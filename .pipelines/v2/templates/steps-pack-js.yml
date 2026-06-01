@@ -1,0 +1,80 @@
+# Steps to assemble the multi-platform Foundry Local JS npm tarball.
+#
+# Assumes the caller has declared the following pipeline artifacts via
+# templateContext.inputs (1ES) so they are present under $(Pipeline.Workspace):
+#   * version-info               -> sdkVersion.txt
+#   * js-prebuild-win-x64        -> prebuilds/win32-x64/
+#   * js-prebuild-win-arm64      -> prebuilds/win32-arm64/
+#   * js-prebuild-linux-x64      -> prebuilds/linux-x64/
+#   * js-prebuild-osx-arm64      -> prebuilds/darwin-arm64/
+#
+# Merges all four prebuilds into sdk_v2/js/prebuilds/, stamps the version,
+# builds TypeScript, and runs `npm pack` to produce a single multi-platform
+# .tgz that ships every supported addon binary.
+#
+# Runs on a Windows pool — packaging only, no native compilation.
+
+parameters:
+- name: outputDir
+  type: string
+  default: '$(Build.ArtifactStagingDirectory)/js-sdk'
+  displayName: 'Directory where the packed .tgz is staged for upload'
+
+steps:
+
+- task: NodeTool@0
+  displayName: 'Use Node.js 20'
+  inputs:
+    versionSpec: '20.x'
+
+- pwsh: |
+      $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
+      if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+      New-Item -ItemType Directory -Force -Path $dst | Out-Null
+
+      $sources = @(
+        @{ rid = 'win-x64'; plat = 'win32-x64' },
+        @{ rid = 'win-arm64'; plat = 'win32-arm64' },
+        @{ rid = 'linux-x64'; plat = 'linux-x64' },
+        @{ rid = 'osx-arm64'; plat = 'darwin-arm64' }
+      )
+
+      foreach ($entry in $sources) {
+        $src = "$(Pipeline.Workspace)/js-prebuild-$($entry.rid)/prebuilds/$($entry.plat)"
+        if (-not (Test-Path $src)) { throw "Missing prebuild artifact: $src" }
+        Copy-Item $src -Destination $dst -Recurse -Force
+        Write-Host "Copied prebuilds/$($entry.plat)"
+      }
+
+      Get-ChildItem -Recurse $dst | ForEach-Object { Write-Host "  $($_.FullName)" }
+  displayName: 'Assemble prebuilds/ from all platform artifacts'
+
+- task: Npm@1
+  displayName: 'npm ci'
+  inputs:
+    command: custom
+    workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
+    customCommand: 'ci --no-audit --no-fund --ignore-scripts'
+
+- pwsh: |
+      $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
+      Write-Host "Stamping JS package version: $version"
+      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      npm version $version --no-git-tag-version --allow-same-version
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  displayName: 'Stamp package version'
+
+- pwsh: |
+      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      npm run build:ts
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  displayName: 'Build TypeScript'
+
+- pwsh: |
+      $dst = '${{ parameters.outputDir }}'
+      New-Item -ItemType Directory -Force -Path $dst | Out-Null
+      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      npm pack --pack-destination $dst
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      Get-ChildItem $dst | ForEach-Object { Write-Host "  $($_.Name)  $($_.Length) bytes" }
+  displayName: 'npm pack'

@@ -26,6 +26,10 @@ __pycache__/
 node_modules/
 packages/
 package-lock.json
+# sdk_v2/js commits its lockfile to give CI deterministic, faster restores
+# via `npm ci`. v1/samples/www intentionally float, so the global rule above
+# stays in place and this negation re-includes only the v2 SDK lockfile.
+!/sdk_v2/js/package-lock.json
 prebuilds/
 
 # Rust build targets
@@ -43,3 +47,8 @@ local-packages/
 
 # JS SDK downloaded native core binaries
 sdk/js/foundry-local-core/
+
+# sdk_v2/js pack-prebuilds.mjs stages deps_versions.json into sdk_v2/js/
+# at publish time so the tarball can carry it. The repo source of truth
+# stays at sdk_v2/deps_versions.json; the copy is generated.
+/sdk_v2/js/deps_versions.json

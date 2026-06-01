@@ -1,0 +1,90 @@
+# Inner steps to run the JS SDK vitest suite against a prebuilt addon.
+#
+# The caller is responsible for placing the `js-prebuild-<rid>` artifact at
+# `prebuildArtifactDir`. We drop its contents into sdk_v2/js/prebuilds/<plat>-<arch>/
+# so the runtime addon-loader in dist/native/load.js finds it, then run vitest.
+
+parameters:
+- name: rid
+  type: string
+  values: ['win-x64', 'linux-x64', 'osx-arm64']
+  displayName: 'ADO RID for the platform being tested (no cross-arch testing)'
+- name: prebuildArtifactDir
+  type: string
+  displayName: 'Path to the downloaded js-prebuild-<rid> artifact directory (root with prebuilds/ inside)'
+- name: testDataSharedDir
+  type: string
+  displayName: 'Path to the checked-out test-data-shared repo'
+
+steps:
+
+- task: NodeTool@0
+  displayName: 'Use Node.js 20'
+  inputs:
+    versionSpec: '20.x'
+
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - pwsh: |
+      $src = "${{ parameters.prebuildArtifactDir }}/prebuilds"
+      $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
+      if (-not (Test-Path $src)) { throw "Prebuild artifact missing: $src" }
+      if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+      New-Item -ItemType Directory -Force -Path $dst | Out-Null
+      Copy-Item "$src/*" -Destination $dst -Recurse -Force
+      Get-ChildItem -Recurse $dst | ForEach-Object { Write-Host "  $($_.FullName)" }
+    displayName: 'Drop prebuild into sdk_v2/js/prebuilds'
+
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+  - bash: |
+      set -euo pipefail
+      src="${{ parameters.prebuildArtifactDir }}/prebuilds"
+      dst="$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
+      if [ ! -d "$src" ]; then echo "Prebuild artifact missing: $src" >&2; exit 1; fi
+      rm -rf "$dst"
+      mkdir -p "$dst"
+      cp -RP "$src/." "$dst/"
+      find "$dst" -maxdepth 3 -print
+    displayName: 'Drop prebuild into sdk_v2/js/prebuilds'
+
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - task: Npm@1
+    displayName: 'npm ci (runs install-native postinstall)'
+    inputs:
+      command: custom
+      workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
+      customCommand: 'ci --no-audit --no-fund'
+
+  - pwsh: |
+      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      npm run build:ts
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    displayName: 'Build TypeScript'
+
+  - pwsh: |
+      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      npx --no-install vitest run --reporter=verbose
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    displayName: 'Run vitest'
+    env:
+      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+  - bash: |
+      set -euo pipefail
+      cd "$(Build.SourcesDirectory)/sdk_v2/js"
+      npm ci --no-audit --no-fund
+    displayName: 'npm ci (runs install-native postinstall)'
+
+  - bash: |
+      set -euo pipefail
+      cd "$(Build.SourcesDirectory)/sdk_v2/js"
+      npm run build:ts
+    displayName: 'Build TypeScript'
+
+  - bash: |
+      set -euo pipefail
+      cd "$(Build.SourcesDirectory)/sdk_v2/js"
+      npx --no-install vitest run --reporter=verbose
+    displayName: 'Run vitest'
+    env:
+      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'

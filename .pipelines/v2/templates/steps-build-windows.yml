@@ -198,3 +198,16 @@ steps:
       SourceFolder: '$(Build.SourcesDirectory)/sdk_v2/cpp/include'
       Contents: '**'
       TargetFolder: '$(Build.ArtifactStagingDirectory)/include'
+
+  # Bundle the ms-gsl headers from vcpkg into cpp-native-include so the
+  # artifact is a self-contained C++ consumption payload. foundry_local_cpp.h
+  # transitively includes <gsl/span> (the public C++ wrapper API targets
+  # C++17, so it uses gsl::span instead of std::span). ms-gsl is header-only
+  # and identical across triplets, so sourcing once from x64-windows is
+  # sufficient for every downstream consumer regardless of platform/arch.
+  - task: CopyFiles@2
+    displayName: 'Stage ms-gsl headers'
+    inputs:
+      SourceFolder: '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/vcpkg_installed/x64-windows/include/gsl'
+      Contents: '**'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)/include/gsl'

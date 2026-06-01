@@ -1,0 +1,222 @@
+# Inner steps to build one platform's Foundry Local JS Node-API addon.
+#
+# The caller is responsible for:
+#   * placing the platform-native foundry_local binaries (.dll/.lib on
+#     Windows, .so on Linux, .dylib on macOS) under `nativeArtifactDir`
+#   * placing the public + gsl headers (cpp-native-include artifact)
+#     under `includeArtifactDir`
+#
+# Each invocation produces a populated prebuilds/<plat>-<arch>/ directory
+# under `outputDir` containing the two .node addons and the matching
+# foundry_local shared library, ready for either the js_pack stage to
+# assemble or a js_test_<rid> stage to consume.
+#
+# Note on directory naming: ADO RIDs use win-x64/osx-arm64 while the npm
+# prebuild layout uses Node.js conventions (win32-x64/darwin-arm64). The
+# `rid` parameter is the ADO RID; `prebuildDir` below is the Node-style key.
+
+parameters:
+- name: rid
+  type: string
+  values: ['win-x64', 'win-arm64', 'linux-x64', 'osx-arm64']
+  displayName: 'ADO RID for the platform being built'
+- name: nativeArtifactDir
+  type: string
+  displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
+- name: includeArtifactDir
+  type: string
+  displayName: 'Path to the downloaded cpp-native-include artifact directory'
+- name: outputDir
+  type: string
+  default: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+  displayName: 'Directory under which prebuilds/<plat>-<arch>/ is produced'
+- name: targetArch
+  type: string
+  default: 'native'
+  values: ['native', 'arm64']
+  displayName: 'Cross-compile target arch for node-gyp on Windows x64 host. "native" = no cross.'
+- name: signWindows
+  type: boolean
+  default: false
+  displayName: 'ESRP-sign Windows .node + .dll artifacts before staging'
+- name: signMac
+  type: boolean
+  default: false
+  displayName: 'ESRP-sign macOS .node + .dylib artifacts before staging'
+
+steps:
+
+- task: NodeTool@0
+  displayName: 'Use Node.js 20'
+  inputs:
+    versionSpec: '20.x'
+
+# Map ADO RID -> Node-style platform-arch key used inside the npm tarball
+# (prebuilds/<plat>-<arch>/) so downstream consumers find the addon under
+# the directory matching `${process.platform}-${process.arch}` at runtime.
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - pwsh: |
+      Write-Host "##vso[task.setvariable variable=prebuildDir]win32-x64"
+      Write-Host "##vso[task.setvariable variable=nativeLib]foundry_local.dll"
+    displayName: 'Set prebuild directory (win32-x64)'
+
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - pwsh: |
+      Write-Host "##vso[task.setvariable variable=prebuildDir]win32-arm64"
+      Write-Host "##vso[task.setvariable variable=nativeLib]foundry_local.dll"
+    displayName: 'Set prebuild directory (win32-arm64)'
+
+- ${{ if eq(parameters.rid, 'linux-x64') }}:
+  - bash: |
+      echo "##vso[task.setvariable variable=prebuildDir]linux-x64"
+      echo "##vso[task.setvariable variable=nativeLib]libfoundry_local.so"
+    displayName: 'Set prebuild directory (linux-x64)'
+
+- ${{ if eq(parameters.rid, 'osx-arm64') }}:
+  - bash: |
+      echo "##vso[task.setvariable variable=prebuildDir]darwin-arm64"
+      echo "##vso[task.setvariable variable=nativeLib]libfoundry_local.dylib"
+    displayName: 'Set prebuild directory (darwin-arm64)'
+
+# v2 sdk_v2/js commits package-lock.json, so use `npm ci` for deterministic,
+# faster restores. --ignore-scripts skips any postinstall hooks; the addon
+# is built explicitly in the next step via node-gyp.
+- task: Npm@1
+  displayName: 'npm ci'
+  inputs:
+    command: custom
+    workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
+    customCommand: 'ci --no-audit --no-fund --ignore-scripts'
+
+# binding.gyp resolves the foundry_local lib + gsl/public include dirs
+# via FOUNDRY_LOCAL_LIB_DIR and FOUNDRY_LOCAL_INCLUDE_DIR when set. The
+# include artifact ships both `foundry_local/` and `gsl/` subdirectories;
+# we point INCLUDE_DIR at that artifact root, and the public include path
+# is added separately in binding.gyp via `../cpp/include`.
+- ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
+  - pwsh: |
+      $arch = '${{ parameters.targetArch }}'
+      $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
+      Write-Host "node-gyp $args"
+      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      npx --no-install node-gyp $args.Split(' ')
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    displayName: 'Build Node-API addon'
+    env:
+      FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
+      FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
+      # Force the copy_addon_to_prebuilds destination to the target-arch dir.
+      # Without this, print-prebuild-dir.mjs uses the host Node.js process.arch
+      # (x64) and the addon lands in prebuilds/win32-x64/ even when we are
+      # cross-compiling to arm64.
+      FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
+
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+  - bash: |
+      set -euo pipefail
+      cd "$(Build.SourcesDirectory)/sdk_v2/js"
+      npx --no-install node-gyp rebuild
+    displayName: 'Build Node-API addon'
+    env:
+      FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
+      FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
+      FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
+
+# Stage prebuilds/<plat>-<arch>/ with the two .node addons + foundry_local
+# shared library. binding.gyp's copy_addon_to_prebuilds target already
+# drops the .node files into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy
+# from there into the artifact dir alongside the shared library.
+- ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
+  - pwsh: |
+      $dst = "${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"
+      if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+      New-Item -ItemType Directory -Force -Path $dst | Out-Null
+
+      $srcAddon = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)"
+      foreach ($file in @('foundry_local_node.node', 'foundry_local_preload.node')) {
+        $path = Join-Path $srcAddon $file
+        if (-not (Test-Path $path)) { throw "Addon not found: $path" }
+        Copy-Item $path -Destination $dst -Force
+        Write-Host "  staged $file"
+      }
+
+      $nativeLibPath = Join-Path "${{ parameters.nativeArtifactDir }}" "$(nativeLib)"
+      if (-not (Test-Path $nativeLibPath)) { throw "Native lib not found: $nativeLibPath" }
+      Copy-Item $nativeLibPath -Destination $dst -Force
+      Write-Host "  staged $(nativeLib)"
+
+      Get-ChildItem $dst | ForEach-Object { Write-Host "    $($_.Name)  $($_.Length) bytes" }
+    displayName: 'Stage prebuild directory'
+
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+  - bash: |
+      set -euo pipefail
+      dst="${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"
+      rm -rf "$dst"
+      mkdir -p "$dst"
+
+      srcAddon="$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)"
+      for file in foundry_local_node.node foundry_local_preload.node; do
+        path="$srcAddon/$file"
+        if [ ! -f "$path" ]; then echo "Addon not found: $path" >&2; exit 1; fi
+        cp -P "$path" "$dst/"
+        echo "  staged $file"
+      done
+
+      nativeLibPath="${{ parameters.nativeArtifactDir }}/$(nativeLib)"
+      if [ ! -f "$nativeLibPath" ]; then echo "Native lib not found: $nativeLibPath" >&2; exit 1; fi
+      cp -P "$nativeLibPath" "$dst/"
+      echo "  staged $(nativeLib)"
+
+      ls -la "$dst"
+    displayName: 'Stage prebuild directory'
+
+# Authenticode-sign the Windows .node + .dll. Mirrors the C# DLL signing
+# block in steps-build-cs.yml — same ConnectedServiceName, ESRP variable
+# group (FoundryLocal-ESRP-Signing), and CP-230012 keyCode.
+- ${{ if eq(parameters.signWindows, true) }}:
+  - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
+    displayName: 'Sign Windows JS addon (.node) + foundry_local.dll'
+    inputs:
+      ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
+      UseMSIAuthentication: true
+      AppRegistrationClientId: '$(esrpClientId)'
+      AppRegistrationTenantId: '$(esrpTenantId)'
+      EsrpClientId: '$(esrpClientId)'
+      AuthAKVName: '$(esrpAkvName)'
+      AuthSignCertName: '$(esrpSignCertName)'
+      FolderPath: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+      # FolderPath is recursed by the task (UseMinimatch=false default).
+      # Pattern must be a plain filename, applied with SearchOption.AllDirectories.
+      # Run the task once per file pattern so each gets its own signing op.
+      Pattern: '*.node;foundry_local.dll'
+      SessionTimeout: 90
+      ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
+      MaxConcurrency: 25
+      signConfigType: inlineSignParams
+      inlineOperation: |
+        [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
+
+# Apple codesign via ESRP for macOS .node + .dylib. The exact keyCode +
+# operationSetCode combination depends on the configured ESRP Mac signing
+# policy; this is a placeholder using a commonly-provisioned Mac policy.
+# Adjust during first pipeline run if the policy isn't provisioned.
+- ${{ if eq(parameters.signMac, true) }}:
+  - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
+    displayName: 'Sign macOS JS addon (.node) + libfoundry_local.dylib'
+    inputs:
+      ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
+      UseMSIAuthentication: true
+      AppRegistrationClientId: '$(esrpClientId)'
+      AppRegistrationTenantId: '$(esrpTenantId)'
+      EsrpClientId: '$(esrpClientId)'
+      AuthAKVName: '$(esrpAkvName)'
+      AuthSignCertName: '$(esrpSignCertName)'
+      FolderPath: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+      Pattern: '*.node;libfoundry_local.dylib'
+      SessionTimeout: 90
+      ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
+      MaxConcurrency: 25
+      signConfigType: inlineSignParams
+      inlineOperation: |
+        [{"keyCode":"CP-401337","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"1.0"}]

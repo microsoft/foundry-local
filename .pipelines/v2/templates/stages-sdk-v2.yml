@@ -53,3 +53,6 @@ stages:
 - template: stages-python.yml
   parameters:
     variant: winml
+
+# ── JS SDK (single multi-platform tarball) ──
+- template: stages-js.yml

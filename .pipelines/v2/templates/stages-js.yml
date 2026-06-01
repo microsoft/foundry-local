@@ -1,0 +1,313 @@
+# Build + test + pack stages for the sdk_v2 JS SDK.
+#
+# Unlike Python and C#, the JS SDK ships a single multi-platform npm tarball.
+# Each per-platform build stage produces a `js-prebuild-<rid>` artifact
+# containing prebuilds/<plat>-<arch>/ (two .node addons + the matching
+# foundry_local shared library). The final `js_pack` stage downloads all
+# four prebuild artifacts, merges them under sdk_v2/js/prebuilds/, stamps
+# the version, and runs `npm pack` to produce a single .tgz.
+#
+# Build stages depend on:
+#   * compute_version          (sdkVersion.txt for the eventual pack stamp)
+#   * cpp_build_<rid>          (matching native foundry_local lib + import lib)
+#   * cpp_build_win_x64        (the cpp-native-include artifact, which is
+#                               stage-headers-only on the win-x64 build)
+#
+# Tests run on the same platform as the build, except win-arm64 (no
+# Windows-ARM64 pool; build-only, matching the C# + Python matrices).
+
+stages:
+
+# =====================================================================
+# Build stages
+# =====================================================================
+
+- stage: js_build_win_x64
+  displayName: 'JS SDK: Build Windows x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    variables:
+    - group: FoundryLocal-ESRP-Signing
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-include'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'js-prebuild-win-x64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-js.yml
+      parameters:
+        rid: 'win-x64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
+        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
+        outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+        signWindows: true
+
+- stage: js_build_win_arm64
+  displayName: 'JS SDK: Build Windows ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_arm64
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    variables:
+    - group: FoundryLocal-ESRP-Signing
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-include'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'js-prebuild-win-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-js.yml
+      parameters:
+        rid: 'win-arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
+        outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+        targetArch: 'arm64'
+        signWindows: true
+
+- stage: js_build_linux_x64
+  displayName: 'JS SDK: Build Linux x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_x64
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-include'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'js-prebuild-linux-x64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-js.yml
+      parameters:
+        rid: 'linux-x64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
+        outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+
+- stage: js_build_osx_arm64
+  displayName: 'JS SDK: Build macOS ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_osx_arm64
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    variables:
+    - group: FoundryLocal-ESRP-Signing
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-include'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'js-prebuild-osx-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-js.yml
+      parameters:
+        rid: 'osx-arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
+        outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+        signMac: true
+
+# =====================================================================
+# Test stages — same-platform only. win-arm64 is build-only.
+# =====================================================================
+
+- stage: js_test_win_x64
+  displayName: 'JS SDK: Test Windows x64'
+  dependsOn:
+  - js_build_win_x64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-win-x64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-win-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-js.yml
+      parameters:
+        rid: 'win-x64'
+        prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-win-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: js_test_linux_x64
+  displayName: 'JS SDK: Test Linux x64'
+  dependsOn:
+  - js_build_linux_x64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-linux-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-js.yml
+      parameters:
+        rid: 'linux-x64'
+        prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-linux-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: js_test_osx_arm64
+  displayName: 'JS SDK: Test macOS ARM64'
+  dependsOn:
+  - js_build_osx_arm64
+  jobs:
+  - job: test
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-osx-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - bash: |
+          set -euo pipefail
+          if ! command -v git-lfs >/dev/null 2>&1; then
+              brew install git-lfs
+          fi
+          git lfs install
+      displayName: 'Install git-lfs (macOS)'
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-js.yml
+      parameters:
+        rid: 'osx-arm64'
+        prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-osx-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+# =====================================================================
+# Pack stage — runs after all four builds. Pure packaging on Windows.
+# =====================================================================
+
+- stage: js_pack
+  displayName: 'JS SDK: Pack multi-platform npm tarball'
+  dependsOn:
+  - js_build_win_x64
+  - js_build_win_arm64
+  - js_build_linux_x64
+  - js_build_osx_arm64
+  jobs:
+  - job: pack
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-win-x64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-win-x64'
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-win-arm64'
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-osx-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'js-sdk'
+        targetPath: '$(Build.ArtifactStagingDirectory)/js-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-pack-js.yml
+      parameters:
+        outputDir: '$(Build.ArtifactStagingDirectory)/js-sdk'

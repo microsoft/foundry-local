@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+coverage/
+TestResults/
+prebuilds/
+*.log
+.vs/
+.vscode/

@@ -1,0 +1,51 @@
+{
+  "name": "foundry-local-sdk",
+  "version": "2.0.0-dev.0",
+  "description": "Foundry Local SDK for Node.js (v2). Native bindings on top of the foundry_local C++ SDK.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "prebuilds/",
+    "script/install-native.cjs",
+    "deps_versions.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:native": "node-gyp rebuild",
+    "configure:native": "node-gyp configure",
+    "copy-native:dev": "node script/copy-native.mjs",
+    "pack:prebuild": "node script/pack-prebuilds.mjs",
+    "install-native": "node script/install-native.cjs",
+    "install": "node script/install-native.cjs",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "build": "npm run copy-native:dev && npm run build:native && npm run build:ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src test script",
+    "format": "biome format --write src test script"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "node-addon-api": "^8.2.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "node-gyp": "^12.1.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
