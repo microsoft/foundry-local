@@ -466,6 +466,9 @@ def configure(args: argparse.Namespace) -> None:
         command += ["-DFOUNDRY_LOCAL_USE_WINML=ON"]
         if args.winml_sdk_version:
             command += [f"-DWINML_SDK_VERSION={args.winml_sdk_version}"]
+    else:
+        # Pass explicitly so a re-configure without the flag clears any cached ON value.
+        command += ["-DFOUNDRY_LOCAL_USE_WINML=OFF"]
 
     if args.ort_home:
         command += [f"-DORT_HOME={args.ort_home}"]
