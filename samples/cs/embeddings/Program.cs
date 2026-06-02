@@ -38,36 +38,54 @@ await model.LoadAsync();
 Console.WriteLine("done.");
 // </model_setup>
 
-// <single_embedding>
-// Get an embedding client
-var embeddingClient = await model.GetEmbeddingClientAsync();
+using var session = new EmbeddingsSession(model);
 
-// Generate a single embedding
+// <single_embedding>
 Console.WriteLine("\n--- Single Embedding ---");
-var response = await embeddingClient.GenerateEmbeddingAsync("The quick brown fox jumps over the lazy dog");
-var embedding = response.Data[0].Embedding;
-Console.WriteLine($"Dimensions: {embedding.Count}");
-Console.WriteLine($"First 5 values: [{string.Join(", ", embedding.Take(5).Select(v => v.ToString("F6")))}]");
+using (var request = new Request())
+{
+    request.AddItem(new TextItem("The quick brown fox jumps over the lazy dog"));
+
+    using var response = await session.ProcessRequestAsync(request);
+    using var item = response.GetItem(0);
+    var tensor = (TensorItem)item;
+
+    // Zero-copy view over the tensor's native buffer — valid only while `item` is alive.
+    var values = tensor.AsSpan<float>();
+    var preview = Math.Min(5, values.Length);
+
+    Console.WriteLine($"Shape: [{string.Join(", ", tensor.Shape)}] ({values.Length} values)");
+    Console.Write($"First {preview}: [");
+    for (int i = 0; i < preview; i++)
+    {
+        Console.Write($"{(i > 0 ? ", " : "")}{values[i]:F6}");
+    }
+    Console.WriteLine("]");
+}
 // </single_embedding>
 
 // <batch_embedding>
-// Generate embeddings for multiple inputs
 Console.WriteLine("\n--- Batch Embeddings ---");
-var batchResponse = await embeddingClient.GenerateEmbeddingsAsync([
-    "Machine learning is a subset of artificial intelligence",
-    "The capital of France is Paris",
-    "Rust is a systems programming language"
-]);
-
-Console.WriteLine($"Number of embeddings: {batchResponse.Data.Count}");
-for (var i = 0; i < batchResponse.Data.Count; i++)
+using (var request = new Request())
 {
-    Console.WriteLine($"  [{i}] Dimensions: {batchResponse.Data[i].Embedding.Count}");
+    request.AddItem(new TextItem("Machine learning is a subset of artificial intelligence"));
+    request.AddItem(new TextItem("The capital of France is Paris"));
+    request.AddItem(new TextItem("Rust is a systems programming language"));
+
+    using var response = await session.ProcessRequestAsync(request);
+    Console.WriteLine($"Number of embeddings: {response.ItemCount}");
+    for (int i = 0; i < response.ItemCount; i++)
+    {
+        using var item = response.GetItem(i);
+        var tensor = (TensorItem)item;
+        Console.WriteLine($"  [{i}] Dimensions: [{string.Join(", ", tensor.Shape)}]");
+    }
 }
 // </batch_embedding>
 
 // <cleanup>
 // Tidy up - unload the model and dispose the manager so native resources are released promptly.
+session.Dispose();
 await model.UnloadAsync();
 mgr.Dispose();
 Console.WriteLine("\nModel unloaded.");

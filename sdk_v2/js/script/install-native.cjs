@@ -46,38 +46,53 @@ const LIB_PREFIX = os.platform() === 'win32' ? '' : 'lib';
 
 const BIN_DIR = path.join(__dirname, '..', 'prebuilds', platformKey);
 
-const depsPath = fs.existsSync(path.resolve(__dirname, '..', 'deps_versions.json'))
-    ? path.resolve(__dirname, '..', 'deps_versions.json')
-    : path.resolve(__dirname, '..', '..', 'deps_versions.json');
-
-if (!fs.existsSync(depsPath)) {
-    console.error(`[foundry-local] deps_versions.json not found at ${depsPath}`);
-    process.exit(1);
+// Tarball consumers receive prebuilds/<plat>-<arch>/ already populated, so
+// deps_versions.json (which only lives in the repo) is unnecessary unless we
+// actually need to download. Read it lazily and fail only if a download is
+// required but no versions file is available.
+// Two valid locations, picked by install context (not a search):
+//   1. <package-root>/deps_versions.json — published tarball. pack-prebuilds.mjs
+//      stages it next to package.json so installed consumers have it locally.
+//   2. <repo>/sdk_v2/deps_versions.json — running from the repo (script at
+//      sdk_v2/js/script/install-native.cjs, so ../.. resolves to sdk_v2/).
+//      The file is intentionally not duplicated into sdk_v2/js/ in source.
+let _deps;
+function getDeps() {
+    if (_deps !== undefined) return _deps;
+    const candidates = [
+        path.resolve(__dirname, '..', 'deps_versions.json'),
+        path.resolve(__dirname, '..', '..', 'deps_versions.json'),
+    ];
+    const depsPath = candidates.find((p) => fs.existsSync(p));
+    if (!depsPath) {
+        throw new Error(`deps_versions.json not found (looked in: ${candidates.join(', ')})`);
+    }
+    _deps = JSON.parse(fs.readFileSync(depsPath, 'utf8'));
+    return _deps;
 }
-const deps = JSON.parse(fs.readFileSync(depsPath, 'utf8'));
 
 const isLinuxX64 = os.platform() === 'linux' && os.arch() === 'x64';
 const ortPackageName = isLinuxX64 ? 'Microsoft.ML.OnnxRuntime.Gpu.Linux' : 'Microsoft.ML.OnnxRuntime.Foundry';
-
-const ortVersion = deps.onnxruntime.version;
-const genaiVersion = deps['onnxruntime-genai'].version;
 
 // Expected post-install filenames per platform. On Linux/macOS we rename or
 // symlink the unversioned ORT lib to a versioned name to match what
 // libfoundry_local.{so,dylib} actually requests at load time.
 function expectedOrt() {
     if (os.platform() === 'linux') return 'libonnxruntime.so.1';
-    if (os.platform() === 'darwin') return `libonnxruntime.${ortVersion}.dylib`;
+    if (os.platform() === 'darwin') return `libonnxruntime.${getDeps().onnxruntime.version}.dylib`;
     return 'onnxruntime.dll';
 }
 function expectedGenai() {
     return `${LIB_PREFIX}onnxruntime-genai${EXT}`;
 }
 
-const ARTIFACTS = [
-    { name: ortPackageName, version: ortVersion, expected: expectedOrt() },
-    { name: 'Microsoft.ML.OnnxRuntimeGenAI.Foundry', version: genaiVersion, expected: expectedGenai() },
-];
+function buildArtifacts() {
+    const deps = getDeps();
+    return [
+        { name: ortPackageName, version: deps.onnxruntime.version, expected: expectedOrt() },
+        { name: 'Microsoft.ML.OnnxRuntimeGenAI.Foundry', version: deps['onnxruntime-genai'].version, expected: expectedGenai() },
+    ];
+}
 
 const FEEDS = [
     'https://api.nuget.org/v3/index.json',
@@ -262,12 +277,26 @@ function applyOrtPlatformAliases(binDir, ortVersion) {
     console.log(`[foundry-local] Installing native runtime libraries for ${RID} into ${BIN_DIR}...`);
     fs.mkdirSync(BIN_DIR, { recursive: true });
 
+    // Fast path for tarball consumers: ORT + GenAI ship inside the published
+    // tarball, so on Windows/Linux we can short-circuit before touching
+    // deps_versions.json (which isn't part of the tarball). On macOS the
+    // expected ORT filename is version-stamped, so we still need deps for the
+    // existence check; defer that to the full path below.
+    const fastCheck = os.platform() !== 'darwin'
+        ? [path.join(BIN_DIR, expectedOrt()), path.join(BIN_DIR, expectedGenai())]
+        : null;
+    if (fastCheck && fastCheck.every((p) => fs.existsSync(p))) {
+        console.log('[foundry-local] Native runtime already staged; nothing to download.');
+        return;
+    }
+
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foundry-install-'));
     try {
-        for (const artifact of ARTIFACTS) {
+        const artifacts = buildArtifacts();
+        for (const artifact of artifacts) {
             await installPackage(artifact, tempDir, BIN_DIR);
         }
-        applyOrtPlatformAliases(BIN_DIR, ortVersion);
+        applyOrtPlatformAliases(BIN_DIR, getDeps().onnxruntime.version);
         console.log('[foundry-local] Native runtime install complete.');
     } catch (err) {
         console.error('[foundry-local] Installation failed:', err instanceof Error ? err.message : err);

@@ -305,6 +305,17 @@ class MessageItem(Item):
     def parts(self) -> list[Item]:
         return list(self._parts)
 
+    def is_simple_text(self) -> bool:
+        """True when the message has exactly one part and it is a ``TextItem``."""
+        return len(self._parts) == 1 and isinstance(self._parts[0], TextItem)
+
+    def get_simple_text(self) -> str:
+        """Text of the single ``TextItem`` part. Raises if :meth:`is_simple_text` is false."""
+        if not self.is_simple_text():
+            raise ValueError("MessageItem is not a single TextItem")
+
+        return self._parts[0].text  # type: ignore[attr-defined]
+
     @classmethod
     def _from_native(cls, ptr, owns: bool) -> "MessageItem":
         from foundry_local_sdk._native import ffi

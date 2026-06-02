@@ -62,26 +62,36 @@ Console.WriteLine("done.");
 
 
 // <transcription>
-// Get an audio client
-var audioClient = await model.GetAudioClientAsync();
-audioClient.Settings.Language = "en";
+using var session = new AudioSession(model);
+session.SetOptions(new RequestOptions
+{
+    AdditionalOptions = new Dictionary<string, string> { ["language"] = "en" },
+});
+session.SetStreaming(true);
 
-// Get a transcription with streaming outputs
 var audioFile = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "Recording.mp3");
 Console.WriteLine($"Transcribing audio with streaming output: {Path.GetFileName(audioFile)}");
-var response = audioClient.TranscribeAudioStreamingAsync(audioFile, CancellationToken.None);
-await foreach (var chunk in response)
-{
-    Console.Write(chunk.Text);
-    Console.Out.Flush();
-}
+using var request = new Request();
+request.AddItem(new AudioItem(audioFile));
 
+await foreach (var item in session.ProcessStreamingRequestAsync(request))
+{
+    using (item)
+    {
+        if (item is TextItem txt)
+        {
+            Console.Write(txt.Text);
+            Console.Out.Flush();
+        }
+    }
+}
 Console.WriteLine();
 // </transcription>
 
 
 // <cleanup>
 // Tidy up - unload the model and dispose the manager so native resources are released promptly.
+session.Dispose();
 await model.UnloadAsync();
 mgr.Dispose();
 // </cleanup>

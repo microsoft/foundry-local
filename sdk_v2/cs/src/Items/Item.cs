@@ -49,6 +49,7 @@ public class Item : IDisposable
             ItemType.ToolCall   => new ToolCallItem(ptr, ownsHandle),
             ItemType.ToolResult => new ToolResultItem(ptr, ownsHandle),
             ItemType.Tensor     => new TensorItem(ptr, ownsHandle),
+            ItemType.Queue      => new ItemQueue(ptr, ownsHandle),
             _                   => new Item(ptr, ownsHandle),
         };
     }

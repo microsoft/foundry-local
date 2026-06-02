@@ -1,29 +1,40 @@
-// <complete_code>
-// <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+// Tutorial: Document Summarizer — Foundry Local JS SDK (native session API).
+//
+// Summarizes a text file (or every .txt in a directory). Each file gets a fresh
+// ChatSession so prior documents don't leak into context.
+
+import { ChatSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, basename, dirname } from 'path';
 import { fileURLToPath } from 'url';
-// </imports>
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-async function summarizeFile(chatClient, filePath, systemPrompt) {
-    const content = readFileSync(filePath, 'utf-8');
-    const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: content }
-    ];
+const SYSTEM_PROMPT =
+    'Summarize the following document into concise bullet points. ' +
+    'Focus on the key points and main ideas.';
 
-    const response = await chatClient.completeChat(messages);
-    console.log(response.choices[0]?.message?.content);
+async function summarizeFile(model, filePath) {
+    const content = readFileSync(filePath, 'utf-8');
+    const session = new ChatSession(model);
+    try {
+        const request = new Request();
+        request.addItem(Item.systemMessage(SYSTEM_PROMPT));
+        request.addItem(Item.userMessage(content));
+
+        for await (const item of session.processStreamingRequest(request)) {
+            if (item.type === 'text' && item.text) {
+                process.stdout.write(item.text);
+            }
+        }
+        console.log();
+    } finally {
+        session.dispose();
+    }
 }
 
-async function summarizeDirectory(chatClient, directory, systemPrompt) {
-    const txtFiles = readdirSync(directory)
-        .filter(f => f.endsWith('.txt'))
-        .sort();
-
+async function summarizeDirectory(model, directory) {
+    const txtFiles = readdirSync(directory).filter((f) => f.endsWith('.txt')).sort();
     if (txtFiles.length === 0) {
         console.log(`No .txt files found in ${directory}`);
         return;
@@ -31,19 +42,16 @@ async function summarizeDirectory(chatClient, directory, systemPrompt) {
 
     for (const fileName of txtFiles) {
         console.log(`--- ${fileName} ---`);
-        await summarizeFile(chatClient, join(directory, fileName), systemPrompt);
+        await summarizeFile(model, join(directory, fileName));
         console.log();
     }
 }
 
-// <init>
-// Initialize the Foundry Local SDK
 const manager = FoundryLocalManager.create({
     appName: 'foundry_local_samples',
-    logLevel: 'info'
+    logLevel: 'info',
 });
 
-// Download and register all execution providers.
 let currentEp = '';
 await manager.downloadAndRegisterEps((epName, percent) => {
     if (epName !== currentEp) {
@@ -54,7 +62,6 @@ await manager.downloadAndRegisterEps((epName, percent) => {
 });
 if (currentEp !== '') process.stdout.write('\n');
 
-// Select and load a model from the catalog
 const model = await manager.catalog.getModel('qwen2.5-0.5b');
 
 await model.download((progress) => {
@@ -65,37 +72,22 @@ console.log('\nModel downloaded.');
 await model.load();
 console.log('Model loaded and ready.\n');
 
-// Create a chat client
-const chatClient = model.createChatClient();
-// </init>
-
-// <summarization>
-const systemPrompt =
-    'Summarize the following document into concise bullet points. ' +
-    'Focus on the key points and main ideas.';
-
-// <file_reading>
 // Default to the shared samples/testdata/document.txt.
 const defaultDocument = join(__dirname, '..', '..', 'testdata', 'document.txt');
 const target = process.argv[2] || defaultDocument;
-// </file_reading>
 
 try {
     const stats = statSync(target);
     if (stats.isDirectory()) {
-        await summarizeDirectory(chatClient, target, systemPrompt);
+        await summarizeDirectory(model, target);
     } else {
         console.log(`--- ${basename(target)} ---`);
-        await summarizeFile(chatClient, target, systemPrompt);
+        await summarizeFile(model, target);
     }
 } catch {
     console.log(`--- ${basename(target)} ---`);
-    await summarizeFile(chatClient, target, systemPrompt);
+    await summarizeFile(model, target);
 }
-// </summarization>
 
-// Clean up
-chatClient.dispose();
 await model.unload();
 console.log('\nModel unloaded. Done!');
-// </complete_code>

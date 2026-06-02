@@ -1,6 +1,6 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { ChatSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
 
 // Initialize the Foundry Local SDK
@@ -63,39 +63,37 @@ console.log('✓ Model loaded');
 // </model_setup>
 
 // <chat_completion>
-// Create chat client
-console.log('\nCreating chat client...');
-const chatClient = model.createChatClient();
-console.log('✓ Chat client created');
+const session = new ChatSession(model);
+try {
+    const req1 = new Request();
+    req1.addItem(Item.systemMessage('You are a concise science tutor. Answer in 1-2 sentences.'));
+    req1.addItem(Item.userMessage('Why is the sky blue?'));
 
-// Example chat completion
-console.log('\nTesting chat completion...');
-const completion = await chatClient.completeChat([
-    { role: 'user', content: 'Why is the sky blue?' }
-]);
+    console.log('Turn 1 (non-streaming):');
+    const resp = await session.processRequest(req1);
+    // Chat responses contain a single MessageItem; the native layer surfaces its
+    // single TextItem part as `.content`.
+    console.log(resp.output[0].content);
 
-console.log('\nChat completion result:');
-console.log(completion.choices[0]?.message?.content);
+    // Session retains history — only the new turn is sent.
+    const req2 = new Request();
+    req2.addItem(Item.userMessage('And why are sunsets red?'));
+
+    console.log('\nTurn 2 (streaming):');
+    for await (const item of session.processStreamingRequest(req2)) {
+        if (item.type === 'text') {
+            process.stdout.write(item.text);
+        }
+    }
+    process.stdout.write('\n');
+
+    console.log(`\nCompleted turns in session: ${session.turnCount}`);
+} finally {
+    session.dispose();
+}
 // </chat_completion>
 
-// <streaming>
-// Example streaming completion
-console.log('\nTesting streaming completion...');
-for await (const chunk of chatClient.completeStreamingChat(
-    [{ role: 'user', content: 'Write a short poem about programming.' }]
-)) {
-    const content = chunk.choices?.[0]?.delta?.content;
-    if (content) {
-        process.stdout.write(content);
-    }
-}
-console.log('\n');
-// </streaming>
-
 // <cleanup>
-console.log('Disposing chat client...');
-chatClient.dispose();
-// Unload the model
 console.log('Unloading model...');
 await model.unload();
 console.log(`✓ Model unloaded`);

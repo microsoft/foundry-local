@@ -45,7 +45,6 @@ app.on('activate', () => {
 // SDK Management
 let manager = null;
 let currentModel = null;
-let chatClient = null;
 let webServiceStarted = false;
 const SERVICE_PORT = 47392;
 const SERVICE_URL = `http://127.0.0.1:${SERVICE_PORT}`;
@@ -152,7 +151,6 @@ ipcMain.handle('load-model', async (event, modelAlias) => {
       } catch (e) {
         // Ignore unload errors
       }
-      chatClient = null;
     }
     
     const model = await manager.catalog.getModel(modelAlias);
@@ -165,13 +163,12 @@ ipcMain.handle('load-model', async (event, modelAlias) => {
     
     await model.load();
     
-    // Wait for model to be fully loaded before creating chat client
+    // Wait for model to be fully loaded before serving requests
     while (!(await model.isLoaded())) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
     currentModel = model;
-    chatClient = model.createChatClient();
     
     return { success: true, modelId: model.id };
   } catch (error) {
@@ -185,7 +182,6 @@ ipcMain.handle('unload-model', async () => {
     if (currentModel) {
       await currentModel.unload();
       currentModel = null;
-      chatClient = null;
     }
     return { success: true };
   } catch (error) {
@@ -204,7 +200,6 @@ ipcMain.handle('delete-model', async (event, modelAlias) => {
     if (currentModel && currentModel.alias === modelAlias) {
       await currentModel.unload();
       currentModel = null;
-      chatClient = null;
     }
     
     model.removeFromCache();
@@ -357,14 +352,23 @@ ipcMain.handle('transcribe-audio', async (event, audioFilePath, base64Data) => {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
-    // Create audio client and transcribe
-    const audioClient = whisperModel.createAudioClient();
-    const result = await audioClient.transcribe(tempFilePath);
+    // Transcribe via the native AudioSession API.
+    const { AudioSession, Item, Request } = await import('foundry-local-sdk');
+    let text = '';
+    const session = new AudioSession(whisperModel);
+    try {
+      const request = new Request();
+      request.addItem(Item.audioFromUri(tempFilePath));
+      const response = await session.processRequest(request);
+      text = response.output[0]?.text ?? '';
+    } finally {
+      session.dispose();
+    }
     
     // Unload whisper model
     await whisperModel.unload();
     
-    return result;
+    return { text };
   } finally {
     // Clean up temp file
     try {

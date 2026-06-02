@@ -8,13 +8,22 @@
 #   python src/app.py --synth      # Synthetic 440Hz sine wave
 
 import math
-import signal
 import struct
 import sys
 import threading
 import time
 
-from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk import (
+    AudioItem,
+    AudioSession,
+    BytesItem,
+    Configuration,
+    FoundryLocalManager,
+    ItemQueue,
+    Request,
+    RequestOptions,
+    TextItem,
+)
 
 use_synth = "--synth" in sys.argv
 
@@ -45,29 +54,30 @@ print(f"Loading model {model.id}...", end="")
 model.load()
 print("done.")
 
-audio_client = model.get_audio_client()
-session = audio_client.create_live_transcription_session()
-session.settings.sample_rate = 16000
-session.settings.channels = 1
-session.settings.language = "en"                  # English (default)
+session = AudioSession(model)
+session.set_options(RequestOptions(additional_options={"language": "en"}))
 # Multi-lingual examples:
-# session.settings.language = "de"     # German
-# session.settings.language = "zh-CN"  # Chinese (Simplified)
-# session.settings.language = "auto"   # Auto-detect language
+#   additional_options={"language": "de"}      # German
+#   additional_options={"language": "zh-CN"}   # Chinese (Simplified)
+#   additional_options={"language": "auto"}    # Auto-detect language
+session.set_streaming(True)
 
-session.start()
+# ItemQueue stays caller-owned (transfer_ownership=False) so we can push chunks
+# while the streaming request runs. Request is built once and reused.
+audio_queue = ItemQueue()
+request = Request()
+request.add_item(AudioItem.create_format_descriptor("pcm", 16000, 1))
+request.add_item(audio_queue, transfer_ownership=False)
+
+result_stream = session.process_streaming_request(request)
 print("✓ Session started")
 
 # --- Background thread reads transcription results (mirrors JS readPromise) ---
 
 def read_results():
-    for result in session.get_stream():
-        text = result.content[0].text if result.content else ""
-        if result.is_final:
-            print()
-            print(f"  [FINAL] {text}")
-        elif text:
-            print(text, end="", flush=True)
+    for item in result_stream:
+        if isinstance(item, TextItem) and item.text:
+            print(item.text, end="", flush=True)
 
 
 read_thread = threading.Thread(target=read_results, daemon=True)
@@ -112,7 +122,7 @@ if not use_synth:
                 try:
                     pcm_data = stream.read(CHUNK, exception_on_overflow=False)
                     if pcm_data:
-                        session.append(pcm_data)
+                        audio_queue.push(BytesItem(pcm_data))
                 except Exception as e:
                     print(f"\n[ERROR] Microphone capture failed: {e}")
                     stop_event.set()
@@ -147,17 +157,17 @@ if not mic_active:
     chunk_size = (RATE // 10) * 2  # 100ms
     for offset in range(0, len(pcm_bytes), chunk_size):
         end = min(offset + chunk_size, len(pcm_bytes))
-        session.append(bytes(pcm_bytes[offset:end]))
+        audio_queue.push(BytesItem(bytes(pcm_bytes[offset:end])))
         time.sleep(0.1)
 
     print("✓ Synthetic audio pushed")
     time.sleep(3)  # Wait for remaining transcription results
 
 
-# --- Graceful shutdown (mirrors JS SIGINT handler / C++ SignalHandler) ---
+# --- Graceful shutdown — ENTER (rather than Ctrl+C)  ---
 
-def shutdown(*_args):
-    print("\n\nStopping...")
+def shutdown():
+    print("\nStopping...")
     stop_event.set()
 
     if stream:
@@ -166,29 +176,24 @@ def shutdown(*_args):
     if pa:
         pa.terminate()
 
-    session.stop()
+    # Signal end-of-input; the streaming session drains remaining items and completes.
+    audio_queue.mark_finished()
     read_thread.join(timeout=5)
-    # close() releases the native session handle. Shutdown still succeeds
-    # without it, but model.unload() then has to wait for the unload deadline
-    # before forcibly proceeding — and the SDK logs a warning that the model
-    # "still has N session(s)". Explicit close() avoids both.
-    session.close()
+
+    # Drop native refs so model.unload() can succeed (session refcount must hit zero).
+    global result_stream, request, audio_queue, session
+    result_stream = request = audio_queue = session = None
+
     model.unload()
     print("✓ Done")
     sys.exit(0)
 
 
-signal.signal(signal.SIGINT, lambda *a: shutdown())
-
 if mic_active:
-    # Block on ENTER to stop (matches the C# sample). Ctrl+C still works via
-    # the SIGINT handler above, but ENTER is the documented exit so the test
-    # harness — and users running multiple samples in sequence — don't have
-    # to send Ctrl+C and risk tearing down the parent shell on Windows.
+    # Block until ENTER pressed
     try:
         input()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         pass
-    shutdown()
-else:
-    shutdown()
+
+shutdown()

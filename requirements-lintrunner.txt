@@ -1,0 +1,4 @@
+lintrunner==0.12.7
+lintrunner-adapters>=0.8.0
+# RUFF, RUFF-FORMAT
+ruff==0.11.4

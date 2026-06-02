@@ -1,7 +1,15 @@
 # <complete_code>
 # <imports>
 import sys
-from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk import (
+    AudioItem,
+    AudioSession,
+    Configuration,
+    FoundryLocalManager,
+    Request,
+    RequestOptions,
+    TextItem,
+)
 # </imports>
 
 
@@ -40,12 +48,17 @@ print("Model loaded.")
 # </init>
 
 # <transcription>
-# Get the audio client and transcribe
-audio_client = model.get_audio_client()
 audio_file = sys.argv[1] if len(sys.argv) > 1 else "Recording.mp3"
-result = audio_client.transcribe(audio_file)
-print("Transcription:")
-print(result.text)
+with AudioSession(model) as session:
+    session.set_options(RequestOptions(additional_options={"language": "en"}))
+    session.set_streaming(True)
+    print(f"Transcribing audio with streaming output: {audio_file}")
+    with Request() as req:
+        req.add_item(AudioItem.from_uri(audio_file))
+        for item in session.process_streaming_request(req):
+            if isinstance(item, TextItem):
+                print(item.text, end="", flush=True)
+    print()
 # </transcription>
 
 # Clean up

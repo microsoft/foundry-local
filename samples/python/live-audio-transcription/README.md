@@ -27,7 +27,7 @@ pip install -r requirements.txt
 python src/app.py
 ```
 
-Speak into your microphone. Transcription appears in real-time. Press `Ctrl+C` to stop.
+Speak into your microphone. Transcription appears in real-time. Press `ENTER` to stop.
 
 To force synthetic audio (e.g., for CI or when no microphone is available):
 
@@ -38,31 +38,37 @@ python src/app.py --synth
 ## How it works
 
 1. Initializes the Foundry Local SDK and loads the Nemotron ASR model
-2. Creates a `LiveAudioTranscriptionSession` with 16kHz/16-bit/mono PCM settings
-3. Captures microphone audio via `pyaudio` (or generates synthetic audio as fallback)
-4. Pushes PCM chunks to the SDK via `session.append()`
-5. Reads transcription results in a background thread via `for result in session.get_stream()`
-6. Access text via `result.content[0].text` (OpenAI Realtime ConversationItem pattern)
+2. Opens an `AudioSession` configured for streaming
+3. Builds a `Request` containing an `AudioItem` format descriptor (16 kHz mono PCM)
+   and a caller-owned `ItemQueue` to feed live PCM chunks into
+4. Captures microphone audio via `pyaudio` (or generates synthetic audio as fallback) and
+   pushes each chunk as a `BytesItem` into the queue
+5. Reads transcription `TextItem`s in a background thread via `session.process_streaming_request(request)`
+6. Calls `audio_queue.mark_finished()` to signal end-of-input; the session drains and the reader exits
 
 ## API
 
 ```python
-audio_client = model.get_audio_client()
-session = audio_client.create_live_transcription_session()
-session.settings.sample_rate = 16000
-session.settings.channels = 1
-session.settings.language = "en"
+from foundry_local_sdk import (
+    AudioItem, AudioSession, BytesItem, ItemQueue,
+    Request, RequestOptions, TextItem,
+)
 
-session.start()
+with AudioSession(model) as session:
+    session.set_options(RequestOptions(additional_options={"language": "en"}))
+    session.set_streaming(True)
 
-# Push audio
-session.append(pcm_bytes)
+    with ItemQueue() as audio_queue, Request() as request:
+        # Format descriptor (no data) + the streaming input queue.
+        request.add_item(AudioItem.create_format_descriptor("pcm", 16000, 1))
+        request.add_item(audio_queue, transfer_ownership=False)
 
-# Read results (typically on a background thread)
-for result in session.get_stream():
-    print(result.content[0].text)        # transcribed text
-    print(result.content[0].transcript)  # alias (OpenAI compat)
-    print(result.is_final)               # True for final results
+        # On a background thread: consume transcription items as they arrive.
+        for item in session.process_streaming_request(request):
+            if isinstance(item, TextItem):
+                print(item.text, end="", flush=True)
 
-session.stop()
+        # On the producer thread: push PCM chunks, then signal end-of-input.
+        audio_queue.push(BytesItem(pcm_bytes))
+        audio_queue.mark_finished()
 ```

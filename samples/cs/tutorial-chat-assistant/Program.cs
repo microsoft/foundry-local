@@ -1,7 +1,6 @@
 // <complete_code>
 // <imports>
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Microsoft.Extensions.Logging;
 // </imports>
 
@@ -50,22 +49,18 @@ await model.DownloadAsync(progress =>
 
 await model.LoadAsync();
 Console.WriteLine("Model loaded and ready.");
-
-// Get a chat client
-var chatClient = await model.GetChatClientAsync();
 // </init>
 
 // <system_prompt>
-// Start the conversation with a system prompt
-var messages = new List<ChatMessage>
-{
-    new ChatMessage
-    {
-        Role = "system",
-        Content = "You are a helpful, friendly assistant. Keep your responses " +
-                  "concise and conversational. If you don't know something, say so."
-    }
-};
+// ChatSession retains conversation history natively, so each turn only sends new items.
+// The system prompt is added once on the first turn.
+using var session = new ChatSession(model);
+session.SetStreaming(true);
+
+const string SystemPrompt =
+    "You are a helpful, friendly assistant. Keep your responses " +
+    "concise and conversational. If you don't know something, say so.";
+var isFirstTurn = true;
 // </system_prompt>
 
 Console.WriteLine("\nChat assistant ready! Type 'quit' to exit.\n");
@@ -82,33 +77,35 @@ while (true)
         break;
     }
 
-    // Add the user's message to conversation history
-    messages.Add(new ChatMessage { Role = "user", Content = userInput });
+    using var request = new Request();
+    if (isFirstTurn)
+    {
+        request.AddItem(MessageItem.System(SystemPrompt));
+        isFirstTurn = false;
+    }
+    request.AddItem(MessageItem.User(userInput));
 
     // <streaming>
-    // Stream the response token by token
+    // Stream the response token by token.
     Console.Write("Assistant: ");
-    var fullResponse = string.Empty;
-    var streamingResponse = chatClient.CompleteChatStreamingAsync(messages, ct);
-    await foreach (var chunk in streamingResponse)
+    await foreach (var item in session.ProcessStreamingRequestAsync(request, ct))
     {
-        var content = chunk.Choices[0].Message.Content;
-        if (!string.IsNullOrEmpty(content))
+        using (item)
         {
-            Console.Write(content);
-            Console.Out.Flush();
-            fullResponse += content;
+            if (item is TextItem text)
+            {
+                Console.Write(text.Text);
+                Console.Out.Flush();
+            }
         }
     }
     Console.WriteLine("\n");
     // </streaming>
-
-    // Add the complete response to conversation history
-    messages.Add(new ChatMessage { Role = "assistant", Content = fullResponse });
 }
 // </conversation_loop>
 
 // Clean up - unload the model and dispose the manager so native resources are released promptly.
+session.Dispose();
 await model.UnloadAsync();
 mgr.Dispose();
 Console.WriteLine("Model unloaded. Goodbye!");

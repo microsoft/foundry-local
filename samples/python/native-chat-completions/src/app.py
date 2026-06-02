@@ -1,6 +1,13 @@
 # <complete_code>
 # <imports>
-from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk import (
+    ChatSession,
+    Configuration,
+    FoundryLocalManager,
+    MessageItem,
+    Request,
+    TextItem,
+)
 # </imports>
 
 
@@ -37,25 +44,34 @@ def main():
     print()
     model.load()
     print("Model loaded and ready.")
-
-    # Get a chat client
-    client = model.get_chat_client()
     # </init>
 
-    # <streaming>
-    # Create the conversation messages
-    messages = [
-        {"role": "user", "content": "What is the golden ratio?"}
-    ]
+    # <chat_completion>
+    with ChatSession(model) as session:
+        # Turn 1 — non-streaming. System message steers the assistant.
+        with Request() as req1:
+            req1.add_item(MessageItem.system("You are a concise science tutor. Answer in 1-2 sentences."))
+            req1.add_item(MessageItem.user("Why is the sky blue?"))
 
-    # Stream the response token by token
-    print("Assistant: ", end="", flush=True)
-    for chunk in client.complete_streaming_chat(messages):
-        content = chunk.choices[0].delta.content
-        if content:
-            print(content, end="", flush=True)
-    print()
-    # </streaming>
+            print("Turn 1 (non-streaming):")
+            resp1 = session.process_request(req1)
+            # Chat responses contain a single MessageItem with a single TextItem part.
+            print(resp1.get_item(0).get_simple_text())
+
+        # Turn 2 — streaming.
+        session.set_streaming(True)
+        with Request() as req2:
+            # Session retains history — only the new turn is sent.
+            req2.add_item(MessageItem.user("And why are sunsets red?"))
+
+            print("\nTurn 2 (streaming):")
+            for item in session.process_streaming_request(req2):
+                if isinstance(item, TextItem):
+                    print(item.text, end="", flush=True)
+            print()
+
+        print(f"\nCompleted turns in session: {session.turn_count}")
+    # </chat_completion>
 
     # Clean up
     model.unload()

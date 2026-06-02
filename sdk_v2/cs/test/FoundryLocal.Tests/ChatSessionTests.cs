@@ -204,6 +204,243 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
+    public async Task Chat_Streaming_FinalResponse_ResolvesAfterDrain()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+
+        var sb = new StringBuilder();
+        int itemCount = 0;
+
+        await foreach (var item in stream)
+        {
+            using (item)
+            {
+                if (item is TextItem txt)
+                {
+                    sb.Append(txt.Text);
+                    itemCount++;
+                }
+            }
+        }
+
+        await Assert.That(itemCount).IsGreaterThan(0);
+
+        using var final = await stream.FinalResponse;
+
+        await Assert.That(final).IsNotNull();
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+
+        var usage = final.GetUsage();
+        Console.WriteLine($"Usage: prompt={usage.PromptTokens} completion={usage.CompletionTokens} total={usage.TotalTokens}");
+        await Assert.That(usage.PromptTokens).IsGreaterThan(0);
+        await Assert.That(usage.CompletionTokens).IsGreaterThan(0);
+        await Assert.That(usage.TotalTokens).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Chat_Streaming_EarlyBreak_FinalResponse_Cancels()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+
+        int itemCount = 0;
+
+        await foreach (var item in stream)
+        {
+            using (item)
+            {
+                itemCount++;
+                if (itemCount >= 1)
+                {
+                    break;
+                }
+            }
+        }
+
+        OperationCanceledException? caught = null;
+        try
+        {
+            using var _ = await stream.FinalResponse;
+        }
+        catch (OperationCanceledException oce)
+        {
+            caught = oce;
+        }
+
+        await Assert.That(caught).IsNotNull();
+    }
+
+    [Test]
+    public async Task Chat_Streaming_TokenCancellation_FinalResponse_Cancels()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+
+        using var cts = new CancellationTokenSource();
+        var stream = session.ProcessStreamingRequestAsync(request, cts.Token);
+
+        OperationCanceledException? iteratorEx = null;
+        int itemCount = 0;
+
+        try
+        {
+            await foreach (var item in stream)
+            {
+                using (item)
+                {
+                    itemCount++;
+                    if (itemCount == 1)
+                    {
+                        cts.Cancel();
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException oce)
+        {
+            iteratorEx = oce;
+        }
+
+        await Assert.That(iteratorEx).IsNotNull();
+
+        OperationCanceledException? finalEx = null;
+        try
+        {
+            using var _ = await stream.FinalResponse;
+        }
+        catch (OperationCanceledException oce)
+        {
+            finalEx = oce;
+        }
+
+        await Assert.That(finalEx).IsNotNull();
+    }
+
+    [Test]
+    public async Task Chat_Streaming_DisposeAsync_WithoutObserving_NoLeak()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Hello."));
+
+        // Get the stream and dispose it without enumerating or awaiting FinalResponse.
+        var stream = session.ProcessStreamingRequestAsync(request);
+        await stream.DisposeAsync();
+
+        // A second DisposeAsync must be a no-op.
+        await stream.DisposeAsync();
+
+        // The session must be usable again — concurrent-streaming guard must have cleared.
+        using var request2 = new Request();
+        request2.AddItem(MessageItem.User("Hi."));
+
+        var stream2 = session.ProcessStreamingRequestAsync(request2);
+        await using (stream2)
+        {
+            int count = 0;
+            await foreach (var item in stream2)
+            {
+                using (item)
+                {
+                    count++;
+                }
+            }
+            await Assert.That(count).IsGreaterThan(0);
+        }
+    }
+
+    [Test]
+    public async Task Chat_Streaming_ConcurrentGuard_Trips()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request1 = new Request();
+        request1.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+
+        using var request2 = new Request();
+        request2.AddItem(MessageItem.User("Hello."));
+
+        var stream1 = session.ProcessStreamingRequestAsync(request1);
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            var stream2 = session.ProcessStreamingRequestAsync(request2);
+            // If we somehow got here, dispose to avoid leak.
+            await stream2.DisposeAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains("Concurrent streaming");
+
+        // Drain the first stream so the session is clean for any later tests.
+        await using (stream1)
+        {
+            await foreach (var item in stream1)
+            {
+                item.Dispose();
+            }
+            using var _ = await stream1.FinalResponse;
+        }
+    }
+
+    [Test]
+    public async Task Chat_Streaming_DoubleEnumeration_Throws()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Hello."));
+
+        await using var stream = session.ProcessStreamingRequestAsync(request);
+
+        await foreach (var item in stream)
+        {
+            item.Dispose();
+        }
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            await foreach (var item in stream)
+            {
+                item.Dispose();
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains("enumerated once");
+
+        using var _ = await stream.FinalResponse;
+    }
+
+    [Test]
     public async Task ToolCall_NoStreaming_Succeeds()
     {
         using var session = new ChatSession(model!);

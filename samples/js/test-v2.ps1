@@ -28,9 +28,9 @@
     Skip the C++ and sdk_v2/js build + pack steps. Use when iterating on the
     script itself or when you've already produced a fresh tarball.
 
-.PARAMETER WinML
-    Pass --use_winml to the C++ build. Defaults to $true on Windows, $false
-    elsewhere.
+.PARAMETER NoWinML
+    Skip --use_winml on the C++ build. By default WinML is enabled on Windows
+    and disabled elsewhere; pass -NoWinML to force it off on Windows.
 
 .PARAMETER Run
     After installing, actually run each sample (npm start) under a timeout.
@@ -57,7 +57,7 @@ param(
     [string] $Sample,
     [switch] $SkipBuild,
     [switch] $Run,
-    [Nullable[bool]] $WinML,
+    [switch] $NoWinML,
     [int]    $TimeoutSec = 120
 )
 
@@ -88,7 +88,7 @@ else {
     throw 'Unsupported platform.'
 }
 
-if ($null -eq $WinML) { $WinML = ($platform -eq 'Windows') }
+$WinML = ($platform -eq 'Windows') -and -not $NoWinML
 $variantLabel = if ($WinML) { 'WinML' } else { 'base' }
 Write-Host "Platform: $platform / variant=$variantLabel" -ForegroundColor DarkGray
 
@@ -210,8 +210,27 @@ foreach ($sampleDir in $samples) {
             $startCmd   = $pkgJson.scripts.start
             if (-not $startCmd) { throw "Sample $name has no scripts.start" }
             $startParts = $startCmd -split '\s+', 2
-            $exe        = $startParts[0]    # typically 'node'
+            $exe        = $startParts[0]    # typically 'node'; may be 'npx' for TS samples
             $exeArgs    = if ($startParts.Count -gt 1) { $startParts[1] } else { '' }
+
+            # Start-Process requires a real Win32 executable; PATHEXT-based
+            # shims like `npx` need to be resolved to `npx.cmd`. Prefer a
+            # local node_modules/.bin shim (e.g. electron) over PATH so we
+            # pick up sample-local devDependencies.
+            $resolved = $null
+            $localBin = Join-Path $sampleDir.FullName 'node_modules\.bin'
+            foreach ($ext in @('.cmd', '.exe', '.bat')) {
+                $candidate = Join-Path $localBin ($exe + $ext)
+                if (Test-Path $candidate) { $resolved = $candidate; break }
+            }
+            if (-not $resolved) {
+                try {
+                    $resolved = (Get-Command $exe -CommandType Application -ErrorAction Stop |
+                                 Where-Object { $_.Source -match '\.(exe|cmd|bat|com)$' } |
+                                 Select-Object -First 1).Source
+                } catch {}
+            }
+            if ($resolved) { $exe = $resolved }
 
             $errFile = Join-Path $sampleDir.FullName 'sample-run.err.log'
             Remove-Item $errFile -Force -ErrorAction SilentlyContinue

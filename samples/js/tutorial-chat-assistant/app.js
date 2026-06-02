@@ -1,17 +1,16 @@
-// <complete_code>
-// <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
-import * as readline from 'readline';
-// </imports>
+// Tutorial: Chat Assistant — Foundry Local JS SDK (native session API).
+//
+// Multi-turn streaming chat using ChatSession. The session retains conversation
+// history; we only add the new user turn each iteration.
 
-// <init>
-// Initialize the Foundry Local SDK
+import { ChatSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
+import * as readline from 'readline';
+
 const manager = FoundryLocalManager.create({
     appName: 'foundry_local_samples',
-    logLevel: 'info'
+    logLevel: 'info',
 });
 
-// Download and register all execution providers.
 let currentEp = '';
 await manager.downloadAndRegisterEps((epName, percent) => {
     if (epName !== currentEp) {
@@ -22,7 +21,6 @@ await manager.downloadAndRegisterEps((epName, percent) => {
 });
 if (currentEp !== '') process.stdout.write('\n');
 
-// Select and load a model from the catalog
 const model = await manager.catalog.getModel('qwen2.5-0.5b');
 
 await model.download((progress) => {
@@ -33,64 +31,45 @@ console.log('\nModel downloaded.');
 await model.load();
 console.log('Model loaded and ready.');
 
-// Create a chat client
-const chatClient = model.createChatClient();
-// </init>
+const session = new ChatSession(model);
 
-// <system_prompt>
-// Start the conversation with a system prompt
-const messages = [
-    {
-        role: 'system',
-        content: 'You are a helpful, friendly assistant. Keep your responses ' +
-                 'concise and conversational. If you don\'t know something, say so.'
-    }
-];
-// </system_prompt>
+try {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const askQuestion = (prompt) => new Promise((resolve) => rl.question(prompt, resolve));
 
-// Set up readline for console input
-const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-});
+    console.log("\nChat assistant ready! Type 'quit' to exit.\n");
 
-const askQuestion = (prompt) => new Promise((resolve) => rl.question(prompt, resolve));
-
-console.log('\nChat assistant ready! Type \'quit\' to exit.\n');
-
-// <conversation_loop>
-while (true) {
-    const userInput = await askQuestion('You: ');
-    if (userInput.trim().toLowerCase() === 'quit' ||
-        userInput.trim().toLowerCase() === 'exit') {
-        break;
-    }
-
-    // Add the user's message to conversation history
-    messages.push({ role: 'user', content: userInput });
-
-    // <streaming>
-    // Stream the response token by token
-    process.stdout.write('Assistant: ');
-    let fullResponse = '';
-    for await (const chunk of chatClient.completeStreamingChat(messages)) {
-        const content = chunk.choices?.[0]?.delta?.content;
-        if (content) {
-            process.stdout.write(content);
-            fullResponse += content;
+    let firstTurn = true;
+    while (true) {
+        const userInput = await askQuestion('You: ');
+        const trimmed = userInput.trim().toLowerCase();
+        if (trimmed === 'quit' || trimmed === 'exit') {
+            break;
         }
+
+        const request = new Request();
+        if (firstTurn) {
+            request.addItem(Item.systemMessage(
+                'You are a helpful, friendly assistant. Keep your responses concise and ' +
+                "conversational. If you don't know something, say so."
+            ));
+            firstTurn = false;
+        }
+        request.addItem(Item.userMessage(userInput));
+
+        process.stdout.write('Assistant: ');
+        for await (const item of session.processStreamingRequest(request)) {
+            if (item.type === 'text' && item.text) {
+                process.stdout.write(item.text);
+            }
+        }
+        console.log('\n');
     }
-    console.log('\n');
-    // </streaming>
 
-    // Add the complete response to conversation history
-    messages.push({ role: 'assistant', content: fullResponse });
+    rl.close();
+} finally {
+    session.dispose();
 }
-// </conversation_loop>
 
-// Clean up - unload the model
-chatClient.dispose();
 await model.unload();
 console.log('Model unloaded. Goodbye!');
-rl.close();
-// </complete_code>

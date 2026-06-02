@@ -7,7 +7,7 @@
  *   3. Streaming chat completions work on an accelerated model
  */
 
-import { FoundryLocalManager } from "foundry-local-sdk";
+import { ChatSession, FoundryLocalManager, Item, Request } from "foundry-local-sdk";
 
 const PASS = "\x1b[92m[PASS]\x1b[0m";
 const FAIL = "\x1b[91m[FAIL]\x1b[0m";
@@ -189,22 +189,19 @@ async function main() {
 
   // ── 4. Streaming Chat Completions (Native SDK) ────────────
   printSeparator("Step 4: Streaming Chat Completions (Native)");
-  const messages = [
-    { role: "system", content: "You are a helpful assistant." },
-    { role: "user", content: "What is 2 + 2? Reply with just the number." },
-  ];
-
+  const session = new ChatSession(chosen);
+  session.setOptions({ search: { temperature: 0, maxOutputTokens: 16 } });
   try {
-    const client = chosen.createChatClient();
-    client.settings.temperature = 0;
-    client.settings.maxTokens = 16;
+    const request = new Request();
+    request.addItem(Item.systemMessage("You are a helpful assistant."));
+    request.addItem(Item.userMessage("What is 2 + 2? Reply with just the number."));
+
     let responseText = "";
     const start = Date.now();
-    for await (const chunk of client.completeStreamingChat(messages)) {
-      const content = chunk?.choices?.[0]?.delta?.content;
-      if (content) {
-        responseText += content;
-        process.stdout.write(content);
+    for await (const item of session.processStreamingRequest(request)) {
+      if (item.type === "text" && item.text) {
+        responseText += item.text;
+        process.stdout.write(item.text);
       }
     }
     const elapsed = ((Date.now() - start) / 1000).toFixed(2);
@@ -212,6 +209,8 @@ async function main() {
     logResult("Streaming Chat (Native)", responseText.length > 0, `${responseText.length} chars in ${elapsed}s`);
   } catch (e) {
     logResult("Streaming Chat (Native)", false, e.message);
+  } finally {
+    session.dispose();
   }
 
   try {

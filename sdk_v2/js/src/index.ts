@@ -55,6 +55,7 @@ export {
   type MessageRole,
   type TensorDataType,
   type TensorItem,
+  type TensorTypedArray,
   type TextItem,
   type TextItemKind,
   type ToolCallItem,

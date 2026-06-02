@@ -134,10 +134,11 @@ class TestStreaming:
 
     def test_break_mid_stream_does_not_break_session(self, chat_session):
         chat_session.set_streaming(True)
-        gen = chat_session.process_streaming_request(_short_request())
-        first = next(gen)
-        assert first is not None
-        gen.close()  # triggers finally → request.cancel() + thread join
+        with chat_session.process_streaming_request(_short_request()) as stream:
+            it = iter(stream)
+            first = next(it)
+            assert first is not None
+            # Exiting the `with` block triggers __exit__ → request.cancel() + thread join.
 
         # Session must still process subsequent (non-streaming) requests.
         chat_session.set_streaming(False)
@@ -150,6 +151,78 @@ class TestStreaming:
 
         with pytest.raises(FoundryLocalException, match="Streaming"):
             list(chat_session.process_streaming_request(_short_request()))
+
+    def test_final_response_after_drain_has_finish_reason_and_usage(self, chat_session):
+        chat_session.set_options(RequestOptions(search=SearchOptions(temperature=0, max_output_tokens=32)))
+        chat_session.set_streaming(True)
+
+        with chat_session.process_streaming_request(_short_request()) as stream:
+            items = list(stream)
+            assert len(items) >= 1
+
+            with stream.final_response as final:
+                assert isinstance(final, Response)
+                assert final.finish_reason in {FinishReason.STOP, FinishReason.LENGTH}
+                usage = final.get_usage()
+                assert usage.prompt_tokens > 0
+                assert usage.completion_tokens > 0
+                assert usage.total_tokens == usage.prompt_tokens + usage.completion_tokens
+
+    def test_final_response_before_drain_raises(self, chat_session):
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        chat_session.set_streaming(True)
+        with chat_session.process_streaming_request(_short_request()) as stream:
+            with pytest.raises(FoundryLocalException, match="fully consumed"):
+                _ = stream.final_response
+            # Drain so cleanup is clean.
+            for _item in stream:
+                pass
+
+    def test_final_response_after_cancel_raises_cancelled(self, chat_session):
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        chat_session.set_streaming(True)
+        with chat_session.process_streaming_request(_short_request()) as stream:
+            it = iter(stream)
+            _ = next(it)
+            # Abandon the iterator — wrapper's __iter__ finally cancels + joins.
+            del it
+            import gc
+            gc.collect()
+            with pytest.raises(FoundryLocalException, match="cancelled"):
+                _ = stream.final_response
+
+    def test_exit_without_iter_or_final_response_does_not_leak(self, chat_session):
+        chat_session.set_streaming(True)
+        # Never iterate, never touch final_response. __exit__ must clean up.
+        with chat_session.process_streaming_request(_short_request()):
+            pass
+
+        # Lock must be released — another streaming call must succeed.
+        items = list(chat_session.process_streaming_request(_short_request()))
+        assert len(items) >= 1
+
+    def test_concurrent_streaming_guard_still_trips(self, chat_session):
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        chat_session.set_streaming(True)
+        with chat_session.process_streaming_request(_short_request()) as stream1:
+            # Don't drain stream1 — it holds the in-flight lock.
+            with pytest.raises(FoundryLocalException, match="Concurrent streaming"):
+                chat_session.process_streaming_request(_short_request())
+            # Drain so cleanup is clean.
+            for _item in stream1:
+                pass
+
+    def test_second_iteration_raises(self, chat_session):
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        chat_session.set_streaming(True)
+        with chat_session.process_streaming_request(_short_request()) as stream:
+            list(stream)
+            with pytest.raises(FoundryLocalException, match="only be iterated once"):
+                list(stream)
 
 
 class TestStreamingToolCall:

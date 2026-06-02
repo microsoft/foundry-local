@@ -1,9 +1,7 @@
 // <complete_code>
 // <imports>
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Microsoft.Extensions.Logging;
-using System.Text;
 // </imports>
 
 // <init>
@@ -57,9 +55,10 @@ await speechModel.DownloadAsync(progress =>
 await speechModel.LoadAsync();
 Console.WriteLine("Speech model loaded.");
 
-// Transcribe the audio file
-var audioClient = await speechModel.GetAudioClientAsync();
-var transcriptionText = new StringBuilder();
+// Stream output to the console for live feedback, then pull the aggregated transcript
+// from the final Response — the downstream summarization needs the consolidated text.
+using var audioSession = new AudioSession(speechModel);
+audioSession.SetStreaming(true);
 
 // Default to the shared samples/testdata/meeting-notes.wav (copied next to the executable by the csproj).
 var audioPath = args.Length > 0
@@ -67,16 +66,35 @@ var audioPath = args.Length > 0
     : Path.Combine(AppContext.BaseDirectory, "testdata", "meeting-notes.wav");
 
 Console.WriteLine("\nTranscription:");
-var audioResponse = audioClient
-    .TranscribeAudioStreamingAsync(audioPath, ct);
-await foreach (var chunk in audioResponse)
+string transcription = "";
+using (var audioRequest = new Request())
 {
-    Console.Write(chunk.Text);
-    transcriptionText.Append(chunk.Text);
+    audioRequest.AddItem(new AudioItem(audioPath));
+
+    var stream = audioSession.ProcessStreamingRequestAsync(audioRequest, ct);
+    await foreach (var item in stream)
+    {
+        using (item)
+        {
+            if (item is TextItem chunk)
+            {
+                Console.Write(chunk.Text);
+            }
+        }
+    }
+    Console.WriteLine();
+
+    using var finalResponse = await stream.FinalResponse;
+    // Audio transcription final response contains a single TextItem.
+    using var finalItem = finalResponse.GetItem(0);
+    if (finalItem is TextItem text)
+    {
+        transcription = text.Text;
+    }
 }
-Console.WriteLine();
 
 // Unload the speech model to free memory
+audioSession.Dispose();
 await speechModel.UnloadAsync();
 // </transcription>
 
@@ -94,29 +112,25 @@ await chatModel.DownloadAsync(progress =>
 await chatModel.LoadAsync();
 Console.WriteLine("Chat model loaded.");
 
-// Summarize the transcription into organized notes
-var chatClient = await chatModel.GetChatClientAsync();
-var messages = new List<ChatMessage>
-{
-    new ChatMessage
-    {
-        Role = "system",
-        Content = "You are a note-taking assistant. Summarize " +
-                  "the following transcription into organized, " +
-                  "concise notes with bullet points."
-    },
-    new ChatMessage
-    {
-        Role = "user",
-        Content = transcriptionText.ToString()
-    }
-};
+// Summarize the transcription into organized notes.
+using var chatSession = new ChatSession(chatModel);
+using var chatRequest = new Request();
+chatRequest.AddItem(MessageItem.System(
+    "You are a note-taking assistant. " +
+    "Summarize the following transcription into organized, concise notes with bullet points."));
+chatRequest.AddItem(MessageItem.User(transcription));
 
-var chatResponse = await chatClient.CompleteChatAsync(messages, ct);
-var summary = chatResponse.Choices[0].Message.Content;
-Console.WriteLine($"\nSummary:\n{summary}");
+using var chatResponse = await chatSession.ProcessRequestAsync(chatRequest, ct);
+Console.WriteLine("\nSummary:");
+// Chat responses contain a single MessageItem with a single TextItem part.
+using var summaryItem = chatResponse.GetItem(0);
+if (summaryItem is MessageItem msg)
+{
+    Console.WriteLine(msg.GetSimpleText());
+}
 
 // Clean up - unload the model and dispose the manager so native resources are released promptly.
+chatSession.Dispose();
 await chatModel.UnloadAsync();
 mgr.Dispose();
 Console.WriteLine("\nDone. Models unloaded.");

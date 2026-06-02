@@ -214,4 +214,78 @@ export const Item = Object.freeze({
   audioDescriptor(format: string, sampleRate: number, channels: number): AudioItem {
     return { type: "audio", format, sampleRate, channels };
   },
+  /**
+   * Decode a {@link TensorItem}'s raw byte buffer into the appropriate
+   * `TypedArray` for its `dataType`. Zero-copy when the underlying buffer is
+   * aligned for the element type; otherwise the bytes are copied into a
+   * fresh aligned buffer.
+   *
+   * Returned types by `dataType`:
+   * `float` → `Float32Array`, `double` → `Float64Array`,
+   * `uint8`/`bool` → `Uint8Array`, `int8` → `Int8Array`,
+   * `uint16`/`float16` → `Uint16Array` (float16 returns raw bits),
+   * `int16` → `Int16Array`, `int32` → `Int32Array`, `uint32` → `Uint32Array`,
+   * `int64` → `BigInt64Array`, `uint64` → `BigUint64Array`.
+   *
+   * Throws for `string` and `unknown` tensors — read `data` directly.
+   */
+  tensorValues(tensor: TensorItem): TensorTypedArray {
+    return decodeTensorValues(tensor);
+  },
 } as const);
+
+/** Union of all `TypedArray` shapes {@link Item.tensorValues} can return. */
+export type TensorTypedArray =
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | Int8Array
+  | Uint16Array
+  | Int16Array
+  | Int32Array
+  | Uint32Array
+  | BigInt64Array
+  | BigUint64Array;
+
+type TypedArrayCtor = {
+  new (buffer: ArrayBufferLike, byteOffset: number, length: number): TensorTypedArray;
+  BYTES_PER_ELEMENT: number;
+};
+
+const TENSOR_TYPED_ARRAY_CTORS: Partial<Record<TensorDataType, TypedArrayCtor>> = {
+  float: Float32Array as unknown as TypedArrayCtor,
+  double: Float64Array as unknown as TypedArrayCtor,
+  uint8: Uint8Array as unknown as TypedArrayCtor,
+  bool: Uint8Array as unknown as TypedArrayCtor,
+  int8: Int8Array as unknown as TypedArrayCtor,
+  uint16: Uint16Array as unknown as TypedArrayCtor,
+  float16: Uint16Array as unknown as TypedArrayCtor,
+  int16: Int16Array as unknown as TypedArrayCtor,
+  int32: Int32Array as unknown as TypedArrayCtor,
+  uint32: Uint32Array as unknown as TypedArrayCtor,
+  int64: BigInt64Array as unknown as TypedArrayCtor,
+  uint64: BigUint64Array as unknown as TypedArrayCtor,
+};
+
+function decodeTensorValues(tensor: TensorItem): TensorTypedArray {
+  const ctor = TENSOR_TYPED_ARRAY_CTORS[tensor.dataType];
+  if (!ctor) {
+    throw new Error(
+      `Item.tensorValues: dataType '${tensor.dataType}' has no TypedArray mapping; read tensor.data directly.`,
+    );
+  }
+  const bpe = ctor.BYTES_PER_ELEMENT;
+  const { buffer, byteOffset, byteLength } = tensor.data;
+  if (byteLength % bpe !== 0) {
+    throw new Error(
+      `Item.tensorValues: tensor.data.byteLength (${byteLength}) is not a multiple of ${bpe} for dataType '${tensor.dataType}'.`,
+    );
+  }
+  const length = byteLength / bpe;
+  if (byteOffset % bpe === 0) {
+    return new ctor(buffer, byteOffset, length);
+  }
+  // Misaligned — copy into a fresh buffer.
+  const copy = tensor.data.slice();
+  return new ctor(copy.buffer, copy.byteOffset, length);
+}

@@ -122,6 +122,17 @@ class TestMessageItem:
         s = repr(MessageItem(MessageRole.USER, "hi"))
         assert "MessageItem" in s
 
+    def test_is_simple_text_true_for_single_text_part(self):
+        msg = MessageItem(MessageRole.USER, "hi")
+        assert msg.is_simple_text() is True
+        assert msg.get_simple_text() == "hi"
+
+    def test_is_simple_text_false_for_multi_part(self):
+        msg = MessageItem(MessageRole.USER, [TextItem("a"), TextItem("b")])
+        assert msg.is_simple_text() is False
+        with pytest.raises(ValueError):
+            msg.get_simple_text()
+
 
 class TestBytesItem:
     def test_bytes_input(self):

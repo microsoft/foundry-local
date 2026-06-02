@@ -22,37 +22,54 @@ npm install
 node app.js
 ```
 
-Speak into your microphone. Transcription appears in real-time. Press `Ctrl+C` to stop.
+Speak into your microphone. Transcription appears in real-time (cyan text). Press `ENTER` to stop.
+
+To force synthetic audio (e.g., for CI or when no microphone is available):
+
+```bash
+node app.js --synth
+```
 
 ## How it works
 
 1. Initializes the Foundry Local SDK and loads the Nemotron ASR model
-2. Creates a `LiveAudioTranscriptionSession` with 16kHz/16-bit/mono PCM settings
-3. Captures microphone audio via `naudiodon2` (or generates synthetic audio as fallback)
-4. Pushes PCM chunks to the SDK via `session.append()`
-5. Reads transcription results via `for await (const result of session.getStream())`
-6. Access text via `result.content[0].text` (OpenAI Realtime ConversationItem pattern)
+2. Opens an `AudioSession` configured with language options
+3. Builds a `Request` containing an `Item.audioDescriptor('pcm', 16000, 1)` and a caller-owned
+   `ItemQueue` to feed live PCM chunks into
+4. Captures microphone audio via `naudiodon2` (or generates synthetic audio as fallback) and
+   pushes each chunk as `Item.bytes(...)` into the queue
+5. Reads transcription `TextItem`s in a background async iterator via
+   `for await (const item of session.processStreamingRequest(request))`
+6. Calls `audioQueue.markFinished()` to signal end-of-input; the session drains and the loop exits
 
 ## API
 
 ```javascript
-const audioClient = model.createAudioClient();
-const session = audioClient.createLiveTranscriptionSession();
-session.settings.sampleRate = 16000;
-session.settings.channels = 1;
-session.settings.language = 'en';
+import { AudioSession, Item, ItemQueue, Request } from 'foundry-local-sdk';
 
-await session.start();
+const session = new AudioSession(model);
+session.setOptions({ additionalOptions: { language: 'en' } });
 
-// Push audio
-await session.append(pcmBytes);
+const audioQueue = new ItemQueue();
+const request = new Request();
+// Format descriptor (no data) + the streaming input queue.
+request.addItem(Item.audioDescriptor('pcm', 16000, 1));
+request.addItem(audioQueue);
 
-// Read results
-for await (const result of session.getStream()) {
-    console.log(result.content[0].text);       // transcribed text
-    console.log(result.content[0].transcript); // alias (OpenAI compat)
-    console.log(result.is_final);              // true for final results
-}
+// Background reader: consume transcription items as they arrive.
+const readPromise = (async () => {
+    for await (const item of session.processStreamingRequest(request)) {
+        if (item.type === 'text') {
+            process.stdout.write(item.text);
+        }
+    }
+})();
 
-await session.stop();
+// Producer side: push PCM chunks, then signal end-of-input.
+audioQueue.push(Item.bytes(pcmBytes));
+audioQueue.markFinished();
+await readPromise;
+
+audioQueue.dispose();
+session.dispose();
 ```

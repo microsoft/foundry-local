@@ -9,7 +9,18 @@ Verifies:
 
 import sys
 import time
-from foundry_local_sdk import Configuration, FoundryLocalManager
+
+from foundry_local_sdk import (
+    ChatSession,
+    Configuration,
+    DeviceType,
+    FoundryLocalManager,
+    MessageItem,
+    Request,
+    RequestOptions,
+    SearchOptions,
+    TextItem,
+)
 
 
 PASS = "\033[92m[PASS]\033[0m"
@@ -37,7 +48,7 @@ def print_separator(title: str):
 
 def is_accelerated_variant(variant) -> bool:
     rt = variant.info.runtime
-    return rt is not None and rt.device_type in ("GPU", "NPU")
+    return rt is not None and rt.device_type in (DeviceType.GPU, DeviceType.NPU)
 
 
 def main():
@@ -121,7 +132,7 @@ def main():
     for v in accelerated_variants:
         rt = v.info.runtime
         ep = rt.execution_provider if rt else "?"
-        device = rt.device_type if rt else "?"
+        device = rt.device_type.name if rt and rt.device_type else "?"
         print(f"  - {v.id:50s}  Device: {device:3s}  EP: {ep}")
 
     log_result("Catalog - Accelerated models found", len(accelerated_variants) > 0,
@@ -169,8 +180,8 @@ def main():
                else str(last_load_error) if last_load_error else "No accelerated variant could be downloaded")
 
     if chosen is None:
-        log_result("Model Load", False,
-                   str(last_load_error) if last_load_error else "No accelerated variant could be loaded on this machine")
+        msg = str(last_load_error) if last_load_error else "No accelerated variant could be loaded"
+        log_result("Model Load", False, msg)
         _print_summary()
         return
 
@@ -178,27 +189,44 @@ def main():
 
     # ── 4. Streaming Chat Completions (Native SDK) ────────────
     print_separator("Step 4: Streaming Chat Completions (Native)")
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What is 2 + 2? Reply with just the number."},
-    ]
 
     try:
-        client = chosen.get_chat_client()
-        client.settings.temperature = 0
-        client.settings.max_tokens = 16
-        response_text = ""
-        start = time.time()
-        for chunk in client.complete_streaming_chat(messages):
-            choices = getattr(chunk, "choices", None)
-            content = choices[0].delta.content if choices and len(choices) > 0 else None
-            if content:
-                response_text += content
-                print(content, end="", flush=True)
-        elapsed = time.time() - start
-        print()
-        log_result("Streaming Chat (Native)", len(response_text) > 0,
-                   f"{len(response_text)} chars in {elapsed:.2f}s")
+        with ChatSession(chosen) as session:
+            session.set_options(RequestOptions(
+                search=SearchOptions(temperature=0, max_output_tokens=16)
+            ))
+            session.set_streaming(True)
+
+            with Request() as req:
+                req.add_item(MessageItem.system("You are a helpful assistant."))
+                req.add_item(MessageItem.user("What is 2 + 2? Reply with just the number."))
+
+                stream = session.process_streaming_request(req)
+                response_text_parts: list[str] = []
+                start = time.time()
+
+                with stream:
+                    for item in stream:
+                        if isinstance(item, TextItem) and item.text:
+                            response_text_parts.append(item.text)
+                            print(item.text, end="", flush=True)
+
+                    # Aggregated transcript for the FinalResponse parity check.
+                    aggregated = ""
+                    with stream.final_response as final:
+                        for it in final:
+                            if isinstance(it, MessageItem):
+                                for part in it.parts:
+                                    if isinstance(part, TextItem):
+                                        aggregated += part.text
+
+                elapsed = time.time() - start
+                print()
+                response_text = "".join(response_text_parts)
+                detail = f"{len(response_text)} chars in {elapsed:.2f}s"
+                if aggregated and aggregated != response_text:
+                    detail += " (aggregated differs from streamed)"
+                log_result("Streaming Chat (Native)", len(response_text) > 0, detail)
     except Exception as e:
         log_result("Streaming Chat (Native)", False, str(e))
 

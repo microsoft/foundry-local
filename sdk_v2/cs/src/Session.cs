@@ -7,7 +7,6 @@
 namespace Microsoft.AI.Foundry.Local;
 
 using System.Collections.Generic;
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
@@ -144,20 +143,29 @@ public abstract class Session : IDisposable
     }
 
     /// <summary>
-    /// Process a request with streaming. Returns items as they are produced.
+    /// Process a request with streaming. Returns a <see cref="StreamingResponse"/> whose async
+    /// iterator yields <see cref="Item"/>s as they are produced and whose
+    /// <see cref="StreamingResponse.FinalResponse"/> resolves to the terminal
+    /// <see cref="Response"/> (carrying <see cref="FinishReason"/>, usage, and any aggregated
+    /// items) after the iterator drains.
+    ///
     /// Requires <see cref="SetStreaming"/> to have been called with <c>true</c>.
     /// Concurrent streaming requests on the same session are not supported.
+    ///
+    /// The caller MUST either await <see cref="StreamingResponse.FinalResponse"/> (and dispose the
+    /// returned <see cref="Response"/>) or <c>await using</c> the <see cref="StreamingResponse"/>
+    /// to avoid leaking the native response handle.
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// Thrown if streaming has not been enabled via <see cref="SetStreaming"/>, or if another
     /// streaming request is already in flight on this session (concurrent streaming requests
     /// on the same session are not supported).
     /// </exception>
-    public async IAsyncEnumerable<Item> ProcessStreamingRequestAsync(
-        Request request,
-        [EnumeratorCancellation] CancellationToken ct = default)
+    public StreamingResponse ProcessStreamingRequestAsync(Request request, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+
+        Detail.Throw.IfNull(request);
 
         if (_nativeStreamingCallback == null)
         {
@@ -180,73 +188,76 @@ public abstract class Session : IDisposable
                 + "Drain or cancel the in-flight stream before starting another.");
         }
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _streamingCt = cts.Token;
-#pragma warning disable IDISP003 // Field is null here (concurrent streaming guarded by _activeChannel CAS); cts is owned by the using above.
+#pragma warning disable IDISP003 // Ownership transferred to the returned StreamingResponse, which disposes the cts.
         _activeStreamingCts = cts;
 #pragma warning restore IDISP003
 
+        var tcs = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var task = Task.Run(() =>
         {
+            IntPtr responsePtr;
+            bool wasCancelledBeforeReturn;
+
             try
             {
-                var responsePtr = _session.ProcessRequest(request.Ptr);
-                Api.Inference.ResponseRelease(responsePtr);
-                channel.Writer.TryComplete();
+                responsePtr = _session.ProcessRequest(request.Ptr);
+
+                // Capture the cancellation state BEFORE completing the channel. Channel completion
+                // (with AllowSynchronousContinuations = true) can synchronously run the consumer's
+                // await-foreach finally, which calls cts.Cancel() — that would otherwise make this
+                // check observe cancellation even when the stream drained naturally.
+                wasCancelledBeforeReturn = cts.IsCancellationRequested;
             }
             catch (OperationCanceledException)
             {
                 channel.Writer.TryComplete();
+                tcs.TrySetCanceled(cts.Token);
+                Interlocked.Exchange(ref _activeChannel, null);
+                return;
             }
             catch (Exception ex)
             {
-                channel.Writer.TryComplete(new FoundryLocalException("Error executing streaming request.", ex));
-            }
-            finally
-            {
+                var wrapped = new FoundryLocalException("Error executing streaming request.", ex);
+                channel.Writer.TryComplete(wrapped);
+                tcs.TrySetException(wrapped);
                 Interlocked.Exchange(ref _activeChannel, null);
+                return;
             }
+
+            // Complete the channel before publishing FinalResponse so any consumer awaiting both
+            // observes iterator completion strictly before FinalResponse settles.
+            channel.Writer.TryComplete();
+
+            if (wasCancelledBeforeReturn)
+            {
+                // Cancelled mid-stream — drop the (potentially partial / undefined) native response.
+                Api.Inference.ResponseRelease(responsePtr);
+                tcs.TrySetCanceled(cts.Token);
+            }
+            else
+            {
+#pragma warning disable IDISP004 // Ownership transferred to FinalResponse consumer (or DisposeAsync).
+                tcs.TrySetResult(new Response(responsePtr));
+#pragma warning restore IDISP004
+            }
+
+            Interlocked.Exchange(ref _activeChannel, null);
         }, CancellationToken.None);
 
         _activeStreamingTask = task;
 
-        try
-        {
-            await foreach (var item in channel.Reader.ReadAllAsync(cts.Token).ConfigureAwait(false))
-            {
-                yield return item;
-            }
-        }
-        finally
-        {
-            // Signal native callback to stop on early break / cancellation.
-            try { cts.Cancel(); } catch { }
+        return new StreamingResponse(this, channel, cts, task, tcs);
+    }
 
-            // Drain and dispose any items still in the channel so native handles don't leak.
-            while (channel.Reader.TryRead(out var leftover))
-            {
-                leftover.Dispose();
-            }
-
-            try
-            {
-                await task.ConfigureAwait(false);
-            }
-            catch
-            {
-                // Producer exceptions are routed via channel completion; swallow on cleanup.
-            }
-
-            while (channel.Reader.TryRead(out var leftover))
-            {
-                leftover.Dispose();
-            }
-
-            _activeStreamingTask = null;
-#pragma warning disable IDISP003 // cts is disposed by the enclosing 'using'; we just clear the field reference.
-            _activeStreamingCts = null;
+    internal void ClearStreamingState()
+    {
+        _activeStreamingTask = null;
+#pragma warning disable IDISP003 // cts is disposed by the owning StreamingResponse; we just clear the field reference.
+        _activeStreamingCts = null;
 #pragma warning restore IDISP003
-        }
     }
 
     public void Dispose()

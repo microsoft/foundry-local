@@ -57,3 +57,63 @@ init_command = [
     '--requirement=requirements-lintrunner.txt',
 ]
 is_formatter = true
+
+[[linter]]
+code = 'RUFF'
+include_patterns = [
+    'sdk_v2/python/**/*.py',
+    'sdk_v2/python/**/*.pyi',
+]
+exclude_patterns = [
+    'sdk_v2/python/build/**',
+    'sdk_v2/python/**/_native/_cffi_build/**',
+]
+command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'ruff_linter',
+    '--config=sdk_v2/python/pyproject.toml',
+    '@{{PATHSFILE}}'
+]
+init_command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'pip_init',
+    '--dry-run={{DRYRUN}}',
+    '--requirement=requirements-lintrunner.txt',
+]
+is_formatter = true
+
+[[linter]]
+code = 'RUFF-FORMAT'
+include_patterns = [
+    'sdk_v2/python/**/*.py',
+]
+exclude_patterns = [
+    'sdk_v2/python/build/**',
+    'sdk_v2/python/**/_native/_cffi_build/**',
+]
+command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'ruff_format_linter',
+    '--config=sdk_v2/python/pyproject.toml',
+    '--',
+    '@{{PATHSFILE}}'
+]
+init_command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'pip_init',
+    '--dry-run={{DRYRUN}}',
+    '--requirement=requirements-lintrunner.txt',
+]
+is_formatter = true

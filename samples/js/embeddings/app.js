@@ -1,6 +1,6 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { EmbeddingsSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
 
 // Initialize the Foundry Local SDK
@@ -32,41 +32,39 @@ await model.load();
 console.log('✓ Model loaded');
 // </model_setup>
 
-// <single_embedding>
-// Create embedding client
-console.log('\nCreating embedding client...');
-const embeddingClient = model.createEmbeddingClient();
-console.log('✓ Embedding client created');
+const session = new EmbeddingsSession(model);
+try {
+    // <single_embedding>
+    console.log('\n--- Single Embedding ---');
+    const req = new Request();
+    req.addItem(Item.text('The quick brown fox jumps over the lazy dog'));
+    const resp = await session.processRequest(req);
 
-// Generate a single embedding
-console.log('\n--- Single Embedding ---');
-const response = await embeddingClient.generateEmbedding(
-    'The quick brown fox jumps over the lazy dog'
-);
+    const tensor = resp.output.find(it => it.type === 'tensor');
+    console.log(`Shape: ${tensor.shape.join('x')}`);
+    const floats = Item.tensorValues(tensor);
+    console.log(`First 5 values: [${Array.from(floats.slice(0, 5)).map(v => v.toFixed(6)).join(', ')}]`);
+    // </single_embedding>
 
-const embedding = response.data[0].embedding;
-console.log(`Dimensions: ${embedding.length}`);
-console.log(`First 5 values: [${embedding.slice(0, 5).map(v => v.toFixed(6)).join(', ')}]`);
-// </single_embedding>
+    // <batch_embedding>
+    console.log('\n--- Batch Embeddings ---');
+    const batchReq = new Request();
+    batchReq.addItem(Item.text('Machine learning is a subset of artificial intelligence'));
+    batchReq.addItem(Item.text('The capital of France is Paris'));
+    batchReq.addItem(Item.text('Rust is a systems programming language'));
+    const batchResp = await session.processRequest(batchReq);
 
-// <batch_embedding>
-// Generate embeddings for multiple inputs
-console.log('\n--- Batch Embeddings ---');
-const batchResponse = await embeddingClient.generateEmbeddings([
-    'Machine learning is a subset of artificial intelligence',
-    'The capital of France is Paris',
-    'Rust is a systems programming language'
-]);
-
-console.log(`Number of embeddings: ${batchResponse.data.length}`);
-for (let i = 0; i < batchResponse.data.length; i++) {
-    console.log(`  [${i}] Dimensions: ${batchResponse.data[i].embedding.length}`);
+    const tensors = batchResp.output.filter(it => it.type === 'tensor');
+    console.log(`Number of embeddings: ${tensors.length}`);
+    for (let i = 0; i < tensors.length; i++) {
+        console.log(`  [${i}] Shape: ${tensors[i].shape.join('x')}`);
+    }
+    // </batch_embedding>
+} finally {
+    session.dispose();
 }
-// </batch_embedding>
 
 // <cleanup>
-console.log('Disposing embedding client...');
-embeddingClient.dispose();
 // Unload the model
 console.log('\nUnloading model...');
 await model.unload();

@@ -1,7 +1,6 @@
 ﻿// <complete_code>
 // <imports>
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 // </imports>
 
 // <init>
@@ -84,24 +83,45 @@ Console.WriteLine("done.");
 // </model_setup>
 
 // <chat_completion>
-// Get a chat client
-var chatClient = await model.GetChatClientAsync();
-
-// Create a chat message
-List<ChatMessage> messages = new()
 {
-    new ChatMessage { Role = "user", Content = "Why is the sky blue?" }
-};
+    using var session = new ChatSession(model);
 
-// Get a streaming chat completion response
-Console.WriteLine("Chat completion response:");
-var streamingResponse = chatClient.CompleteChatStreamingAsync(messages, ct);
-await foreach (var chunk in streamingResponse)
-{
-    Console.Write(chunk.Choices[0].Message.Content);
-    Console.Out.Flush();
+    // Turn 1 — non-streaming. Include a system message to steer the assistant.
+    using var request1 = new Request();
+    request1.AddItem(MessageItem.System("You are a concise science tutor. Answer in 1-2 sentences."));
+    request1.AddItem(MessageItem.User("Why is the sky blue?"));
+
+    Console.WriteLine("Turn 1 (non-streaming):");
+    using (var response1 = await session.ProcessRequestAsync(request1, ct))
+    {
+        using var item = response1.GetItem(0);
+        if (item is MessageItem msg)
+        {
+            Console.WriteLine(msg.GetSimpleText());
+        }
+    }
+
+    // Turn 2 — streaming. Session retains history — only the new turn is sent.
+    session.SetStreaming(true);
+    using var request2 = new Request();
+    request2.AddItem(MessageItem.User("And why are sunsets red?"));
+
+    Console.WriteLine("\nTurn 2 (streaming):");
+    await foreach (var item in session.ProcessStreamingRequestAsync(request2, ct))
+    {
+        using (item)
+        {
+            if (item is TextItem txt)
+            {
+                Console.Write(txt.Text);
+                Console.Out.Flush();
+            }
+        }
+    }
+    Console.WriteLine();
+
+    Console.WriteLine($"\nCompleted turns in session: {session.TurnCount}");
 }
-Console.WriteLine();
 // </chat_completion>
 
 // <cleanup>

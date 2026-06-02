@@ -1,6 +1,13 @@
 # <complete_code>
 # <imports>
-from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk import (
+    ChatSession,
+    Configuration,
+    FoundryLocalManager,
+    MessageItem,
+    Request,
+    TextItem,
+)
 # </imports>
 
 
@@ -31,47 +38,42 @@ def main():
     print()
     model.load()
     print("Model loaded and ready.")
-
-    # Get a chat client
-    client = model.get_chat_client()
     # </init>
 
-    # <system_prompt>
-    # Start the conversation with a system prompt
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful, friendly assistant. Keep your responses "
-                       "concise and conversational. If you don't know something, say so."
-        }
-    ]
-    # </system_prompt>
-
-    print("\nChat assistant ready! Type 'quit' to exit.\n")
-
     # <conversation_loop>
-    while True:
-        user_input = input("You: ")
-        if user_input.strip().lower() in ("quit", "exit"):
-            break
+    # ChatSession keeps conversation history across turns; we send only new items each turn.
+    with ChatSession(model) as session:
+        session.set_streaming(True)
 
-        # Add the user's message to conversation history
-        messages.append({"role": "user", "content": user_input})
+        system_message = MessageItem.system(
+            "You are a helpful, friendly assistant. Keep your responses "
+            "concise and conversational. If you don't know something, say so."
+        )
 
-        # <streaming>
-        # Stream the response token by token
-        print("Assistant: ", end="", flush=True)
-        full_response = ""
-        for chunk in client.complete_streaming_chat(messages):
-            content = chunk.choices[0].delta.content
-            if content:
-                print(content, end="", flush=True)
-                full_response += content
-        print("\n")
-        # </streaming>
+        print("\nChat assistant ready! Type 'quit' to exit.\n")
 
-        # Add the complete response to conversation history
-        messages.append({"role": "assistant", "content": full_response})
+        first_turn = True
+        while True:
+            # Print prompt explicitly: input()'s prompt goes through readline to stderr
+            # when stdout isn't a TTY, which breaks captured-output scenarios.
+            print("You: ", end="", flush=True)
+            user_input = input()
+            if user_input.strip().lower() in ("quit", "exit"):
+                break
+
+            with Request() as req:
+                if first_turn:
+                    req.add_item(system_message)
+                    first_turn = False
+                req.add_item(MessageItem.user(user_input))
+
+                # <streaming>
+                print("Assistant: ", end="", flush=True)
+                for item in session.process_streaming_request(req):
+                    if isinstance(item, TextItem):
+                        print(item.text, end="", flush=True)
+                print("\n")
+                # </streaming>
     # </conversation_loop>
 
     # Clean up - unload the model

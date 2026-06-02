@@ -11,31 +11,41 @@ namespace Microsoft.AI.Foundry.Local;
 /// <summary>
 /// A queue of items used for streaming. Items can be pushed and popped.
 /// </summary>
-public sealed class ItemQueue : IDisposable
+/// <remarks>
+/// Mirrors the C++ <c>class ItemQueue : Item</c> — a queue <i>is</i> an item (carries item type tag
+/// <see cref="ItemType.Queue"/>). The base <see cref="Item.Ptr"/> stores the owning <c>flItem*</c>; the
+/// inner <c>flItemQueue*</c> needed by the queue-specific ABI calls is fetched on demand via
+/// <c>Api.Item.GetQueue</c>. The inherited dispose path (<c>Item_Release</c>) is polymorphic on the
+/// type tag and correctly destroys queues, so no override is needed.
+/// </remarks>
+public sealed class ItemQueue : Item
 {
-    private IntPtr _ptr;
-    private bool _disposed;
+    // The inner flItemQueue* is stable for the item's lifetime, so resolve it once at construction
+    // rather than calling Item_GetQueue on every Push/TryPop/Count/etc. (each call is a P/Invoke).
+    private readonly IntPtr _queuePtr;
 
-    public ItemQueue()
+    public ItemQueue() : base(ItemType.Queue)
     {
-        Api.EnsureInitialized();
-        var status = Api.Item.QueueCreate(out _ptr);
-        Api.CheckStatus(status);
+        Api.CheckStatus(Api.Item.GetQueue(Ptr, out _queuePtr));
     }
 
-    internal IntPtr Ptr => _ptr;
+    internal ItemQueue(IntPtr ptr, bool ownsHandle) : base(ptr, ownsHandle)
+    {
+        Api.CheckStatus(Api.Item.GetQueue(Ptr, out _queuePtr));
+    }
 
     /// <summary>Push an item into the queue. Transfers ownership of the item.</summary>
     public void Push(Item item)
     {
+        Detail.Throw.IfNull(item);
         var nativePtr = item.ReleaseOwnership();
-        Api.CheckStatus(Api.Item.QueuePush(_ptr, nativePtr));
+        Api.CheckStatus(Api.Item.QueuePush(_queuePtr, nativePtr));
     }
 
     /// <summary>Try to pop an item from the queue. Returns null if queue is empty.</summary>
     public Item? TryPop()
     {
-        if (Api.Item.QueueTryPop(_ptr, out var itemPtr))
+        if (Api.Item.QueueTryPop(_queuePtr, out var itemPtr))
         {
             return Item.FromNative(itemPtr, ownsHandle: true);
         }
@@ -43,19 +53,9 @@ public sealed class ItemQueue : IDisposable
         return null;
     }
 
-    public int Count => checked((int)(ulong)Api.Item.QueueSize(_ptr));
+    public int Count => checked((int)(ulong)Api.Item.QueueSize(_queuePtr));
 
-    public void MarkFinished() => Api.Item.QueueMarkFinished(_ptr);
+    public void MarkFinished() => Api.Item.QueueMarkFinished(_queuePtr);
 
-    public bool IsFinished => Api.Item.QueueGetFinished(_ptr);
-
-    public void Dispose()
-    {
-        if (!_disposed && _ptr != IntPtr.Zero)
-        {
-            Api.Item.QueueRelease(_ptr);
-            _ptr = IntPtr.Zero;
-            _disposed = true;
-        }
-    }
+    public bool IsFinished => Api.Item.QueueGetFinished(_queuePtr);
 }

@@ -2,24 +2,39 @@
 # <imports>
 import sys
 from pathlib import Path
-from foundry_local_sdk import Configuration, FoundryLocalManager
+
+from foundry_local_sdk import (
+    ChatSession,
+    Configuration,
+    FoundryLocalManager,
+    MessageItem,
+    Request,
+)
 # </imports>
 
 
-def summarize_file(client, file_path, system_prompt):
-    """Summarize a single file and print the result."""
-    content = Path(file_path).read_text(encoding="utf-8")
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": content}
-    ]
-    response = client.complete_chat(messages)
-    print(response.choices[0].message.content)
+SYSTEM_PROMPT = (
+    "Summarize the following document into concise bullet points. "
+    "Focus on the key points and main ideas."
+)
 
 
-def summarize_directory(client, directory, system_prompt):
+def summarize_file(model, file_path: Path) -> None:
+    """Summarize a single file in its own ChatSession."""
+    content = file_path.read_text(encoding="utf-8")
+    # Fresh session per file — no cross-document conversation history.
+    with ChatSession(model) as session, Request() as req:
+        req.add_item(MessageItem.system(SYSTEM_PROMPT))
+        req.add_item(MessageItem.user(content))
+
+        response = session.process_request(req)
+        # Chat responses contain a single MessageItem with a single TextItem part.
+        print(response.get_item(0).get_simple_text())
+
+
+def summarize_directory(model, directory: Path) -> None:
     """Summarize all .txt files in a directory."""
-    txt_files = sorted(Path(directory).glob("*.txt"))
+    txt_files = sorted(directory.glob("*.txt"))
 
     if not txt_files:
         print(f"No .txt files found in {directory}")
@@ -27,7 +42,7 @@ def summarize_directory(client, directory, system_prompt):
 
     for txt_file in txt_files:
         print(f"--- {txt_file.name} ---")
-        summarize_file(client, txt_file, system_prompt)
+        summarize_file(model, txt_file)
         print()
 
 
@@ -38,7 +53,6 @@ def main():
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
 
-    # Download and register all execution providers.
     current_ep = ""
     def ep_progress(ep_name: str, percent: float):
         nonlocal current_ep
@@ -52,35 +66,24 @@ def main():
     if current_ep:
         print()
 
-    # Select and load a model from the catalog
     model = manager.catalog.get_model("qwen2.5-0.5b")
     model.download(lambda p: print(f"\rDownloading model: {p:.2f}%", end="", flush=True))
     print()
     model.load()
     print("Model loaded and ready.\n")
-
-    # Get a chat client
-    client = model.get_chat_client()
     # </init>
 
     # <summarization>
-    system_prompt = (
-        "Summarize the following document into concise bullet points. "
-        "Focus on the key points and main ideas."
-    )
-
-    # <file_reading>
     # Default to the shared samples/testdata/document.txt.
     default_document = Path(__file__).resolve().parents[3] / "testdata" / "document.txt"
     target = sys.argv[1] if len(sys.argv) > 1 else default_document
     target_path = Path(target)
-    # </file_reading>
 
     if target_path.is_dir():
-        summarize_directory(client, target_path, system_prompt)
+        summarize_directory(model, target_path)
     else:
         print(f"--- {target_path.name} ---")
-        summarize_file(client, target_path, system_prompt)
+        summarize_file(model, target_path)
     # </summarization>
 
     # Clean up

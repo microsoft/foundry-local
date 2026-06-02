@@ -7,9 +7,9 @@
 ///   3. Streaming chat completions work on an accelerated model
 /// </summary>
 
+using System.Linq;
 using Microsoft.AI.Foundry.Local;
 using Microsoft.Extensions.Logging;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 
 const string PASS = "\x1b[92m[PASS]\x1b[0m";
 const string FAIL = "\x1b[91m[FAIL]\x1b[0m";
@@ -239,32 +239,38 @@ LogResult("Model Load", true, $"Loaded {chosen.Id}");
 PrintSeparator("Step 4: Streaming Chat Completions (Native)");
 try
 {
-    var chatClient = await chosen.GetChatClientAsync();
-    chatClient.Settings.Temperature = 0;
-    chatClient.Settings.MaxTokens = 16;
-    var messages = new List<ChatMessage>
-    {
-        new() { Role = "system", Content = "You are a helpful assistant." },
-        new() { Role = "user", Content = "What is 2 + 2? Reply with just the number." },
-    };
+    using var session = new ChatSession(chosen);
+    session.SetStreaming(true);
 
-    var fullResponse = "";
-    var start = DateTime.UtcNow;
-    await foreach (var chunk in chatClient.CompleteChatStreamingAsync(messages, ct))
+    using var request = new Request();
+    request.AddItem(MessageItem.System("You are a helpful assistant."));
+    request.AddItem(MessageItem.User("What is 2 + 2? Reply with just the number."));
+    request.SetOptions(new RequestOptions
     {
-        var content = chunk.Choices?.FirstOrDefault()?.Message?.Content;
-        if (!string.IsNullOrEmpty(content))
+        Search = new SearchOptions { Temperature = 0, MaxOutputTokens = 16 },
+    });
+
+    var start = DateTime.UtcNow;
+    var stream = session.ProcessStreamingRequestAsync(request, ct);
+    await foreach (var item in stream)
+    {
+        using (item)
         {
-            Console.Write(content);
-            Console.Out.Flush();
-            fullResponse += content;
+            if (item is TextItem txt && !string.IsNullOrEmpty(txt.Text))
+            {
+                Console.Write(txt.Text);
+                Console.Out.Flush();
+            }
         }
     }
 
+    using var final = await stream.FinalResponse;
+    using var finalItem = final.GetItem(0);
+    var aggregated = (finalItem as MessageItem)?.GetSimpleText() ?? string.Empty;
     var elapsed = (DateTime.UtcNow - start).TotalSeconds;
     Console.WriteLine();
-    LogResult("Streaming Chat (Native)", fullResponse.Length > 0,
-        $"{fullResponse.Length} chars in {elapsed:F2}s");
+    LogResult("Streaming Chat (Native)", aggregated.Length > 0,
+        $"{aggregated.Length} chars in {elapsed:F2}s");
 }
 catch (Exception e)
 {

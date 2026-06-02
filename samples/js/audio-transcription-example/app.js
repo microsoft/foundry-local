@@ -1,6 +1,6 @@
 // <complete_code>
 // <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+import { AudioSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
 
 // Initialize the Foundry Local SDK
@@ -45,32 +45,26 @@ console.log('✓ Model loaded');
 // </model_setup>
 
 // <transcription>
-// Create audio client
-console.log('\nCreating audio client...');
-const audioClient = model.createAudioClient();
-console.log('✓ Audio client created');
-
-// Example audio transcription
 const audioFile = process.argv[2] || './Recording.mp3';
-console.log(`\nTranscribing ${audioFile}...`);
-const transcription = await audioClient.transcribe(audioFile);
+console.log(`Transcribing audio with streaming output: ${audioFile}`);
 
-console.log('\nAudio transcription result:');
-console.log(transcription.text);
-console.log('✓ Audio transcription completed');
-
-// Same example but with streaming transcription using async iteration
-console.log('\nTesting streaming audio transcription...');
-for await (const result of audioClient.transcribeStreaming(audioFile)) {
-    // Output the intermediate transcription results as they are received without line ending
-    process.stdout.write(result.text);
+const session = new AudioSession(model);
+try {
+    session.setOptions({ additionalOptions: { language: 'en' } });
+    const req = new Request();
+    req.addItem(Item.audioFromUri(audioFile));
+    for await (const item of session.processStreamingRequest(req)) {
+        if (item.type === 'text') {
+            process.stdout.write(item.text);
+        }
+    }
+    process.stdout.write('\n');
+} finally {
+    session.dispose();
 }
-console.log('\n✓ Streaming transcription completed');
 // </transcription>
 
 // <cleanup>
-console.log('Disposing audio client...');
-audioClient.dispose();
 // Unload the model
 console.log('Unloading model...');
 await model.unload();

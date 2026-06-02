@@ -21,12 +21,26 @@ public sealed class Request : IDisposable
         Ptr = ptr;
     }
 
-    /// <summary>Add an item to the request. Transfers ownership — do not use the item after this.</summary>
-    public Request AddItem(Item item)
+    /// <summary>
+    /// Add an item to the request.
+    /// </summary>
+    /// <param name="item">The item to add. Must not be null.</param>
+    /// <param name="takeOwnership">
+    /// When <c>true</c> (default) the request takes ownership of <paramref name="item"/> and the caller must not
+    /// use it afterwards. When <c>false</c> the caller retains ownership — required for an <see cref="ItemQueue"/>
+    /// the caller continues to push into while the request is being processed, and useful for sharing a single
+    /// input <see cref="Item"/> (e.g. a tensor) across multiple requests.
+    /// </param>
+    public Request AddItem(Item item, bool takeOwnership = true)
     {
-        var nativePtr = item.Ptr;
-        Api.CheckStatus(Api.Inference.RequestAddItem(Ptr, nativePtr, true));
-        item.ReleaseOwnership();
+        Detail.Throw.IfNull(item);
+        Api.CheckStatus(Api.Inference.RequestAddItem(Ptr, item.Ptr, takeOwnership));
+
+        if (takeOwnership)
+        {
+            item.ReleaseOwnership();
+        }
+
         return this;
     }
 

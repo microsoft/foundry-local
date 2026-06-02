@@ -1,5 +1,4 @@
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using System.Diagnostics;
 
 CancellationToken ct = new CancellationToken();
@@ -116,27 +115,22 @@ foreach (var loadedModel in loadedModels)
 Console.WriteLine();
 
 
-// Get a chat client
-var chatClient = await model.GetChatClientAsync();
-
-// Create a chat message
-List<ChatMessage> messages = new()
+// Run a single chat turn to confirm the model is functional.
+// See the native-chat-completions sample for streaming and multi-turn examples.
+using (var session = new ChatSession(model))
+using (var request = new Request())
 {
-    new ChatMessage { Role = "user", Content = "Why is the sky blue?" }
-};
+    request.AddItem(MessageItem.User("Why is the sky blue?"));
 
-// You can adjust settings on the chat client
-chatClient.Settings.Temperature = 0.7f;
-chatClient.Settings.MaxTokens = 512;
-
-Console.WriteLine("Chat completion response:");
-var streamingResponse = chatClient.CompleteChatStreamingAsync(messages, ct);
-await foreach (var chunk in streamingResponse)
-{
-    Console.Write(chunk.Choices[0].Message.Content);
-    Console.Out.Flush();
+    Console.WriteLine("Chat completion response:");
+    using var response = await session.ProcessRequestAsync(request, ct);
+    // Chat responses contain a single MessageItem with a single TextItem part.
+    using var item = response.GetItem(0);
+    if (item is MessageItem msg)
+    {
+        Console.WriteLine(msg.GetSimpleText());
+    }
 }
-Console.WriteLine();
 Console.WriteLine();
 
 // Tidy up - unload the model

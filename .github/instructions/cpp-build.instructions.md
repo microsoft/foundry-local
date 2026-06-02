@@ -22,12 +22,13 @@ applyTo: sdk_v2/cpp/**
 
 ## Allowed exceptions
 
-- **Fast incremental rebuild during inner-loop iteration**, after `build.py --configure --build` has already populated the canonical build dir for that config. Two equivalent options:
+- **Fast incremental rebuild during inner-loop iteration**, after `build.py --configure --build` has already populated the canonical build dir for that config. Pass explicit phase flags to skip what you don't need:
   ```
-  python build.py --build --config Debug                        # whole solution, no reconfigure, no tests
+  python build.py --build --config Debug                        # rebuild only, no reconfigure, no tests
+  python build.py --build --test --config Debug                 # rebuild + run tests, no reconfigure
   cmake --build build/Windows/Debug --config Debug --target sdk_integration_tests --parallel 4
   ```
-  `build.py --build` is the preferred form: it skips `--configure` and `--test` (much faster than the default `--configure --build --test`) while still using the canonical platform-segmented build dir. Use the raw `cmake --build` form only when you want to build a single target. Never use a non-platform-segmented `-B` / build dir.
+  `build.py --build` (optionally with `--test`) is the preferred form: it skips the expensive `--configure` step (much faster than the default `--configure --build --test`) while still using the canonical platform-segmented build dir. Always pass explicit phase flags when iterating — never re-run the bare `python build.py` (which reconfigures every time). Use the raw `cmake --build` form only when you want to build a single target. Never use a non-platform-segmented `-B` / build dir.
 - **MSVC C1041 PDB-lock recovery**: retry the same `cmake --build` once with `--parallel 4`. Don't change the build dir.
 
 ## When verifying C# / Python tests against a fresh native

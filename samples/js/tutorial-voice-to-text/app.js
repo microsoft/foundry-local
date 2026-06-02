@@ -1,21 +1,25 @@
-// <complete_code>
-// <imports>
-import { FoundryLocalManager } from 'foundry-local-sdk';
+// Tutorial: Voice to Text — Foundry Local JS SDK (native session API).
+//
+// Transcribes an audio file with AudioSession (whisper), then summarizes the
+// transcription into organized notes with ChatSession (qwen).
+
+import {
+    AudioSession,
+    ChatSession,
+    FoundryLocalManager,
+    Item,
+    Request,
+} from 'foundry-local-sdk';
 import { fileURLToPath } from 'url';
 import path from 'path';
-// </imports>
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// <init>
-// Initialize the Foundry Local SDK
 const manager = FoundryLocalManager.create({
     appName: 'foundry_local_samples',
-    logLevel: 'info'
+    logLevel: 'info',
 });
-// </init>
 
-// Download and register all execution providers.
 let currentEp = '';
 await manager.downloadAndRegisterEps((epName, percent) => {
     if (epName !== currentEp) {
@@ -26,66 +30,66 @@ await manager.downloadAndRegisterEps((epName, percent) => {
 });
 if (currentEp !== '') process.stdout.write('\n');
 
-// <transcription>
-// Load the speech-to-text model
+// --- Step 1: Transcription ---
 const speechModel = await manager.catalog.getModel('whisper-tiny');
 await speechModel.download((progress) => {
-    process.stdout.write(
-        `\rDownloading speech model: ${progress.toFixed(2)}%`
-    );
+    process.stdout.write(`\rDownloading speech model: ${progress.toFixed(2)}%`);
 });
 console.log('\nSpeech model downloaded.');
 
 await speechModel.load();
 console.log('Speech model loaded.');
 
-// Transcribe the audio file
-const audioClient = speechModel.createAudioClient();
 // Default to the shared samples/testdata/meeting-notes.wav.
 const defaultAudio = path.join(__dirname, '..', '..', 'testdata', 'meeting-notes.wav');
-const audioPath = process.argv[2] || defaultAudio;
-const transcription = await audioClient.transcribe(audioPath);
-console.log(`\nTranscription:\n${transcription.text}`);
+const audioPath = path.resolve(process.argv[2] || defaultAudio);
 
-// Unload the speech model to free memory
+let transcription = '';
+const speechSession = new AudioSession(speechModel);
+try {
+    const request = new Request();
+    request.addItem(Item.audioFromUri(audioPath));
+    for await (const item of speechSession.processStreamingRequest(request)) {
+        if (item.type === 'text' && item.text) {
+            transcription += item.text;
+        }
+    }
+} finally {
+    speechSession.dispose();
+}
+console.log(`\nTranscription:\n${transcription}`);
+
 await speechModel.unload();
-// </transcription>
 
-// <summarization>
-// Load the chat model for summarization
+// --- Step 2: Summarization ---
 const chatModel = await manager.catalog.getModel('qwen2.5-0.5b');
 await chatModel.download((progress) => {
-    process.stdout.write(
-        `\rDownloading chat model: ${progress.toFixed(2)}%`
-    );
+    process.stdout.write(`\rDownloading chat model: ${progress.toFixed(2)}%`);
 });
 console.log('\nChat model downloaded.');
 
 await chatModel.load();
 console.log('Chat model loaded.');
 
-// Summarize the transcription into organized notes
-const chatClient = chatModel.createChatClient();
-const messages = [
-    {
-        role: 'system',
-        content: 'You are a note-taking assistant. Summarize ' +
-                 'the following transcription into organized, ' +
-                 'concise notes with bullet points.'
-    },
-    {
-        role: 'user',
-        content: transcription.text
+const chatSession = new ChatSession(chatModel);
+try {
+    const request = new Request();
+    request.addItem(Item.systemMessage(
+        'You are a note-taking assistant. Summarize the following transcription into ' +
+        'organized, concise notes with bullet points.'
+    ));
+    request.addItem(Item.userMessage(transcription));
+
+    process.stdout.write('\nSummary:\n');
+    for await (const item of chatSession.processStreamingRequest(request)) {
+        if (item.type === 'text' && item.text) {
+            process.stdout.write(item.text);
+        }
     }
-];
+    console.log();
+} finally {
+    chatSession.dispose();
+}
 
-const response = await chatClient.completeChat(messages);
-const summary = response.choices[0]?.message?.content;
-console.log(`\nSummary:\n${summary}`);
-
-// Clean up
-chatClient.dispose();
 await chatModel.unload();
 console.log('\nDone. Models unloaded.');
-// </summarization>
-// </complete_code>

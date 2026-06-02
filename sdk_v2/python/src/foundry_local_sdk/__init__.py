@@ -43,9 +43,10 @@ from foundry_local_sdk.session_types import (
     TokenUsage,
     ToolChoice,
 )
+from foundry_local_sdk.item_queue import ItemQueue
 from foundry_local_sdk.request import Request
 from foundry_local_sdk.response import Response
-from foundry_local_sdk.session import Session, ChatSession, AudioSession, EmbeddingsSession
+from foundry_local_sdk.session import Session, ChatSession, AudioSession, EmbeddingsSession, StreamingResponse
 
 _logger = logging.getLogger(__name__)
 _logger.setLevel(logging.WARNING)
@@ -91,6 +92,7 @@ __all__ = [
     "TextItemType",
     "MessageRole",
     "TensorDataType",
+    "ItemQueue",
     "FinishReason",
     "TokenUsage",
     "SearchOptions",
@@ -102,4 +104,5 @@ __all__ = [
     "ChatSession",
     "AudioSession",
     "EmbeddingsSession",
+    "StreamingResponse",
 ]

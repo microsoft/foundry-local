@@ -1,10 +1,6 @@
 ﻿// <complete_code>
 // <imports>
 using Microsoft.AI.Foundry.Local;
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
-using Betalgo.Ranul.OpenAI.ObjectModels.ResponseModels;
-using Betalgo.Ranul.OpenAI.ObjectModels.SharedModels;
-using ToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolChoice;
 using System.Text.Json;
 // </imports>
 
@@ -66,115 +62,96 @@ Console.WriteLine("done.");
 // </model_setup>
 
 
-// Get a chat client
-var chatClient = await model.GetChatClientAsync();
-chatClient.Settings.ToolChoice = ToolChoice.Required; // Force the model to make a tool call
-
-
-// Prepare messages
-List<ChatMessage> messages =
-[
-    new ChatMessage { Role = "system", Content = "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question." },
-    new ChatMessage { Role = "user", Content = "What is the answer to 7 multiplied by 6?" }
-];
+// Create a chat session and register the tool definition.
+// AddToolDefinition makes the tool visible to the model for every request on this session.
+using var session = new ChatSession(model);
 
 
 // <tool_definitions>
-// Prepare tools
-List<ToolDefinition> tools =
-[
-    new ToolDefinition
+session.AddToolDefinition(
+    "multiply_numbers",
+    "A tool for multiplying two numbers.",
+    /*lang=json,strict*/
+    """
     {
-        Type = "function",
-        Function = new FunctionDefinition()
-        {
-            Name = "multiply_numbers",
-            Description = "A tool for multiplying two numbers.",
-            Parameters = new PropertyDefinition()
-            {
-                Type = "object",
-                Properties = new Dictionary<string, PropertyDefinition>()
-                {
-                    { "first", new PropertyDefinition() { Type = "integer", Description = "The first number in the operation" } },
-                    { "second", new PropertyDefinition() { Type = "integer", Description = "The second number in the operation" } }
-                },
-                Required = ["first", "second"]
-            }
-        }
+      "type": "object",
+      "properties": {
+        "first": { "type": "integer", "description": "The first number in the operation" },
+        "second": { "type": "integer", "description": "The second number in the operation" }
+      },
+      "required": ["first", "second"]
     }
-];
+    """);
 // </tool_definitions>
 
 
 // <tool_loop>
-// Get a streaming chat completion response
-var toolCallResponses = new List<ChatCompletionCreateResponse>();
-Console.WriteLine("Chat completion response:");
-var streamingResponse = chatClient.CompleteChatStreamingAsync(messages, tools, ct);
-await foreach (var chunk in streamingResponse)
+// Turn 1: force a tool call so we can demonstrate the tool-result round-trip.
+// ChatSession accumulates message history, so we only add new items each turn.
+using (var request = new Request())
 {
-    var content = chunk.Choices[0].Message.Content;
-    Console.Write(content);
-    Console.Out.Flush();
+    request.AddItem(MessageItem.System(
+        "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question."));
+    request.AddItem(MessageItem.User("What is the answer to 7 multiplied by 6?"));
+    request.SetOptions(new RequestOptions { ToolChoice = ToolChoice.Required });
 
-    if (chunk.Choices[0].FinishReason == "tool_calls")
+    Console.WriteLine("Chat completion response:");
+    using var response = await session.ProcessRequestAsync(request, ct);
+
+    // Collect tool calls from the response, then invoke them and feed results back as a second request.
+    // The response is iterated in order; each item must be disposed once we are done with it.
+    var pendingResults = new List<ToolResultItem>();
+    foreach (var item in response)
     {
-        toolCallResponses.Add(chunk);
-    }
-}
-Console.WriteLine();
-
-
-// Invoke tools called and append responses to the chat
-foreach (var chunk in toolCallResponses)
-{
-    var call = chunk?.Choices[0].Message.ToolCalls?[0].FunctionCall;
-    if (call?.Name == "multiply_numbers")
-    {
-        var arguments = JsonSerializer.Deserialize<Dictionary<string, int>>(call.Arguments!)!;
-        var first = arguments["first"];
-        var second = arguments["second"];
-
-        Console.WriteLine($"\nInvoking tool: {call?.Name} with arguments {first} and {second}");
-        var result = Utils.MultiplyNumbers(first, second);
-        Console.WriteLine($"Tool response: {result.ToString()}");
-
-        var response = new ChatMessage
+        using (item)
         {
-            Role = "tool",
-            ToolCallId = chunk!.Choices[0].Message.ToolCalls![0].Id,
-            Content = result.ToString(),
-        };
-        messages.Add(response);
+            if (item is ToolCallItem call && call.Name == "multiply_numbers")
+            {
+                var arguments = JsonSerializer.Deserialize<Dictionary<string, int>>(call.Arguments)!;
+                var first = arguments["first"];
+                var second = arguments["second"];
+
+                Console.WriteLine($"\nInvoking tool: {call.Name} with arguments {first} and {second}");
+                var result = Utils.MultiplyNumbers(first, second);
+                Console.WriteLine($"Tool response: {result}");
+
+                pendingResults.Add(new ToolResultItem(call.CallId, result.ToString()));
+            }
+        }
     }
+
+    Console.WriteLine("\nTool calls completed. Prompting model to continue conversation...\n");
+
+    // Turn 2: send the tool results back. ToolChoice defaults to Auto so the model can either
+    // call the tool again or answer the user directly.
+    using var followUp = new Request();
+    foreach (var toolResult in pendingResults)
+    {
+        followUp.AddItem(toolResult);
+    }
+    followUp.AddItem(MessageItem.System("Respond only with the answer generated by the tool."));
+
+    session.SetStreaming(true);
+    Console.WriteLine("Chat completion response:");
+    await foreach (var item in session.ProcessStreamingRequestAsync(followUp, ct))
+    {
+        using (item)
+        {
+            if (item is TextItem txt)
+            {
+                Console.Write(txt.Text);
+                Console.Out.Flush();
+            }
+        }
+    }
+    Console.WriteLine();
 }
-Console.WriteLine("\nTool calls completed. Prompting model to continue conversation...\n");
-
-
-// Prompt the model to continue the conversation after the tool call
-messages.Add(new ChatMessage { Role = "system", Content = "Respond only with the answer generated by the tool." });
-
-
-// Set tool calling back to auto so that the model can decide whether to call
-// the tool again or continue the conversation based on the new user prompt
-chatClient.Settings.ToolChoice = ToolChoice.Auto;
-
-
-// Run the next turn of the conversation
-Console.WriteLine("Chat completion response:");
-streamingResponse = chatClient.CompleteChatStreamingAsync(messages, tools, ct);
-await foreach (var chunk in streamingResponse)
-{
-    var content = chunk.Choices[0].Message.Content;
-    Console.Write(content);
-    Console.Out.Flush();
-}
-Console.WriteLine();
 // </tool_loop>
 
 
 // <cleanup>
 // Tidy up - unload the model and dispose the manager so native resources are released promptly.
+session.Dispose();
 await model.UnloadAsync();
 mgr.Dispose();
 // </cleanup>

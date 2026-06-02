@@ -4,6 +4,7 @@
 #include "items/image_item.h"
 
 #include "exception.h"
+#include "util/file_uri.h"
 
 #include <fstream>
 #include <ios>
@@ -19,13 +20,9 @@ std::vector<std::uint8_t> ImageItem::ReadBytes() const {
   }
 
   if (!uri.empty()) {
-    std::string path = uri;
-
-    // Strip the optional `file://` scheme prefix.
-    constexpr std::string_view kFileScheme = "file://";
-    if (path.compare(0, kFileScheme.size(), kFileScheme) == 0) {
-      path.erase(0, kFileScheme.size());
-    }
+    // Strip optional `file://` scheme prefix and percent-decode so URIs like
+    // `file:///C:/My%20Image.png` work the same as a plain path.
+    std::string path = PathFromFileUri(uri);
 
     std::ifstream in(path, std::ios::binary);
     if (!in) {

@@ -33,33 +33,41 @@ dotnet run -- --synth
 ## How it works
 
 1. Initializes the Foundry Local SDK and loads the Nemotron ASR model
-2. Creates a `LiveAudioTranscriptionSession` with 16kHz/16-bit/mono PCM settings
-3. Captures microphone audio via `NAudio.WaveInEvent` (or generates synthetic audio as fallback)
-4. Pushes PCM chunks to the SDK via `session.AppendAsync()` through a bounded channel for backpressure
-5. Reads transcription results via `await foreach (var result in session.GetStream())`
-6. Access text via `result.Content[0].Text` (OpenAI Realtime ConversationItem pattern)
+2. Opens an `AudioSession` configured for streaming
+3. Builds a `Request` containing an `AudioItem` format descriptor (16 kHz mono PCM)
+   and an `ItemQueue` to feed live PCM chunks into
+4. Captures microphone audio via `NAudio.WaveInEvent` (or generates synthetic audio as fallback)
+   and pushes each chunk as a `BytesItem` into the queue (through a bounded channel for backpressure)
+5. Reads transcription `TextItem`s via `await foreach (var item in session.ProcessStreamingRequestAsync(request))`
+6. Calls `audioQueue.MarkFinished()` to signal end-of-input; the session drains and the loop exits
 
 ## API
 
 ```csharp
-var audioClient = await model.GetAudioClientAsync();
-var session = audioClient.CreateLiveTranscriptionSession();
-session.Settings.SampleRate = 16000;
-session.Settings.Channels = 1;
-session.Settings.Language = "en";
-
-await session.StartAsync();
-
-// Push audio
-await session.AppendAsync(pcmBytes);
-
-// Read results
-await foreach (var result in session.GetStream())
+using var session = new AudioSession(model);
+session.SetOptions(new RequestOptions
 {
-    Console.WriteLine(result.Content[0].Text);       // transcribed text
-    Console.WriteLine(result.Content[0].Transcript); // alias (OpenAI compat)
-    Console.WriteLine(result.IsFinal);               // true for final results
+    AdditionalOptions = { ["language"] = "en" },
+});
+session.SetStreaming(true);
+
+using var audioQueue = new ItemQueue();
+using var request = new Request();
+
+// Format descriptor (no data) + the streaming input queue.
+request.AddItem(AudioItem.CreateFormatDescriptor("pcm", 16000, 1));
+request.AddItem(audioQueue, takeOwnership: false);
+
+// On a background task: consume transcription items as they arrive.
+await foreach (var item in session.ProcessStreamingRequestAsync(request))
+{
+    if (item is TextItem text)
+    {
+        Console.Write(text.Text);
+    }
 }
 
-await session.StopAsync();
+// On the producer side: push PCM chunks, then signal end-of-input.
+audioQueue.Push(BytesItem.CreateOwned(pcmBytes));
+audioQueue.MarkFinished();
 ```
