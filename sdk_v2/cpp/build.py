@@ -165,6 +165,19 @@ def _parse_args() -> argparse.Namespace:
         help="Override the Microsoft.Windows.AI.MachineLearning NuGet version for the WinML EP "
              "catalog (Windows only). Defaults to the version pinned in deps_versions.json.",
     )
+    parser.add_argument(
+        "--no_telemetry", action="store_true",
+        help="Skip building the 1DS (cpp-client-telemetry) bridge. Useful while the vcpkg "
+             "port (microsoft/vcpkg#52316) is unmerged or when building forks that should "
+             "not link any telemetry transport. Local diagnostic logging via TelemetryLogger "
+             "still works.",
+    )
+    parser.add_argument(
+        "--telemetry_token", default=None, type=str,
+        help="1DS / Aria ingestion token. Baked into the binary at configure time as a "
+             "secret. Treat with care — do not commit to source. Defaults to empty, which "
+             "means OneDsTelemetry initializes but skips upload.",
+    )
 
     # Cross-compilation (mutually exclusive targets)
     cross_group = parser.add_mutually_exclusive_group()
@@ -451,9 +464,22 @@ def configure(args: argparse.Namespace) -> None:
         f"-DFOUNDRY_LOCAL_BUILD_SERVICE={build_service}",
     ]
 
-    # Enable vcpkg manifest features for tests
+    # Enable vcpkg manifest features as needed. Multiple features are passed as a
+    # semicolon-separated list in a single -D flag.
+    manifest_features = []
     if build_tests == "ON":
-        command += ["-DVCPKG_MANIFEST_FEATURES=tests"]
+        manifest_features.append("tests")
+    if not args.no_telemetry:
+        manifest_features.append("telemetry")
+    if manifest_features:
+        command += [f"-DVCPKG_MANIFEST_FEATURES={';'.join(manifest_features)}"]
+
+    if args.no_telemetry:
+        command += ["-DFOUNDRY_LOCAL_USE_TELEMETRY=OFF"]
+    else:
+        command += ["-DFOUNDRY_LOCAL_USE_TELEMETRY=ON"]
+    if args.telemetry_token is not None:
+        command += [f"-DFOUNDRY_LOCAL_TELEMETRY_TOKEN={args.telemetry_token}"]
 
     # WinML EP catalog is enabled automatically on Windows by CMake. Allow an
     # optional version override for the Microsoft.Windows.AI.MachineLearning NuGet.
