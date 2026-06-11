@@ -15,12 +15,17 @@ class NullTelemetry : public ITelemetry {
 
   void RecordException(Action /*action*/, const std::exception& /*exception*/) override {}
 
-  void RecordModelUsage(const std::string& /*model_id*/,
-                        int64_t /*prompt_tokens*/,
-                        int64_t /*completion_tokens*/,
-                        int64_t /*duration_ms*/) override {}
+  void RecordModelUsage(const ModelUsageInfo& /*info*/) override {}
 
-  void RecordModelId(Action /*action*/, const std::string& /*model_id*/) override {}
+  void RecordModelId(Action /*action*/, const std::string& /*model_id*/,
+                     ActionStatus /*status*/ = ActionStatus::kSuccess,
+                     const std::string& /*user_agent*/ = "") override {}
+
+  void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& /*info*/) override {}
+
+  void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& /*info*/) override {}
+
+  void RecordDownload(const DownloadInfo& /*info*/) override {}
 };
 
 }  // namespace fl::test

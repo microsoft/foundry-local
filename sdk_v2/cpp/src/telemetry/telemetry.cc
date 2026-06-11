@@ -50,6 +50,14 @@ std::string_view ActionToString(Action action) {
       return "OpenAIResponsesGetInputItems";
     case Action::kCoreAudioTranscribe:
       return "CoreAudioTranscribe";
+    case Action::kEpDownloadAttempt:
+      return "EpDownloadAttempt";
+    case Action::kEpDownloadAndRegister:
+      return "EpDownloadAndRegister";
+    case Action::kModelFileDownload:
+      return "ModelFileDownload";
+    case Action::kModelInference:
+      return "ModelInference";
     default:
       return "Unknown";
   }

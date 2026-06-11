@@ -19,7 +19,7 @@ ActionTracker::~ActionTracker() {
   telemetry_.RecordAction(action_, status_, user_agent_, indirect_, duration_ms);
 
   if (!model_id_.empty()) {
-    telemetry_.RecordModelId(action_, model_id_);
+    telemetry_.RecordModelId(action_, model_id_, status_, user_agent_);
   }
 }
 
@@ -28,7 +28,7 @@ void ActionTracker::SetStatus(ActionStatus status) {
 }
 
 void ActionTracker::RecordException(const std::exception& exception) {
-  telemetry_.RecordException(action_, exception);
+  telemetry_.RecordException(action_, exception, user_agent_);
 }
 
 void ActionTracker::SetModelId(const std::string& model_id) {

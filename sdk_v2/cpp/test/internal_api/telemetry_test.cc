@@ -51,29 +51,35 @@ class RecordingTelemetry : public ITelemetry {
     exception_calls.emplace_back(action, exception.what());
   }
 
-  void RecordModelUsage(const std::string& model_id,
-                        int64_t prompt_tokens,
-                        int64_t completion_tokens,
-                        int64_t duration_ms) override {
-    model_usage_calls.push_back(
-        ModelUsageCall{model_id, prompt_tokens, completion_tokens, duration_ms});
+  void RecordModelUsage(const ModelUsageInfo& info) override {
+    model_usage_calls.push_back(info);
   }
 
-  void RecordModelId(Action action, const std::string& model_id) override {
+  void RecordModelId(Action action, const std::string& model_id,
+                     ActionStatus /*status*/ = ActionStatus::kSuccess,
+                     const std::string& /*user_agent*/ = "") override {
     model_id_calls.emplace_back(action, model_id);
   }
 
-  struct ModelUsageCall {
-    std::string model_id;
-    int64_t prompt_tokens;
-    int64_t completion_tokens;
-    int64_t duration_ms;
-  };
+  void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) override {
+    ep_attempt_calls.push_back(info);
+  }
+
+  void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override {
+    ep_register_calls.push_back(info);
+  }
+
+  void RecordDownload(const DownloadInfo& info) override {
+    download_calls.push_back(info);
+  }
 
   std::vector<ActionCall> action_calls;
   std::vector<std::pair<Action, std::string>> exception_calls;
-  std::vector<ModelUsageCall> model_usage_calls;
+  std::vector<ModelUsageInfo> model_usage_calls;
   std::vector<std::pair<Action, std::string>> model_id_calls;
+  std::vector<EpDownloadAttemptInfo> ep_attempt_calls;
+  std::vector<EpDownloadAndRegisterInfo> ep_register_calls;
+  std::vector<DownloadInfo> download_calls;
 };
 
 }  // namespace
@@ -87,12 +93,12 @@ TEST(TelemetryLoggerTest, RecordActionIncludesConcreteFields) {
 
   ASSERT_EQ(logger.entries.size(), 1u);
   EXPECT_EQ(logger.entries[0].level, LogLevel::Debug);
-  EXPECT_NE(logger.entries[0].message.find("AppName:foundry-local"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("UserAgent:cli/1.0"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("Command:ModelDownload"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("Status:Success"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("Direct:true"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("Time:1234ms"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("AppName=foundry-local"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("UserAgent=cli/1.0"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Action=ModelDownload"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Status=Success"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Direct=true"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("TimeMs=1234"), std::string::npos);
 }
 
 TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
@@ -100,20 +106,30 @@ TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
   TelemetryLogger telemetry("foundry-local", logger);
 
   telemetry.RecordException(Action::kModelLoad, std::runtime_error("config missing"));
-  telemetry.RecordModelUsage("phi-3-mini", 17, 31, 250);
-  telemetry.RecordModelId(Action::kModelLoad, "phi-3-mini");
+
+  ModelUsageInfo usage;
+  usage.model_id = "phi-3-mini";
+  usage.execution_provider = "CPU";
+  usage.user_agent = "cli/1.0";
+  usage.total_tokens = 31;
+  usage.input_token_count = 17;
+  usage.total_time_ms = 250;
+  telemetry.RecordModelUsage(usage);
+
+  telemetry.RecordModelId(Action::kModelLoad, "phi-3-mini", ActionStatus::kSuccess, "cli/1.0");
 
   ASSERT_EQ(logger.entries.size(), 3u);
-  EXPECT_NE(logger.entries[0].message.find("Command:ModelLoad"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("Exception:config missing"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Action=ModelLoad"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Exception=config missing"), std::string::npos);
 
-  EXPECT_NE(logger.entries[1].message.find("ModelUsage: model=phi-3-mini"), std::string::npos);
-  EXPECT_NE(logger.entries[1].message.find("prompt_tokens=17"), std::string::npos);
-  EXPECT_NE(logger.entries[1].message.find("completion_tokens=31"), std::string::npos);
-  EXPECT_NE(logger.entries[1].message.find("duration=250ms"), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("Model "), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("ModelId=phi-3-mini"), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("InputTokenCount=17"), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("TotalTokens=31"), std::string::npos);
+  EXPECT_NE(logger.entries[1].message.find("TotalTimeMs=250"), std::string::npos);
 
-  EXPECT_NE(logger.entries[2].message.find("Command:ModelLoad"), std::string::npos);
-  EXPECT_NE(logger.entries[2].message.find("ModelId:phi-3-mini"), std::string::npos);
+  EXPECT_NE(logger.entries[2].message.find("Action=ModelLoad"), std::string::npos);
+  EXPECT_NE(logger.entries[2].message.find("ModelId=phi-3-mini"), std::string::npos);
 }
 
 TEST(ActionTrackerTest, DestructorRecordsFailureByDefaultWithoutModelId) {
