@@ -121,9 +121,22 @@ class AzureBlobDownloader : public IBlobDownloader {
 /// High-level download function: enumerate, filter, and download all blobs from a SAS URI.
 /// Handles safetensors optimization, path prefix filtering, and progress reporting.
 /// Throws fl::Exception on failure.
+/// @param stats When non-null, populated with byte/file counts and per-phase timings useful
+///              for telemetry. Always populated when the function returns normally; partially
+///              populated when it throws (use values only after a clean return).
 void DownloadBlobsToDirectory(IBlobDownloader& downloader,
                               const std::string& sas_uri,
                               const std::string& output_directory,
-                              const BlobDownloadOptions& options);
+                              const BlobDownloadOptions& options,
+                              struct BlobDownloadStats* stats = nullptr);
+
+/// Aggregate statistics from one DownloadBlobsToDirectory call. Used by callers to
+/// stamp telemetry events with download-shape data (file count, byte volume, timing).
+struct BlobDownloadStats {
+  int64_t total_size_bytes = 0;
+  int32_t file_count = 0;
+  int64_t enumeration_ms = 0;   // Time spent listing blobs from the SAS URI.
+  int64_t download_ms = 0;      // Time spent transferring blob bytes (excludes enumeration).
+};
 
 }  // namespace fl

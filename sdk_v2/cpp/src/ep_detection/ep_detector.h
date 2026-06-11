@@ -23,6 +23,7 @@ struct OrtEnv;
 namespace fl {
 
 class ILogger;
+class ITelemetry;
 
 /// Interface for detecting available hardware devices and execution providers.
 class IEpDetector {
@@ -71,9 +72,15 @@ class EpDetector : public IEpDetector {
   /// @param ort_env  The ORT environment singleton.
   /// @param bootstrappers  EP bootstrappers for download/registration.
   /// @param logger  Logger instance.
+  /// @param telemetry  Optional telemetry sink. When non-null, DownloadAndRegisterEps
+  ///                   emits one EPDownloadAndRegister event per provider via
+  ///                   EpDownloadTracker, plus one aggregate EPDownloadAttempt
+  ///                   event for the whole call. Pass nullptr in tests / when no
+  ///                   telemetry sink is available.
   EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
              std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
-             ILogger& logger);
+             ILogger& logger,
+             ITelemetry* telemetry = nullptr);
   ~EpDetector() override = default;
 
   // Non-copyable, non-movable (owns bootstrappers and mutex state)
@@ -92,6 +99,7 @@ class EpDetector : public IEpDetector {
   OrtEnv& ort_env_;
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers_;
   ILogger& logger_;
+  ITelemetry* telemetry_ = nullptr;
   std::mutex download_mutex_;
   std::atomic<bool> download_in_progress_{false};
   mutable std::mutex cache_mutex_;

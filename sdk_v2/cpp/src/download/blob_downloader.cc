@@ -443,7 +443,11 @@ bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path) {
 void DownloadBlobsToDirectory(IBlobDownloader& downloader,
                               const std::string& sas_uri,
                               const std::string& output_directory,
-                              const BlobDownloadOptions& options) {
+                              const BlobDownloadOptions& options,
+                              BlobDownloadStats* stats) {
+  using clock = std::chrono::steady_clock;
+  auto enum_start = clock::now();
+
   // Step 1: Enumerate all blobs
   auto all_blobs = downloader.ListBlobs(sas_uri);
 
@@ -486,6 +490,11 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
                           blobs_to_download.end());
 
   if (blobs_to_download.empty()) {
+    if (stats != nullptr) {
+      stats->enumeration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  clock::now() - enum_start)
+                                  .count();
+    }
     return;
   }
 
@@ -501,6 +510,15 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   for (const auto& [blob, _] : blobs_to_download) {
     total_size += blob.content_length;
   }
+
+  if (stats != nullptr) {
+    stats->file_count = static_cast<int32_t>(blobs_to_download.size());
+    stats->total_size_bytes = total_size;
+    stats->enumeration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                clock::now() - enum_start)
+                                .count();
+  }
+  auto download_start = clock::now();
 
   // Step 5: Skip blobs already present at the expected size. Their bytes
   // count toward "downloaded" so the percentage stays accurate when this is a
@@ -595,6 +613,12 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   // Final progress
   if (options.progress) {
     options.progress(100.0f);
+  }
+
+  if (stats != nullptr) {
+    stats->download_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             clock::now() - download_start)
+                             .count();
   }
 }
 

@@ -120,9 +120,12 @@ class Manager {
   //                                released manually in ~Manager() after all
   //                                consumers (sessions, ep_detector_) are gone.
   //   logger_                  — everything logs through this, destroyed last
+  //   telemetry_               — used by ep_detector_ and throughout; must
+  //                              outlive ep_detector_ because EpDetector holds
+  //                              a raw ITelemetry* for emitting EP events
   //   ep_detector_             — detects HW acceleration; holds OrtEnv& (must
-  //                              outlive ort_env_ release in ~Manager())
-  //   telemetry_               — used throughout
+  //                              outlive ort_env_ release in ~Manager()) and
+  //                              a raw ITelemetry*
   //   catalog_                 — owns all Model instances. used by download_manager, model_load_manager, and web service
   //   download_manager_        — uses ModelInfo owned by catalog
   //   model_load_manager_      — holds loaded model state referencing catalog models
@@ -135,8 +138,8 @@ class Manager {
   OrtEnv* ort_env_ = nullptr;
   std::vector<std::string> registered_ep_libraries_;
   std::unique_ptr<ILogger> logger_;
-  std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ITelemetry> telemetry_;
+  std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ICatalog> catalog_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;

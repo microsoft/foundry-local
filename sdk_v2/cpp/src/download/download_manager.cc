@@ -6,6 +6,8 @@
 #include "exception.h"
 #include "log_level.h"
 #include "logger.h"
+#include "telemetry/download_tracker.h"
+#include "telemetry/telemetry.h"
 #include "util/path_safety.h"
 #include "util/region_fallback.h"
 #include "utils.h"
@@ -13,6 +15,7 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -177,14 +180,15 @@ std::string ResolveRegion(const std::string& config_region, const ModelInfo& inf
 }  // anonymous namespace
 
 DownloadManager::DownloadManager(std::string cache_directory, std::string_view catalog_region, int max_concurrency,
-                                 ILogger& logger, bool disable_region_fallback)
+                                 ILogger& logger, bool disable_region_fallback, ITelemetry* telemetry)
     : cache_directory_(std::move(cache_directory)),
       config_region_(NormalizeConfiguredRegion(catalog_region)),
       max_concurrency_(max_concurrency),
       logger_(logger),
       registry_client_(std::make_unique<ModelRegistryClient>(
           kDefaultRegistryRegion, logger, std::make_unique<RegionFallback>(logger, !disable_region_fallback))),
-      blob_downloader_(std::make_unique<AzureBlobDownloader>(logger)) {}
+      blob_downloader_(std::make_unique<AzureBlobDownloader>(logger)),
+      telemetry_(telemetry) {}
 
 DownloadManager::~DownloadManager() = default;
 
@@ -238,12 +242,31 @@ std::string DownloadManager::ComputeModelPath(const ModelInfo& info) const {
 }
 
 std::string DownloadManager::DownloadModel(const ModelInfo& info,
-                                           std::function<int(float)> progress_cb) {
+                                           std::function<int(float)> progress_cb,
+                                           const std::string& user_agent) {
+  using clock = std::chrono::steady_clock;
+  auto lock_wait_start = clock::now();
+
   // Serialize all model downloads in this process: only one runs at a time, so it
   // gets the full network and disk instead of competing with another download.
   // The cross-process file lock taken below extends the guarantee across every
   // process and app that shares this cache directory.
   std::unique_lock<std::mutex> download_guard(download_mutex_);
+
+  int64_t lock_wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             clock::now() - lock_wait_start)
+                             .count();
+
+  // RAII telemetry tracker — emits a "Download" event on destruction with whatever
+  // fields have been populated. Default status is kFailure so abrupt exits (exceptions)
+  // are recorded as failures; the happy path explicitly sets kSuccess / kSkipped.
+  std::unique_ptr<DownloadTracker> tracker;
+  if (telemetry_ != nullptr) {
+    tracker = std::make_unique<DownloadTracker>(info.model_id, user_agent, *telemetry_);
+    tracker->SetLockWaitMs(lock_wait_ms);
+    tracker->SetMaxConcurrency(static_cast<int32_t>(max_concurrency_));
+  }
+
   auto model_path = ComputeModelPath(info);
 
   // Fast path: serve the cache without taking the cross-process lock.
@@ -258,10 +281,17 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
       progress_cb(100.0f);
     }
 
+    if (tracker != nullptr) {
+      tracker->SetStatus(ActionStatus::kSkipped);
+    }
     return ResolveEffectiveModelPath(model_path);
   }
 
   if (info.uri.empty()) {
+    if (tracker != nullptr) {
+      auto ex = std::runtime_error("cannot download model: empty URI (asset_id)");
+      tracker->RecordException(ex);
+    }
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "cannot download model: empty URI (asset_id)");
   }
 
@@ -349,8 +379,21 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
       };
     }
 
+    if (tracker != nullptr) {
+      tracker->BeginDownloadPhase();
+    }
+
+    BlobDownloadStats stats;
     DownloadBlobsToDirectory(*blob_downloader_, container.blob_sas_uri,
-                             model_path, download_opts);
+                             model_path, download_opts, &stats);
+
+    if (tracker != nullptr) {
+      tracker->EndDownloadPhase();
+      tracker->SetEnumerationMs(stats.enumeration_ms);
+      tracker->SetFileCount(stats.file_count);
+      tracker->SetTotalSizeBytes(stats.total_size_bytes);
+      tracker->SetDownloadWaitResult("Completed");
+    }
 
     // Step 3: Write inference_model.json — use model_id (includes version) so the
     // local model scanner can match it back to catalog entries during startup.
@@ -362,8 +405,15 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // Step 5: Remove download signal — marks download as complete
     std::filesystem::remove(signal_path);
 
+    if (tracker != nullptr) {
+      tracker->SetStatus(ActionStatus::kSuccess);
+    }
     return ResolveEffectiveModelPath(model_path);
-  } catch (...) {
+  } catch (const std::exception& e) {
+    if (tracker != nullptr) {
+      tracker->SetDownloadWaitResult("Failed");
+      tracker->RecordException(e);
+    }
     // Leave the signal file in place so the incomplete download is detected
     throw;
   }
