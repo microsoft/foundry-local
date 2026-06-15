@@ -25,14 +25,14 @@ namespace fl {
 namespace {
 
 using ::Microsoft::Applications::Events::LogManager;
-using ::Microsoft::Applications::Events::ILogger;
+using MatILogger = ::Microsoft::Applications::Events::ILogger;
 using ::Microsoft::Applications::Events::EventProperties;
 using ::Microsoft::Applications::Events::EventPriority;
 using ::Microsoft::Applications::Events::PiiKind_None;
 
 constexpr uint64_t kCriticalData = MICROSOFT_KEYWORD_CRITICAL_DATA;
 
-void SetCommonContext(ILogger* mat_logger, const TelemetryMetadata& m) {
+void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
   // Process-wide context — stamped on every event uploaded through this ILogger.
   mat_logger->SetContext("AppName", m.app_name);
   mat_logger->SetContext("Version", m.version);
@@ -56,13 +56,13 @@ EventProperties MakeEvent(const char* name, bool test_mode) {
   return ev;
 }
 
-void SafeLog(ILogger* mat_logger, EventProperties& ev) {
+void SafeLog(MatILogger* mat_logger, EventProperties& ev) {
   if (mat_logger != nullptr) {
     mat_logger->LogEvent(ev);
   }
 }
 
-ILogger* GetMatLogger() {
+MatILogger* GetMatLogger() {
   // LogManager::GetLogger() returns nullptr until Initialize has been called.
   return LogManager::GetLogger();
 }
