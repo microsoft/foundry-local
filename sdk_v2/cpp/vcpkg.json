@@ -19,7 +19,8 @@
     },
     "ms-gsl",
     "nlohmann-json",
-    "spdlog"
+    "spdlog",
+    { "name": "sqlite3", "default-features": false }
   ],
   "overrides": [
     { "name": "nlohmann-json", "version": "3.11.3" },

@@ -401,6 +401,27 @@ if(WIN32)
             /DELAYLOAD:Microsoft.Windows.AI.MachineLearning.dll
         )
     endif()
+
+    # Strip unreferenced symbols and fold identical COMDATs in Release builds.
+    # MSVC's /DEBUG (needed for PDBs) silently disables /OPT:REF and /OPT:ICF
+    # unless they are explicitly re-enabled. /INCREMENTAL:NO is required because
+    # incremental linking also prevents dead-code elimination.
+    target_link_options(foundry_local PRIVATE
+        $<$<CONFIG:Release,RelWithDebInfo>:/OPT:REF>
+        $<$<CONFIG:Release,RelWithDebInfo>:/OPT:ICF>
+        $<$<CONFIG:Release,RelWithDebInfo>:/INCREMENTAL:NO>
+    )
+endif()
+
+# Strip unreferenced sections on Linux (GCC/Clang) and macOS (Apple ld).
+if(UNIX AND NOT APPLE)
+    target_link_options(foundry_local PRIVATE
+        $<$<CONFIG:Release,RelWithDebInfo>:-Wl,--gc-sections>
+    )
+elseif(APPLE)
+    target_link_options(foundry_local PRIVATE
+        $<$<CONFIG:Release,RelWithDebInfo>:-Wl,-dead_strip>
+    )
 endif()
 
 # --------------------------------------------------------------------------
