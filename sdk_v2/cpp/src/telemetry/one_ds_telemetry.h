@@ -52,16 +52,15 @@ class OneDsTelemetry : public ITelemetry {
   OneDsTelemetry(const OneDsTelemetry&) = delete;
   OneDsTelemetry& operator=(const OneDsTelemetry&) = delete;
 
-  void RecordAction(Action action, ActionStatus status, const std::string& user_agent,
-                    bool indirect, int64_t duration_ms) override;
+  void RecordAction(Action action, ActionStatus status, const InvocationContext& context,
+                    int64_t duration_ms) override;
 
-  void RecordException(Action action, const std::exception& exception) override;
   void RecordException(Action action, const std::exception& exception,
-                       const std::string& user_agent) override;
+                       const InvocationContext& context) override;
 
   void RecordModelUsage(const ModelUsageInfo& info) override;
   void RecordModelId(Action action, const std::string& model_id,
-                     ActionStatus status, const std::string& user_agent) override;
+                     ActionStatus status, const InvocationContext& context) override;
   void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) override;
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override;
   void RecordDownload(const DownloadInfo& info) override;

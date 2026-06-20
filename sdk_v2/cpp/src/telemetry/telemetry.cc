@@ -22,10 +22,6 @@ std::string_view ActionToString(Action action) {
       return "ModelLoad";
     case Action::kModelUnload:
       return "ModelUnload";
-    case Action::kModelDownload:
-      return "ModelDownload";
-    case Action::kModelDelete:
-      return "ModelDelete";
     case Action::kModelList:
       return "ModelList";
     case Action::kOpenAIChatCompletions:
@@ -48,8 +44,6 @@ std::string_view ActionToString(Action action) {
       return "OpenAIResponsesDelete";
     case Action::kOpenAIResponsesGetInputItems:
       return "OpenAIResponsesGetInputItems";
-    case Action::kCoreAudioTranscribe:
-      return "CoreAudioTranscribe";
     case Action::kEpDownloadAttempt:
       return "EpDownloadAttempt";
     case Action::kEpDownloadAndRegister:
@@ -58,6 +52,8 @@ std::string_view ActionToString(Action action) {
       return "ModelFileDownload";
     case Action::kModelInference:
       return "ModelInference";
+    case Action::kServiceRequestUnmatched:
+      return "ServiceRequestUnmatched";
     default:
       return "Unknown";
   }
@@ -73,6 +69,8 @@ std::string_view ActionStatusToString(ActionStatus status) {
       return "Invalid";
     case ActionStatus::kSkipped:
       return "Skipped";
+    case ActionStatus::kClientError:
+      return "ClientError";
     default:
       return "Unknown";
   }

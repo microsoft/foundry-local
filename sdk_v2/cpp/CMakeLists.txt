@@ -214,6 +214,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/service/web_service.cc
     src/telemetry/telemetry.cc
     src/telemetry/telemetry_action_tracker.cc
+    src/telemetry/invocation_context.cc
     src/telemetry/telemetry_environment.cc
     src/telemetry/telemetry_logger.cc
     src/telemetry/telemetry_metadata.cc

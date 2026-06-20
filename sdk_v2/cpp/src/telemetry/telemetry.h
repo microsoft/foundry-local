@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "telemetry/invocation_context.h"
+
 #include <cstdint>
 #include <exception>
 #include <string>
@@ -27,8 +29,6 @@ enum class Action {
   // Model management
   kModelLoad = 100,
   kModelUnload = 101,
-  kModelDownload = 102,
-  kModelDelete = 103,
   kModelList = 104,
 
   // OpenAI Chat/Audio/Embeddings APIs
@@ -45,9 +45,6 @@ enum class Action {
   kOpenAIResponsesDelete = 303,
   kOpenAIResponsesGetInputItems = 304,
 
-  // Audio
-  kCoreAudioTranscribe = 400,
-
   // EP catalog operations
   kEpDownloadAttempt = 500,         // Wraps the entire DownloadAndRegisterEps call
   kEpDownloadAndRegister = 501,     // One per-provider attempt within DownloadAndRegisterEps
@@ -57,14 +54,18 @@ enum class Action {
 
   // EP runtime usage (TimeToFirstToken / total tokens / memory)
   kModelInference = 700,            // The "Model" event in the C# implementation
+
+  // HTTP service plumbing
+  kServiceRequestUnmatched = 800,   // A request reached the service but matched no route / method
 };
 
 /// Status of a tracked telemetry action.
 enum class ActionStatus {
-  kFailure = 0,
+  kFailure = 0,    // Server-side / internal failure (maps to HTTP 5xx)
   kSuccess,
   kInvalid,
   kSkipped,
+  kClientError,    // Rejected due to invalid client input (maps to HTTP 4xx) — not a service fault
 };
 
 /// Convert Action to human-readable string.
@@ -76,6 +77,7 @@ std::string_view ActionStatusToString(ActionStatus status);
 /// Payload for the EPDownloadAttempt event — emitted once per DownloadAndRegisterEps call.
 struct EpDownloadAttemptInfo {
   std::string user_agent;
+  std::string correlation_id;
   int attempts = 0;            // Total per-provider attempts made
   int num_providers = 0;       // Number of providers requested
   int succeeded = 0;           // Number of providers that registered successfully
@@ -88,6 +90,7 @@ struct EpDownloadAttemptInfo {
 /// Payload for the EPDownloadAndRegister event — emitted once per provider attempt.
 struct EpDownloadAndRegisterInfo {
   std::string user_agent;
+  std::string correlation_id;
   std::string provider_name;
   std::string init_ready_state;        // EP state before this call (e.g. "NotPresent")
   std::string download_ready_state;    // EP state after the download phase (e.g. "Installed")
@@ -103,6 +106,9 @@ struct ModelUsageInfo {
   std::string model_id;
   std::string execution_provider;
   std::string user_agent;
+  std::string correlation_id;
+  bool stream = false;                  // True if the inference was streamed (SSE) vs a single response
+  bool indirect = false;                // True if the inference was driven by another action (e.g. an HTTP route)
   int64_t time_to_first_token_ms = 0;
   int64_t total_time_ms = 0;
   int32_t total_tokens = 0;
@@ -117,6 +123,7 @@ struct ModelUsageInfo {
 struct DownloadInfo {
   std::string model_id;
   std::string user_agent;
+  std::string correlation_id;
   ActionStatus status = ActionStatus::kInvalid;
   int64_t lock_wait_ms = 0;
   int64_t enumeration_ms = 0;
@@ -137,29 +144,22 @@ class ITelemetry {
  public:
   virtual ~ITelemetry() = default;
 
-  /// Record a completed action with timing and status.
+  /// Record a completed action with timing and status. The context carries the
+  /// user agent, the correlation id grouping this operation's events, and whether
+  /// the action was indirect (triggered by another action).
   virtual void RecordAction(Action action, ActionStatus status,
-                            const std::string& user_agent,
-                            bool indirect, int64_t duration_ms) = 0;
+                            const InvocationContext& context, int64_t duration_ms) = 0;
 
   /// Record an exception associated with an action.
-  virtual void RecordException(Action action, const std::exception& exception) = 0;
-
-  /// Record an exception associated with an action, with an optional user agent.
-  /// Default forwards to RecordException(action, exception) for implementations
-  /// that don't yet propagate the user agent.
   virtual void RecordException(Action action, const std::exception& exception,
-                               const std::string& /*user_agent*/) {
-    RecordException(action, exception);
-  }
+                               const InvocationContext& context) = 0;
 
   /// Record model usage metrics after inference (Model event).
   virtual void RecordModelUsage(const ModelUsageInfo& info) = 0;
 
   /// Record which model was used for an action (ModelId event).
   virtual void RecordModelId(Action action, const std::string& model_id,
-                             ActionStatus status = ActionStatus::kSuccess,
-                             const std::string& user_agent = "") = 0;
+                             ActionStatus status, const InvocationContext& context) = 0;
 
   /// Record the result of a DownloadAndRegisterEps call (EPDownloadAttempt event).
   virtual void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) = 0;

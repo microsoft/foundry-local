@@ -21,6 +21,7 @@ class EpDownloadTracker {
  public:
   EpDownloadTracker(std::string provider_name,
                     std::string user_agent,
+                    std::string correlation_id,
                     ITelemetry& telemetry);
   ~EpDownloadTracker();
 
@@ -61,6 +62,7 @@ class EpDownloadTracker {
   ITelemetry& telemetry_;
   std::string provider_name_;
   std::string user_agent_;
+  std::string correlation_id_;
   std::string init_ready_state_ = "N/A";
   std::string download_ready_state_ = "N/A";
   std::string register_ready_state_ = "N/A";

@@ -427,7 +427,8 @@ Manager& Manager::Create(const Configuration& config) {
   // state: catch and log, then proceed. The Manager itself is fully constructed at this
   // point — only the post-construction signaling can fail, and it's not load-bearing.
   try {
-    created->telemetry_->RecordAction(Action::kCoreInitialize, ActionStatus::kSuccess, "", false, 0);
+    created->telemetry_->RecordAction(Action::kCoreInitialize, ActionStatus::kSuccess,
+                                      InvocationContext::Direct(), 0);
   } catch (const std::exception& ex) {
     created->GetLogger().Log(LogLevel::Error,
                              fmt::format("telemetry RecordAction failed during Create: {}", ex.what()));

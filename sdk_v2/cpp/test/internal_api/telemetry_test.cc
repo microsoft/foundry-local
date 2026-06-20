@@ -42,12 +42,13 @@ struct ActionCall {
 class RecordingTelemetry : public ITelemetry {
  public:
   void RecordAction(Action action, ActionStatus status,
-                    const std::string& user_agent,
-                    bool indirect, int64_t duration_ms) override {
-    action_calls.push_back(ActionCall{action, status, user_agent, indirect, duration_ms});
+                    const InvocationContext& context, int64_t duration_ms) override {
+    action_calls.push_back(
+        ActionCall{action, status, context.user_agent, context.indirect, duration_ms});
   }
 
-  void RecordException(Action action, const std::exception& exception) override {
+  void RecordException(Action action, const std::exception& exception,
+                       const InvocationContext& /*context*/) override {
     exception_calls.emplace_back(action, exception.what());
   }
 
@@ -56,8 +57,7 @@ class RecordingTelemetry : public ITelemetry {
   }
 
   void RecordModelId(Action action, const std::string& model_id,
-                     ActionStatus /*status*/ = ActionStatus::kSuccess,
-                     const std::string& /*user_agent*/ = "") override {
+                     ActionStatus /*status*/, const InvocationContext& /*context*/) override {
     model_id_calls.emplace_back(action, model_id);
   }
 
@@ -88,14 +88,15 @@ TEST(TelemetryLoggerTest, RecordActionIncludesConcreteFields) {
   RecordingLogger logger;
   TelemetryLogger telemetry("foundry-local", logger);
 
-  telemetry.RecordAction(Action::kModelDownload, ActionStatus::kSuccess,
-                         "cli/1.0", false, 1234);
+  telemetry.RecordAction(Action::kModelFileDownload, ActionStatus::kSuccess,
+                         InvocationContext{"cli/1.0", "corr-1", false}, 1234);
 
   ASSERT_EQ(logger.entries.size(), 1u);
   EXPECT_EQ(logger.entries[0].level, LogLevel::Debug);
   EXPECT_NE(logger.entries[0].message.find("AppName=foundry-local"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("UserAgent=cli/1.0"), std::string::npos);
-  EXPECT_NE(logger.entries[0].message.find("Action=ModelDownload"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("CorrelationId=corr-1"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("Action=ModelFileDownload"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("Status=Success"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("Direct=true"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("TimeMs=1234"), std::string::npos);
@@ -105,7 +106,7 @@ TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
   RecordingLogger logger;
   TelemetryLogger telemetry("foundry-local", logger);
 
-  telemetry.RecordException(Action::kModelLoad, std::runtime_error("config missing"));
+  telemetry.RecordException(Action::kModelLoad, std::runtime_error("config missing"), InvocationContext{});
 
   ModelUsageInfo usage;
   usage.model_id = "phi-3-mini";
@@ -116,7 +117,8 @@ TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
   usage.total_time_ms = 250;
   telemetry.RecordModelUsage(usage);
 
-  telemetry.RecordModelId(Action::kModelLoad, "phi-3-mini", ActionStatus::kSuccess, "cli/1.0");
+  telemetry.RecordModelId(Action::kModelLoad, "phi-3-mini", ActionStatus::kSuccess,
+                          InvocationContext{"cli/1.0", "", false});
 
   ASSERT_EQ(logger.entries.size(), 3u);
   EXPECT_NE(logger.entries[0].message.find("Action=ModelLoad"), std::string::npos);
@@ -136,11 +138,11 @@ TEST(ActionTrackerTest, DestructorRecordsFailureByDefaultWithoutModelId) {
   RecordingTelemetry telemetry;
 
   {
-    ActionTracker tracker(Action::kModelDelete, telemetry, "cli/2.0", true);
+    ActionTracker tracker(Action::kModelFileDownload, telemetry, InvocationContext{"cli/2.0", "", true});
   }
 
   ASSERT_EQ(telemetry.action_calls.size(), 1u);
-  EXPECT_EQ(telemetry.action_calls[0].action, Action::kModelDelete);
+  EXPECT_EQ(telemetry.action_calls[0].action, Action::kModelFileDownload);
   EXPECT_EQ(telemetry.action_calls[0].status, ActionStatus::kFailure);
   EXPECT_EQ(telemetry.action_calls[0].user_agent, "cli/2.0");
   EXPECT_TRUE(telemetry.action_calls[0].indirect);
@@ -152,7 +154,7 @@ TEST(ActionTrackerTest, RecordsExceptionSuccessAndModelId) {
   RecordingTelemetry telemetry;
 
   {
-    ActionTracker tracker(Action::kModelLoad, telemetry, "cli/3.0", false);
+    ActionTracker tracker(Action::kModelLoad, telemetry, InvocationContext{"cli/3.0", "", false});
     tracker.RecordException(std::runtime_error("failed to load"));
     tracker.SetModelId("phi-3-mini");
     tracker.SetStatus(ActionStatus::kSuccess);

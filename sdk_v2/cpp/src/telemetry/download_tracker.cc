@@ -12,6 +12,7 @@ DownloadTracker::DownloadTracker(std::string model_id,
     : telemetry_(telemetry) {
   info_.model_id = std::move(model_id);
   info_.user_agent = std::move(user_agent);
+  info_.correlation_id = MakeGuidV4Hex();
   info_.status = ActionStatus::kFailure;
   download_phase_start_ = std::chrono::steady_clock::now();
 }
@@ -23,7 +24,8 @@ DownloadTracker::~DownloadTracker() {
 }
 
 void DownloadTracker::RecordException(const std::exception& exception) {
-  telemetry_.RecordException(Action::kModelFileDownload, exception, info_.user_agent);
+  telemetry_.RecordException(Action::kModelFileDownload, exception,
+                             InvocationContext{info_.user_agent, info_.correlation_id, /*indirect=*/false});
 }
 
 }  // namespace fl

@@ -120,34 +120,32 @@ OneDsTelemetry::~OneDsTelemetry() {
   }
 }
 
-void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const std::string& user_agent,
-                                  bool indirect, int64_t duration_ms) {
-  local_log_.RecordAction(action, status, user_agent, indirect, duration_ms);
+void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const InvocationContext& context,
+                                  int64_t duration_ms) {
+  local_log_.RecordAction(action, status, context, duration_ms);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
   }
   auto ev = MakeEvent("Action", metadata_.test_mode);
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("Status", std::string(ActionStatusToString(status)));
-  ev.SetProperty("UserAgent", user_agent);
-  ev.SetProperty("Direct", !indirect);
+  ev.SetProperty("UserAgent", context.user_agent);
+  ev.SetProperty("CorrelationId", context.correlation_id);
+  ev.SetProperty("Direct", !context.indirect);
   ev.SetProperty("TimeMs", duration_ms);
   SafeLog(GetMatLogger(), ev);
 }
 
-void OneDsTelemetry::RecordException(Action action, const std::exception& exception) {
-  RecordException(action, exception, std::string{});
-}
-
 void OneDsTelemetry::RecordException(Action action, const std::exception& exception,
-                                     const std::string& user_agent) {
-  local_log_.RecordException(action, exception, user_agent);
+                                     const InvocationContext& context) {
+  local_log_.RecordException(action, exception, context);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
   }
   auto ev = MakeEvent("Error", metadata_.test_mode);
   ev.SetProperty("Action", std::string(ActionToString(action)));
-  ev.SetProperty("UserAgent", user_agent);
+  ev.SetProperty("UserAgent", context.user_agent);
+  ev.SetProperty("CorrelationId", context.correlation_id);
   ev.SetProperty("ExceptionType", "std::exception");
   ev.SetProperty("ExceptionMessage", std::string(exception.what()));
   ev.SetProperty("InnerExceptionType", "");
@@ -166,6 +164,9 @@ void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
   ev.SetProperty("ModelId", info.model_id);
   ev.SetProperty("ExecutionProvider", info.execution_provider);
   ev.SetProperty("UserAgent", info.user_agent);
+  ev.SetProperty("CorrelationId", info.correlation_id);
+  ev.SetProperty("Stream", info.stream);
+  ev.SetProperty("Direct", !info.indirect);
   ev.SetProperty("TimeToFirstTokenMs", info.time_to_first_token_ms);
   ev.SetProperty("TotalTimeMs", info.total_time_ms);
   ev.SetProperty("TotalTokens", static_cast<int64_t>(info.total_tokens));
@@ -178,8 +179,8 @@ void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
 }
 
 void OneDsTelemetry::RecordModelId(Action action, const std::string& model_id,
-                                   ActionStatus status, const std::string& user_agent) {
-  local_log_.RecordModelId(action, model_id, status, user_agent);
+                                   ActionStatus status, const InvocationContext& context) {
+  local_log_.RecordModelId(action, model_id, status, context);
   if (!initialized_.load(std::memory_order_acquire) || model_id.empty()) {
     return;
   }
@@ -187,7 +188,8 @@ void OneDsTelemetry::RecordModelId(Action action, const std::string& model_id,
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("ModelId", model_id);
   ev.SetProperty("Status", std::string(ActionStatusToString(status)));
-  ev.SetProperty("UserAgent", user_agent);
+  ev.SetProperty("UserAgent", context.user_agent);
+  ev.SetProperty("CorrelationId", context.correlation_id);
   SafeLog(GetMatLogger(), ev);
 }
 
@@ -198,6 +200,7 @@ void OneDsTelemetry::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) 
   }
   auto ev = MakeEvent("EPDownloadAttempt", metadata_.test_mode);
   ev.SetProperty("UserAgent", info.user_agent);
+  ev.SetProperty("CorrelationId", info.correlation_id);
   ev.SetProperty("Attempts", static_cast<int64_t>(info.attempts));
   ev.SetProperty("NumProviders", static_cast<int64_t>(info.num_providers));
   ev.SetProperty("Succeeded", static_cast<int64_t>(info.succeeded));
@@ -215,6 +218,7 @@ void OneDsTelemetry::RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo
   }
   auto ev = MakeEvent("EPDownloadAndRegister", metadata_.test_mode);
   ev.SetProperty("UserAgent", info.user_agent);
+  ev.SetProperty("CorrelationId", info.correlation_id);
   ev.SetProperty("ProviderName", info.provider_name);
   ev.SetProperty("InitReadyState", info.init_ready_state);
   ev.SetProperty("DownloadReadyState", info.download_ready_state);
@@ -233,6 +237,7 @@ void OneDsTelemetry::RecordDownload(const DownloadInfo& info) {
   }
   auto ev = MakeEvent("Download", metadata_.test_mode);
   ev.SetProperty("UserAgent", info.user_agent);
+  ev.SetProperty("CorrelationId", info.correlation_id);
   ev.SetProperty("ModelId", info.model_id);
   ev.SetProperty("Status", std::string(ActionStatusToString(info.status)));
   ev.SetProperty("LockWaitTimeMs", info.lock_wait_ms);

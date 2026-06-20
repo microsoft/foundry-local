@@ -2,13 +2,13 @@
 // Licensed under the MIT License.
 #include "telemetry/telemetry_metadata.h"
 
+#include "telemetry/invocation_context.h"
 #include "telemetry/telemetry_environment.h"
 #include "version.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <random>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -20,30 +20,6 @@
 namespace fl {
 
 namespace {
-
-std::string MakeGuidV4Hex() {
-  // RFC 4122 v4 UUID, hex-encoded with hyphens. We use std::random_device + mt19937_64
-  // because we don't need the OS UUID API — this is just a per-process correlation id,
-  // not a cryptographic identifier.
-  std::random_device rd;
-  std::mt19937_64 gen{(static_cast<uint64_t>(rd()) << 32) | rd()};
-  uint64_t hi = gen();
-  uint64_t lo = gen();
-
-  // Set version (4) and variant (10xx) bits.
-  hi = (hi & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
-  lo = (lo & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
-
-  char buf[37];
-  std::snprintf(buf, sizeof(buf),
-                "%08x-%04x-%04x-%04x-%012llx",
-                static_cast<unsigned>((hi >> 32) & 0xFFFFFFFFu),
-                static_cast<unsigned>((hi >> 16) & 0xFFFFu),
-                static_cast<unsigned>(hi & 0xFFFFu),
-                static_cast<unsigned>((lo >> 48) & 0xFFFFu),
-                static_cast<unsigned long long>(lo & 0x0000FFFFFFFFFFFFULL));
-  return std::string(buf);
-}
 
 #ifdef _WIN32
 std::string GetWindowsVersion() {

@@ -140,8 +140,11 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   result.success = true;
 
   // Telemetry: time the whole call and count provider outcomes for the
-  // aggregate EPDownloadAttempt event (emitted at the end below).
+  // aggregate EPDownloadAttempt event (emitted at the end below). The whole call
+  // shares one correlation id; each per-provider EPDownloadAndRegister event is
+  // an indirect child that reuses it.
   const auto attempt_start = std::chrono::steady_clock::now();
+  const std::string telemetry_correlation_id = MakeGuidV4Hex();
   int telemetry_num_providers = 0;
   int telemetry_attempts = 0;
   int telemetry_succeeded = 0;
@@ -193,7 +196,8 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     std::unique_ptr<EpDownloadTracker> tracker;
     const bool was_registered_before = bs->IsRegistered();
     if (telemetry_ != nullptr) {
-      tracker = std::make_unique<EpDownloadTracker>(bs->Name(), /*user_agent=*/std::string{}, *telemetry_);
+      tracker = std::make_unique<EpDownloadTracker>(bs->Name(), /*user_agent=*/std::string{},
+                                                    telemetry_correlation_id, *telemetry_);
       tracker->RecordInitialState(was_registered_before ? "Registered" : "NotPresent");
     }
 
@@ -256,6 +260,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
 
   if (telemetry_ != nullptr) {
     EpDownloadAttemptInfo attempt_info;
+    attempt_info.correlation_id = telemetry_correlation_id;
     attempt_info.attempts = telemetry_attempts;
     attempt_info.num_providers = telemetry_num_providers;
     attempt_info.succeeded = telemetry_succeeded;

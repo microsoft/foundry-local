@@ -18,10 +18,12 @@ int64_t ElapsedMs(std::chrono::steady_clock::time_point start) {
 
 EpDownloadTracker::EpDownloadTracker(std::string provider_name,
                                      std::string user_agent,
+                                     std::string correlation_id,
                                      ITelemetry& telemetry)
     : telemetry_(telemetry),
       provider_name_(std::move(provider_name)),
       user_agent_(std::move(user_agent)),
+      correlation_id_(std::move(correlation_id)),
       stage_start_(std::chrono::steady_clock::now()) {
 }
 
@@ -58,7 +60,10 @@ void EpDownloadTracker::Done() {
 }
 
 void EpDownloadTracker::RecordException(const std::exception& ex) {
-  telemetry_.RecordException(Action::kEpDownloadAndRegister, ex, user_agent_);
+  // The per-provider attempt happens as a consequence of the overall
+  // DownloadAndRegisterEps call, so it is indirect and shares its correlation id.
+  telemetry_.RecordException(Action::kEpDownloadAndRegister, ex,
+                             InvocationContext{user_agent_, correlation_id_, /*indirect=*/true});
 }
 
 void EpDownloadTracker::RecordEvent(ActionStatus incomplete_stage_status) {
@@ -77,6 +82,7 @@ void EpDownloadTracker::RecordEvent(ActionStatus incomplete_stage_status) {
 
   EpDownloadAndRegisterInfo info;
   info.user_agent = user_agent_;
+  info.correlation_id = correlation_id_;
   info.provider_name = provider_name_;
   info.init_ready_state = init_ready_state_;
   info.download_ready_state = download_ready_state_;
