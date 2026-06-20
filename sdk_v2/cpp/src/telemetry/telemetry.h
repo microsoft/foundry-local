@@ -57,6 +57,7 @@ enum class Action {
 
   // HTTP service plumbing
   kServiceRequestUnmatched = 800,   // A request reached the service but matched no route / method
+  kServiceStatus = 801,             // GET /status heartbeat (sampled — at most once per hour per process)
 };
 
 /// Status of a tracked telemetry action.

@@ -16,6 +16,7 @@ struct Request;
 class ChatSession;
 class Model;
 class GenAIModelInstance;
+class ActionTracker;
 
 namespace responses {
 struct ResponseCreateParams;
@@ -65,7 +66,8 @@ class ResponsesHandler : public HttpRequestHandler {
                                                     const std::string& model_name, const std::string& response_id,
                                                     int64_t created_at,
                                                     const responses::ResponseCreateParams& params,
-                                                    const nlohmann::json& req_json);
+                                                    const nlohmann::json& req_json,
+                                                    std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
 };

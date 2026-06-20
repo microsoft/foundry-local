@@ -54,6 +54,8 @@ std::string_view ActionToString(Action action) {
       return "ModelInference";
     case Action::kServiceRequestUnmatched:
       return "ServiceRequestUnmatched";
+    case Action::kServiceStatus:
+      return "ServiceStatus";
     default:
       return "Unknown";
   }

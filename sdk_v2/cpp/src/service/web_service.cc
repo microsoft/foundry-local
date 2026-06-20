@@ -13,6 +13,7 @@
 #include "service/handler_utils.h"
 #include "service/models_handlers.h"
 #include "service/responses_handler.h"
+#include "telemetry/telemetry_action_tracker.h"
 
 #include <fmt/format.h>
 #include <oatpp/network/Server.hpp>
@@ -23,6 +24,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <stdexcept>
 #include <thread>
 
@@ -134,7 +136,9 @@ class StatusHandler : public HttpRequestHandler {
  public:
   explicit StatusHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
+    MaybeRecordStatusTelemetry(request);
+
     nlohmann::json body = {
         {"modelCachePath", ctx_.model_cache_dir},
         {"endpoints", ctx_.bound_urls},
@@ -149,7 +153,32 @@ class StatusHandler : public HttpRequestHandler {
   }
 
  private:
+  // /status is an orchestrator heartbeat that can be polled as often as every
+  // second, so record it at most once per hour per process — enough to confirm
+  // the endpoint is being used without letting it dominate telemetry volume.
+  void MaybeRecordStatusTelemetry(const std::shared_ptr<IncomingRequest>& request) {
+    constexpr int64_t kIntervalMs = 3'600'000;
+    constexpr int64_t kNever = INT64_MIN;
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+
+    int64_t last = last_status_emit_ms_.load(std::memory_order_relaxed);
+    if (last != kNever && now_ms - last < kIntervalMs) {
+      return;
+    }
+    // Exactly one caller wins this interval's slot; the rest skip.
+    if (!last_status_emit_ms_.compare_exchange_strong(last, now_ms, std::memory_order_relaxed)) {
+      return;
+    }
+
+    ActionTracker tracker(Action::kServiceStatus, ctx_.telemetry,
+                          InvocationContext::Direct(GetUserAgent(request)));
+    tracker.SetStatus(ActionStatus::kSuccess);
+  }
+
   ServiceContext& ctx_;
+  std::atomic<int64_t> last_status_emit_ms_{INT64_MIN};
 };
 
 // ========================================================================

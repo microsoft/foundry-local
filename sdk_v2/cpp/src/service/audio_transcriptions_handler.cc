@@ -87,16 +87,19 @@ void AudioTranscriptionsHandler::BuildOpenAIJsonRequest(const std::string& body,
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::handle(
     const std::shared_ptr<IncomingRequest>& request) {
-  ActionTracker tracker(Action::kOpenAIAudioTranscribe, ctx_.telemetry);
+  auto route_ctx = InvocationContext::Direct(GetUserAgent(request));
+  auto tracker = std::make_unique<ActionTracker>(Action::kOpenAIAudioTranscribe, ctx_.telemetry, route_ctx);
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
+    tracker->SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
   // 1. Parse & validate
   AudioTranscriptionRequest req;
   if (auto err = ParseAndValidateRequest(body_str->c_str(), req)) {
+    tracker->SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -108,9 +111,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   // 2. Validate file path
   try {
     if (!std::filesystem::exists(req.filename)) {
+      tracker->SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Audio file not found", "'" + req.filename + "'");
     }
   } catch (const std::filesystem::filesystem_error& ex) {
+    tracker->SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Invalid file path", ex.what());
   }
 
@@ -119,30 +124,40 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   Model* model = nullptr;
   GenAIModelInstance* loaded = nullptr;
   if (auto err = ResolveModel(model_name, model, loaded)) {
+    tracker->SetStatus(ActionStatus::kClientError);
     return err;
   }
 
-  tracker.SetModelId(model_name);
+  tracker->SetModelId(model_name);
 
   // 4. Build an OPENAI_JSON-tagged TEXT request item — pass original body directly
   Request session_request;
   BuildOpenAIJsonRequest(body_str->c_str(), session_request);
 
+  // The session and the inference it drives are indirect children of this route.
+  auto session_ctx = route_ctx.AsIndirect();
+
   // 5. Dispatch to streaming or non-streaming
   try {
     AudioSession session(*model, *loaded, ctx_.logger, ctx_.telemetry);
+    {
+      ActionTracker create_tracker(Action::kSessionCreate, ctx_.telemetry, session_ctx);
+      create_tracker.SetModelId(model_name);
+      create_tracker.SetStatus(ActionStatus::kSuccess);
+    }
+    session.SetRequestContext(session_ctx);
 
     if (stream) {
-      tracker.SetStatus(ActionStatus::kSuccess);
-      return HandleStreaming(std::move(session), std::move(session_request));
+      // The route action is recorded by the streaming thread on completion.
+      return HandleStreaming(std::move(session), std::move(session_request), std::move(tracker));
     } else {
       SessionRegistration reg(ctx_.session_manager, session);
       auto response = HandleNonStreaming(session, session_request);
-      tracker.SetStatus(ActionStatus::kSuccess);
+      tracker->SetStatus(ActionStatus::kSuccess);
       return response;
     }
   } catch (const std::exception& ex) {
-    tracker.RecordException(ex);
+    tracker->RecordException(ex);
     ctx_.logger.Log(LogLevel::Error, fmt::format("Audio transcription inference failed: {}", ex.what()));
     return ErrorResponse(Status::CODE_500, "Inference failed", ex.what());
   } catch (...) {
@@ -177,14 +192,15 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::HandleStreaming(
-    AudioSession&& session, Request session_request) {
+    AudioSession&& session, Request session_request, std::unique_ptr<ActionTracker> route_tracker) {
   auto body = std::make_shared<SseStreamBody>();
   auto body_ptr = body;
   auto& logger = ctx_.logger;
-  auto& tracker = ctx_.thread_tracker;
+  auto& thread_tracker = ctx_.thread_tracker;
 
   std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request), &tracker,
+                                req = std::move(session_request), &thread_tracker,
+                                route_tracker = std::move(route_tracker),
                                 &session_manager = ctx_.session_manager]() mutable {
     SessionRegistration reg(session_manager, bg_session);
 
@@ -216,19 +232,27 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
       // Send terminal event
       body_ptr->Push("data: [DONE]\n\n");
+
+      if (route_tracker) {
+        route_tracker->SetStatus(ActionStatus::kSuccess);
+      }
     } catch (const std::exception& ex) {
       logger.Log(LogLevel::Error, fmt::format("Audio streaming transcription failed: {}", ex.what()));
 
       // Push error to stream so client doesn't hang
       nlohmann::json error = {{"error", {{"message", ex.what()}}}};
       body_ptr->Push("data: " + error.dump() + "\n\n");
+
+      if (route_tracker) {
+        route_tracker->RecordException(ex);
+      }
     }
 
     body_ptr->Finish();
-    tracker.Remove(std::this_thread::get_id());
+    thread_tracker.Remove(std::this_thread::get_id());
   });
 
-  tracker.Track(std::move(streaming_thread));
+  thread_tracker.Track(std::move(streaming_thread));
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(Status::CODE_200, body);
   response->putHeader("Content-Type", "text/event-stream");

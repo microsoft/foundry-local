@@ -28,10 +28,12 @@ class EmbeddingsHandler : public HttpRequestHandler {
   explicit EmbeddingsHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
-    ActionTracker tracker(Action::kOpenAIEmbeddings, ctx_.telemetry);
+    auto route_ctx = InvocationContext::Direct(GetUserAgent(request));
+    ActionTracker tracker(Action::kOpenAIEmbeddings, ctx_.telemetry, route_ctx);
 
     auto body_str = request->readBodyToString();
     if (!body_str || body_str->empty()) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Empty request body");
     }
 
@@ -41,6 +43,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
       auto j = nlohmann::json::parse(*body_str);
       req = j.get<EmbeddingCreateRequest>();
     } catch (const nlohmann::json::exception& ex) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Invalid JSON", ex.what());
     }
 
@@ -53,6 +56,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
     }
 
     if (inputs.empty()) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "\"input\" must not be empty");
     }
 
@@ -60,19 +64,30 @@ class EmbeddingsHandler : public HttpRequestHandler {
     std::string model_name = req.model;
     auto* model = ctx_.catalog.GetModelVariant(model_name);
     if (!model) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", model_name);
     }
 
     auto* loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
     if (!loaded) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Model not loaded", model_name);
     }
 
     tracker.SetModelId(model_name);
 
+    // The session and the inference it drives are indirect children of this route.
+    auto session_ctx = route_ctx.AsIndirect();
+
     // 4. Create session and process each input
     try {
       EmbeddingsSession session(*model, *loaded, ctx_.logger, ctx_.telemetry);
+      {
+        ActionTracker create_tracker(Action::kSessionCreate, ctx_.telemetry, session_ctx);
+        create_tracker.SetModelId(model_name);
+        create_tracker.SetStatus(ActionStatus::kSuccess);
+      }
+      session.SetRequestContext(session_ctx);
       SessionRegistration reg(ctx_.session_manager, session);
 
       Request session_request;

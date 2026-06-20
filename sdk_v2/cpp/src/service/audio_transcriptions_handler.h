@@ -16,6 +16,7 @@ struct AudioTranscriptionRequest;
 class AudioSession;
 class Model;
 class GenAIModelInstance;
+class ActionTracker;
 struct Request;
 
 // ========================================================================
@@ -43,8 +44,11 @@ class AudioTranscriptionsHandler : public HttpRequestHandler {
   /// Non-streaming inference — processes request, extracts the OPENAI_JSON-tagged TEXT response.
   std::shared_ptr<OutgoingResponse> HandleNonStreaming(AudioSession& session, Request& session_request);
 
-  /// Streaming inference — runs inference in background thread with SSE output.
-  std::shared_ptr<OutgoingResponse> HandleStreaming(AudioSession&& session, Request session_request);
+  /// Streaming inference — runs inference in a background thread with SSE output.
+  /// Takes ownership of the route ActionTracker so the route action records when
+  /// the stream finishes (real duration + terminal status).
+  std::shared_ptr<OutgoingResponse> HandleStreaming(AudioSession&& session, Request session_request,
+                                                    std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
 };
