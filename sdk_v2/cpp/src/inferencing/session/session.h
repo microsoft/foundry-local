@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
 #include "inferencing/session/types.h"
+#include "telemetry/invocation_context.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
@@ -100,6 +102,15 @@ class Session {
     callback_user_data_ = user_data;
   }
 
+  /// Telemetry context for the next ProcessRequest. HTTP handlers set this to an
+  /// indirect child of the route's context so the kSessionProcessRequest action
+  /// and the per-inference Model event are marked indirect and share the route's
+  /// correlation id. When unset (direct SDK use), ProcessRequest mints its own
+  /// direct context per call.
+  void SetRequestContext(InvocationContext context) {
+    request_context_ = std::move(context);
+  }
+
  protected:
   Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
           bool allow_concurrent_requests = false);
@@ -131,6 +142,10 @@ class Session {
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
 
+  /// Execution provider the loaded model runs on (e.g. "CPU", "CUDA"). Surfaced
+  /// on the per-inference Model telemetry event. Empty when not known.
+  virtual std::string ExecutionProvider() const { return {}; }
+
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
   std::unique_ptr<CallbackHandler> CreateCallbackHandler(const Request& request) {
@@ -151,6 +166,7 @@ class Session {
   KeyValuePairs session_options_;
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
+  std::optional<InvocationContext> request_context_;
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 };

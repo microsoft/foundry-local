@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <memory>
 
 namespace fl {
@@ -101,9 +102,17 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     lock.lock();
   }
 
-  ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
+  // Use the context the caller staged (an HTTP route stages an indirect child
+  // with the route's correlation id); otherwise mint a direct context per call
+  // for direct SDK use.
+  InvocationContext context = request_context_ ? *request_context_ : InvocationContext::Direct();
+  context.EnsureCorrelationId();
+  const bool streaming = static_cast<bool>(callback_fn_);
+
+  ActionTracker tracker(Action::kSessionProcessRequest, telemetry_, context);
   tracker.SetModelId(CatalogModel().Id());
 
+  const auto start = std::chrono::steady_clock::now();
   try {
     ProcessRequestImpl(request, response);
 
@@ -112,6 +121,23 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     tracker.RecordException(ex);
     throw;
   }
+
+  // Per-inference Model event — emitted on success with whatever metrics this run
+  // produced, sharing the action's correlation id and indirect flag. TTFT and
+  // memory are not surfaced by the generators yet and stay at their unset values.
+  ModelUsageInfo usage;
+  usage.model_id = CatalogModel().Id();
+  usage.execution_provider = ExecutionProvider();
+  usage.user_agent = context.user_agent;
+  usage.correlation_id = context.correlation_id;
+  usage.indirect = context.indirect;
+  usage.stream = streaming;
+  usage.total_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count();
+  usage.total_tokens = static_cast<int32_t>(response.usage.total_tokens);
+  usage.input_token_count = static_cast<int32_t>(response.usage.prompt_tokens);
+  telemetry_.RecordModelUsage(usage);
 }
 
 }  // namespace fl

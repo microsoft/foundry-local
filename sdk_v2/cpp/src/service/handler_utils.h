@@ -62,6 +62,16 @@ inline std::string GenerateCompletionId(const std::string& prefix) {
   return ss.str();
 }
 
+/// Extract the User-Agent header from an incoming request ("" if absent), for
+/// attribution on the telemetry events the request drives.
+inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::IncomingRequest>& request) {
+  if (!request) {
+    return {};
+  }
+  auto ua = request->getHeader("User-Agent");
+  return ua ? *ua : std::string{};
+}
+
 // ========================================================================
 // SSE stream body — feeds token-by-token SSE events to oatpp's chunked
 // transfer encoding. A producer thread pushes formatted SSE strings into
