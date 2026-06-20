@@ -24,11 +24,11 @@
 #include "spdlog_logger.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/telemetry_logger.h"
-#include "util/string_utils.h"
 #if FOUNDRY_LOCAL_HAS_1DS
 #include "one_ds_tenant_token.h"   // auto-generated header, in ${CMAKE_BINARY_DIR}/generated
 #include "telemetry/one_ds_telemetry.h"
 #endif
+#include "util/string_utils.h"
 #include "utils.h"
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
@@ -350,7 +350,8 @@ Manager::Manager(const Configuration& config)
       *ep_detector_, *logger_,
       config_.external_service_url.has_value(),
       config_.catalog_region.value_or("auto"),
-      disable_region_fallback);
+      disable_region_fallback,
+      telemetry_.get());
 }
 
 Manager::~Manager() {

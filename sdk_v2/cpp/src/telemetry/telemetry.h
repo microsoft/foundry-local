@@ -137,6 +137,21 @@ struct DownloadInfo {
   int32_t max_concurrency = 0;
 };
 
+/// Payload for the CatalogFetch event — emitted once per access to a model
+/// catalog source (the live Azure catalog or the embedded static snapshot).
+struct CatalogFetchInfo {
+  std::string operation;       // "FetchAll" (full catalog) or "FetchByIds" (cached-id lookup)
+  std::string endpoint;        // catalog host (e.g. "ai.azure.com"), or "static" for the embedded snapshot
+  std::string region;          // region parsed from the catalog URL (e.g. "eastus"); empty if not present
+  std::string format;          // catalog API path/version after the region (e.g. "ux/v1.0")
+  ActionStatus status = ActionStatus::kInvalid;
+  int64_t duration_ms = 0;
+  int32_t model_count = 0;     // models returned by this access
+  std::string error_message;   // populated on failure
+  std::string user_agent;
+  std::string correlation_id;  // shared across the accesses of one catalog refresh
+};
+
 /// Abstract telemetry interface.
 /// Implementations may send events to a telemetry backend (1DS, ETW, OpenTelemetry, …)
 /// or simply log them. The OneDsTelemetry implementation sends to 1DS; the
@@ -170,6 +185,9 @@ class ITelemetry {
 
   /// Record one model file download (Download event).
   virtual void RecordDownload(const DownloadInfo& info) = 0;
+
+  /// Record one access to a model catalog source (CatalogFetch event).
+  virtual void RecordCatalogFetch(const CatalogFetchInfo& info) = 0;
 };
 
 }  // namespace fl

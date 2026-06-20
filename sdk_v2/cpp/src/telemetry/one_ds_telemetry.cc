@@ -252,4 +252,23 @@ void OneDsTelemetry::RecordDownload(const DownloadInfo& info) {
   SafeLog(GetMatLogger(), ev);
 }
 
+void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
+  local_log_.RecordCatalogFetch(info);
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return;
+  }
+  auto ev = MakeEvent("CatalogFetch", metadata_.test_mode);
+  ev.SetProperty("Operation", info.operation);
+  ev.SetProperty("Endpoint", info.endpoint);
+  ev.SetProperty("Region", info.region);
+  ev.SetProperty("Format", info.format);
+  ev.SetProperty("Status", std::string(ActionStatusToString(info.status)));
+  ev.SetProperty("TimeMs", info.duration_ms);
+  ev.SetProperty("ModelCount", static_cast<int64_t>(info.model_count));
+  ev.SetProperty("ErrorMessage", info.error_message);
+  ev.SetProperty("UserAgent", info.user_agent);
+  ev.SetProperty("CorrelationId", info.correlation_id);
+  SafeLog(GetMatLogger(), ev);
+}
+
 }  // namespace fl

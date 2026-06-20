@@ -83,4 +83,13 @@ void TelemetryLogger::RecordDownload(const DownloadInfo& info) {
                           info.download_wait_result, info.max_concurrency));
 }
 
+void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
+  logger_.Log(LogLevel::Debug,
+              fmt::format("[Telemetry] CatalogFetch AppName={} Operation={} Endpoint={} Region={} Format={} "
+                          "Status={} TimeMs={} ModelCount={} Error={} UserAgent={} CorrelationId={}",
+                          app_name_, info.operation, info.endpoint, info.region, info.format,
+                          ActionStatusToString(info.status), info.duration_ms, info.model_count,
+                          info.error_message, info.user_agent, info.correlation_id));
+}
+
 }  // namespace fl

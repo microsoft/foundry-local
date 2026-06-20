@@ -84,6 +84,10 @@ class CapturingTelemetry : public ITelemetry {
   void RecordEpDownloadAttempt(const EpDownloadAttemptInfo&) override {}
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo&) override {}
   void RecordDownload(const DownloadInfo&) override {}
+  void RecordCatalogFetch(const CatalogFetchInfo& info) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    catalog_fetches.push_back(info);
+  }
 
   int Count(Action action) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -108,6 +112,7 @@ class CapturingTelemetry : public ITelemetry {
 
   std::vector<ActionCall> actions;
   std::vector<ModelUsageInfo> model_usages;
+  std::vector<CatalogFetchInfo> catalog_fetches;
   std::mutex mutex_;
 };
 

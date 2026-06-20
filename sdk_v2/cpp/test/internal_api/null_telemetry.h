@@ -25,6 +25,8 @@ class NullTelemetry : public ITelemetry {
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& /*info*/) override {}
 
   void RecordDownload(const DownloadInfo& /*info*/) override {}
+
+  void RecordCatalogFetch(const CatalogFetchInfo& /*info*/) override {}
 };
 
 }  // namespace fl::test

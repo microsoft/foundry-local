@@ -73,6 +73,10 @@ class RecordingTelemetry : public ITelemetry {
     download_calls.push_back(info);
   }
 
+  void RecordCatalogFetch(const CatalogFetchInfo& info) override {
+    catalog_fetch_calls.push_back(info);
+  }
+
   std::vector<ActionCall> action_calls;
   std::vector<std::pair<Action, std::string>> exception_calls;
   std::vector<ModelUsageInfo> model_usage_calls;
@@ -80,6 +84,7 @@ class RecordingTelemetry : public ITelemetry {
   std::vector<EpDownloadAttemptInfo> ep_attempt_calls;
   std::vector<EpDownloadAndRegisterInfo> ep_register_calls;
   std::vector<DownloadInfo> download_calls;
+  std::vector<CatalogFetchInfo> catalog_fetch_calls;
 };
 
 }  // namespace

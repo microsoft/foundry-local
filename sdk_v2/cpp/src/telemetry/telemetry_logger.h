@@ -35,6 +35,7 @@ class TelemetryLogger : public ITelemetry {
   void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) override;
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override;
   void RecordDownload(const DownloadInfo& info) override;
+  void RecordCatalogFetch(const CatalogFetchInfo& info) override;
 
  private:
   std::string app_name_;

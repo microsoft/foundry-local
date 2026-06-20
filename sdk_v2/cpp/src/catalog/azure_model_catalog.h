@@ -14,6 +14,8 @@
 
 namespace fl {
 
+class ITelemetry;  // forward declaration
+
 /// Azure-specific catalog. Fetches from Azure Foundry catalog API,
 /// scans local cache, merges results.
 /// Maps to C# AzureModelCatalog.
@@ -28,7 +30,8 @@ class AzureModelCatalog : public BaseModelCatalog {
                     ILogger& logger,
                     bool cache_only = false,
                     std::string catalog_region = "",
-                    bool disable_region_fallback = false);
+                    bool disable_region_fallback = false,
+                    ITelemetry* telemetry = nullptr);
   ~AzureModelCatalog() override;
 
  protected:
@@ -50,6 +53,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
   std::string catalog_region_;
   bool disable_region_fallback_;
+  ITelemetry* telemetry_;
 };
 
 }  // namespace fl
