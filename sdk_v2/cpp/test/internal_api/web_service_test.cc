@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -57,6 +58,58 @@ std::string TestHttpDelete(const std::string& url, const std::string& user_agent
   options.close_connection = true;
   return http::HttpDelete(url, options);
 }
+
+// Telemetry sink that records every event for assertions.
+class CapturingTelemetry : public ITelemetry {
+ public:
+  struct ActionCall {
+    Action action;
+    ActionStatus status;
+    std::string user_agent;
+    std::string correlation_id;
+    bool indirect;
+  };
+
+  void RecordAction(Action action, ActionStatus status, const InvocationContext& context,
+                    int64_t /*duration_ms*/) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    actions.push_back({action, status, context.user_agent, context.correlation_id, context.indirect});
+  }
+  void RecordException(Action, const std::exception&, const InvocationContext&) override {}
+  void RecordModelUsage(const ModelUsageInfo& info) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    model_usages.push_back(info);
+  }
+  void RecordModelId(Action, const std::string&, ActionStatus, const InvocationContext&) override {}
+  void RecordEpDownloadAttempt(const EpDownloadAttemptInfo&) override {}
+  void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo&) override {}
+  void RecordDownload(const DownloadInfo&) override {}
+
+  int Count(Action action) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int n = 0;
+    for (const auto& c : actions) {
+      if (c.action == action) {
+        ++n;
+      }
+    }
+    return n;
+  }
+
+  std::optional<ActionCall> Find(Action action) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& c : actions) {
+      if (c.action == action) {
+        return c;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::vector<ActionCall> actions;
+  std::vector<ModelUsageInfo> model_usages;
+  std::mutex mutex_;
+};
 
 }  // namespace
 
@@ -483,6 +536,86 @@ TEST(WebServiceEmptyCatalogTest, LoadedModelsReturnsEmptyArray) {
   EXPECT_EQ(j.size(), 0u) << "Response: " << j.dump(2);
 
   service.Stop();
+}
+
+// ========================================================================
+// Telemetry behaviors — capture events and assert coverage / classification
+// ========================================================================
+
+TEST(WebServiceTelemetryTest, UnmatchedRouteRecordsServiceRequestUnmatched) {
+  test::MockCatalog catalog;
+  StderrLogger logger;
+  test::CpuOnlyEpDetector ep_detector;
+  ModelLoadManager model_load_manager(ep_detector, logger);
+  SessionManager session_manager(logger);
+  CapturingTelemetry telemetry;
+
+  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, telemetry, []() {});
+  auto urls = service.Start({"http://127.0.0.1:0"});
+
+  // Unknown path: the interceptor replies 404, so TestHttpGet throws on the non-2xx.
+  try {
+    TestHttpGet(urls[0] + "/no/such/route", "probe-agent/9");
+  } catch (...) {
+  }
+
+  service.Stop();
+
+  ASSERT_EQ(telemetry.Count(Action::kServiceRequestUnmatched), 1);
+  auto call = telemetry.Find(Action::kServiceRequestUnmatched);
+  ASSERT_TRUE(call.has_value());
+  EXPECT_EQ(call->status, ActionStatus::kClientError);
+  EXPECT_EQ(call->user_agent, "probe-agent/9");
+  EXPECT_FALSE(call->indirect);
+  EXPECT_FALSE(call->correlation_id.empty());
+}
+
+TEST(WebServiceTelemetryTest, EmptyChatBodyRecordsClientErrorNotFailure) {
+  test::MockCatalog catalog;
+  StderrLogger logger;
+  test::CpuOnlyEpDetector ep_detector;
+  ModelLoadManager model_load_manager(ep_detector, logger);
+  SessionManager session_manager(logger);
+  CapturingTelemetry telemetry;
+
+  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, telemetry, []() {});
+  auto urls = service.Start({"http://127.0.0.1:0"});
+
+  // Empty body is rejected (400) before any model resolution.
+  try {
+    TestHttpPost(urls[0] + "/v1/chat/completions", "");
+  } catch (...) {
+  }
+
+  service.Stop();
+
+  auto call = telemetry.Find(Action::kOpenAIChatCompletions);
+  ASSERT_TRUE(call.has_value()) << "chat completions route action was not recorded";
+  EXPECT_EQ(call->status, ActionStatus::kClientError);
+  EXPECT_FALSE(call->indirect);
+  // A 4xx reject performs no inference, so there is no Model event.
+  EXPECT_TRUE(telemetry.model_usages.empty());
+}
+
+TEST(WebServiceTelemetryTest, StatusEndpointIsSampledHourly) {
+  test::MockCatalog catalog;
+  StderrLogger logger;
+  test::CpuOnlyEpDetector ep_detector;
+  ModelLoadManager model_load_manager(ep_detector, logger);
+  SessionManager session_manager(logger);
+  CapturingTelemetry telemetry;
+
+  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, telemetry, []() {});
+  auto urls = service.Start({"http://127.0.0.1:0"});
+
+  // Three rapid heartbeats — only the first inside the hourly window is recorded.
+  TestHttpGet(urls[0] + "/status");
+  TestHttpGet(urls[0] + "/status");
+  TestHttpGet(urls[0] + "/status");
+
+  service.Stop();
+
+  EXPECT_EQ(telemetry.Count(Action::kServiceStatus), 1);
 }
 
 // ========================================================================

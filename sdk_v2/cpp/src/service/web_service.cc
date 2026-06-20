@@ -21,6 +21,7 @@
 #include <oatpp/network/tcp/server/ConnectionProvider.hpp>
 #include <oatpp/web/server/HttpConnectionHandler.hpp>
 #include <oatpp/web/server/HttpRouter.hpp>
+#include <oatpp/web/server/interceptor/RequestInterceptor.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -202,6 +203,49 @@ class ShutdownHandler : public HttpRequestHandler {
 };
 
 // ========================================================================
+// UnmatchedRouteInterceptor
+//
+// oatpp routes straight to handlers, so requests that match no route (unknown
+// path or wrong method) never reach an ActionTracker and would be invisible to
+// telemetry. This request interceptor runs before routing: when the router has
+// no route for the request it records a kServiceRequestUnmatched action and
+// replies 404 itself; otherwise it returns nullptr and normal routing proceeds.
+// ========================================================================
+
+class UnmatchedRouteInterceptor : public oatpp::web::server::interceptor::RequestInterceptor {
+ public:
+  UnmatchedRouteInterceptor(std::shared_ptr<oatpp::web::server::HttpRouter> router, ITelemetry& telemetry)
+      : router_(std::move(router)), telemetry_(telemetry) {}
+
+  std::shared_ptr<OutgoingResponse> intercept(const std::shared_ptr<IncomingRequest>& request) override {
+    const auto& line = request->getStartingLine();
+    if (router_->getRoute(line.method, line.path)) {
+      return nullptr;  // a handler will serve this request
+    }
+
+    std::string user_agent;
+    if (auto ua = request->getHeader("User-Agent")) {
+      user_agent = *ua;
+    }
+    {
+      ActionTracker tracker(Action::kServiceRequestUnmatched, telemetry_,
+                            InvocationContext::Direct(user_agent));
+      tracker.SetStatus(ActionStatus::kClientError);
+    }
+
+    nlohmann::json body = {
+        {"error", {{"message", "Not found"}, {"type", "invalid_request_error"},
+                   {"param", nullptr}, {"code", nullptr}}},
+    };
+    return JsonResponse(Status::CODE_404, body);
+  }
+
+ private:
+  std::shared_ptr<oatpp::web::server::HttpRouter> router_;
+  ITelemetry& telemetry_;
+};
+
+// ========================================================================
 // WebService implementation
 // ========================================================================
 
@@ -300,6 +344,11 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
   impl_->router->route("GET", "/v1/responses/{id}/input_items", CreateGetInputItemsHandler(ctx));
 
   impl_->connection_handler = oatpp::web::server::HttpConnectionHandler::createShared(impl_->router);
+
+  // Record requests that match no route (unknown path / wrong method), which
+  // otherwise bypass every handler's ActionTracker.
+  impl_->connection_handler->addRequestInterceptor(
+      std::make_shared<UnmatchedRouteInterceptor>(impl_->router, ctx.telemetry));
 
   std::vector<std::string> bound_urls;
 
