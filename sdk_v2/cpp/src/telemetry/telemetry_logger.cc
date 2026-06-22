@@ -92,4 +92,12 @@ void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
                           info.error_message, info.user_agent, info.correlation_id));
 }
 
+void TelemetryLogger::StartSession() {
+  logger_.Log(LogLevel::Debug, fmt::format("[Telemetry] SessionStart AppName={}", app_name_));
+}
+
+void TelemetryLogger::EndSession() {
+  logger_.Log(LogLevel::Debug, fmt::format("[Telemetry] SessionEnd AppName={}", app_name_));
+}
+
 }  // namespace fl

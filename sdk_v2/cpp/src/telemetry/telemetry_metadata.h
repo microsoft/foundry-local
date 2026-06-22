@@ -9,11 +9,11 @@ namespace fl {
 /// Process-wide metadata stamped onto every 1DS event as common context.
 /// Computed once at startup and cached. Cheap to copy.
 struct TelemetryMetadata {
-  /// Hex-encoded random 128-bit GUID; correlates events from the same process.
-  /// 1DS interprets the magic field name "UTCReplace_AppSessionGuid" by replacing
-  /// the value with the OS-supplied app session GUID on Windows, and accepts our
-  /// random GUID on other platforms. We always provide a value so the event is
-  /// well-formed even if UTC's magic isn't honored.
+  /// Hex-encoded random 128-bit GUID, generated once at startup. Stamped on
+  /// every event as `AppSessionGuid` so the backend can group all events from a
+  /// single FL process run. This is a stable per-process correlation id and is
+  /// distinct from the SDK's rotating usage-session id (ext.app.sesId), which is
+  /// driven separately via LogSession(Started/Ended).
   std::string app_session_guid;
 
   /// Foundry Local SDK version (FoundryLocalGetVersionString).

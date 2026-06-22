@@ -485,6 +485,9 @@ void Manager::StartWebService() {
 
   bound_urls_ = web_service_->Start(endpoints);
   web_service_running_ = true;
+  // Open an app-usage session for the lifetime of the running service so events
+  // carry ext.app.sesId and the backend gets session duration.
+  telemetry_->StartSession();
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -514,6 +517,7 @@ void Manager::StopWebService() {
   web_service_.reset();
   web_service_running_ = false;
   bound_urls_.clear();
+  telemetry_->EndSession();
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,

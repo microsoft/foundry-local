@@ -65,6 +65,8 @@ class OneDsTelemetry : public ITelemetry {
   void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override;
   void RecordDownload(const DownloadInfo& info) override;
   void RecordCatalogFetch(const CatalogFetchInfo& info) override;
+  void StartSession() override;
+  void EndSession() override;
 
   /// True if 1DS Initialize succeeded (i.e. events are actually uploaded).
   /// False in CI or when the tenant token was empty.

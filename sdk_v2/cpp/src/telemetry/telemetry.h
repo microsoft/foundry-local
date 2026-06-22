@@ -188,6 +188,13 @@ class ITelemetry {
 
   /// Record one access to a model catalog source (CatalogFetch event).
   virtual void RecordCatalogFetch(const CatalogFetchInfo& info) = 0;
+
+  /// Mark the start / end of an app-usage session via 1DS LogSession. Between
+  /// these the SDK stamps a session id (ext.app.sesId) on events and emits a
+  /// session start/end with duration — standard, cross-platform engagement
+  /// sessions. Default no-op for the non-1DS implementations.
+  virtual void StartSession() {}
+  virtual void EndSession() {}
 };
 
 }  // namespace fl

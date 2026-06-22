@@ -29,6 +29,7 @@ using MatILogger = ::Microsoft::Applications::Events::ILogger;
 using ::Microsoft::Applications::Events::EventProperties;
 using ::Microsoft::Applications::Events::EventPriority;
 using ::Microsoft::Applications::Events::PiiKind_None;
+using ::Microsoft::Applications::Events::SessionState;
 
 constexpr uint64_t kCriticalData = MICROSOFT_KEYWORD_CRITICAL_DATA;
 
@@ -36,10 +37,10 @@ void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
   // Process-wide context — stamped on every event uploaded through this ILogger.
   mat_logger->SetContext("AppName", m.app_name);
   mat_logger->SetContext("Version", m.version);
-  // 1DS recognizes UTCReplace_AppSessionGuid as a magic field name on Windows UTC
-  // and substitutes the OS session GUID. On other platforms we just send the
-  // GUID we computed at startup — same correlation semantics either way.
-  mat_logger->SetContext("UTCReplace_AppSessionGuid", m.app_session_guid);
+  // Per-process correlation GUID, generated at startup. Lets the backend group
+  // every event from one FL run. (This is distinct from ext.app.sesId, the SDK's
+  // rotating usage-session id set via LogSession.)
+  mat_logger->SetContext("AppSessionGuid", m.app_session_guid);
   mat_logger->SetContext("OsName", m.os_name);
   mat_logger->SetContext("OsVersion", m.os_version);
   mat_logger->SetContext("CpuArch", m.cpu_arch);
@@ -269,6 +270,32 @@ void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
   SafeLog(GetMatLogger(), ev);
+}
+
+void OneDsTelemetry::StartSession() {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return;
+  }
+  auto* mat_logger = GetMatLogger();
+  if (mat_logger == nullptr) {
+    return;
+  }
+  // LogSession(Started) opens an app-usage session; the SDK stamps ext.app.sesId
+  // on subsequent events and records session duration on End.
+  auto ev = MakeEvent("Session", metadata_.test_mode);
+  mat_logger->LogSession(SessionState::Session_Started, ev);
+}
+
+void OneDsTelemetry::EndSession() {
+  if (!initialized_.load(std::memory_order_acquire)) {
+    return;
+  }
+  auto* mat_logger = GetMatLogger();
+  if (mat_logger == nullptr) {
+    return;
+  }
+  auto ev = MakeEvent("Session", metadata_.test_mode);
+  mat_logger->LogSession(SessionState::Session_Ended, ev);
 }
 
 }  // namespace fl
