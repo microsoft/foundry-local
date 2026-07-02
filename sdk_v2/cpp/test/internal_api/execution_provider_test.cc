@@ -10,6 +10,7 @@ TEST(ExecutionProviderTest, StringToEPRecognizesSupportedNames) {
   EXPECT_EQ(EPUtils::StringtoEP("CPUExecutionProvider"), ExecutionProvider::kCPU);
   EXPECT_EQ(EPUtils::StringtoEP("cuda"), ExecutionProvider::kCUDA);
   EXPECT_EQ(EPUtils::StringtoEP("CUDAExecutionProvider"), ExecutionProvider::kCUDA);
+  EXPECT_EQ(EPUtils::StringtoEP("CudaPluginExecutionProvider"), ExecutionProvider::kCUDA);
   EXPECT_EQ(EPUtils::StringtoEP("WebGPU"), ExecutionProvider::kWebGPU);
   EXPECT_EQ(EPUtils::StringtoEP("OpenVINOExecutionProvider"), ExecutionProvider::kOpenVINO);
   EXPECT_EQ(EPUtils::StringtoEP("NvTensorRTRTXExecutionProvider"), ExecutionProvider::kTensorRT_RTX);

@@ -28,6 +28,17 @@ class GpuEpDetector : public fl::IEpDetector {
   }
 };
 
+/// EP detector that reports the CUDA plugin EP name instead of the canonical CUDA name.
+class CudaPluginEpDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {
+        {"CPU", {"CPUExecutionProvider"}},
+        {"GPU", {"CudaPluginExecutionProvider"}},
+    };
+  }
+};
+
 /// EP detector that reports CPU only.
 class CpuOnlyDetector : public fl::IEpDetector {
  public:
@@ -94,6 +105,24 @@ TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaNotAvailable_ErrorMessage) {
     std::string msg = e.what();
     EXPECT_NE(msg.find("CUDAExecutionProvider"), std::string::npos);
     EXPECT_NE(msg.find("DownloadAndRegisterEps"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaPluginAvailable_DoesNotTripEpGuard) {
+  CudaPluginEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("test-cuda-plugin-model");
+
+  try {
+    mgr.LoadModel(dir.path(), "test-cuda-plugin-model", fl::ExecutionProvider::kCUDA);
+    FAIL() << "Expected exception from model construction, not EP guard";
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    std::string msg = e.what();
+    EXPECT_EQ(msg.find("CUDAExecutionProvider"), std::string::npos);
+    EXPECT_EQ(msg.find("DownloadAndRegisterEps"), std::string::npos);
   }
 }
 
