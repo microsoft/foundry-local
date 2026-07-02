@@ -60,8 +60,7 @@ steps:
         # The SDK tgz should include only public wrapper headers.
         $pathsToPrune = @(
           (Join-Path $includeDst 'gsl'),
-          (Join-Path $includeDst 'manifest'),
-          (Join-Path $includeDst 'manifest.json')
+          (Join-Path $includeDst '_manifest')
         )
         foreach ($pathToPrune in $pathsToPrune) {
           if (Test-Path $pathToPrune) {

@@ -189,7 +189,6 @@ stages:
           outputDir: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
 
   # ====================================================================
-  # Pack — base NuGet package (all 4 platforms)
   # Pack — NuGet package (all 4 platforms; Windows includes WinML)
   # ====================================================================
   - stage: cpp_pack_nuget
