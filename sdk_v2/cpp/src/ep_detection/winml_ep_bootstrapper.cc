@@ -120,16 +120,6 @@ void CALLBACK EnsureReadyProgressThunk(WinMLAsyncBlock* async, double progress) 
   }
 }
 
-constexpr const char* kWinMLWebGpuProviderName = "WebGpuExecutionProvider";
-
-bool IsWinMLWebGpuProvider(const WinMLEpInfo* info) {
-  if (!info || !info->name) {
-    return false;
-  }
-
-  return info->name == std::string{kWinMLWebGpuProviderName};
-}
-
 }  // namespace
 
 WinMLEpBootstrapper::WinMLEpBootstrapper(std::string name, EpRegistrationCallback register_ep,
@@ -295,15 +285,6 @@ std::vector<std::unique_ptr<WinMLEpBootstrapper>> WinMLEpBootstrapper::DiscoverP
       catalog,
       [](WinMLEpHandle ep, const WinMLEpInfo* info, void* context) -> BOOL {
         auto* ctx = static_cast<EnumContext*>(context);
-
-        if (IsWinMLWebGpuProvider(info)) {
-          std::string provider_name = (info && info->name) ? info->name : "";
-          ctx->logger->Log(
-              LogLevel::Information,
-              fmt::format("WinML EP filtered out: {} (reason: prefer Foundry Local WebGPU EP)",
-                          provider_name));
-          return TRUE;  // continue enumeration
-        }
 
         std::string provider_name = info->name ? info->name : "";
 
