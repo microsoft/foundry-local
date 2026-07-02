@@ -72,9 +72,9 @@ internal static class Utils
             return;
         }
 
-        string testDataSharedPath = Path.GetFullPath(Path.Combine(envCacheDir, "Microsoft"));
+        string testDataSharedPath = Path.GetFullPath(envCacheDir);
         logger.LogInformation(
-            "Using test model cache directory from FOUNDRY_TEST_DATA_DIR/Microsoft: {TestDataSharedPath}",
+            "Using test model cache directory: {TestDataSharedPath}",
             testDataSharedPath);
 
         if (!Directory.Exists(testDataSharedPath))
@@ -92,7 +92,7 @@ internal static class Utils
         // exactly which path we resolved. Critical when diagnosing initialization
         // failures from CI logs only.
         Console.WriteLine($"[Utils::Utils] FOUNDRY_TEST_DATA_DIR env: '{envCacheDir}'");
-        Console.WriteLine($"[Utils::Utils] Resolved test model cache (FOUNDRY_TEST_DATA_DIR/Microsoft): '{testDataSharedPath}'");
+        Console.WriteLine($"[Utils::Utils] Resolved test model cache: '{testDataSharedPath}'");
 
         var config = new Configuration
         {
