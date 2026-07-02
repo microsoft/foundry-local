@@ -47,6 +47,11 @@ std::string_view RequiredEpForModelId(std::string_view model_id) {
   return {};
 }
 
+bool IsCudaEpRegistrationName(std::string_view ep_name) {
+  const auto lowered = ToLower(std::string(ep_name));
+  return lowered == "cudaexecutionprovider" || lowered == "cudapluginexecutionprovider";
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -67,6 +72,14 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
   for (const auto& [device, eps] : device_map) {
     if (std::find(eps.begin(), eps.end(), ep_name) != eps.end()) {
       return true;
+    }
+
+    if (IsCudaEpRegistrationName(ep_name)) {
+      for (const auto& candidate : eps) {
+        if (IsCudaEpRegistrationName(candidate)) {
+          return true;
+        }
+      }
     }
   }
 

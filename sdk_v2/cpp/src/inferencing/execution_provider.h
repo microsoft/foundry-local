@@ -29,7 +29,8 @@ struct EPUtils {
       return ExecutionProvider::kCPU;
     } else if (ep == "cuda" ||
                ep == "CUDA" ||
-               ep == "CUDAExecutionProvider") {
+               ep == "CUDAExecutionProvider" ||
+               ep == "CudaPluginExecutionProvider") {
       return ExecutionProvider::kCUDA;
     } else if (ep == "webgpu" ||
                ep == "WebGPU" ||
