@@ -49,6 +49,18 @@
 	let error = '';
 	let copiedModelId: string | null = null;
 	let copiedCliCommandId: string | null = null;
+	let detectedOs: 'windows' | 'macos' | 'linux' | 'other' = 'other';
+	let showAllPlatforms = false;
+
+	$: visibleInstallLinks = showAllPlatforms
+		? CLI_INSTALL_LINKS
+		: detectedOs === 'windows'
+			? CLI_INSTALL_LINKS.filter((i) => i.id === 'windows-cli')
+			: detectedOs === 'macos'
+				? CLI_INSTALL_LINKS.filter((i) => i.id === 'macos-cli')
+				: detectedOs === 'linux'
+					? CLI_INSTALL_LINKS.filter((i) => i.id === 'linux-cli')
+					: CLI_INSTALL_LINKS;
 
 	// Modal state
 	let selectedModel: GroupedFoundryModel | null = null;
@@ -473,6 +485,14 @@
 	}
 
 	onMount(() => {
+		// Detect OS for the CLI install panel
+		if (typeof navigator !== 'undefined') {
+			const ua = navigator.userAgent;
+			if (/Win/i.test(ua)) detectedOs = 'windows';
+			else if (/Mac/i.test(ua)) detectedOs = 'macos';
+			else if (/Linux|X11/i.test(ua)) detectedOs = 'linux';
+		}
+
 		// Read initial filter state from URL before fetching
 		suppressUrlUpdate = true;
 		readFiltersFromUrl();
@@ -514,21 +534,31 @@
 				class="border-border/50 bg-muted/30 mb-4 rounded-lg border px-3 py-2.5 sm:px-4"
 				aria-label="CLI quick test"
 			>
-				<div class="flex flex-col gap-2 xl:flex-row xl:items-center">
+				<div class="flex flex-col gap-2 lg:flex-row lg:items-center">
 					<div class="flex shrink-0 items-center gap-2">
 						<Terminal class="text-primary size-4" aria-hidden="true" />
 						<div class="leading-tight">
 							<div class="text-sm font-medium">Test with the CLI</div>
 							<div class="text-muted-foreground text-xs">
-								Copy a command, then swap in any model alias.
+								Copy a command, then swap in any model alias.{#if detectedOs !== 'other'}
+									<button
+										type="button"
+										class="text-primary hover:text-primary/80 ml-1.5 underline-offset-2 hover:underline"
+										onclick={() => (showAllPlatforms = !showAllPlatforms)}
+									>
+										{showAllPlatforms ? 'Show fewer' : 'Show all platforms'}
+									</button>
+								{/if}
 							</div>
 						</div>
 					</div>
 
 					<div
-						class="grid min-w-0 flex-1 gap-2 md:grid-cols-[repeat(3,minmax(6rem,auto))_minmax(18rem,1fr)]"
+						class="grid min-w-0 flex-1 gap-2 {visibleInstallLinks.length === 1
+							? 'md:grid-cols-[minmax(8rem,auto)_minmax(18rem,1fr)]'
+							: 'md:grid-cols-[repeat(3,minmax(6rem,auto))_minmax(18rem,1fr)]'}"
 					>
-						{#each CLI_INSTALL_LINKS as item}
+						{#each visibleInstallLinks as item}
 							<a
 								href={item.href}
 								target="_blank"
@@ -644,7 +674,6 @@
 		bind:isOpen={isModalOpen}
 		{copiedModelId}
 		onCopyModelId={copyModelId}
-		onCopyCommand={copyRunCommand}
 		onCopyShareUrl={copyModelShareUrl}
 	/>
 

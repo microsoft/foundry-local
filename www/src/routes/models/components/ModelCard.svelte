@@ -1,87 +1,39 @@
 <script lang="ts">
 	import type { GroupedFoundryModel } from '../types';
-	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Calendar, Check } from 'lucide-svelte';
+	import { Calendar, Copy, Check } from 'lucide-svelte';
 	import * as Card from '$lib/components/ui/card';
-	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { animate } from '$lib/utils/animations';
+	import { foundryModelService } from '../service';
+	import { generateModelDescription } from '$lib/utils/model-description';
+	import ModelStarterCode from './ModelStarterCode.svelte';
 
 	export let model: GroupedFoundryModel;
 	export let copiedModelId: string | null = null;
 	export let onCardClick: (model: GroupedFoundryModel) => void;
 	export let onCopyCommand: (modelId: string) => void;
 
-	import { foundryModelService } from '../service';
-
-	import {
-		getDeviceIcon,
-		getAcceleratorLogo,
-		getAcceleratorColor,
-		getVariantLabel
-	} from '$lib/utils/model-helpers';
-	import { generateModelDescription } from '$lib/utils/model-description';
-
-	function getUniqueVariants() {
-		if (!model.variants || model.variants.length === 0) return [];
-
-		const uniqueMap = new Map();
-		for (const variant of model.variants) {
-			if (!uniqueMap.has(variant.name)) {
-				uniqueMap.set(variant.name, variant);
-			}
-		}
-		return Array.from(uniqueMap.values());
-	}
-
-	function sortVariantsByDevice(variants: any[]) {
-		const devicePriority: Record<string, number> = {
-			cpu: 1,
-			gpu: 2,
-			npu: 3
-		};
-
-		return [...variants].sort((a, b) => {
-			const aDevice = a.deviceSupport[0]?.toLowerCase() || 'zzz';
-			const bDevice = b.deviceSupport[0]?.toLowerCase() || 'zzz';
-
-			const aPriority = devicePriority[aDevice] || 99;
-			const bPriority = devicePriority[bDevice] || 99;
-
-			return aPriority - bPriority;
-		});
-	}
-
-	function formatModelCommand(modelId: string): string {
-		return `foundry run ${modelId}`;
-	}
-
-	// Device suffix pattern for cleaning model names
 	const DEVICE_SUFFIX_PATTERN = /-(generic|cuda|qnn|openvino|vitis)-(cpu|gpu|npu)$|-(cpu|gpu|npu)$/i;
 
-	// Get the generic model name for auto-selection
 	function getGenericModelName(): string {
 		const baseName = model.alias || model.variants[0]?.name || model.displayName;
-		const withoutVersion = baseName.split(':')[0];
-		return withoutVersion.replace(DEVICE_SUFFIX_PATTERN, '');
+		return baseName.split(':')[0].replace(DEVICE_SUFFIX_PATTERN, '');
 	}
 
-	$: uniqueVariants = sortVariantsByDevice(getUniqueVariants());
-	$: displayDescription = generateModelDescription(model);
-	$: genericModelName = getGenericModelName();
-	
-	// Check if model is speech-to-text
 	function isSpeechToTextModel(): boolean {
 		const taskType = model.taskType?.toLowerCase() || '';
 		const alias = model.alias?.toLowerCase() || '';
 		const displayName = model.displayName?.toLowerCase() || '';
-		
-		return taskType.includes('automatic-speech-recognition') || 
+		return (
+			taskType.includes('automatic-speech-recognition') ||
 			taskType.includes('speech-to-text') ||
 			alias.includes('whisper') ||
-			displayName.includes('whisper');
+			displayName.includes('whisper')
+		);
 	}
-	
+
+	$: displayDescription = generateModelDescription(model);
+	$: genericModelName = getGenericModelName();
 	$: isSpeechToText = isSpeechToTextModel();
 </script>
 
@@ -183,157 +135,59 @@
 				{/if}
 			</div>
 
-			<!-- Copy Run Command Section -->
-			<div class="border-border/40 border-t pt-3">
+			<!-- Run command + starter code strip -->
+			<div class="border-border/40 space-y-3 border-t pt-3">
 				{#if isSpeechToText}
-					<!-- SDK Only Notice for Speech-to-Text Models -->
-					<div class="space-y-2">
-						<div class="bg-gradient-to-r from-violet-500/10 to-purple-500/10 rounded-lg p-3 border border-violet-500/20">
-							<div class="flex items-center gap-2 mb-2">
-								<svg class="size-4 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-								</svg>
-								<span class="text-xs font-semibold text-violet-600 dark:text-violet-400">SDK Only</span>
-							</div>
-							<div class="font-mono text-xs text-muted-foreground mb-2">
-								Model ID: <span class="text-foreground font-medium">{genericModelName}</span>
-							</div>
-							<a
-								href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/how-to/how-to-transcribe-audio?view=foundry-classic&tabs=windows"
-								target="_blank"
-								rel="noopener noreferrer"
-								onclick={(e) => e.stopPropagation()}
-								class="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors"
-								aria-label="View SDK Documentation (opens in new tab)"
-							>
-								<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-								</svg>
-								View SDK Documentation
-								<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-								</svg>
-							</a>
-						</div>
+					<div class="flex items-center gap-1.5">
+						<span
+							class="bg-primary/10 text-primary rounded px-1.5 py-0.5 text-[10px] font-semibold"
+						>SDK only</span>
+						<span class="text-muted-foreground text-[11px]">Not available via CLI</span>
 					</div>
-				{:else if uniqueVariants.length > 0}
-					<div class="space-y-1.5">
-						<div class="text-xs font-medium text-gray-600 dark:text-gray-400">
-							Copy Run Command:
+				{:else}
+					<div>
+						<div class="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">
+							Run with CLI
 						</div>
-
-						<!-- Default/Generic Run Command -->
-						<Tooltip.Root>
-							<Tooltip.Trigger>
-								{#snippet child({ props })}
-									<Button
-										{...props}
-										variant="outline"
-										size="sm"
-										onclick={(e) => {
-											e.stopPropagation();
-											onCopyCommand(genericModelName);
-										}}
-										class="border-primary text-primary hover:bg-primary/10 group relative h-8 w-full justify-start gap-2 overflow-hidden border-2 px-3 text-xs font-semibold"
-									>
-										{#if copiedModelId === `run-${genericModelName}`}
-											<!-- Success State -->
-											<div
-												class="animate-in fade-in absolute inset-0 bg-gradient-to-r from-purple-500/20 to-violet-500/20 duration-300"
-											></div>
-											<Check class="relative z-10 size-4 shrink-0 text-green-500" />
-											<span class="relative z-10 min-w-0 truncate">Copied!</span>
-										{:else}
-											<!-- Animated gradient overlay on hover/click -->
-											<div
-												class="from-primary/0 via-primary/20 to-primary/0 absolute inset-0 translate-x-[-100%] bg-gradient-to-r transition-transform duration-700 ease-in-out group-hover:translate-x-[100%]"
-											></div>
-											<svg
-												class="relative z-10 size-4 shrink-0"
-												fill="currentColor"
-												viewBox="0 0 20 20"
-											>
-												<path
-													fill-rule="evenodd"
-													d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"
-													clip-rule="evenodd"
-												/>
-											</svg>
-											<span class="relative z-10 min-w-0 truncate">Auto-select Best Variant</span>
-										{/if}
-									</Button>
-								{/snippet}
-							</Tooltip.Trigger>
-							<Tooltip.Portal>
-								<Tooltip.Content side="top" align="center" sideOffset={6}>
-									<code class="tooltip-code">{formatModelCommand(genericModelName)}</code>
-								</Tooltip.Content>
-							</Tooltip.Portal>
-						</Tooltip.Root>
-
-						<!-- Specific Variant Commands -->
-						<div class="grid grid-cols-2 gap-1.5">
-							{#each uniqueVariants as variant (variant.name)}
-								<Tooltip.Root>
-									<Tooltip.Trigger>
-										{#snippet child({ props })}
-											<Button
-												{...props}
-												variant="outline"
-												size="sm"
-												onclick={(e) => {
-													e.stopPropagation();
-													onCopyCommand(variant.name);
-												}}
-												class="h-7 w-full justify-start gap-1.5 px-2.5 text-xs"
-											>
-												{#if copiedModelId === `run-${variant.name}`}
-													<Check class="size-4 shrink-0 text-green-500" />
-													<span class="min-w-0 truncate">Copied!</span>
-												{:else}
-													{@const acceleratorLogo = getAcceleratorLogo(variant.name)}
-													{@const acceleratorColor = getAcceleratorColor(variant.name)}
-													{#if acceleratorLogo}
-														<span
-															class="accelerator-logo-mask size-4 shrink-0"
-															style="--logo-color: {acceleratorColor}; --logo-url: url({acceleratorLogo});"
-															role="img"
-															aria-label="Accelerator logo"
-														></span>
-													{:else}
-														<span class="shrink-0"
-															>{getDeviceIcon(variant.deviceSupport[0] || '')}</span
-														>
-													{/if}
-													<span class="min-w-0 truncate">{getVariantLabel(variant)}</span>
-												{/if}
-											</Button>
-										{/snippet}
-									</Tooltip.Trigger>
-									<Tooltip.Portal>
-										<Tooltip.Content side="top" align="center" sideOffset={6}>
-											<code class="tooltip-code">{formatModelCommand(variant.name)}</code>
-										</Tooltip.Content>
-									</Tooltip.Portal>
-								</Tooltip.Root>
-							{/each}
+						<div class="flex min-w-0 items-center gap-2">
+							<code
+								class="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[11px]"
+								title="foundry run {genericModelName}"
+							>
+								foundry run {genericModelName}
+							</code>
+							<button
+								type="button"
+								onclick={(e) => {
+									e.stopPropagation();
+									onCopyCommand(genericModelName);
+								}}
+								class="border-border text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-primary/5 flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs transition-colors"
+								aria-label="Copy run command for {genericModelName}"
+							>
+								{#if copiedModelId === `run-${genericModelName}`}
+									<Check class="size-3 text-green-500" aria-hidden="true" />
+									<span>Copied</span>
+								{:else}
+									<Copy class="size-3" aria-hidden="true" />
+									<span>Run</span>
+								{/if}
+							</button>
 						</div>
 					</div>
 				{/if}
+				<div>
+					<div class="text-muted-foreground mb-1 text-[10px] font-semibold tracking-wide uppercase">
+						Starter code
+					</div>
+					<ModelStarterCode {model} compact />
+				</div>
 			</div>
 		</Card.Content>
 	</Card.Root>
 </div>
 
 <style>
-	:root {
-		--amd-color: #000000; /* Black in light mode */
-	}
-
-	:global(.dark) {
-		--amd-color: #ffffff; /* White in dark mode */
-	}
-
 	:global(.line-clamp-1) {
 		display: -webkit-box;
 		-webkit-line-clamp: 1;
@@ -356,13 +210,6 @@
 		line-clamp: 3;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
-	}
-
-	.tooltip-code {
-		display: inline-block;
-		font-family:
-			ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-		white-space: nowrap;
 	}
 
 	:global(.accelerator-logo-mask) {

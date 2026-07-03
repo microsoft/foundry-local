@@ -5,15 +5,15 @@
 	import { Calendar, Package, Copy, Check, ExternalLink } from 'lucide-svelte';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { foundryModelService } from '../service';
+	import ModelStarterCode from './ModelStarterCode.svelte';
+	import { getModelStarterKind } from '../model-boilerplate';
 
 	export let model: GroupedFoundryModel | null;
 	export let isOpen = false;
 	export let copiedModelId: string | null = null;
 	export let onCopyModelId: (modelId: string) => void;
-	export let onCopyCommand: (modelId: string) => void;
 	export let onCopyShareUrl: (modelAlias: string) => void;
 
-	// Tags to hide from the details view (internal/system metadata)
 	const HIDDEN_TAG_SUBSTRINGS = [
 		':licensedescription',
 		'prompttemplate',
@@ -27,10 +27,8 @@
 		'invisiblelatest'
 	];
 
-	// Compute generic model name reactively
 	$: genericModelName = model ? getGenericModelName(model) : '';
 
-	// Filter tags for display in the details modal
 	$: visibleTags =
 		model?.tags.filter((tag) => {
 			const lower = tag.toLowerCase();
@@ -94,10 +92,6 @@
 			month: 'short',
 			day: 'numeric'
 		});
-	}
-
-	function formatModelCommand(modelId: string): string {
-		return `foundry run ${modelId}`;
 	}
 
 	function renderMarkdown(text: string): string {
@@ -184,25 +178,9 @@
 	// Device suffix pattern for cleaning model names
 	const DEVICE_SUFFIX_PATTERN = /-(generic|cuda|qnn|openvino|vitis)-(cpu|gpu|npu)$|-(cpu|gpu|npu)$/i;
 
-	// Get the generic model name for auto-selection
 	function getGenericModelName(model: GroupedFoundryModel): string {
 		const baseName = model.alias || model.variants[0]?.name || model.displayName;
-		const withoutVersion = baseName.split(':')[0];
-		return withoutVersion.replace(DEVICE_SUFFIX_PATTERN, '');
-	}
-
-	// Check if model is a speech-to-text model
-	function isSpeechToTextModel(model: GroupedFoundryModel | null): boolean {
-		if (!model) return false;
-		
-		const taskType = model.taskType?.toLowerCase() || '';
-		const alias = model.alias?.toLowerCase() || '';
-		const displayName = model.displayName?.toLowerCase() || '';
-		
-		return taskType.includes('automatic-speech-recognition') || 
-			taskType.includes('speech-to-text') ||
-			alias.includes('whisper') || 
-			displayName.includes('whisper');
+		return baseName.split(':')[0].replace(DEVICE_SUFFIX_PATTERN, '');
 	}
 </script>
 
@@ -257,6 +235,32 @@
 						<div class="text-muted-foreground mt-2 text-xs">Supported Devices</div>
 					</div>
 				</div>
+
+				<!-- Get started / boilerplate code -->
+				{#if model}
+					{#if getModelStarterKind(model) !== 'audio'}
+						<div class="border-border/40 flex items-center gap-2 rounded-lg border px-3 py-2">
+							<code class="text-muted-foreground min-w-0 flex-1 font-mono text-sm">
+								foundry run {genericModelName}
+							</code>
+							<button
+								type="button"
+								onclick={() => onCopyModelId(`run-${genericModelName}`)}
+								class="border-border text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-primary/5 flex shrink-0 items-center gap-1.5 rounded border px-2.5 py-1 text-xs transition-colors"
+								aria-label="Copy run command for {genericModelName}"
+							>
+								{#if copiedModelId === `run-${genericModelName}`}
+									<Check class="size-3.5 text-green-500" aria-hidden="true" />
+									<span>Copied</span>
+								{:else}
+									<Copy class="size-3.5" aria-hidden="true" />
+									<span>Copy</span>
+								{/if}
+							</button>
+						</div>
+					{/if}
+					<ModelStarterCode {model} />
+				{/if}
 
 				<!-- Description -->
 				<div>
@@ -361,139 +365,10 @@
 
 				<!-- Available Variants -->
 				<div>
-					<h3 class="mb-3 text-lg font-semibold">Available Model Variants</h3>
-
-					{#if isSpeechToTextModel(model)}
-						<!-- SDK Only Notice for Speech-to-Text Models -->
-						<div class="bg-gradient-to-r from-violet-500/10 to-purple-500/10 mb-4 rounded-lg border-2 border-violet-500/20 p-4">
-							<div class="flex items-start gap-3">
-								<div class="rounded-full bg-violet-500/20 p-2">
-									<svg class="size-5 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-									</svg>
-								</div>
-								<div class="flex-1">
-									<div class="text-sm font-semibold text-violet-600 dark:text-violet-400">SDK Only - Audio Transcription Model</div>
-									<div class="text-muted-foreground mt-1 text-sm">
-										This model transcribes audio to text and must be used via the Foundry Local SDK.
-									</div>
-								</div>
-							</div>
-							<div class="bg-background/50 mt-3 rounded-md p-3">
-								<div class="flex items-center justify-between">
-									<div>
-										<div class="text-muted-foreground text-xs font-medium">Model ID for SDK</div>
-										<div class="font-mono text-sm font-medium">{genericModelName}</div>
-									</div>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={(e) => {
-											e.stopPropagation();
-											onCopyModelId(genericModelName);
-										}}
-										class="shrink-0 gap-2"
-									>
-										{#if copiedModelId === genericModelName}
-											<Check class="size-4 text-green-500" />
-											Copied
-										{:else}
-											<Copy class="size-4" />
-											Copy ID
-										{/if}
-									</Button>
-								</div>
-							</div>
-							<div class="mt-3 pt-3 border-t border-violet-500/20">
-								<a
-									href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/how-to/how-to-transcribe-audio?view=foundry-classic&tabs=windows"
-									target="_blank"
-									rel="noopener noreferrer"
-									class="inline-flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors"
-									aria-label="View Audio Transcription Documentation (opens in new tab)"
-								>
-									<svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-									</svg>
-									View Audio Transcription Documentation
-									<ExternalLink class="size-3.5" />
-								</a>
-							</div>
-						</div>
-
-						<!-- Show variants info without run commands -->
-						<div class="space-y-3">
-							{#each getUniqueVariants(model) as variant}
-								<div class="bg-card hover:border-primary/50 rounded-lg border p-4 transition-all">
-									<div class="flex items-start justify-between">
-										<div class="flex-1">
-											<div class="font-mono text-sm font-medium">{variant.name}</div>
-											<div class="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-xs">
-												<span>Device:</span>
-												{#each variant.deviceSupport as device}
-													{@const acceleratorLogo = getAcceleratorLogo(variant.name)}
-													{@const acceleratorColor = getAcceleratorColor(variant.name)}
-													<Badge variant="secondary" class="text-xs">
-														{#if acceleratorLogo}
-															<span
-																class="accelerator-logo-mask mr-1 inline-block size-3.5"
-																style="--logo-color: {acceleratorColor}; --logo-url: url({acceleratorLogo});"
-																role="img"
-																aria-label="Accelerator logo"
-															></span>
-														{:else}
-															{getDeviceIcon(device)}
-														{/if}
-														{getVariantLabel(variant)}
-													</Badge>
-												{/each}
-												{#if variant.fileSizeBytes}
-													<Badge variant="outline" class="text-xs">
-														{foundryModelService.formatFileSize(variant.fileSizeBytes)}
-													</Badge>
-												{/if}
-											</div>
-										</div>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={(e) => {
-												e.stopPropagation();
-												onCopyModelId(variant.name);
-											}}
-											class="gap-2"
-										>
-											{#if copiedModelId === variant.name}
-												<Check class="size-4 text-green-500" />
-												Copied
-											{:else}
-												<Copy class="size-4" />
-												Copy ID
-											{/if}
-										</Button>
-									</div>
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<!-- Default/Generic Run Command -->
-						<div class="border-primary/20 bg-primary/5 mb-3 rounded-lg border-2 p-4">
-						<div class="mb-3 flex items-center justify-between gap-3">
-							<div class="flex items-center gap-2">
-								<svg class="text-primary size-5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-									<path
-										fill-rule="evenodd"
-										d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"
-										clip-rule="evenodd"
-									/>
-								</svg>
-								<div>
-									<div class="text-sm font-semibold">Recommended: Auto-select Best Variant</div>
-									<div class="text-muted-foreground text-xs">
-										Foundry Local will choose the optimal variant for your device
-									</div>
-								</div>
-							</div>
+					<div class="mb-3 flex items-center justify-between gap-3">
+						<h3 class="text-lg font-semibold">Available Variants</h3>
+						<div class="flex items-center gap-2">
+							<span class="text-muted-foreground font-mono text-xs">{genericModelName}</span>
 							<Button
 								variant="outline"
 								size="sm"
@@ -501,141 +376,72 @@
 									e.stopPropagation();
 									onCopyModelId(genericModelName);
 								}}
-								class="shrink-0 gap-2"
+								class="h-7 gap-1.5 px-2.5 text-xs"
 							>
 								{#if copiedModelId === genericModelName}
-									<Check class="size-4 text-green-500" />
+									<Check class="size-3.5 text-green-500" />
 									Copied
 								{:else}
-									<Copy class="size-4" />
+									<Copy class="size-3.5" />
 									Copy ID
 								{/if}
 							</Button>
 						</div>
-
-						<div class="bg-muted/50 rounded-md p-3">
-							<div class="mb-2 font-mono text-sm font-medium">{genericModelName}</div>
-							<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-								<code class="text-muted-foreground text-xs break-all sm:flex-1">
-									foundry run {genericModelName}
-								</code>
+					</div>
+					<div class="space-y-2">
+						{#each getUniqueVariants(model) as variant}
+							<div
+								class="bg-card hover:border-primary/50 flex items-center justify-between rounded-lg border p-3 transition-colors"
+							>
+								<div class="min-w-0 flex-1">
+									<div class="font-mono text-xs font-medium">{variant.name}</div>
+									<div
+										class="text-muted-foreground mt-1 flex flex-wrap items-center gap-1.5 text-xs"
+									>
+										{#each variant.deviceSupport as device}
+											{@const acceleratorLogo = getAcceleratorLogo(variant.name)}
+											{@const acceleratorColor = getAcceleratorColor(variant.name)}
+											<Badge variant="secondary" class="gap-1 text-xs">
+												{#if acceleratorLogo}
+													<span
+														class="accelerator-logo-mask inline-block size-3"
+														style="--logo-color: {acceleratorColor}; --logo-url: url({acceleratorLogo});"
+														role="img"
+														aria-label="Accelerator logo"
+													></span>
+												{:else}
+													{getDeviceIcon(device)}
+												{/if}
+												{getVariantLabel(variant)}
+											</Badge>
+										{/each}
+										{#if variant.fileSizeBytes}
+											<Badge variant="outline" class="text-xs">
+												{foundryModelService.formatFileSize(variant.fileSizeBytes)}
+											</Badge>
+										{/if}
+									</div>
+								</div>
 								<Button
-									variant="outline"
+									variant="ghost"
 									size="sm"
 									onclick={(e) => {
 										e.stopPropagation();
-										onCopyCommand(genericModelName);
+										onCopyModelId(variant.name);
 									}}
-									class="group border-primary text-primary hover:bg-primary/10 relative h-7 shrink-0 gap-1.5 overflow-hidden border-2 px-2.5 text-xs"
+									class="ml-3 h-7 shrink-0 gap-1.5 px-2.5 text-xs"
 								>
-									{#if copiedModelId === `run-${genericModelName}`}
-										<!-- Success State -->
-										<div
-											class="animate-in fade-in absolute inset-0 bg-gradient-to-r from-purple-500/20 to-violet-500/20 duration-300"
-										></div>
-										<Check class="relative z-10 size-3.5 text-green-500" />
-										<span class="relative z-10">Copied</span>
+									{#if copiedModelId === variant.name}
+										<Check class="size-3.5 text-green-500" />
+										Copied
 									{:else}
-										<!-- Animated gradient overlay on hover/click -->
-										<div
-											class="from-primary/0 via-primary/20 to-primary/0 absolute inset-0 translate-x-[-100%] bg-gradient-to-r transition-transform duration-700 ease-in-out group-hover:translate-x-[100%]"
-										></div>
-										<Copy class="relative z-10 size-3.5" />
-										<span class="relative z-10">Copy</span>
+										<Copy class="size-3.5" />
+										Copy ID
 									{/if}
 								</Button>
 							</div>
-						</div>
-					</div>
-
-					<div class="mb-2 text-sm font-medium text-gray-600 dark:text-gray-400">
-						Or choose a specific variant:
-					</div>
-					<div class="space-y-3">
-						{#each getUniqueVariants(model) as variant}
-							<div class="bg-card hover:border-primary/50 rounded-lg border p-4 transition-all">
-								<div class="mb-3 flex items-start justify-between">
-									<div class="flex-1">
-										<div class="font-mono text-sm font-medium">{variant.name}</div>
-										<div
-											class="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-xs"
-										>
-											<span>Device:</span>
-											{#each variant.deviceSupport as device}
-												{@const acceleratorLogo = getAcceleratorLogo(variant.name)}
-												{@const acceleratorColor = getAcceleratorColor(variant.name)}
-												<Badge variant="secondary" class="text-xs">
-													{#if acceleratorLogo}
-														<span
-															class="accelerator-logo-mask mr-1 inline-block size-3.5"
-															style="--logo-color: {acceleratorColor}; --logo-url: url({acceleratorLogo});"
-															role="img"
-															aria-label="Accelerator logo"
-														></span>
-													{:else}
-														{getDeviceIcon(device)}
-													{/if}
-													{getVariantLabel(variant)}
-												</Badge>
-											{/each}
-											{#if variant.fileSizeBytes}
-												<Badge variant="outline" class="text-xs">
-													{foundryModelService.formatFileSize(variant.fileSizeBytes)}
-												</Badge>
-											{/if}
-										</div>
-									</div>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={(e) => {
-											e.stopPropagation();
-											onCopyModelId(variant.name);
-										}}
-										class="gap-2"
-									>
-										{#if copiedModelId === variant.name}
-											<Check class="size-4 text-green-500" />
-											Copied
-										{:else}
-											<Copy class="size-4" />
-											Copy ID
-										{/if}
-									</Button>
-								</div>
-
-								<!-- Command to run -->
-								<div class="bg-muted/50 rounded-md p-3">
-									<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-										<div class="text-muted-foreground text-xs font-medium sm:w-32">
-											Run Command:
-										</div>
-										<code class="font-mono text-xs break-all sm:flex-1">
-											{formatModelCommand(variant.name)}
-										</code>
-										<Button
-											variant="ghost"
-											size="sm"
-											onclick={(e) => {
-												e.stopPropagation();
-												onCopyCommand(variant.name);
-											}}
-											class="h-6 gap-1.5 px-2 text-xs"
-										>
-											{#if copiedModelId === `run-${variant.name}`}
-												<Check class="size-3 text-green-500" />
-												Copied
-											{:else}
-												<Copy class="size-3" />
-												Copy
-											{/if}
-										</Button>
-									</div>
-								</div>
-							</div>
 						{/each}
 					</div>
-					{/if}
 				</div>
 
 				<!-- Links Section -->
@@ -704,14 +510,6 @@
 </Dialog.Root>
 
 <style>
-	:root {
-		--amd-color: #000000; /* Black in light mode */
-	}
-
-	:global(.dark) {
-		--amd-color: #ffffff; /* White in dark mode */
-	}
-
 	.prose :global(code) {
 		background-color: hsl(var(--muted));
 		padding: 0.125rem 0.25rem;
