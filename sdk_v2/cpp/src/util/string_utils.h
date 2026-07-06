@@ -6,6 +6,7 @@
 #include <cctype>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace fl {
@@ -45,6 +46,16 @@ inline bool EndsWithIgnoreCase(const std::string& str, const std::string& suffix
                     [](char a, char b) {
                       return std::tolower(static_cast<unsigned char>(a)) ==
                              std::tolower(static_cast<unsigned char>(b));
+                    });
+}
+
+/// Case-insensitive (ASCII) string equality.
+inline bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
+  return a.size() == b.size() &&
+         std::equal(a.begin(), a.end(), b.begin(),
+                    [](char x, char y) {
+                      return std::tolower(static_cast<unsigned char>(x)) ==
+                             std::tolower(static_cast<unsigned char>(y));
                     });
 }
 

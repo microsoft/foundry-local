@@ -4,11 +4,10 @@
 
 #include "logger.h"
 #include "util/sha256.h"
+#include "util/string_utils.h"
 
 #include <fmt/format.h>
 
-#include <algorithm>
-#include <cctype>
 #include <string>
 
 #ifdef _WIN32
@@ -17,16 +16,6 @@
 #endif
 
 namespace fl {
-
-namespace {
-
-bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
-  return a.size() == b.size() &&
-         std::equal(a.begin(), a.end(), b.begin(), b.end(),
-                    [](char x, char y) { return std::toupper(x) == std::toupper(y); });
-}
-
-}  // namespace
 
 bool VerifyEpArchive(
     const std::filesystem::path& archive_path,
