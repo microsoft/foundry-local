@@ -60,41 +60,64 @@ steps:
         }
       }
 
+      function Generate-InferenceModelJson {
+        param(
+          [string]$ModelRoot,
+          [string]$TargetAlias
+        )
+
+        if ($TargetAlias -notmatch '-\d+$') {
+          throw "TargetAlias '$TargetAlias' does not end with a numeric version suffix."
+        }
+
+        # Convert '<name>-<version>' to '<name>:<version>' by replacing the last '-'.
+        $modelId = $TargetAlias -replace '-(?=[^-]+$)', ':'
+
+        $inferenceModelPath = Join-Path $ModelRoot 'inference_model.json'
+        @{ Name = $modelId } |
+          ConvertTo-Json -Depth 2 |
+          Set-Content -Path $inferenceModelPath -Encoding utf8
+
+        Write-Host "Generated inference_model.json: $inferenceModelPath (Name=$modelId)"
+      }
+
       # The active SDK tests resolve versioned model aliases in cache.
-      # Keep one target alias per source model to avoid duplicate copies.
+      # Keep explicit version per model, then derive target alias and v{N} path.
       $modelMappings = @(
         @{
           SourcePath = 'qwen2.5-0.5b-instruct'
-          TargetAlias = 'qwen2.5-0.5b-instruct-generic-cpu-4'
+          Version = 4
         },
         @{
           SourcePath = 'openai-whisper-tiny'
-          TargetAlias = 'openai-whisper-tiny-generic-cpu-4'
+          Version = 4
         },
         @{
           SourcePath = 'nemotron-speech-streaming-en-0.6b'
-          TargetAlias = 'nemotron-speech-streaming-en-0.6b-generic-cpu-3'
+          Version = 3
         },
         @{
           SourcePath = 'qwen3-embedding-0.6b'
-          TargetAlias = 'qwen3-embedding-0.6b-generic-cpu-1'
+          Version = 1
         },
         @{
           SourcePath = 'qwen3.5-0.8b'
-          TargetAlias = 'qwen3.5-0.8b-generic-cpu-2'
+          Version = 2
         },
         @{
           SourcePath = 'deepseek-r1-distill-qwen-14b'
-          TargetAlias = 'deepseek-r1-distill-qwen-14b-generic-cpu-4'
+          Version = 4
         }
       )
 
       foreach ($model in $modelMappings) {
-        $requestedUrl = "https://$storageAccount.blob.core.windows.net/$container/$prefix/$($model.SourcePath)/onnx/cpu_and_mobile/*"
+        $targetAlias = "$($model.SourcePath)-generic-cpu-$($model.Version)"
+        $requestedUrl = "https://$storageAccount.blob.core.windows.net/$container/$prefix/$($model.SourcePath)/onnx/cpu_and_mobile/v$($model.Version)/*"
         Write-Host "Requested blob URL: $requestedUrl"
 
-        $target = Join-Path $publisherRoot $model.TargetAlias
+        $target = Join-Path (Join-Path $publisherRoot $targetAlias) ("v" + $model.Version)
         Invoke-AzCopy -Source $requestedUrl -Target $target
+        Generate-InferenceModelJson -ModelRoot $target -TargetAlias $targetAlias
       }
 
       $count = @(Get-ChildItem -Path $destination -Recurse -File).Count
