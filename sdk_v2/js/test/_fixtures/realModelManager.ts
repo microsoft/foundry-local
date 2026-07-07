@@ -31,22 +31,6 @@ export const testModelCacheDiagnostic = haveTestModelCache
   : "[v2 SDK real-model tests] SKIPPED — FOUNDRY_TEST_DATA_DIR is not set or does not exist";
 
 const isCi: boolean = process.env.CI !== undefined || process.env.TF_BUILD !== undefined;
-const debugRealModelFixture: boolean =
-  isCi || process.env.FOUNDRY_JS_TEST_DEBUG === "1" || process.env.FOUNDRY_JS_TEST_DEBUG === "true";
-
-function fixtureLog(message: string): void {
-  if (!debugRealModelFixture) {
-    return;
-  }
-  console.log(`[realModelManager] ${message}`);
-}
-
-function describeModel(model: IModel): string {
-  const info = model.info;
-  const size = info.fileSizeMb ?? Number.NaN;
-  const sizeText = Number.isFinite(size) ? `${size}MB` : "size=unknown";
-  return `${info.name} (task=${info.task}, device=${info.deviceType}, cached=${model.isCached}, ${sizeText})`;
-}
 
 export interface RealModelManagerOptions {
   /** Override the appName. Defaults to a fixed test id. */
@@ -79,9 +63,6 @@ export interface RealModelManagerFixture {
  * must gate the `describe` block themselves.
  */
 export async function setupRealModelManager(opts: RealModelManagerOptions = {}): Promise<RealModelManagerFixture> {
-  fixtureLog(
-    `setup start: haveTestModelCache=${haveTestModelCache} envCache=${envCache ?? "(unset)"} CI=${isCi} opts=${JSON.stringify(opts)}`,
-  );
   if (!haveTestModelCache || envCache === undefined) {
     throw new Error(
       "setupRealModelManager called without FOUNDRY_TEST_DATA_DIR — gate the describe with `skipIf(!haveTestModelCache)`",
@@ -94,132 +75,62 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   });
   const catalog = manager.catalog;
   const namePref = opts.namePreference ?? "qwen2.5-0.5b";
-  const task = opts.task ?? "chat-completion";
-  const all = await catalog.getModels();
-  fixtureLog(`catalog loaded: modelCount=${all.length} namePref='${namePref}' task='${task}'`);
-
-  const normalizeVersionSuffix = (value: string): string => value.replace(/-\d+$/, "");
-  const nameMatchesPreference = (candidateName: string, preference: string): boolean => {
-    if (candidateName === preference) {
-      return true;
-    }
-
-    const candidateBase = normalizeVersionSuffix(candidateName);
-    const prefBase = normalizeVersionSuffix(preference);
-
-    // Handles versioned/unversioned pairs in either direction, e.g.
-    //  - preference: openai-whisper-tiny-generic-cpu
-    //  - candidate : openai-whisper-tiny-generic-cpu-4
-    return candidateBase === prefBase;
-  };
-
-  const bySize = (a: IModel, b: IModel): number =>
-    (a.info.fileSizeMb ?? Number.POSITIVE_INFINITY) - (b.info.fileSizeMb ?? Number.POSITIVE_INFINITY);
-
-  const preferCachedThenSize = (models: IModel[]): IModel | undefined => {
-    fixtureLog(`preferCachedThenSize called with ${models.length} candidate(s)`);
-    const cached = models.filter((m) => m.isCached);
-    fixtureLog(`preferCachedThenSize cached subset count=${cached.length}`);
-    if (cached.length > 0) {
-      const selected = cached.sort(bySize)[0];
-      fixtureLog(`preferCachedThenSize selected cached candidate: ${describeModel(selected)}`);
-      return selected;
-    }
-    const selected = models.sort(bySize)[0];
-    if (selected !== undefined) {
-      fixtureLog(`preferCachedThenSize selected non-cached candidate: ${describeModel(selected)}`);
-    } else {
-      fixtureLog("preferCachedThenSize had no candidates to select");
-    }
-    return selected;
-  };
 
   // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
   let model: IModel | undefined;
   try {
-    fixtureLog(`preference stage 1: attempting catalog.getModel('${namePref}')`);
     const exact = await catalog.getModel(namePref);
-    fixtureLog(`preference stage 1: getModel hit ${describeModel(exact)}`);
-    if (exact.info.deviceType === "CPU") {
-      model = exact;
-      fixtureLog("preference stage 1 accepted exact hit (CPU)");
-    } else {
-      fixtureLog(`preference stage 1 rejected exact hit due to deviceType='${exact.info.deviceType}'`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    fixtureLog(`preference stage 1 miss/error from getModel('${namePref}'): ${message}`);
+    model = exact.info.deviceType === "CPU" ? exact : undefined;
+  } catch {
     model = undefined;
   }
 
-  // Preference 1b: robust preference matching with CPU + cache-first behavior.
-  // Handles versioned/unversioned names in either direction.
-  if (model === undefined) {
-    const preferredMatches = all.filter((m) => {
-      const info = m.info;
-      return info.deviceType === "CPU" && nameMatchesPreference(info.name, namePref);
-    });
-    fixtureLog(`preference stage 1b: robust name match candidates=${preferredMatches.length}`);
-    if (preferredMatches.length > 0) {
-      fixtureLog(
-        `preference stage 1b candidates: ${preferredMatches
-          .map((candidate) => `${candidate.info.name}[cached=${candidate.isCached}]`)
-          .join(", ")}`,
-      );
-    }
-    model = preferCachedThenSize(preferredMatches);
-    if (model !== undefined) {
-      fixtureLog(`preference stage 1b selected ${describeModel(model)}`);
+  // Preference 1b: catalog entries often carry a `-N` version suffix
+  // (e.g. `nemotron-speech-streaming-en-0.6b-generic-cpu-3`). If the exact
+  // hit missed, try matching by prefix before falling back to the task
+  // filter — caller-specified names should win over "smallest by task".
+  if (model === undefined && opts.namePreference !== undefined) {
+    const all = await catalog.getModels();
+    const prefixed = all.find((m) => m.info.deviceType === "CPU" && m.info.name.startsWith(namePref));
+    if (prefixed !== undefined) {
+      model = prefixed;
     }
   }
 
   // Preference 2: smallest model matching the task filter.
   if (model === undefined) {
+    const task = opts.task ?? "chat-completion";
+    const all = await catalog.getModels();
     const matching = all.filter((m) => {
       const info = m.info;
       return info.task === task && info.deviceType === "CPU";
     });
-    fixtureLog(`preference stage 2: task/device candidates=${matching.length}`);
-    if (matching.length > 0) {
-      fixtureLog(
-        `preference stage 2 candidates: ${matching
-          .map((candidate) => `${candidate.info.name}[cached=${candidate.isCached}]`)
-          .join(", ")}`,
-      );
-    }
     if (matching.length === 0) {
-      fixtureLog(`preference stage 2 found no candidates for task='${task}' and device='CPU'`);
       manager.dispose();
       throw new Error(
         `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`,
       );
     }
-    model = preferCachedThenSize(matching);
-    if (model !== undefined) {
-      fixtureLog(`preference stage 2 selected ${describeModel(model)}`);
-    }
+    matching.sort(
+      (a, b) =>
+        (a.info.fileSizeMb ?? Number.POSITIVE_INFINITY) - (b.info.fileSizeMb ?? Number.POSITIVE_INFINITY),
+    );
+    model = matching[0];
   }
   if (model === undefined) {
-    fixtureLog("final selection failed unexpectedly (model is undefined)");
     manager.dispose();
     throw new Error("Unreachable: model selection failed");
   }
 
-  fixtureLog(`final selected model: ${describeModel(model)}`);
-
   // CI gate: refuse to trigger a real download.
   if (isCi && !model.isCached) {
-    fixtureLog(`CI gate triggered skip: selected model is not cached (${model.info.name})`);
     manager.dispose();
     throw new SkipFixture(
       `[CI] selected model '${model.info.name}' is not in the cache; skipping to avoid a download.`,
     );
   }
 
-  fixtureLog(`loading selected model '${model.info.name}'`);
-
   await model.load();
-  fixtureLog(`model loaded successfully '${model.info.name}'`);
   return { manager, catalog, model };
 }
 
