@@ -6,7 +6,6 @@
 
 namespace Microsoft.AI.Foundry.Local;
 
-using System.Collections.Generic;
 using System.Threading.Channels;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;

@@ -35,7 +35,7 @@ bool VerifyEpArchive(
   }
 
   auto hash = Sha256File(archive_path);
-  if (!EqualsIgnoreCase(hash, expected_hash)) {
+  if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
     logger.Log(LogLevel::Warning,
                fmt::format("{}: archive hash mismatch for {}: got {}, expected {}",
                            ep_name,
@@ -64,7 +64,7 @@ bool VerifyEpBinaries(
     auto hash = Sha256File(file_path);
 
     // Case-insensitive hex comparison
-    if (!EqualsIgnoreCase(hash, expected_hash)) {
+    if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
       logger.Log(LogLevel::Warning,
                  fmt::format("{}: hash mismatch for {}: got {}, expected {}",
                              ep_name, filename, hash, expected_hash));

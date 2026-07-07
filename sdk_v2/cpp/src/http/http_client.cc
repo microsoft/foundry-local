@@ -6,10 +6,20 @@
 
 #include <azure/core/context.hpp>
 #include <azure/core/datetime.hpp>
-#include <azure/core/http/curl_transport.hpp>
 #include <azure/core/http/http.hpp>
 #include <azure/core/http/raw_response.hpp>
 #include <azure/core/io/body_stream.hpp>
+
+// Desktop Windows uses the WinHTTP transport (OS SChannel TLS, no background threads)
+// and drops libcurl entirely to shrink the binary and avoid curl's process-lifetime
+// connection-pool cleanup thread, which races with host-runtime teardown (Node/V8).
+// UWP and non-Windows builds keep the libcurl transport to match the vcpkg feature selection.
+// FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT is set by CMake for non-UWP Windows builds.
+#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#include <azure/core/http/win_http_transport.hpp>
+#else
+#include <azure/core/http/curl_transport.hpp>
+#endif
 
 #include <chrono>
 #include <random>
@@ -35,7 +45,11 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
   using namespace Azure::Core;
   using namespace Azure::Core::Http;
 
+#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+  WinHttpTransport transport;
+#else
   CurlTransport transport;
+#endif
 
   // Build the request. For methods with a body (POST), attach a MemoryBodyStream.
   std::vector<uint8_t> body_bytes(body.begin(), body.end());

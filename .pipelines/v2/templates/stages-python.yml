@@ -231,3 +231,78 @@ stages:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         pythonArchitecture: 'arm64'
+
+# ================================================================
+# Aggregate all Python wheels into one artifact for distribution.
+# ================================================================
+- stage: python_pack_all_wheels
+  displayName: 'Python SDK: Pack all wheels (python-sdk-v2)'
+  dependsOn:
+  - python_build_win_x64
+  - python_build_win_arm64
+  - python_build_linux_x64
+  - python_build_osx_arm64
+  jobs:
+  - job: pack
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-win-x64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-win-x64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-win-arm64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-v2'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk-v2'
+    steps:
+    - checkout: none
+    - task: PowerShell@2
+      displayName: 'Collect all wheels'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          $sources = @(
+            '$(Pipeline.Workspace)/python-sdk-win-x64',
+            '$(Pipeline.Workspace)/python-sdk-win-arm64',
+            '$(Pipeline.Workspace)/python-sdk-linux-x64',
+            '$(Pipeline.Workspace)/python-sdk-osx-arm64'
+          )
+
+          $outDir = '$(Build.ArtifactStagingDirectory)/python-sdk-v2'
+          if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+          foreach ($src in $sources) {
+            if (-not (Test-Path $src)) {
+              throw "Expected wheel artifact directory not found: $src"
+            }
+
+            $wheels = @(Get-ChildItem -Path $src -Recurse -Filter '*.whl' -File)
+            if ($wheels.Count -eq 0) {
+              throw "No .whl files found under $src"
+            }
+
+            foreach ($wheel in $wheels) {
+              Copy-Item -Path $wheel.FullName -Destination (Join-Path $outDir $wheel.Name) -Force
+              Write-Host "Added wheel: $($wheel.Name)"
+            }
+          }
+
+          Write-Host "Final wheel set:"
+          Get-ChildItem -Path $outDir -Filter '*.whl' | ForEach-Object {
+            Write-Host "  $($_.Name)"
+          }
