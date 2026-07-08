@@ -71,9 +71,14 @@ export function detectModelFamily(identifier: string | null | undefined): string
 	if (!identifier) return undefined;
 	const s = identifier.toLowerCase();
 	for (const k of FAMILY_KEYWORDS) {
-		// Token-boundary match: keyword must start the string or follow a
-		// separator, and must be followed by a separator or end-of-string.
-		const re = new RegExp(`(^|[-_/])${k.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}([-_/.]|$)`);
+		// Token-boundary match: the keyword must start the string or follow a
+		// separator, and must NOT be followed by a letter. A trailing digit
+		// is treated as a version boundary so `qwen3`, `qwen2.5`, `smollm3`
+		// all match. Trailing `-`, `.`, `_`, `/`, or end-of-string also
+		// count as a boundary. This blocks false positives like `phillm`
+		// matching `phi`.
+		const escaped = k.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+		const re = new RegExp(`(^|[-_/])${escaped}(?![a-z])`);
 		if (re.test(s)) return k;
 	}
 	return undefined;
