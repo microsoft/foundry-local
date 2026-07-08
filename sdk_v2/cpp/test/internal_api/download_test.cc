@@ -10,7 +10,7 @@
 #include "catalog/azure_catalog_models.h"
 #include "download/blob_download_state.h"
 #include "download/blob_downloader.h"
-#include "download/cross_process_file_lock.h"
+#include "platform/cross_process_file_lock.h"
 #include "download/download_manager.h"
 #include "download/inference_model_writer.h"
 #include "download/model_registry_client.h"
@@ -47,7 +47,7 @@ using namespace fl;
 
 namespace {
 
-using fl::test::TempDir;
+using fl::test::TempPath;
 
 /// Read entire file contents.
 std::string ReadFile(const fs::path& path) {
@@ -418,7 +418,7 @@ TEST(ModelRegistryClientTest, Fallback_PerCallRegionOverridesStickyRegion) {
 // ========================================================================
 
 TEST(BlobDownloadTest, DownloadsAllBlobs) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"model/weights.safetensors", 1000},
@@ -433,7 +433,7 @@ TEST(BlobDownloadTest, DownloadsAllBlobs) {
 }
 
 TEST(BlobDownloadTest, FiltersByPathPrefix) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"variant-a/weights.safetensors", 1000},
@@ -450,7 +450,7 @@ TEST(BlobDownloadTest, FiltersByPathPrefix) {
 }
 
 TEST(BlobDownloadTest, FiltersOutInferenceModelJson) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"weights.safetensors", 1000},
@@ -468,7 +468,7 @@ TEST(BlobDownloadTest, FiltersOutInferenceModelJson) {
 }
 
 TEST(BlobDownloadTest, ReportsProgress) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"file1.bin", 500},
@@ -496,7 +496,7 @@ TEST(BlobDownloadTest, ReportsProgress) {
 }
 
 TEST(BlobDownloadTest, HandlesEmptyBlobList) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   // No blobs
 
@@ -511,7 +511,7 @@ TEST(BlobDownloadTest, HandlesEmptyBlobList) {
 // ========================================================================
 
 TEST(BlobDownloadTest, SkipsExistingFilesWithCorrectSize) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   // Pre-create one of the blobs at the expected size on disk.
   std::ofstream(tmpdir.path() / "weights.safetensors") << std::string(1000, 'X');
 
@@ -530,7 +530,7 @@ TEST(BlobDownloadTest, SkipsExistingFilesWithCorrectSize) {
 }
 
 TEST(BlobDownloadTest, RedownloadsFilesWithWrongSize) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   // Existing file is truncated relative to the expected blob size.
   std::ofstream(tmpdir.path() / "weights.safetensors") << std::string(500, 'X');
 
@@ -548,7 +548,7 @@ TEST(BlobDownloadTest, RedownloadsFilesWithWrongSize) {
 }
 
 TEST(BlobDownloadTest, ReportsSkippedBytesInInitialProgress) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   // 500 of 2000 bytes already on disk → initial progress should be 25%.
   std::ofstream(tmpdir.path() / "already.bin") << std::string(500, 'X');
 
@@ -575,7 +575,7 @@ TEST(BlobDownloadTest, ReportsSkippedBytesInInitialProgress) {
 }
 
 TEST(BlobDownloadTest, EmitsHundredPercentWhenEverythingIsCached) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   std::ofstream(tmpdir.path() / "a.bin") << std::string(100, 'A');
   std::ofstream(tmpdir.path() / "b.bin") << std::string(200, 'B');
 
@@ -632,7 +632,7 @@ TEST(IsPathWithinDirectoryTest, RejectsSiblingPrefixCollision) {
 }
 
 TEST(BlobDownloadTest, RejectsPathTraversalBlobName) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"../evil.bin", 4},
@@ -645,7 +645,7 @@ TEST(BlobDownloadTest, RejectsPathTraversalBlobName) {
 }
 
 TEST(BlobDownloadTest, RejectsBackslashPathTraversalBlobName) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"..\\evil.bin", 4},
@@ -658,7 +658,7 @@ TEST(BlobDownloadTest, RejectsBackslashPathTraversalBlobName) {
 }
 
 TEST(BlobDownloadTest, RejectsNestedPathTraversalBlobName) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   MockBlobDownloader mock;
   mock.blobs_to_return = {
       {"good/../../evil.bin", 4},
@@ -671,7 +671,7 @@ TEST(BlobDownloadTest, RejectsNestedPathTraversalBlobName) {
 }
 
 TEST(BlobDownloadTest, CancellationStopsRemainingBlobs) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   CancellingMockDownloader mock;
   mock.blobs_to_return = {
       {"blob1.bin", 100},
@@ -696,7 +696,7 @@ TEST(BlobDownloadTest, CancellationStopsRemainingBlobs) {
 }
 
 TEST(BlobDownloadTest, CancelledFlagAbortsInFlightDownload) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   CancelCheckingMockDownloader mock;
   mock.blobs_to_return = {
       {"blob1.bin", 100},
@@ -728,7 +728,7 @@ TEST(BlobDownloadTest, CancelledFlagAbortsInFlightDownload) {
 // ========================================================================
 
 TEST(InferenceModelWriterTest, WritesJsonWithPromptTemplate) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   fl::KeyValuePairs templates;
   templates.Add("system", "You are a helpful assistant.");
   templates.Add("user", "{input}");
@@ -743,7 +743,7 @@ TEST(InferenceModelWriterTest, WritesJsonWithPromptTemplate) {
 }
 
 TEST(InferenceModelWriterTest, WritesNullPromptTemplateWhenEmpty) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   fl::KeyValuePairs templates;
   WriteInferenceModelJson(tmpdir.string(), "test-model", templates);
 
@@ -759,7 +759,7 @@ TEST(InferenceModelWriterTest, WritesNullPromptTemplateWhenEmpty) {
 // ========================================================================
 
 TEST(VariantFixupTest, CopiesInferenceModelToSubdirs) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   const auto& root = tmpdir.path();
 
   // Create inference_model.json at root
@@ -782,7 +782,7 @@ TEST(VariantFixupTest, CopiesInferenceModelToSubdirs) {
 }
 
 TEST(VariantFixupTest, DoesNotOverwriteExisting) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   const auto& root = tmpdir.path();
 
   {
@@ -805,7 +805,7 @@ TEST(VariantFixupTest, DoesNotOverwriteExisting) {
 }
 
 TEST(VariantFixupTest, NoOpWhenNoRootFile) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   fs::create_directories(tmpdir.path() / "sub");
 
   // Should not throw
@@ -817,7 +817,7 @@ TEST(VariantFixupTest, PreservesRootFileWhenNoSubdirs) {
   // Single-variant downloads put every blob (and inference_model.json) at the root
   // with no variant subdirectory. The fixup must not delete the root file in that
   // case, otherwise IsModelCached would report false on the next check.
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   const auto& root = tmpdir.path();
 
   {
@@ -845,7 +845,7 @@ TEST(VariantFixupTest, PreservesRootFileWhenNoSubdirs) {
 // ========================================================================
 
 TEST(DownloadManagerTest, FullDownloadFlow) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
 
   auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
@@ -897,7 +897,7 @@ TEST(DownloadManagerTest, FullDownloadFlow) {
 // Run one download and return the registry URL the manager hit.
 static std::string CaptureRegistryUrlForDownload(const std::string& config_region,
                                                  const std::string& detected_region) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto manager =
       std::make_unique<DownloadManager>(tmpdir.string(), config_region, 64, fl::test::NullLog());
 
@@ -951,7 +951,7 @@ TEST(DownloadManagerTest, Region_FallsBackToDefaultRegistryRegionWhenNoConfigAnd
 }
 
 TEST(DownloadManagerTest, SkipsAlreadyCachedModel) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -977,7 +977,7 @@ TEST(DownloadManagerTest, SkipsAlreadyCachedModel) {
 }
 
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseForMissing) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -988,7 +988,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForMissing) {
 }
 
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseForIncomplete) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1006,7 +1006,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForIncomplete) {
 }
 
 TEST(DownloadManagerTest, IsModelCachedReturnsTrueForComplete) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1025,7 +1025,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsTrueForComplete) {
 }
 
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseForEmptyDir) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1041,7 +1041,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForEmptyDir) {
 }
 
 TEST(DownloadManagerTest, VersionSuffixConversion) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1061,7 +1061,7 @@ TEST(DownloadManagerTest, VersionSuffixConversion) {
 }
 
 TEST(DownloadManagerTest, ThrowsOnEmptyUri) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1075,7 +1075,7 @@ TEST(DownloadManagerTest, ThrowsOnEmptyUri) {
 // thread sees the cached result rather than re-downloading. Different models still
 // proceed in parallel — covered by the unrelated-model test below.
 TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   auto registry = std::make_unique<ModelRegistryClient>(
@@ -1159,7 +1159,7 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
 // downloads running at once; correct serialization keeps that peak at 1 (the
 // second download can't enter until the first releases the mutex).
 TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   auto registry = std::make_unique<ModelRegistryClient>(
@@ -1251,7 +1251,7 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
 // AND inference_model.json is present, return the cached result via the post-lock
 // recheck WITHOUT re-downloading anything.
 TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   // Registry + downloader that must stay untouched if the post-lock recheck works.
@@ -1306,7 +1306,7 @@ TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
 // it's asked about is not a directory (e.g. a regular file). Previously the
 // underlying directory_iterator would throw filesystem_error.
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseWhenPathIsRegularFile) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1447,7 +1447,7 @@ TEST(EndToEndTest, DISABLED_LiveCatalogAndDownload) {
 // ========================================================================
 
 TEST(DownloadManagerTest, RejectsParentEscapeInModelId) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1459,7 +1459,7 @@ TEST(DownloadManagerTest, RejectsParentEscapeInModelId) {
 }
 
 TEST(DownloadManagerTest, RejectsBackslashInPublisher) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1470,7 +1470,7 @@ TEST(DownloadManagerTest, RejectsBackslashInPublisher) {
 }
 
 TEST(DownloadManagerTest, RejectsForwardSlashInPublisher) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1483,7 +1483,7 @@ TEST(DownloadManagerTest, RejectsForwardSlashInPublisher) {
 TEST(DownloadManagerTest, RejectsColonInBareModelId) {
   // model_id "drive:c:1" splits as bare="drive:c", version="1"; the bare half then
   // contains a stray ':' that would let a Windows drive letter slip through.
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1494,7 +1494,7 @@ TEST(DownloadManagerTest, RejectsColonInBareModelId) {
 }
 
 TEST(DownloadManagerTest, RejectsTrailingDotInPublisher) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1505,7 +1505,7 @@ TEST(DownloadManagerTest, RejectsTrailingDotInPublisher) {
 }
 
 TEST(DownloadManagerTest, RejectsEmptyModelId) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1516,7 +1516,7 @@ TEST(DownloadManagerTest, RejectsEmptyModelId) {
 }
 
 TEST(DownloadManagerTest, AcceptsNormalModelIdAndPublisher) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
 
   ModelInfo info;
@@ -1599,7 +1599,7 @@ class FakeChunkAzureDownloader : public AzureBlobDownloader {
 }  // namespace
 
 TEST(AzureBlobDownloaderResumeTest, SkipsChunksAlreadyMarkedCompleteInSidecar) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;
@@ -1642,7 +1642,7 @@ TEST(AzureBlobDownloaderResumeTest, IgnoresSidecarWhenDataFileTruncated) {
   // an external cleanup) while the sidecar survived. The downloader must not trust
   // the sidecar — those "completed" chunks are no longer on disk — and must
   // re-download every chunk rather than leave them as zeros.
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;
@@ -1675,7 +1675,7 @@ TEST(AzureBlobDownloaderResumeTest, IgnoresSidecarWhenDataFileTruncated) {
 }
 
 TEST(AzureBlobDownloaderResumeTest, DownloadsAllChunksWhenSidecarMissing) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;
@@ -1695,7 +1695,7 @@ TEST(AzureBlobDownloaderResumeTest, DownloadsAllChunksWhenSidecarMissing) {
 }
 
 TEST(AzureBlobDownloaderResumeTest, PersistsSidecarOnChunkFailure) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;
@@ -1742,7 +1742,7 @@ TEST(AzureBlobDownloaderResumeTest, PersistsSidecarOnChunkFailure) {
 // next run skips — silently serving zeros. Verify a sidecar is already present
 // the moment the first chunk is requested.
 TEST(AzureBlobDownloaderResumeTest, SidecarExistsBeforeFirstChunkCompletes) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;
@@ -1778,7 +1778,7 @@ TEST(AzureBlobDownloaderResumeTest, SidecarExistsBeforeFirstChunkCompletes) {
 }
 
 TEST(AzureBlobDownloaderResumeTest, CleansUpSidecarOnEmptyBlob) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "empty.bin";
   // Plant a stale sidecar.
   {
@@ -1798,7 +1798,7 @@ TEST(AzureBlobDownloaderResumeTest, CleansUpSidecarOnEmptyBlob) {
 }
 
 TEST(AzureBlobDownloaderResumeTest, ChunkFailureCancelsInFlightPeersFast) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;
@@ -1844,7 +1844,7 @@ TEST(AzureBlobDownloaderResumeTest, ChunkFailureCancelsInFlightPeersFast) {
 }
 
 TEST(AzureBlobDownloaderResumeTest, UserCancelDrainsInFlightPeersFast) {
-  TempDir tmpdir;
+  auto tmpdir = TempPath::CreateTempDir();
   auto local = tmpdir.path() / "blob.bin";
 
   constexpr int32_t kChunkSize = 2 * 1024 * 1024;

@@ -155,7 +155,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/configuration.cc
     src/download/blob_download_state.cc
     src/download/blob_downloader.cc
-    src/download/cross_process_file_lock.cc
+    src/platform/cross_process_file_lock.cc
     src/download/download_manager.cc
     src/download/file_writer.cc
     src/download/inference_model_writer.cc

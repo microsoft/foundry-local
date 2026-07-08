@@ -8,7 +8,7 @@
 #include "inferencing/model_load_manager.h"
 #include "logger.h"
 
-#include "utils/temp_dir.h"
+#include "utils/temp_path.h"
 
 #include <cstdint>
 #include <filesystem>

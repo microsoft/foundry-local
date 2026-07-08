@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-#include "download/cross_process_file_lock.h"
+#include "platform/cross_process_file_lock.h"
 #include "test_helpers.h"
 
 #include "exception.h"
@@ -27,12 +27,12 @@ using namespace fl;
 
 namespace {
 
-using fl::test::TempDir;
+using fl::test::TempPath;
 
 }  // namespace
 
 TEST(CrossProcessFileLockTest, TryAcquireSucceedsForFreshDirectory) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
 
   auto lock = CrossProcessFileLock::TryAcquireForDirectory(dir.path(), fl::test::NullLog());
 
@@ -43,7 +43,7 @@ TEST(CrossProcessFileLockTest, TryAcquireSucceedsForFreshDirectory) {
 }
 
 TEST(CrossProcessFileLockTest, ReleaseOnDestructionRemovesLockFile) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   fs::path lock_file;
 
   {
@@ -59,7 +59,7 @@ TEST(CrossProcessFileLockTest, ReleaseOnDestructionRemovesLockFile) {
 }
 
 TEST(CrossProcessFileLockTest, SecondAcquireReturnsNullWhileFirstIsHeld) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   auto first = CrossProcessFileLock::TryAcquireForDirectory(dir.path(), fl::test::NullLog());
   ASSERT_NE(first, nullptr);
 
@@ -68,7 +68,7 @@ TEST(CrossProcessFileLockTest, SecondAcquireReturnsNullWhileFirstIsHeld) {
 }
 
 TEST(CrossProcessFileLockTest, ReacquireSucceedsAfterRelease) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   {
     auto first = CrossProcessFileLock::TryAcquireForDirectory(dir.path(), fl::test::NullLog());
     ASSERT_NE(first, nullptr);
@@ -78,7 +78,7 @@ TEST(CrossProcessFileLockTest, ReacquireSucceedsAfterRelease) {
 }
 
 TEST(CrossProcessFileLockTest, CreatesDirectoryIfMissing) {
-  TempDir parent;
+  auto parent = TempPath::CreateTempDir();
   auto missing = parent.path() / "nested" / "model";
 
   ASSERT_FALSE(fs::exists(missing));
@@ -91,7 +91,7 @@ TEST(CrossProcessFileLockTest, CreatesDirectoryIfMissing) {
 }
 
 TEST(CrossProcessFileLockTest, WaitForLockReturnsImmediatelyWhenAvailable) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
 
   auto start = std::chrono::steady_clock::now();
   auto lock = CrossProcessFileLock::WaitForDirectoryLock(dir.path(), []() { return false; }, fl::test::NullLog());
@@ -103,7 +103,7 @@ TEST(CrossProcessFileLockTest, WaitForLockReturnsImmediatelyWhenAvailable) {
 }
 
 TEST(CrossProcessFileLockTest, WaitForLockAcquiresAfterHolderReleases) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   auto holder = CrossProcessFileLock::TryAcquireForDirectory(dir.path(), fl::test::NullLog());
   ASSERT_NE(holder, nullptr);
 
@@ -126,7 +126,7 @@ TEST(CrossProcessFileLockTest, WaitForLockAcquiresAfterHolderReleases) {
 }
 
 TEST(CrossProcessFileLockTest, WaitForLockThrowsOnCancellation) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   auto holder = CrossProcessFileLock::TryAcquireForDirectory(dir.path(), fl::test::NullLog());
   ASSERT_NE(holder, nullptr);
 
@@ -149,7 +149,7 @@ TEST(CrossProcessFileLockTest, WaitForLockThrowsOnCancellation) {
 }
 
 TEST(CrossProcessFileLockTest, WaitForLockThrowsOnTimeout) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   auto holder = CrossProcessFileLock::TryAcquireForDirectory(dir.path(), fl::test::NullLog());
   ASSERT_NE(holder, nullptr);
 
@@ -174,7 +174,7 @@ TEST(CrossProcessFileLockTest, WaitForLockThrowsOnTimeout) {
 // in-process by SecondAcquireReturnsNullWhileFirstIsHeld (dwShareMode=0 is
 // enforced identically for same- and cross-process opens).
 TEST(CrossProcessFileLockTest, HeldAcrossProcessesAndReleasedWhenHolderExits) {
-  TempDir dir;
+  auto dir = TempPath::CreateTempDir();
   const auto acquired_signal = dir.path() / "child_acquired";
   const auto release_signal = dir.path() / "parent_done";
 

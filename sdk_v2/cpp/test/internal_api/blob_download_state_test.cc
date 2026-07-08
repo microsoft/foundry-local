@@ -17,7 +17,7 @@ using namespace fl;
 
 namespace {
 
-using fl::test::TempDir;
+using fl::test::TempPath;
 
 constexpr int64_t kBlobSize = 20 * 1024 * 1024;  // 20 MiB
 constexpr int32_t kChunkSize = 2 * 1024 * 1024;  // 2 MiB
@@ -32,7 +32,7 @@ TEST(BlobDownloadStateTest, GetStateFilePathAppendsDlstate) {
 }
 
 TEST(BlobDownloadStateTest, CreateNewInitializesEmptyBitmap) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
   ASSERT_NE(s, nullptr);
@@ -48,7 +48,7 @@ TEST(BlobDownloadStateTest, CreateNewInitializesEmptyBitmap) {
 }
 
 TEST(BlobDownloadStateTest, MarkChunkCompleteUpdatesBitmapAndCounter) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
   s->MarkChunkComplete(3);
@@ -60,7 +60,7 @@ TEST(BlobDownloadStateTest, MarkChunkCompleteUpdatesBitmapAndCounter) {
 }
 
 TEST(BlobDownloadStateTest, MarkChunkCompleteIsIdempotent) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
   s->MarkChunkComplete(5);
@@ -70,7 +70,7 @@ TEST(BlobDownloadStateTest, MarkChunkCompleteIsIdempotent) {
 }
 
 TEST(BlobDownloadStateTest, CalculateDownloadedSizeAccountsForPartialFinalChunk) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   constexpr int64_t kOddBlobSize = 4 * 1024 * 1024 + 17;  // 3 chunks of 2 MiB; last chunk is a partial 17 bytes
   constexpr int32_t kOddNumChunks = 3;
@@ -83,7 +83,7 @@ TEST(BlobDownloadStateTest, CalculateDownloadedSizeAccountsForPartialFinalChunk)
 }
 
 TEST(BlobDownloadStateTest, GetPendingChunksReturnsGaps) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
   for (int32_t i : {0, 1, 2, 5, 7}) {
@@ -95,7 +95,7 @@ TEST(BlobDownloadStateTest, GetPendingChunksReturnsGaps) {
 }
 
 TEST(BlobDownloadStateTest, SaveAndLoadRoundTrip) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   {
     auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
@@ -120,7 +120,7 @@ TEST(BlobDownloadStateTest, SaveAndLoadRoundTrip) {
 }
 
 TEST(BlobDownloadStateTest, SaveStateAdvancesBitmapByteAlignedStart) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   // Use a large enough total that whole-word advance is meaningful.
   constexpr int32_t kBigNumChunks = 200;
@@ -154,7 +154,7 @@ TEST(BlobDownloadStateTest, SaveStateAdvancesBitmapByteAlignedStart) {
 // previously accumulated +64 per word onto the unaligned base and overshot by
 // (start % 64), silently marking never-downloaded chunks complete on reload.
 TEST(BlobDownloadStateTest, SaveStateFromUnalignedStartDoesNotMarkPendingComplete) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   constexpr int32_t kBigNumChunks = 200;
   constexpr int64_t kBigBlobSize = static_cast<int64_t>(kBigNumChunks) * kChunkSize;
@@ -192,14 +192,14 @@ TEST(BlobDownloadStateTest, SaveStateFromUnalignedStartDoesNotMarkPendingComplet
 }
 
 TEST(BlobDownloadStateTest, LoadStateReturnsNullWhenFileMissing) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto s = BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, fl::test::NullLog());
   EXPECT_EQ(s, nullptr);
 }
 
 TEST(BlobDownloadStateTest, LoadStateRejectsBadMagic) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto sidecar = BlobDownloadState::GetStateFilePath(local);
   {
@@ -213,7 +213,7 @@ TEST(BlobDownloadStateTest, LoadStateRejectsBadMagic) {
 }
 
 TEST(BlobDownloadStateTest, LoadStateRejectsBlobSizeMismatch) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   {
     auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
@@ -227,7 +227,7 @@ TEST(BlobDownloadStateTest, LoadStateRejectsBlobSizeMismatch) {
 }
 
 TEST(BlobDownloadStateTest, LoadStateRejectsChunkSizeMismatch) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   {
     auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
@@ -240,7 +240,7 @@ TEST(BlobDownloadStateTest, LoadStateRejectsChunkSizeMismatch) {
 }
 
 TEST(BlobDownloadStateTest, LoadStateRejectsTotalChunksMismatch) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   {
     auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
@@ -253,7 +253,7 @@ TEST(BlobDownloadStateTest, LoadStateRejectsTotalChunksMismatch) {
 }
 
 TEST(BlobDownloadStateTest, DeleteStateRemovesSidecar) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   {
     auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
@@ -268,7 +268,7 @@ TEST(BlobDownloadStateTest, DeleteStateRemovesSidecar) {
 }
 
 TEST(BlobDownloadStateTest, IsCompleteFlipsTrueWhenAllChunksMarked) {
-  TempDir d;
+  auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";
   auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
   for (int32_t i = 0; i < kNumChunks; ++i) {

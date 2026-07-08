@@ -5,7 +5,7 @@
 // FormatProcessInfo, the CrossProcessFileLock destructor/constructor, and
 // TryAcquireForDirectory — live in
 // src/platform/{windows,posix}/cross_process_file_lock.cc.
-#include "download/cross_process_file_lock.h"
+#include "platform/cross_process_file_lock.h"
 #include "exception.h"
 
 #include <foundry_local/foundry_local_c.h>

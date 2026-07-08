@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 // POSIX implementation of CrossProcessFileLock acquisition and the
 // platform-specific lock handle. Cross-platform orchestration
-// (WaitForDirectoryLock) lives in src/download/cross_process_file_lock.cc.
-#include "download/cross_process_file_lock.h"
+// (WaitForDirectoryLock) lives in src/platform/cross_process_file_lock.cc.
+#include "platform/cross_process_file_lock.h"
 #include "exception.h"
 #include "logger.h"
 
