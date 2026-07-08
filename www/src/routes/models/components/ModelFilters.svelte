@@ -43,7 +43,7 @@
 <Card.Root class="border-border/40 bg-background shadow-sm">
 	<Card.Header class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 		<div>
-			<Card.Title class="text-2xl font-semibold">Browse Foundry Models</Card.Title>
+			<Card.Title level={2} class="text-2xl font-semibold">Browse Foundry Models</Card.Title>
 			<Card.Description>Results update automatically as you type or change filters</Card.Description
 			>
 		</div>

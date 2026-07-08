@@ -4,11 +4,10 @@
 
 #include "logger.h"
 #include "util/sha256.h"
+#include "util/string_utils.h"
 
 #include <fmt/format.h>
 
-#include <algorithm>
-#include <cctype>
 #include <string>
 
 #ifdef _WIN32
@@ -18,11 +17,43 @@
 
 namespace fl {
 
-bool VerifyEpPackage(
+bool VerifyEpArchive(
+    const std::filesystem::path& archive_path,
+    std::string_view expected_hash,
+    std::string_view ep_name,
+    ILogger& logger) {
+  if (!std::filesystem::exists(archive_path)) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: archive missing: {}", ep_name, archive_path.string()));
+    return false;
+  }
+
+  if (expected_hash.empty()) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: archive hash missing for {}", ep_name, archive_path.string()));
+    return false;
+  }
+
+  auto hash = Sha256File(archive_path);
+  if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: archive hash mismatch for {}: got {}, expected {}",
+                           ep_name,
+                           archive_path.filename().string(),
+                           hash,
+                           expected_hash));
+    return false;
+  }
+
+  return true;
+}
+
+bool VerifyEpBinaries(
     const std::filesystem::path& dir,
     std::initializer_list<std::pair<std::string_view, std::string_view>> expected,
     std::string_view ep_name,
     ILogger& logger) {
+
   for (const auto& [filename, expected_hash] : expected) {
     auto file_path = dir / filename;
 
@@ -33,8 +64,7 @@ bool VerifyEpPackage(
     auto hash = Sha256File(file_path);
 
     // Case-insensitive hex comparison
-    if (!std::equal(hash.begin(), hash.end(), expected_hash.begin(), expected_hash.end(),
-                    [](char a, char b) { return std::toupper(a) == std::toupper(b); })) {
+    if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
       logger.Log(LogLevel::Warning,
                  fmt::format("{}: hash mismatch for {}: got {}, expected {}",
                              ep_name, filename, hash, expected_hash));

@@ -687,6 +687,34 @@ FL_API_STATUS_IMPL(Catalog_GetNameImpl, const flCatalog* catalog, const char** o
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Catalog_GetModelVersionsImpl, const flCatalog* catalog,
+                   const char* model_alias, const char* model_name,
+                   int32_t max_versions, flModelList** out_models) {
+  API_IMPL_BEGIN
+  if (!catalog || !model_alias || !out_models) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  if (*model_alias == '\0') {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_alias must not be empty");
+  }
+
+  std::string alias = model_alias;
+  std::string model_name_filter = model_name ? model_name : std::string{};
+
+  auto models = catalog->impl.GetModelVersions(alias, model_name_filter, max_versions);
+  auto list = std::make_unique<flModelList>();
+  list->items.reserve(models.size());
+
+  for (auto* m : models) {
+    list->items.push_back(AsHandle<flModel>(m));
+  }
+
+  *out_models = list.release();
+  return nullptr;
+  API_IMPL_END
+}
+
 static const flCatalogApi g_catalog_api = {
     Catalog_GetNameImpl,
     Catalog_GetModelsImpl,
@@ -695,6 +723,7 @@ static const flCatalogApi g_catalog_api = {
     Catalog_GetLatestVersionImpl,
     Catalog_GetCachedModelsImpl,
     Catalog_GetLoadedModelsImpl,
+    Catalog_GetModelVersionsImpl,
 };
 
 // ========================================================================

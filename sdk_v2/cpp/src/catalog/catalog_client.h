@@ -27,6 +27,26 @@ class ICatalogClient {
   /// be resolved.
   virtual std::vector<ModelInfo> FetchModelsByIds(
       const std::vector<std::string>& model_ids) = 0;
+
+  /// Fetch all known versions of a model (by alias), bypassing the "latest only"
+  /// filter that `FetchAllModelInfos` applies. Maps to C#
+  /// `IAzureFoundryApiService.FetchAllModelVersionsAsync`.
+  ///
+  /// `model_alias` must be non-empty.
+  /// `model_name` optionally filters by variant name (default empty = no filter).
+  /// `max_versions` is applied per variant name (latest X per variant;
+  /// 0 or negative = no cap).
+  /// Implementations that cannot list older versions return whatever they have
+  /// locally.
+  ///
+  /// Provided with a default `{}` body so an implementation that has not yet
+  /// overridden it still compiles.
+  virtual std::vector<ModelInfo> FetchAllVersionsByAlias(
+      const std::string& /*model_alias*/,
+      const std::string& /*model_name*/ = "",
+      int /*max_versions*/ = 0) {
+    return {};
+  }
 };
 
 /// Production helper that combines a catalog fetch with locally cached model

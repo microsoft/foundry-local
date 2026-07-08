@@ -208,7 +208,7 @@ let response = client.complete_chat(&messages, None).await?;`,
 	class="border-primary/20 bg-primary/5 hover:border-primary/40 relative w-full rounded-xl border p-4 transition-all duration-300 hover:shadow-lg sm:p-5"
 >
 	<div class="mb-4 text-center">
-		<h3 class="text-foreground text-sm font-semibold sm:text-base">Start with the SDK</h3>
+		<h2 class="text-foreground text-sm font-semibold sm:text-base">Start with the SDK</h2>
 		<p class="text-muted-foreground mx-auto mt-1 max-w-xl text-xs">
 			Install one package, load a model, then run inference in-process.
 		</p>

@@ -15,7 +15,7 @@ import type { FoundryModel, GroupedFoundryModel } from './types';
 
 // Azure Function endpoint for CORS proxy
 const FOUNDRY_API_ENDPOINT =
-	'https://onnxruntime-foundry-proxy-hpape7gzf2haesef.eastus-01.azurewebsites.net/api/foundryproxy';
+	'https://foundry-local-cors-proxy.azurewebsites.net/api/foundryproxy';
 
 export interface ApiFilters {
 	device?: string;
@@ -276,10 +276,18 @@ export class FoundryModelService {
 			const requestBody = this.buildRequestBody(device, executionProvider, skip, continuationToken);
 
 			try {
+				// NOTE: Content-Type is intentionally "text/plain" (not "application/json").
+				// This keeps the request a CORS "simple request" so the browser does NOT
+				// send a preflight OPTIONS. The Azure Functions host intercepts preflight
+				// OPTIONS before our proxy code runs and returns 204 with no
+				// Access-Control-Allow-Origin header, which fails CORS. The proxy parses the
+				// body as JSON regardless of Content-Type, so sending text/plain is safe and
+				// avoids the preflight entirely. Do not change this back to application/json
+				// unless platform-level CORS is configured on the Function App.
 				const response = await fetch(FOUNDRY_API_ENDPOINT, {
 					method: 'POST',
 					headers: {
-						'Content-Type': 'application/json',
+						'Content-Type': 'text/plain',
 						Accept: 'application/json'
 					},
 					body: JSON.stringify(requestBody)

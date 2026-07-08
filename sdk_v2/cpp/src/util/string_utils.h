@@ -48,4 +48,30 @@ inline bool EndsWithIgnoreCase(const std::string& str, const std::string& suffix
                     });
 }
 
+/// Case-insensitive (ASCII) three-way comparison.
+/// Returns: < 0 if lhs < rhs, 0 if equal, > 0 if lhs > rhs (all case-insensitive).
+inline int CompareCaseInsensitive(const std::string& lhs, const std::string& rhs) {
+  const size_t common = std::min(lhs.size(), rhs.size());
+  for (size_t i = 0; i < common; ++i) {
+    const auto l = static_cast<unsigned char>(lhs[i]);
+    const auto r = static_cast<unsigned char>(rhs[i]);
+    const char l_lower = static_cast<char>(std::tolower(l));
+    const char r_lower = static_cast<char>(std::tolower(r));
+    if (l_lower < r_lower) {
+      return -1;
+    }
+    if (l_lower > r_lower) {
+      return 1;
+    }
+  }
+
+  if (lhs.size() < rhs.size()) {
+    return -1;
+  }
+  if (lhs.size() > rhs.size()) {
+    return 1;
+  }
+  return 0;
+}
+
 }  // namespace fl

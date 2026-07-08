@@ -247,6 +247,11 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
 
     if(WIN32)
         target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
+        # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
+        # WinHTTP is not available in UWP, so only define this on desktop Windows.
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
+        endif()
     endif()
 
     if(ANDROID)
