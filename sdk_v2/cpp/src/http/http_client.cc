@@ -22,13 +22,23 @@
 #endif
 
 #include <chrono>
+#include <cstdlib>
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fl {
 namespace http {
+
+std::string CaBundleFile() {
+  const char* cert_file = std::getenv("SSL_CERT_FILE");
+  if (cert_file != nullptr && cert_file[0] != '\0') {
+    return cert_file;
+  }
+  return {};
+}
 
 namespace {
 
@@ -48,7 +58,14 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  CurlTransport transport;
+  // The bundled libcurl does not honor the SSL_CERT_FILE environment variable (it was built with a
+  // compiled-in default CA path that does not exist on platforms like Android). Explicitly pass the
+  // CA bundle via CAInfo so the caller-provided trust store is actually used for TLS verification.
+  CurlTransportOptions curl_opts;
+  if (std::string ca_bundle = CaBundleFile(); !ca_bundle.empty()) {
+    curl_opts.CAInfo = std::move(ca_bundle);
+  }
+  CurlTransport transport(curl_opts);
 #endif
 
   // Build the request. For methods with a body (POST), attach a MemoryBodyStream.

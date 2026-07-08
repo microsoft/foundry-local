@@ -4,6 +4,7 @@
 #include "download/blob_download_state.h"
 #include "download/file_writer.h"
 #include "exception.h"
+#include "http/http_client.h"
 #include "logger.h"
 #include "util/path_safety.h"
 #include "util/string_utils.h"
@@ -18,10 +19,18 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <azure/core/context.hpp>
 #include <azure/storage/blobs.hpp>
+
+// The Azure Storage SDK builds its own libcurl transport, which — like our other curl transports —
+// does not honor SSL_CERT_FILE. On non-Windows builds we install a CurlTransport preconfigured with
+// CAInfo (see MakeBlobClientOptions below). Desktop Windows uses the default WinHTTP transport.
+#if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#include <azure/core/http/curl_transport.hpp>
+#endif
 
 namespace fl {
 
@@ -31,6 +40,24 @@ namespace {
 /// 64 KB-ish granularity Stream.CopyTo uses in .NET, capping per-worker peak
 /// memory at this many bytes regardless of chunk size.
 constexpr size_t kStreamingBufferBytes = 64 * 1024;
+
+/// Builds BlobClientOptions with the CA bundle wired into the transport. The Azure Storage SDK
+/// constructs its own libcurl transport internally, which does not consult SSL_CERT_FILE, so blob
+/// downloads would otherwise fail TLS verification on Android with "unable to get local issuer
+/// certificate". On non-Windows builds we install a CurlTransport preconfigured with CAInfo so
+/// verification uses the caller-provided trust store; on desktop Windows the default WinHTTP
+/// transport uses the OS store and is left untouched.
+Azure::Storage::Blobs::BlobClientOptions MakeBlobClientOptions() {
+  Azure::Storage::Blobs::BlobClientOptions options;
+#if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+  if (std::string ca_bundle = fl::http::CaBundleFile(); !ca_bundle.empty()) {
+    Azure::Core::Http::CurlTransportOptions curl_opts;
+    curl_opts.CAInfo = std::move(ca_bundle);
+    options.Transport.Transport = std::make_shared<Azure::Core::Http::CurlTransport>(curl_opts);
+  }
+#endif
+  return options;
+}
 
 }  // namespace
 
@@ -55,7 +82,7 @@ AzureBlobDownloader::AzureBlobDownloader(ILogger& logger) : logger_(logger) {}
 
 std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_uri) {
   try {
-    auto container_client = Azure::Storage::Blobs::BlobContainerClient(sas_uri);
+    auto container_client = Azure::Storage::Blobs::BlobContainerClient(sas_uri, MakeBlobClientOptions());
     std::vector<BlobItemInfo> items;
 
     for (auto page = container_client.ListBlobs(); page.HasPage(); page.MoveToNextPage()) {
@@ -137,7 +164,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
   try {
     // Configure retry at the SDK level instead of a manual retry loop.
     // Exponential backoff: 2s initial delay, 30s cap, generous retry count.
-    Azure::Storage::Blobs::BlobClientOptions client_options;
+    // MakeBlobClientOptions wires the CA bundle into the transport (see its comment).
+    auto client_options = MakeBlobClientOptions();
     client_options.Retry.MaxRetries = 10;
     client_options.Retry.RetryDelay = std::chrono::milliseconds{2000};
     client_options.Retry.MaxRetryDelay = std::chrono::milliseconds{30000};

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "http/http_download.h"
 
+#include "http/http_client.h"
 #include "logger.h"
 #include "util/string_utils.h"
 
@@ -17,8 +18,10 @@
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 
 namespace fl {
 
@@ -40,7 +43,14 @@ bool HttpDownloadFile(const std::string& url,
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  CurlTransport transport;
+  // The bundled libcurl does not honor the SSL_CERT_FILE environment variable (it was built with a
+  // compiled-in default CA path that does not exist on platforms like Android). Explicitly pass the
+  // CA bundle via CAInfo so the caller-provided trust store is actually used for TLS verification.
+  CurlTransportOptions curl_opts;
+  if (std::string ca_bundle = http::CaBundleFile(); !ca_bundle.empty()) {
+    curl_opts.CAInfo = std::move(ca_bundle);
+  }
+  CurlTransport transport(curl_opts);
 #endif
   Request request(HttpMethod::Get, Url(url));
   request.SetHeader("User-Agent", user_agent);
