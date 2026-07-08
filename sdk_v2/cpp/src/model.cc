@@ -231,19 +231,19 @@ void Model::Load(ExecutionProvider ep) {
       }
     };
 
-    enrich(tag_info.tool_call_start_str, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
-    enrich(tag_info.tool_call_end_str, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
-    enrich(tag_info.reasoning_start_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
-    enrich(tag_info.reasoning_end_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
+    enrich(tag_info.bot_str, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
+    enrich(tag_info.eot_str, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+    enrich(tag_info.bor_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
+    enrich(tag_info.eor_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
 
     // Infer support flags from the presence of valid tag IDs
     if (!info_.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT)) {
-      if (tag_info.tool_call_start_id >= 0) {
+      if (tag_info.bot_id >= 0) {
         info_.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] = 1;
       }
     }
     if (!info_.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT)) {
-      if (tag_info.reasoning_start_id >= 0) {
+      if (tag_info.bor_id >= 0) {
         info_.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] = 1;
       }
     }

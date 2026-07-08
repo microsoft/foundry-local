@@ -142,13 +142,13 @@ const std::vector<int32_t>& GenAIModelInstance::GetEosTokenIds() {
 
 const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
   std::call_once(tag_info_init_flag_, [this]() {
-    if (!oga_model_) return;
+    if (!tokenizer_) return;
 
-    // Get tag IDs from GenAI (config first, then fallback-encoded via tokenizer vocab lookup)
-    tag_info_.tool_call_start_id = oga_model_->GetTagId("tool_call_start");
-    tag_info_.tool_call_end_id = oga_model_->GetTagId("tool_call_end");
-    tag_info_.reasoning_start_id = oga_model_->GetTagId("reasoning_start");
-    tag_info_.reasoning_end_id = oga_model_->GetTagId("reasoning_end");
+    // Get tag IDs from the tokenizer (reads from config, with fallback vocab lookup)
+    tag_info_.bot_id = tokenizer_->GetBotTokenId();
+    tag_info_.eot_id = tokenizer_->GetEotTokenId();
+    tag_info_.bor_id = tokenizer_->GetBorTokenId();
+    tag_info_.eor_id = tokenizer_->GetEorTokenId();
 
     // Decode each valid ID once through the special tokenizer to get the string.
     // Uses tokenizer_with_special_ so that special token text (e.g., "<tool_call>") is produced.
@@ -159,10 +159,10 @@ const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
       return p ? std::string(p) : std::string();
     };
 
-    tag_info_.tool_call_start_str = decode_id(tag_info_.tool_call_start_id);
-    tag_info_.tool_call_end_str = decode_id(tag_info_.tool_call_end_id);
-    tag_info_.reasoning_start_str = decode_id(tag_info_.reasoning_start_id);
-    tag_info_.reasoning_end_str = decode_id(tag_info_.reasoning_end_id);
+    tag_info_.bot_str = decode_id(tag_info_.bot_id);
+    tag_info_.eot_str = decode_id(tag_info_.eot_id);
+    tag_info_.bor_str = decode_id(tag_info_.bor_id);
+    tag_info_.eor_str = decode_id(tag_info_.eor_id);
   });
 
   return tag_info_;

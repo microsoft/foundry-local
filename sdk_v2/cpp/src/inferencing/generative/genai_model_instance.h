@@ -39,16 +39,19 @@ class GenAIModelInstance {
   /// Cached tag token IDs and their decoded strings for efficient detection.
   /// IDs are used for integer comparison in the decode loop (fast path).
   /// Strings are used by ToolCallContext/Accumulator for text-based processing.
-  /// Populated once at first access via OgaModel::GetTagId + tokenizer decode.
+  /// Populated once at first access via OgaTokenizer getters + tokenizer decode.
+  /// Naming follows bos/eos/pad convention:
+  ///   bot = beginning of tool (call), eot = end of tool (call)
+  ///   bor = beginning of reasoning,   eor = end of reasoning
   struct TagInfo {
-    int32_t tool_call_start_id{-1};
-    int32_t tool_call_end_id{-1};
-    int32_t reasoning_start_id{-1};
-    int32_t reasoning_end_id{-1};
-    std::string tool_call_start_str;
-    std::string tool_call_end_str;
-    std::string reasoning_start_str;
-    std::string reasoning_end_str;
+    int32_t bot_id{-1};
+    int32_t eot_id{-1};
+    int32_t bor_id{-1};
+    int32_t eor_id{-1};
+    std::string bot_str;
+    std::string eot_str;
+    std::string bor_str;
+    std::string eor_str;
   };
   const TagInfo& GetTagInfo();
 

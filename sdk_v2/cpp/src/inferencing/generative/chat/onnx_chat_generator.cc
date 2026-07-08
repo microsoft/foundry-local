@@ -88,25 +88,25 @@ std::string OnnxChatGenerator::Decode() {
   // When tag IDs are configured (>= 0), we detect tool-call and reasoning tokens
   // with a simple integer comparison, avoiding the expensive double-decode + string search.
   const auto& tag_info = model_.GetTagInfo();
-  bool has_tag_ids = (tag_info.tool_call_start_id >= 0 || tag_info.tool_call_end_id >= 0 ||
-                      tag_info.reasoning_start_id >= 0 || tag_info.reasoning_end_id >= 0);
+  bool has_tag_ids = (tag_info.bot_id >= 0 || tag_info.eot_id >= 0 ||
+                      tag_info.bor_id >= 0 || tag_info.eor_id >= 0);
 
   if (has_tag_ids) {
-    if (token_id == tag_info.tool_call_start_id) {
+    if (token_id == tag_info.bot_id) {
       stream_->Decode(token_id);  // keep normal stream in sync
-      return tag_info.tool_call_start_str;
+      return tag_info.bot_str;
     }
-    if (token_id == tag_info.tool_call_end_id) {
+    if (token_id == tag_info.eot_id) {
       stream_->Decode(token_id);
-      return tag_info.tool_call_end_str;
+      return tag_info.eot_str;
     }
-    if (token_id == tag_info.reasoning_start_id) {
+    if (token_id == tag_info.bor_id) {
       stream_->Decode(token_id);
-      return tag_info.reasoning_start_str;
+      return tag_info.bor_str;
     }
-    if (token_id == tag_info.reasoning_end_id) {
+    if (token_id == tag_info.eor_id) {
       stream_->Decode(token_id);
-      return tag_info.reasoning_end_str;
+      return tag_info.eor_str;
     }
 
     // Not a tag token — decode normally (no special stream needed)
