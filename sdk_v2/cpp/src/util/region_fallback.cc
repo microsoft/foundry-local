@@ -104,10 +104,6 @@ const std::map<std::string, std::vector<std::string>>& ProximalRegions() {
   return kMap;
 }
 
-std::string DescribeStatus(int status) {
-  return status == 0 ? "transport failure" : ("HTTP " + std::to_string(status));
-}
-
 }  // namespace
 
 bool IsRegionRetryableStatus(int status) {
@@ -202,10 +198,14 @@ FallbackResult RegionFallback::Execute(const std::string& start_region, const At
       failure_summary += ", ";
     }
 
-    failure_summary += region + "(" + DescribeStatus(response.status) + ")";
+    // Preserve the underlying failure detail (e.g. the libcurl/TLS error carried in the body on a
+    // transport failure) so both the aggregated summary and the device logs are actionable rather
+    // than an opaque "transport failure".
+    const std::string detail = http::DescribeFailure(response);
+    failure_summary += region + "(" + detail + ")";
     logger_.Log(LogLevel::Warning,
-                "RegionFallback: region '" + region + "' unhealthy (" +
-                    DescribeStatus(response.status) + "); trying next candidate.");
+                "RegionFallback: region '" + region + "' unhealthy (" + detail +
+                    "); trying next candidate.");
   }
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
