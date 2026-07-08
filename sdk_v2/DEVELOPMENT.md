@@ -106,11 +106,13 @@ CLI Example:
 # 1) Inspect aliases available on your machine/region
 foundry model list
 
-# 2) Download the models needed by sdk_v2 integration tests
-foundry model download qwen2.5-0.5b
-foundry model download openai-whisper-tiny
-foundry model download qwen3-embedding-0.6b
-foundry model download nemotron-speech-streaming-en-0.6b
+# 2) Download the CPU models needed by sdk_v2 integration tests
+foundry model download qwen2.5-0.5b-instruct-generic-cpu
+foundry model download qwen3.5-0.8b-generic-cpu
+foundry model download deepseek-r1-distill-qwen-14b-generic-cpu
+foundry model download openai-whisper-tiny-generic-cpu
+foundry model download qwen3-embedding-0.6b-generic-cpu
+foundry model download nemotron-speech-streaming-en-0.6b-generic-cpu
 ```
 
 Then set env var `FOUNDRY_TEST_DATA_DIR` to the cache path you want tests to use.
@@ -118,7 +120,7 @@ Then set env var `FOUNDRY_TEST_DATA_DIR` to the cache path you want tests to use
 Example:
 
 ```powershell
-$env:FOUNDRY_TEST_DATA_DIR = 'C:\path\to\model-cache'
+$env:FOUNDRY_TEST_DATA_DIR = '$env:USERPROFILE\.foundry\cache\models\Microsoft'
 pwsh ./build_and_test_all.ps1
 ```
 
