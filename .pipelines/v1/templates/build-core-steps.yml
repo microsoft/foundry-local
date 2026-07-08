@@ -36,21 +36,12 @@ steps:
       <configuration>
         <packageSources>
           <clear />
-          <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
           <add key="AIFoundryLocal_PublicPackages" value="https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json" />
         </packageSources>
-        <packageSourceMapping>
-          <packageSource key="feed-AIFoundryLocal_PublicPackages">
-            <package pattern="Microsoft.Telemetry*" />
-          </packageSource>
-          <packageSource key="nuget.org">
-            <package pattern="*" />
-          </packageSource>
-        </packageSourceMapping>
       </configuration>
       "@
       Set-Content -Path "$(nsRoot)/nuget.config" -Value $nugetConfig
-      Write-Host "Updated nuget.config to use nuget.org, AIFoundryLocal_PublicPackages, and Neutron with mappings"
+      Write-Host "Updated nuget.config to use the AIFoundryLocal_PublicPackages feed."
 
 - ${{ if eq(parameters.isWinML, true) }}:
   - task: DotNetCoreCLI@2
