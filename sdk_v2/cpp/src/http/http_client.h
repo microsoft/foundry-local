@@ -27,6 +27,14 @@ struct HttpRequestOptions {
   bool close_connection = false;
 };
 
+/// Returns the CA bundle file path from the `SSL_CERT_FILE` environment variable, or an empty
+/// string when it is unset/empty. The bundled libcurl does not consult `SSL_CERT_FILE`
+/// automatically (it was built with a compiled-in default CA path that does not exist on platforms
+/// like Android), so every libcurl-based transport we construct — direct requests, file downloads,
+/// and the Azure Storage blob client — must pass this explicitly as `CAInfo`. On desktop Windows the
+/// WinHTTP transport uses the OS trust store and ignores this.
+std::string CaBundleFile();
+
 /// Perform an HTTP POST and return status, headers, and body without throwing on non-2xx responses.
 /// Transport failures are returned as `status == 0` with the error message in `body`.
 HttpResponse HttpPostWithResponse(const std::string& url,
