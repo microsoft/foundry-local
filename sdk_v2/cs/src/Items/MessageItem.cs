@@ -1,13 +1,14 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
+﻿// --------------------------------------------------------------------------------------------------------------------
+// <copyright company="Microsoft">
+//   Copyright (c) Microsoft. All rights reserved.
+// </copyright>
+// --------------------------------------------------------------------------------------------------------------------
 
-using System.Collections.Generic;
+namespace Microsoft.AI.Foundry.Local;
 using System.Runtime.InteropServices;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 using Microsoft.AI.Foundry.Local.Detail.Native;
-
-namespace Microsoft.AI.Foundry.Local;
 
 /// <summary>
 /// Chat message with role, typed content parts, and optional participant name.

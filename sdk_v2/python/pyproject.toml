@@ -1,8 +1,7 @@
 [build-system]
 requires = ["setuptools>=68", "cffi>=1.16", "wheel"]
-# Custom backend wraps setuptools.build_meta to honour the
-# FL_PYTHON_PACKAGE_NAME env var (used by CI to produce the
-# `foundry-local-sdk-winml` variant from the same source tree).
+# Custom backend wraps setuptools.build_meta to rewrite the ORT/GenAI
+# version pins from sdk_v2/deps_versions.json at wheel-build time.
 build-backend = "_build_backend"
 backend-path = ["."]
 
@@ -40,8 +39,7 @@ classifiers = [
 # ORT/GenAI version pins below use sentinel ``0.0.0``. The real versions
 # come from sdk_v2/deps_versions.json — the _build_backend rewrites these
 # pins from JSON at wheel-build time. JSON is the single source of truth;
-# bumping ORT versions is a one-file edit. The WinML wheel variant shares
-# the same ORT/GenAI versions and only differs in the distribution name.
+# bumping ORT versions is a one-file edit.
 #
 # If a wheel ever ships with ``==0.0.0`` it means the backend wasn't
 # invoked (e.g. raw setuptools bypass) — pip install will fail loudly

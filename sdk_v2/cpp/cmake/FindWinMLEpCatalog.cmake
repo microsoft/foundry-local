@@ -41,8 +41,8 @@ endif()
 
 # The package's own CMake config FATAL_ERRORs on architectures it doesn't ship
 # binaries for (anything other than x64/ARM64). Pre-check so we degrade to a soft
-# disable instead of halting configuration when someone builds e.g. ARM64EC with
-# FOUNDRY_LOCAL_USE_WINML=ON.
+# disable instead of halting configuration when someone builds e.g. ARM64EC on
+# Windows.
 if(CMAKE_GENERATOR_PLATFORM)
     string(TOUPPER "${CMAKE_GENERATOR_PLATFORM}" _WINML_PLATFORM_UPPER)
 elseif(CMAKE_VS_PLATFORM_NAME)

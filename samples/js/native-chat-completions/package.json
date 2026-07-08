@@ -8,8 +8,5 @@
   },
   "dependencies": {
     "foundry-local-sdk": "latest"
-  },
-  "optionalDependencies": {
-    "foundry-local-sdk-winml": "latest"
   }
 }

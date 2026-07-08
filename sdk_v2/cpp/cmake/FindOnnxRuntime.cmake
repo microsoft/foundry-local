@@ -4,8 +4,7 @@
 # Sources ORT from Microsoft.ML.OnnxRuntime.Foundry (or Microsoft.ML.OnnxRuntime
 # on Android) via FetchContent — nuget.org for releases, the ORT-Nightly ADO
 # feed for -dev- versions. The version comes from sdk_v2/deps_versions.json and
-# is shared by WinML and non-WinML builds; FOUNDRY_LOCAL_USE_WINML only gates
-# the WinML EP catalog in FindWinMLEpCatalog.cmake.
+# is shared by all platforms.
 #
 # Creates an IMPORTED target: OnnxRuntime::OnnxRuntime
 
@@ -39,25 +38,6 @@ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "x64" OR CMAKE_GENERATOR_PLATFORM STREQ
     set(_ORT_PLATFORM "win-x64")
 else()
     message(FATAL_ERROR "Unsupported platform for OnnxRuntime: ${CMAKE_GENERATOR_PLATFORM} on ${CMAKE_SYSTEM_NAME}")
-endif()
-
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    # WinML is only available on Windows
-    set(FOUNDRY_LOCAL_USE_WINML OFF)
-endif()
-
-if(FOUNDRY_LOCAL_USE_WINML)
-    # FOUNDRY_LOCAL_USE_WINML opts in to the WinML EP catalog (see FindWinMLEpCatalog.cmake) but
-    # does NOT change where ORT comes from. We always link against our own ORT
-    # (Microsoft.ML.OnnxRuntime.Foundry) because it enables CUDA and WebGPU EPs.
-    #
-    # Which onnxruntime.dll the process actually binds to at runtime is determined by the
-    # binding-side preload contract (see sdk_v2/cpp/docs/OrtRuntimeLoading.md), not by build
-    # layout. Co-location of our onnxruntime.dll next to foundry_local.dll keeps in-tree
-    # tests and examples zero-config, but is not a correctness guarantee for arbitrary
-    # deployments — bindings preload the intended onnxruntime.dll by absolute path before
-    # loading foundry_local.
-    message(STATUS "FOUNDRY_LOCAL_USE_WINML=ON: WinML EP catalog enabled; ORT still sourced from Microsoft.ML.OnnxRuntime.Foundry")
 endif()
 
 if(ORT_HOME)
@@ -240,7 +220,7 @@ else()
     set_target_properties(OnnxRuntime::OnnxRuntime PROPERTIES
         IMPORTED_IMPLIB "${_ORT_LIB_DIR}/onnxruntime.lib"
     )
-    # On Windows, the runtime DLL sits next to the import lib for both flavors.
+    # On Windows, the runtime DLL sits next to the import lib.
     if(NOT _ORT_DLL_DIR)
         set(_ORT_DLL_DIR "${_ORT_LIB_DIR}")
     endif()

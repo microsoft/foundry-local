@@ -14,11 +14,9 @@
 From `sdk_v2/cs/`:
 ```
 dotnet pack src/Microsoft.AI.Foundry.Local.csproj -o ../../local-packages /p:IsPacking=true /p:TreatWarningsAsErrors=false -c Release
-dotnet pack src/Microsoft.AI.Foundry.Local.csproj -o ../../local-packages /p:IsPacking=true /p:UseWinML=true /p:TreatWarningsAsErrors=false -c Release
 ```
 - `IsPacking=true` auto-sets `Version=0.5.0-dev.local.<yyyyMMddHHmmss>` (see `Microsoft.AI.Foundry.Local.csproj`).
-- `UseWinML=true` flips `PackageId`/`AssemblyName` to `Microsoft.AI.Foundry.Local.WinML`; both SKUs share the `net8.0;net9.0` TFM set (WinML SKU omits `netstandard2.0`).
-- Cross-platform + WinML are independent packages — most samples reference WinML on Windows and the cross-platform package elsewhere, so both must be packed.
+- The single `Microsoft.AI.Foundry.Local` package targets `net8.0;net9.0;netstandard2.0` and bundles the WinML 2.x runtime on Windows automatically — there is no separate WinML SKU to pack.
 
 ## Full clean-rebuild
 ```

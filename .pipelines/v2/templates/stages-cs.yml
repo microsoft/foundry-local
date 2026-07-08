@@ -1,241 +1,145 @@
-# Build + test stages for the sdk_v2 C# SDK, parameterized by variant.
+# Build + test stages for the sdk_v2 C# SDK.
 #
-#   variant: base   -> Microsoft.AI.Foundry.Local       (build + test win/linux/osx)
-#   variant: winml  -> Microsoft.AI.Foundry.Local.WinML (build + test win only)
+# Produces Microsoft.AI.Foundry.Local (build + test win/linux/osx). On Windows
+# the native runtime it consumes bundles the reg-free WinML 2.x runtime, so a
+# single package serves every platform.
 #
-# Depends on the matching native pack stage from stages-build-native.yml:
-#   base  -> cpp_pack_nuget       (artifact: cpp-nuget)
-#   winml -> cpp_pack_nuget_winml (artifact: cpp-nuget-winml)
+# Depends on the native pack stage from stages-build-native.yml:
+#   cpp_pack_nuget  (artifact: cpp-nuget)
 #
-# Produces a `cs-sdk-v2-<variant>` pipeline artifact containing the signed
-# .nupkg (+ .snupkg).
-
-parameters:
-- name: variant
-  type: string
-  default: 'base'
-  values: ['base', 'winml']
-
-# Per-variant config block selected at template-expansion time. Keeps the
-# stage bodies free of nested ${{ if }} branching for static naming.
-- name: _config_base
-  type: object
-  default:
-    suffix: 'base'
-    isWinML: false
-    packStage: 'cpp_pack_nuget'
-    nativeArtifact: 'cpp-nuget'
-    csArtifact: 'cs-sdk-v2-base'
-
-- name: _config_winml
-  type: object
-  default:
-    suffix: 'winml'
-    isWinML: true
-    packStage: 'cpp_pack_nuget_winml'
-    nativeArtifact: 'cpp-nuget-winml'
-    csArtifact: 'cs-sdk-v2-winml'
+# Produces a `cs-sdk-v2` pipeline artifact containing the signed .nupkg (+ .snupkg).
 
 stages:
 
 # ====================================================================
 # Build stage — produces the C# SDK NuGet package.
 # ====================================================================
-- ${{ if eq(parameters.variant, 'base') }}:
-  - stage: cs_build_base
-    displayName: 'C# SDK: Build (base)'
-    dependsOn:
-    - compute_version
-    - ${{ parameters._config_base.packStage }}
-    jobs:
-    - job: build
-      pool:
-        name: onnxruntime-Win-CPU-2022
-        os: windows
-      templateContext:
-        inputs:
-        - input: pipelineArtifact
-          artifactName: 'version-info'
-          targetPath: '$(Pipeline.Workspace)/version-info'
-        - input: pipelineArtifact
-          artifactName: ${{ parameters._config_base.nativeArtifact }}
-          targetPath: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-        outputs:
-        - output: pipelineArtifact
-          artifactName: ${{ parameters._config_base.csArtifact }}
-          targetPath: '$(Build.ArtifactStagingDirectory)/cs-sdk'
-      steps:
-      - checkout: self
-        clean: true
-      - template: steps-build-cs.yml
-        parameters:
-          flNugetDir: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-          isWinML: false
-          outputDir: '$(Build.ArtifactStagingDirectory)/cs-sdk'
-
-- ${{ if eq(parameters.variant, 'winml') }}:
-  - stage: cs_build_winml
-    displayName: 'C# SDK: Build (WinML)'
-    dependsOn:
-    - compute_version
-    - ${{ parameters._config_winml.packStage }}
-    jobs:
-    - job: build
-      pool:
-        name: onnxruntime-Win-CPU-2022
-        os: windows
-      templateContext:
-        inputs:
-        - input: pipelineArtifact
-          artifactName: 'version-info'
-          targetPath: '$(Pipeline.Workspace)/version-info'
-        - input: pipelineArtifact
-          artifactName: ${{ parameters._config_winml.nativeArtifact }}
-          targetPath: '$(Pipeline.Workspace)/${{ parameters._config_winml.nativeArtifact }}'
-        outputs:
-        - output: pipelineArtifact
-          artifactName: ${{ parameters._config_winml.csArtifact }}
-          targetPath: '$(Build.ArtifactStagingDirectory)/cs-sdk'
-      steps:
-      - checkout: self
-        clean: true
-      - template: steps-build-cs.yml
-        parameters:
-          flNugetDir: '$(Pipeline.Workspace)/${{ parameters._config_winml.nativeArtifact }}'
-          isWinML: true
-          outputDir: '$(Build.ArtifactStagingDirectory)/cs-sdk'
+- stage: cs_build
+  displayName: 'C# SDK: Build'
+  dependsOn:
+  - compute_version
+  - cpp_pack_nuget
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'cs-sdk-v2'
+        targetPath: '$(Build.ArtifactStagingDirectory)/cs-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-cs.yml
+      parameters:
+        flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+        outputDir: '$(Build.ArtifactStagingDirectory)/cs-sdk'
 
 # ====================================================================
 # Test — Windows x64
 # ====================================================================
-- ${{ if eq(parameters.variant, 'base') }}:
-  - stage: cs_test_win_x64
-    displayName: 'C# SDK: Test Windows x64 (base)'
-    dependsOn:
-    - cs_build_base
-    jobs:
-    - job: test
-      pool:
-        name: onnxruntime-Win-CPU-2022
-        os: windows
-      templateContext:
-        inputs:
-        - input: pipelineArtifact
-          artifactName: 'version-info'
-          targetPath: '$(Pipeline.Workspace)/version-info'
-        - input: pipelineArtifact
-          artifactName: ${{ parameters._config_base.nativeArtifact }}
-          targetPath: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-      steps:
-      - checkout: self
-        clean: true
-      - template: ../../templates/checkout-steps.yml@self
-        parameters:
-          repoName: test-data-shared
-      - template: steps-test-cs.yml
-        parameters:
-          flNugetDir: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-          isWinML: false
-          testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-
-- ${{ if eq(parameters.variant, 'winml') }}:
-  - stage: cs_test_win_x64_winml
-    displayName: 'C# SDK: Test Windows x64 (WinML)'
-    dependsOn:
-    - cs_build_winml
-    jobs:
-    - job: test
-      pool:
-        name: onnxruntime-Win-CPU-2022
-        os: windows
-      templateContext:
-        inputs:
-        - input: pipelineArtifact
-          artifactName: 'version-info'
-          targetPath: '$(Pipeline.Workspace)/version-info'
-        - input: pipelineArtifact
-          artifactName: ${{ parameters._config_winml.nativeArtifact }}
-          targetPath: '$(Pipeline.Workspace)/${{ parameters._config_winml.nativeArtifact }}'
-      steps:
-      - checkout: self
-        clean: true
-      - template: ../../templates/checkout-steps.yml@self
-        parameters:
-          repoName: test-data-shared
-      - template: steps-test-cs.yml
-        parameters:
-          flNugetDir: '$(Pipeline.Workspace)/${{ parameters._config_winml.nativeArtifact }}'
-          isWinML: true
-          testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+- stage: cs_test_win_x64
+  displayName: 'C# SDK: Test Windows x64'
+  dependsOn:
+  - cs_build
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-cs.yml
+      parameters:
+        flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # ====================================================================
-# Test — Linux x64 / macOS ARM64 (base variant only; WinML is Windows-only)
+# Test — Linux x64 / macOS ARM64
 # ====================================================================
-- ${{ if eq(parameters.variant, 'base') }}:
-  - stage: cs_test_linux_x64
-    displayName: 'C# SDK: Test Linux x64 (base)'
-    dependsOn:
-    - cs_build_base
-    jobs:
-    - job: test
-      pool:
-        name: onnxruntime-Ubuntu2404-AMD-CPU
-        os: linux
-      templateContext:
-        inputs:
-        - input: pipelineArtifact
-          artifactName: 'version-info'
-          targetPath: '$(Pipeline.Workspace)/version-info'
-        - input: pipelineArtifact
-          artifactName: ${{ parameters._config_base.nativeArtifact }}
-          targetPath: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-      steps:
-      - checkout: self
-        clean: true
-      - template: ../../templates/checkout-steps.yml@self
-        parameters:
-          repoName: test-data-shared
-      - template: steps-test-cs.yml
-        parameters:
-          flNugetDir: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-          isWinML: false
-          testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+- stage: cs_test_linux_x64
+  displayName: 'C# SDK: Test Linux x64'
+  dependsOn:
+  - cs_build
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-cs.yml
+      parameters:
+        flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
-  - stage: cs_test_osx_arm64
-    displayName: 'C# SDK: Test macOS ARM64 (base)'
-    dependsOn:
-    - cs_build_base
-    jobs:
-    - job: test
-      pool:
-        name: AcesShared
-        os: macOS
-        demands:
-        - ImageOverride -equals ACES_VM_SharedPool_Sequoia
-      templateContext:
-        inputs:
-        - input: pipelineArtifact
-          artifactName: 'version-info'
-          targetPath: '$(Pipeline.Workspace)/version-info'
-        - input: pipelineArtifact
-          artifactName: ${{ parameters._config_base.nativeArtifact }}
-          targetPath: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-      steps:
-      - checkout: self
-        clean: true
-      - bash: |
-          set -euo pipefail
-          if ! command -v git-lfs >/dev/null 2>&1; then
-            brew install git-lfs
-          fi
-          git lfs install
-        displayName: 'Install git-lfs (macOS)'
-      - template: ../../templates/checkout-steps.yml@self
-        parameters:
-          repoName: test-data-shared
-      - template: steps-test-cs.yml
-        parameters:
-          flNugetDir: '$(Pipeline.Workspace)/${{ parameters._config_base.nativeArtifact }}'
-          isWinML: false
-          testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-          additionalTestArgs: '--settings $(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/sequential.runsettings'
+- stage: cs_test_osx_arm64
+  displayName: 'C# SDK: Test macOS ARM64'
+  dependsOn:
+  - cs_build
+  jobs:
+  - job: test
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+    steps:
+    - checkout: self
+      clean: true
+    - bash: |
+        set -euo pipefail
+        if ! command -v git-lfs >/dev/null 2>&1; then
+          brew install git-lfs
+        fi
+        git lfs install
+      displayName: 'Install git-lfs (macOS)'
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-cs.yml
+      parameters:
+        flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        additionalTestArgs: '--settings $(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/sequential.runsettings'

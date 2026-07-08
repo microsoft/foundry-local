@@ -19,7 +19,6 @@ Out of scope (deferred):
 
 - **Linux ARM64.** Cross-cutting ARM64 work item will add this for C++,
   C#, Python, and JS together.
-- **WinML variant.** JS is scoped out by the base plan.
 - **npm publishing.** Pipeline produces the `.tgz` as an artifact only.
 
 ## Supported platforms

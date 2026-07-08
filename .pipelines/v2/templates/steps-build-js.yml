@@ -123,9 +123,10 @@ steps:
       FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
 
 # Stage prebuilds/<plat>-<arch>/ with the two .node addons + foundry_local
-# shared library. binding.gyp's copy_addon_to_prebuilds target already
-# drops the .node files into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy
-# from there into the artifact dir alongside the shared library.
+# shared library (and, on Windows, the reg-free WinML 2.x runtime DLL).
+# binding.gyp's copy_addon_to_prebuilds target already drops the .node files
+# into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy from there into the artifact
+# dir alongside the shared library.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - pwsh: |
       $dst = "${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"
@@ -144,6 +145,16 @@ steps:
       if (-not (Test-Path $nativeLibPath)) { throw "Native lib not found: $nativeLibPath" }
       Copy-Item $nativeLibPath -Destination $dst -Force
       Write-Host "  staged $(nativeLib)"
+
+      # WinML 2.x runtime ships next to foundry_local.dll so WinML EPs work out
+      # of the box. It is Microsoft-signed (NuGet) — excluded from ESRP signing.
+      $winmlDll = Join-Path "${{ parameters.nativeArtifactDir }}" 'Microsoft.Windows.AI.MachineLearning.dll'
+      if (Test-Path $winmlDll) {
+        Copy-Item $winmlDll -Destination $dst -Force
+        Write-Host "  staged Microsoft.Windows.AI.MachineLearning.dll"
+      } else {
+        throw "WinML runtime DLL not found in native artifact: $winmlDll"
+      }
 
       Get-ChildItem $dst | ForEach-Object { Write-Host "    $($_.Name)  $($_.Length) bytes" }
     displayName: 'Stage prebuild directory'

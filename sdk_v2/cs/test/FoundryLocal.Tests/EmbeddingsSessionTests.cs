@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
+
 using TUnit.Core.Exceptions;
 
 #pragma warning disable CA2000 // Items are transferred to Request via AddItem

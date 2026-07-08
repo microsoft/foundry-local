@@ -1,7 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <UseWinML Condition="'$(UseWinML)' == ''">false</UseWinML>
     <IsWindows Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IsWindows>
 
     <!-- Always test on the .NET (Core) LTS pair. The Windows default SKU also targets
@@ -12,7 +11,7 @@
          scripts pass an explicit framework filter so the .NET (Core) test suite
          only runs once. -->
     <TargetFrameworks>net8.0</TargetFrameworks>
-    <TargetFrameworks Condition="'$(IsWindows)' == 'true' And '$(UseWinML)' != 'true'">net462;net8.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(IsWindows)' == 'true'">net462;net8.0</TargetFrameworks>
 
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

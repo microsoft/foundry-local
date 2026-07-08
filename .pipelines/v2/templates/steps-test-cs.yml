@@ -8,9 +8,6 @@ parameters:
 - name: flNugetDir
   type: string
   displayName: 'Path to directory containing the Foundry Local Runtime .nupkg'
-- name: isWinML
-  type: boolean
-  default: false
 - name: testDataSharedDir
   type: string
   displayName: 'Absolute path to a checked-out test-data-shared working tree'
@@ -81,7 +78,7 @@ steps:
   displayName: 'Authenticate NuGet feeds'
 
 # Per-job NuGet isolation to prevent "Central Directory corrupt" / file-locking
-# errors when multiple C# test jobs (regular + WinML) run concurrently on the
+# errors when multiple C# test jobs run concurrently on the
 # same reused agent. Keyed by $(System.JobId); cleaned on each run.
 - task: PowerShell@2
   displayName: 'Set isolated NuGet packages path'
@@ -117,7 +114,6 @@ steps:
 
       dotnet restore $proj `
         --configfile "$(customNugetConfig)" `
-        /p:UseWinML=${{ parameters.isWinML }} `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir= `
         /p:RuntimeIdentifiers=$rid
@@ -125,7 +121,6 @@ steps:
 
       dotnet build $proj `
         --no-restore --configuration Release `
-        /p:UseWinML=${{ parameters.isWinML }} `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir= `
         /p:RuntimeIdentifiers=$rid
@@ -161,15 +156,14 @@ steps:
 
       # Test TFMs:
       #   * net9.0 covers the .NET (Core) runtime test surface.
-      #   * net462 (Windows only, non-WinML) exercises the netstandard2.0 surface
+      #   * net462 (Windows only) exercises the netstandard2.0 surface
       #     + polyfills at runtime on .NET Framework.
       # The csproj also targets net8.0, but only as build-time coverage — the .NET
       # back-compat guarantee means a successful net9.0 test run validates the same
       # assemblies for net8.0 consumers.
       $frameworks = @('net9.0')
       $isWin = $IsWindows -or ($PSVersionTable.Platform -eq $null)
-      $isWinML = '${{ parameters.isWinML }}' -eq 'True'
-      if ($isWin -and -not $isWinML) {
+      if ($isWin) {
         $frameworks += 'net462'
       }
 
@@ -178,7 +172,6 @@ steps:
         dotnet test $proj `
           --no-build --configuration Release `
           --framework $tfm `
-          /p:UseWinML=${{ parameters.isWinML }} `
           ${{ parameters.additionalTestArgs }}
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       }

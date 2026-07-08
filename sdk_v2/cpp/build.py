@@ -161,16 +161,9 @@ def _parse_args() -> argparse.Namespace:
         "--skip_service", action="store_true", help="Skip building web service support (oat++)."
     )
     parser.add_argument(
-        "--use_winml", action="store_true",
-        help="Enable the WinML EP catalog (Microsoft.Windows.AI.MachineLearning, WinML 2.x reg-free "
-             "runtime) for hardware EP discovery. ORT itself still comes from Microsoft.ML.OnnxRuntime.Foundry; "
-             "this flag only adds the WinML EP catalog client.",
-    )
-    parser.add_argument(
         "--winml_sdk_version", default=None, type=str,
-        help="Version of Microsoft.Windows.AI.MachineLearning NuGet package (used for the WinML EP "
-             "catalog when --use_winml is set; defaults to the version pinned in "
-             "FindWinMLEpCatalog.cmake).",
+        help="Override the Microsoft.Windows.AI.MachineLearning NuGet version for the WinML EP "
+             "catalog (Windows only). Defaults to the version pinned in deps_versions.json.",
     )
 
     # Cross-compilation (mutually exclusive targets)
@@ -462,13 +455,10 @@ def configure(args: argparse.Namespace) -> None:
     if build_tests == "ON":
         command += ["-DVCPKG_MANIFEST_FEATURES=tests"]
 
-    if args.use_winml:
-        command += ["-DFOUNDRY_LOCAL_USE_WINML=ON"]
-        if args.winml_sdk_version:
-            command += [f"-DWINML_EP_CATALOG_VERSION={args.winml_sdk_version}"]
-    else:
-        # Pass explicitly so a re-configure without the flag clears any cached ON value.
-        command += ["-DFOUNDRY_LOCAL_USE_WINML=OFF"]
+    # WinML EP catalog is enabled automatically on Windows by CMake. Allow an
+    # optional version override for the Microsoft.Windows.AI.MachineLearning NuGet.
+    if args.winml_sdk_version:
+        command += [f"-DWINML_EP_CATALOG_VERSION={args.winml_sdk_version}"]
 
     if args.ort_home:
         command += [f"-DORT_HOME={args.ort_home}"]

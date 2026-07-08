@@ -509,6 +509,7 @@
 
 	<div class="bg-white dark:bg-neutral-950">
 		<main id="main-content" class="mx-auto w-full max-w-6xl px-6 py-8 sm:px-8 lg:px-12">
+			<h1 class="sr-only">Foundry Local model catalog</h1>
 			<section
 				class="border-border/50 bg-muted/30 mb-4 rounded-lg border px-3 py-2.5 sm:px-4"
 				aria-label="CLI quick test"

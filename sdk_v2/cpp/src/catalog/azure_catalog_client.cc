@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -183,18 +185,34 @@ std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_mo
   return infos;
 }
 
-std::vector<std::vector<CatalogFilter>> BuildSearchFilters(const IEpDetector& ep_detector,
-                                                           const std::vector<std::string>& model_filter) {
+/// Build per-device filter sets for catalog queries.
+/// `latest_only` controls whether to include the `labels=latest` filter (default true for latest models).
+/// `model_alias` scopes results to a specific alias when non-empty; when empty, no alias filter is applied.
+/// `model_name` scopes results to a specific model name when non-empty for server-side filtering.
+/// Each filter set queries for variants on a specific device/EP pair; the catalog API matches on the
+/// (device, execution provider) pair.
+std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
+    const IEpDetector& ep_detector,
+    const std::vector<std::string>& model_filter,
+    bool latest_only = true,
+    const std::string& model_alias = "",
+    const std::string& model_name = "") {
   std::vector<std::vector<CatalogFilter>> filter_sets;
 
-  // One filter set per detected device. The catalog API matches on the
-  // (device, execution provider) pair, so we keep the EPs grouped by device.
   for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
     std::vector<CatalogFilter> filters;
     filters.push_back(MakeFilter("type", {"models"}));
     filters.push_back(MakeFilter("kind", {"Versioned"}));
-    filters.push_back(MakeFilter("labels", {"latest"}));
+    if (latest_only) {
+      filters.push_back(MakeFilter("labels", {"latest"}));
+    }
     filters.push_back(MakeFilter("annotations/tags/foundryLocal", model_filter));
+    if (!model_alias.empty()) {
+      filters.push_back(MakeFilter("annotations/tags/alias", {model_alias}));
+    }
+    if (!model_name.empty()) {
+      filters.push_back(MakeFilter("properties/name", {model_name}));
+    }
     filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}));
     filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps));
     filter_sets.push_back(std::move(filters));
@@ -202,6 +220,7 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(const IEpDetector& ep
 
   return filter_sets;
 }
+
 
 std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& model_filter,
                                                const std::vector<std::string>& model_ids) {
@@ -273,8 +292,7 @@ std::optional<AzureCatalogClient::FetchedFilterSet> AzureCatalogClient::FetchFil
     if (regional && !pinned_region) {
       // Page 1: run through region fallback starting from the sticky region (last known-good) or the active region.
       // Exhaustion means every candidate had a retryable region-health failure, so fail just this filter set.
-      const std::string start =
-          region_fallback_.StickyRegion().value_or(region_);
+      const std::string start = region_fallback_.StickyRegion().value_or(region_);
       try {
         auto fallback_result = region_fallback_.Execute(start, [&](const std::string& r) {
           return http_post_response_(BuildRegionalUrl(url_prefix_, url_suffix_, r), body);
@@ -382,6 +400,33 @@ std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
   }
 
   return ToModelInfos(result->models, result->region);
+}
+
+std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
+    const std::string& model_alias,
+    const std::string& model_name,
+    int /*max_versions*/) {
+  // Fetch all versions of the alias across per-device filter sets. Each filter set
+  // queries for variants matching the alias on a specific device/EP pair; the results
+  // are aggregated. The caller applies per-variant version caps (latest X per variant).
+  const auto filter_sets = BuildSearchFilters(ep_detector_, model_filter_, /*latest_only=*/false,
+                                              model_alias, model_name);
+
+  std::vector<ModelInfo> result;
+
+  for (const auto& filters : filter_sets) {
+    auto walk = FetchFilterSet(filters);
+    if (!walk) {
+      continue;
+    }
+
+    auto batch = ToModelInfos(walk->models, walk->region);
+    result.insert(result.end(),
+                  std::make_move_iterator(batch.begin()),
+                  std::make_move_iterator(batch.end()));
+  }
+
+  return result;
 }
 
 std::unique_ptr<ICatalogClient> MakeCatalogClient(

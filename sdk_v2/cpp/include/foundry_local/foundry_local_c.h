@@ -955,6 +955,19 @@ struct flCatalogApi {
   FL_API_STATUS(GetCachedModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
   FL_API_STATUS(GetLoadedModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
 
+  /// Get all versions of a model alias, optionally narrowed to a specific model name.
+  /// @param model_alias Alias of the model (e.g. "phi-4-mini"). Must be non-NULL and non-empty.
+  /// @param model_name Optional model name (ModelInfo.Name, e.g. "Phi-4-generic-gpu"). NULL returns
+  ///        every model name.
+  /// @param max_versions Select latest X versions per model name. Pass 0 (or any
+  ///        negative value) for no per-model-name cap.
+  /// Each call performs a fresh catalog query; results are not integrated into the
+  /// catalog's main lookup indices. Returned handles are owned by the catalog and remain
+  /// valid for the catalog's lifetime — repeated queries never invalidate prior results.
+  /// Releasing the list does not invalidate the underlying model handles.
+  FL_API_STATUS(GetModelVersions, _In_ const flCatalog* catalog, _In_ const char* model_alias,
+                _In_opt_ const char* model_name, int32_t max_versions, _Outptr_ flModelList** out_models);
+
   // End V1
 };
 

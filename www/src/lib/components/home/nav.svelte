@@ -59,7 +59,7 @@
 						darkSrc={siteConfig.logoDark ?? siteConfig.logo}
 						strokeSrc={siteConfig.logoMark}
 						height={28}
-						alt="Foundry Local"
+						alt=""
 					/>
 				</span>
 				<span class="ml-1 whitespace-nowrap text-lg font-semibold">Foundry Local</span>

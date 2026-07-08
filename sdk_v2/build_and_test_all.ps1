@@ -15,14 +15,6 @@
     unless -ContinueOnError is supplied, and prints a per-SDK pass/fail
     summary at the end.
 
-.PARAMETER UseWinml
-    Build the WinML variant across all SDKs:
-      * C++:    passes --use_winml to build.py
-      * C#:     passes -p:UseWinML=true to dotnet test
-      * Python: sets FL_PYTHON_PACKAGE_NAME=foundry-local-sdk-winml before pip install
-      * JS:     rebuilds the native addon against the WinML C++ build
-    Windows only.
-
 .PARAMETER Skip
     SDKs to skip. Any of: cpp, cs, python, js.
 
@@ -39,11 +31,7 @@
 
 .EXAMPLE
     pwsh ./build_and_test_all.ps1
-    # Full build + test, no WinML.
-
-.EXAMPLE
-    pwsh ./build_and_test_all.ps1 -UseWinml
-    # Full build + test against the WinML variant.
+    # Full build + test of all SDKs.
 
 .EXAMPLE
     pwsh ./build_and_test_all.ps1 -Only cpp,js -SkipCppTests
@@ -51,7 +39,6 @@
 #>
 [CmdletBinding()]
 param(
-    [switch] $UseWinml,
     [ValidateSet('cpp', 'cs', 'python', 'js')]
     [string[]] $Skip = @(),
     [ValidateSet('cpp', 'cs', 'python', 'js')]
@@ -70,10 +57,6 @@ $cppDir    = Join-Path $sdkRoot 'cpp'
 $csDir     = Join-Path $sdkRoot 'cs'
 $pythonDir = Join-Path $sdkRoot 'python'
 $jsDir     = Join-Path $sdkRoot 'js'
-
-if ($UseWinml -and -not $IsWindows) {
-    throw "-UseWinml is Windows-only."
-}
 
 # Resolve which SDKs to run.
 $all = @('cpp', 'cs', 'python', 'js')
@@ -100,7 +83,7 @@ function Invoke-Step {
     )
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
-    Write-Host "==> [$Name] start (UseWinml=$UseWinml)" -ForegroundColor Cyan
+    Write-Host "==> [$Name] start" -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     $start = Get-Date
     $ok = $false
@@ -133,7 +116,6 @@ try {
     if ('cpp' -in $targets) {
         Invoke-Step 'cpp' {
             $args = @('build.py', '--config', $Config)
-            if ($UseWinml)     { $args += '--use_winml' }
             if ($SkipCppTests) { $args += '--skip_tests' }
             Push-Location $cppDir
             try {
@@ -152,16 +134,13 @@ try {
             try {
                 $sln = 'Microsoft.AI.Foundry.Local.SDK.sln'
                 $buildArgs = @('build', $sln, '-c', $dotnetConfig, '--nologo')
-                if ($UseWinml) { $buildArgs += '-p:UseWinML=true' }
                 dotnet @buildArgs
                 if ($LASTEXITCODE -ne 0) { throw "dotnet build exit $LASTEXITCODE" }
 
-                # The test csproj multi-targets net8.0/net9.0 (and net462 on Windows
-                # non-WinML) for build coverage; run the .NET (Core) test suite once
-                # on net9.0 (back-compat covers net8.0 consumers) plus net462 on
-                # Windows non-WinML to exercise the netstandard polyfills at runtime.
+                # Test on net9.0 (back-compat covers net8.0 consumers); on Windows
+                # also run net462 to exercise the netstandard2.0 polyfills.
                 $frameworks = @('net9.0')
-                if ($IsWindows -and -not $UseWinml) { $frameworks += 'net462' }
+                if ($IsWindows) { $frameworks += 'net462' }
 
                 foreach ($tfm in $frameworks) {
                     Write-Host "=== dotnet test --framework $tfm ==="
@@ -172,7 +151,6 @@ try {
                         '--framework', $tfm,
                         '--nologo'
                     )
-                    if ($UseWinml) { $testArgs += '-p:UseWinML=true' }
                     dotnet @testArgs
                     if ($LASTEXITCODE -ne 0) { throw "dotnet test ($tfm) exit $LASTEXITCODE" }
                 }
@@ -214,8 +192,6 @@ print(sys.executable)
                     $env:Platform            = 'x64'
                 }
 
-                $env:FL_PYTHON_PACKAGE_NAME =
-                    if ($UseWinml) { 'foundry-local-sdk-winml' } else { 'foundry-local-sdk' }
                 try {
                     python -m pip install -e '.[dev]'
                     if ($LASTEXITCODE -ne 0) { throw "pip install exit $LASTEXITCODE" }
@@ -223,7 +199,6 @@ print(sys.executable)
                     python -m pytest test/ -v
                     if ($LASTEXITCODE -ne 0) { throw "pytest exit $LASTEXITCODE" }
                 } finally {
-                    Remove-Item Env:FL_PYTHON_PACKAGE_NAME -ErrorAction SilentlyContinue
                     if ($null -eq $restoreTgt)  { Remove-Item Env:VSCMD_ARG_TGT_ARCH  -ErrorAction SilentlyContinue } else { $env:VSCMD_ARG_TGT_ARCH  = $restoreTgt }
                     if ($null -eq $restoreHost) { Remove-Item Env:VSCMD_ARG_HOST_ARCH -ErrorAction SilentlyContinue } else { $env:VSCMD_ARG_HOST_ARCH = $restoreHost }
                     if ($null -eq $restorePlat) { Remove-Item Env:Platform            -ErrorAction SilentlyContinue } else { $env:Platform            = $restorePlat }
@@ -241,8 +216,7 @@ print(sys.executable)
                 npm install
                 if ($LASTEXITCODE -ne 0) { throw "npm install exit $LASTEXITCODE" }
 
-                # JS picks up the native library copied from the C++ build dir;
-                # the WinML/non-WinML distinction is whichever C++ build ran above.
+                # JS picks up the native library copied from the C++ build dir.
                 npm run build
                 if ($LASTEXITCODE -ne 0) { throw "npm run build exit $LASTEXITCODE" }
 

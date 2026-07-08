@@ -11,7 +11,7 @@ The Foundry Local C# SDK provides a .NET interface for running AI models locally
 - **Download progress** — wire up an `Action<float>` callback for real-time download percentage
 - **Model variants** — select specific hardware/quantization variants per model alias
 - **Optional web service** — start an OpenAI-compatible REST endpoint (`/v1/chat_completions`, `/v1/models`)
-- **WinML acceleration** — opt-in Windows hardware acceleration with automatic EP download
+- **WinML acceleration** — built-in Windows hardware acceleration with automatic EP download
 - **Full async/await** — every operation supports `CancellationToken` and async patterns
 - **IDisposable** — deterministic cleanup of native resources
 
@@ -32,19 +32,9 @@ Or open [Microsoft.AI.Foundry.Local.SDK.sln](./Microsoft.AI.Foundry.Local.SDK.sl
 
 ## WinML: Automatic Hardware Acceleration (Windows)
 
-On Windows, Foundry Local can leverage WinML for GPU/NPU hardware acceleration via ONNX Runtime execution providers (EPs). EPs are large binaries downloaded on first use and cached for subsequent runs.
+On Windows, Foundry Local leverages WinML for GPU/NPU hardware acceleration via ONNX Runtime execution providers (EPs). EPs are large binaries downloaded on first use and cached for subsequent runs.
 
-Install the WinML package variant instead:
-
-```bash
-dotnet add package Microsoft.AI.Foundry.Local.WinML
-```
-
-Or build from source with:
-
-```bash
-dotnet build src/Microsoft.AI.Foundry.Local.csproj /p:UseWinML=true
-```
+WinML acceleration is built into the `Microsoft.AI.Foundry.Local` package — it bundles the reg-free WinML 2.x runtime on Windows automatically, with no separate package or build flag required.
 
 ### Triggering EP download
 
