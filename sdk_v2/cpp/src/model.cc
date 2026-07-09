@@ -111,11 +111,11 @@ Model::Model(Model&& other) noexcept
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
-      selected_variant_(other.selected_variant_) {
+      selected_variant_(other.selected_variant_.load(std::memory_order_acquire)) {
   // After vector move, selected_variant_ still points into the transferred buffer.
   other.download_manager_ = nullptr;
   other.model_load_manager_ = nullptr;
-  other.selected_variant_ = nullptr;
+  other.selected_variant_.store(nullptr, std::memory_order_release);
 }
 
 Model& Model::operator=(Model&& other) noexcept {
@@ -126,10 +126,10 @@ Model& Model::operator=(Model&& other) noexcept {
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
-    selected_variant_ = other.selected_variant_;
+    selected_variant_.store(other.selected_variant_.load(std::memory_order_acquire), std::memory_order_release);
     other.download_manager_ = nullptr;
     other.model_load_manager_ = nullptr;
-    other.selected_variant_ = nullptr;
+    other.selected_variant_.store(nullptr, std::memory_order_release);
   }
 
   return *this;
@@ -163,7 +163,7 @@ Model Model::FromModelInfo(ModelInfo info,
 Model Model::MakeContainer(Model first_variant) {
   Model container;
   container.variants_.push_back(std::make_unique<Model>(std::move(first_variant)));
-  container.selected_variant_ = container.variants_.back().get();
+  container.selected_variant_.store(container.variants_.back().get(), std::memory_order_release);
   return container;
 }
 
@@ -196,12 +196,12 @@ void Model::SelectDefaultVariant() {
 
   for (auto& v : variants_) {
     if (v->IsCached()) {
-      selected_variant_ = v.get();
+      selected_variant_.store(v.get(), std::memory_order_release);
       return;
     }
   }
 
-  selected_variant_ = variants_.front().get();
+  selected_variant_.store(variants_.front().get(), std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,24 +209,24 @@ void Model::SelectDefaultVariant() {
 // ---------------------------------------------------------------------------
 
 const std::string& Model::Id() const {
-  if (selected_variant_) {
-    return selected_variant_->Id();
+  if (auto* selected = SelectedVariant()) {
+    return selected->Id();
   }
 
   return info_.model_id;
 }
 
 const std::string& Model::Alias() const {
-  if (selected_variant_) {
-    return selected_variant_->Alias();
+  if (auto* selected = SelectedVariant()) {
+    return selected->Alias();
   }
 
   return info_.alias;
 }
 
 const ModelInfo& Model::Info() const {
-  if (selected_variant_) {
-    return selected_variant_->Info();
+  if (auto* selected = SelectedVariant()) {
+    return selected->Info();
   }
 
   return info_;
@@ -251,16 +251,16 @@ std::vector<Model*> Model::Variants() const {
 }
 
 bool Model::IsCached() const {
-  if (selected_variant_) {
-    return selected_variant_->IsCached();
+  if (auto* selected = SelectedVariant()) {
+    return selected->IsCached();
   }
 
   return cached_;
 }
 
 bool Model::IsLoaded() const {
-  if (selected_variant_) {
-    return selected_variant_->IsLoaded();
+  if (auto* selected = SelectedVariant()) {
+    return selected->IsLoaded();
   }
 
   // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
@@ -274,8 +274,8 @@ bool Model::IsLoaded() const {
 // ---------------------------------------------------------------------------
 
 void Model::Download(std::function<int(float)> progress_cb) {
-  if (selected_variant_) {
-    selected_variant_->Download(std::move(progress_cb));
+  if (auto* selected = SelectedVariant()) {
+    selected->Download(std::move(progress_cb));
     return;
   }
 
@@ -296,16 +296,16 @@ void Model::Download(std::function<int(float)> progress_cb) {
 }
 
 const std::string& Model::GetPath() const {
-  if (selected_variant_) {
-    return selected_variant_->GetPath();
+  if (auto* selected = SelectedVariant()) {
+    return selected->GetPath();
   }
 
   return local_path_;
 }
 
 void Model::Load(ExecutionProvider ep) {
-  if (selected_variant_) {
-    selected_variant_->Load(ep);
+  if (auto* selected = SelectedVariant()) {
+    selected->Load(ep);
     return;
   }
 
@@ -319,8 +319,8 @@ void Model::Load(ExecutionProvider ep) {
 }
 
 void Model::Unload() {
-  if (selected_variant_) {
-    selected_variant_->Unload();
+  if (auto* selected = SelectedVariant()) {
+    selected->Unload();
     return;
   }
 
@@ -329,8 +329,8 @@ void Model::Unload() {
 }
 
 void Model::RemoveFromCache() {
-  if (selected_variant_) {
-    selected_variant_->RemoveFromCache();
+  if (auto* selected = SelectedVariant()) {
+    selected->RemoveFromCache();
     return;
   }
 
@@ -359,7 +359,7 @@ void Model::SelectVariant(const Model& variant) {
 
   for (auto& v : variants_) {
     if (v.get() == &variant) {
-      selected_variant_ = v.get();
+      selected_variant_.store(v.get(), std::memory_order_release);
       return;
     }
   }
@@ -434,8 +434,8 @@ Model::IOInfo IOInfoFromCache(const StaticIOCache& cache) {
 }  // namespace
 
 Model::IOInfo Model::GetInputOutputInfo() const {
-  if (selected_variant_) {
-    return selected_variant_->GetInputOutputInfo();
+  if (auto* selected = SelectedVariant()) {
+    return selected->GetInputOutputInfo();
   }
 
   const auto& task = Info().task;

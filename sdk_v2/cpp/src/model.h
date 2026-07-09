@@ -116,7 +116,7 @@ class Model {
   IOInfo GetInputOutputInfo() const;
 
   /// True if this is a multi-variant container.
-  bool IsContainer() const { return selected_variant_ != nullptr; }
+  bool IsContainer() const { return SelectedVariant() != nullptr; }
 
   // --- Mutation methods ---
 
@@ -169,11 +169,13 @@ class Model {
   // Container data (empty/null for leaves). unique_ptr keeps Model addresses
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
-  Model* selected_variant_ = nullptr;  // non-null = this is a container
+  std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
   mutable std::mutex state_mutex_;
+
+  Model* SelectedVariant() const { return selected_variant_.load(std::memory_order_acquire); }
 };
 
 }  // namespace fl
