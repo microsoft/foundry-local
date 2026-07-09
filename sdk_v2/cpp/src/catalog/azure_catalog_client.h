@@ -18,19 +18,20 @@
 namespace fl {
 
 /// Live Azure Foundry catalog client. Queries the catalog REST API
-/// (`{base_url}/entities/crossRegion`) for the models available to the local
+/// (`asset-gallery/v1.0/models`) for the models available to the local
 /// hardware, paginating through results and converting each entry to ModelInfo.
 ///
 /// Uses one filter set per detected device, page size 50, and pagination via
-/// skip + continuationToken.
+/// skip + continuationToken. The detected region is stamped onto results so
+/// downloads can target the matching regional model registry.
 class AzureCatalogClient : public ICatalogClient {
  public:
   /// Response-aware HTTP POST. Used for region detection, catalog fetches, and regional fallback.
   using HttpPostResponseFn =
       std::function<http::HttpResponse(const std::string& url, const std::string& body)>;
 
-  /// @param base_url Catalog base URL, e.g. "https://ai.azure.com/api/centralus/ux/v1.0".
-  /// @param filter_override Foundry Local tag filter. "" means public models; "''" means a single empty value.
+  /// @param base_url Catalog endpoint. Empty means the default V2 asset-gallery endpoint.
+  /// @param filter_override Deployment-option override. Empty means `foundryLocalDevices`.
   /// @param ep_detector Reports available device and execution-provider pairs.
   /// @param logger Logger.
   /// @param http_post HTTP POST implementation. The default uses `http::HttpPostWithResponse`.
@@ -76,19 +77,14 @@ class AzureCatalogClient : public ICatalogClient {
   std::vector<FetchedFilterSet> FetchAllFilterSets();
 
   std::string base_url_;
-  std::vector<std::string> model_filter_;  // foundryLocal tag values
+  std::vector<std::string> model_filter_;  // deploymentOptions filter values
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   HttpPostResponseFn http_post_response_;
   RegionFallback region_fallback_;
 
-  // Region state. region_ is the active region (empty = use base_url verbatim).
-  // When base_url matches the https://{host}/api/{region}/{suffix} template,
-  // url_prefix_/url_suffix_ let us synthesize per-region URLs.
+  // Region state used for model-registry routing after catalog discovery.
   std::string region_;
-  std::string url_prefix_;
-  std::string url_suffix_;
-  bool regional_template_ = false;
 };
 
 }  // namespace fl

@@ -38,8 +38,8 @@ class AzureModelCatalog : public BaseModelCatalog {
   std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
 
  private:
-  static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
-  static constexpr const char* kDefaultCatalogFilter = "''";
+  static constexpr const char* kDefaultCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+  static constexpr const char* kDefaultCatalogFilter = "foundryLocalDevices";
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;

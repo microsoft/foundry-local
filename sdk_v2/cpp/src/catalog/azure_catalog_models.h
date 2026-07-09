@@ -28,31 +28,34 @@ struct CatalogFilter {
   std::vector<std::string> values;
 };
 
-struct CatalogResource {
-  std::string resource_id;
-  std::string entity_container_type;
-};
-
-struct IndexEntitiesRequest {
+struct AzureCatalogRequest {
   std::vector<CatalogFilter> filters;
   int page_size = 50;
   std::optional<int> skip;
   std::optional<std::string> continuation_token;
 };
 
-struct AzureCatalogRequest {
-  std::vector<CatalogResource> resource_ids;
-  IndexEntitiesRequest index_entities_request;
+// --- Response types ---
+
+struct TextLimits {
+  std::optional<int64_t> input_context_window;
+  std::optional<int64_t> max_output_tokens;
 };
 
-// --- Response types ---
+struct ModelLimits {
+  std::optional<TextLimits> text_limits;
+  std::vector<std::string> supported_input_modalities;
+  std::vector<std::string> supported_output_modalities;
+};
 
 /// Variant metadata nested inside Properties → VariantInfo.
 struct VariantMetadata {
   std::optional<std::string> model_type;
+  std::vector<std::string> quantization;
   std::optional<std::string> device;
   std::optional<std::string> execution_provider;
   std::optional<int64_t> file_size_bytes;
+  std::optional<int64_t> vram_footprint_bytes;
 };
 
 struct VariantParent {
@@ -109,6 +112,21 @@ struct CatalogAnnotations {
 struct CatalogLocalModel {
   std::optional<std::string> asset_id;
   std::optional<std::string> entity_id;
+  std::optional<std::string> name;
+  std::optional<std::string> display_name;
+  std::optional<std::string> version;
+  std::optional<std::string> publisher;
+  std::optional<std::string> license;
+  std::optional<std::string> license_description;
+  std::optional<std::string> alias;
+  std::optional<std::string> min_fl_version;
+  std::optional<std::string> created_time;
+  std::optional<std::string> author;
+  std::vector<std::string> inference_tasks;
+  std::vector<std::string> model_capabilities;
+  std::vector<std::string> deployment_options;
+  std::optional<ModelLimits> model_limits;
+  std::optional<VariantInfo> variant_information;
   std::optional<CatalogAnnotations> annotations;
   std::optional<CatalogProperties> properties;
 };
@@ -121,6 +139,10 @@ struct IndexEntitiesResponse {
 };
 
 struct AzureCatalogResponse {
+  std::optional<int> total_count;
+  std::vector<CatalogLocalModel> models;
+  std::optional<int> next_skip;
+  std::optional<std::string> continuation_token;
   std::optional<IndexEntitiesResponse> index_entities_response;
 };
 
@@ -142,12 +164,12 @@ struct CatalogPromptTemplate {
 // --- Request serialization (to_json) ---
 
 void to_json(nlohmann::json& j, const CatalogFilter& f);
-void to_json(nlohmann::json& j, const CatalogResource& r);
-void to_json(nlohmann::json& j, const IndexEntitiesRequest& r);
 void to_json(nlohmann::json& j, const AzureCatalogRequest& r);
 
 // --- Response deserialization (from_json) ---
 
+void from_json(const nlohmann::json& j, TextLimits& t);
+void from_json(const nlohmann::json& j, ModelLimits& m);
 void from_json(const nlohmann::json& j, VariantMetadata& v);
 void from_json(const nlohmann::json& j, VariantParent& v);
 void from_json(const nlohmann::json& j, VariantInfo& v);
