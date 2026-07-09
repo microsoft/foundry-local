@@ -280,13 +280,12 @@ def prepare_native_dependencies(foundry_local_dir: pathlib.Path) -> list:
 
     # macOS only: GenAI's static initializer does its own dlopen("libonnxruntime.dylib"),
     # which on Darwin only matches by leafname against dyld search paths or images
-    # whose install_name leaf is exactly "libonnxruntime.dylib". The wheel ships
-    # the ORT dylib as "libonnxruntime.<version>.dylib" (install_name
-    # "@rpath/libonnxruntime.<version>.dylib"), so neither match path succeeds and
-    # GenAI aborts in dyld init before any of our code runs. The second name GenAI
-    # tries is "<genai_dir>/libonnxruntime.dylib", so a symlink there fixes it.
-    # Linux dlopen consults the loaded-soname table by leafname and finds our
-    # already-RTLD_GLOBAL'd image without help.
+    # whose install_name leaf is exactly "libonnxruntime.dylib". ORT's dylib has a
+    # versioned install_name instead (the soversion, e.g. "@rpath/libonnxruntime.1.dylib"),
+    # so neither match path succeeds and GenAI aborts in dyld init before any of our code
+    # runs. The second name GenAI tries is "<genai_dir>/libonnxruntime.dylib", so a symlink
+    # there fixes it. Linux dlopen consults the loaded-soname table by leafname and finds
+    # our already-RTLD_GLOBAL'd image without help.
     if sys.platform == "darwin":
         symlink_path = genai_path.parent / "libonnxruntime.dylib"
         try:

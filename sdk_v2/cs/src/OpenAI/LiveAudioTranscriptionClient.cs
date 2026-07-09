@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
 using Betalgo.Ranul.OpenAI.ObjectModels.RealtimeModels;
+
 using Microsoft.AI.Foundry.Local;
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 
@@ -103,16 +104,14 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 
                         LiveAudioTranscriptionResponse? response = null;
 
-                        if (item is TextItem textItem && !string.IsNullOrEmpty(textItem.Text))
+                        if (item is SpeechSegmentItem segItem && !string.IsNullOrEmpty(segItem.Text))
                         {
-                            // using the direct API only so should be just the text currently
-                            // TODO: Do we need the other custom fields we added and a new item type?
-                            System.Diagnostics.Debug.Assert(textItem.Type != TextItemType.OpenAIJson,
-                                "Unexpected TextItem type in streaming callback: " + textItem.Type);
-
-                            // Direct streaming path — raw text tokens from AudioSession.
-                            // Matches legacy SDK semantics which doesn't conform to either 
+                            // Direct streaming path — per-token segments from AudioSession.
+                            // Matches legacy SDK semantics which doesn't conform to either
                             // OAI transcription streaming or OAI realtime API types/semantics.
+                            // IsFinal here marks the last message in the stream (set by the
+                            // final-Response drain below), not per-segment finality, so we
+                            // intentionally ignore SpeechSegmentKind.Final on intermediate segments.
                             response = new LiveAudioTranscriptionResponse
                             {
                                 IsFinal = false,
@@ -120,8 +119,8 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
                                 [
                                     new ContentPart
                                     {
-                                        Text = textItem.Text,
-                                        Transcript = textItem.Text
+                                        Text = segItem.Text,
+                                        Transcript = segItem.Text
                                     }
                                 ]
                             };
@@ -158,7 +157,7 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
             {
                 var responsePtr = _session.ProcessRequest(_request.Ptr);
 
-                // Drain the final Response: it carries the aggregated transcription as TextItem(s)
+                // Drain the final Response: it carries the aggregated transcription as a SpeechResultItem
                 using (var response = new Response(responsePtr))
                 {
                     var finalText = new System.Text.StringBuilder();
@@ -166,9 +165,9 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
                     {
                         using (responseItem)
                         {
-                            if (responseItem is TextItem finalTextItem && !string.IsNullOrEmpty(finalTextItem.Text))
+                            if (responseItem is SpeechResultItem resultItem && !string.IsNullOrEmpty(resultItem.Text))
                             {
-                                finalText.Append(finalTextItem.Text);
+                                finalText.Append(resultItem.Text);
                             }
                         }
                     }

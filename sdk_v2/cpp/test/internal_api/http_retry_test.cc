@@ -93,6 +93,21 @@ TEST(RetryWithBackoffTest, GivesUpAfterMaxRetries) {
   EXPECT_EQ(call_count, 4);
 }
 
+TEST(RetryWithBackoffTest, ThrowsNetworkCodeOnExhaustion) {
+  RecordingLogger logger;
+  auto op = []() -> RetryAttempt {
+    return RetryAttempt{RetryDecision::RetryTransient, "", "503 Service Unavailable"};
+  };
+  auto noop_sleep = [](std::chrono::milliseconds) {};
+
+  try {
+    RetryWithBackoff(op, FastConfig(), logger, noop_sleep);
+    FAIL() << "expected fl::Exception";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+  }
+}
+
 TEST(RetryWithBackoffTest, DoesNotRetryPermanentFailure) {
   RecordingLogger logger;
   int call_count = 0;

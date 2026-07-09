@@ -1,12 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Find/acquire ONNX Runtime.
 #
-# ORT is always sourced from Microsoft.ML.OnnxRuntime.Foundry (or
-# Microsoft.ML.OnnxRuntime on Android) via FetchContent — nuget.org for releases,
-# the ORT-Nightly ADO feed for -dev- versions. The FOUNDRY_LOCAL_USE_WINML flag
-# does NOT change the ORT package source; it only:
-#   - selects a WinML-compatible ORT version (see version branch below), and
-#   - opts in to the WinML EP catalog (handled by FindWinMLEpCatalog.cmake).
+# Sources ORT from Microsoft.ML.OnnxRuntime.Foundry (or Microsoft.ML.OnnxRuntime
+# on Android) via FetchContent — nuget.org for releases, the ORT-Nightly ADO
+# feed for -dev- versions. The version comes from sdk_v2/deps_versions.json and
+# is shared by all platforms.
 #
 # Creates an IMPORTED target: OnnxRuntime::OnnxRuntime
 
@@ -42,25 +40,6 @@ else()
     message(FATAL_ERROR "Unsupported platform for OnnxRuntime: ${CMAKE_GENERATOR_PLATFORM} on ${CMAKE_SYSTEM_NAME}")
 endif()
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    # WinML is only available on Windows
-    set(FOUNDRY_LOCAL_USE_WINML OFF)
-endif()
-
-if(FOUNDRY_LOCAL_USE_WINML)
-    # FOUNDRY_LOCAL_USE_WINML opts in to the WinML EP catalog (see FindWinMLEpCatalog.cmake) but
-    # does NOT change where ORT comes from. We always link against our own ORT
-    # (Microsoft.ML.OnnxRuntime.Foundry) because it enables CUDA and WebGPU EPs.
-    #
-    # Which onnxruntime.dll the process actually binds to at runtime is determined by the
-    # binding-side preload contract (see sdk_v2/cpp/docs/OrtRuntimeLoading.md), not by build
-    # layout. Co-location of our onnxruntime.dll next to foundry_local.dll keeps in-tree
-    # tests and examples zero-config, but is not a correctness guarantee for arbitrary
-    # deployments — bindings preload the intended onnxruntime.dll by absolute path before
-    # loading foundry_local.
-    message(STATUS "FOUNDRY_LOCAL_USE_WINML=ON: WinML EP catalog enabled; ORT still sourced from Microsoft.ML.OnnxRuntime.Foundry")
-endif()
-
 if(ORT_HOME)
     # Use a pre-extracted ORT directory (e.g. from build.py --ort_home).
     # Android: expects headers/ and jni/<abi>/ from an extracted AAR.
@@ -80,14 +59,10 @@ else()
     # Standard path: FetchContent from nuget.org (releases) or ORT-Nightly ADO feed (dev builds)
     # -----------------------------------------------------------------------
     if(NOT ORT_VERSION)
-        # Single source of truth: sdk_v2/deps_versions[_winml].json. The Python
-        # SDK build backend reads the same files so wheel deps and native ABI
+        # Single source of truth: sdk_v2/deps_versions.json. The Python SDK
+        # build backend reads the same file so wheel deps and native ABI
         # always agree. Override at the cmake command line with -DORT_VERSION=...
-        if(FOUNDRY_LOCAL_USE_WINML)
-            set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions_winml.json")
-        else()
-            set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
-        endif()
+        set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
         if(NOT EXISTS "${_DEPS_FILE}")
             message(FATAL_ERROR "Required versions file not found: ${_DEPS_FILE}")
         endif()
@@ -245,8 +220,7 @@ else()
     set_target_properties(OnnxRuntime::OnnxRuntime PROPERTIES
         IMPORTED_IMPLIB "${_ORT_LIB_DIR}/onnxruntime.lib"
     )
-    # On Windows the runtime DLL usually sits next to the import lib; WinML SDK is the
-    # exception (DLL lives under runtimes-framework/), so honour _ORT_DLL_DIR if set.
+    # On Windows, the runtime DLL sits next to the import lib.
     if(NOT _ORT_DLL_DIR)
         set(_ORT_DLL_DIR "${_ORT_LIB_DIR}")
     endif()

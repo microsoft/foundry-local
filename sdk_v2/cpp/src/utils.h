@@ -5,21 +5,13 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include "exception.h"
+#include "util/string_utils.h"
 
-#include <algorithm>
-#include <cctype>
 #include <optional>
 #include <string>
 #include <utility>
 
 namespace fl {
-
-/// Lowercase a string (ASCII). Returns a new string.
-inline std::string to_lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-  return s;
-}
 
 class ILogger;
 

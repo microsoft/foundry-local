@@ -1,15 +1,18 @@
 # Copyright (c) Microsoft. All rights reserved.
-# Find/acquire the WinML EP Catalog C API from Microsoft.WindowsAppSDK.ML.
+# Find/acquire the WinML EP Catalog C API from Microsoft.Windows.AI.MachineLearning.
 #
-# Downloads the NuGet package if needed, then creates an IMPORTED target for
-# the EP catalog library (Microsoft.Windows.AI.MachineLearning.dll/.lib).
+# Downloads the NuGet package if needed, then loads the package's first-party
+# CMake config (build/cmake/microsoft.windows.ai.machinelearning-config.cmake)
+# for target discovery. The config defines WindowsML::Api (EP catalog) and
+# WindowsML::OnnxRuntime; only WindowsML::Api is linked here — ORT comes from
+# FindOnnxRuntime.cmake.
 #
-# This is separate from ORT — we use the EP catalog to discover and download
-# hardware-specific execution providers at runtime. ORT itself comes from
-# FindOnnxRuntime.cmake (either WinML SDK or ORT-Nightly feed).
+# Microsoft.Windows.AI.MachineLearning ships a self-contained native DLL that
+# loads directly from any unpackaged app on Windows 10 19H1 (build 18362) or
+# newer, with no Windows App SDK runtime bootstrap required.
 #
-# Creates an IMPORTED target: WinMLEpCatalog::WinMLEpCatalog
-# Sets: WINML_EP_CATALOG_HEADER_DIR, WINML_EP_CATALOG_DLL_DIR
+# Exposes an ALIAS target: WinMLEpCatalog::WinMLEpCatalog -> WindowsML::Api
+# Sets: WINML_EP_CATALOG_DLL_DIR (= WINML_BINARY_DIR)
 
 if(WinMLEpCatalog_FOUND)
     return()
@@ -22,28 +25,45 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     return()
 endif()
 
-# Latest stable Microsoft.WindowsAppSDK.ML 1.8.x on nuget.org. Anything older
-# than 1.8.2141 silently disables EP detection (no WinMLEpCatalog.h).
-set(_WINML_EP_CATALOG_MIN_VERSION "1.8.2192")
-
-# WINML_EP_CATALOG_VERSION may be set explicitly; otherwise pick the minimum
-# known-good version. We deliberately do NOT inherit WINML_SDK_VERSION here:
-# the WinML SDK and the EP catalog package have independent compatibility
-# requirements (the EP catalog ships only in newer WindowsAppSDK.ML packages,
-# and our build no longer uses the WinML-bundled ORT regardless).
+# Version comes from sdk_v2/deps_versions.json (single source of truth, same
+# pattern as FindOnnxRuntime.cmake). The WinMLEpCatalog.h C ABI is stable
+# across 2.0.x and 2.1.x. Override at the cmake command line with
+# -DWINML_EP_CATALOG_VERSION=...
 if(NOT WINML_EP_CATALOG_VERSION)
-    set(WINML_EP_CATALOG_VERSION "${_WINML_EP_CATALOG_MIN_VERSION}")
+    set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
+    if(NOT EXISTS "${_DEPS_FILE}")
+        message(FATAL_ERROR "Required versions file not found: ${_DEPS_FILE}")
+    endif()
+    file(READ "${_DEPS_FILE}" _DEPS_JSON)
+    string(JSON WINML_EP_CATALOG_VERSION GET "${_DEPS_JSON}" "windows-ai-machinelearning" "version")
+    message(STATUS "WINML_EP_CATALOG_VERSION=${WINML_EP_CATALOG_VERSION} (from ${_DEPS_FILE})")
+endif()
+
+# The package's own CMake config FATAL_ERRORs on architectures it doesn't ship
+# binaries for (anything other than x64/ARM64). Pre-check so we degrade to a soft
+# disable instead of halting configuration when someone builds e.g. ARM64EC on
+# Windows.
+if(CMAKE_GENERATOR_PLATFORM)
+    string(TOUPPER "${CMAKE_GENERATOR_PLATFORM}" _WINML_PLATFORM_UPPER)
+elseif(CMAKE_VS_PLATFORM_NAME)
+    string(TOUPPER "${CMAKE_VS_PLATFORM_NAME}" _WINML_PLATFORM_UPPER)
+elseif(CMAKE_SYSTEM_PROCESSOR)
+    string(TOUPPER "${CMAKE_SYSTEM_PROCESSOR}" _WINML_PLATFORM_UPPER)
+else()
+    set(_WINML_PLATFORM_UPPER "X64")
+endif()
+
+if(NOT _WINML_PLATFORM_UPPER MATCHES "^(AMD64|X64|X86_64|ARM64|AARCH64)$")
+    message(WARNING "WinML EP Catalog: unsupported architecture '${_WINML_PLATFORM_UPPER}'. "
+                    "Package ships x64/ARM64 only. EP detection will be disabled.")
+    set(WinMLEpCatalog_FOUND FALSE)
+    return()
 endif()
 
 include(cmake/nuget.cmake)
 
 # WINML_EP_CATALOG_FETCH_URL can be set externally (e.g. for CI where nuget.org is blocked).
 set(WINML_EP_CATALOG_FETCH_URL "" CACHE STRING "Override URL or local path for the WinML EP Catalog NuGet package")
-
-# Microsoft.WindowsAppSDK.Foundation ships the bootstrap (MddBootstrapInitialize2) ABI. When using
-# FetchContent (offline CI) it must be supplied alongside the .ML package because nuget transitive
-# resolution doesn't run on a raw .nupkg fetch.
-set(WINAPPSDK_FOUNDATION_FETCH_URL "" CACHE STRING "Override URL or local path for the Microsoft.WindowsAppSDK.Foundation NuGet package")
 
 if(WINML_EP_CATALOG_FETCH_URL)
     # Use FetchContent to download/extract the pre-downloaded package
@@ -61,143 +81,43 @@ if(WINML_EP_CATALOG_FETCH_URL)
     set(_WINML_EP_ROOT "${winml_ep_catalog_SOURCE_DIR}")
     message(STATUS "WinML EP Catalog via FetchContent: ${_WINML_EP_ROOT}")
 else()
-    install_nuget_package(Microsoft.WindowsAppSDK.ML ${WINML_EP_CATALOG_VERSION} _WINML_EP_ROOT
+    install_nuget_package(Microsoft.Windows.AI.MachineLearning ${WINML_EP_CATALOG_VERSION} _WINML_EP_ROOT
         SOURCE https://api.nuget.org/v3/index.json)
 endif()
 
-# Determine platform for lib/native path
-if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR CMAKE_GENERATOR_PLATFORM STREQUAL "arm64")
-    set(_WINML_EP_ARCH "arm64")
-    set(_WINML_EP_RUNTIME_PLATFORM "win-arm64")
-elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64EC" OR CMAKE_GENERATOR_PLATFORM STREQUAL "arm64EC")
-    set(_WINML_EP_ARCH "arm64ec")
-    set(_WINML_EP_RUNTIME_PLATFORM "win-arm64ec")
-else()
-    set(_WINML_EP_ARCH "x64")
-    set(_WINML_EP_RUNTIME_PLATFORM "win-x64")
-endif()
-
-set(_WINML_EP_HEADER_DIR "${_WINML_EP_ROOT}/include")
-set(_WINML_EP_LIB_DIR "${_WINML_EP_ROOT}/lib/native/${_WINML_EP_ARCH}")
-set(_WINML_EP_DLL_DIR "${_WINML_EP_ROOT}/runtimes-framework/${_WINML_EP_RUNTIME_PLATFORM}/native")
-
-# Validate headers
-if(NOT EXISTS "${_WINML_EP_HEADER_DIR}/WinMLEpCatalog.h")
-    message(WARNING "WinML EP Catalog: WinMLEpCatalog.h not found at ${_WINML_EP_HEADER_DIR}. "
-                    "EP detection will be disabled. Package version may be too old (need ≥1.8.2141).")
+# Load the package's first-party CMake config for target discovery and layout
+# resolution. The config lives at build/cmake/<lowercased-package>-config.cmake
+# and defines WindowsML::Api / WindowsML::OnnxRuntime / WindowsML::DirectML.
+set(_WINML_EP_CONFIG_DIR "${_WINML_EP_ROOT}/build/cmake")
+if(NOT EXISTS "${_WINML_EP_CONFIG_DIR}/microsoft.windows.ai.machinelearning-config.cmake")
+    message(WARNING "WinML EP Catalog: package CMake config not found at ${_WINML_EP_CONFIG_DIR}. "
+                    "Package version may be too old or layout has changed. EP detection will be disabled.")
     set(WinMLEpCatalog_FOUND FALSE)
     return()
 endif()
 
-# Validate import lib
-set(_WINML_EP_IMPORT_LIB "${_WINML_EP_LIB_DIR}/Microsoft.Windows.AI.MachineLearning.lib")
-if(NOT EXISTS "${_WINML_EP_IMPORT_LIB}")
-    message(WARNING "WinML EP Catalog: import lib not found at ${_WINML_EP_IMPORT_LIB}. "
+set(microsoft.windows.ai.machinelearning_DIR "${_WINML_EP_CONFIG_DIR}" CACHE PATH
+    "Path to the Microsoft.Windows.AI.MachineLearning CMake config" FORCE)
+find_package(microsoft.windows.ai.machinelearning CONFIG REQUIRED)
+
+if(NOT TARGET WindowsML::Api)
+    message(WARNING "WinML EP Catalog: WindowsML::Api target not defined after find_package. "
                     "EP detection will be disabled.")
     set(WinMLEpCatalog_FOUND FALSE)
     return()
 endif()
 
-# Create imported target
-add_library(WinMLEpCatalog::WinMLEpCatalog SHARED IMPORTED)
-set_target_properties(WinMLEpCatalog::WinMLEpCatalog PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${_WINML_EP_HEADER_DIR}"
-    IMPORTED_IMPLIB "${_WINML_EP_IMPORT_LIB}"
-)
+# Promote WindowsML::Api to GLOBAL so the alias is visible in any subdirectory
+# that links foundry_local transitively, then expose it as WinMLEpCatalog::WinMLEpCatalog.
+set_target_properties(WindowsML::Api PROPERTIES IMPORTED_GLOBAL TRUE)
+add_library(WinMLEpCatalog::WinMLEpCatalog ALIAS WindowsML::Api)
 
-# Set the DLL location if it exists (for post-build copy)
-set(_WINML_EP_DLL "${_WINML_EP_DLL_DIR}/Microsoft.Windows.AI.MachineLearning.dll")
-if(EXISTS "${_WINML_EP_DLL}")
-    set_target_properties(WinMLEpCatalog::WinMLEpCatalog PROPERTIES
-        IMPORTED_LOCATION "${_WINML_EP_DLL}"
-    )
-endif()
-
-# Export paths for downstream use
-set(WINML_EP_CATALOG_HEADER_DIR "${_WINML_EP_HEADER_DIR}" CACHE PATH "WinML EP Catalog include directory" FORCE)
-set(WINML_EP_CATALOG_DLL_DIR "${_WINML_EP_DLL_DIR}" CACHE PATH "WinML EP Catalog native DLL directory" FORCE)
+# Mirror the official config's WINML_BINARY_DIR as WINML_EP_CATALOG_DLL_DIR
+# for the post-build DLL-copy step. Include paths flow through the
+# WinMLEpCatalog::WinMLEpCatalog target's INTERFACE_INCLUDE_DIRECTORIES.
+set(WINML_EP_CATALOG_DLL_DIR "${WINML_BINARY_DIR}" CACHE PATH "WinML EP Catalog native DLL directory" FORCE)
 
 set(WinMLEpCatalog_FOUND TRUE)
 message(STATUS "WinML EP Catalog: ${_WINML_EP_ROOT}")
-message(STATUS "  Headers: ${_WINML_EP_HEADER_DIR}")
-message(STATUS "  Import lib: ${_WINML_EP_IMPORT_LIB}")
-message(STATUS "  DLL dir: ${_WINML_EP_DLL_DIR}")
-
-# --------------------------------------------------------------------------
-# WinAppSDK Bootstrap (MddBootstrapInitialize2)
-# --------------------------------------------------------------------------
-# The bootstrap C ABI ships in Microsoft.WindowsAppSDK.Foundation. There are two acquisition paths:
-#   1. nuget install (default) — pulled in transitively as a dependency of Microsoft.WindowsAppSDK.ML.
-#   2. FetchContent (offline CI) — caller must supply WINAPPSDK_FOUNDATION_FETCH_URL pointing at the
-#      Foundation .nupkg, since FetchContent doesn't resolve nuget transitive deps.
-#
-# Either path resolves to a directory layout matching the NuGet package and exposes:
-#   - WinAppSdkBootstrap::WinAppSdkBootstrap (IMPORTED SHARED) — link to get
-#     Microsoft.WindowsAppRuntime.Bootstrap.lib + the MddBootstrap.h include path.
-#   - WINAPPSDK_BOOTSTRAP_DLL — full path to Microsoft.WindowsAppRuntime.Bootstrap.dll
-#     for post-build co-location next to the consuming binary.
-set(_WINAPPSDK_FOUNDATION_ROOT "")
-
-if(WINAPPSDK_FOUNDATION_FETCH_URL)
-    include(FetchContent)
-    string(REPLACE "\\" "/" WINAPPSDK_FOUNDATION_FETCH_URL "${WINAPPSDK_FOUNDATION_FETCH_URL}")
-    if(WINAPPSDK_FOUNDATION_FETCH_URL MATCHES "\\.nupkg$" AND NOT WINAPPSDK_FOUNDATION_FETCH_URL MATCHES "^https?://")
-        set(_WINAPPSDK_FOUNDATION_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/winappsdk_foundation-download/winappsdk_foundation.zip")
-        get_filename_component(_WINAPPSDK_FOUNDATION_ZIP_DIR "${_WINAPPSDK_FOUNDATION_ZIP_PATH}" DIRECTORY)
-        file(MAKE_DIRECTORY "${_WINAPPSDK_FOUNDATION_ZIP_DIR}")
-        file(COPY_FILE "${WINAPPSDK_FOUNDATION_FETCH_URL}" "${_WINAPPSDK_FOUNDATION_ZIP_PATH}")
-        set(WINAPPSDK_FOUNDATION_FETCH_URL "${_WINAPPSDK_FOUNDATION_ZIP_PATH}")
-    endif()
-    FetchContent_Declare(winappsdk_foundation URL ${WINAPPSDK_FOUNDATION_FETCH_URL}
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE DOWNLOAD_NAME winappsdk_foundation.zip)
-    FetchContent_MakeAvailable(winappsdk_foundation)
-    set(_WINAPPSDK_FOUNDATION_ROOT "${winappsdk_foundation_SOURCE_DIR}")
-    message(STATUS "WinAppSDK Foundation via FetchContent: ${_WINAPPSDK_FOUNDATION_ROOT}")
-elseif(NOT WINML_EP_CATALOG_FETCH_URL)
-    if(NOT NUGET_PACKAGE_ROOT_PATH)
-        set(NUGET_PACKAGE_ROOT_PATH "${CMAKE_BINARY_DIR}/__nuget")
-    endif()
-    file(GLOB _WINAPPSDK_FOUNDATION_DIRS LIST_DIRECTORIES TRUE
-        "${NUGET_PACKAGE_ROOT_PATH}/Microsoft.WindowsAppSDK.Foundation.*")
-    if(_WINAPPSDK_FOUNDATION_DIRS)
-        list(SORT _WINAPPSDK_FOUNDATION_DIRS COMPARE NATURAL ORDER DESCENDING)
-        list(GET _WINAPPSDK_FOUNDATION_DIRS 0 _WINAPPSDK_FOUNDATION_ROOT)
-    endif()
-endif()
-
-if(_WINAPPSDK_FOUNDATION_ROOT)
-    set(_WINAPPSDK_BOOTSTRAP_HEADER_DIR "${_WINAPPSDK_FOUNDATION_ROOT}/include")
-    set(_WINAPPSDK_BOOTSTRAP_LIB
-        "${_WINAPPSDK_FOUNDATION_ROOT}/lib/native/${_WINML_EP_ARCH}/Microsoft.WindowsAppRuntime.Bootstrap.lib")
-    set(_WINAPPSDK_BOOTSTRAP_DLL
-        "${_WINAPPSDK_FOUNDATION_ROOT}/runtimes/${_WINML_EP_RUNTIME_PLATFORM}/native/Microsoft.WindowsAppRuntime.Bootstrap.dll")
-
-    if(EXISTS "${_WINAPPSDK_BOOTSTRAP_HEADER_DIR}/MddBootstrap.h" AND EXISTS "${_WINAPPSDK_BOOTSTRAP_LIB}")
-        add_library(WinAppSdkBootstrap::WinAppSdkBootstrap SHARED IMPORTED)
-        set_target_properties(WinAppSdkBootstrap::WinAppSdkBootstrap PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${_WINAPPSDK_BOOTSTRAP_HEADER_DIR}"
-            IMPORTED_IMPLIB "${_WINAPPSDK_BOOTSTRAP_LIB}"
-        )
-        if(EXISTS "${_WINAPPSDK_BOOTSTRAP_DLL}")
-            set_target_properties(WinAppSdkBootstrap::WinAppSdkBootstrap PROPERTIES
-                IMPORTED_LOCATION "${_WINAPPSDK_BOOTSTRAP_DLL}"
-            )
-            set(WINAPPSDK_BOOTSTRAP_DLL "${_WINAPPSDK_BOOTSTRAP_DLL}"
-                CACHE FILEPATH "Microsoft.WindowsAppRuntime.Bootstrap.dll for post-build copy" FORCE)
-        endif()
-        set(WinAppSdkBootstrap_FOUND TRUE)
-        message(STATUS "WinAppSDK Bootstrap: ${_WINAPPSDK_FOUNDATION_ROOT}")
-        message(STATUS "  Import lib: ${_WINAPPSDK_BOOTSTRAP_LIB}")
-        message(STATUS "  DLL: ${_WINAPPSDK_BOOTSTRAP_DLL}")
-    else()
-        message(WARNING "WinAppSDK Bootstrap: header or import lib missing under "
-                        "${_WINAPPSDK_FOUNDATION_ROOT}. Bootstrap.Initialize() will be a no-op.")
-    endif()
-elseif(WINML_EP_CATALOG_FETCH_URL)
-    message(WARNING "WinAppSDK Bootstrap: WINML_EP_CATALOG_FETCH_URL is set but "
-                    "WINAPPSDK_FOUNDATION_FETCH_URL is not. WinML builds in this configuration "
-                    "will fail to link the bootstrap.")
-else()
-    message(WARNING "WinAppSDK Bootstrap: Microsoft.WindowsAppSDK.Foundation NuGet not found "
-                    "under ${NUGET_PACKAGE_ROOT_PATH}. Bootstrap.Initialize() will be a no-op.")
-endif()
+message(STATUS "  Target: WinMLEpCatalog::WinMLEpCatalog -> WindowsML::Api")
+message(STATUS "  DLL dir: ${WINML_EP_CATALOG_DLL_DIR}")

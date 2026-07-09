@@ -1,15 +1,15 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
+// --------------------------------------------------------------------------------------------------------------------
+// <copyright company="Microsoft">
+//   Copyright (c) Microsoft. All rights reserved.
+// </copyright>
+// --------------------------------------------------------------------------------------------------------------------
+
+namespace Microsoft.AI.Foundry.Local;
 
 using System.Runtime.InteropServices;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 using Microsoft.AI.Foundry.Local.Detail.Native;
-
-#pragma warning disable IDISP001
-#pragma warning disable IDISP023
-
-namespace Microsoft.AI.Foundry.Local;
 
 public sealed class AudioItem : Item
 {
@@ -158,15 +158,14 @@ public sealed class AudioItem : Item
     public static AudioItem CreateOwned(string format, Memory<byte> data)
     {
         var item = new AudioItem(ItemType.Audio);
-        var pinCtx = PinContext.Pin(data);
-        var userData = pinCtx.AllocForNativeDeleter();
+        var userData = PinContext.PinForNativeDeleter(data, out var dataPtr, out var dataSize);
 
         try
         {
             item.Format = format;
-            item.SetNativeAudioOwned(pinCtx.Pointer, pinCtx.Length, pinCtx.Pointer, format, s_deleterPtr, userData);
-            item._data = pinCtx.Pointer;
-            item._dataSize = pinCtx.Length;
+            item.SetNativeAudioOwned(dataPtr, dataSize, dataPtr, format, s_deleterPtr, userData);
+            item._data = dataPtr;
+            item._dataSize = dataSize;
             return item;
         }
         catch
@@ -196,18 +195,17 @@ public sealed class AudioItem : Item
     public static AudioItem CreateOwned(string format, Memory<byte> data, int sampleRate, int channels)
     {
         var item = new AudioItem(ItemType.Audio);
-        var pinCtx = PinContext.Pin(data);
-        var userData = pinCtx.AllocForNativeDeleter();
+        var userData = PinContext.PinForNativeDeleter(data, out var dataPtr, out var dataSize);
 
         try
         {
             item.Format = format;
             item.SampleRate = sampleRate;
             item.Channels = channels;
-            item.SetNativeAudioOwned(pinCtx.Pointer, pinCtx.Length, pinCtx.Pointer, format, s_deleterPtr, userData,
+            item.SetNativeAudioOwned(dataPtr, dataSize, dataPtr, format, s_deleterPtr, userData,
                                      sampleRate, channels);
-            item._data = pinCtx.Pointer;
-            item._dataSize = pinCtx.Length;
+            item._data = dataPtr;
+            item._dataSize = dataSize;
             return item;
         }
         catch

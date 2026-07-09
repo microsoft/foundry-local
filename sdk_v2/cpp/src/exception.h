@@ -5,8 +5,8 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include "util/code_location.h"
-#include "util/make_string.h"
 #include "util/stacktrace.h"
+#include "util/string_utils.h"
 
 #include <stdexcept>
 #include <string>

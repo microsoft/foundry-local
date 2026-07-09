@@ -1,5 +1,6 @@
 {
-  "_comment": "Single source of truth for ORT and ORT-GenAI versions in sdk_v2. Read by sdk_v2/cpp/cmake/FindOnnxRuntime*.cmake and sdk_v2/python/_build_backend/__init__.py.",
-  "onnxruntime":       { "version": "1.25.1" },
-  "onnxruntime-genai": { "version": "0.13.2" }
+  "_comment": "Single source of truth for native dependency versions in sdk_v2. Read by sdk_v2/cpp/cmake/Find*.cmake and sdk_v2/python/_build_backend/__init__.py. The .pipelines/foundry-local-packaging.yml literals must match; the 'Validate pinned versions' step fails the build on drift.",
+  "onnxruntime":               { "version": "1.26.0" },
+  "onnxruntime-genai":         { "version": "0.14.1" },
+  "windows-ai-machinelearning": { "version": "2.1.70" }
 }

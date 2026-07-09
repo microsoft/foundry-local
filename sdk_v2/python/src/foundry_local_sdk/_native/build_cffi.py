@@ -60,6 +60,7 @@ typedef enum flErrorCode {
     FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT = 3,
     FOUNDRY_LOCAL_ERROR_INVALID_USAGE = 4,
     FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED = 5,
+    FOUNDRY_LOCAL_ERROR_NETWORK = 6,
 } flErrorCode;
 
 typedef enum flLogLevel {
@@ -114,10 +115,18 @@ typedef enum flItemType {
     FOUNDRY_LOCAL_ITEM_MESSAGE = 21,
     FOUNDRY_LOCAL_ITEM_IMAGE = 25,
     FOUNDRY_LOCAL_ITEM_AUDIO = 30,
+    FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT = 31,
+    FOUNDRY_LOCAL_ITEM_SPEECH_RESULT = 32,
     FOUNDRY_LOCAL_ITEM_TOOL_CALL = 100,
     FOUNDRY_LOCAL_ITEM_TOOL_RESULT = 101,
     FOUNDRY_LOCAL_ITEM_QUEUE = 200,
 } flItemType;
+
+typedef enum flSpeechSegmentKind {
+    FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE = 0,
+    FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL = 1,
+    FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL = 2,
+} flSpeechSegmentKind;
 
 typedef enum flTextItemType {
     FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT = 0,
@@ -274,6 +283,40 @@ typedef struct flToolResultData {
     const char* result;
 } flToolResultData;
 
+/* Speech recognition output types. SPEECH_SEGMENT / SPEECH_RESULT are output-only;
+   the ABI exposes only Get accessors. Time fields use FOUNDRY_LOCAL_DURATION_UNSET
+   (INT64_MIN, defined Python-side as _DURATION_UNSET) when absent. */
+
+typedef struct flSpeechWord {
+    uint32_t version;
+    const char* text;
+    int64_t start_time_ms;
+    int64_t end_time_ms;
+    float confidence;
+    const char* speaker_id;
+} flSpeechWord;
+
+typedef struct flSpeechSegmentData {
+    uint32_t version;
+    flSpeechSegmentKind kind;
+    const char* text;
+    int64_t start_time_ms;
+    int64_t end_time_ms;
+    _Bool utterance_start;
+    const flSpeechWord* words;
+    size_t words_count;
+    const char* language;
+} flSpeechSegmentData;
+
+typedef struct flSpeechResultData {
+    uint32_t version;
+    const char* text;
+    const char* language;
+    int64_t duration_ms;
+    const flItem* const* segments;
+    size_t segments_count;
+} flSpeechResultData;
+
 typedef struct flStreamingCallbackData {
     uint32_t version;
     flItemQueue* item_queue;
@@ -372,6 +415,8 @@ typedef struct flItemApi {
     flStatusPtr (*GetAudio)(const flItem* item, flAudioData* out_audio);
     flStatusPtr (*GetToolCall)(const flItem* item, flToolCallData* out_tool_call);
     flStatusPtr (*GetToolResult)(const flItem* item, flToolResultData* out_tool_result);
+    flStatusPtr (*GetSpeechSegment)(const flItem* item, flSpeechSegmentData* out_segment);
+    flStatusPtr (*GetSpeechResult)(const flItem* item, flSpeechResultData* out_result);
     flStatusPtr (*GetMetadata)(const flItem* item, const flKeyValuePairs** out_metadata);
     flStatusPtr (*GetMutableMetadata)(flItem* item, flKeyValuePairs** out_metadata);
     flStatusPtr (*GetQueue)(flItem* item, flItemQueue** out_queue);
@@ -443,6 +488,7 @@ typedef struct flCatalogApi {
     flStatusPtr (*GetLatestVersion)(const flCatalog* catalog, const flModel* model, flModel** out_model);
     flStatusPtr (*GetCachedModels)(const flCatalog* catalog, flModelList** out_models);
     flStatusPtr (*GetLoadedModels)(const flCatalog* catalog, flModelList** out_models);
+    flStatusPtr (*GetModelVersions)(const flCatalog* catalog, const char* model_alias, const char* model_name, int32_t max_versions, flModelList** out_models);
 } flCatalogApi;
 
 /* -----------------------------------------------------------------------

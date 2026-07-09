@@ -168,7 +168,7 @@ All 5 "Migrate" items from [MigrationPlan.md](MigrationPlan.md) are **done**:
 | **C# Files** | `AzureExtensions.cs`, `Configuration.cs`, `FoundryLocalCore.cs` |
 
 **What changed in C#:**
-- `Configuration` gains `ModelRegistryRegion` property (default `"eastus"`), read from
+- `Configuration` gains `ModelRegistryRegion` property (default `"centralus"`), read from
   config key `"CatalogRegion"`.
 - `AzureExtensions.ModelRegistryRegion` is set from configuration during init.
 - The hardcoded `https://eastus.api.azureml.ms/modelregistry/...` URL becomes
@@ -179,7 +179,7 @@ All 5 "Migrate" items from [MigrationPlan.md](MigrationPlan.md) are **done**:
 - `Configuration` has no region field.
 
 **Migration work:**
-- Add `catalog_region` field to `Configuration` (default `"eastus"`).
+- Add `catalog_region` field to `Configuration` (default `"centralus"`).
 - Expose via C ABI configuration setter.
 - `ModelRegistryClient` uses `configuration.catalog_region` to construct the URL.
 - ~15 lines across 3 files.

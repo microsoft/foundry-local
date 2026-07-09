@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -7,6 +7,7 @@
 namespace Microsoft.AI.Foundry.Local;
 
 using System.Threading.Tasks;
+
 using Microsoft.Extensions.Logging;
 
 internal class Utils

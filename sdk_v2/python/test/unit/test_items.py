@@ -21,6 +21,8 @@ from foundry_local_sdk.items import (
     ItemType,
     MessageItem,
     MessageRole,
+    SpeechResultItem,
+    SpeechSegmentItem,
     TensorItem,
     TextItem,
     TextItemType,
@@ -287,6 +289,16 @@ class TestTensorItemNegative:
     def test_direct_construction_raises(self):
         with pytest.raises(TypeError):
             TensorItem()
+
+
+class TestSpeechItemsNegative:
+    def test_speech_segment_direct_construction_raises(self):
+        with pytest.raises(TypeError):
+            SpeechSegmentItem()
+
+    def test_speech_result_direct_construction_raises(self):
+        with pytest.raises(TypeError):
+            SpeechResultItem()
 
 
 class TestDispatchByType:

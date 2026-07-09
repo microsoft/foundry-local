@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/telemetry_logger.h"
+#include "telemetry/telemetry_redaction.h"
 
 #include <gtest/gtest.h>
 
@@ -137,6 +138,24 @@ TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
 
   EXPECT_NE(logger.entries[2].message.find("Action=ModelLoad"), std::string::npos);
   EXPECT_NE(logger.entries[2].message.find("ModelId=phi-3-mini"), std::string::npos);
+}
+
+TEST(TelemetryRedactionTest, ScrubsHomePathsAndKeepsUsefulTail) {
+  const std::string message =
+      "failed to open /home/alice/.cache/foundry/model/config.json and C:\\Users\\Bob\\AppData\\file.bin";
+
+  const auto scrubbed = ScrubTelemetryErrorMessage(message);
+
+  EXPECT_EQ(scrubbed.find("alice"), std::string::npos);
+  EXPECT_EQ(scrubbed.find("Bob"), std::string::npos);
+  EXPECT_NE(scrubbed.find("[path]/model/config.json"), std::string::npos);
+  EXPECT_NE(scrubbed.find("[path]\\AppData\\file.bin"), std::string::npos);
+}
+
+TEST(TelemetryRedactionTest, TruncatesLongErrorMessages) {
+  const auto scrubbed = ScrubTelemetryErrorMessage(std::string(300, 'x'));
+
+  EXPECT_EQ(scrubbed.size(), kMaxTelemetryErrorMessageLength);
 }
 
 TEST(ActionTrackerTest, DestructorRecordsFailureByDefaultWithoutModelId) {

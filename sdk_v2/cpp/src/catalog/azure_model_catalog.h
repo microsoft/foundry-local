@@ -29,20 +29,19 @@ class AzureModelCatalog : public BaseModelCatalog {
                     const IEpDetector& ep_detector,
                     ILogger& logger,
                     bool cache_only = false,
+                    std::string catalog_region = "",
+                    bool disable_region_fallback = false,
                     ITelemetry* telemetry = nullptr);
   ~AzureModelCatalog() override;
 
  protected:
   std::vector<Model> FetchModels() const override;
+  std::vector<Model> FetchModelVersions(const std::string& model_alias,
+                                        const std::string& model_name = "") const override;
+  std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
 
  private:
-#if defined(FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT)
-  static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/eastus/ux/v1.0";
-#else
-  // Live Azure catalog client was excluded from this build; default to the
-  // embedded snapshot so the SDK works out of the box without a custom config.
-  static constexpr const char* kDefaultCatalogUrl = "static";
-#endif
+  static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
   static constexpr const char* kDefaultCatalogFilter = "''";
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
@@ -51,6 +50,9 @@ class AzureModelCatalog : public BaseModelCatalog {
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   bool cache_only_;
+  // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
+  std::string catalog_region_;
+  bool disable_region_fallback_;
   ITelemetry* telemetry_;
 };
 

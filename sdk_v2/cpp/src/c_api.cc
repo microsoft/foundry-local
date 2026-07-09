@@ -13,6 +13,8 @@
 #include "items/bytes_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
+#include "items/speech_result_item.h"
+#include "items/speech_segment_item.h"
 #include "items/tensor_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -685,6 +687,34 @@ FL_API_STATUS_IMPL(Catalog_GetNameImpl, const flCatalog* catalog, const char** o
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Catalog_GetModelVersionsImpl, const flCatalog* catalog,
+                   const char* model_alias, const char* model_name,
+                   int32_t max_versions, flModelList** out_models) {
+  API_IMPL_BEGIN
+  if (!catalog || !model_alias || !out_models) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  if (*model_alias == '\0') {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_alias must not be empty");
+  }
+
+  std::string alias = model_alias;
+  std::string model_name_filter = model_name ? model_name : std::string{};
+
+  auto models = catalog->impl.GetModelVersions(alias, model_name_filter, max_versions);
+  auto list = std::make_unique<flModelList>();
+  list->items.reserve(models.size());
+
+  for (auto* m : models) {
+    list->items.push_back(AsHandle<flModel>(m));
+  }
+
+  *out_models = list.release();
+  return nullptr;
+  API_IMPL_END
+}
+
 static const flCatalogApi g_catalog_api = {
     Catalog_GetNameImpl,
     Catalog_GetModelsImpl,
@@ -693,6 +723,7 @@ static const flCatalogApi g_catalog_api = {
     Catalog_GetLatestVersionImpl,
     Catalog_GetCachedModelsImpl,
     Catalog_GetLoadedModelsImpl,
+    Catalog_GetModelVersionsImpl,
 };
 
 // ========================================================================
@@ -986,6 +1017,11 @@ FL_API_STATUS_IMPL(Item_CreateImpl, flItemType type, flItem** out_item) {
   API_IMPL_BEGIN
   if (!out_item) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null out_item");
+  }
+
+  if (type == FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT || type == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                      "SPEECH_SEGMENT / SPEECH_RESULT are output-only and cannot be created by callers");
   }
 
   auto item = fl::Item::Create(type);
@@ -1304,6 +1340,38 @@ FL_API_STATUS_IMPL(Item_GetToolResultImpl, const flItem* item, flToolResultData*
   API_IMPL_END
 }
 
+// --- Speech (output-only) ---
+
+FL_API_STATUS_IMPL(Item_GetSpeechSegmentImpl, const flItem* item, flSpeechSegmentData* out_segment) {
+  API_IMPL_BEGIN
+  if (!item || !out_segment) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  if (AsImpl(item)->type != FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "item is not a SPEECH_SEGMENT item");
+  }
+
+  AsItemType<fl::SpeechSegmentItem>(item)->GetApiData(*out_segment);
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Item_GetSpeechResultImpl, const flItem* item, flSpeechResultData* out_result) {
+  API_IMPL_BEGIN
+  if (!item || !out_result) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  if (AsImpl(item)->type != FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "item is not a SPEECH_RESULT item");
+  }
+
+  AsItemType<fl::SpeechResultItem>(item)->GetApiData(*out_result);
+  return nullptr;
+  API_IMPL_END
+}
+
 // --- Bytes ---
 
 FL_API_STATUS_IMPL(Item_SetBytesImpl, flItem* item, const flBytesData* bytes) {
@@ -1460,6 +1528,8 @@ static const flItemApi g_item_api = {
     Item_GetAudioImpl,
     Item_GetToolCallImpl,
     Item_GetToolResultImpl,
+    Item_GetSpeechSegmentImpl,
+    Item_GetSpeechResultImpl,
     Item_GetMetadataImpl,
     Item_GetMutableMetadataImpl,
     Item_GetQueueImpl,

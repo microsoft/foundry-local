@@ -195,7 +195,8 @@ Refactored to use Azure SDK native features instead of a custom retry loop:
 
 Full implementation plan in [docs/EpDetectionPlan.md](EpDetectionPlan.md). Summary:
 - Replace stub `EpDetector` with real hardware detection via WinML EP catalog C API
-  (`WinMLEpCatalog.h` from `Microsoft.WindowsAppSDK.ML` NuGet, acquired via vcpkg).
+  (`WinMLEpCatalog.h` from `Microsoft.Windows.AI.MachineLearning` NuGet, fetched directly
+  from nuget.org — WinML 2.x is reg-free, no Windows App SDK bootstrap needed).
 - `WinMLEpBootstrapper` wraps the WinML C API for EP enumeration + download + registration.
 - `CudaEpBootstrapper` handles manual CUDA EP download from Azure CDN + registration.
 - `EpDetector` orchestrator manages bootstrappers, coordinates download, and invalidates

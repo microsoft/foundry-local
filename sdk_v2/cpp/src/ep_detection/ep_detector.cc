@@ -202,9 +202,12 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     }
 
     ++telemetry_attempts;
+    // Reuse previously downloaded EP packages unless the caller explicitly asks
+    // for a forced refresh. Downloading every time made the bootstrapper
+    // re-fetch and re-register EPs on every invocation.
     bool ok = false;
     try {
-      ok = bs->DownloadAndRegister(/*force=*/true, wrapped_cb, logger_);
+      ok = bs->DownloadAndRegister(/*force=*/false, wrapped_cb, logger_);
     } catch (const std::exception& ex) {
       if (tracker) {
         tracker->RecordException(ex);

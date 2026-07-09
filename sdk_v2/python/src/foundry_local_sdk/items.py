@@ -6,10 +6,20 @@ from __future__ import annotations
 # --------------------------------------------------------------------------
 
 import math
+import struct
+from dataclasses import dataclass
 from enum import IntEnum
 
 
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+# Sentinel for absent time fields in flSpeech* structs. INT64_MIN, matches
+# C ABI FOUNDRY_LOCAL_DURATION_UNSET. cffi cdef does not process #define.
+_DURATION_UNSET: int = -(2**63)
+# Sentinel for an absent confidence value in flSpeechWord. -FLT_MAX (the most-negative finite
+# 32-bit float), matching C ABI FOUNDRY_LOCAL_CONFIDENCE_UNSET. Derived from the IEEE-754
+# single-precision bit pattern (0x7f7fffff) so it equals the exact double cffi widens the
+# C float to. cffi cdef does not process #define.
+_CONFIDENCE_UNSET: float = -struct.unpack("<f", b"\xff\xff\x7f\x7f")[0]
 
 
 class ItemType(IntEnum):
@@ -20,6 +30,8 @@ class ItemType(IntEnum):
     MESSAGE = 21
     IMAGE = 25
     AUDIO = 30
+    SPEECH_SEGMENT = 31
+    SPEECH_RESULT = 32
     TOOL_CALL = 100
     TOOL_RESULT = 101
     QUEUE = 200
@@ -29,6 +41,20 @@ class TextItemType(IntEnum):
     DEFAULT = 0
     REASONING = 1
     OPENAI_JSON = 2
+
+
+class SpeechSegmentKind(IntEnum):
+    """Discriminator for a :class:`SpeechSegmentItem`.
+
+    PARTIAL/FINAL describe the state of the current segment hypothesis in a
+    streaming callback. PARTIAL is the evolving guess for the in-progress
+    segment; FINAL closes it. They do not describe the overall response.
+    NONE is used for segments embedded in :class:`SpeechResultItem`, where
+    the streaming distinction no longer applies.
+    """
+    NONE = 0
+    PARTIAL = 1
+    FINAL = 2
 
 
 class MessageRole(IntEnum):
@@ -764,6 +790,131 @@ class TensorItem(Item):
         return f"TensorItem(dtype={self.data_type.name}, shape={self.shape})"
 
 
+@dataclass(frozen=True)
+class SpeechWord:
+    """One word within a :class:`SpeechSegmentItem`. Output-only."""
+    text: str
+    start_time_ms: int | None
+    end_time_ms: int | None
+    confidence: float | None
+    speaker_id: str | None
+
+
+class SpeechSegmentItem(Item):
+    """Output-only item produced by ``AudioSession``.
+
+    A streaming callback receives zero-or-more PARTIAL segments followed by
+    exactly one FINAL closing the current utterance. Entries of
+    :attr:`SpeechResultItem.segments` use NONE or FINAL.
+    """
+
+    kind: SpeechSegmentKind
+    text: str
+    start_time_ms: int | None
+    end_time_ms: int | None
+    utterance_start: bool
+    words: list[SpeechWord]
+    language: str | None
+
+    def __init__(self) -> None:
+        raise TypeError("SpeechSegmentItem cannot be created directly; use Item.from_native()")
+
+    @classmethod
+    def _from_native(cls, ptr, owns: bool) -> "SpeechSegmentItem":
+        from foundry_local_sdk._native import ffi
+        from foundry_local_sdk._native.api import api
+
+        obj = cls.__new__(cls)
+        obj._ptr = ptr
+        obj._owns = owns
+
+        data = ffi.new("flSpeechSegmentData*")
+        data.version = _API_VERSION
+        api.check_status(api.item.GetSpeechSegment(ptr, data))
+
+        obj.kind = SpeechSegmentKind(int(data.kind))
+        obj.text = _utf8(data.text) or ""
+        start = int(data.start_time_ms)
+        end = int(data.end_time_ms)
+        obj.start_time_ms = None if start == _DURATION_UNSET else start
+        obj.end_time_ms = None if end == _DURATION_UNSET else end
+        obj.utterance_start = bool(data.utterance_start)
+        obj.language = _utf8(data.language)
+
+        word_count = int(data.words_count)
+        words: list[SpeechWord] = []
+        for i in range(word_count):
+            w = data.words[i]
+            w_start = int(w.start_time_ms)
+            w_end = int(w.end_time_ms)
+            # Read confidence only when set; the sentinel marks an absent value.
+            conf = float(w.confidence)
+            confidence = None if conf == _CONFIDENCE_UNSET else conf
+            words.append(SpeechWord(
+                text=_utf8(w.text) or "",
+                start_time_ms=None if w_start == _DURATION_UNSET else w_start,
+                end_time_ms=None if w_end == _DURATION_UNSET else w_end,
+                confidence=confidence,
+                speaker_id=_utf8(w.speaker_id),
+            ))
+        obj.words = words
+
+        return obj
+
+    def __repr__(self) -> str:
+        preview = self.text if len(self.text) <= 40 else self.text[:37] + "..."
+        return f"SpeechSegmentItem(kind={self.kind.name}, text={preview!r})"
+
+
+class SpeechResultItem(Item):
+    """Output-only aggregate produced by ``AudioSession`` at the end of a transcription.
+
+    Holds the full transcript and per-segment detail. The :attr:`segments`
+    entries are borrowed handles owned by this result; do not close them
+    individually — they remain valid only while this item is alive.
+    """
+
+    text: str
+    language: str | None
+    duration_ms: int | None
+    segments: list[SpeechSegmentItem]
+
+    def __init__(self) -> None:
+        raise TypeError("SpeechResultItem cannot be created directly; use Item.from_native()")
+
+    @classmethod
+    def _from_native(cls, ptr, owns: bool) -> "SpeechResultItem":
+        from foundry_local_sdk._native import ffi
+        from foundry_local_sdk._native.api import api
+
+        obj = cls.__new__(cls)
+        obj._ptr = ptr
+        obj._owns = owns
+
+        data = ffi.new("flSpeechResultData*")
+        data.version = _API_VERSION
+        api.check_status(api.item.GetSpeechResult(ptr, data))
+
+        obj.text = _utf8(data.text) or ""
+        obj.language = _utf8(data.language)
+        duration = int(data.duration_ms)
+        obj.duration_ms = None if duration == _DURATION_UNSET else duration
+
+        seg_count = int(data.segments_count)
+        # Borrowed segment handles are owned by the result item; their lifetime
+        # is tied to obj via the native parent, so owns=False on the wrappers.
+        obj.segments = [
+            SpeechSegmentItem._from_native(data.segments[i], owns=False)
+            for i in range(seg_count)
+        ]
+
+        return obj
+
+    def __repr__(self) -> str:
+        dur = self.duration_ms if self.duration_ms is not None else "?"
+        return f"SpeechResultItem(duration_ms={dur}, segments={len(self.segments)})"
+
+
 # Dispatch map for Item.from_native — must be defined after all subclasses
 # so the names resolve correctly.
 _TYPE_MAP: dict[ItemType, type[Item]] = {
@@ -773,6 +924,8 @@ _TYPE_MAP: dict[ItemType, type[Item]] = {
     ItemType.TENSOR: TensorItem,
     ItemType.IMAGE: ImageItem,
     ItemType.AUDIO: AudioItem,
+    ItemType.SPEECH_SEGMENT: SpeechSegmentItem,
+    ItemType.SPEECH_RESULT: SpeechResultItem,
     ItemType.TOOL_CALL: ToolCallItem,
     ItemType.TOOL_RESULT: ToolResultItem,
 }

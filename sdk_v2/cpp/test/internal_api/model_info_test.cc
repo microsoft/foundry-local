@@ -15,6 +15,33 @@ using namespace fl;
 // Reasoning fields round-trip
 // ========================================================================
 
+TEST(ModelInfoRoundTrip, DetectedRegionSurvivesRoundTrip) {
+  ModelInfo original;
+  original.model_id = "test-model:1";
+  original.name = "test-model";
+  original.detected_region = "westus2";
+
+  nlohmann::json j = ModelInfoToJson(original);
+  EXPECT_EQ(j["detectedRegion"], "westus2");
+
+  ModelInfo restored = ModelInfoFromJson(j);
+  EXPECT_EQ(restored.detected_region, "westus2");
+}
+
+TEST(ModelInfoRoundTrip, MissingDetectedRegionOmittedFromJsonAndParsesEmpty) {
+  ModelInfo original;
+  original.model_id = "test-model:1";
+  original.name = "test-model";
+  // detected_region left empty (e.g. BYO model or pre-region cache file).
+
+  nlohmann::json j = ModelInfoToJson(original);
+  EXPECT_FALSE(j.contains("detectedRegion"));
+
+  // An old cache document without the field must still parse with an empty region.
+  ModelInfo restored = ModelInfoFromJson(j);
+  EXPECT_TRUE(restored.detected_region.empty());
+}
+
 TEST(ModelInfoRoundTrip, ReasoningFieldsSurviveRoundTrip) {
   ModelInfo original;
   original.model_id = "test-model:1";

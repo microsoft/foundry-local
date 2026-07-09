@@ -12,6 +12,7 @@
 #include "items/audio_item.h"
 #include "items/bytes_item.h"
 #include "items/item_queue.h"
+#include "items/speech_result_item.h"
 #include "items/text_item.h"
 #include "items/text_item.h"
 #include "logger.h"
@@ -453,13 +454,13 @@ TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {
   Response response;
   ASSERT_NO_THROW(session.ProcessRequest(request, response));
 
-  // Should produce at least one text item
+  // Should produce at least one item
   ASSERT_FALSE(response.items.empty()) << "No items in response";
 
   std::string text;
   for (const auto& item : response.items) {
-    if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
-      text = static_cast<TextItem&>(*item).text;
+    if (item->type == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+      text = static_cast<SpeechResultItem&>(*item).text;
       break;
     }
   }

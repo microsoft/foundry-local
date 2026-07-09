@@ -5,10 +5,8 @@
 // --------------------------------------------------------------------------------------------------------------------
 
 namespace Microsoft.AI.Foundry.Local.Tests;
-
-using System.Text.Json;
-using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.OpenAI;
+
 using TUnit.Core.Exceptions;
 
 internal sealed class LiveAudioTranscriptionTests
@@ -545,6 +543,108 @@ internal sealed class LiveAudioTranscriptionTests
 
         Console.WriteLine($"Received {allResults.Count} streaming results");
         Console.WriteLine($"Final transcription: {text}");
+    }
+
+    /// <summary>
+    /// Streamed input + streamed output: pushes PCM chunks into a session-borrowed
+    /// <see cref="ItemQueue"/> while consuming per-token <see cref="SpeechSegmentItem"/>s via
+    /// <see cref="Session.ProcessStreamingRequestAsync"/>, then verifies the terminal
+    /// <see cref="SpeechResultItem"/> aggregates the same segments. Mirrors the C++
+    /// <c>StreamingAudioFixture.StreamingCallbackReceivesTokens</c> test in
+    /// <c>sdk_v2/cpp/test/sdk_api/streaming_audio_test.cc</c>. Requires the nemotron
+    /// live-streaming ASR model — whisper rejects PCM chunks at inference.
+    /// </summary>
+    [Test]
+    [SkipUnlessIntegration]
+    public async Task AudioSession_PcmStreamedInAndSegmentsStreamedOut()
+    {
+        if (streamingAudioModel == null || !await streamingAudioModel.IsLoadedAsync())
+        {
+            throw new SkipTestException("nemotron streaming audio model not available");
+        }
+
+        var pcm = LoadRecordingPcm();
+        await Assert.That(pcm.Length).IsGreaterThan(0);
+
+        // 100ms chunks at 16kHz mono s16le = 3200 bytes each
+        var chunks = SplitIntoChunks(pcm, 3200);
+        await Assert.That(chunks.Count).IsGreaterThan(1);
+
+        // Format descriptor — no initial data, the actual bytes arrive via the queue.
+        // Mirrors the C++ Item::AudioFromData("pcm", nullptr, 0, 16000, 1) shape.
+        using var audio = AudioItem.CreateFormatDescriptor("pcm", sampleRate: 16000, channels: 1);
+        using var queue = new ItemQueue();
+
+        using var request = new Request();
+        request.AddItem(audio, takeOwnership: true);
+        request.AddItem(queue, takeOwnership: false);
+
+        using var session = new AudioSession(streamingAudioModel!);
+        session.SetStreaming(true);
+
+        // ItemQueue is unbounded, so we can push every chunk synchronously up-front.
+        // The native session consumes them on its own worker thread once we kick off
+        // ProcessStreamingRequestAsync below.
+        foreach (var chunk in chunks)
+        {
+            // Owned bytes item (State 3, see docs/item-data-ownership.md): the native side takes
+            // ownership and its deleter unpins the buffer when the item is destroyed, so there is
+            // nothing for the caller to dispose. Generic Push(Item) — no per-type push helper needed.
+            queue.Push(BytesItem.CreateOwned(chunk));
+        }
+
+        queue.MarkFinished();
+
+        var sb = new System.Text.StringBuilder();
+        int segmentCount = 0;
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+
+        await foreach (var item in stream)
+        {
+            using (item)
+            {
+                if (item is SpeechSegmentItem seg)
+                {
+                    sb.Append(seg.Text);
+                    segmentCount++;
+                }
+                else
+                {
+                    Assert.Fail($"unexpected streamed item type: {item.GetType().Name}");
+                }
+            }
+        }
+
+        await Assert.That(segmentCount).IsGreaterThan(0);
+        var streamedText = sb.ToString();
+        await Assert.That(streamedText).IsNotEmpty();
+        ExpectTranscriptionContent(streamedText);
+
+        // The terminal Response carries an aggregated SpeechResultItem built from the
+        // streamed segments. Validate it matches what we accumulated from the iterator.
+        using var final = await stream.FinalResponse;
+        await Assert.That(final).IsNotNull();
+        await Assert.That(final.ItemCount).IsGreaterThan(0);
+
+        SpeechResultItem? aggregated = null;
+
+        for (int i = 0; i < final.ItemCount; i++)
+        {
+            using var item = final.GetItem(i);
+
+            if (item is SpeechResultItem result)
+            {
+                aggregated = result;
+                break;
+            }
+        }
+
+        await Assert.That(aggregated).IsNotNull();
+        await Assert.That(aggregated!.Segments.Count).IsEqualTo(segmentCount);
+        await Assert.That(aggregated.Text).IsEqualTo(streamedText);
+
+        Console.WriteLine($"Streaming transcription ({segmentCount} segments): {streamedText}");
     }
 }
 

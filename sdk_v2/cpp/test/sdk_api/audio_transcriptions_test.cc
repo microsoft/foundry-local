@@ -135,7 +135,46 @@ TEST_F(AudioSessionFixture, TranscribeWithSessionLevelOptions) {
   ExpectTranscriptionContent(text);
 }
 
-// ---- Error paths — exercise ProcessRequestImpl validation branches. ----
+TEST_F(AudioSessionFixture, TranscribeProducesSpeechResultItem) {
+  using namespace foundry_local;
+
+  Request request;
+  request.AddItem(Item::AudioFromUri(audio_file_path()));
+
+  AudioSession session(audio_model());
+  Response response = session.ProcessRequest(request);
+
+  EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_STOP);
+
+  const Item* speech_item = nullptr;
+  for (const auto& item : response.GetItems()) {
+    if (item.GetType() == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+      speech_item = &item;
+      break;
+    }
+  }
+  ASSERT_NE(speech_item, nullptr) << "Expected a SPEECH_RESULT item by default";
+
+  auto result = speech_item->GetSpeechResult();
+  std::string result_text(result.text);
+  EXPECT_FALSE(result_text.empty());
+  ExpectTranscriptionContent(result_text);
+  // One segment per decoded token, kind NONE. Concatenated text matches result.text.
+  ASSERT_FALSE(result.segments.empty());
+  std::string concatenated;
+  for (const auto& seg_item : result.segments) {
+    auto seg = seg_item.GetSpeechSegment();
+    EXPECT_EQ(seg.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE);
+    EXPECT_FALSE(seg.start_time_ms.has_value());
+    EXPECT_FALSE(seg.end_time_ms.has_value());
+    EXPECT_TRUE(seg.words.empty());
+    concatenated.append(seg.text.data(), seg.text.size());
+  }
+  EXPECT_EQ(concatenated, result_text);
+  // Detected source language is not reported by GenAI today — reserved for future translation.
+  EXPECT_FALSE(result.language.has_value());
+  EXPECT_FALSE(result.duration_ms.has_value());
+}
 
 TEST_F(AudioSessionFixture, RejectsEmptyRequest) {
   using namespace foundry_local;

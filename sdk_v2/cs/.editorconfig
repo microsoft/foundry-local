@@ -300,8 +300,12 @@ dotnet_diagnostic.IDE0090.severity = error
 ## Suppressing this particular case due to issues in the analyzer's understanding of pattern matching.
 dotnet_diagnostic.IDE0072.severity = suggestion
 
-# CA2000: Dispose objects before losing scope
-dotnet_diagnostic.CA2000.severity = warning
+# CA2000: Dispose objects before losing scope.
+# Downgraded to 'none' — see the NoWarn + rationale in the .csproj files. The Item ownership model
+# transfers a native handle into a container (Request/ItemQueue) and the C# wrapper's Dispose() is a
+# no-op afterwards (docs/item-data-ownership.md), which CA2000 can't model. IDisposableAnalyzers is
+# our authority for disposal correctness instead.
+dotnet_diagnostic.CA2000.severity = none
 
 # IDE0046: Convert to conditional expression
 dotnet_diagnostic.IDE0046.severity = silent

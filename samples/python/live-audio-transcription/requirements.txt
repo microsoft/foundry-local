@@ -1,5 +1,4 @@
-foundry-local-sdk; sys_platform != "win32"
-foundry-local-sdk-winml; sys_platform == "win32"
+foundry-local-sdk
 # pyaudio is optional — only needed for live microphone capture.
 # Install manually: pip install pyaudio
 # The sample falls back to synthetic audio if pyaudio is unavailable.

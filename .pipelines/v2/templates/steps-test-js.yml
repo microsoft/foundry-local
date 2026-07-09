@@ -14,7 +14,7 @@ parameters:
   displayName: 'Path to the downloaded js-prebuild-<rid> artifact directory (root with prebuilds/ inside)'
 - name: testDataSharedDir
   type: string
-  displayName: 'Path to the checked-out test-data-shared repo'
+  displayName: 'Path to the model cache directory used by tests'
 
 steps:
 
@@ -62,6 +62,9 @@ steps:
 
   - pwsh: |
       Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      Write-Host "FOUNDRY_TEST_DATA_DIR=$env:FOUNDRY_TEST_DATA_DIR"
+      if (-not (Test-Path $env:FOUNDRY_TEST_DATA_DIR)) { throw "FOUNDRY_TEST_DATA_DIR does not exist: $env:FOUNDRY_TEST_DATA_DIR" }
+      Get-ChildItem -Path $env:FOUNDRY_TEST_DATA_DIR -Force | ForEach-Object { Write-Host "  $($_.FullName)" }
       npx --no-install vitest run --reporter=verbose
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Run vitest'
@@ -84,6 +87,9 @@ steps:
   - bash: |
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
+      echo "FOUNDRY_TEST_DATA_DIR=${FOUNDRY_TEST_DATA_DIR}"
+      test -d "${FOUNDRY_TEST_DATA_DIR}"
+      ls -la "${FOUNDRY_TEST_DATA_DIR}"
       npx --no-install vitest run --reporter=verbose
     displayName: 'Run vitest'
     env:

@@ -41,6 +41,7 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
     private int _enumerated;
     private int _finalResponseObserved;
     private int _cleanupStarted;
+    private int _drainedNaturally;
     private int _disposed;
 
     internal StreamingResponse(Session session,
@@ -140,6 +141,14 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
             {
                 yield return item;
             }
+
+            // The channel completed on its own: the producer finished ProcessRequest and called
+            // TryComplete (channel completion is always preceded by ProcessRequest returning). The
+            // native request has therefore already produced its full output, so cleanup MUST NOT
+            // signal abort — doing so races the native streaming-callback worker thread and can
+            // flip request.canceled on a still-finalizing request, truncating the output. Only an
+            // early break / dispose / external-token cancellation (which skip this line) should abort.
+            Interlocked.Exchange(ref _drainedNaturally, 1);
         }
         finally
         {
@@ -154,8 +163,14 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
             return;
         }
 
-        // Signal the native callback (and producer) to stop on early break / cancellation.
-        try { _cts.Cancel(); } catch { }
+        // Signal the native callback (and producer) to stop ONLY when the consumer is abandoning
+        // the stream early (break / dispose / external cancellation before the channel completed).
+        // On the natural-drain path the request already finished, and cancelling here would race the
+        // native callback worker thread and could truncate a still-in-flight ProcessRequest.
+        if (Volatile.Read(ref _drainedNaturally) == 0)
+        {
+            try { _cts.Cancel(); } catch { }
+        }
 
         // Drain and dispose any items still buffered so native handles don't leak.
         while (_channel.Reader.TryRead(out var leftover))

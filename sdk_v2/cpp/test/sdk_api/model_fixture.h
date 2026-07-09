@@ -63,6 +63,9 @@ inline std::string CollectResponseText(const foundry_local::Response& response) 
       text += item.GetText().text;
     } else if (item.GetType() == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       text += CollectMessageText(item.GetMessage());
+    } else if (item.GetType() == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+      auto sr = item.GetSpeechResult();
+      text.append(sr.text.data(), sr.text.size());
     }
   }
 

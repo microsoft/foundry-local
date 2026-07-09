@@ -5,7 +5,7 @@ openai>=2.24.0
 # - Linux x86_64:   onnxruntime-gpu / onnxruntime-genai-cuda (CUDA-enabled wheels).
 # - Linux aarch64:  onnxruntime / onnxruntime-genai (the CUDA variants do not ship aarch64 binaries).
 # - Other platforms: onnxruntime-core / onnxruntime-genai-core (cross-platform variants).
-foundry-local-core==1.2.1
+foundry-local-core==1.2.3
 onnxruntime-core==1.26.0; sys_platform != "linux"
 onnxruntime-gpu==1.26.0; sys_platform == "linux" and platform_machine == "x86_64"
 onnxruntime==1.26.0; sys_platform == "linux" and platform_machine == "aarch64"

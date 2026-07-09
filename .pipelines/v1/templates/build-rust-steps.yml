@@ -24,6 +24,10 @@ parameters:
   type: string
   default: ''
   displayName: 'Path to deps-versions artifact directory'
+- name: depsVersionsWinmlDir
+  type: string
+  default: ''
+  displayName: 'Path to WinML deps-versions artifact directory'
 steps:
 # Set paths for multi-repo checkout
 - task: PowerShell@2
@@ -73,6 +77,14 @@ steps:
     repoRoot: $(repoRoot)
     artifactDir: ${{ parameters.depsVersionsDir }}
     isWinML: ${{ parameters.isWinML }}
+
+# Rust publishes a single crate that carries both deps_versions.json and
+# deps_versions_winml.json, so always refresh WinML deps as part of packaging.
+- template: update-deps-versions-steps.yml
+  parameters:
+    repoRoot: $(repoRoot)
+    artifactDir: ${{ parameters.depsVersionsWinmlDir }}
+    isWinML: true
 
 # Copy both deps_versions JSON files into the crate directory so cargo
 # package includes them and build.rs can find the right one at build time

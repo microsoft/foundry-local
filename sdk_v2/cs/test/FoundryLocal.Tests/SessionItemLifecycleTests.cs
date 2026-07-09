@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -6,7 +6,6 @@
 
 namespace Microsoft.AI.Foundry.Local.Tests;
 
-using System.Collections.Generic;
 using System.Threading.Tasks;
 
 using TUnit.Core.Exceptions;

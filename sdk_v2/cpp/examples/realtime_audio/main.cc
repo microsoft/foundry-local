@@ -46,8 +46,10 @@ void RealtimeAudioChat(IModel& model, const std::string& audio_path) {
     flItem* raw_item = nullptr;
     if (item_api->ItemQueue_TryPop(event.item_queue, &raw_item)) {
       Item item(*raw_item);
-      if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
-        std::cout << item.GetText().text << std::flush;
+      if (item.GetType() == FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT) {
+        auto seg = item.GetSpeechSegment();
+        std::cout.write(seg.text.data(), seg.text.size());
+        std::cout.flush();
       } else {
         std::cerr << "Unexpected item type" << std::endl;
       }
@@ -133,10 +135,19 @@ void RealtimeAudioChat(IModel& model, const std::string& audio_path) {
             << ", completion: " << usage.completion_tokens
             << ", total: " << usage.total_tokens << "\n";
 
-  // 8. The full response items are also available.
-  for (const auto& item : response.GetItems()) {
-    if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
-      std::cout << "Full response: " << item.GetText().text << "\n";
+  // 8. The full response is a single SpeechResultItem carrying the complete
+  // transcript and per-segment detail.
+  const auto& items = response.GetItems();
+  if (!items.empty()) {
+    const auto& item = items.front();
+    if (item.GetType() == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT) {
+      auto result = item.GetSpeechResult();
+      std::cout << "Full response: ";
+      std::cout.write(result.text.data(), result.text.size());
+      std::cout << "\n";
+      std::cout << "Segments: " << result.segments.size() << "\n";
+    } else {
+      std::cerr << "Unexpected item type" << std::endl;
     }
   }
 }

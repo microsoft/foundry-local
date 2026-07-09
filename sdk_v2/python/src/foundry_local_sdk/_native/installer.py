@@ -2,13 +2,12 @@
 
 Usage::
 
-    foundry-local-install [--winml] [--verbose]
+    foundry-local-install [--verbose]
 
-Re-installs the SDK wheel (``foundry-local-sdk`` or ``foundry-local-sdk-winml``)
-via pip — pip then resolves the ORT and GenAI runtime packages declared as
-dependencies in ``pyproject.toml``. After install we materialise the platform's
-DLL search path / symlink workarounds and verify ``onnxruntime`` and
-``onnxruntime_genai`` import cleanly.
+Re-installs the SDK wheel (``foundry-local-sdk``) via pip — pip then resolves the
+ORT and GenAI runtime packages declared as dependencies in ``pyproject.toml``.
+After install we materialise the platform's DLL search path / symlink workarounds
+and verify ``onnxruntime`` and ``onnxruntime_genai`` import cleanly.
 
 This is the v2 equivalent of the legacy ``foundry-local-install`` command.
 v2 ships a single SDK wheel (rather than the legacy split between ``-sdk`` and
@@ -57,13 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="foundry-local-install",
         description=(
             "(Re)install the Foundry Local SDK wheel and verify its ORT/GenAI "
-            "native dependencies are reachable. Use --winml for the WinML variant."
+            "native dependencies are reachable."
         ),
-    )
-    parser.add_argument(
-        "--winml",
-        action="store_true",
-        help="Install the WinML variant (foundry-local-sdk-winml) instead of the standard wheel.",
     )
     parser.add_argument(
         "--verbose",
@@ -72,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    package = "foundry-local-sdk-winml" if args.winml else "foundry-local-sdk"
+    package = "foundry-local-sdk"
     print(f"[foundry-local] Installing {package} (will pull ORT/GenAI runtime deps)...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", package])

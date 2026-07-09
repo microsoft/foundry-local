@@ -6,11 +6,13 @@
 
 #include "telemetry/one_ds_telemetry.h"
 
+#include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry_environment.h"
 
 #include <fmt/format.h>
 
 // 1DS C++ SDK headers. The vcpkg port ships these via find_package(MSTelemetry CONFIG).
+#include <CommonFields.h>
 #include <LogManager.hpp>
 #include <ILogger.hpp>
 #include <EventProperties.hpp>
@@ -26,30 +28,29 @@ namespace {
 
 using ::Microsoft::Applications::Events::LogManager;
 using MatILogger = ::Microsoft::Applications::Events::ILogger;
+using ::Microsoft::Applications::Events::EventLatency_Normal;
 using ::Microsoft::Applications::Events::EventProperties;
-using ::Microsoft::Applications::Events::EventPriority;
-using ::Microsoft::Applications::Events::PiiKind_None;
 using ::Microsoft::Applications::Events::SessionState;
-
-constexpr uint64_t kCriticalData = MICROSOFT_KEYWORD_CRITICAL_DATA;
 
 void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
   // Process-wide context — stamped on every event uploaded through this ILogger.
   mat_logger->SetContext("AppName", m.app_name);
   mat_logger->SetContext("Version", m.version);
+  mat_logger->SetContext("AppVersion", m.version);
   // Per-process correlation GUID, generated at startup. Lets the backend group
   // every event from one FL run. (This is distinct from ext.app.sesId, the SDK's
   // rotating usage-session id set via LogSession.)
   mat_logger->SetContext("AppSessionGuid", m.app_session_guid);
   mat_logger->SetContext("OsName", m.os_name);
+  mat_logger->SetContext("Platform", m.os_name);
   mat_logger->SetContext("OsVersion", m.os_version);
   mat_logger->SetContext("CpuArch", m.cpu_arch);
 }
 
 EventProperties MakeEvent(const char* name, bool test_mode) {
   EventProperties ev(name);
-  ev.SetPriority(EventPriority::EventPriority_Normal);
-  ev.SetPolicyBitFlags(kCriticalData);
+  ev.SetLatency(EventLatency_Normal);
+  ev.SetLevel(DIAG_LEVEL_REQUIRED);
   // `test` is stamped on every event so CI/test data is distinguishable in the backend
   // when FOUNDRY_TESTING_MODE is set. In CI (IsCiEnvironment()=true) we never reach
   // emission at all, so this only ever toggles for explicit test mode.
@@ -148,7 +149,7 @@ void OneDsTelemetry::RecordException(Action action, const std::exception& except
   ev.SetProperty("UserAgent", context.user_agent);
   ev.SetProperty("CorrelationId", context.correlation_id);
   ev.SetProperty("ExceptionType", "std::exception");
-  ev.SetProperty("ExceptionMessage", std::string(exception.what()));
+  ev.SetProperty("ExceptionMessage", ScrubTelemetryErrorMessage(exception.what()));
   ev.SetProperty("InnerExceptionType", "");
   ev.SetProperty("InnerExceptionMessage", "");
   ev.SetProperty("StackTrace", "");
@@ -266,7 +267,7 @@ void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
   ev.SetProperty("Status", std::string(ActionStatusToString(info.status)));
   ev.SetProperty("TimeMs", info.duration_ms);
   ev.SetProperty("ModelCount", static_cast<int64_t>(info.model_count));
-  ev.SetProperty("ErrorMessage", info.error_message);
+  ev.SetProperty("ErrorMessage", ScrubTelemetryErrorMessage(info.error_message));
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
   SafeLog(GetMatLogger(), ev);

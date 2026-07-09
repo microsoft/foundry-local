@@ -54,17 +54,13 @@ parameters:
 variables:
 - group: FoundryLocal-ESRP-Signing
 # C++ SDK (sdk_v2/cpp) native dependency versions. Must match cmake defaults
-# in sdk_v2/deps_versions.json and sdk_v2/deps_versions_winml.json.
+# in sdk_v2/deps_versions.json.
 - name: cppOrtVersion
-  value: '1.25.1'
-- name: cppOrtVersionWinml
-  # Pinned to the WinML-aligned ORT line so foundry_local.dll's ORT ABI matches
-  # the WinML EP catalog plugins it loads. See FindOnnxRuntime.cmake.
-  value: '1.23.2.3'
+  value: '1.26.0'
 - name: cppGenaiVersion
-  value: '0.13.2'
+  value: '0.14.1'
 - name: cppWinmlVersion
-  value: '1.8.2192'
+  value: '2.1.70'
 - name: cppBuildConfig
   value: 'RelWithDebInfo'
 
@@ -269,6 +265,5 @@ extends:
       parameters:
         buildConfig: $(cppBuildConfig)
         ortVersion: $(cppOrtVersion)
-        ortVersionWinml: $(cppOrtVersionWinml)
         genaiVersion: $(cppGenaiVersion)
         winmlVersion: $(cppWinmlVersion)

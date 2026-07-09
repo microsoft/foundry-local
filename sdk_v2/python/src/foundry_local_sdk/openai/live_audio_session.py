@@ -201,16 +201,17 @@ class LiveAudioTranscriptionSession:
                         if response is not None:
                             response_queue.put(response)
 
-                    from foundry_local_sdk.items import TextItem
+                    from foundry_local_sdk.items import SpeechResultItem
 
-                    final_text_parts: list[str] = []
+                    final_text: str | None = None
                     with stream.final_response as final:
                         for it in final:
-                            if isinstance(it, TextItem) and it.text:
-                                final_text_parts.append(it.text)
+                            if isinstance(it, SpeechResultItem) and it.text:
+                                # The result's text is the canonical concatenated transcript.
+                                final_text = it.text
+                                break
 
-                if final_text_parts:
-                    final_text = "".join(final_text_parts)
+                if final_text:
                     response_queue.put(
                         LiveAudioTranscriptionResponse(
                             content=[TranscriptionContentPart(text=final_text, transcript=final_text)],
@@ -370,9 +371,12 @@ class LiveAudioTranscriptionSession:
 
     def _translate(self, item: "Item") -> "LiveAudioTranscriptionResponse | None":
         """Translate a streaming Item into a LiveAudioTranscriptionResponse, or None to drop it."""
-        from foundry_local_sdk.items import TextItem
+        from foundry_local_sdk.items import SpeechSegmentItem
 
-        if isinstance(item, TextItem) and item.text:
+        # is_final stays False here: SpeechSegmentKind.FINAL on intermediate segments
+        # marks the end of an utterance, not the end of the stream. The trailing
+        # is_final=True event comes from the final-Response drain.
+        if isinstance(item, SpeechSegmentItem) and item.text:
             return LiveAudioTranscriptionResponse(
                 content=[TranscriptionContentPart(text=item.text, transcript=item.text)],
                 is_final=False,

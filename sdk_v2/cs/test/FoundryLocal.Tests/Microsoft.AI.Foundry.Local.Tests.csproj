@@ -1,20 +1,34 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- net462 is a Windows-only framework. Targeting it here (alongside net8.0) exercises
-         the netstandard2.0 surface of the SDK end-to-end: the netstandard-only DllLoader
-         path, the Utf8 unsafe-pointer fallback, the System.Memory / Bcl.AsyncInterfaces /
-         System.Threading.Channels polyfills, and the vtable async/await pipeline all run
-         on .NET Framework. Replaces the previous standalone Smoke.NetFx console project. -->
-    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('Windows'))">net462;net8.0</TargetFrameworks>
-    <TargetFrameworks Condition="!$([MSBuild]::IsOSPlatform('Windows'))">net8.0</TargetFrameworks>
+    <IsWindows Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IsWindows>
+
+    <!-- Always test on the .NET (Core) LTS pair. The Windows default SKU also targets
+         net462 to exercise the netstandard2.0 surface of the SDK end-to-end: the
+         netstandard-only DllLoader path, the Utf8 unsafe-pointer fallback, the
+         System.Memory / Bcl.AsyncInterfaces / System.Threading.Channels polyfills,
+         and the vtable async/await pipeline all run on .NET Framework. CI and local
+         scripts pass an explicit framework filter so the .NET (Core) test suite
+         only runs once. -->
+    <TargetFrameworks>net8.0</TargetFrameworks>
+    <TargetFrameworks Condition="'$(IsWindows)' == 'true'">net462;net8.0</TargetFrameworks>
+
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
-    <IsWindows Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IsWindows>
-    <UseWinML>false</UseWinML>
     <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <!--
+    CA2000 is downgraded here for the same reason as the SDK project: tests construct Items and hand
+    ownership to Request/ItemQueue, after which the C# wrapper's Dispose() is a no-op (see
+    docs/item-data-ownership.md). CA2000 can't model that transfer and only produces false positives
+    on the hand-off. Unlike the SDK project, IDisposableAnalyzers does not flow here (it is referenced
+    PrivateAssets=all), but that is acceptable: this is non-shipping test code with no leak risk.
+  -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CA2000</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -47,24 +61,6 @@
     <PackageReference Include="System.Threading.Channels" Version="9.0.9" />
   </ItemGroup>
 
-  <PropertyGroup Condition="'$(UseWinML)'=='true'">
-    <TargetFrameworks>net9.0-windows10.0.26100.0</TargetFrameworks>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-    <WindowsPackageType>None</WindowsPackageType>
-    <!-- The WinML variant pins an older ONNX Runtime than the base SDK. Vision-language
-         models in the catalog (e.g. qwen3.5) use ops (CausalConvWithState) that aren't
-         registered in that ORT version, so vision tests can't load any model. Define a
-         compile symbol so VisionTests can skip itself cleanly on this build. -->
-    <DefineConstants>$(DefineConstants);USE_WINML</DefineConstants>
-  </PropertyGroup>
-
-  <!-- copies appsettings.Test.json to output directory so tests can find it -->
-  <ItemGroup>
-    <None Update="appsettings.Test.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-
   <ItemGroup>
     <None Include="../../../testdata/Recording.mp3" Link="testdata/Recording.mp3">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -83,8 +79,6 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.9" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
     <PackageReference Include="TUnit" Version="0.63.3" />
     <PackageReference Include="TUnit.Core" Version="0.63.3" />

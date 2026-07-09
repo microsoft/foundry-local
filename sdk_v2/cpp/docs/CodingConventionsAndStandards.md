@@ -162,7 +162,7 @@ The root `flApi` struct provides accessors to five domain-specific sub-API vtabl
 
 * Functions that can fail return `flStatus*` (typedef'd as `flStatusPtr`). `nullptr` = success, non-null = error.
 * Error status is created via `Status_Create(flErrorCode, message)` and released via `Status_Release`.
-* `flErrorCode` enum: `FOUNDRY_LOCAL_OK`, `_NOT_IMPLEMENTED`, `_INTERNAL`, `_INVALID_ARGUMENT`, `_INVALID_USAGE`.
+* `flErrorCode` enum: `FOUNDRY_LOCAL_OK`, `_NOT_IMPLEMENTED`, `_INTERNAL`, `_INVALID_ARGUMENT`, `_INVALID_USAGE`, `_OPERATION_CANCELLED`, `_NETWORK`.
 * All API functions are `noexcept` (`FL_NO_EXCEPTION`). Exceptions must be caught in the implementation and converted to status.
 
 ### Function Pointer Macros

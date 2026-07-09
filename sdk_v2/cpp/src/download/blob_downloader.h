@@ -11,6 +11,8 @@
 
 namespace fl {
 
+class ILogger;
+
 /// Progress callback: percent is 0.0 to 100.0. Return 0 to continue, non-zero to cancel.
 using DownloadProgressFn = std::function<int(float percent)>;
 
@@ -57,8 +59,23 @@ class IBlobDownloader {
 };
 
 /// Azure Storage Blobs SDK-based implementation of IBlobDownloader.
+///
+/// Implements resumable downloads: a `<file>.dlstate` sidecar tracks which 2 MB
+/// chunks have completed, and DownloadBlob picks up where a prior aborted run
+/// left off. A linked cancellation token cascades the first chunk-level
+/// failure to every other in-flight chunk so the worker pool drains quickly.
+///
+/// Chunks stream from the blob client into the local file in ~64 KB pieces
+/// via a sink callback, so each worker holds a single 64 KB scratch buffer
+/// instead of allocating a full chunk's worth of bytes per request. This
+/// caps peak memory at roughly `max_concurrency * 64 KB` regardless of how
+/// large the blob or the chunk size is.
 class AzureBlobDownloader : public IBlobDownloader {
  public:
+  /// `logger` receives diagnostics only (state-file save/load events). It is required:
+  /// the orchestrator always has a logger, so there is no optional/null case to handle.
+  explicit AzureBlobDownloader(ILogger& logger);
+
   std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) override;
 
   void DownloadBlob(const std::string& sas_uri,
@@ -67,6 +84,38 @@ class AzureBlobDownloader : public IBlobDownloader {
                     int max_concurrency,
                     BlobBytesWrittenFn bytes_written_cb = nullptr,
                     std::atomic<bool>* cancelled = nullptr) override;
+
+ protected:
+  /// Opaque per-blob context. Defined in `blob_downloader.cc`; holds the Azure
+  /// SDK BlobClient + Context pointers used by the production virtuals.
+  struct ChunkContext;
+
+  /// Return the blob size in bytes. Production calls `BlobClient::GetProperties`.
+  virtual int64_t GetBlobSize(ChunkContext& ctx);
+
+  /// Read `size` bytes starting at `offset` from the blob and forward them
+  /// piecewise to `sink`. Pulls from the blob client referenced by `ctx`.
+  ///
+  /// `scratch` is a per-worker reusable buffer (default 64 KB). `sink` must be
+  ///  invoked with strictly contiguous ranges; the cumulative byte count
+  ///  delivered to `sink` must equal `size` on success.
+  ///
+  /// Must throw on failure. Implementations should observe the cancellation
+  /// flag accessible via `ctx` and exit promptly when cancellation is requested.
+  virtual void DownloadChunkStreaming(ChunkContext& ctx,
+                                       int64_t offset,
+                                       int64_t size,
+                                       std::vector<uint8_t>& scratch,
+                                       const std::function<void(const uint8_t*, size_t)>& sink);
+
+  /// Reports whether cooperative cancellation has been requested for this
+  /// download. The orchestrator calls `Azure::Core::Context::Cancel()` after a
+  /// sibling chunk fails or on external cancellation, and the Azure SDK
+  /// interrupts in-flight transfers as a result.
+  bool IsCancellationRequested(const ChunkContext& ctx) const;
+
+ private:
+  ILogger& logger_;
 };
 
 /// High-level download function: enumerate, filter, and download all blobs from a SAS URI.

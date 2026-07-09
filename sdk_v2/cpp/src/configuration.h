@@ -30,7 +30,7 @@ struct Configuration {
   /// Azure region for the model registry download endpoint
   /// (https://{catalog_region}.api.azureml.ms/modelregistry/...).
   /// Resolves a model's asset_id to a downloadable blob storage URL.
-  /// Defaults to "eastus" when not set.
+  /// Defaults to "centralus" when not set.
   std::optional<std::string> catalog_region;
 
   /// Web service endpoints to bind to (e.g. "http://127.0.0.1:0").

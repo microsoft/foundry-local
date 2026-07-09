@@ -53,7 +53,7 @@ public class Configuration
     /// <summary>
     /// Optional. Azure region for the model registry download endpoint
     /// (https://{region}.api.azureml.ms/modelregistry/...).
-    /// Defaults to "eastus" when not set.
+    /// Defaults to "centralus" when not set.
     /// </summary>
     public string? CatalogRegion { get; init; }
 

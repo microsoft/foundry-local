@@ -1,0 +1,29 @@
+<Project>
+
+  <!-- Fix a RuntimeIdentifier at evaluation time on every platform.
+
+       The Microsoft.AI.Foundry.Local[.Core] package's build/*.targets default
+       RuntimeIdentifier to $(NETCoreSdkRuntimeIdentifier) when it is empty. Those
+       targets run during build (after restore), so if we leave the RID unset here,
+       restore produces a RID-less assets file while build asks for a RID-specific
+       target -> NETSDK1047. Setting the RID early keeps restore and build in sync.
+
+       $(NETCoreSdkRuntimeIdentifier) is intentionally NOT used here because
+       Directory.Build.props is evaluated before Sdk.props initializes that property.
+       Instead, use static OS + architecture detection, which is always available.
+       The sample solutions build as AnyCPU, so the host architecture is the only
+       input we need. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)'==''">
+    <_OSArch>$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)</_OSArch>
+
+    <RuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(_OSArch)' == 'X64'">win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(_OSArch)' == 'Arm64'">win-arm64</RuntimeIdentifier>
+
+    <RuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('OSX')) And '$(_OSArch)' == 'Arm64'">osx-arm64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('OSX')) And '$(_OSArch)' == 'X64'">osx-x64</RuntimeIdentifier>
+
+    <RuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(_OSArch)' == 'X64'">linux-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(_OSArch)' == 'Arm64'">linux-arm64</RuntimeIdentifier>
+  </PropertyGroup>
+
+</Project>

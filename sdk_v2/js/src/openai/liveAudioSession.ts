@@ -4,7 +4,7 @@
 // small Promise-based async buffer that `getStream()` yields from.
 
 import { ItemQueue } from "../item-queue.js";
-import { Item, type TextItem } from "../items.js";
+import { Item, type SpeechResultItem } from "../items.js";
 import type { Model } from "../model.js";
 import { Request } from "../request.js";
 import { AudioSession } from "../session.js";
@@ -88,21 +88,22 @@ export class LiveAudioTranscriptionSession implements AsyncDisposable, Disposabl
       try {
         const stream = session.processStreamingRequest(request);
         for await (const item of stream) {
-          if (item.type !== "text") continue;
-          const t = item as TextItem;
-          if (t.text === "") continue;
-          // Per-token partial result. The native audio session only surfaces raw text, so timing fields stay
-          // unset and each streamed token is marked as not-yet-final.
+          if (item.type !== "speechSegment") continue;
+          if (item.text === "") continue;
+          // Per-token partial result from AudioSession. `is_final` here marks the last message in the stream
+          // (set by the final-Response drain below), not per-segment finality, so segment-level
+          // `kind === "final"` on intermediate items is intentionally not propagated.
           this.#enqueueResponse({
             is_final: false,
-            content: [{ text: t.text, transcript: t.text }],
+            content: [{ text: item.text, transcript: item.text }],
           });
         }
-        // Final aggregate transcript — sourced from the terminal Response's text item rather than locally
-        // concatenated tokens so we get the canonical model output (with whatever post-processing the native
-        // side applied) and stay consistent with non-streaming Response semantics.
+        // Final aggregate transcript — sourced from the terminal Response's speechResult item rather than
+        // locally concatenated tokens so we get the canonical model output (with whatever post-processing the
+        // native side applied) and stay consistent with non-streaming Response semantics.
         const response = await stream.response;
-        const finalText = response.output.find((it): it is TextItem => it.type === "text")?.text ?? "";
+        const finalText =
+          response.output.find((it): it is SpeechResultItem => it.type === "speechResult")?.text ?? "";
         if (finalText !== "") {
           this.#enqueueResponse({
             is_final: true,

@@ -73,7 +73,20 @@ SpdlogLogger::SpdlogLogger(LogLevel min_level, const std::string& logs_dir) {
                                                    spdlog::async_overflow_policy::block);
 
   logger_->set_level(ToSpdlogLevel(min_level));
-  logger_->flush_on(spdlog::level::warn);
+
+  // Flush policy: by default we buffer low-severity logs and only force a flush at warning and
+  // above (plus on destruction), avoiding a per-message flush on the hot path. We flush on every
+  // message only when running in a debug build, or when the caller has explicitly opted into
+  // Debug/Verbose diagnostics -- in those cases prompt, crash-safe output is worth the cost.
+#ifndef NDEBUG
+  constexpr bool debug_build = true;
+#else
+  constexpr bool debug_build = false;
+#endif
+
+  const bool flush_every_message = debug_build || min_level <= LogLevel::Debug;
+
+  logger_->flush_on(flush_every_message ? spdlog::level::trace : spdlog::level::warn);
 
   spdlog::register_logger(logger_);
 }

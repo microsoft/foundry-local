@@ -3,7 +3,7 @@
 #
 # The caller is responsible for:
 #   * placing the built wheel (.whl) under `wheelDir`
-#   * checking out test-data-shared at `testDataSharedDir`
+#   * populating the model cache directory at `testDataSharedDir`
 
 parameters:
 - name: wheelDir
@@ -12,9 +12,6 @@ parameters:
 - name: testDataSharedDir
   type: string
   displayName: 'Absolute path to a checked-out test-data-shared working tree'
-- name: isWinML
-  type: boolean
-  default: false
 - name: pythonArchitecture
   type: string
   default: 'x64'
@@ -29,20 +26,6 @@ steps:
     versionSpec: '3.12'
     addToPath: true
     architecture: '${{ parameters.pythonArchitecture }}'
-
-- ${{ if eq(parameters.isWinML, true) }}:
-    - task: PowerShell@2
-      displayName: 'Install Windows App SDK Runtime'
-      inputs:
-          targetType: 'inline'
-          pwsh: true
-          script: |
-              $installerUrl = "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe"
-              $installerPath = "$env:TEMP\windowsappruntimeinstall.exe"
-              Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
-              & $installerPath --quiet --force
-              if ($LASTEXITCODE -ne 0) { throw "Windows App SDK Runtime install failed" }
-          errorActionPreference: 'stop'
 
 # Job-local venv so installs never pollute the agent's site-packages.
 - task: PowerShell@2
@@ -70,8 +53,8 @@ steps:
     targetType: inline
     pwsh: true
     script: |
-        # Locate the wheel. Both variants land in their own per-job artifact
-        # so a single match is expected.
+        # Locate the wheel. Each job's wheel lands in its own artifact, so a
+        # single match is expected.
         $wheels = @(Get-ChildItem "${{ parameters.wheelDir }}" -Recurse -Filter '*.whl')
         if ($wheels.Count -eq 0) { throw "No .whl found under ${{ parameters.wheelDir }}" }
         if ($wheels.Count -gt 1) {

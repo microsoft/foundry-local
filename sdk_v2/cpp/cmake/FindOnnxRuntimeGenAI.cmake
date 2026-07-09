@@ -1,10 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Find/acquire ONNX Runtime GenAI.
 #
-# Windows + FOUNDRY_LOCAL_USE_WINML=ON:  Microsoft.ML.OnnxRuntimeGenAI.WinML
-# Windows + FOUNDRY_LOCAL_USE_WINML=OFF: Microsoft.ML.OnnxRuntimeGenAI.Foundry
-# Linux:                   Microsoft.ML.OnnxRuntimeGenAI.Foundry
-# macOS:                   Microsoft.ML.OnnxRuntimeGenAI.Foundry
+# All platforms / flavors: Microsoft.ML.OnnxRuntimeGenAI.Foundry
 #
 # When ORT_GENAI_HOME is set, uses the local ORT GenAI build instead of NuGet.
 # Otherwise uses FetchContent from nuget.org.
@@ -104,21 +101,13 @@ else()
     message(FATAL_ERROR "Unsupported platform for OnnxRuntimeGenAI: ${CMAKE_GENERATOR_PLATFORM} on ${CMAKE_SYSTEM_NAME}")
 endif()
 
-if(FOUNDRY_LOCAL_USE_WINML)
-    set(_GENAI_PACKAGE_NAME "Microsoft.ML.OnnxRuntimeGenAI.WinML")
-else()
-    set(_GENAI_PACKAGE_NAME "Microsoft.ML.OnnxRuntimeGenAI.Foundry")
-endif()
+set(_GENAI_PACKAGE_NAME "Microsoft.ML.OnnxRuntimeGenAI.Foundry")
 
 if(NOT ORT_GENAI_VERSION)
-    # Single source of truth: sdk_v2/deps_versions[_winml].json. The Python
-    # SDK build backend reads the same files. Override at the cmake command
-    # line with -DORT_GENAI_VERSION=...
-    if(FOUNDRY_LOCAL_USE_WINML)
-        set(_GENAI_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions_winml.json")
-    else()
-        set(_GENAI_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
-    endif()
+    # Single source of truth: sdk_v2/deps_versions.json. The Python SDK build
+    # backend reads the same file. Override at the cmake command line with
+    # -DORT_GENAI_VERSION=...
+    set(_GENAI_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
     if(NOT EXISTS "${_GENAI_DEPS_FILE}")
         message(FATAL_ERROR "Required versions file not found: ${_GENAI_DEPS_FILE}")
     endif()

@@ -15,36 +15,6 @@
 
 namespace fl {
 
-// Implemented in static_catalog_client.cc (always linked).
-std::unique_ptr<ICatalogClient> MakeStaticCatalogClient(
-    const IEpDetector& ep_detector, ILogger& logger);
-
-// Implemented in azure_catalog_client.cc (private repo only).
-std::unique_ptr<ICatalogClient> MakeLiveCatalogClient(
-    const std::string& base_url,
-    const std::string& filter_override,
-    const IEpDetector& ep_detector,
-    ILogger& logger,
-    const std::string& cache_directory);
-
-std::unique_ptr<ICatalogClient> MakeCatalogClient(
-    const std::string& base_url,
-    const std::string& filter_override,
-    const IEpDetector& ep_detector,
-    ILogger& logger,
-    const std::string& cache_directory) {
-  if (base_url == "static") {
-    if (!filter_override.empty()) {
-      logger.Log(LogLevel::Information,
-                 fmt::format("static catalog: ignoring filter '{}'", filter_override));
-    }
-
-    return MakeStaticCatalogClient(ep_detector, logger);
-  }
-
-  return MakeLiveCatalogClient(base_url, filter_override, ep_detector, logger, cache_directory);
-}
-
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,

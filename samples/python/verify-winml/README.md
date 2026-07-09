@@ -17,8 +17,8 @@ If you want to reuse your existing Python environment instead, delete that
 environment's `Lib\site-packages\foundry_local_core` directory before
 reinstalling so stale native files are not left behind.
 
-`requirements.txt` installs the WinML SDK variant, which brings the matching
-WinML native package transitively. Either install path is enough:
+`requirements.txt` installs the single `foundry-local-sdk` package, which bundles
+WinML hardware acceleration on Windows automatically. Either install path is enough:
 
 ```bash
 python -m venv .venv

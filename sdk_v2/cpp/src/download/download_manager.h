@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 namespace fl {
 
@@ -26,16 +27,20 @@ class DownloadManager {
  public:
   /// Construct with the model cache directory path.
   /// @param cache_directory Local directory where models are cached.
-  /// @param catalog_region Azure region for the model registry endpoint (e.g. "eastus").
+  /// @param catalog_region Explicit Azure region override for the model registry endpoint,
+  ///        or "auto"/empty to use each model's detected region (falling back to the default registry region).
   /// @param max_concurrency Per-blob chunk parallelism (default 64).
   /// @param logger Logger forwarded to the registry client for retry diagnostics.
+  /// @param disable_region_fallback When true, the registry uses a single region attempt
+  ///        with no cross-region fallback.
   /// @param telemetry Optional telemetry sink. If non-null, a Download event is emitted
   ///                  per DownloadModel call. nullptr is supported so tests and
   ///                  embedders without telemetry continue to compile and run.
   DownloadManager(std::string cache_directory,
-                  std::string catalog_region,
+                  std::string_view catalog_region,
                   int max_concurrency,
                   ILogger& logger,
+                  bool disable_region_fallback = false,
                   ITelemetry* telemetry = nullptr);
   ~DownloadManager();
 
@@ -73,15 +78,20 @@ class DownloadManager {
   std::string ComputeModelPath(const ModelInfo& info) const;
 
   std::string cache_directory_;
+  // Explicit registry region override. Empty (or "auto") means "use the model's
+  // detected_region, falling back to default registry region" — set at construction
+  // from config.
+  std::string config_region_;
   int max_concurrency_;
+  ILogger& logger_;
   std::unique_ptr<ModelRegistryClient> registry_client_;
   std::unique_ptr<IBlobDownloader> blob_downloader_;
   ITelemetry* telemetry_ = nullptr;
 
-  /// Serializes all DownloadModel calls. Only one model downloads at a time — simpler
-  /// than per-model locking and avoids contending with the per-blob chunk parallelism
-  /// (`max_concurrency_`) inside a single download.
-  mutable std::mutex download_mutex_;
+  /// Serializes all model downloads in this process: only one runs at a time, so
+  /// each gets the full network/disk instead of competing with another download.
+  /// Cross-process serialization is handled separately by CrossProcessFileLock.
+  std::mutex download_mutex_;
 };
 
 }  // namespace fl

@@ -6,8 +6,10 @@
 
 namespace Microsoft.AI.Foundry.Local.Detail;
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 using Microsoft.Extensions.Logging;
 
@@ -33,6 +35,12 @@ internal partial class CoreInterop : ICoreInterop
     private static IntPtr genaiLibHandle = IntPtr.Zero;
     private static IntPtr ortLibHandle = IntPtr.Zero;
     private static readonly NativeCallbackFn handleCallbackDelegate = HandleCallback;
+
+    // Map of in-flight callback helpers keyed by an opaque integer ID we pass to native as `userData`.
+    // Native must never see a raw managed pointer: if it fires a stale callback after ExecuteCommandImpl
+    // has returned, the lookup misses and we no-op instead of dereferencing freed memory.
+    private static long nextCallbackId;
+    private static readonly ConcurrentDictionary<long, CallbackHelper> callbackHelpers = new();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private unsafe delegate void ExecuteCommandDelegate(RequestBuffer* req, ResponseBuffer* resp);
@@ -105,11 +113,17 @@ internal partial class CoreInterop : ICoreInterop
         Debug.WriteLine($"Loaded GenAI: {loadedGenAI} handle={genaiLibHandle}");
     }
 
-    private static int HandleCallback(nint data, int length, nint callbackHelper)
+    private static int HandleCallback(nint data, int length, nint callbackHelperId)
     {
-        var callbackData = string.Empty;
-        CallbackHelper? helper = null;
+        // `callbackHelperId` is an opaque integer ID, NOT a GCHandle pointer. If the producing call has
+        // already returned and removed its entry, this lookup misses and we cancel cleanly.
+        var id = (long)callbackHelperId;
+        if (!callbackHelpers.TryGetValue(id, out var helper))
+        {
+            return 1; // late callback after ExecuteCommandImpl returned; cancel
+        }
 
+        var callbackData = string.Empty;
         try
         {
             if (data != IntPtr.Zero && length > 0)
@@ -119,27 +133,18 @@ internal partial class CoreInterop : ICoreInterop
                 callbackData = System.Text.Encoding.UTF8.GetString(managedData);
             }
 
-            Debug.Assert(callbackHelper != IntPtr.Zero, "Callback helper pointer is required.");
-
-            helper = (CallbackHelper)GCHandle.FromIntPtr(callbackHelper).Target!;
             helper.Callback.Invoke(callbackData);
             return 0; // continue
         }
         catch (OperationCanceledException ex)
         {
-            if (helper != null && helper.Exception == null)
-            {
-                helper.Exception = ex;
-            }
+            helper.Exception ??= ex;
             return 1; // cancel
         }
         catch (Exception ex)
         {
             FoundryLocalManager.Instance.Logger.LogError(ex, $"Error in callback. Callback data: {callbackData}");
-            if (helper != null && helper.Exception == null)
-            {
-                helper.Exception = ex;
-            }
+            helper.Exception ??= ex;
             return 1; // cancel on error
         }
     }
@@ -176,26 +181,25 @@ internal partial class CoreInterop : ICoreInterop
 
             if (callback != null)
             {
-                // NOTE: This assumes the command will NOT return until complete, so the lifetime of the
-                //       objects involved in the callback is limited to the duration of the call to
-                //       CoreExecuteCommandWithCallback.
+                // We pass an opaque integer ID (not a GCHandle pointer) as `userData` so a late callback
+                // from native after this call returns becomes a harmless lookup miss instead of a
+                // use-after-free of a freed GCHandle.
 
                 var helper = new CallbackHelper(callback);
-
                 var funcPtr = Marshal.GetFunctionPointerForDelegate(handleCallbackDelegate);
-                var helperHandle = GCHandle.Alloc(helper);
-                var helperPtr = GCHandle.ToIntPtr(helperHandle);
+                var helperId = Interlocked.Increment(ref nextCallbackId);
+                callbackHelpers[helperId] = helper;
 
                 try
                 {
                     unsafe
                     {
-                        CoreExecuteCommandWithCallback(&request, &response, funcPtr, helperPtr);
+                        CoreExecuteCommandWithCallback(&request, &response, funcPtr, (nint)helperId);
                     }
                 }
                 finally
                 {
-                    helperHandle.Free();
+                    callbackHelpers.TryRemove(helperId, out _);
                 }
 
                 callbackException = helper.Exception;

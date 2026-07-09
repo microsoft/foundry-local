@@ -13,13 +13,10 @@
 parameters:
 - name: nativeArtifactDir
   type: string
-  displayName: 'Path to the downloaded cpp-native-<rid>[-winml] artifact directory'
+  displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
 - name: rid
   type: string
   displayName: 'Runtime identifier (win-x64, win-arm64, linux-x64, osx-arm64)'
-- name: isWinML
-  type: boolean
-  default: false
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/python-sdk'
@@ -270,13 +267,6 @@ steps:
     script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-        $isWinML = [bool]::Parse('${{ parameters.isWinML }}')
-        if ($isWinML) {
-            $env:FL_PYTHON_PACKAGE_NAME = 'foundry-local-sdk-winml'
-            Write-Host "WinML variant: FL_PYTHON_PACKAGE_NAME=$env:FL_PYTHON_PACKAGE_NAME"
-        } else {
-            Remove-Item Env:FL_PYTHON_PACKAGE_NAME -ErrorAction SilentlyContinue
-        }
         $targetArch = '${{ parameters.targetArch }}'
         $extraArgs = @()
         if ($targetArch -eq 'arm64') {

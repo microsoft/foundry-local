@@ -63,12 +63,16 @@ static void PreloadIsolatedOpenSsl() {
 namespace foundry_local_node {
 
 AddonData::~AddonData() {
-  // Release the addon's own reference acquired at Init. Per-item Acquires
-  // are released by their deleters; once both sides drain, the TSFN
-  // finalizes. By the time ~AddonData runs at env teardown, ObjectWrap
-  // finalizers have already destroyed Requests (and therefore their Items),
-  // so any pending Releases from item deleters have been queued on the JS
-  // thread before we get here.
+  // buffer_release_tsfn is released by the env cleanup hook registered in
+  // Init(), not by this destructor. Releasing a ThreadSafeFunction from the
+  // instance-data destructor is unsafe: it runs late in node::FreeEnvironment,
+  // after the point where the TSFN's uv_async handle can be finalized cleanly,
+  // so the async close races the loop teardown and Node dereferences freed
+  // state during uv_run (a process-exit access violation). N-API's
+  // "Finalization on the exit of the environment" guidance prescribes
+  // napi_add_env_cleanup_hook for exactly this. The cleanup hook nulls the
+  // handle, so this guard is normally false; the Release() below is a
+  // defensive fallback that only runs if the cleanup hook never fired.
   if (buffer_release_tsfn) {
     buffer_release_tsfn.Release();
   }
@@ -100,6 +104,23 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // queued from background threads still execute on the JS thread; we just
   // stop using this TSFN to artificially keep the process alive.
   data->buffer_release_tsfn.Unref(env);
+
+  // Release the TSFN from an env cleanup hook rather than from ~AddonData.
+  // Cleanup hooks run early in node::FreeEnvironment, while the event loop
+  // can still finalize the TSFN's uv_async handle safely; the instance-data
+  // destructor runs too late and its async close races loop teardown,
+  // producing a process-exit access violation (a use-after-free that Node
+  // hits while draining the loop in uv_run). Null the handle so ~AddonData
+  // does not double-release. Per N-API "Finalization on the exit of the
+  // Node.js environment".
+  env.AddCleanupHook(
+      [](foundry_local_node::AddonData* d) {
+        if (d->buffer_release_tsfn) {
+          d->buffer_release_tsfn.Release();
+          d->buffer_release_tsfn = Napi::ThreadSafeFunction();
+        }
+      },
+      data);
 
   Napi::Function manager_ctor = foundry_local_node::Manager::Init(env);
   Napi::Function catalog_ctor = foundry_local_node::Catalog::Init(env);

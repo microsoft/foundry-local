@@ -40,6 +40,11 @@ struct ModelInfo {
   std::string execution_provider;  // e.g. "WebGPUExecutionProvider", empty if not set
   std::string task;
 
+  // Azure region the catalog was served from (auto-detected from cluster headers).
+  // Empty for non-Azure / BYO models. Used to target the matching regional model
+  // registry when downloading. Round-trips through the on-disk catalog cache.
+  std::string detected_region;
+
   KeyValuePairs prompt_templates;
   KeyValuePairs model_settings;
 

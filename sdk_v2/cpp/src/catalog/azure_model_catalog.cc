@@ -13,6 +13,9 @@
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <utility>
+
 namespace fl {
 
 namespace {
@@ -87,6 +90,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      const IEpDetector& ep_detector,
                                      ILogger& logger,
                                      bool cache_only,
+                                     std::string catalog_region,
+                                     bool disable_region_fallback,
                                      ITelemetry* telemetry)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
@@ -95,7 +100,13 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
       ep_detector_(ep_detector),
       logger_(logger),
       cache_only_(cache_only),
+      catalog_region_(std::move(catalog_region)),
+      disable_region_fallback_(disable_region_fallback),
       telemetry_(telemetry) {
+  if (catalog_urls_.empty()) {
+    catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
+  }
+
   logger_.Log(LogLevel::Information,
               fmt::format("Created AzureModelCatalog. Cache directory: {}",
                           cache_dir_));
@@ -133,6 +144,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   }
 
   std::vector<Model> models;
+  std::vector<ModelInfo> fetched_infos;
   const std::string& cache_dir = cache_dir_;
 
   // One correlation id groups every catalog access made by this refresh.
@@ -155,7 +167,8 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   auto fetch_from = [&](const std::string& url, const std::optional<std::string>& filter) {
     // Preserve byte-identical behavior for the "no override" case (previously stored as ""),
     // while letting callers explicitly request "" as a real filter override.
-    auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir);
+    auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir,
+                                    catalog_region_, disable_region_fallback_);
 
     auto parsed = ParseCatalogUrl(url);
     CatalogFetchInfo base_info;
@@ -175,32 +188,117 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
         local_path = it->second;
       }
 
+      fetched_infos.push_back(info);
       models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
     }
   };
 
-  if (catalog_urls_.empty()) {
-    // Use default Azure Foundry catalog
+  for (const auto& [url, filter] : catalog_urls_) {
     try {
-      fetch_from(kDefaultCatalogUrl, kDefaultCatalogFilter);
+      fetch_from(url, filter);
     } catch (const std::exception& ex) {
+      // One failing URL shouldn't block others — skip and continue.
       logger_.Log(LogLevel::Error,
-                  fmt::format("failed to fetch catalog from default URL: {}", ex.what()));
-    }
-  } else {
-    for (const auto& [url, filter] : catalog_urls_) {
-      try {
-        fetch_from(url, filter);
-      } catch (const std::exception& ex) {
-        // One failing URL shouldn't block others — skip and continue.
-        logger_.Log(LogLevel::Error,
-                    fmt::format("failed to fetch catalog from {}: {}", url, ex.what()));
-      }
+                  fmt::format("failed to fetch catalog from {}: {}", url, ex.what()));
     }
   }
 
   logger_.Log(LogLevel::Information,
               fmt::format("Populated model info for {} models.", models.size()));
+
+  // Save the fetched catalog for cache-only mode. This is best-effort: Save handles
+  // its own errors and freshness checks. If nothing was fetched, leave the existing
+  // cache untouched.
+  if (!fetched_infos.empty()) {
+    CatalogCache cache(cache_dir_, logger_);
+    cache.Save(fetched_infos);
+  }
+
+  return models;
+}
+
+std::vector<Model> AzureModelCatalog::FetchModelVersions(
+    const std::string& model_alias,
+    const std::string& model_name) const {
+  std::vector<Model> out;
+  if (cache_only_) {
+    // In cache-only mode we have no remote source to query for older versions.
+    logger_.Log(LogLevel::Debug,
+                "FetchModelVersions skipped: catalog is in cache-only mode.");
+    return out;
+  }
+
+  for (const auto& [url, filter] : catalog_urls_) {
+    try {
+      auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
+                                      catalog_region_, disable_region_fallback_);
+      auto model_infos = client->FetchAllVersionsByAlias(model_alias, model_name);
+
+      out.reserve(out.size() + model_infos.size());
+      for (auto& info : model_infos) {
+        out.push_back(model_factory_(std::move(info), /*local_path=*/""));
+      }
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Error,
+                  fmt::format("FetchModelVersions: failed to query {} — {}", url, ex.what()));
+    }
+  }
+
+  logger_.Log(LogLevel::Information,
+              fmt::format("FetchModelVersions('{}') returned {} variant(s).",
+                          model_alias, out.size()));
+
+  return out;
+}
+
+std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::string>& model_ids) const {
+  if (model_ids.empty()) {
+    return {};
+  }
+
+  if (cache_only_) {
+    logger_.Log(LogLevel::Debug,
+                "FetchModelsByIds skipped: catalog is in cache-only mode.");
+    return {};
+  }
+
+  auto local_models = ScanLocalModels(cache_dir_, logger_);
+
+  std::vector<Model> models;
+  // Track which IDs are still unresolved so we can stop calling further
+  // endpoints once everything has been found.
+  std::vector<std::string> remaining(model_ids);
+
+  for (const auto& [url, filter] : catalog_urls_) {
+    if (remaining.empty()) {
+      break;
+    }
+
+    try {
+      auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
+                                      catalog_region_, disable_region_fallback_);
+      auto model_infos = client->FetchModelsByIds(remaining);
+
+      for (auto& info : model_infos) {
+        std::string local_path;
+        auto it = local_models.find(info.model_id);
+        if (it != local_models.end()) {
+          local_path = it->second;
+        }
+
+        // Drop this id from the remaining list now that it's resolved.
+        auto rit = std::find(remaining.begin(), remaining.end(), info.model_id);
+        if (rit != remaining.end()) {
+          remaining.erase(rit);
+        }
+
+        models.push_back(model_factory_(std::move(info), std::move(local_path)));
+      }
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Error,
+                  fmt::format("FetchModelsByIds: failed to query {} — {}", url, ex.what()));
+    }
+  }
 
   return models;
 }

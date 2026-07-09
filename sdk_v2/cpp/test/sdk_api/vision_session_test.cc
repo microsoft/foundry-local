@@ -11,7 +11,7 @@
 
 #include "utils/string_utils.h"
 
-using fl::test::to_lower;
+using fl::test::ToLower;
 
 namespace {
 
@@ -69,7 +69,7 @@ TEST_F(VisionFixture, ChatSessionWithImageProducesDescriptiveOutput) {
       << "Response should contain at least one output item";
 
   std::string output_text = CollectResponseText(response);
-  std::string lower = to_lower(output_text);
+  std::string lower = ToLower(output_text);
 
   // The image shows bottles of Taittinger champagne.
   EXPECT_NE(lower.find("bottle"), std::string::npos)

@@ -121,15 +121,25 @@ Write-Host "`n=== Merging coverage reports ===" -ForegroundColor Cyan
 $htmlDir  = Join-Path $covDir "html"
 $cobFile  = Join-Path $covDir "coverage.xml"
 
-# OpenCppCoverage merge: run a no-op command, feed the binary inputs, export both formats.
+# OpenCppCoverage merge: feed the two binary inputs and export both formats.
 # HTML gives per-line browsing; Cobertura XML gives machine-readable per-line hit data
 # that we can union across modules (foundry_local.dll vs foundry_local_tests.exe).
+#
+# OpenCppCoverage requires a child program after `--`. We use the no-arg `hostname.exe`
+# rather than `cmd.exe /c exit 0` because OpenCppCoverage re-quotes each trailing token,
+# turning the latter into `cmd.exe /c "exit" "0"` — cmd then fails to find a command named
+# "exit" and returns exit code 1, producing a misleading error in the log. A no-arg program
+# sidesteps the quoting entirely. The no-op child loads no instrumentable foundry_local
+# module, so OpenCppCoverage emits a benign "No modules were selected" warning for this run;
+# the real coverage comes entirely from --input_coverage, so we drop that one expected line.
 $mergeAllArgs = $mergeArgs + @(
     "--export_type", "html:$htmlDir",
     "--export_type", "cobertura:$cobFile",
-    "--", "cmd.exe", "/c", "exit", "0"
+    "--", "hostname.exe"
 )
-& $opencpp @mergeAllArgs
+& $opencpp @mergeAllArgs 2>&1 |
+    Where-Object { $_ -notmatch "No modules were selected" } |
+    ForEach-Object { Write-Host $_ }
 
 $indexHtml = Join-Path $htmlDir "index.html"
 if (-not (Test-Path $indexHtml)) {

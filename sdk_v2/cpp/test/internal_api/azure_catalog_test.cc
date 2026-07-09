@@ -6,10 +6,6 @@
 //   - Response JSON parsing works with realistic data
 //   - Live integration test fetches models from ai.azure.com
 //
-// NOTE: Tests for the static catalog client live in static_catalog_test.cc
-// so that they remain available when the live Azure catalog client source
-// files have been removed (public-repo build).
-//
 #include "catalog/azure_catalog_client.h"
 #include "catalog/azure_catalog_models.h"
 #include "catalog/catalog_client.h"
@@ -23,6 +19,17 @@
 #include <nlohmann/json.hpp>
 
 using namespace fl;
+
+namespace {
+
+http::HttpResponse MakeOkResponse(std::string body) {
+  http::HttpResponse response;
+  response.status = 200;
+  response.body = std::move(body);
+  return response;
+}
+
+}  // namespace
 
 // ========================================================================
 // Test EP detector that returns all three devices (matching .http fixture)
@@ -49,6 +56,16 @@ class CpuOnlyEpDetector : public IEpDetector {
   }
 };
 
+class CpuGpuEpDetector : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {
+        {"CPU", {"CPUExecutionProvider"}},
+        {"GPU", {"CUDAExecutionProvider"}},
+    };
+  }
+};
+
 // ========================================================================
 // Request format tests
 // ========================================================================
@@ -58,19 +75,19 @@ class CpuOnlyEpDetector : public IEpDetector {
 TEST(AzureCatalogClientTest, RequestFormatMatchesKnownGood) {
   AllDevicesEpDetector ep;
   StderrLogger logger;
-  // filter_override: "", "test" — matches the .http file's foundryLocal filter values
-  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "''", ep, logger);
-
-  // Capture the request body via the HttpPostFn hook.
   std::vector<std::string> captured_urls;
   std::vector<nlohmann::json> captured_bodies;
 
-  client.SetHttpPost([&](const std::string& url, const std::string& body) -> std::string {
-    captured_urls.push_back(url);
-    captured_bodies.push_back(nlohmann::json::parse(body));
-    // Return a valid empty response so pagination stops
-    return R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
-  });
+  // filter_override: "", "test" — matches the .http file's foundryLocal filter values
+  AzureCatalogClient client(
+      "https://ai.azure.com/api/eastus/ux/v1.0", "''", ep, logger,
+      [&](const std::string& url, const std::string& body) {
+        captured_urls.push_back(url);
+        captured_bodies.push_back(nlohmann::json::parse(body));
+        return MakeOkResponse(
+            R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+      },
+      "eastus");
 
   client.FetchAllModels();
 
@@ -82,7 +99,7 @@ TEST(AzureCatalogClientTest, RequestFormatMatchesKnownGood) {
   }
 
   // Verify the first request (cpu) matches the expected structure.
-  // The .http file combines all devices; our C# pattern splits per device.
+  // The .http file combines all devices; the client splits requests per device.
   // We verify the structure, field names, and operators match.
   const auto& cpu_req = captured_bodies[0];
 
@@ -135,17 +152,20 @@ TEST(AzureCatalogClientTest, RequestFormatMatchesKnownGood) {
   EXPECT_EQ(filters[5]["operator"], "eq");
 }
 
-// Verify page size default is 50 (matching C#) and can be set.
+// Verify page size default is 50.
 TEST(AzureCatalogClientTest, DefaultPageSizeIs50) {
   AllDevicesEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger);
-
   nlohmann::json captured;
-  client.SetHttpPost([&](const std::string&, const std::string& body) -> std::string {
-    captured = nlohmann::json::parse(body);
-    return R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
-  });
+
+  AzureCatalogClient client(
+      "https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+      [&](const std::string&, const std::string& body) {
+        captured = nlohmann::json::parse(body);
+        return MakeOkResponse(
+            R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+      },
+      "eastus");
 
   client.FetchAllModels();
   EXPECT_EQ(captured["indexEntitiesRequest"]["pageSize"], 50);
@@ -158,7 +178,6 @@ TEST(AzureCatalogClientTest, DefaultPageSizeIs50) {
 TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
 
   // Realistic single-model response matching the Azure catalog schema
   const char* mock_response = R"({
@@ -205,9 +224,10 @@ TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
     }
   })";
 
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    return mock_response;
-  });
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
 
   auto model_infos = client.FetchAllModelInfos();
   ASSERT_EQ(model_infos.size(), 1u);
@@ -244,7 +264,6 @@ TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
 TEST(AzureCatalogClientTest, SkipsInvalidModels) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
 
   // Response with one valid model and one missing assetId
   const char* mock_response = R"({
@@ -274,9 +293,10 @@ TEST(AzureCatalogClientTest, SkipsInvalidModels) {
     }
   })";
 
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    return mock_response;
-  });
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
 
   auto infos = client.FetchAllModelInfos();
   ASSERT_EQ(infos.size(), 1u);
@@ -295,16 +315,15 @@ TEST(AzureCatalogClientTest, FollowsPagination) {
   } single_ep;
 
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", single_ep, logger);
-
   int call_count = 0;
-  client.SetHttpPost([&](const std::string&, const std::string& body) -> std::string {
-    call_count++;
-    auto req = nlohmann::json::parse(body);
+  AzureCatalogClient client("https://test.com", "", single_ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              call_count++;
+                              auto req = nlohmann::json::parse(body);
 
-    if (call_count == 1) {
-      // First page — return nextSkip to trigger page 2
-      return R"({
+                              if (call_count == 1) {
+                                // First page — return nextSkip to trigger page 2
+                                return MakeOkResponse(R"({
         "indexEntitiesResponse": {
           "totalCount": 2,
           "value": [{
@@ -316,13 +335,14 @@ TEST(AzureCatalogClientTest, FollowsPagination) {
           "nextSkip": 1,
           "continuationToken": "token123"
         }
-      })";
-    } else {
-      // Second page — no more
-      // Verify skip/token were passed
-      EXPECT_EQ(req["indexEntitiesRequest"]["skip"], 1);
-      EXPECT_EQ(req["indexEntitiesRequest"]["continuationToken"], "token123");
-      return R"({
+      })");
+                              }
+
+                              // Second page — no more
+                              // Verify skip/token were passed
+                              EXPECT_EQ(req["indexEntitiesRequest"]["skip"], 1);
+                              EXPECT_EQ(req["indexEntitiesRequest"]["continuationToken"], "token123");
+                              return MakeOkResponse(R"({
         "indexEntitiesResponse": {
           "totalCount": 2,
           "value": [{
@@ -334,9 +354,8 @@ TEST(AzureCatalogClientTest, FollowsPagination) {
           "nextSkip": 0,
           "continuationToken": ""
         }
-      })";
-    }
-  });
+      })");
+                            });
 
   auto models = client.FetchAllModels();
   EXPECT_EQ(call_count, 2);
@@ -348,7 +367,7 @@ TEST(AzureCatalogClientTest, FollowsPagination) {
 // Disabled by default. Run with: --gtest_also_run_disabled_tests
 // ========================================================================
 
-TEST(AzureCatalogClientTest, LiveFetchModelsFromAzure) {
+TEST(AzureCatalogClientTest, DISABLED_LiveFetchModelsFromAzure) {
   AllDevicesEpDetector ep;
   StderrLogger logger;
   AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "''", ep, logger);
@@ -387,13 +406,14 @@ TEST(AzureCatalogClientTest, LiveFetchModelsFromAzure) {
 TEST(AzureCatalogClientTest, BuildModelIdFiltersProducesCorrectStructure) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
-
   nlohmann::json captured;
-  client.SetHttpPost([&](const std::string&, const std::string& body) -> std::string {
-    captured = nlohmann::json::parse(body);
-    return R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
-  });
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              captured = nlohmann::json::parse(body);
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
 
   client.FetchModelsByIds({"phi-4-mini:3", "llama-3:1"});
 
@@ -429,13 +449,14 @@ TEST(AzureCatalogClientTest, BuildModelIdFiltersProducesCorrectStructure) {
 TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyReturnsEmptyNoHttp) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
-
   bool http_called = false;
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    http_called = true;
-    return R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
-  });
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              http_called = true;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
 
   auto result = client.FetchModelsByIds({});
   EXPECT_TRUE(result.empty());
@@ -479,13 +500,13 @@ static std::string MakeMockCatalogResponse(
 TEST(AzureCatalogClientTest, WithCachedModels_NoCachedIds_BehavesLikeRegularFetch) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
-
   int http_call_count = 0;
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    http_call_count++;
-    return MakeMockCatalogResponse({{"phi-4-mini", 3}});
-  });
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              http_call_count++;
+                              return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                            });
 
   auto result = FetchAllModelInfosWithCachedModels(client, {}, logger);
 
@@ -498,13 +519,13 @@ TEST(AzureCatalogClientTest, WithCachedModels_NoCachedIds_BehavesLikeRegularFetc
 TEST(AzureCatalogClientTest, WithCachedModels_AlreadyInCatalog_NoExtraFetch) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
-
   int http_call_count = 0;
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    http_call_count++;
-    return MakeMockCatalogResponse({{"phi-4-mini", 3}});
-  });
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              http_call_count++;
+                              return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                            });
 
   // The cached ID matches what's already in the catalog — no extra fetch needed.
   auto result = FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:3"}, logger);
@@ -517,34 +538,33 @@ TEST(AzureCatalogClientTest, WithCachedModels_AlreadyInCatalog_NoExtraFetch) {
 TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
-
   int http_call_count = 0;
-  client.SetHttpPost([&](const std::string&, const std::string& body) -> std::string {
-    http_call_count++;
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              http_call_count++;
 
-    if (http_call_count == 1) {
-      // Primary catalog fetch — returns phi-4-mini only.
-      return MakeMockCatalogResponse({{"phi-4-mini", 3}});
-    } else {
-      // Second fetch — looking up the unresolved model by ID.
-      auto req = nlohmann::json::parse(body);
-      const auto& filters = req["indexEntitiesRequest"]["filters"];
+                              if (http_call_count == 1) {
+                                // Primary catalog fetch — returns phi-4-mini only.
+                                return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                              } else {
+                                // Second fetch — looking up the unresolved model by ID.
+                                auto req = nlohmann::json::parse(body);
+                                const auto& filters = req["indexEntitiesRequest"]["filters"];
 
-      // Verify the second call uses properties/id filter.
-      bool has_id_filter = false;
-      for (const auto& f : filters) {
-        if (f["field"] == "properties/id") {
-          has_id_filter = true;
-          EXPECT_EQ(f["values"], nlohmann::json({"old-model:1"}));
-        }
-      }
+                                // Verify the second call uses properties/id filter.
+                                bool has_id_filter = false;
+                                for (const auto& f : filters) {
+                                  if (f["field"] == "properties/id") {
+                                    has_id_filter = true;
+                                    EXPECT_EQ(f["values"], nlohmann::json({"old-model:1"}));
+                                  }
+                                }
 
-      EXPECT_TRUE(has_id_filter);
+                                EXPECT_TRUE(has_id_filter);
 
-      return MakeMockCatalogResponse({{"old-model", 1}});
-    }
-  });
+                                return MakeOkResponse(MakeMockCatalogResponse({{"old-model", 1}}));
+                              }
+                            });
 
   auto result = FetchAllModelInfosWithCachedModels(client, {"old-model:1"}, logger);
 
@@ -571,20 +591,20 @@ TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) 
 TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_CreatesBYOEntry) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
-
   int http_call_count = 0;
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    http_call_count++;
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              http_call_count++;
 
-    if (http_call_count == 1) {
-      // Primary catalog — returns nothing matching.
-      return MakeMockCatalogResponse({{"phi-4-mini", 3}});
-    } else {
-      // FetchModelsByIds — also returns nothing for the custom model.
-      return R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
-    }
-  });
+                              if (http_call_count == 1) {
+                                // Primary catalog — returns nothing matching.
+                                return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                              } else {
+                                // FetchModelsByIds — also returns nothing for the custom model.
+                                return MakeOkResponse(
+                                    R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                              }
+                            });
 
   auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger);
 
@@ -614,7 +634,6 @@ TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_CreatesBYOEntry) {
 TEST(AzureCatalogClientTest, ParsesReasoningFieldsCorrectly) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
 
   const char* mock_response = R"({
     "indexEntitiesResponse": {
@@ -655,9 +674,10 @@ TEST(AzureCatalogClientTest, ParsesReasoningFieldsCorrectly) {
     }
   })";
 
-  client.SetHttpPost([&](const std::string&, const std::string&) -> std::string {
-    return mock_response;
-  });
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
 
   auto model_infos = client.FetchAllModelInfos();
   ASSERT_EQ(model_infos.size(), 1u);
@@ -681,26 +701,26 @@ TEST(AzureCatalogClientTest, ParsesReasoningFieldsCorrectly) {
 TEST(AzureCatalogClientTest, ParsesTagsCaseInsensitively) {
   AllDevicesEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger);
 
   // Three models with mixed-case device strings ("GpU", "NPU", "Cpu") and mixed-case
   // bool strings ("TRUE", "False", "tRuE") to exercise the case-insensitive paths in
   // ParseDeviceType and the bool-tag parser.
   // Each request carries a device filter — return only the matching model so the
   // 3 per-device requests (AllDevicesEpDetector) produce exactly 3 results total.
-  client.SetHttpPost([&](const std::string&, const std::string& body) -> std::string {
-    auto req = nlohmann::json::parse(body);
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              auto req = nlohmann::json::parse(body);
 
-    std::string device_filter;
-    for (const auto& f : req["indexEntitiesRequest"]["filters"]) {
-      if (f["field"] == "properties/variantInfo/variantMetadata/device") {
-        device_filter = f["values"][0].get<std::string>();
-        break;
-      }
-    }
+                              std::string device_filter;
+                              for (const auto& f : req["indexEntitiesRequest"]["filters"]) {
+                                if (f["field"] == "properties/variantInfo/variantMetadata/device") {
+                                  device_filter = f["values"][0].get<std::string>();
+                                  break;
+                                }
+                              }
 
-    if (device_filter == "gpu") {
-      return R"({
+                              if (device_filter == "gpu") {
+                                return MakeOkResponse(R"({
         "indexEntitiesResponse": {
           "totalCount": 1,
           "value": [{
@@ -718,11 +738,11 @@ TEST(AzureCatalogClientTest, ParsesTagsCaseInsensitively) {
           "nextSkip": 0,
           "continuationToken": ""
         }
-      })";
-    }
+      })");
+                              }
 
-    if (device_filter == "npu") {
-      return R"({
+                              if (device_filter == "npu") {
+                                return MakeOkResponse(R"({
         "indexEntitiesResponse": {
           "totalCount": 1,
           "value": [{
@@ -740,11 +760,11 @@ TEST(AzureCatalogClientTest, ParsesTagsCaseInsensitively) {
           "nextSkip": 0,
           "continuationToken": ""
         }
-      })";
-    }
+      })");
+                              }
 
-    // cpu
-    return R"({
+                              // cpu
+                              return MakeOkResponse(R"({
       "indexEntitiesResponse": {
         "totalCount": 1,
         "value": [{
@@ -762,8 +782,8 @@ TEST(AzureCatalogClientTest, ParsesTagsCaseInsensitively) {
         "nextSkip": 0,
         "continuationToken": ""
       }
-    })";
-  });
+    })");
+                            });
 
   auto model_infos = client.FetchAllModelInfos();
   ASSERT_EQ(model_infos.size(), 3u);
@@ -784,4 +804,304 @@ TEST(AzureCatalogClientTest, ParsesTagsCaseInsensitively) {
   ASSERT_TRUE(by_id.count("m-cpu:1"));
   EXPECT_EQ(by_id["m-cpu:1"]->device_type, DeviceType::kCPU);
   EXPECT_EQ(by_id["m-cpu:1"]->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
+}
+
+// ========================================================================
+// Region detection tests
+// ========================================================================
+
+namespace {
+
+// Build an HTTP response with a single cluster header and the given status.
+http::HttpResponse MakeProbeResponse(int status, const std::string& cluster_header) {
+  http::HttpResponse resp;
+  resp.status = status;
+  if (!cluster_header.empty()) {
+    resp.headers["azureml-served-by-cluster"] = cluster_header;
+  }
+  resp.body = R"({"value":[]})";
+  return resp;
+}
+
+}  // namespace
+
+TEST(AzureCatalogClientTest, DetectRegionParsesClusterHeader) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string probe_url;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                probe_url = url;
+                                return MakeProbeResponse(200, "vienna-westus2-01");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(probe_url, "https://api.catalog.azureml.ms/asset-gallery/v1.0/models");
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/westus2/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectRegionMissingHeaderDefaultsToCentralUs) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                return MakeProbeResponse(200, /*cluster_header=*/"");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/centralus/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectRegionMalformedHeaderDefaultsToCentralUs) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                return MakeProbeResponse(200, "not-a-cluster-name");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/centralus/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectRegionProbeFailureDefaultsToCentralUs) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                return MakeProbeResponse(503, "vienna-westus2-01");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/centralus/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, ExplicitRegionOverridesDetection) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  bool probe_called = false;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                probe_called = true;
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})"); }, "westeurope");
+
+  client.FetchAllModels();
+  EXPECT_FALSE(probe_called);
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/westeurope/ux/v1.0/entities/crossRegion");
+}
+
+// ========================================================================
+// Region-aware catalog URL tests
+// ========================================================================
+
+TEST(AzureCatalogClientTest, ActiveRegionDrivesCatalogUrl) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string captured_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string&) {
+                              captured_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})"); }, "westus2");
+
+  client.FetchAllModels();
+  EXPECT_EQ(captured_url, "https://ai.azure.com/api/westus2/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, NonRegionalUrlUsedVerbatimEvenWithRegion) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string captured_url;
+  AzureCatalogClient client("https://custom.example.com/catalog", "", ep, logger, [&](const std::string& url, const std::string&) {
+                              captured_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})"); }, "westus2");
+
+  client.FetchAllModels();
+  EXPECT_EQ(captured_url, "https://custom.example.com/catalog/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectedRegionStampedOnModels) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) { return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}})); }, "westus2");
+
+  auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 1u);
+  EXPECT_EQ(infos[0].detected_region, "westus2");
+}
+
+TEST(AzureCatalogClientTest, RegionStampedPerFilterSetAfterFallback) {
+  CpuGpuEpDetector ep;
+  StderrLogger logger;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string& body) {
+    http::HttpResponse resp;
+    if (body.find("\"cpu\"") != std::string::npos && url.find("/api/eastus/") != std::string::npos) {
+      resp.status = 503;
+      return resp;
+    }
+
+    if (body.find("\"cpu\"") != std::string::npos && url.find("/api/eastus2/") != std::string::npos) {
+      resp.status = 200;
+      resp.body = MakeMockCatalogResponse({{"cpu-model", 1}});
+      return resp;
+    }
+
+    if (body.find("\"gpu\"") != std::string::npos && url.find("/api/eastus2/") != std::string::npos) {
+      resp.status = 503;
+      return resp;
+    }
+
+    if (body.find("\"gpu\"") != std::string::npos && url.find("/api/eastus/") != std::string::npos) {
+      resp.status = 200;
+      resp.body = MakeMockCatalogResponse({{"gpu-model", 1}});
+      return resp;
+    }
+
+    resp.status = 500;
+    return resp; }, "eastus");
+
+  auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 2u);
+
+  std::map<std::string, std::string> region_by_id;
+  for (const auto& info : infos) {
+    region_by_id[info.model_id] = info.detected_region;
+  }
+
+  EXPECT_EQ(region_by_id["cpu-model:1"], "eastus2");
+  EXPECT_EQ(region_by_id["gpu-model:1"], "eastus");
+}
+
+// ========================================================================
+// Catalog region fallback
+// ========================================================================
+
+TEST(AzureCatalogClientTest, Fallback_RetriesNextRegionAndPinsPagination) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::vector<std::string> attempted_urls;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string&) {
+    attempted_urls.push_back(url);
+    http::HttpResponse resp;
+    // First attempt (eastus) is region-unhealthy; subsequent regions are healthy.
+    if (attempted_urls.size() == 1) {
+      resp.status = 503;
+      return resp;
+    }
+    resp.status = 200;
+    resp.body = R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
+    return resp; }, "eastus");
+
+  auto models = client.FetchAllModels();
+  ASSERT_GE(attempted_urls.size(), 2u);
+  EXPECT_TRUE(attempted_urls[0].find("/api/eastus/") != std::string::npos);
+  EXPECT_TRUE(attempted_urls[1].find("/api/eastus2/") != std::string::npos)
+      << "Expected fallback to the first proximal region. Got: " << attempted_urls[1];
+}
+
+TEST(AzureCatalogClientTest, Fallback_DisabledDoesNotRetry) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int calls = 0;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) {
+    ++calls;
+    http::HttpResponse resp;
+    resp.status = 503;  // unhealthy, but fallback is off → no retry, filter set is skipped
+    return resp; }, "eastus", /*region_fallback_enabled=*/false);
+
+  auto models = client.FetchAllModels();
+  EXPECT_EQ(calls, 1);
+  EXPECT_TRUE(models.empty());
+}
+
+TEST(AzureCatalogClientTest, Fallback_PermanentCatalogErrorThrows) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int calls = 0;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) {
+    ++calls;
+    http::HttpResponse resp;
+    resp.status = 404;
+    return resp; }, "eastus");
+
+  try {
+    client.FetchAllModels();
+    FAIL() << "Expected fl::Exception for permanent catalog HTTP failure";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+  }
+  EXPECT_EQ(calls, 1);
+}
+
+TEST(AzureCatalogClientTest, Fallback_MidPaginationFailureDoesNotCommitPartialFilterSet) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int calls = 0;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) {
+    ++calls;
+    http::HttpResponse resp;
+    if (calls == 1) {
+      resp.status = 200;
+      resp.body = R"({
+        "indexEntitiesResponse": {
+          "totalCount": 1,
+          "value": [{
+            "assetId": "azureml://registries/azureml/models/page-one-model/versions/1",
+            "entityId": "page-one-model:1",
+            "annotations": {"tags": {"alias": "page-one-model"}},
+            "properties": {
+              "name": "page-one-model",
+              "version": 1,
+              "variantInfo": {
+                "parents": [],
+                "variantMetadata": {"device": "cpu", "executionProvider": "CPUExecutionProvider"}
+              }
+            }
+          }],
+          "nextSkip": 50,
+          "continuationToken": "next"
+        }
+      })";
+      return resp;
+    }
+
+    resp.status = 503;
+    return resp; }, "eastus");
+
+  auto models = client.FetchAllModels();
+  EXPECT_EQ(calls, 2);
+  EXPECT_TRUE(models.empty());
 }

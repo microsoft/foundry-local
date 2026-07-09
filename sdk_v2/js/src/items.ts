@@ -99,6 +99,51 @@ export interface ToolResultItem {
 }
 
 /**
+ * Discriminator for a {@link SpeechSegmentItem}. PARTIAL/FINAL describe the state of the current segment
+ * hypothesis in a streaming callback — PARTIAL is the evolving guess for the in-progress segment, FINAL closes
+ * it. They do not describe the overall response. NONE is used for segments embedded in the aggregate
+ * {@link SpeechResultItem}, where the streaming distinction no longer applies.
+ */
+export type SpeechSegmentKind = "none" | "partial" | "final";
+
+/** One word inside a {@link SpeechSegmentItem}. Timing, confidence, and speaker fields are omitted when unset. */
+export interface SpeechWord {
+  readonly text: string;
+  readonly startTimeMs?: number;
+  readonly endTimeMs?: number;
+  readonly confidence?: number;
+  readonly speakerId?: string;
+}
+
+/**
+ * Recognized/translated speech segment from an `AudioSession` (output-only). In a streaming callback, `text`
+ * for a PARTIAL segment is the cumulative current hypothesis for the segment, not a delta. As an entry of a
+ * {@link SpeechResultItem}, `kind` is `"final"` (or `"none"` for a single non-segmented transcript).
+ */
+export interface SpeechSegmentItem {
+  readonly type: "speechSegment";
+  readonly kind: SpeechSegmentKind;
+  readonly text: string;
+  readonly startTimeMs?: number;
+  readonly endTimeMs?: number;
+  readonly utteranceStart: boolean;
+  readonly words: ReadonlyArray<SpeechWord>;
+  readonly language?: string;
+}
+
+/**
+ * Final aggregate transcription from an `AudioSession` (output-only). `segments` carries the per-segment
+ * breakdown owned by the result; each entry's `kind` is `"final"` or `"none"`.
+ */
+export interface SpeechResultItem {
+  readonly type: "speechResult";
+  readonly text: string;
+  readonly language?: string;
+  readonly durationMs?: number;
+  readonly segments: ReadonlyArray<SpeechSegmentItem>;
+}
+
+/**
  * Tagged union of all item shapes the JS surface understands. Outputs from
  * `Session.send` are always one of these; inputs to `Request.addItem` accept
  * the same shapes. Raw-bytes inputs (bytes/tensor/image-from-data/
@@ -114,7 +159,9 @@ export type Item =
   | ImageItem
   | AudioItem
   | ToolCallItem
-  | ToolResultItem;
+  | ToolResultItem
+  | SpeechSegmentItem
+  | SpeechResultItem;
 
 /**
  * Factory helpers for building Item objects with the right shape. Mirrors

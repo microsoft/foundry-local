@@ -71,7 +71,7 @@ class TestBuildNative:
     def test_additional_settings_accepted(self):
         c = Configuration(
             app_name="BuildNativeTest",
-            additional_settings={"Bootstrap": "false", "K2": "v2"},
+            additional_settings={"K1": "v1", "K2": "v2"},
         )
         with _native_config(c) as ptr:
             assert ptr is not None
