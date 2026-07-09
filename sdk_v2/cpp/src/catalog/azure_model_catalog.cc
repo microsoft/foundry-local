@@ -23,8 +23,7 @@ namespace {
 /// Split a catalog URL into structured telemetry dimensions. The Azure Foundry
 /// catalog URL looks like "https://ai.azure.com/api/<region>/<format...>", e.g.
 /// "https://ai.azure.com/api/eastus/ux/v1.0" -> {ai.azure.com, eastus, ux/v1.0}.
-/// Custom URLs that don't follow the "/api/<region>/" convention keep an empty
-/// region and put the whole path in `format`. The embedded snapshot is "static".
+/// Custom/private URLs are bucketed so telemetry does not disclose hostnames or paths.
 struct ParsedCatalogUrl {
   std::string endpoint;
   std::string region;
@@ -67,12 +66,12 @@ ParsedCatalogUrl ParseCatalogUrl(const std::string& url) {
     pos = next + 1;
   }
 
-  size_t format_start = 0;
-  if (segments.size() >= 2 && segments[0] == "api") {
-    out.region = segments[1];
-    format_start = 2;
+  if (out.endpoint != "ai.azure.com" || segments.size() < 2 || segments[0] != "api") {
+    return {"custom", "", ""};
   }
-  for (size_t i = format_start; i < segments.size(); ++i) {
+
+  out.region = segments[1];
+  for (size_t i = 2; i < segments.size(); ++i) {
     if (!out.format.empty()) {
       out.format += '/';
     }

@@ -357,6 +357,8 @@ void Model::SelectVariant(const Model& variant) {
              "with all variants available.");
   }
 
+  std::lock_guard<std::mutex> lock(state_mutex_);
+
   for (auto& v : variants_) {
     if (v.get() == &variant) {
       selected_variant_.store(v.get(), std::memory_order_release);
