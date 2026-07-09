@@ -1844,10 +1844,10 @@ static const flModelApi* FL_API_CALL GetModelApiImpl() FL_NO_EXCEPTION {
 }
 
 // ========================================================================
-// Root API function table (version 1)
+// Root API function table (version 2)
 // ========================================================================
 
-static const flApi g_api_v1 = {
+static const flApi g_api_v2 = {
     /* Status */
     Status_CreateImpl,
     Status_ReleaseImpl,
@@ -1898,7 +1898,7 @@ extern "C" {
 
 FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EXCEPTION {
   if (version == 0 || version <= FOUNDRY_LOCAL_API_VERSION) {
-    return &g_api_v1;
+    return &g_api_v2;
   }
 
   return nullptr;

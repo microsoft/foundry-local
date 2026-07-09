@@ -152,6 +152,16 @@ TEST(TelemetryRedactionTest, ScrubsHomePathsAndKeepsUsefulTail) {
   EXPECT_NE(scrubbed.find("[path]\\AppData\\file.bin"), std::string::npos);
 }
 
+TEST(TelemetryRedactionTest, ScrubsUrlQueryAndFragment) {
+  const auto scrubbed = ScrubTelemetryErrorMessage(
+      "GET https://custom.example.com/private/catalog?token=secret#fragment failed");
+
+  EXPECT_EQ(scrubbed.find("custom.example.com"), std::string::npos);
+  EXPECT_EQ(scrubbed.find("token=secret"), std::string::npos);
+  EXPECT_EQ(scrubbed.find("#fragment"), std::string::npos);
+  EXPECT_NE(scrubbed.find("[path]/private/catalog"), std::string::npos);
+}
+
 TEST(TelemetryRedactionTest, TruncatesLongErrorMessages) {
   const auto scrubbed = ScrubTelemetryErrorMessage(std::string(300, 'x'));
 

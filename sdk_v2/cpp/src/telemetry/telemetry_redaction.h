@@ -10,6 +10,9 @@ namespace fl {
 namespace telemetry_detail {
 
 inline bool LooksLikePath(std::string_view token) {
+  if (token.find("://") != std::string_view::npos) {
+    return true;
+  }
   if (token.find('\\') != std::string_view::npos) {
     return true;
   }
@@ -32,6 +35,10 @@ inline bool LooksLikePath(std::string_view token) {
 
 inline std::string RedactPathToken(std::string_view token) {
   const auto is_sep = [](char c) { return c == '/' || c == '\\'; };
+  const auto query_start = token.find_first_of("?#");
+  if (query_start != std::string_view::npos) {
+    token = token.substr(0, query_start);
+  }
 
   std::string normalized(token);
   for (char& c : normalized) {

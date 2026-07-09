@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 1
+#define FOUNDRY_LOCAL_API_VERSION 2
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -816,7 +816,7 @@ struct flItemApi {
   void FL_API_T(ItemQueue_MarkFinished, _In_ flItemQueue* queue);  ///< Producer is done
   bool FL_API_T(ItemQueue_IsFinished, _In_ const flItemQueue* queue);
 
-  // End V1
+  // End V2
 };
 
 struct flInferenceApi {
@@ -889,7 +889,7 @@ struct flInferenceApi {
   /// If all turns are undone, the cached generator is destroyed.
   FL_API_STATUS(Session_UndoTurns, _In_ flSession* session, size_t count);
 
-  // End V1
+  // End V2
 };
 
 /* --- Configuration API ------------------------------------------------- */

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from foundry_local_sdk.items import Item
     from foundry_local_sdk.session_types import RequestOptions
 
-_API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
 
 
 class Request:

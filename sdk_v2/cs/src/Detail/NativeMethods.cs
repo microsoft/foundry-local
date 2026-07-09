@@ -33,7 +33,7 @@ using System.Runtime.InteropServices;
 // -----------------------------------------------------------------------
 public static partial class NativeMethods
 {
-    public const uint ApiVersion = 1;
+    public const uint ApiVersion = 2;
     public const string LibraryName = "foundry_local";
 
     // The first P/Invoke through this class can come from any of several entry

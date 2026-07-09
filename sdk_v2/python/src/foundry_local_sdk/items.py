@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 
-_API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
 # Sentinel for absent time fields in flSpeech* structs. INT64_MIN, matches
 # C ABI FOUNDRY_LOCAL_DURATION_UNSET. cffi cdef does not process #define.
 _DURATION_UNSET: int = -(2**63)
