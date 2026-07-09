@@ -71,7 +71,15 @@ FileWriter::FileWriter(ILogger& logger) : logger_(logger) {}
 
 #ifdef _WIN32
 
-FileWriter::~FileWriter() { Close(); }
+FileWriter::~FileWriter() {
+  try {
+    Close();
+  } catch (const std::exception& ex) {
+    logger_.Log(LogLevel::Warning, std::string("FileWriter: close failed in destructor: ") + ex.what());
+  } catch (...) {
+    logger_.Log(LogLevel::Warning, "FileWriter: close failed in destructor with unknown error");
+  }
+}
 
 void FileWriter::Open(const fs::path& path, int64_t expected_size) {
   EnsureFileExistsAtSize(path, expected_size);
@@ -119,8 +127,9 @@ void FileWriter::Close() {
   if (handle_ != nullptr) {
     if (!::CloseHandle(handle_)) {
       const DWORD err = ::GetLastError();
-      logger_.Log(LogLevel::Warning,
-                  "FileWriter: CloseHandle failed (Win32 err " + std::to_string(err) + ")");
+      handle_ = nullptr;
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "FileWriter CloseHandle failed (Win32 err " + std::to_string(err) + ")");
     }
     handle_ = nullptr;
   }
@@ -128,7 +137,15 @@ void FileWriter::Close() {
 
 #else  // POSIX
 
-FileWriter::~FileWriter() { Close(); }
+FileWriter::~FileWriter() {
+  try {
+    Close();
+  } catch (const std::exception& ex) {
+    logger_.Log(LogLevel::Warning, std::string("FileWriter: close failed in destructor: ") + ex.what());
+  } catch (...) {
+    logger_.Log(LogLevel::Warning, "FileWriter: close failed in destructor with unknown error");
+  }
+}
 
 void FileWriter::Open(const fs::path& path, int64_t expected_size) {
   EnsureFileExistsAtSize(path, expected_size);
@@ -163,13 +180,13 @@ void FileWriter::Close() {
   if (fd_ >= 0) {
     // A failing close() can surface a deferred write error (e.g. EIO, or ENOSPC
     // on delayed allocation / a networked filesystem), so the file may be
-    // incomplete even though every pwrite returned success. Log it for
-    // diagnosis. Don't retry: on Linux the descriptor is freed even when close()
+    // incomplete even though every pwrite returned success. Don't retry: on Linux the descriptor is freed even when close()
     // returns EINTR, so a retry could close an unrelated, since-reused fd.
     if (::close(fd_) != 0) {
       const int err = errno;
-      logger_.Log(LogLevel::Warning,
-                  "FileWriter: close failed (errno " + std::to_string(err) + ")");
+      fd_ = -1;
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "FileWriter close failed (errno " + std::to_string(err) + ")");
     }
     fd_ = -1;
   }

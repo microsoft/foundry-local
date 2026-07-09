@@ -342,6 +342,10 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     if (progress_cb) {
       progress_cb(100.0f);
     }
+    if (tracker != nullptr) {
+      tracker->SetStatus(ActionStatus::kSkipped);
+      tracker->SetDownloadWaitResult("CompletedByOtherProcess");
+    }
     return ResolveEffectiveModelPath(model_path);
   }
 

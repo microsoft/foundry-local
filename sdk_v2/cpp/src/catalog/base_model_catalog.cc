@@ -20,6 +20,11 @@ BaseModelCatalog::BaseModelCatalog(std::string name, ILogger& logger)
 BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
+  if (populated_) {
+    IntegrateVariantsLocked(std::move(variants));
+    return;
+  }
+
   // Group variants by alias into Model containers.
   // Matches C# Catalog.UpdateModels() pattern:
   //   foreach (modelInfo) { find or create Model by alias, add variant }
@@ -47,42 +52,14 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
     model.SelectDefaultVariant();
   }
 
-  // On refresh: merge new models into stable storage. Existing models keep their addresses.
-  // New aliases are appended. Existing aliases are left unchanged (their Model* stays valid).
-  if (populated_) {
-    // Build a set of existing aliases for fast lookup.
-    std::unordered_map<std::string, Model*> existing_aliases;
-    for (auto& m : models_) {
-      existing_aliases[m->Alias()] = m.get();
-    }
-
-    size_t new_count = 0;
-    for (auto& [alias, model] : alias_to_model) {
-      if (!existing_aliases.contains(alias)) {
-        models_.push_back(std::make_unique<Model>(std::move(model)));
-        ++new_count;
-      }
-    }
-
-    if (new_count > 0) {
-      logger_.Log(LogLevel::Information,
-                  fmt::format("Catalog '{}' refresh: {} new model(s) added, {} total.",
-                              name_, new_count, models_.size()));
-    } else {
-      logger_.Log(LogLevel::Debug,
-                  fmt::format("Catalog '{}' refresh: no new models. {} total.",
-                              name_, models_.size()));
-    }
-  } else {
-    // Initial population: move all models into stable storage.
-    models_.reserve(alias_to_model.size());
-    for (auto& [alias, model] : alias_to_model) {
-      models_.push_back(std::make_unique<Model>(std::move(model)));
-    }
-
-    logger_.Log(LogLevel::Debug,
-                fmt::format("Catalog '{}' populated with {} model(s).", name_, models_.size()));
+  // Initial population: move all models into stable storage.
+  models_.reserve(alias_to_model.size());
+  for (auto& [alias, model] : alias_to_model) {
+    models_.push_back(std::make_unique<Model>(std::move(model)));
   }
+
+  logger_.Log(LogLevel::Debug,
+              fmt::format("Catalog '{}' populated with {} model(s).", name_, models_.size()));
 
   RebuildIndex();
   populated_ = true;
@@ -90,7 +67,10 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
 
 void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
   std::lock_guard<std::mutex> lock(mutex_);
+  IntegrateVariantsLocked(std::move(variants));
+}
 
+void BaseModelCatalog::IntegrateVariantsLocked(std::vector<Model> variants) const {
   if (variants.empty()) {
     return;
   }
@@ -141,6 +121,7 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
         it->second->AddVariant(std::move(v));
         ++added_variants;
       }
+      it->second->SelectDefaultVariant();
     } else {
       // New alias: build a container and choose default after all variants are added.
       auto first = std::move(alias_variants.front());

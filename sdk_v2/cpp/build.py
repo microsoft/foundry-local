@@ -57,9 +57,16 @@ def _path_from_env_var(var: str) -> Path | None:
 # Subprocess runner
 # ---------------------------------------------------------------------------
 
+def _redact_command_arg(arg: str) -> str:
+    secret_define = "-DFOUNDRY_LOCAL_TELEMETRY_TOKEN="
+    if arg.startswith(secret_define):
+        return f"{secret_define}<redacted>"
+    return arg
+
+
 def run(cmd: list[str], cwd: Path | str | None = None, env: dict[str, str] | None = None) -> None:
     """Run a command, logging and streaming output. Raises on non-zero exit."""
-    log.info("Running: %s", " ".join(str(c) for c in cmd))
+    log.info("Running: %s", " ".join(_redact_command_arg(str(c)) for c in cmd))
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
 
