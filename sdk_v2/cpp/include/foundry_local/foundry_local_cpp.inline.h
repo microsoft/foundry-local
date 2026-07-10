@@ -289,36 +289,36 @@ inline flManager* detail::CreateManager(const Configuration& config) {
 // ModelInfo
 // ===========================================================================
 
-inline std::string_view ModelInfo::Id() const noexcept {
+inline std::string_view ModelInfo::Id() const {
   return safe(detail::model_api()->Info_GetId(info_));
 }
 
-inline std::string_view ModelInfo::Name() const noexcept {
+inline std::string_view ModelInfo::Name() const {
   return safe(detail::model_api()->Info_GetName(info_));
 }
 
-inline int ModelInfo::Version() const noexcept {
+inline int ModelInfo::Version() const {
   return detail::model_api()->Info_GetVersion(info_);
 }
 
-inline std::string_view ModelInfo::Alias() const noexcept {
+inline std::string_view ModelInfo::Alias() const {
   return safe(detail::model_api()->Info_GetAlias(info_));
 }
 
-inline std::string_view ModelInfo::Uri() const noexcept {
+inline std::string_view ModelInfo::Uri() const {
   return safe(detail::model_api()->Info_GetUri(info_));
 }
 
-inline flDeviceType ModelInfo::DeviceType() const noexcept {
+inline flDeviceType ModelInfo::DeviceType() const {
   return detail::model_api()->Info_GetDeviceType(info_);
 }
 
-inline std::optional<std::string_view> ModelInfo::ExecutionProvider() const noexcept {
+inline std::optional<std::string_view> ModelInfo::ExecutionProvider() const {
   const char* v = detail::model_api()->Info_GetExecutionProvider(info_);
   return v ? std::optional<std::string_view>{v} : std::nullopt;
 }
 
-inline std::optional<Runtime> ModelInfo::GetRuntime() const noexcept {
+inline std::optional<Runtime> ModelInfo::GetRuntime() const {
   flDeviceType dt = DeviceType();
   if (dt == FOUNDRY_LOCAL_DEVICE_NOTSET) {
     return std::nullopt;
@@ -326,7 +326,7 @@ inline std::optional<Runtime> ModelInfo::GetRuntime() const noexcept {
   return Runtime{dt, ExecutionProvider()};
 }
 
-inline std::optional<std::string_view> ModelInfo::GetPromptTemplate(const char* key) const noexcept {
+inline std::optional<std::string_view> ModelInfo::GetPromptTemplate(const char* key) const {
   const flKeyValuePairs* kvps = detail::model_api()->Info_GetPromptTemplates(info_);
   if (!kvps) {
     return std::nullopt;
@@ -335,7 +335,7 @@ inline std::optional<std::string_view> ModelInfo::GetPromptTemplate(const char* 
   return v ? std::optional<std::string_view>{v} : std::nullopt;
 }
 
-inline std::optional<std::string_view> ModelInfo::GetModelSetting(const char* key) const noexcept {
+inline std::optional<std::string_view> ModelInfo::GetModelSetting(const char* key) const {
   const flKeyValuePairs* kvps = detail::model_api()->Info_GetModelSettings(info_);
   if (!kvps) {
     return std::nullopt;
@@ -344,7 +344,7 @@ inline std::optional<std::string_view> ModelInfo::GetModelSetting(const char* ke
   return v ? std::optional<std::string_view>{v} : std::nullopt;
 }
 
-inline std::optional<KeyValuePairs> ModelInfo::GetModelSettings() const noexcept {
+inline std::optional<KeyValuePairs> ModelInfo::GetModelSettings() const {
   const flKeyValuePairs* kvps = detail::model_api()->Info_GetModelSettings(info_);
   if (!kvps) {
     return std::nullopt;
@@ -352,54 +352,54 @@ inline std::optional<KeyValuePairs> ModelInfo::GetModelSettings() const noexcept
   return KeyValuePairs(*kvps);
 }
 
-inline std::optional<std::string_view> ModelInfo::GetStringProperty(const char* key) const noexcept {
+inline std::optional<std::string_view> ModelInfo::GetStringProperty(const char* key) const {
   const char* v = detail::model_api()->Info_GetStringProperty(info_, key);
   return v ? std::optional<std::string_view>{v} : std::nullopt;
 }
 
-inline int64_t ModelInfo::GetIntProperty(const char* key, int64_t default_value) const noexcept {
+inline int64_t ModelInfo::GetIntProperty(const char* key, int64_t default_value) const {
   return detail::model_api()->Info_GetIntProperty(info_, key, default_value);
 }
 
 // --- Typed property accessors ---
 
-inline std::optional<std::string_view> ModelInfo::DisplayName() const noexcept {
+inline std::optional<std::string_view> ModelInfo::DisplayName() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::ModelType() const noexcept {
+inline std::optional<std::string_view> ModelInfo::ModelType() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::Publisher() const noexcept {
+inline std::optional<std::string_view> ModelInfo::Publisher() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::License() const noexcept {
+inline std::optional<std::string_view> ModelInfo::License() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::LicenseDescription() const noexcept {
+inline std::optional<std::string_view> ModelInfo::LicenseDescription() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::Task() const noexcept {
+inline std::optional<std::string_view> ModelInfo::Task() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::ModelProvider() const noexcept {
+inline std::optional<std::string_view> ModelInfo::ModelProvider() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::MinFlVersion() const noexcept {
+inline std::optional<std::string_view> ModelInfo::MinFlVersion() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::ParentUri() const noexcept {
+inline std::optional<std::string_view> ModelInfo::ParentUri() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR);
 }
 
-inline std::optional<bool> ModelInfo::SupportsToolCalling() const noexcept {
+inline std::optional<bool> ModelInfo::SupportsToolCalling() const {
   int64_t v = GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
   if (v < 0) {
     return std::nullopt;
@@ -407,7 +407,7 @@ inline std::optional<bool> ModelInfo::SupportsToolCalling() const noexcept {
   return v != 0;
 }
 
-inline std::optional<int64_t> ModelInfo::FilesizeMb() const noexcept {
+inline std::optional<int64_t> ModelInfo::FilesizeMb() const {
   int64_t v = GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT);
   if (v < 0) {
     return std::nullopt;
@@ -415,7 +415,7 @@ inline std::optional<int64_t> ModelInfo::FilesizeMb() const noexcept {
   return v;
 }
 
-inline std::optional<int64_t> ModelInfo::MaxOutputTokens() const noexcept {
+inline std::optional<int64_t> ModelInfo::MaxOutputTokens() const {
   int64_t v = GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT);
   if (v < 0) {
     return std::nullopt;
@@ -423,15 +423,15 @@ inline std::optional<int64_t> ModelInfo::MaxOutputTokens() const noexcept {
   return v;
 }
 
-inline int64_t ModelInfo::CreatedAtUnix() const noexcept {
+inline int64_t ModelInfo::CreatedAtUnix() const {
   return GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, 0);
 }
 
-inline bool ModelInfo::IsTestModel() const noexcept {
+inline bool ModelInfo::IsTestModel() const {
   return GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT, 0) != 0;
 }
 
-inline std::optional<int64_t> ModelInfo::ContextLength() const noexcept {
+inline std::optional<int64_t> ModelInfo::ContextLength() const {
   int64_t v = GetIntProperty(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1);
   if (v < 0) {
     return std::nullopt;
@@ -439,15 +439,15 @@ inline std::optional<int64_t> ModelInfo::ContextLength() const noexcept {
   return v;
 }
 
-inline std::optional<std::string_view> ModelInfo::InputModalities() const noexcept {
+inline std::optional<std::string_view> ModelInfo::InputModalities() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::OutputModalities() const noexcept {
+inline std::optional<std::string_view> ModelInfo::OutputModalities() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR);
 }
 
-inline std::optional<std::string_view> ModelInfo::Capabilities() const noexcept {
+inline std::optional<std::string_view> ModelInfo::Capabilities() const {
   return GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR);
 }
 
