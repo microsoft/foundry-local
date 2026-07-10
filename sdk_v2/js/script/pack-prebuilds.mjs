@@ -54,7 +54,7 @@ const wanted = (() => {
 // not. The reg-free WinML 2.x runtime ships next to foundry_local.dll on Windows
 // so WinML hardware EPs work out of the box without an install-time download.
 const optional =
-  process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll"] : [];
+  process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll", "DirectML.dll"] : [];
 
 let copied = 0;
 const available = new Set(readdirSync(sourceDir));

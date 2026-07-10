@@ -108,7 +108,7 @@ steps:
         # the curated artifact contents straight in.
         $rid = '${{ parameters.rid }}'
         if ($rid -like 'win-*') {
-            $allowed = @('foundry_local.dll', 'Microsoft.Windows.AI.MachineLearning.dll', 'DirectML.dll')
+            $allowed = @('foundry_local.dll', 'foundry_local.lib', 'Microsoft.Windows.AI.MachineLearning.dll', 'DirectML.dll')
         } elseif ($rid -like 'linux-*') {
             $allowed = @('libfoundry_local.so')
         } elseif ($rid -like 'osx-*') {

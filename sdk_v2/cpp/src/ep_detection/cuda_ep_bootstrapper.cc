@@ -8,6 +8,7 @@
 #include "utils.h"
 #include "http/http_download.h"
 #include "util/zip_extract.h"
+#include "util/sha256.h"
 
 #include <fmt/format.h>
 
@@ -28,6 +29,8 @@ constexpr int kMaxInstallAttempts = 5;
 // CUDA EP package is built against the ONNX Runtime version we link against.
 constexpr const char* kDownloadUrl =
     "https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/cuda-ep-20260501-062935.zip";
+constexpr const char* kPackageSha256 =
+    "D0DBCE52D121954F2D86E01E6D3418690A5BBA787028CCEE448E4BCDDD4F01E1";
 
 struct ExpectedBinary {
   const char* filename;
@@ -153,6 +156,11 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
       if (!HttpDownloadFile(kDownloadUrl, zip_path, kUserAgent,
                             &cancel_flag, download_progress, logger)) {
         logger.Log(LogLevel::Warning, "CUDA EP: download failed (see prior log for details)");
+        return false;
+      }
+
+      if (!VerifyEpArchive(zip_path, kPackageSha256, "CUDA EP", logger)) {
+        logger.Log(LogLevel::Warning, "CUDA EP: downloaded archive verification failed");
         return false;
       }
 

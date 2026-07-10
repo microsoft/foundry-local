@@ -349,6 +349,8 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     return ResolveEffectiveModelPath(model_path);
   }
 
+  const bool was_incomplete_download = std::filesystem::exists(signal_path);
+
   // Create download signal file
   {
     std::ofstream signal(signal_path);
@@ -376,7 +378,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // and the blob container has all files at the root or in variant subdirectories.
     download_opts.path_prefix = "";
     download_opts.max_concurrency = max_concurrency_;
-    download_opts.skip_completed_files = !std::filesystem::exists(signal_path);
+    download_opts.skip_completed_files = !was_incomplete_download;
 
     if (progress_cb) {
       download_opts.progress = [&progress_cb](float percent) {
