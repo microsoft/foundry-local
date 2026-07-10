@@ -110,7 +110,7 @@ struct ModelUsageInfo {
   std::string correlation_id;
   bool stream = false;                  // True if the inference was streamed (SSE) vs a single response
   bool indirect = false;                // True if the inference was driven by another action (e.g. an HTTP route)
-  int64_t time_to_first_token_ms = 0;
+  int64_t time_to_first_token_ms = -1;
   int64_t total_time_ms = 0;
   int32_t total_tokens = 0;
   int32_t input_token_count = 0;

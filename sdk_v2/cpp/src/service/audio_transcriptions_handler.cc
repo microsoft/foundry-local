@@ -249,7 +249,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
     }
 
     body_ptr->Finish();
-    thread_tracker.Remove(std::this_thread::get_id());
   });
 
   thread_tracker.Track(std::move(streaming_thread));

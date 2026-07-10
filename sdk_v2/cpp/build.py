@@ -60,8 +60,10 @@ def _path_from_env_var(var: str) -> Path | None:
 def _redact_command_arg(arg: str) -> str:
     sensitive_words = ("token", "secret", "password", "passwd", "apikey", "api_key", "accesskey", "sig")
     if "=" in arg:
-        key, _ = arg.split("=", 1)
+        key, value = arg.split("=", 1)
         normalized_key = key.lstrip("-").lower()
+        if "://" in value:
+            return f"{key}=<redacted-url>"
         if any(word in normalized_key for word in sensitive_words):
             return f"{key}=<redacted>"
     return arg

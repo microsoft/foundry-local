@@ -287,7 +287,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
     body_ptr->Finish();
     // route_tracker is destroyed with this closure once the thread completes,
     // recording the route action with the full streaming duration and final status.
-    thread_tracker.Remove(std::this_thread::get_id());
   });
 
   thread_tracker.Track(std::move(streaming_thread));

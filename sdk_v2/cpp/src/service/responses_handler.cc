@@ -602,7 +602,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     body_ptr->Push("data: [DONE]\n\n");
     body_ptr->Finish();
 
-    tracker.Remove(std::this_thread::get_id());
   });
 
   tracker.Track(std::move(streaming_thread));
