@@ -4,8 +4,10 @@
 
 #include <filesystem>
 #include <initializer_list>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace fl {
 
@@ -34,6 +36,12 @@ bool VerifyEpArchive(
 bool VerifyEpBinaries(
     const std::filesystem::path& dir,
     std::initializer_list<std::pair<std::string_view, std::string_view>> expected,
+    std::string_view ep_name,
+    ILogger& logger);
+
+bool VerifyEpBinaries(
+    const std::filesystem::path& dir,
+    const std::vector<std::pair<std::string, std::string>>& expected,
     std::string_view ep_name,
     ILogger& logger);
 

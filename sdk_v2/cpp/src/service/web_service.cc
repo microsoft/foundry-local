@@ -351,6 +351,7 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
 
   std::vector<std::string> bound_urls;
 
+  try {
   for (const auto& endpoint : endpoints) {
     // Parse "http://host:port" — strip scheme, extract host:port
     std::string host = "127.0.0.1";
@@ -421,6 +422,11 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
     bound_urls.push_back(bound_url);
 
     ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
+  }
+  } catch (...) {
+    impl_->running.store(true);
+    Stop();
+    throw;
   }
 
   ctx.bound_urls = bound_urls;

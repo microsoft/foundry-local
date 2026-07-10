@@ -56,7 +56,7 @@ const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetada
       "0767448ABEADE590821E88E56C471E0F2DFE89EC9A7642D08ADC3DC94F14AB92"}
     },
 };
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && defined(__aarch64__)
 const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetadata = {
     {"macos-arm64",
      {"https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/webgpu_ep_0.1.0_macos-arm64.zip",
@@ -64,7 +64,7 @@ const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetada
       "A08BCEBE097B555E23938FCC71A5FAAD461F586CAB0B63DC9D21E970F6CA4C87"}
     },
 };
-#else
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
 const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetadata = {
     {"linux-x64",
      {"https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/webgpu_ep_0.1.0_linux-x64.zip",
@@ -72,6 +72,8 @@ const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetada
       "CBDFF74E6569E3CF66B46F0D194D87CD3CF49E83B7AA46552C39B0218D58B215"}
     },
 };
+#else
+const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetadata = {};
 #endif
 
 // Platform-specific package metadata is baked into the binary to keep
@@ -80,10 +82,12 @@ const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetada
 constexpr const char* kPlatformKey = "win-arm64";
 #elif defined(_WIN32)
 constexpr const char* kPlatformKey = "win-x64";
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && defined(__aarch64__)
 constexpr const char* kPlatformKey = "macos-arm64";
-#else
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
 constexpr const char* kPlatformKey = "linux-x64";
+#else
+constexpr const char* kPlatformKey = "";
 #endif
 
 const WebGpuPackageMetadata& GetPackageMetadata() {
@@ -122,6 +126,10 @@ const std::string& WebGpuEpBootstrapper::Name() const {
 
 bool WebGpuEpBootstrapper::IsRegistered() const {
   return registered_;
+}
+
+bool WebGpuEpBootstrapper::IsSupported() {
+  return kPackageMetadata.find(kPlatformKey) != kPackageMetadata.end();
 }
 
 bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,

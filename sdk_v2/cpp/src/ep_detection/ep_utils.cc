@@ -9,6 +9,7 @@
 #include <fmt/format.h>
 
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -65,6 +66,30 @@ bool VerifyEpBinaries(
 
     // Case-insensitive hex comparison
     if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("{}: hash mismatch for {}: got {}, expected {}",
+                             ep_name, filename, hash, expected_hash));
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool VerifyEpBinaries(
+    const std::filesystem::path& dir,
+    const std::vector<std::pair<std::string, std::string>>& expected,
+    std::string_view ep_name,
+    ILogger& logger) {
+  for (const auto& [filename, expected_hash] : expected) {
+    auto file_path = dir / filename;
+
+    if (!std::filesystem::exists(file_path)) {
+      return false;
+    }
+
+    auto hash = Sha256File(file_path);
+    if (CompareCaseInsensitive(hash, expected_hash) != 0) {
       logger.Log(LogLevel::Warning,
                  fmt::format("{}: hash mismatch for {}: got {}, expected {}",
                              ep_name, filename, hash, expected_hash));

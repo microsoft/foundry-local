@@ -17,7 +17,10 @@
 #include <cstdlib>
 #include <cstdio>
 #include <filesystem>
+#include <iterator>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -38,6 +41,17 @@ struct ExpectedBinary {
 };
 
 constexpr ExpectedBinary kExpectedBinaries[] = {
+    {"cublas64_12.dll", "9513540E4EC4C51EE9E7304138C2CC255C29A8C181F9E80C38EFA25738BECD99"},
+    {"cublasLt64_12.dll", "B199D1FF892A81B7FD3D57BA1781549609B41500B36008FEF326038393AD46C7"},
+    {"cudart64_12.dll", "C2C9A9C22A9BCBA90E261825968836787B331038047A26770CFFB7A583C28344"},
+    {"cudnn64_9.dll", "0D1D71325EB5E91570AB8BA8E399E07BF717FFD76511B2407229A8F45E0B1305"},
+    {"cudnn_adv64_9.dll", "6D66BCE22502C2582A9C0E5398EE8CC38ADDCE2C837EB6DB8786ABC650E48DD8"},
+    {"cudnn_engines_precompiled64_9.dll", "B410C3B42921AFC6E668FF994FCE1BF12C5A8A9B1A9445EBEE61958BF49B1E0A"},
+    {"cudnn_engines_runtime_compiled64_9.dll", "8E62214495C96B93C6333C084FEC49B43F272B7E1977A12FE62275E9070647EB"},
+    {"cudnn_graph64_9.dll", "82F710B01D15D20C311009721C771B76360A4954EBF7B5F4A407B0F96587F568"},
+    {"cudnn_heuristic64_9.dll", "50719EEFB6692074096BF83C87E9CD186F7CE5B953201DA33669C1277A61949B"},
+    {"cudnn_ops64_9.dll", "49487537744256A3D4365C4792B03BF31130AD1FAEA0A13EAFA219620941D837"},
+    {"cufft64_11.dll", "F4FEA9227B14843894AD5436725F9638B172171142C95291FC6AE7A493248221"},
     {"onnxruntime_providers_cuda.dll", "DD540FCFECFBC68B4675C9ADF09C2858CF6B054563859D79598AA2524406A76F"},
     {"onnxruntime-genai-cuda.dll", "BC953F8E2AAFC6219B2D723B65AB8F1A9426A6B7724D6A01ED756FAE8C3DE6AE"},
 };
@@ -45,6 +59,15 @@ constexpr ExpectedBinary kExpectedBinaries[] = {
 constexpr const char* kRegistrationName = "Foundry.CUDA";
 constexpr const char* kCudaProviderDll = "onnxruntime_providers_cuda.dll";
 constexpr const char* kCudaProviderOverrideEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
+
+std::vector<std::pair<std::string, std::string>> ExpectedBinaryHashes() {
+  std::vector<std::pair<std::string, std::string>> expected;
+  expected.reserve(std::size(kExpectedBinaries));
+  for (const auto& binary : kExpectedBinaries) {
+    expected.emplace_back(binary.filename, binary.sha256);
+  }
+  return expected;
+}
 
 }  // anonymous namespace
 
@@ -125,10 +148,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
     FileLock lock(lock_path);
 
     // Check if package already exists and is valid
-    if (fl::VerifyEpBinaries(ep_dir,
-            {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
-             {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
-            "CUDA EP", logger)) {
+    if (fl::VerifyEpBinaries(ep_dir, ExpectedBinaryHashes(), "CUDA EP", logger)) {
       logger.Log(LogLevel::Information, "CUDA EP: package already valid, skipping download");
     } else {
       // Clean up any partial install
@@ -176,10 +196,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
       std::filesystem::remove(zip_path);
 
       // Verify
-      if (!fl::VerifyEpBinaries(ep_dir,
-               {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
-                {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
-               "CUDA EP", logger)) {
+      if (!fl::VerifyEpBinaries(ep_dir, ExpectedBinaryHashes(), "CUDA EP", logger)) {
         logger.Log(LogLevel::Warning, "CUDA EP: verification failed after download");
         return false;
       }

@@ -182,6 +182,7 @@ std::unique_ptr<Manager> Manager::s_instance_;
 
 Manager::Manager(const Configuration& config)
     : config_(config) {
+  try {
   config_.Validate();
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
@@ -302,9 +303,10 @@ Manager::Manager(const Configuration& config)
   }
 #endif
 
-  // WebGPU EP — always available (no hardware detection needed).
-  const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
-  bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
+  if (WebGpuEpBootstrapper::IsSupported()) {
+    const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
+    bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
+  }
 
   // Telemetry must be constructed before subsystems that emit events so we can
   // pass it to them at construction time (e.g. EpDetector emits EPDownloadAttempt
@@ -359,6 +361,22 @@ Manager::Manager(const Configuration& config)
       config_.catalog_region.value_or("auto"),
       disable_region_fallback,
       telemetry_.get());
+  } catch (...) {
+    if (ort_api_ != nullptr && ort_env_ != nullptr) {
+      for (const auto& name : registered_ep_libraries_) {
+        OrtStatus* status = ort_api_->UnregisterExecutionProviderLibrary(ort_env_, name.c_str());
+        if (status != nullptr) {
+          ort_api_->ReleaseStatus(status);
+        }
+      }
+      registered_ep_libraries_.clear();
+      ort_api_->ReleaseEnv(ort_env_);
+      ort_env_ = nullptr;
+    }
+    SetOgaLogCallback(nullptr);
+    s_ort_logger.store(nullptr, std::memory_order_release);
+    throw;
+  }
 }
 
 Manager::~Manager() {
@@ -540,6 +558,9 @@ void Manager::Shutdown() {
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
 
+  model_load_manager_->RejectNewLoads();
+  session_manager_->CancelAll();
+
   if (web_service_running_) {
     StopWebService();
   }
@@ -550,8 +571,6 @@ void Manager::Shutdown() {
   //   3. Unload all models, polling per-model session refcount for direct-API users
   //      who haven't dropped their flSession* yet. Bounded by timeout so a stuck
   //      caller can't block process shutdown indefinitely.
-  model_load_manager_->RejectNewLoads();
-  session_manager_->CancelAll();
   session_manager_->WaitForDrain();
   model_load_manager_->UnloadAll();
 }
