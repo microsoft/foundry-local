@@ -512,7 +512,13 @@ void Manager::StartWebService() {
   web_service_running_ = true;
   // Open an app-usage session for the lifetime of the running service so events
   // carry ext.app.sesId and the backend gets session duration.
-  telemetry_->StartSession();
+  try {
+    telemetry_->StartSession();
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
