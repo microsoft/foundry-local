@@ -189,13 +189,6 @@ def _parse_args() -> argparse.Namespace:
              "not link any telemetry transport. Local diagnostic logging via TelemetryLogger "
              "still works.",
     )
-    parser.add_argument(
-        "--telemetry_token", default=None, type=str,
-        help="1DS / Aria ingestion token. Baked into the binary at configure time as a "
-             "secret. Treat with care — do not commit to source. Defaults to empty, which "
-             "means OneDsTelemetry initializes but skips upload.",
-    )
-
     # Cross-compilation (mutually exclusive targets)
     cross_group = parser.add_mutually_exclusive_group()
     cross_group.add_argument(
@@ -360,6 +353,12 @@ def _validate_args(args: argparse.Namespace) -> None:
     args.cmake_extra_defines = (
         [f"-D{d}" for j in args.cmake_extra_defines for d in j] if args.cmake_extra_defines else []
     )
+    for define in args.cmake_extra_defines:
+        if define.startswith("-DFOUNDRY_LOCAL_TELEMETRY_TOKEN"):
+            raise ValueError(
+                "FOUNDRY_LOCAL_TELEMETRY_TOKEN must be supplied as an environment variable, "
+                "not via --cmake_extra_defines or command-line arguments."
+            )
 
     # Cross-compilation
     if args.arm64:
@@ -495,11 +494,6 @@ def configure(args: argparse.Namespace) -> None:
         command += ["-DFOUNDRY_LOCAL_USE_TELEMETRY=OFF"]
     else:
         command += ["-DFOUNDRY_LOCAL_USE_TELEMETRY=ON"]
-    env = None
-    if args.telemetry_token is not None:
-        env = os.environ.copy()
-        env["FOUNDRY_LOCAL_TELEMETRY_TOKEN"] = args.telemetry_token
-
     # WinML EP catalog is enabled automatically on Windows by CMake. Allow an
     # optional version override for the Microsoft.Windows.AI.MachineLearning NuGet.
     if args.winml_sdk_version:

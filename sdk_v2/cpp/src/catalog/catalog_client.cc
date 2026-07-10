@@ -16,6 +16,12 @@
 
 namespace fl {
 
+namespace {
+
+constexpr const char* kCatalogFetchFailure = "catalog request failed";
+
+}  // namespace
+
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,
@@ -48,7 +54,9 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     try {
       result = client.FetchAllModelInfos();
     } catch (const std::exception& ex) {
-      emit("FetchAll", ActionStatus::kFailure, elapsed_ms(start), 0, ex.what());
+      logger.Log(LogLevel::Warning,
+                 fmt::format("catalog: failed to fetch models — {}", ScrubTelemetryErrorMessage(ex.what())));
+      emit("FetchAll", ActionStatus::kFailure, elapsed_ms(start), 0, kCatalogFetchFailure);
       throw;
     }
     emit("FetchAll", ActionStatus::kSuccess, elapsed_ms(start), static_cast<int32_t>(result.size()), "");
@@ -86,7 +94,7 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
       auto error_message = ScrubTelemetryErrorMessage(ex.what());
       logger.Log(LogLevel::Warning,
                  fmt::format("catalog: failed to fetch cached model IDs — {}", error_message));
-      emit("FetchByIds", ActionStatus::kFailure, elapsed_ms(start), 0, error_message);
+      emit("FetchByIds", ActionStatus::kFailure, elapsed_ms(start), 0, kCatalogFetchFailure);
     } catch (...) {
       logger.Log(LogLevel::Warning, "catalog: failed to fetch cached model IDs — unknown error");
       emit("FetchByIds", ActionStatus::kFailure, elapsed_ms(start), 0, "unknown error");

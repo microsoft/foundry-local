@@ -1,5 +1,5 @@
 # Copyright (c) Microsoft. All rights reserved.
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 # Android: web service not applicable on device.
 # Detect Android early via the vcpkg triplet name because the ANDROID variable

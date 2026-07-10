@@ -218,12 +218,21 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     auto pending = state->GetPendingChunks();
     if (pending.empty()) {
-      // Already complete on disk — drop the sidecar.
+      // A complete sidecar means a previous attempt finished all chunks but did not reach finalization. Do not trust
+      // that state: a late close error may have left a full-size corrupt file. Start a fresh all-chunks pass.
+      logger_.Log(LogLevel::Information,
+                  "Resume sidecar for '" + local_path + "' is complete but unfinalized; starting fresh");
+      std::error_code remove_ec;
+      std::filesystem::remove(local_path, remove_ec);
       BlobDownloadState::DeleteState(local_path, logger_);
-      if (bytes_written_cb) {
-        bytes_written_cb(blob_size);
+      state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
+                                           static_cast<int32_t>(kChunkSize), num_chunks);
+      if (!state->SaveState(logger_)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "failed to persist reset download state for '" + local_path + "'");
       }
-      return;
+      bytes_completed.store(0);
+      pending = state->GetPendingChunks();
     }
 
     // Open the file writer once for the whole download. Open() pre-allocates
@@ -363,30 +372,47 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     try {
       writer.Close();
     } catch (...) {
+      bool safe_to_delete_state = false;
       std::error_code remove_ec;
-      const bool removed = std::filesystem::remove(local_path, remove_ec) ||
-                           !std::filesystem::exists(local_path);
-      if (removed) {
-        BlobDownloadState::DeleteState(local_path, logger_);
+      if (std::filesystem::remove(local_path, remove_ec) || !std::filesystem::exists(local_path)) {
+        safe_to_delete_state = true;
       } else {
         logger_.Log(LogLevel::Warning,
                     "failed to remove blob file after close failure: " + local_path +
                         " (" + remove_ec.message() + ")");
-        std::error_code resize_ec;
-        std::filesystem::resize_file(local_path, 0, resize_ec);
-        if (resize_ec) {
-          logger_.Log(LogLevel::Warning,
-                      "failed to truncate blob file after close failure: " + local_path +
-                          " (" + resize_ec.message() + ")");
-          auto fresh_state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
-                                                          static_cast<int32_t>(kChunkSize), num_chunks);
-          if (!fresh_state->SaveState(logger_)) {
-            logger_.Log(LogLevel::Error,
-                        "failed to reset download state after close failure for '" + local_path + "'");
-          }
+
+        const std::filesystem::path invalid_path = local_path + ".invalid";
+        std::error_code cleanup_ec;
+        std::filesystem::remove(invalid_path, cleanup_ec);
+        std::error_code rename_ec;
+        std::filesystem::rename(local_path, invalid_path, rename_ec);
+        if (!rename_ec) {
+          safe_to_delete_state = true;
         } else {
-          BlobDownloadState::DeleteState(local_path, logger_);
+          logger_.Log(LogLevel::Warning,
+                      "failed to quarantine blob file after close failure: " + local_path +
+                          " (" + rename_ec.message() + ")");
+
+          std::error_code resize_ec;
+          std::filesystem::resize_file(local_path, 0, resize_ec);
+          if (!resize_ec) {
+            safe_to_delete_state = true;
+          } else {
+            logger_.Log(LogLevel::Warning,
+                        "failed to truncate blob file after close failure: " + local_path +
+                            " (" + resize_ec.message() + ")");
+            auto fresh_state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
+                                                            static_cast<int32_t>(kChunkSize), num_chunks);
+            if (!fresh_state->SaveState(logger_)) {
+              logger_.Log(LogLevel::Error,
+                          "failed to reset download state after close failure for '" + local_path + "'");
+            }
+          }
         }
+      }
+
+      if (safe_to_delete_state) {
+        BlobDownloadState::DeleteState(local_path, logger_);
       }
       throw;
     }
