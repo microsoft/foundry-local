@@ -582,8 +582,8 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   int32_t skipped_file_count = 0;
   blobs_to_download.erase(
       std::remove_if(blobs_to_download.begin(), blobs_to_download.end(),
-                     [&skipped_bytes, &skipped_file_count](const auto& pair) {
-                      if (IsDownloadNeeded(pair.first, pair.second)) {
+                     [&skipped_bytes, &skipped_file_count, &options](const auto& pair) {
+                      if (!options.skip_completed_files || IsDownloadNeeded(pair.first, pair.second)) {
                         return false;
                       }
                       skipped_bytes += pair.first.content_length;

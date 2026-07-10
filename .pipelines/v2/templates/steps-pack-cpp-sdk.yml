@@ -100,7 +100,8 @@ steps:
         'foundry_local.lib',
         'Microsoft.Windows.AI.MachineLearning.dll',
         'onnxruntime.dll',
-        'onnxruntime-genai.dll'
+        'onnxruntime-genai.dll',
+        'onnxruntime_providers_*.dll'
       )
 
       New-SdkArchive -Rid 'win-arm64' -NativeArtifact 'cpp-native-win-arm64' -Files @(
@@ -109,12 +110,15 @@ steps:
         'foundry_local.lib',
         'Microsoft.Windows.AI.MachineLearning.dll',
         'onnxruntime.dll',
-        'onnxruntime-genai.dll'
+        'onnxruntime-genai.dll',
+        'onnxruntime_providers_*.dll'
       )
 
       New-SdkArchive -Rid 'linux-x64' -NativeArtifact 'cpp-native-linux-x64' -Files @(
         'libfoundry_local.so',
         'libonnxruntime-genai.so',
+        'libonnxruntime-genai*.so',
+        'libonnxruntime_providers_*.so',
         'libonnxruntime.so*'
       )
 

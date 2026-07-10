@@ -376,6 +376,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // and the blob container has all files at the root or in variant subdirectories.
     download_opts.path_prefix = "";
     download_opts.max_concurrency = max_concurrency_;
+    download_opts.skip_completed_files = !std::filesystem::exists(signal_path);
 
     if (progress_cb) {
       download_opts.progress = [&progress_cb](float percent) {

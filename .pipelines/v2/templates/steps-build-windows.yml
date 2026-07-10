@@ -142,6 +142,9 @@ steps:
         (Join-Path $binDir  'onnxruntime.dll'),
         (Join-Path $binDir  'onnxruntime-genai.dll')
       )
+      $optionalPatterns = @(
+        'onnxruntime_providers_*.dll'
+      )
 
       foreach ($s in $sources) {
         if (-not (Test-Path $s)) {
@@ -150,6 +153,12 @@ steps:
         }
         Copy-Item -Path $s -Destination $dst -Force
         Write-Host "  staged $(Split-Path -Leaf $s)"
+      }
+      foreach ($pattern in $optionalPatterns) {
+        Get-ChildItem -Path $binDir -Filter $pattern -File -ErrorAction SilentlyContinue | ForEach-Object {
+          Copy-Item -Path $_.FullName -Destination $dst -Force
+          Write-Host "  staged $($_.Name)"
+        }
       }
 
 - ${{ if eq(parameters.stageHeaders, true) }}:

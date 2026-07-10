@@ -510,6 +510,9 @@ if(TARGET OnnxRuntime::OnnxRuntime)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ORT_LIB_DIR}/libonnxruntime.so"
                 $<TARGET_FILE_DIR:foundry_local>
+            COMMAND ${CMAKE_COMMAND} -E create_symlink
+                libonnxruntime.so
+                $<TARGET_FILE_DIR:foundry_local>/libonnxruntime.so.1
         )
 
         if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_shared.so")

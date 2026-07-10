@@ -28,6 +28,10 @@ struct BlobDownloadOptions {
   /// Maximum concurrent chunk downloads per blob. Default matches C# desktop.
   int max_concurrency = 64;
 
+  /// When false, full-size files without a sidecar are redownloaded instead of
+  /// skipped. Use this while recovering an incomplete model directory.
+  bool skip_completed_files = true;
+
   /// Progress callback (optional). Return non-zero to cancel the download.
   DownloadProgressFn progress;
 };
