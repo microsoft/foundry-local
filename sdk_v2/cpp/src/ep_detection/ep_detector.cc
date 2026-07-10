@@ -24,21 +24,28 @@ EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
       bootstrappers_(std::move(bootstrappers)),
       logger_(logger),
       telemetry_(telemetry) {
-  // Populate both cache vectors exact-sized from bootstrappers_. After this point
-  // size and element addresses (including the EpInfo::name string storage backing
-  // flEpInfo::name) are immutable for the detector's lifetime — only is_registered
-  // is ever updated, in place, under cache_mutex_.
+  // Populate the C++ cache once from bootstrappers_. Name string storage is stable
+  // because cached_eps_ size is fixed for the detector's lifetime.
   cached_eps_.reserve(bootstrappers_.size());
-  cached_eps_c_.reserve(bootstrappers_.size());
 
   for (const auto& bs : bootstrappers_) {
     cached_eps_.push_back(EpInfo{bs->Name(), bs->IsRegistered()});
-    cached_eps_c_.push_back(flEpInfo{
+  }
+
+  PublishCApiSnapshotLocked();
+}
+
+void EpDetector::PublishCApiSnapshotLocked() {
+  auto& snapshot = cached_eps_c_snapshots_.emplace_back();
+  snapshot.reserve(cached_eps_.size());
+  for (const auto& ep : cached_eps_) {
+    snapshot.push_back(flEpInfo{
         FOUNDRY_LOCAL_API_VERSION,
-        cached_eps_.back().name.c_str(),
-        bs->IsRegistered(),
+        ep.name.c_str(),
+        ep.is_registered,
     });
   }
+  current_cached_eps_c_ = &snapshot;
 }
 
 std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesToEPs() const {
@@ -122,7 +129,10 @@ const std::vector<EpInfo>& EpDetector::GetDiscoverableEps() const {
 
 std::span<const flEpInfo> EpDetector::GetDiscoverableEpsCApi() const {
   std::lock_guard<std::mutex> lock(cache_mutex_);
-  return cached_eps_c_;
+  if (current_cached_eps_c_ == nullptr) {
+    return {};
+  }
+  return *current_cached_eps_c_;
 }
 
 EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::string>* names,
@@ -226,7 +236,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       // GetDiscoverableEps[C] readers see the new value.
       std::lock_guard<std::mutex> cache_lock(cache_mutex_);
       cached_eps_[i].is_registered = true;
-      cached_eps_c_[i].is_registered = true;
+      PublishCApiSnapshotLocked();
 
       if (tracker) {
         tracker->RecordDownloadComplete(ActionStatus::kSuccess, "Installed");

@@ -364,13 +364,30 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       writer.Close();
     } catch (...) {
       std::error_code remove_ec;
-      std::filesystem::remove(local_path, remove_ec);
-      if (remove_ec) {
+      const bool removed = std::filesystem::remove(local_path, remove_ec) ||
+                           !std::filesystem::exists(local_path);
+      if (removed) {
+        BlobDownloadState::DeleteState(local_path, logger_);
+      } else {
         logger_.Log(LogLevel::Warning,
                     "failed to remove blob file after close failure: " + local_path +
                         " (" + remove_ec.message() + ")");
+        std::error_code resize_ec;
+        std::filesystem::resize_file(local_path, 0, resize_ec);
+        if (resize_ec) {
+          logger_.Log(LogLevel::Warning,
+                      "failed to truncate blob file after close failure: " + local_path +
+                          " (" + resize_ec.message() + ")");
+          auto fresh_state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
+                                                          static_cast<int32_t>(kChunkSize), num_chunks);
+          if (!fresh_state->SaveState(logger_)) {
+            logger_.Log(LogLevel::Error,
+                        "failed to reset download state after close failure for '" + local_path + "'");
+          }
+        } else {
+          BlobDownloadState::DeleteState(local_path, logger_);
+        }
       }
-      BlobDownloadState::DeleteState(local_path, logger_);
       throw;
     }
 
@@ -536,16 +553,23 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   // count toward "downloaded" so the percentage stays accurate when this is a
   // resume of a partially-completed download.
   int64_t skipped_bytes = 0;
+  int32_t skipped_file_count = 0;
   blobs_to_download.erase(
       std::remove_if(blobs_to_download.begin(), blobs_to_download.end(),
-                     [&skipped_bytes](const auto& pair) {
-                       if (IsDownloadNeeded(pair.first, pair.second)) {
-                         return false;
-                       }
-                       skipped_bytes += pair.first.content_length;
-                       return true;
+                     [&skipped_bytes, &skipped_file_count](const auto& pair) {
+                      if (IsDownloadNeeded(pair.first, pair.second)) {
+                        return false;
+                      }
+                      skipped_bytes += pair.first.content_length;
+                      ++skipped_file_count;
+                      return true;
                      }),
       blobs_to_download.end());
+
+  if (stats != nullptr) {
+    stats->already_cached_bytes = skipped_bytes;
+    stats->skipped_file_count = skipped_file_count;
+  }
 
   // Step 6: Emit initial progress reflecting any already-on-disk bytes.
   // If everything was skipped, emit 100% directly and return.

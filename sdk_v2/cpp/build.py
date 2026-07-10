@@ -495,8 +495,10 @@ def configure(args: argparse.Namespace) -> None:
         command += ["-DFOUNDRY_LOCAL_USE_TELEMETRY=OFF"]
     else:
         command += ["-DFOUNDRY_LOCAL_USE_TELEMETRY=ON"]
+    env = None
     if args.telemetry_token is not None:
-        command += [f"-DFOUNDRY_LOCAL_TELEMETRY_TOKEN={args.telemetry_token}"]
+        env = os.environ.copy()
+        env["FOUNDRY_LOCAL_TELEMETRY_TOKEN"] = args.telemetry_token
 
     # WinML EP catalog is enabled automatically on Windows by CMake. Allow an
     # optional version override for the Microsoft.Windows.AI.MachineLearning NuGet.

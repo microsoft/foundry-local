@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -103,11 +104,14 @@ class EpDetector : public IEpDetector {
   std::mutex download_mutex_;
   std::atomic<bool> download_in_progress_{false};
   mutable std::mutex cache_mutex_;
-  // Populated once in the constructor; size and element addresses (including name strings)
-  // are stable for the detector's lifetime. Only is_registered fields are mutated, under
-  // cache_mutex_. cached_eps_c_ mirrors cached_eps_ for the C ABI.
+  // cached_eps_ is updated under cache_mutex_. Each C ABI view is an immutable
+  // snapshot retained for the detector lifetime so previously returned spans are
+  // never mutated or freed while callers may still read them.
   std::vector<EpInfo> cached_eps_;
-  std::vector<flEpInfo> cached_eps_c_;
+  std::deque<std::vector<flEpInfo>> cached_eps_c_snapshots_;
+  const std::vector<flEpInfo>* current_cached_eps_c_ = nullptr;
+
+  void PublishCApiSnapshotLocked();
 };
 
 }  // namespace fl

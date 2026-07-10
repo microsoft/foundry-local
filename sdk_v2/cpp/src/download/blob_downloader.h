@@ -134,7 +134,9 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
 /// stamp telemetry events with download-shape data (file count, byte volume, timing).
 struct BlobDownloadStats {
   int64_t total_size_bytes = 0;
+  int64_t already_cached_bytes = 0;
   int32_t file_count = 0;
+  int32_t skipped_file_count = 0;
   int64_t enumeration_ms = 0;   // Time spent listing blobs from the SAS URI.
   int64_t download_ms = 0;      // Time spent transferring blob bytes (excludes enumeration).
 };

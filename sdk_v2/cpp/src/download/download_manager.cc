@@ -396,6 +396,8 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
       tracker->SetEnumerationMs(stats.enumeration_ms);
       tracker->SetFileCount(stats.file_count);
       tracker->SetTotalSizeBytes(stats.total_size_bytes);
+      tracker->SetAlreadyCachedBytes(stats.already_cached_bytes);
+      tracker->SetSkippedFileCount(stats.skipped_file_count);
       tracker->SetDownloadWaitResult("Completed");
     }
 

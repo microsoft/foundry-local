@@ -47,14 +47,11 @@ option(FOUNDRY_LOCAL_USE_TELEMETRY
        "Build with 1DS telemetry uploads (requires cpp-client-telemetry vcpkg port)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
 
-# 1DS ingestion token. Treat as a secret: pass via CI as
-#   cmake -DFOUNDRY_LOCAL_TELEMETRY_TOKEN="<aria-token>"
-# Defaults to empty so developer builds and forks don't accidentally bind to a
-# real tenant. When empty (or when in CI at runtime), OneDsTelemetry initializes
-# but does not transmit events.
-set(FOUNDRY_LOCAL_TELEMETRY_TOKEN ""
-    CACHE STRING "1DS / Aria ingestion token baked into the binary. Leave empty in dev builds.")
-mark_as_advanced(FOUNDRY_LOCAL_TELEMETRY_TOKEN)
+# 1DS ingestion token. Treat as a secret: pass via the
+# FOUNDRY_LOCAL_TELEMETRY_TOKEN environment variable so it does not land in
+# process argv or CMakeCache.txt. Defaults to empty so developer builds and forks
+# don't accidentally bind to a real tenant.
+set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
 
 # Android: interactive examples and host tools don't run on device
 if(ANDROID)
