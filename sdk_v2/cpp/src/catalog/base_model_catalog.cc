@@ -197,6 +197,7 @@ void BaseModelCatalog::InvalidateCache() {
   // This is called after EP registration changes — the catalog needs to
   // re-query with updated device/EP filters.
   std::lock_guard<std::mutex> lock(mutex_);
+  force_refresh_ = true;
   next_refresh_at_ = std::chrono::steady_clock::time_point{};
 }
 
@@ -207,8 +208,8 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  bool needs_refresh = allow_refresh &&
-                       std::chrono::steady_clock::now() >= next_refresh_at_;
+  bool needs_refresh = force_refresh_ ||
+                       (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
 
   if (populated_ && !needs_refresh) {
     return;
@@ -221,6 +222,7 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
 
   auto variants = FetchModels();
   PopulateModels(std::move(variants));
+  force_refresh_ = false;
   next_refresh_at_ = std::chrono::steady_clock::now() + kCacheDuration;
 }
 

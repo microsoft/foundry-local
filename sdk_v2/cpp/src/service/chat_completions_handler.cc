@@ -212,16 +212,16 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
   auto& logger = ctx_.logger;
   auto& thread_tracker = ctx_.thread_tracker;
   auto stream_done = std::make_shared<std::atomic<bool>>(false);
+  auto stream_request = std::make_shared<Request>(std::move(session_request));
 
   std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request),
+                                req = stream_request,
                                 include_usage, &thread_tracker,
                                 route_tracker = std::move(route_tracker),
                                 &session_manager = ctx_.session_manager,
                                 stream_done]() mutable {
-    SessionRegistration reg(session_manager, bg_session);
-
     try {
+      SessionRegistration reg(session_manager, bg_session);
       fl::Response bg_response;
 
       // Callback receives OPENAI_JSON-tagged TextItem chunks from ChatSession — just wrap in SSE framing.
@@ -246,7 +246,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      bg_session.ProcessRequest(*req, bg_response);
 
       // Usage chunk — only if stream_options.include_usage was true
       if (include_usage) {
@@ -294,7 +294,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
     stream_done->store(true, std::memory_order_release);
   });
 
-  thread_tracker.Track(std::move(streaming_thread), stream_done, [body] { body->Abort(); });
+  thread_tracker.Track(std::move(streaming_thread), stream_done, [body, stream_request] {
+    body->Abort();
+    stream_request->canceled.store(true, std::memory_order_relaxed);
+  });
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

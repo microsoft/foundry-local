@@ -98,6 +98,7 @@ class BaseModelCatalog : public ICatalog {
   std::shared_ptr<const ModelIndex> GetIndex() const;
 
   mutable bool populated_ = false;
+  mutable bool force_refresh_ = false;
   mutable std::mutex mutex_;
   mutable std::chrono::steady_clock::time_point next_refresh_at_{};
 

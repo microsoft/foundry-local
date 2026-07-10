@@ -330,12 +330,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   auto& session_manager = ctx_.session_manager;
   auto& tracker = ctx_.thread_tracker;
   auto stream_done = std::make_shared<std::atomic<bool>>(false);
+  auto stream_request = std::make_shared<Request>(std::move(session_request));
 
   // Background thread is required: oatpp needs the Response returned immediately so it can
   // start writing SSE events. ProcessRequest blocks until generation completes.
   std::thread streaming_thread([body_ptr, &logger, &session_manager,
                                 session = std::move(session),
-                                req = std::move(session_request),
+                                req = stream_request,
                                 model_name, response_id, created_at,
                                 should_store, &store,
                                 req_copy = std::move(req_copy),
@@ -343,8 +344,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                 route_tracker = std::move(route_tracker),
                                 &tracker,
                                 stream_done]() mutable {
-    SessionRegistration reg(session_manager, *session);
-
     int seq = 2;
     std::string full_text;  // concatenation of all visible runs, used for output_text in completed_response
 
@@ -363,6 +362,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     // Items that have been *closed* (or, for the currently-open item at end-of-stream, finalized in place).
     // Used to construct the final `output[]` array for the response.completed event.
     std::vector<ResponseOutputItem> closed_items;
+    std::optional<SessionRegistration> reg;
 
     auto push_event = [&](const std::string& event_name, const StreamEvent& ev) {
       return body_ptr->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
@@ -490,6 +490,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     };
 
     try {
+      reg.emplace(session_manager, *session);
       fl::Response bg_response;
       fl::Session::StreamingCallbackFn callback_fn = [&](flStreamingCallbackData event, void* /*user_data*/) -> int {
         fl::ItemQueue* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
@@ -550,7 +551,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
       session->SetStreamingCallback(callback_fn);
 
-      session->ProcessRequest(req, bg_response);
+      session->ProcessRequest(*req, bg_response);
 
       // Close whatever item is still open at end-of-generation so the SSE stream is well-formed.
       close_current();
@@ -571,7 +572,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         store.Store(response_id, response_json, std::move(input_items));
 
         // Deregister before caching — see non-streaming path comment.
-        reg.Release();
+        reg->Release();
 
         // Clear per-request streaming callback before caching — see non-streaming path comment.
         session->SetStreamingCallback(nullptr);
@@ -611,7 +612,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
   });
 
-  tracker.Track(std::move(streaming_thread), stream_done, [body] { body->Abort(); });
+  tracker.Track(std::move(streaming_thread), stream_done, [body, stream_request] {
+    body->Abort();
+    stream_request->canceled.store(true, std::memory_order_relaxed);
+  });
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);
