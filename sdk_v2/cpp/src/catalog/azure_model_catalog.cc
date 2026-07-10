@@ -241,8 +241,10 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
         out.push_back(model_factory_(std::move(info), /*local_path=*/""));
       }
     } catch (const std::exception& ex) {
+      auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("FetchModelVersions: failed to query {} — {}", url, ex.what()));
+                  fmt::format("FetchModelVersions: failed to query {} — {}", parsed.endpoint,
+                              ScrubTelemetryErrorMessage(ex.what())));
     }
   }
 
@@ -297,8 +299,10 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
         models.push_back(model_factory_(std::move(info), std::move(local_path)));
       }
     } catch (const std::exception& ex) {
+      auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("FetchModelsByIds: failed to query {} — {}", url, ex.what()));
+                  fmt::format("FetchModelsByIds: failed to query {} — {}", parsed.endpoint,
+                              ScrubTelemetryErrorMessage(ex.what())));
     }
   }
 

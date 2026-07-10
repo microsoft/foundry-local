@@ -73,8 +73,11 @@ def _redact_command_arg(arg: str) -> str:
 
 def run(cmd: list[str], cwd: Path | str | None = None, env: dict[str, str] | None = None) -> None:
     """Run a command, logging and streaming output. Raises on non-zero exit."""
-    log.info("Running: %s", " ".join(_redact_command_arg(str(c)) for c in cmd))
-    subprocess.run(cmd, cwd=cwd, env=env, check=True)
+    redacted = " ".join(_redact_command_arg(str(c)) for c in cmd)
+    log.info("Running: %s", redacted)
+    result = subprocess.run(cmd, cwd=cwd, env=env, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"Command failed with exit code {result.returncode}: {redacted}")
 
 
 # ---------------------------------------------------------------------------
