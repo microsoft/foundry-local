@@ -34,6 +34,10 @@ inline bool LooksLikePath(std::string_view token) {
 }
 
 inline std::string RedactPathToken(std::string_view token) {
+  if (token.find("://") != std::string_view::npos) {
+    return "[url]";
+  }
+
   const auto is_sep = [](char c) { return c == '/' || c == '\\'; };
   const auto query_start = token.find_first_of("?#");
   if (query_start != std::string_view::npos) {

@@ -61,39 +61,80 @@ inline const char* Version() noexcept;
 namespace detail {
 
 /// Get the API function table (cached on first call).
-/// Returns nullptr if the library does not support the requested API version.
 inline const flApi* api() {
-  static const flApi* p = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  static const flApi* p = [] {
+    const flApi* root = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+    if (!root) {
+      throw Error("Foundry Local native library does not support the requested API version",
+                  FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    }
+    return root;
+  }();
   return p;
 }
 
 /// Get the Catalog sub-API (cached on first call).
 inline const flCatalogApi* catalog_api() {
-  static const flCatalogApi* p = api()->GetCatalogApi();
+  static const flCatalogApi* p = [] {
+    const flCatalogApi* catalog = api()->GetCatalogApi();
+    if (!catalog) {
+      throw Error("Foundry Local native library returned a null Catalog API table",
+                  FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+    return catalog;
+  }();
   return p;
 }
 
 /// Get the Configuration sub-API (cached on first call).
 inline const flConfigurationApi* config_api() {
-  static const flConfigurationApi* p = api()->GetConfigurationApi();
+  static const flConfigurationApi* p = [] {
+    const flConfigurationApi* config = api()->GetConfigurationApi();
+    if (!config) {
+      throw Error("Foundry Local native library returned a null Configuration API table",
+                  FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+    return config;
+  }();
   return p;
 }
 
 /// Get the Inference sub-API (cached on first call).
 inline const flInferenceApi* inference_api() {
-  static const flInferenceApi* p = api()->GetInferenceApi();
+  static const flInferenceApi* p = [] {
+    const flInferenceApi* inference = api()->GetInferenceApi();
+    if (!inference) {
+      throw Error("Foundry Local native library returned a null Inference API table",
+                  FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+    return inference;
+  }();
   return p;
 }
 
 /// Get the Item sub-API (cached on first call).
 inline const flItemApi* item_api() {
-  static const flItemApi* p = api()->GetItemApi();
+  static const flItemApi* p = [] {
+    const flItemApi* item = api()->GetItemApi();
+    if (!item) {
+      throw Error("Foundry Local native library returned a null Item API table",
+                  FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+    return item;
+  }();
   return p;
 }
 
 /// Get the Model sub-API (cached on first call).
 inline const flModelApi* model_api() {
-  static const flModelApi* p = api()->GetModelApi();
+  static const flModelApi* p = [] {
+    const flModelApi* model = api()->GetModelApi();
+    if (!model) {
+      throw Error("Foundry Local native library returned a null Model API table",
+                  FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+    return model;
+  }();
   return p;
 }
 

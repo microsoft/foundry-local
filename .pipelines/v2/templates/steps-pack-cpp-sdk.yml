@@ -57,9 +57,8 @@ steps:
 
         Copy-Item -Path (Join-Path $includeSrc '*') -Destination $includeDst -Recurse -Force
 
-        # The SDK tgz should include only public wrapper headers.
+        # The SDK tgz should include public wrapper headers and their header-only dependencies.
         $pathsToPrune = @(
-          (Join-Path $includeDst 'gsl'),
           (Join-Path $includeDst '_manifest')
         )
         foreach ($pathToPrune in $pathsToPrune) {
@@ -96,13 +95,15 @@ steps:
       New-SdkArchive -Rid 'win-x64' -NativeArtifact 'cpp-native-win-x64' -Files @(
         'foundry_local.dll',
         'foundry_local.pdb',
-        'foundry_local.lib'
+        'foundry_local.lib',
+        'Microsoft.Windows.AI.MachineLearning.dll'
       )
 
       New-SdkArchive -Rid 'win-arm64' -NativeArtifact 'cpp-native-win-arm64' -Files @(
         'foundry_local.dll',
         'foundry_local.pdb',
-        'foundry_local.lib'
+        'foundry_local.lib',
+        'Microsoft.Windows.AI.MachineLearning.dll'
       )
 
       New-SdkArchive -Rid 'linux-x64' -NativeArtifact 'cpp-native-linux-x64' -Files @(

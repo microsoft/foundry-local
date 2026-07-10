@@ -8,6 +8,7 @@
 #include "model_info.h"
 #include "telemetry/invocation_context.h"
 #include "telemetry/telemetry.h"
+#include "telemetry/telemetry_redaction.h"
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -197,8 +198,10 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
       fetch_from(url, filter);
     } catch (const std::exception& ex) {
       // One failing URL shouldn't block others — skip and continue.
+      auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("failed to fetch catalog from {}: {}", url, ex.what()));
+                  fmt::format("failed to fetch catalog from {}: {}", parsed.endpoint,
+                              ScrubTelemetryErrorMessage(ex.what())));
     }
   }
 

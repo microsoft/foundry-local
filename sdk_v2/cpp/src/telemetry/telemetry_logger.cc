@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "telemetry/telemetry_logger.h"
 
+#include "telemetry/telemetry_redaction.h"
+
 #include <fmt/format.h>
 
 namespace fl {
@@ -24,7 +26,7 @@ void TelemetryLogger::RecordException(Action action, const std::exception& excep
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] Error AppName={} UserAgent={} CorrelationId={} Action={} Exception={}",
                           app_name_, context.user_agent, context.correlation_id, ActionToString(action),
-                          exception.what()));
+                          ScrubTelemetryErrorMessage(exception.what())));
 }
 
 void TelemetryLogger::RecordModelUsage(const ModelUsageInfo& info) {
@@ -89,7 +91,7 @@ void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
                           "Status={} TimeMs={} ModelCount={} Error={} UserAgent={} CorrelationId={}",
                           app_name_, info.operation, info.endpoint, info.region, info.format,
                           ActionStatusToString(info.status), info.duration_ms, info.model_count,
-                          info.error_message, info.user_agent, info.correlation_id));
+                          ScrubTelemetryErrorMessage(info.error_message), info.user_agent, info.correlation_id));
 }
 
 void TelemetryLogger::StartSession() {

@@ -159,7 +159,7 @@ TEST(TelemetryRedactionTest, ScrubsUrlQueryAndFragment) {
   EXPECT_EQ(scrubbed.find("custom.example.com"), std::string::npos);
   EXPECT_EQ(scrubbed.find("token=secret"), std::string::npos);
   EXPECT_EQ(scrubbed.find("#fragment"), std::string::npos);
-  EXPECT_NE(scrubbed.find("[path]/private/catalog"), std::string::npos);
+  EXPECT_NE(scrubbed.find("[url]"), std::string::npos);
 }
 
 TEST(TelemetryRedactionTest, TruncatesLongErrorMessages) {
