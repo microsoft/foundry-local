@@ -60,6 +60,9 @@ if(_FL_TELEMETRY_TOKEN_IN_CACHE)
     endif()
 endif()
 set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
+if(NOT FOUNDRY_LOCAL_USE_TELEMETRY)
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
+endif()
 
 # Android: interactive examples and host tools don't run on device
 if(ANDROID)

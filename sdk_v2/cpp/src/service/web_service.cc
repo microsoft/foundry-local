@@ -435,9 +435,6 @@ void WebService::Stop() {
     return;
   }
 
-  // Join streaming threads first — they may still be pushing to SSE bodies.
-  impl_->thread_tracker.JoinAll();
-
   // Stop accepting new connections first, then stop server loops.
   for (auto& provider : impl_->providers) {
     provider->stop();
@@ -457,6 +454,10 @@ void WebService::Stop() {
   if (impl_->connection_handler) {
     impl_->connection_handler->stop();
   }
+
+  // Join streaming producers after connection shutdown so no new streaming
+  // thread can be tracked while Stop() is taking its join snapshot.
+  impl_->thread_tracker.JoinAll();
 
   for (auto& thread : impl_->listener_threads) {
     if (thread.joinable()) {

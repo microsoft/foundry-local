@@ -67,13 +67,15 @@ steps:
           }
         }
 
-        foreach ($f in $Files) {
-          $src = Join-Path $nativeSrc $f
-          if (-not (Test-Path $src)) {
-            throw "Required native file not found: $src"
+        foreach ($pattern in $Files) {
+          $matches = @(Get-ChildItem -Path $nativeSrc -Filter $pattern -File -ErrorAction SilentlyContinue)
+          if ($matches.Count -eq 0) {
+            throw "Required native file not found: $(Join-Path $nativeSrc $pattern)"
           }
-          $dst = Join-Path $libDst (Split-Path -Leaf $src)
-          Copy-Item -Path $src -Destination $dst -Force
+          foreach ($match in $matches) {
+            $dst = Join-Path $libDst $match.Name
+            Copy-Item -Path $match.FullName -Destination $dst -Force
+          }
         }
 
         $archive = Join-Path $outDir ("cpp-sdk-v2-{0}.tgz" -f $Rid)
@@ -96,22 +98,30 @@ steps:
         'foundry_local.dll',
         'foundry_local.pdb',
         'foundry_local.lib',
-        'Microsoft.Windows.AI.MachineLearning.dll'
+        'Microsoft.Windows.AI.MachineLearning.dll',
+        'onnxruntime.dll',
+        'onnxruntime-genai.dll'
       )
 
       New-SdkArchive -Rid 'win-arm64' -NativeArtifact 'cpp-native-win-arm64' -Files @(
         'foundry_local.dll',
         'foundry_local.pdb',
         'foundry_local.lib',
-        'Microsoft.Windows.AI.MachineLearning.dll'
+        'Microsoft.Windows.AI.MachineLearning.dll',
+        'onnxruntime.dll',
+        'onnxruntime-genai.dll'
       )
 
       New-SdkArchive -Rid 'linux-x64' -NativeArtifact 'cpp-native-linux-x64' -Files @(
-        'libfoundry_local.so'
+        'libfoundry_local.so',
+        'libonnxruntime-genai.so',
+        'libonnxruntime.so*'
       )
 
       New-SdkArchive -Rid 'osx-arm64' -NativeArtifact 'cpp-native-osx-arm64' -Files @(
-        'libfoundry_local.dylib'
+        'libfoundry_local.dylib',
+        'libonnxruntime-genai.dylib',
+        'libonnxruntime*.dylib'
       )
 
       Write-Host "Staged archives:"
