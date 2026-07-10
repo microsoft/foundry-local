@@ -111,11 +111,13 @@ Model::Model(Model&& other) noexcept
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
-      selected_variant_(other.selected_variant_.load(std::memory_order_acquire)) {
+      selected_variant_(other.selected_variant_.load(std::memory_order_acquire)),
+      explicit_variant_selected_(other.explicit_variant_selected_.load(std::memory_order_acquire)) {
   // After vector move, selected_variant_ still points into the transferred buffer.
   other.download_manager_ = nullptr;
   other.model_load_manager_ = nullptr;
   other.selected_variant_.store(nullptr, std::memory_order_release);
+  other.explicit_variant_selected_.store(false, std::memory_order_release);
 }
 
 Model& Model::operator=(Model&& other) noexcept {
@@ -127,9 +129,12 @@ Model& Model::operator=(Model&& other) noexcept {
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
     selected_variant_.store(other.selected_variant_.load(std::memory_order_acquire), std::memory_order_release);
+    explicit_variant_selected_.store(other.explicit_variant_selected_.load(std::memory_order_acquire),
+                                     std::memory_order_release);
     other.download_manager_ = nullptr;
     other.model_load_manager_ = nullptr;
     other.selected_variant_.store(nullptr, std::memory_order_release);
+    other.explicit_variant_selected_.store(false, std::memory_order_release);
   }
 
   return *this;
@@ -197,11 +202,13 @@ void Model::SelectDefaultVariant() {
   for (auto& v : variants_) {
     if (v->IsCached()) {
       selected_variant_.store(v.get(), std::memory_order_release);
+      explicit_variant_selected_.store(false, std::memory_order_release);
       return;
     }
   }
 
   selected_variant_.store(variants_.front().get(), std::memory_order_release);
+  explicit_variant_selected_.store(false, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +369,7 @@ void Model::SelectVariant(const Model& variant) {
   for (auto& v : variants_) {
     if (v.get() == &variant) {
       selected_variant_.store(v.get(), std::memory_order_release);
+      explicit_variant_selected_.store(true, std::memory_order_release);
       return;
     }
   }

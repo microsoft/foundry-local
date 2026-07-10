@@ -224,6 +224,26 @@ TEST_F(BaseModelCatalogTest, RefreshMergesNewVariantsForExistingAlias) {
   ASSERT_EQ(refreshed.size(), 1u);
   EXPECT_EQ(refreshed[0]->Variants().size(), 2u);
   EXPECT_NE(catalog.GetModelVariant("phi-3-mini-gpu:1"), nullptr);
+  EXPECT_EQ(catalog.GetModel("phi-3")->Id(), "phi-3-mini-gpu:1");
+}
+
+TEST_F(BaseModelCatalogTest, RefreshPreservesExplicitVariantSelection) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+
+  Model* container = catalog.GetModel("phi-3");
+  ASSERT_NE(container, nullptr);
+  Model* cpu_variant = catalog.GetModelVariant("phi-3-mini-cpu:1");
+  ASSERT_NE(cpu_variant, nullptr);
+  container->SelectVariant(*cpu_variant);
+
+  catalog.AddModel(MakeModel("phi-3-mini-gpu:1", "phi-3-mini-gpu", 1, "phi-3"));
+  catalog.InvalidateCache();
+
+  auto refreshed = catalog.ListModels();
+  ASSERT_EQ(refreshed.size(), 1u);
+  EXPECT_EQ(refreshed[0]->Variants().size(), 2u);
+  EXPECT_EQ(container->Id(), "phi-3-mini-cpu:1");
 }
 
 TEST_F(BaseModelCatalogTest, GetModel_NotFound_ReturnsNullptr) {

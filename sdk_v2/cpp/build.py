@@ -58,16 +58,12 @@ def _path_from_env_var(var: str) -> Path | None:
 # ---------------------------------------------------------------------------
 
 def _redact_command_arg(arg: str) -> str:
-    secret_define = "-DFOUNDRY_LOCAL_TELEMETRY_TOKEN"
-    if arg.startswith(secret_define):
-        suffix = arg[len(secret_define):]
-        if suffix.startswith("="):
-            return f"{secret_define}=<redacted>"
-        if suffix.startswith(":"):
-            separator = suffix.find("=")
-            if separator >= 0:
-                return f"{secret_define}{suffix[:separator]}=<redacted>"
-            return f"{secret_define}:<redacted>"
+    sensitive_words = ("token", "secret", "password", "passwd", "apikey", "api_key", "accesskey", "sig")
+    if "=" in arg:
+        key, _ = arg.split("=", 1)
+        normalized_key = key.lstrip("-").lower()
+        if any(word in normalized_key for word in sensitive_words):
+            return f"{key}=<redacted>"
     return arg
 
 

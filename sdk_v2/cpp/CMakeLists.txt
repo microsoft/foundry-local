@@ -51,6 +51,14 @@ option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSan
 # FOUNDRY_LOCAL_TELEMETRY_TOKEN environment variable so it does not land in
 # process argv or CMakeCache.txt. Defaults to empty so developer builds and forks
 # don't accidentally bind to a real tenant.
+get_property(_FL_TELEMETRY_TOKEN_IN_CACHE CACHE FOUNDRY_LOCAL_TELEMETRY_TOKEN PROPERTY TYPE SET)
+if(_FL_TELEMETRY_TOKEN_IN_CACHE)
+    get_property(_FL_TELEMETRY_TOKEN_CACHE_VALUE CACHE FOUNDRY_LOCAL_TELEMETRY_TOKEN PROPERTY VALUE)
+    unset(FOUNDRY_LOCAL_TELEMETRY_TOKEN CACHE)
+    if(_FL_TELEMETRY_TOKEN_CACHE_VALUE)
+        message(FATAL_ERROR "FOUNDRY_LOCAL_TELEMETRY_TOKEN must be supplied as an environment variable, not via -D.")
+    endif()
+endif()
 set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
 
 # Android: interactive examples and host tools don't run on device

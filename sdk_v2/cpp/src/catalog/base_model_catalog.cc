@@ -121,6 +121,9 @@ void BaseModelCatalog::IntegrateVariantsLocked(std::vector<Model> variants) cons
         it->second->AddVariant(std::move(v));
         ++added_variants;
       }
+      if (!it->second->HasExplicitVariantSelection()) {
+        it->second->SelectDefaultVariant();
+      }
     } else {
       // New alias: build a container and choose default after all variants are added.
       auto first = std::move(alias_variants.front());
