@@ -67,7 +67,8 @@ ParsedCatalogUrl ParseCatalogUrl(const std::string& url) {
     pos = next + 1;
   }
 
-  if (out.endpoint != "ai.azure.com" || segments.size() < 2 || segments[0] != "api") {
+  if (out.endpoint != "ai.azure.com" || segments.size() < 4 || segments[0] != "api" ||
+      segments[2] != "ux" || segments[3].empty() || segments[3][0] != 'v') {
     return {"custom", "", ""};
   }
 

@@ -3,6 +3,7 @@
 #include "catalog/catalog_client.h"
 #include "ep_detection/ep_detector.h"
 #include "telemetry/telemetry.h"
+#include "telemetry/telemetry_redaction.h"
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -82,9 +83,10 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
       }
       emit("FetchByIds", ActionStatus::kSuccess, elapsed_ms(start), additional_count, "");
     } catch (const std::exception& ex) {
+      auto error_message = ScrubTelemetryErrorMessage(ex.what());
       logger.Log(LogLevel::Warning,
-                 fmt::format("catalog: failed to fetch cached model IDs — {}", ex.what()));
-      emit("FetchByIds", ActionStatus::kFailure, elapsed_ms(start), 0, ex.what());
+                 fmt::format("catalog: failed to fetch cached model IDs — {}", error_message));
+      emit("FetchByIds", ActionStatus::kFailure, elapsed_ms(start), 0, error_message);
     } catch (...) {
       logger.Log(LogLevel::Warning, "catalog: failed to fetch cached model IDs — unknown error");
       emit("FetchByIds", ActionStatus::kFailure, elapsed_ms(start), 0, "unknown error");

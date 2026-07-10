@@ -360,7 +360,19 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     // Release the OS handle before persisting / deleting the sidecar so any
     // observer that watches the data file sees a fully-closed handle.
-    writer.Close();
+    try {
+      writer.Close();
+    } catch (...) {
+      std::error_code remove_ec;
+      std::filesystem::remove(local_path, remove_ec);
+      if (remove_ec) {
+        logger_.Log(LogLevel::Warning,
+                    "failed to remove blob file after close failure: " + local_path +
+                        " (" + remove_ec.message() + ")");
+      }
+      BlobDownloadState::DeleteState(local_path, logger_);
+      throw;
+    }
 
     const bool was_cancelled = cancelled && cancelled->load(std::memory_order_relaxed);
     if (first_error || was_cancelled) {
