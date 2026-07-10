@@ -32,6 +32,7 @@ _lib_path = find_library()
 # module-level name so the GC never collects them (which would unload the DLLs
 # mid-process and crash any in-flight ORT call).
 _preloaded_native_deps: list = []
+_dll_directory_handles: list = []
 if _lib_path is not None:
     _preloaded_native_deps = prepare_native_dependencies(_lib_path.parent)
 
@@ -46,7 +47,7 @@ if _lib_path is not None:
         # foundry_local.dll resolves. ORT/GenAI were already preloaded by absolute path above.
         _dll_parent = _lib_path.parent.resolve()
         if _dll_parent.is_dir():
-            os.add_dll_directory(str(_dll_parent))
+            _dll_directory_handles.append(os.add_dll_directory(str(_dll_parent)))
     else:
         # Linux/macOS: preload libfoundry_local with RTLD_GLOBAL so its exported symbols satisfy the cffi
         # extension's NEEDED entry by symbol resolution rather than by file lookup. ORT/GenAI are already

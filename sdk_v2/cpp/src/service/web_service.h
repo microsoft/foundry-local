@@ -34,11 +34,31 @@ class StreamingThreadTracker {
   void Track(std::thread t, std::shared_ptr<std::atomic<bool>> done, std::function<void()> abort) {
     std::lock_guard<std::mutex> lock(mutex_);
     ReapCompletedLocked();
+    if (stopping_) {
+      if (abort) {
+        abort();
+      }
+    }
     threads_.push_back(TrackedThread{std::move(t), std::move(done), std::move(abort)});
+  }
+
+  void BeginStopping() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = true;
+    AbortAllLocked();
   }
 
   void AbortAll() {
     std::lock_guard<std::mutex> lock(mutex_);
+    AbortAllLocked();
+  }
+
+  void Reset() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = false;
+  }
+
+  void AbortAllLocked() {
     for (auto& tracked : threads_) {
       if (tracked.abort) {
         tracked.abort();
@@ -78,6 +98,7 @@ class StreamingThreadTracker {
 
   std::mutex mutex_;
   std::vector<TrackedThread> threads_;
+  bool stopping_ = false;
 };
 
 /// Context shared with all HTTP controllers.

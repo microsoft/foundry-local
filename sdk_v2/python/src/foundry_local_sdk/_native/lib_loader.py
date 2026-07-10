@@ -248,7 +248,7 @@ def prepare_native_dependencies(foundry_local_dir: pathlib.Path) -> list:
         if add_dll_directory is not None:
             for d in {ort_path.parent, genai_path.parent, foundry_local_dir}:
                 try:
-                    add_dll_directory(str(d))
+                    handles.append(add_dll_directory(str(d)))
                 except OSError as exc:
                     logger.warning("os.add_dll_directory(%s) failed: %s", d, exc)
 

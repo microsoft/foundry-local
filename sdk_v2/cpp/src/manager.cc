@@ -252,7 +252,11 @@ Manager::Manager(const Configuration& config)
   // Detected once and reused below for both the WinML-catalog skip-list and the
   // Foundry CUDA bootstrapper. HasNvidiaGpu() shells out to nvidia-smi, so caching
   // the result here avoids a second subprocess spawn.
+#ifdef _WIN32
   const bool has_nvidia_gpu = CudaEpBootstrapper::HasNvidiaGpu();
+#else
+  const bool has_nvidia_gpu = false;
+#endif
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
   // WinML EPs — enumerate from the OS EP catalog (Windows 10 19H1+ reg-free runtime).
@@ -289,11 +293,14 @@ Manager::Manager(const Configuration& config)
 
   const auto cache_dir = std::filesystem::path(*config_.model_cache_dir).parent_path();
 
-  // CUDA EP — only if an NVIDIA GPU is detected
+#ifdef _WIN32
+  // CUDA EP — only if an NVIDIA GPU is detected. The current Foundry CUDA
+  // package contains Windows DLLs.
   if (has_nvidia_gpu) {
     const auto cuda_ep_dir = cache_dir / "cuda-ep";
     bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_dir.string(), register_ep));
   }
+#endif
 
   // WebGPU EP — always available (no hardware detection needed).
   const auto webgpu_ep_dir = cache_dir / "webgpu-ep";

@@ -192,9 +192,8 @@ class ShutdownHandler : public HttpRequestHandler {
       : shutdown_fn_(std::move(shutdown_fn)) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
-    shutdown_fn_();
-
     nlohmann::json body = {{"status", "shutting_down"}};
+    std::thread([fn = shutdown_fn_] { fn(); }).detach();
     return JsonResponse(Status::CODE_200, body);
   }
 
@@ -426,6 +425,7 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
 
   ctx.bound_urls = bound_urls;
   impl_->running.store(true);
+  impl_->thread_tracker.Reset();
 
   return bound_urls;
 }
@@ -434,6 +434,8 @@ void WebService::Stop() {
   if (!impl_->running.load()) {
     return;
   }
+
+  impl_->thread_tracker.BeginStopping();
 
   // Stop accepting new connections first, then stop server loops.
   for (auto& provider : impl_->providers) {
