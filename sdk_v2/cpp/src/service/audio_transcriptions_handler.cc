@@ -197,11 +197,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   auto body_ptr = body;
   auto& logger = ctx_.logger;
   auto& thread_tracker = ctx_.thread_tracker;
+  auto stream_done = std::make_shared<std::atomic<bool>>(false);
 
   std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
                                 req = std::move(session_request), &thread_tracker,
                                 route_tracker = std::move(route_tracker),
-                                &session_manager = ctx_.session_manager]() mutable {
+                                &session_manager = ctx_.session_manager,
+                                stream_done]() mutable {
     SessionRegistration reg(session_manager, bg_session);
 
     try {
@@ -249,9 +251,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
     }
 
     body_ptr->Finish();
+    stream_done->store(true, std::memory_order_release);
   });
 
-  thread_tracker.Track(std::move(streaming_thread));
+  thread_tracker.Track(std::move(streaming_thread), stream_done);
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(Status::CODE_200, body);
   response->putHeader("Content-Type", "text/event-stream");

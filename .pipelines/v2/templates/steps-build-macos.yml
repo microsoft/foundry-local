@@ -107,4 +107,10 @@ steps:
         echo "  staged $(basename "$f")"
       fi
     done
+    for f in "$src"/libonnxruntime_providers_*.dylib; do
+      if [ -e "$f" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
   displayName: 'Stage native artifacts'

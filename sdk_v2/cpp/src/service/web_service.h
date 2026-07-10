@@ -4,6 +4,7 @@
 
 #include "logger.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -22,32 +23,51 @@ class ResponseStore;
 /// Tracks streaming threads so they can be joined on shutdown.
 /// Handlers call Track() instead of std::thread::detach().
 class StreamingThreadTracker {
+  struct TrackedThread {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+  };
+
  public:
   /// Take ownership of a streaming thread.
-  void Track(std::thread t) {
+  void Track(std::thread t, std::shared_ptr<std::atomic<bool>> done) {
     std::lock_guard<std::mutex> lock(mutex_);
-    threads_.push_back(std::move(t));
+    ReapCompletedLocked();
+    threads_.push_back(TrackedThread{std::move(t), std::move(done)});
   }
 
   /// Join all remaining threads. Called by WebService::Stop().
   /// Moves entries out before joining so completed streaming threads are cleaned up safely.
   void JoinAll() {
-    std::vector<std::thread> local;
+    std::vector<TrackedThread> local;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       local = std::move(threads_);
     }
 
-    for (auto& t : local) {
-      if (t.joinable()) {
-        t.join();
+    for (auto& tracked : local) {
+      if (tracked.thread.joinable()) {
+        tracked.thread.join();
       }
     }
   }
 
  private:
+  void ReapCompletedLocked() {
+    for (auto it = threads_.begin(); it != threads_.end();) {
+      if (it->done && it->done->load(std::memory_order_acquire)) {
+        if (it->thread.joinable()) {
+          it->thread.join();
+        }
+        it = threads_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   std::mutex mutex_;
-  std::vector<std::thread> threads_;
+  std::vector<TrackedThread> threads_;
 };
 
 /// Context shared with all HTTP controllers.

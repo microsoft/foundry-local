@@ -329,6 +329,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   auto& logger = ctx_.logger;
   auto& session_manager = ctx_.session_manager;
   auto& tracker = ctx_.thread_tracker;
+  auto stream_done = std::make_shared<std::atomic<bool>>(false);
 
   // Background thread is required: oatpp needs the Response returned immediately so it can
   // start writing SSE events. ProcessRequest blocks until generation completes.
@@ -340,7 +341,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                 req_copy = std::move(req_copy),
                                 params_copy = std::move(params_copy),
                                 route_tracker = std::move(route_tracker),
-                                &tracker]() mutable {
+                                &tracker,
+                                stream_done]() mutable {
     SessionRegistration reg(session_manager, *session);
 
     int seq = 2;
@@ -601,10 +603,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     // Terminal event per spec
     body_ptr->Push("data: [DONE]\n\n");
     body_ptr->Finish();
+    stream_done->store(true, std::memory_order_release);
 
   });
 
-  tracker.Track(std::move(streaming_thread));
+  tracker.Track(std::move(streaming_thread), stream_done);
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);
