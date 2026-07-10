@@ -234,7 +234,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
-          body_ptr->Push("data: " + text_item.text + "\n\n");
+          if (!body_ptr->Push("data: " + text_item.text + "\n\n")) {
+            return 1;
+          }
         } else {
           logger.Log(LogLevel::Error,
                      fmt::format("Unexpected item type {} in chat streaming callback", static_cast<int>(item->type)));
@@ -292,7 +294,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
     stream_done->store(true, std::memory_order_release);
   });
 
-  thread_tracker.Track(std::move(streaming_thread), stream_done);
+  thread_tracker.Track(std::move(streaming_thread), stream_done, [body] { body->Abort(); });
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

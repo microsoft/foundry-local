@@ -106,7 +106,19 @@ steps:
         # deps (onnxruntime-{core,gpu} / onnxruntime-genai-{core,cuda}). Test
         # and example binaries are also filtered out upstream. We just copy
         # the curated artifact contents straight in.
-        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File
+        $rid = '${{ parameters.rid }}'
+        if ($rid -like 'win-*') {
+            $allowed = @('foundry_local.dll', 'Microsoft.Windows.AI.MachineLearning.dll', 'DirectML.dll')
+        } elseif ($rid -like 'linux-*') {
+            $allowed = @('libfoundry_local.so')
+        } elseif ($rid -like 'osx-*') {
+            $allowed = @('libfoundry_local.dylib')
+        } else {
+            throw "Unsupported Python wheel RID: $rid"
+        }
+        $files = foreach ($name in $allowed) {
+            Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Filter $name -File -ErrorAction SilentlyContinue
+        }
         if ($files.Count -eq 0) {
             throw "No native artifacts found under ${{ parameters.nativeArtifactDir }}"
         }

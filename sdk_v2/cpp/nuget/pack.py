@@ -60,6 +60,7 @@ RIDS: dict[str, tuple[str, str]] = {
 # foundry_local.dll; other platforms don't, so presence alone drives inclusion.
 OPTIONAL_SIBLINGS: tuple[str, ...] = (
     "Microsoft.Windows.AI.MachineLearning.dll",
+    "DirectML.dll",
 )
 
 log = logging.getLogger("pack")

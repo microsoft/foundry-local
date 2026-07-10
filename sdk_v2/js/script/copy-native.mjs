@@ -55,6 +55,7 @@ const wanted = (() => {
       "onnxruntime-genai.dll",
       "onnxruntime_providers_shared.dll",
       "Microsoft.Windows.AI.MachineLearning.dll",
+      "DirectML.dll",
     ];
   }
   if (process.platform === "darwin") {

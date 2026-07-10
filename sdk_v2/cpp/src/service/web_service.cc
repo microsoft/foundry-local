@@ -444,6 +444,8 @@ void WebService::Stop() {
     server->stop();
   }
 
+  impl_->thread_tracker.AbortAll();
+
   // Stop per-connection worker tasks before releasing router/handlers.
   //
   // HttpConnectionHandler::stop() invalidates every open connection (our ForceCloseConnectionProvider's invalidator

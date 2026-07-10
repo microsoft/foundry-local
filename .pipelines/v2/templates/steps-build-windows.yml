@@ -139,6 +139,7 @@ steps:
         (Join-Path $binDir  'foundry_local.pdb'),
         (Join-Path $linkDir 'foundry_local.lib'),
         (Join-Path $binDir  'Microsoft.Windows.AI.MachineLearning.dll'),
+        (Join-Path $binDir  'DirectML.dll'),
         (Join-Path $binDir  'onnxruntime.dll'),
         (Join-Path $binDir  'onnxruntime-genai.dll')
       )

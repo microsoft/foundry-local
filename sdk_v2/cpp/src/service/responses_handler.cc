@@ -365,7 +365,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     std::vector<ResponseOutputItem> closed_items;
 
     auto push_event = [&](const std::string& event_name, const StreamEvent& ev) {
-      body_ptr->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
+      return body_ptr->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
     };
 
     auto close_current = [&]() {
@@ -527,7 +527,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
           delta.output_index = current_output_index;
           delta.item_id = current_id;
           delta.delta = text_item->text;
-          push_event("response.reasoning.delta", delta);
+          if (!push_event("response.reasoning.delta", delta)) {
+            return 1;
+          }
         } else {
           full_text += text_item->text;
 
@@ -538,7 +540,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
           text_delta.content_index = 0;
           text_delta.item_id = current_id;
           text_delta.delta = text_item->text;
-          push_event("response.output_text.delta", text_delta);
+          if (!push_event("response.output_text.delta", text_delta)) {
+            return 1;
+          }
         }
 
         return 0;
@@ -607,7 +611,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
   });
 
-  tracker.Track(std::move(streaming_thread), stream_done);
+  tracker.Track(std::move(streaming_thread), stream_done, [body] { body->Abort(); });
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

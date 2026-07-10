@@ -80,13 +80,17 @@ inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::Incomi
 
 class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
  public:
-  SseStreamBody() : done_(false) {}
+  SseStreamBody() : done_(false), aborted_(false) {}
 
   /// Push a formatted SSE event (e.g. "data: {...}\n\n") into the queue.
-  void Push(std::string chunk) {
+  bool Push(std::string chunk) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (aborted_) {
+      return false;
+    }
     queue_.push(std::move(chunk));
     cv_.notify_one();
+    return true;
   }
 
   /// Signal that no more data will be pushed.
@@ -94,6 +98,18 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
     std::lock_guard<std::mutex> lock(mutex_);
     done_ = true;
     cv_.notify_one();
+  }
+
+  void Abort() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    aborted_ = true;
+    done_ = true;
+    cv_.notify_all();
+  }
+
+  bool IsAborted() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return aborted_;
   }
 
   // -- Body interface --
@@ -143,10 +159,11 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
   v_int64 getKnownSize() override { return -1; }  // unknown → chunked transfer
 
  private:
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::queue<std::string> queue_;
   bool done_;
+  bool aborted_;
 };
 
 }  // namespace fl

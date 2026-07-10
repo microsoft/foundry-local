@@ -101,6 +101,7 @@ steps:
         'foundry_local.pdb',
         'foundry_local.lib',
         'Microsoft.Windows.AI.MachineLearning.dll',
+        'DirectML.dll',
         'onnxruntime.dll',
         'onnxruntime-genai.dll',
         '?onnxruntime_providers_*.dll'
@@ -111,6 +112,7 @@ steps:
         'foundry_local.pdb',
         'foundry_local.lib',
         'Microsoft.Windows.AI.MachineLearning.dll',
+        'DirectML.dll',
         'onnxruntime.dll',
         'onnxruntime-genai.dll',
         '?onnxruntime_providers_*.dll'

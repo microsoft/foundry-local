@@ -26,14 +26,24 @@ class StreamingThreadTracker {
   struct TrackedThread {
     std::thread thread;
     std::shared_ptr<std::atomic<bool>> done;
+    std::function<void()> abort;
   };
 
  public:
   /// Take ownership of a streaming thread.
-  void Track(std::thread t, std::shared_ptr<std::atomic<bool>> done) {
+  void Track(std::thread t, std::shared_ptr<std::atomic<bool>> done, std::function<void()> abort) {
     std::lock_guard<std::mutex> lock(mutex_);
     ReapCompletedLocked();
-    threads_.push_back(TrackedThread{std::move(t), std::move(done)});
+    threads_.push_back(TrackedThread{std::move(t), std::move(done), std::move(abort)});
+  }
+
+  void AbortAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& tracked : threads_) {
+      if (tracked.abort) {
+        tracked.abort();
+      }
+    }
   }
 
   /// Join all remaining threads. Called by WebService::Stop().
