@@ -14,11 +14,10 @@ import {
 import type { EpDownloadResult, EpInfo } from "./types.js";
 
 // A native Manager holds process-global native resources. Dispose the live
-// Manager on process exit so native teardown happens at a deterministic point
-// rather than being left entirely to environment finalizers. `beforeExit`
-// covers a natural event-loop drain; `exit` covers callers who invoke
-// `process.exit()` themselves. Both are idempotent. The native layer permits
-// only one live Manager at a time, so a single reference is enough.
+// Manager when the event loop naturally drains so native teardown happens at a
+// deterministic point rather than being left entirely to environment finalizers.
+// Do not dispose during the synchronous `exit` event: native worker threads may
+// still be unwinding, and freeing the process-global manager there can race them.
 let liveManager: FoundryLocalManager | undefined;
 let exitHandlersInstalled = false;
 
@@ -40,9 +39,6 @@ function installExitHandlersOnce(): void {
   }
   exitHandlersInstalled = true;
   process.on("beforeExit", () => {
-    disposeLiveManager();
-  });
-  process.on("exit", () => {
     disposeLiveManager();
   });
 }

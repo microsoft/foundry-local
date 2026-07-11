@@ -94,7 +94,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      std::string catalog_region,
                                      bool disable_region_fallback,
                                      ITelemetry* telemetry)
-    : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
+    : BaseModelCatalog(ParseCatalogUrl(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first).endpoint,
+                       logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
       model_factory_(std::move(model_factory)),

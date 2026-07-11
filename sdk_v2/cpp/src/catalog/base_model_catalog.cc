@@ -5,6 +5,7 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include "exception.h"
+#include "telemetry/telemetry_redaction.h"
 
 #include <algorithm>
 #include <atomic>
@@ -226,7 +227,8 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   } catch (const std::exception& ex) {
     if (populated_) {
       logger_.Log(LogLevel::Warning,
-                  fmt::format("Catalog '{}' refresh failed; keeping existing catalog: {}", name_, ex.what()));
+                  fmt::format("Catalog '{}' refresh failed; keeping existing catalog: {}",
+                              name_, ScrubTelemetryErrorMessage(ex.what())));
       next_refresh_at_ = std::chrono::steady_clock::now() + std::chrono::minutes(1);
       return;
     }
