@@ -124,6 +124,7 @@ OneDsTelemetry::~OneDsTelemetry() {
 
 void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const InvocationContext& context,
                                   int64_t duration_ms) {
+  try {
   local_log_.RecordAction(action, status, context, duration_ms);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -136,10 +137,13 @@ void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const Invo
   ev.SetProperty("Direct", !context.indirect);
   ev.SetProperty("TimeMs", duration_ms);
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordException(Action action, const std::exception& exception,
                                      const InvocationContext& context) {
+  try {
   local_log_.RecordException(action, exception, context);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -155,9 +159,12 @@ void OneDsTelemetry::RecordException(Action action, const std::exception& except
   ev.SetProperty("StackTrace", "");
   ev.SetProperty("InnerStackTrace", "");
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
+  try {
   local_log_.RecordModelUsage(info);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -178,10 +185,13 @@ void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
   ev.SetProperty("CpuTimeMs", info.cpu_time_ms);
   ev.SetProperty("GpuMemoryUsedMB", info.gpu_memory_used_mb);
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordModelId(Action action, const std::string& model_id,
                                    ActionStatus status, const InvocationContext& context) {
+  try {
   local_log_.RecordModelId(action, model_id, status, context);
   if (!initialized_.load(std::memory_order_acquire) || model_id.empty()) {
     return;
@@ -193,9 +203,12 @@ void OneDsTelemetry::RecordModelId(Action action, const std::string& model_id,
   ev.SetProperty("UserAgent", context.user_agent);
   ev.SetProperty("CorrelationId", context.correlation_id);
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) {
+  try {
   local_log_.RecordEpDownloadAttempt(info);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -211,9 +224,12 @@ void OneDsTelemetry::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) 
   ev.SetProperty("Status", std::string(ActionStatusToString(info.status)));
   ev.SetProperty("TimeMs", info.duration_ms);
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) {
+  try {
   local_log_.RecordEpDownloadAndRegister(info);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -230,9 +246,12 @@ void OneDsTelemetry::RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo
   ev.SetProperty("RegisterStatus", std::string(ActionStatusToString(info.register_status)));
   ev.SetProperty("RegisterTimeMs", info.register_duration_ms);
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordDownload(const DownloadInfo& info) {
+  try {
   local_log_.RecordDownload(info);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -252,9 +271,12 @@ void OneDsTelemetry::RecordDownload(const DownloadInfo& info) {
   ev.SetProperty("DownloadWaitResult", info.download_wait_result);
   ev.SetProperty("MaxConcurrency", static_cast<int64_t>(info.max_concurrency));
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
+  try {
   local_log_.RecordCatalogFetch(info);
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
@@ -271,9 +293,12 @@ void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
   SafeLog(GetMatLogger(), ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::StartSession() {
+  try {
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
   }
@@ -285,9 +310,12 @@ void OneDsTelemetry::StartSession() {
   // on subsequent events and records session duration on End.
   auto ev = MakeEvent("Session", metadata_.test_mode);
   mat_logger->LogSession(SessionState::Session_Started, ev);
+  } catch (...) {
+  }
 }
 
 void OneDsTelemetry::EndSession() {
+  try {
   if (!initialized_.load(std::memory_order_acquire)) {
     return;
   }
@@ -297,6 +325,8 @@ void OneDsTelemetry::EndSession() {
   }
   auto ev = MakeEvent("Session", metadata_.test_mode);
   mat_logger->LogSession(SessionState::Session_Ended, ev);
+  } catch (...) {
+  }
 }
 
 }  // namespace fl

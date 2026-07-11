@@ -20,10 +20,13 @@ ActionTracker::~ActionTracker() {
   auto end = std::chrono::steady_clock::now();
   auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_).count();
 
-  telemetry_.RecordAction(action_, status_, context_, duration_ms);
+  try {
+    telemetry_.RecordAction(action_, status_, context_, duration_ms);
 
-  if (!model_id_.empty()) {
-    telemetry_.RecordModelId(action_, model_id_, status_, context_);
+    if (!model_id_.empty()) {
+      telemetry_.RecordModelId(action_, model_id_, status_, context_);
+    }
+  } catch (...) {
   }
 }
 
@@ -32,7 +35,10 @@ void ActionTracker::SetStatus(ActionStatus status) {
 }
 
 void ActionTracker::RecordException(const std::exception& exception) {
-  telemetry_.RecordException(action_, exception, context_);
+  try {
+    telemetry_.RecordException(action_, exception, context_);
+  } catch (...) {
+  }
 }
 
 void ActionTracker::SetModelId(const std::string& model_id) {

@@ -31,7 +31,10 @@ EpDownloadTracker::~EpDownloadTracker() {
   // Mirror neutron-server: if the caller didn't reach Done() or
   // RecordRegisterComplete, assume the abrupt exit was an exception path and
   // record any unfinished stage as kFailure.
-  RecordEvent(ActionStatus::kFailure);
+  try {
+    RecordEvent(ActionStatus::kFailure);
+  } catch (...) {
+  }
 }
 
 void EpDownloadTracker::RecordInitialState(std::string ready_state) {
@@ -62,8 +65,11 @@ void EpDownloadTracker::Done() {
 void EpDownloadTracker::RecordException(const std::exception& ex) {
   // The per-provider attempt happens as a consequence of the overall
   // DownloadAndRegisterEps call, so it is indirect and shares its correlation id.
-  telemetry_.RecordException(Action::kEpDownloadAndRegister, ex,
-                             InvocationContext{user_agent_, correlation_id_, /*indirect=*/true});
+  try {
+    telemetry_.RecordException(Action::kEpDownloadAndRegister, ex,
+                               InvocationContext{user_agent_, correlation_id_, /*indirect=*/true});
+  } catch (...) {
+  }
 }
 
 void EpDownloadTracker::RecordEvent(ActionStatus incomplete_stage_status) {

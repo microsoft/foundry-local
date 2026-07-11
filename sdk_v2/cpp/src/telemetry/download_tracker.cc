@@ -20,12 +20,18 @@ DownloadTracker::DownloadTracker(std::string model_id,
 DownloadTracker::~DownloadTracker() {
   // Emit the Download event regardless of outcome. The default status is
   // kFailure so abrupt exits (exceptions) are recorded as failures.
-  telemetry_.RecordDownload(info_);
+  try {
+    telemetry_.RecordDownload(info_);
+  } catch (...) {
+  }
 }
 
 void DownloadTracker::RecordException(const std::exception& exception) {
-  telemetry_.RecordException(Action::kModelFileDownload, exception,
-                             InvocationContext{info_.user_agent, info_.correlation_id, /*indirect=*/false});
+  try {
+    telemetry_.RecordException(Action::kModelFileDownload, exception,
+                               InvocationContext{info_.user_agent, info_.correlation_id, /*indirect=*/false});
+  } catch (...) {
+  }
 }
 
 }  // namespace fl
