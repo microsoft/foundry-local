@@ -40,6 +40,7 @@ struct BlobDownloadOptions {
 struct BlobItemInfo {
   std::string name;
   int64_t content_length = 0;
+  std::string blob_identity;
 };
 
 /// Interface for blob download operations. Enables testing via mock implementations.
@@ -96,6 +97,7 @@ class AzureBlobDownloader : public IBlobDownloader {
 
   /// Return the blob size in bytes. Production calls `BlobClient::GetProperties`.
   virtual int64_t GetBlobSize(ChunkContext& ctx);
+  virtual std::string GetBlobIdentity(ChunkContext& ctx);
 
   /// Read `size` bytes starting at `offset` from the blob and forward them
   /// piecewise to `sink`. Pulls from the blob client referenced by `ctx`.

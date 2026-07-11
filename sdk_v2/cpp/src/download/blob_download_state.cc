@@ -21,7 +21,7 @@ constexpr const char* kStateFileExtension = ".dlstate";
 //   bytes  | field
 //   -------|--------------------------------------------------------
 //   0..3   | magic "FLDS"
-//   4      | version (currently 1)
+//   4      | version (currently 2)
 //   5..12  | blob_size                   (int64)
 //   13..16 | chunk_size                  (int32)
 //   17..20 | total_chunks                (int32)
@@ -29,12 +29,14 @@ constexpr const char* kStateFileExtension = ".dlstate";
 //   25..28 | highest_completed_chunk     (int32)
 //   29..32 | completed_count             (int32)
 //   33..40 | last_modified_unix_ms       (int64)
-//   41..44 | trunc_bitmap_byte_len       (uint32)
-//   45..   | trunc_bitmap_byte_len bytes of bitmap data, copied directly out of
+//   41..44 | blob_identity_len           (uint32)
+//   45..   | blob_identity bytes
+//   ...    | trunc_bitmap_byte_len       (uint32)
+//   ...    | trunc_bitmap_byte_len bytes of bitmap data, copied directly out of
 //           full_completion_bitmap starting at the byte offset implied by
 //           bitmap_byte_aligned_start.
 constexpr char kMagic[4] = {'F', 'L', 'D', 'S'};
-constexpr uint8_t kVersion = 1;
+constexpr uint8_t kVersion = 2;
 
 constexpr int32_t kBitsPerWord = 64;
 
@@ -51,6 +53,25 @@ template <typename T>
 bool ReadNative(std::istream& in, T& out_value) {
   static_assert(std::is_trivially_copyable_v<T>);
   in.read(reinterpret_cast<char*>(&out_value), sizeof(T));
+  return static_cast<bool>(in);
+}
+
+void WriteString(std::ostream& out, const std::string& value) {
+  WriteNative(out, static_cast<uint32_t>(value.size()));
+  if (!value.empty()) {
+    out.write(value.data(), static_cast<std::streamsize>(value.size()));
+  }
+}
+
+bool ReadString(std::istream& in, std::string& value) {
+  uint32_t size = 0;
+  if (!ReadNative(in, size)) {
+    return false;
+  }
+  value.resize(size);
+  if (size > 0) {
+    in.read(value.data(), size);
+  }
   return static_cast<bool>(in);
 }
 
@@ -72,13 +93,15 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::CreateNew(std::string blob
                                                                 const std::filesystem::path& local_file_path,
                                                                 int64_t blob_size,
                                                                 int32_t chunk_size,
-                                                                int32_t total_chunks) {
+                                                                int32_t total_chunks,
+                                                                std::string blob_identity) {
   auto state = std::make_unique<BlobDownloadState>();
   state->blob_name = std::move(blob_name);
   state->local_file_path = local_file_path.string();
   state->blob_size = blob_size;
   state->chunk_size = chunk_size;
   state->total_chunks = total_chunks;
+  state->blob_identity = std::move(blob_identity);
   state->bitmap_byte_aligned_start = 0;
   state->highest_completed_chunk = -1;
   state->completed_count = 0;
@@ -93,6 +116,7 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
                                                                 int64_t expected_blob_size,
                                                                 int32_t expected_chunk_size,
                                                                 int32_t expected_total_chunks,
+                                                                std::string_view expected_blob_identity,
                                                                 ILogger& logger) {
   auto state_path = GetStateFilePath(local_file_path);
   std::error_code ec;
@@ -122,17 +146,20 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
   int32_t highest_completed_chunk = 0;
   int32_t completed_count = 0;
   int64_t last_modified_unix_ms = 0;
+  std::string blob_identity;
   uint32_t trunc_len = 0;
   if (!ReadNative(in, blob_size) || !ReadNative(in, chunk_size) || !ReadNative(in, total_chunks) ||
       !ReadNative(in, bitmap_byte_aligned_start) || !ReadNative(in, highest_completed_chunk) ||
-      !ReadNative(in, completed_count) || !ReadNative(in, last_modified_unix_ms) || !ReadNative(in, trunc_len)) {
+      !ReadNative(in, completed_count) || !ReadNative(in, last_modified_unix_ms) ||
+      !ReadString(in, blob_identity) || !ReadNative(in, trunc_len)) {
     logger.Log(LogLevel::Warning, "Download state header truncated: " + state_path.string());
     return nullptr;
   }
 
   // Sanity / compatibility checks.
   if (blob_size != expected_blob_size || chunk_size != expected_chunk_size ||
-      total_chunks != expected_total_chunks) {
+      total_chunks != expected_total_chunks ||
+      (!expected_blob_identity.empty() && blob_identity != expected_blob_identity)) {
     logger.Log(LogLevel::Information,
                "Download state for " + state_path.string() +
                    " is incompatible with current blob layout; starting fresh");
@@ -191,6 +218,7 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
   state->highest_completed_chunk = highest_completed_chunk;
   state->completed_count = completed_count;
   state->last_modified_unix_ms = last_modified_unix_ms;
+  state->blob_identity = std::move(blob_identity);
   state->full_completion_bitmap = std::move(bitmap);
 
   logger.Log(LogLevel::Information,
@@ -198,6 +226,16 @@ std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob
                  std::to_string(completed_count) + "/" + std::to_string(total_chunks) +
                  " chunks already done");
   return state;
+}
+
+std::unique_ptr<BlobDownloadState> BlobDownloadState::LoadState(std::string blob_name,
+                                                                const std::filesystem::path& local_file_path,
+                                                                int64_t expected_blob_size,
+                                                                int32_t expected_chunk_size,
+                                                                int32_t expected_total_chunks,
+                                                                ILogger& logger) {
+  return LoadState(std::move(blob_name), local_file_path, expected_blob_size, expected_chunk_size,
+                   expected_total_chunks, {}, logger);
 }
 
 int64_t BlobDownloadState::CalculateDownloadedSize() const noexcept {
@@ -321,6 +359,7 @@ bool BlobDownloadState::SaveState(ILogger& logger) {
     WriteNative(out, highest_completed_chunk);
     WriteNative(out, completed_count);
     WriteNative(out, last_modified_unix_ms);
+    WriteString(out, blob_identity);
     WriteNative(out, trunc_len);
     if (trunc_len > 0) {
       auto* src = reinterpret_cast<const unsigned char*>(full_completion_bitmap.data()) + byte_offset;

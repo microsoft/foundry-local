@@ -49,6 +49,7 @@ constexpr size_t kStreamingBufferBytes = 64 * 1024;
 struct AzureBlobDownloader::ChunkContext {
   const Azure::Storage::Blobs::BlobClient& blob_client;
   const Azure::Core::Context& azure_ctx;
+  std::string blob_identity;
 };
 
 AzureBlobDownloader::AzureBlobDownloader(ILogger& logger) : logger_(logger) {}
@@ -63,6 +64,11 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
         BlobItemInfo info;
         info.name = blob.Name;
         info.content_length = blob.BlobSize;
+        if (blob.Details.ETag.HasValue()) {
+          info.blob_identity = blob.Details.ETag.ToString();
+        } else if (blob.VersionId.HasValue()) {
+          info.blob_identity = blob.VersionId.Value();
+        }
         items.push_back(std::move(info));
       }
     }
@@ -79,6 +85,11 @@ int64_t AzureBlobDownloader::GetBlobSize(ChunkContext& ctx) {
   return props.BlobSize;
 }
 
+std::string AzureBlobDownloader::GetBlobIdentity(ChunkContext& ctx) {
+  auto props = ctx.blob_client.GetProperties({}, ctx.azure_ctx).Value;
+  return props.ETag.HasValue() ? props.ETag.ToString() : std::string{};
+}
+
 bool AzureBlobDownloader::IsCancellationRequested(const ChunkContext& ctx) const {
   return ctx.azure_ctx.IsCancelled();
 }
@@ -88,6 +99,9 @@ void AzureBlobDownloader::DownloadChunkStreaming(
     const std::function<void(const uint8_t*, size_t)>& sink) {
   Azure::Storage::Blobs::DownloadBlobOptions range_opts;
   range_opts.Range = Azure::Core::Http::HttpRange{offset, size};
+  if (!ctx.blob_identity.empty()) {
+    range_opts.AccessConditions.IfMatch = Azure::ETag(ctx.blob_identity);
+  }
   auto result = ctx.blob_client.Download(range_opts, ctx.azure_ctx);
   auto& body_stream = *result.Value.BodyStream;
 
@@ -155,9 +169,10 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // or by external cancellation; checked by workers between iterations.
     std::atomic<bool> internal_cancel{false};
 
-    ChunkContext chunk_ctx{blob_client, azure_ctx};
+    ChunkContext chunk_ctx{blob_client, azure_ctx, ""};
 
     int64_t blob_size = GetBlobSize(chunk_ctx);
+    chunk_ctx.blob_identity = GetBlobIdentity(chunk_ctx);
 
     if (blob_size == 0) {
       EnsureEmptyBlobFile(local_path);
@@ -172,7 +187,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // Resume from existing sidecar if it matches the current blob layout.
     auto state = BlobDownloadState::LoadState(blob_name, local_path, blob_size,
                                               static_cast<int32_t>(kChunkSize),
-                                              num_chunks, logger_);
+                                              num_chunks, chunk_ctx.blob_identity, logger_);
     if (state) {
       // Only trust the sidecar if the data file it describes is actually on disk
       // at full size. If the data file was truncated or removed (e.g. an external
@@ -192,7 +207,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     if (!state) {
       state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
-                                           static_cast<int32_t>(kChunkSize), num_chunks);
+                                           static_cast<int32_t>(kChunkSize), num_chunks,
+                                           chunk_ctx.blob_identity);
       // Persist the sidecar now, before Open() pre-allocates the data file.
       // IsDownloadNeeded treats "data file at full size + no sidecar" as a
       // completed download and skips it. The periodic save below does not run
@@ -226,7 +242,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       std::filesystem::remove(local_path, remove_ec);
       BlobDownloadState::DeleteState(local_path, logger_);
       state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
-                                           static_cast<int32_t>(kChunkSize), num_chunks);
+                                           static_cast<int32_t>(kChunkSize), num_chunks,
+                                           chunk_ctx.blob_identity);
       if (!state->SaveState(logger_)) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
                  "failed to persist reset download state for '" + local_path + "'");
@@ -402,7 +419,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
                         "failed to truncate blob file after close failure: " + local_path +
                             " (" + resize_ec.message() + ")");
             auto fresh_state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
-                                                            static_cast<int32_t>(kChunkSize), num_chunks);
+                                                            static_cast<int32_t>(kChunkSize), num_chunks,
+                                                            chunk_ctx.blob_identity);
             if (!fresh_state->SaveState(logger_)) {
               logger_.Log(LogLevel::Error,
                           "failed to reset download state after close failure for '" + local_path + "'");
