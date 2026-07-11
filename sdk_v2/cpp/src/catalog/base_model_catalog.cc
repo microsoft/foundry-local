@@ -220,7 +220,18 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
                 fmt::format("Catalog '{}' refreshing (cache expired).", name_));
   }
 
-  auto variants = FetchModels();
+  std::vector<Model> variants;
+  try {
+    variants = FetchModels();
+  } catch (const std::exception& ex) {
+    if (populated_) {
+      logger_.Log(LogLevel::Warning,
+                  fmt::format("Catalog '{}' refresh failed; keeping existing catalog: {}", name_, ex.what()));
+      next_refresh_at_ = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+      return;
+    }
+    throw;
+  }
   PopulateModels(std::move(variants));
   force_refresh_ = false;
   next_refresh_at_ = std::chrono::steady_clock::now() + kCacheDuration;

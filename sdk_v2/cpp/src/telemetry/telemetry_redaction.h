@@ -50,6 +50,7 @@ inline std::string RedactPathToken(std::string_view token) {
   }
 
   size_t safe_start = 0;
+  std::string redacted_user;
   const auto guard = [&](std::string_view marker, bool has_user) {
     for (size_t pos = normalized.find(marker); pos != std::string::npos;
          pos = normalized.find(marker, pos + 1)) {
@@ -60,8 +61,15 @@ inline std::string RedactPathToken(std::string_view token) {
                 (token[end] == '.' && (end + 1 == token.size() || is_sep(token[end + 1]))))) {
           ++end;
         }
+        const size_t user_start = end;
         while (end < token.size() && !is_sep(token[end])) {
           ++end;
+        }
+        if (end > user_start && redacted_user.empty()) {
+          redacted_user.assign(token.data() + user_start, end - user_start);
+          for (char& c : redacted_user) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          }
         }
       } else {
         --end;
@@ -94,7 +102,23 @@ inline std::string RedactPathToken(std::string_view token) {
   const size_t keep_from = (tail_start > safe_start) ? tail_start : safe_start;
   std::string out = "[path]";
   if (keep_from < token.size()) {
-    out.append(token.data() + keep_from, token.size() - keep_from);
+    size_t pos = keep_from;
+    while (pos < token.size()) {
+      if (is_sep(token[pos])) {
+        out.push_back(token[pos++]);
+        continue;
+      }
+      const size_t segment_start = pos;
+      while (pos < token.size() && !is_sep(token[pos])) {
+        ++pos;
+      }
+      std::string segment(token.data() + segment_start, pos - segment_start);
+      std::string lowered = segment;
+      for (char& c : lowered) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
+      out += (!redacted_user.empty() && lowered == redacted_user) ? "[user]" : segment;
+    }
   }
   return out;
 }

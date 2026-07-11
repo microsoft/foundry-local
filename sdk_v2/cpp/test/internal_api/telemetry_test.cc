@@ -152,6 +152,14 @@ TEST(TelemetryRedactionTest, ScrubsHomePathsAndKeepsUsefulTail) {
   EXPECT_NE(scrubbed.find("[path]\\AppData\\file.bin"), std::string::npos);
 }
 
+TEST(TelemetryRedactionTest, ScrubsRepeatedUserNameInRetainedTail) {
+  const auto scrubbed = ScrubTelemetryErrorMessage(R"(failed C:\Users\Alice\src\Alice\model.onnx)");
+
+  EXPECT_EQ(scrubbed.find("Alice"), std::string::npos);
+  EXPECT_EQ(scrubbed.find("alice"), std::string::npos);
+  EXPECT_NE(scrubbed.find("[path]\\[user]\\model.onnx"), std::string::npos);
+}
+
 TEST(TelemetryRedactionTest, ScrubsUrlQueryAndFragment) {
   const auto scrubbed = ScrubTelemetryErrorMessage(
       "GET https://custom.example.com/private/catalog?token=secret#fragment failed");
