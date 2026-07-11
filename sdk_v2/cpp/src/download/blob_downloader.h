@@ -30,7 +30,7 @@ struct BlobDownloadOptions {
 
   /// When false, full-size files without a sidecar are redownloaded instead of
   /// skipped. Use this while recovering an incomplete model directory.
-  bool skip_completed_files = true;
+  bool skip_completed_files = false;
 
   /// Progress callback (optional). Return non-zero to cancel the download.
   DownloadProgressFn progress;

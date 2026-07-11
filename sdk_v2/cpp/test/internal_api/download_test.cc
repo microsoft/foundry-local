@@ -490,6 +490,7 @@ TEST(BlobDownloadTest, FiltersOutInferenceModelJson) {
   };
 
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
 
   ASSERT_EQ(mock.downloaded_blobs.size(), 2u);
@@ -553,6 +554,7 @@ TEST(BlobDownloadTest, SkipsExistingFilesWithCorrectSize) {
   };
 
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
 
   // Only the missing blob should be downloaded.
@@ -591,6 +593,7 @@ TEST(BlobDownloadTest, ReportsSkippedBytesInInitialProgress) {
 
   std::vector<float> progress_values;
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   opts.progress = [&](float pct) {
     progress_values.push_back(pct);
     return 0;
@@ -618,6 +621,7 @@ TEST(BlobDownloadTest, EmitsHundredPercentWhenEverythingIsCached) {
 
   std::vector<float> progress_values;
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   opts.progress = [&](float pct) {
     progress_values.push_back(pct);
     return 0;

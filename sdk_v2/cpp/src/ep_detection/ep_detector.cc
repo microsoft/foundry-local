@@ -32,13 +32,22 @@ EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
     cached_eps_.push_back(EpInfo{bs->Name(), bs->IsRegistered()});
   }
 
+  PublishEpSnapshotLocked();
   PublishCApiSnapshotLocked();
+}
+
+void EpDetector::PublishEpSnapshotLocked() {
+  auto& snapshot = cached_eps_snapshots_.emplace_back(cached_eps_);
+  current_cached_eps_ = &snapshot;
 }
 
 void EpDetector::PublishCApiSnapshotLocked() {
   auto& snapshot = cached_eps_c_snapshots_.emplace_back();
-  snapshot.reserve(cached_eps_.size());
-  for (const auto& ep : cached_eps_) {
+  if (current_cached_eps_ == nullptr) {
+    current_cached_eps_ = &cached_eps_;
+  }
+  snapshot.reserve(current_cached_eps_->size());
+  for (const auto& ep : *current_cached_eps_) {
     snapshot.push_back(flEpInfo{
         FOUNDRY_LOCAL_API_VERSION,
         ep.name.c_str(),
@@ -117,14 +126,12 @@ std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesT
 }
 
 const std::vector<EpInfo>& EpDetector::GetDiscoverableEps() const {
-  // Take the cache lock for strict correctness of the is_registered field reads.
-  // Vector size and element addresses are immutable after construction; only
-  // is_registered fields can be mutated (by DownloadAndRegisterEps under the same
-  // mutex). The lock is released when this function returns, so the snapshot may
-  // be stale by the time the caller reads individual fields — that is documented
-  // and acceptable.
   std::lock_guard<std::mutex> lock(cache_mutex_);
-  return cached_eps_;
+  if (current_cached_eps_ == nullptr) {
+    static const std::vector<EpInfo> empty;
+    return empty;
+  }
+  return *current_cached_eps_;
 }
 
 std::span<const flEpInfo> EpDetector::GetDiscoverableEpsCApi() const {
@@ -236,6 +243,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       // GetDiscoverableEps[C] readers see the new value.
       std::lock_guard<std::mutex> cache_lock(cache_mutex_);
       cached_eps_[i].is_registered = true;
+      PublishEpSnapshotLocked();
       PublishCApiSnapshotLocked();
 
       if (tracker) {

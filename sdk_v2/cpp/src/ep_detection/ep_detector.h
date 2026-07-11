@@ -108,9 +108,12 @@ class EpDetector : public IEpDetector {
   // snapshot retained for the detector lifetime so previously returned spans are
   // never mutated or freed while callers may still read them.
   std::vector<EpInfo> cached_eps_;
+  std::deque<std::vector<EpInfo>> cached_eps_snapshots_;
+  const std::vector<EpInfo>* current_cached_eps_ = nullptr;
   std::deque<std::vector<flEpInfo>> cached_eps_c_snapshots_;
   const std::vector<flEpInfo>* current_cached_eps_c_ = nullptr;
 
+  void PublishEpSnapshotLocked();
   void PublishCApiSnapshotLocked();
 };
 

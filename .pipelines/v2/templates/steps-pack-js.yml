@@ -74,6 +74,7 @@ steps:
       $dst = '${{ parameters.outputDir }}'
       New-Item -ItemType Directory -Force -Path $dst | Out-Null
       Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+      Copy-Item "$(Build.SourcesDirectory)/sdk_v2/deps_versions.json" -Destination "deps_versions.json" -Force
       npm pack --pack-destination $dst
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       Get-ChildItem $dst | ForEach-Object { Write-Host "  $($_.Name)  $($_.Length) bytes" }
