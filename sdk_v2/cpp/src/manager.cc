@@ -482,6 +482,13 @@ void Manager::Destroy() {
   s_instance_.reset();
 }
 
+void Manager::RequestShutdown() {
+  std::lock_guard<std::mutex> lock(s_mutex_);
+  if (s_instance_ != nullptr) {
+    s_instance_->Shutdown();
+  }
+}
+
 ICatalog& Manager::GetCatalog() {
   return *catalog_;
 }
@@ -501,7 +508,7 @@ void Manager::StartWebService() {
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
                                               *session_manager_, *telemetry_,
-                                              [this]() { Shutdown(); });
+                                              []() { Manager::RequestShutdown(); });
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {

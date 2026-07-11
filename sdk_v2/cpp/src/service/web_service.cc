@@ -193,7 +193,12 @@ class ShutdownHandler : public HttpRequestHandler {
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
     nlohmann::json body = {{"status", "shutting_down"}};
-    std::thread([fn = shutdown_fn_] { fn(); }).detach();
+    std::thread([fn = shutdown_fn_] {
+      try {
+        fn();
+      } catch (...) {
+      }
+    }).detach();
     return JsonResponse(Status::CODE_200, body);
   }
 

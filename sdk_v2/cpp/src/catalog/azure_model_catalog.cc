@@ -194,9 +194,11 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
     }
   };
 
+  bool fetched_any_catalog = false;
   for (const auto& [url, filter] : catalog_urls_) {
     try {
       fetch_from(url, filter);
+      fetched_any_catalog = true;
     } catch (const std::exception& ex) {
       // One failing URL shouldn't block others — skip and continue.
       auto parsed = ParseCatalogUrl(url);
@@ -204,6 +206,10 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
                   fmt::format("failed to fetch catalog from {}: {}", parsed.endpoint,
                               ScrubTelemetryErrorMessage(ex.what())));
     }
+  }
+
+  if (!fetched_any_catalog) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "failed to fetch any configured catalog source");
   }
 
   logger_.Log(LogLevel::Information,

@@ -45,6 +45,9 @@ class Manager {
   /// Destroy the singleton and release all resources.
   static void Destroy();
 
+  /// Request shutdown on the singleton if it still exists.
+  static void RequestShutdown();
+
   /// Get the shared catalog interface for querying models.
   /// The catalog is owned by the manager and shared across all consumers
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.

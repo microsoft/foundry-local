@@ -246,7 +246,7 @@ class KeyValuePairs {
   KeyValuePairs& operator=(KeyValuePairs&&) noexcept = default;
 
   /// Get a value by key. Returns nullopt if not found.
-  std::optional<std::string_view> Get(const char* key) const noexcept;
+  std::optional<std::string_view> Get(const char* key) const;
 
   /// Get all key/value pairs.
   std::vector<KeyValueEntry> GetAll() const;
@@ -551,7 +551,7 @@ class Item {
 
   // --- Read accessors (always work) ---
 
-  flItemType GetType() const noexcept;
+  flItemType GetType() const;
   BytesContent GetBytes() const;
   TextContent GetText() const;
   TensorContent GetTensor() const;
@@ -817,7 +817,13 @@ class ICatalog {
   /// Queries for different aliases do not invalidate each other's results.
   virtual ModelList GetModelVersions(const std::string& model_alias,
                                      const std::string& variant_name = {},
-                                     int max_versions = 50) = 0;
+                                     int max_versions = 50) {
+    (void)model_alias;
+    (void)variant_name;
+    (void)max_versions;
+    throw Error("GetModelVersions is not implemented by this catalog",
+                FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED);
+  }
 };
 
 // ===========================================================================
@@ -983,7 +989,7 @@ class Request {
 
   Request& AddItem(Item&& item) { return AddItem(item, true); }
 
-  size_t GetItemCount() const noexcept;
+  size_t GetItemCount() const;
   Item GetItem(size_t idx) const;
 
   /// Options for this request. Overrides session options for the duration of this request.
@@ -1005,7 +1011,7 @@ class Response {
   /// Lifetime is tied to this Response object.
   const std::vector<Item>& GetItems() const noexcept { return items_; }
 
-  flFinishReason GetFinishReason() const noexcept;
+  flFinishReason GetFinishReason() const;
   flUsage GetUsage() const;
 
  private:

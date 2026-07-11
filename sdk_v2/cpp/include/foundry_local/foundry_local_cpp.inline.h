@@ -91,7 +91,7 @@ inline KeyValuePairs::KeyValuePairs(
   }
 }
 
-inline std::optional<std::string_view> KeyValuePairs::Get(const char* key) const noexcept {
+inline std::optional<std::string_view> KeyValuePairs::Get(const char* key) const {
   if (!handle_.get()) {
     return std::nullopt;
   }
@@ -634,7 +634,7 @@ inline Item::Item(flItem& raw)
 inline Item::Item(flItemType type)
     : handle_(detail::CreateItem(type), detail::item_api()->Item_Release) {}
 
-inline flItemType Item::GetType() const noexcept {
+inline flItemType Item::GetType() const {
   return detail::item_api()->GetType(handle_.get());
 }
 
@@ -1076,7 +1076,7 @@ inline Request& Request::AddItem(Item& item, bool take_ownership) {
   return *this;
 }
 
-inline size_t Request::GetItemCount() const noexcept {
+inline size_t Request::GetItemCount() const {
   return detail::inference_api()->Request_GetItemCount(handle_.get());
 }
 
@@ -1118,7 +1118,7 @@ inline Response::Response(flResponse* response)
   }
 }
 
-inline flFinishReason Response::GetFinishReason() const noexcept {
+inline flFinishReason Response::GetFinishReason() const {
   return detail::inference_api()->Response_GetFinishReason(handle_.get());
 }
 
