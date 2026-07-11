@@ -108,6 +108,12 @@ void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession
   {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (shutting_down_.load()) {
+      logger_.Log(LogLevel::Debug,
+                  fmt::format("SessionManager: dropping check-in for '{}' during shutdown", key));
+      return;
+    }
+
     // Replace existing entry for this key (if any)
     auto existing = cache_.find(key);
     if (existing != cache_.end()) {

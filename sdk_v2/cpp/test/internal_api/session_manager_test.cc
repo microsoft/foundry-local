@@ -145,6 +145,17 @@ TEST_F(SessionManagerTest, CheckInAndCheckOutRoundTrip) {
   EXPECT_EQ(mgr.CacheSize(), 0u);
 }
 
+TEST(SessionManagerStandaloneTest, CheckInAfterCancelAllDropsSession) {
+  StderrLogger logger;
+  SessionManager mgr(logger);
+  mgr.CancelAll();
+
+  mgr.CheckIn("resp-1", nullptr);
+
+  EXPECT_EQ(mgr.CacheSize(), 0u);
+  EXPECT_EQ(mgr.CheckOut("resp-1"), nullptr);
+}
+
 TEST_F(SessionManagerTest, CheckOutRemovesFromCache) {
   SessionManager mgr(GetLogger());
   auto session = MakeSession();
