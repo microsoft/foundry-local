@@ -7,6 +7,7 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "contracts/chat_completions.h"
+#include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session.h"
@@ -247,6 +248,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
       bg_session.SetStreamingCallback(callback_fn);
       bg_session.ProcessRequest(*req, bg_response);
+      if (req->canceled.load(std::memory_order_relaxed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "chat completion stream cancelled");
+      }
 
       // Usage chunk — only if stream_options.include_usage was true
       if (include_usage) {

@@ -39,6 +39,7 @@ constexpr char kMagic[4] = {'F', 'L', 'D', 'S'};
 constexpr uint8_t kVersion = 2;
 
 constexpr int32_t kBitsPerWord = 64;
+constexpr uint32_t kMaxBlobIdentityLength = 4096;
 
 // Serialize a scalar field in host byte order. Every target we build for
 // (x64 / arm64) is little-endian, so the on-disk layout is little-endian in
@@ -66,6 +67,9 @@ void WriteString(std::ostream& out, const std::string& value) {
 bool ReadString(std::istream& in, std::string& value) {
   uint32_t size = 0;
   if (!ReadNative(in, size)) {
+    return false;
+  }
+  if (size > kMaxBlobIdentityLength) {
     return false;
   }
   value.resize(size);

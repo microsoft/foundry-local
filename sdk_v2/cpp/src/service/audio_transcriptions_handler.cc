@@ -7,6 +7,7 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "contracts/audio_transcriptions.h"
+#include "exception.h"
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
@@ -233,6 +234,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
       bg_session.SetStreamingCallback(callback_fn);
       bg_session.ProcessRequest(*req, bg_response);
+      if (req->canceled.load(std::memory_order_relaxed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "audio transcription stream cancelled");
+      }
 
       // Send terminal event
       body_ptr->Push("data: [DONE]\n\n");
