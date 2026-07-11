@@ -6,6 +6,7 @@
 
 #include "c_api_types.h"
 #include "catalog.h"
+#include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "inferencing/generative/openresponses/response_store.h"
@@ -552,6 +553,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       session->SetStreamingCallback(callback_fn);
 
       session->ProcessRequest(*req, bg_response);
+      if (req->canceled.load(std::memory_order_relaxed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
+      }
 
       // Close whatever item is still open at end-of-generation so the SSE stream is well-formed.
       close_current();
