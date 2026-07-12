@@ -25,16 +25,20 @@ logger = logging.getLogger(__name__)
 def _tool_call_is_valid(tool_call: Any) -> bool:
     """Return True if a tool call is well-formed enough for the OpenAI schema.
 
-    A ``function`` tool call must carry a non-empty ``function.name`` and a ``custom``
-    tool call must carry a ``custom`` object. Anything else (for example a call with
-    only ``{"arguments": "null"}``) is malformed and would abort response parsing.
+    Validity is decided by the explicit ``type`` discriminator: a ``function`` tool
+    call must carry a non-empty ``function.name`` and a ``custom`` tool call must carry
+    a ``custom`` object. A missing or unknown discriminator is itself malformed, as is a
+    ``function`` call with only ``{"arguments": "null"}`` and no name.
     """
     if not isinstance(tool_call, dict):
         return False
-    if tool_call.get("type") == "custom" or "custom" in tool_call:
+    tool_call_type = tool_call.get("type")
+    if tool_call_type == "custom":
         return isinstance(tool_call.get("custom"), dict)
-    function = tool_call.get("function")
-    return isinstance(function, dict) and bool(function.get("name"))
+    if tool_call_type == "function":
+        function = tool_call.get("function")
+        return isinstance(function, dict) and bool(function.get("name"))
+    return False
 
 
 def _drop_malformed_tool_calls(payload: Any) -> None:
@@ -333,23 +337,24 @@ class ChatClient:
             request.add_item(TextItem(request_json, TextItemType.OPENAI_JSON))
             for item in session.process_streaming_request(request):
                 # Each item is a TextItem(OPENAI_JSON) — parse and normalize.
-                raw = json.loads(item.text)
-
-                # Foundry Local streams tool calls under "message" instead of the
-                # standard "delta".  Normalize to "delta" so ChatCompletionChunk parses.
-                for choice in raw.get("choices", []):
-                    if "message" in choice and "delta" not in choice:
-                        msg_obj = choice.pop("message")
-                        # ChoiceDeltaToolCall requires "index"; add if absent.
-                        for i, tc in enumerate(msg_obj.get("tool_calls", [])):
-                            tc.setdefault("index", i)
-                        choice["delta"] = msg_obj
-
-                _drop_malformed_tool_calls(raw)
                 try:
-                    yield ChatCompletionChunk.model_validate(raw)
-                except ValidationError as exc:
+                    raw = json.loads(item.text)
+
+                    # Foundry Local streams tool calls under "message" instead of the
+                    # standard "delta".  Normalize to "delta" so ChatCompletionChunk parses.
+                    for choice in raw.get("choices", []):
+                        if "message" in choice and "delta" not in choice:
+                            msg_obj = choice.pop("message")
+                            # ChoiceDeltaToolCall requires "index"; add if absent.
+                            for i, tc in enumerate(msg_obj.get("tool_calls", [])):
+                                tc.setdefault("index", i)
+                            choice["delta"] = msg_obj
+
+                    _drop_malformed_tool_calls(raw)
+                    chunk = ChatCompletionChunk.model_validate(raw)
+                except (ValidationError, ValueError, TypeError, AttributeError) as exc:
                     raise FoundryLocalException(
                         "Failed to parse a streaming chat completion chunk from Foundry Local. "
                         f"Raw chunk: {item.text!r}"
                     ) from exc
+                yield chunk

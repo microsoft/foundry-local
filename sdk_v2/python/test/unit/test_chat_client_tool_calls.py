@@ -2,19 +2,23 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Unit tests for tolerant tool-call parsing in ChatClient.
+"""Unit tests for tolerant tool-call parsing in the SDK v2 ChatClient.
 
 These cover the pure sanitization helpers used by ``complete_chat`` /
-``complete_streaming_chat`` and do not require a loaded model or native binary.
+``complete_streaming_chat`` and do not require a native session or loaded model.
 """
-
 from __future__ import annotations
 
 import json
 
-from openai.types.chat import ChatCompletion
+import pytest
 
-from foundry_local_sdk.openai.chat_client import (
+pytest.importorskip("openai")
+
+from openai.types.chat import ChatCompletion  # noqa: E402
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk  # noqa: E402
+
+from foundry_local_sdk.openai.chat_client import (  # noqa: E402
     _drop_malformed_tool_calls,
     _tool_call_is_valid,
 )
@@ -54,11 +58,6 @@ class TestToolCallValidation:
             {"type": "function", "function": {"arguments": "null"}}
         )
 
-    def test_custom_call_is_valid(self):
-        assert _tool_call_is_valid(
-            {"type": "custom", "custom": {"name": "c", "input": "x"}}
-        )
-
     def test_function_call_with_extra_custom_key_is_still_valid(self):
         # Dispatch on the explicit "type" discriminator: a valid function call must
         # not be dropped merely because it also carries an extra "custom" key.
@@ -67,7 +66,13 @@ class TestToolCallValidation:
              "function": {"name": "f", "arguments": "{}"}}
         )
 
+    def test_custom_call_is_valid(self):
+        assert _tool_call_is_valid(
+            {"type": "custom", "custom": {"name": "c", "input": "x"}}
+        )
+
     def test_missing_discriminator_is_invalid(self):
+        # No "type" — the discriminator is missing, so the entry is malformed.
         assert not _tool_call_is_valid(
             {"function": {"name": "f", "arguments": "{}"}}
         )
@@ -148,7 +153,9 @@ class TestDropMalformedToolCalls:
         }
 
         _drop_malformed_tool_calls(payload)
+        chunk = ChatCompletionChunk.model_validate(payload)  # must not raise
 
-        remaining = payload["choices"][0]["delta"]["tool_calls"]
+        remaining = chunk.choices[0].delta.tool_calls
+        assert remaining is not None
         assert len(remaining) == 1
-        assert remaining[0]["function"]["name"] == "f"
+        assert remaining[0].function.name == "f"
