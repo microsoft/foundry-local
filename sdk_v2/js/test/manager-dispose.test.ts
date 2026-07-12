@@ -89,7 +89,7 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     const mgr = freshManager("async-worker");
     const pending = mgr.downloadAndRegisterEps(["__not-a-provider__"]);
     expect(() => mgr.dispose()).toThrow(/active native workers/i);
-    await expect(pending).resolves.toMatchObject({ success: true });
+    await expect(pending).rejects.toThrow(/not available/i);
     mgr.dispose();
     expect(mgr.disposed).toBe(true);
   });
