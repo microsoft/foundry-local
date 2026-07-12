@@ -219,9 +219,6 @@ class StreamWorker : public Napi::AsyncWorker {
         return 0;
       });
       ctx_->response = std::make_shared<foundry_local::Response>(sess_->ProcessRequest(*req_));
-      // Drop the callback so any stale shared state in the lambda is released
-      // before the Session is re-used for a follow-up request.
-      sess_->SetStreamingCallback(nullptr);
     } catch (const foundry_local::Error& e) {
       ctx_->errored = true;
       ctx_->err_code = static_cast<int>(e.Code());
@@ -234,6 +231,9 @@ class StreamWorker : public Napi::AsyncWorker {
       ctx_->errored = true;
       ctx_->err_msg = "Unknown native exception";
     }
+    // Drop the callback so any stale shared state in the lambda is released
+    // before the Session is re-used for a follow-up request.
+    sess_->SetStreamingCallback(nullptr);
   }
 
   // Promise resolution happens in FinalizeStream — overriding OnOK/OnError
@@ -329,7 +329,7 @@ ChatSession::ChatSession(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Chat
   }
   try {
     auto manager_keepalive = model->manager_keepalive();
-    if (!manager_keepalive) {
+    if (model->manager_disposed() || !manager_keepalive) {
       ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
       return;
     }
@@ -493,7 +493,7 @@ EmbeddingsSession::EmbeddingsSession(const Napi::CallbackInfo& info)
   }
   try {
     auto manager_keepalive = model->manager_keepalive();
-    if (!manager_keepalive) {
+    if (model->manager_disposed() || !manager_keepalive) {
       ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
       return;
     }
@@ -594,7 +594,7 @@ AudioSession::AudioSession(const Napi::CallbackInfo& info)
   }
   try {
     auto manager_keepalive = model->manager_keepalive();
-    if (!manager_keepalive) {
+    if (model->manager_disposed() || !manager_keepalive) {
       ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
       return;
     }

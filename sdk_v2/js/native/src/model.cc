@@ -248,6 +248,10 @@ Model::Model(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Model>(info) {
   manager_ = std::move(token->manager);
 }
 
+bool Model::manager_disposed() const noexcept {
+  return !lifecycle_ || lifecycle_->disposed.load(std::memory_order_acquire);
+}
+
 Napi::Value Model::GetInfo(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
