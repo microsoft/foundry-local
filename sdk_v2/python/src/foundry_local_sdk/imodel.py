@@ -111,7 +111,8 @@ class IModel(ABC):
         """Get an OpenAI API-compatible ChatClient.
 
         .. deprecated::
-            Use ``ChatSession`` instead. OpenAI types remain supported for the web-server path.
+            Use ``ChatSession`` instead; the OpenAI direct client will be removed at the end of 2026.
+            OpenAI types remain supported for the web-server path.
         """
 
     @abstractmethod
@@ -119,7 +120,8 @@ class IModel(ABC):
         """Get an OpenAI API-compatible AudioClient.
 
         .. deprecated::
-            Use ``AudioSession`` instead. OpenAI types remain supported for the web-server path.
+            Use ``AudioSession`` instead; the OpenAI direct client will be removed at the end of 2026.
+            OpenAI types remain supported for the web-server path.
         """
 
     @abstractmethod
@@ -127,7 +129,8 @@ class IModel(ABC):
         """Get an OpenAI API-compatible EmbeddingClient.
 
         .. deprecated::
-            Use ``EmbeddingsSession`` instead. OpenAI types remain supported for the web-server path.
+            Use ``EmbeddingsSession`` instead; the OpenAI direct client will be removed at the end of 2026.
+            OpenAI types remain supported for the web-server path.
         """
 
     @property
@@ -414,20 +417,20 @@ class _ModelImpl(IModel):
     # OpenAI client factories
     # ------------------------------------------------------------------
 
-    @deprecated("The OpenAI direct client is deprecated; use ChatSession. OpenAI types remain supported "
-                "for the web-server path.")
+    @deprecated("The OpenAI direct client is deprecated and will be removed at the end of 2026; use ChatSession. "
+                "OpenAI types remain supported for the web-server path.")
     def get_chat_client(self) -> "ChatClient":
         from foundry_local_sdk.openai.chat_client import ChatClient
         return ChatClient(self.info.id, self)
 
-    @deprecated("The OpenAI direct client is deprecated; use ChatSession. OpenAI types remain supported "
-                "for the web-server path.")
+    @deprecated("The OpenAI direct client is deprecated and will be removed at the end of 2026; use AudioSession. "
+                "OpenAI types remain supported for the web-server path.")
     def get_audio_client(self) -> "AudioClient":
         from foundry_local_sdk.openai.audio_client import AudioClient
         return AudioClient(self.info.id, self)
 
-    @deprecated("The OpenAI direct client is deprecated; use EmbeddingsSession. OpenAI types remain "
-                "supported for the web-server path.")
+    @deprecated("The OpenAI direct client is deprecated and will be removed at the end of 2026; use EmbeddingsSession. "
+                "OpenAI types remain supported for the web-server path.")
     def get_embedding_client(self) -> "EmbeddingClient":
         from foundry_local_sdk.openai.embedding_client import EmbeddingClient
         return EmbeddingClient(self.info.id, self)

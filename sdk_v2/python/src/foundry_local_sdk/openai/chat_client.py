@@ -118,14 +118,14 @@ class ChatClientSettings:
 
 
 @deprecated(
-    "The OpenAI direct client is deprecated; use ChatSession. OpenAI types remain supported "
-    "for the web-server path."
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use ChatSession. "
+    "OpenAI types remain supported for the web-server path."
 )
 class ChatClient:
     """OpenAI-compatible chat completions client backed by Foundry Local Core.
 
     .. deprecated::
-        The OpenAI direct client is deprecated; use
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
         :class:`foundry_local_sdk.session.ChatSession`. OpenAI types remain
         supported for the web-server path.
 
@@ -139,8 +139,8 @@ class ChatClient:
 
     def __init__(self, model_id: str, model: IModel) -> None:
         warnings.warn(
-            "The OpenAI direct client is deprecated; use ChatSession. OpenAI types remain "
-            "supported for the web-server path.",
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "ChatSession. OpenAI types remain supported for the web-server path.",
             DeprecationWarning,
             stacklevel=2,
         )

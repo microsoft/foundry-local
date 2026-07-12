@@ -21,8 +21,8 @@ export class LiveAudioTranscriptionOptions {
 }
 
 /**
- * @deprecated The OpenAI direct client is deprecated. Use AudioSession streaming instead.
- * OpenAI types remain supported for the web-server path.
+ * @deprecated The OpenAI direct client is deprecated and will be removed at the end of 2026.
+ * Use AudioSession streaming instead. OpenAI types remain supported for the web-server path.
  */
 export class LiveAudioTranscriptionSession implements AsyncDisposable, Disposable {
   readonly #model: Model;

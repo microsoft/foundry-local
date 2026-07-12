@@ -11,8 +11,8 @@ import { EmbeddingsSession } from "../session.js";
 type Json = any;
 
 /**
- * @deprecated The OpenAI direct client is deprecated. Use EmbeddingsSession instead.
- * OpenAI types remain supported for the web-server path.
+ * @deprecated The OpenAI direct client is deprecated and will be removed at the end of 2026.
+ * Use EmbeddingsSession instead. OpenAI types remain supported for the web-server path.
  */
 export class EmbeddingClient {
   readonly #model: Model;

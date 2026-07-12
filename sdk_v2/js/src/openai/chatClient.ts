@@ -65,7 +65,7 @@ export class ChatClientSettings {
  * Each `completeChat` / `completeStreamingChat` call constructs and disposes its own `ChatSession`,
  * matching the v1 SDK's stateless behaviour — no conversation state is retained on the client.
  *
- * @deprecated The OpenAI direct client is deprecated. Use ChatSession instead.
+ * @deprecated The OpenAI direct client is deprecated and will be removed at the end of 2026. Use ChatSession instead.
  * OpenAI types remain supported for the web-server path.
  */
 export class ChatClient {

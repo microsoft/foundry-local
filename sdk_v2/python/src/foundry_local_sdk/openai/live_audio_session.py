@@ -72,14 +72,14 @@ class _State(IntEnum):
 
 
 @deprecated(
-    "The OpenAI direct client is deprecated; use AudioSession. OpenAI types remain supported "
-    "for the web-server path."
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use AudioSession. "
+    "OpenAI types remain supported for the web-server path."
 )
 class LiveAudioTranscriptionSession:
     """Session for real-time audio streaming ASR (Automatic Speech Recognition).
 
     .. deprecated::
-        The OpenAI direct client is deprecated; use
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
         :class:`foundry_local_sdk.session.AudioSession` for streaming
         transcription. OpenAI types remain supported for the web-server path.
 
@@ -120,8 +120,8 @@ class LiveAudioTranscriptionSession:
 
     def __init__(self, model_id: str, model: "IModel") -> None:
         warnings.warn(
-            "The OpenAI direct client is deprecated; use AudioSession. OpenAI types remain "
-            "supported for the web-server path.",
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "AudioSession. OpenAI types remain supported for the web-server path.",
             DeprecationWarning,
             stacklevel=2,
         )

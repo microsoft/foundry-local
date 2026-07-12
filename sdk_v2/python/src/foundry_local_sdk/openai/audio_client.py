@@ -46,14 +46,14 @@ class AudioTranscriptionResponse:
 
 
 @deprecated(
-    "The OpenAI direct client is deprecated; use AudioSession. OpenAI types remain supported "
-    "for the web-server path."
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use AudioSession. "
+    "OpenAI types remain supported for the web-server path."
 )
 class AudioClient:
     """OpenAI-compatible audio transcription client backed by Foundry Local Core.
 
     .. deprecated::
-        The OpenAI direct client is deprecated; use
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
         :class:`foundry_local_sdk.session.AudioSession`. OpenAI types remain
         supported for the web-server path.
 
@@ -67,8 +67,8 @@ class AudioClient:
 
     def __init__(self, model_id: str, model: IModel) -> None:
         warnings.warn(
-            "The OpenAI direct client is deprecated; use AudioSession. OpenAI types remain "
-            "supported for the web-server path.",
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "AudioSession. OpenAI types remain supported for the web-server path.",
             DeprecationWarning,
             stacklevel=2,
         )
