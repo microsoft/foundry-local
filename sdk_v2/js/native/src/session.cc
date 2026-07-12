@@ -331,6 +331,7 @@ ChatSession::ChatSession(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Chat
     return;
   }
   manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+  manager_keepalive_ = model->manager_keepalive();
 }
 
 bool ChatSession::ThrowIfDisposed(Napi::Env env) {
@@ -488,6 +489,7 @@ EmbeddingsSession::EmbeddingsSession(const Napi::CallbackInfo& info)
     return;
   }
   manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+  manager_keepalive_ = model->manager_keepalive();
 }
 
 bool EmbeddingsSession::ThrowIfDisposed(Napi::Env env) {
@@ -582,6 +584,7 @@ AudioSession::AudioSession(const Napi::CallbackInfo& info)
     return;
   }
   manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+  manager_keepalive_ = model->manager_keepalive();
 }
 
 bool AudioSession::ThrowIfDisposed(Napi::Env env) {

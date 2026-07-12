@@ -193,7 +193,7 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       }
       config.SetAdditionalOptions(kvp);
     }
-    impl_ = std::make_unique<foundry_local::Manager>(std::move(config));
+    impl_ = std::make_shared<foundry_local::Manager>(std::move(config));
   });
 }
 
@@ -227,6 +227,7 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
     CatalogCtorToken token;
     token.impl = &cat;
     token.manager = std::move(owner);
+    token.manager_keepalive = impl_;
     return Catalog::NewInstance(env, std::move(token));
   });
 }
@@ -288,8 +289,9 @@ namespace {
 // progress callback. Mirrors the pattern in model.cc's DownloadWorker.
 class EpDownloadWorker : public Napi::AsyncWorker {
  public:
-  EpDownloadWorker(Napi::Env env, foundry_local::Manager* impl, std::vector<std::string> ep_names,
-                   Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
+  EpDownloadWorker(Napi::Env env, std::shared_ptr<foundry_local::Manager> impl,
+                   std::vector<std::string> ep_names, Napi::ObjectReference owner,
+                   Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
@@ -356,7 +358,7 @@ class EpDownloadWorker : public Napi::AsyncWorker {
   }
 
   Napi::Promise::Deferred deferred_;
-  foundry_local::Manager* impl_;
+  std::shared_ptr<foundry_local::Manager> impl_;
   std::vector<std::string> ep_names_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
@@ -413,7 +415,7 @@ Napi::Value Manager::DownloadAndRegisterEps(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
-  auto* w = new EpDownloadWorker(env, impl_.get(), std::move(ep_names), std::move(owner), std::move(tsfn));
+  auto* w = new EpDownloadWorker(env, impl_, std::move(ep_names), std::move(owner), std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;

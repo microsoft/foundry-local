@@ -25,6 +25,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -70,9 +71,17 @@ struct flCatalog {
 
 // --- Manager ---
 struct flManager {
+  explicit flManager(fl::Manager& manager) : impl(manager) {}
+
+  struct UrlSnapshot {
+    std::vector<std::string> strings;
+    std::vector<const char*> pointers;
+  };
+
   fl::Manager& impl;
   std::unique_ptr<flCatalog> catalog;  // stores the flCatalog wrapper around impl.GetCatalog()
-  mutable std::vector<const char*> urls_cache;
+  mutable std::mutex urls_cache_mutex;
+  mutable std::vector<std::unique_ptr<UrlSnapshot>> urls_snapshots;
 };
 
 // ========================================================================
@@ -327,7 +336,7 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
   }
 
   auto& mgr = fl::Manager::Create(*cfg);
-  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}});
+  auto wrapper = std::make_unique<flManager>(mgr);
   wrapper->catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog()});
   *out_manager = wrapper.release();
   return nullptr;
@@ -372,15 +381,22 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  const auto& urls = manager->impl.GetWebServiceUrls();
-  manager->urls_cache.clear();
-  manager->urls_cache.reserve(urls.size());
-  for (const auto& u : urls) {
-    manager->urls_cache.push_back(u.c_str());
+  auto urls = manager->impl.GetWebServiceUrls();
+  auto snapshot = std::make_unique<flManager::UrlSnapshot>();
+  snapshot->strings = std::move(urls);
+  snapshot->pointers.reserve(snapshot->strings.size());
+  for (const auto& u : snapshot->strings) {
+    snapshot->pointers.push_back(u.c_str());
   }
 
-  *out_urls = manager->urls_cache.data();
-  *out_num_urls = manager->urls_cache.size();
+  auto* snapshot_ptr = snapshot.get();
+  {
+    std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
+    manager->urls_snapshots.push_back(std::move(snapshot));
+  }
+
+  *out_urls = snapshot_ptr->pointers.empty() ? nullptr : snapshot_ptr->pointers.data();
+  *out_num_urls = snapshot_ptr->pointers.size();
   return nullptr;
   API_IMPL_END
 }

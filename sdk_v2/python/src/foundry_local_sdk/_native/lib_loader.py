@@ -279,22 +279,11 @@ def prepare_native_dependencies(foundry_local_dir: pathlib.Path) -> list:
         logger.warning("Failed to preload ORT (%s): %s", ort_path, exc)
         return handles
 
-    # macOS only: GenAI's static initializer does its own dlopen("libonnxruntime.dylib"),
-    # which on Darwin only matches by leafname against dyld search paths or images
-    # whose install_name leaf is exactly "libonnxruntime.dylib". ORT's dylib has a
-    # versioned install_name instead (the soversion, e.g. "@rpath/libonnxruntime.1.dylib"),
-    # so neither match path succeeds and GenAI aborts in dyld init before any of our code
-    # runs. The second name GenAI tries is "<genai_dir>/libonnxruntime.dylib", so a symlink
-    # there fixes it. Linux dlopen consults the loaded-soname table by leafname and finds
-    # our already-RTLD_GLOBAL'd image without help.
-    if sys.platform == "darwin":
-        symlink_path = genai_path.parent / "libonnxruntime.dylib"
-        try:
-            if not symlink_path.exists():
-                symlink_path.symlink_to(ort_path)
-                logger.info("Created macOS GenAI->ORT symlink: %s -> %s", symlink_path, ort_path)
-        except OSError as exc:
-            logger.warning("Failed to create macOS ORT symlink at %s: %s", symlink_path, exc)
+    # GenAI's lazy InitApi() first checks ORT_LIB_PATH before falling back to a
+    # platform leafname. Point it at the exact ORT dylib/so we resolved instead
+    # of mutating the installed GenAI package to add an unversioned alias.
+    if "ORT_LIB_PATH" not in os.environ:
+        os.environ["ORT_LIB_PATH"] = str(ort_path)
 
     try:
         handles.append(ctypes.CDLL(str(genai_path), mode=ctypes.RTLD_GLOBAL))

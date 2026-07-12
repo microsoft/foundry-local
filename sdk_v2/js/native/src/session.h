@@ -53,6 +53,7 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   std::unique_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -84,6 +85,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -113,6 +115,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   std::unique_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
 };
 
 }  // namespace foundry_local_node

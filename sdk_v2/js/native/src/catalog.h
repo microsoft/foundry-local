@@ -16,6 +16,7 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <memory>
 #include <utility>
 
 namespace foundry_local_node {
@@ -23,6 +24,7 @@ namespace foundry_local_node {
 struct CatalogCtorToken {
   foundry_local::ICatalog* impl = nullptr;
   Napi::ObjectReference manager;  // pins the owning Manager
+  std::shared_ptr<foundry_local::Manager> manager_keepalive;
 };
 
 class Catalog : public Napi::ObjectWrap<Catalog> {
@@ -43,6 +45,7 @@ class Catalog : public Napi::ObjectWrap<Catalog> {
 
   foundry_local::ICatalog* impl_ = nullptr;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
 };
 
 }  // namespace foundry_local_node

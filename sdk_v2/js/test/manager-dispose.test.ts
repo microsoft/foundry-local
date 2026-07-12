@@ -70,6 +70,14 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     expect(mgr.disposed).toBe(true);
   });
 
+  it("dispose() does not invalidate an in-flight native EP worker", async () => {
+    const mgr = freshManager("async-worker");
+    const pending = mgr.downloadAndRegisterEps(["__not-a-provider__"]);
+    mgr.dispose();
+    await expect(pending).resolves.toMatchObject({ success: true });
+    expect(mgr.disposed).toBe(true);
+  });
+
   it("`using` declaration disposes at scope exit", () => {
     let captured: FoundryLocalManager | undefined;
     {

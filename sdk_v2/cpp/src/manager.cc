@@ -558,10 +558,11 @@ void Manager::StartWebService() {
 #endif
 }
 
-const std::vector<std::string>& Manager::GetWebServiceUrls() const {
+std::vector<std::string> Manager::GetWebServiceUrls() const {
   // No "not running" check: bound_urls_ is cleared in StopWebService() and is empty before
   // StartWebService(), so the empty vector is the documented "service is not running" signal
   // (see GetWebServiceEndpoints() docstring in foundry_local_cpp.h).
+  std::lock_guard<std::mutex> lock(web_service_mutex_);
   return bound_urls_;
 }
 

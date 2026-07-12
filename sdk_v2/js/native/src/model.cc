@@ -144,7 +144,8 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
 // Drain a ModelList into a JS array, with each entry wrapped as a JS Model
 // whose keepalive holds the shared ModelList.
 Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelList> list,
-                          Napi::ObjectReference manager) {
+                          Napi::ObjectReference manager,
+                          std::shared_ptr<foundry_local::Manager> manager_keepalive) {
   auto models = list->Models();
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
@@ -153,6 +154,7 @@ Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelLis
     token.keepalive = list;  // shared_ptr copy keeps the ModelList alive
     // Cloning the manager ObjectReference per Model so each entry pins it.
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);
+    token.manager_keepalive = manager_keepalive;
     arr.Set(static_cast<uint32_t>(i), Model::NewInstance(env, std::move(token)));
   }
   return arr;
@@ -198,6 +200,7 @@ Model::Model(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Model>(info) {
   }
   impl_ = token->impl;
   keepalive_ = std::move(token->keepalive);
+  manager_keepalive_ = std::move(token->manager_keepalive);
   manager_ = std::move(token->manager);
 }
 
@@ -238,17 +241,16 @@ Napi::Value Model::GetVariants(const Napi::CallbackInfo& info) {
   Napi::ObjectReference owner_clone = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto list = std::make_shared<foundry_local::ModelList>(impl_->GetVariants());
-    return WrapModelList(env, std::move(list), std::move(owner_clone));
+    return WrapModelList(env, std::move(list), std::move(owner_clone), manager_keepalive_);
   });
 }
 
 // ── Async lifecycle ─────────────────────────────────────────────────────────
 //
 // Load/Unload/Download dispatch the underlying virtual call onto a libuv
-// worker so the event loop stays responsive. The Model itself is pinned
-// against GC for the duration of the worker via an ObjectReference to the
-// parent Manager (the Manager owns the catalog whose ModelList views the
-// IModel*).
+// worker so the event loop stays responsive. Each worker captures the model's
+// native keepalives so explicit Manager.dispose() or JS GC cannot release the
+// underlying Manager/ModelList/owned IModel before the worker finishes.
 
 Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
@@ -258,8 +260,11 @@ Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
+  auto keepalive = keepalive_;
+  auto manager_keepalive = manager_keepalive_;
   return PromiseWorkerVoid::Run(
-      env, [m]() { m->Load(); }, std::move(owner));
+      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive)]() { m->Load(); },
+      std::move(owner));
 }
 
 Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
@@ -270,8 +275,11 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
+  auto keepalive = keepalive_;
+  auto manager_keepalive = manager_keepalive_;
   return PromiseWorkerVoid::Run(
-      env, [m]() { m->Unload(); }, std::move(owner));
+      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive)]() { m->Unload(); },
+      std::move(owner));
 }
 
 namespace {
@@ -282,11 +290,14 @@ namespace {
 // worker queues and released in OnOK/OnError.
 class DownloadWorker : public Napi::AsyncWorker {
  public:
-  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, Napi::ObjectReference owner,
+  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, std::shared_ptr<void> keepalive,
+                 std::shared_ptr<foundry_local::Manager> manager_keepalive, Napi::ObjectReference owner,
                  Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
+        keepalive_(std::move(keepalive)),
+        manager_keepalive_(std::move(manager_keepalive)),
         owner_(std::move(owner)),
         tsfn_(std::move(tsfn)) {}
 
@@ -350,6 +361,8 @@ class DownloadWorker : public Napi::AsyncWorker {
 
   Napi::Promise::Deferred deferred_;
   foundry_local::IModel* impl_;
+  std::shared_ptr<void> keepalive_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
   std::string err_msg_;
@@ -379,7 +392,7 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto* w = new DownloadWorker(env, impl_, std::move(owner), std::move(tsfn));
+  auto* w = new DownloadWorker(env, impl_, keepalive_, manager_keepalive_, std::move(owner), std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;

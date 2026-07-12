@@ -84,7 +84,7 @@ class Manager {
 
   /// Get the bound service URLs. The returned reference is valid as long as
   /// the web service is running. Throws if web service is not running.
-  const std::vector<std::string>& GetWebServiceUrls() const;
+  std::vector<std::string> GetWebServiceUrls() const;
 
   /// Stop the embedded web service.
   void StopWebService();
@@ -149,7 +149,7 @@ class Manager {
   std::unique_ptr<SessionManager> session_manager_;
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> web_service_running_{false};
-  std::mutex web_service_mutex_;
+  mutable std::mutex web_service_mutex_;
   std::vector<std::string> bound_urls_;
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
