@@ -6,14 +6,67 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any, Generator
 
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from pydantic import ValidationError
+
+from foundry_local_sdk.exception import FoundryLocalException
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
+
+logger = logging.getLogger(__name__)
+
+
+def _tool_call_is_valid(tool_call: Any) -> bool:
+    """Return True if a tool call is well-formed enough for the OpenAI schema.
+
+    A ``function`` tool call must carry a non-empty ``function.name`` and a ``custom``
+    tool call must carry a ``custom`` object. Anything else (for example a call with
+    only ``{"arguments": "null"}``) is malformed and would abort response parsing.
+    """
+    if not isinstance(tool_call, dict):
+        return False
+    if tool_call.get("type") == "custom" or "custom" in tool_call:
+        return isinstance(tool_call.get("custom"), dict)
+    function = tool_call.get("function")
+    return isinstance(function, dict) and bool(function.get("name"))
+
+
+def _drop_malformed_tool_calls(payload: Any) -> None:
+    """Remove malformed tool calls from a chat completion payload in place.
+
+    Small models sometimes emit an invalid extra tool call (e.g. missing
+    ``function.name``). Dropping only the bad entries keeps the rest of the response
+    usable instead of failing the whole parse; a warning is logged for each drop.
+    """
+    if not isinstance(payload, dict):
+        return
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        # Non-streaming responses carry tool calls under "message"; streaming under "delta".
+        for key in ("message", "delta"):
+            message = choice.get(key)
+            if not isinstance(message, dict):
+                continue
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            valid = [tc for tc in tool_calls if _tool_call_is_valid(tc)]
+            if len(valid) == len(tool_calls):
+                continue
+            for tc in tool_calls:
+                if not _tool_call_is_valid(tc):
+                    logger.warning("Dropping malformed tool call from Foundry Local response: %r", tc)
+            if valid:
+                message["tool_calls"] = valid
+            else:
+                message.pop("tool_calls", None)
 
 
 class ChatClientSettings:
@@ -221,7 +274,22 @@ class ChatClient:
 
         request_json = self._build_request_json(messages, streaming=False, tools=tools)
         response_json = self._run_native_request(request_json)
-        return ChatCompletion.model_validate_json(response_json)
+        try:
+            payload = json.loads(response_json)
+        except (TypeError, ValueError) as exc:
+            raise FoundryLocalException(
+                f"Foundry Local returned a non-JSON chat completion response: {response_json!r}"
+            ) from exc
+
+        _drop_malformed_tool_calls(payload)
+
+        try:
+            return ChatCompletion.model_validate(payload)
+        except ValidationError as exc:
+            raise FoundryLocalException(
+                "Failed to parse the chat completion response from Foundry Local. "
+                f"Raw response: {response_json!r}"
+            ) from exc
 
     def complete_streaming_chat(
         self,
@@ -277,4 +345,11 @@ class ChatClient:
                             tc.setdefault("index", i)
                         choice["delta"] = msg_obj
 
-                yield ChatCompletionChunk.model_validate(raw)
+                _drop_malformed_tool_calls(raw)
+                try:
+                    yield ChatCompletionChunk.model_validate(raw)
+                except ValidationError as exc:
+                    raise FoundryLocalException(
+                        "Failed to parse a streaming chat completion chunk from Foundry Local. "
+                        f"Raw chunk: {item.text!r}"
+                    ) from exc
