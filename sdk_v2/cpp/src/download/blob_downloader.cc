@@ -80,14 +80,14 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
   }
 }
 
-int64_t AzureBlobDownloader::GetBlobSize(ChunkContext& ctx) {
+AzureBlobDownloader::BlobProperties AzureBlobDownloader::GetBlobProperties(ChunkContext& ctx) {
   auto props = ctx.blob_client.GetProperties({}, ctx.azure_ctx).Value;
-  return props.BlobSize;
-}
-
-std::string AzureBlobDownloader::GetBlobIdentity(ChunkContext& ctx) {
-  auto props = ctx.blob_client.GetProperties({}, ctx.azure_ctx).Value;
-  return props.ETag.HasValue() ? props.ETag.ToString() : std::string{};
+  BlobProperties result;
+  result.content_length = props.BlobSize;
+  if (props.ETag.HasValue()) {
+    result.blob_identity = props.ETag.ToString();
+  }
+  return result;
 }
 
 bool AzureBlobDownloader::IsCancellationRequested(const ChunkContext& ctx) const {
@@ -171,8 +171,9 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     ChunkContext chunk_ctx{blob_client, azure_ctx, ""};
 
-    int64_t blob_size = GetBlobSize(chunk_ctx);
-    chunk_ctx.blob_identity = GetBlobIdentity(chunk_ctx);
+    auto blob_properties = GetBlobProperties(chunk_ctx);
+    int64_t blob_size = blob_properties.content_length;
+    chunk_ctx.blob_identity = std::move(blob_properties.blob_identity);
 
     if (blob_size == 0) {
       EnsureEmptyBlobFile(local_path);

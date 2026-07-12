@@ -222,7 +222,7 @@ std::string DownloadManager::ComputeModelPath(const ModelInfo& info) const {
     auto version = std::string_view(info.model_id).substr(last_colon + 1);
     SanitizeForPathSegment(bare_id);
     SanitizeForPathSegment(version);
-    sanitized_model_dir = FixVersionSuffix(info.model_id);
+    sanitized_model_dir = SanitizeForPathSegment(FixVersionSuffix(info.model_id));
   }
 
   std::filesystem::path full_path(cache_directory_);

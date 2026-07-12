@@ -1528,6 +1528,17 @@ TEST(DownloadManagerTest, RejectsColonInBareModelId) {
   EXPECT_THROW(manager.GetModelCachePath(info), fl::Exception);
 }
 
+TEST(DownloadManagerTest, RejectsNonNumericVersionSuffix) {
+  TempDir tmpdir;
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  ModelInfo info;
+  info.model_id = "test:preview";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Publisher";
+
+  EXPECT_THROW(manager.GetModelCachePath(info), fl::Exception);
+}
+
 TEST(DownloadManagerTest, RejectsTrailingDotInPublisher) {
   TempDir tmpdir;
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
@@ -1566,7 +1577,7 @@ TEST(DownloadManagerTest, AcceptsNormalModelIdAndPublisher) {
 
 // ========================================================================
 // AzureBlobDownloader resume + cancel-cascade tests
-// Use a subclass that overrides the protected GetBlobSize / DownloadChunkStreaming
+// Use a subclass that overrides the protected GetBlobProperties / DownloadChunkStreaming
 // virtuals to bypass the real Azure SDK and simulate per-chunk behavior.
 // ========================================================================
 
@@ -1577,6 +1588,7 @@ namespace {
 class FakeChunkAzureDownloader : public AzureBlobDownloader {
  public:
   int64_t blob_size = 0;
+  std::string blob_identity;
 
   /// Per-call hook. Receives the chunk offset and size plus a `sink` callback
   /// that forwards bytes to the file writer. Allowed to:
@@ -1601,7 +1613,9 @@ class FakeChunkAzureDownloader : public AzureBlobDownloader {
   FakeChunkAzureDownloader() : AzureBlobDownloader(fl::test::NullLog()) {}
 
  protected:
-  int64_t GetBlobSize(ChunkContext& /*ctx*/) override { return blob_size; }
+  BlobProperties GetBlobProperties(ChunkContext& /*ctx*/) override {
+    return BlobProperties{blob_size, blob_identity};
+  }
 
   void DownloadChunkStreaming(ChunkContext& ctx, int64_t offset, int64_t size,
                               std::vector<uint8_t>& scratch,

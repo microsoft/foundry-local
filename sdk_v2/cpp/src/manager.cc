@@ -494,38 +494,63 @@ ICatalog& Manager::GetCatalog() {
 }
 
 void Manager::StartWebService() {
-  if (web_service_running_) {
-    FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "web service is already running");
-  }
-
-  if (config_.external_service_url.has_value()) {
-    FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                     "cannot start local web service when external_service_url is configured");
-  }
-
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              []() { Manager::RequestShutdown(); });
+  bool stop_after_start = false;
 
-  auto endpoints = config_.web_service_endpoints;
-  if (endpoints.empty()) {
-    endpoints.push_back("http://127.0.0.1:0");
+  {
+    std::lock_guard<std::mutex> lock(web_service_mutex_);
+
+    if (web_service_ != nullptr) {
+      FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "web service is already running");
+    }
+
+    if (config_.external_service_url.has_value()) {
+      FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                       "cannot start local web service when external_service_url is configured");
+    }
+
+    web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
+                                                *session_manager_, *telemetry_,
+                                                []() { Manager::RequestShutdown(); });
+
+    auto endpoints = config_.web_service_endpoints;
+    if (endpoints.empty()) {
+      endpoints.push_back("http://127.0.0.1:0");
+    }
+
+    try {
+      bound_urls_ = web_service_->Start(endpoints);
+      web_service_running_ = true;
+      stop_after_start = shutdown_requested_.load(std::memory_order_acquire);
+
+      if (!stop_after_start) {
+        // Open an app-usage session for the lifetime of the running service so events
+        // carry ext.app.sesId and the backend gets session duration.
+        try {
+          telemetry_->StartSession();
+        } catch (const std::exception& ex) {
+          logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+        } catch (...) {
+          logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
+        }
+      }
+    } catch (...) {
+      if (web_service_) {
+        web_service_->Stop();
+      }
+      web_service_.reset();
+      web_service_running_ = false;
+      bound_urls_.clear();
+      throw;
+    }
   }
 
-  bound_urls_ = web_service_->Start(endpoints);
-  web_service_running_ = true;
-  // Open an app-usage session for the lifetime of the running service so events
-  // carry ext.app.sesId and the backend gets session duration.
-  try {
-    telemetry_->StartSession();
-  } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
-  } catch (...) {
-    logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
+  if (stop_after_start) {
+    StopWebService();
   }
+
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -541,21 +566,28 @@ const std::vector<std::string>& Manager::GetWebServiceUrls() const {
 }
 
 void Manager::StopWebService() {
-  if (!web_service_running_) {
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  std::lock_guard<std::mutex> lock(web_service_mutex_);
+
+  if (web_service_ == nullptr) {
     // No-op rather than throw: the public-API contract treats StopWebService() as idempotent so
     // callers can shut down unconditionally without first probing service state.
     logger_->Log(LogLevel::Information, "StopWebService called but web service is not running; ignoring");
     return;
   }
-
   ActionTracker tracker(Action::kCoreServiceStop, *telemetry_);
 
-#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_->Stop();
   web_service_.reset();
   web_service_running_ = false;
   bound_urls_.clear();
-  telemetry_->EndSession();
+  try {
+    telemetry_->EndSession();
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -574,9 +606,9 @@ void Manager::Shutdown() {
   model_load_manager_->RejectNewLoads();
   session_manager_->CancelAll();
 
-  if (web_service_running_) {
-    StopWebService();
-  }
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  StopWebService();
+#endif
 
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
