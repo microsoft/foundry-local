@@ -10,6 +10,8 @@
 #include <oatpp/web/protocol/http/outgoing/Response.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 
+#include "telemetry/telemetry_redaction.h"
+
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -69,7 +71,15 @@ inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::Incomi
     return {};
   }
   auto ua = request->getHeader("User-Agent");
-  return ua ? *ua : std::string{};
+  if (!ua) {
+    return {};
+  }
+  auto scrubbed = ScrubTelemetryErrorMessage(*ua);
+  constexpr size_t kMaxUserAgentLength = 256;
+  if (scrubbed.size() > kMaxUserAgentLength) {
+    scrubbed.resize(kMaxUserAgentLength);
+  }
+  return scrubbed;
 }
 
 // ========================================================================

@@ -23,6 +23,7 @@ namespace foundry_local_node {
 struct ManagerLifecycle {
   std::atomic<bool> disposed{false};
   std::atomic<int> active_sessions{0};
+  std::atomic<int> active_workers{0};
 };
 
 class Manager : public Napi::ObjectWrap<Manager> {

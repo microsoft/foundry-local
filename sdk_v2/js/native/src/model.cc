@@ -19,6 +19,24 @@ namespace foundry_local_node {
 
 namespace {
 
+struct WorkerLease {
+  explicit WorkerLease(std::shared_ptr<ManagerLifecycle> lifecycle) : lifecycle_(std::move(lifecycle)) {
+    if (lifecycle_) {
+      lifecycle_->active_workers.fetch_add(1, std::memory_order_acq_rel);
+    }
+  }
+  ~WorkerLease() {
+    if (lifecycle_) {
+      lifecycle_->active_workers.fetch_sub(1, std::memory_order_acq_rel);
+    }
+  }
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+};
+
+std::shared_ptr<void> MakeWorkerLease(std::shared_ptr<ManagerLifecycle> lifecycle) {
+  return std::make_shared<WorkerLease>(std::move(lifecycle));
+}
+
 const char* DeviceTypeToString(flDeviceType dt) {
   switch (dt) {
     case FOUNDRY_LOCAL_DEVICE_CPU:
@@ -323,8 +341,10 @@ Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   if (!manager_keepalive) {
     return env.Undefined();
   }
+  auto worker_lease = MakeWorkerLease(lifecycle_);
   return PromiseWorkerVoid::Run(
-      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive)]() { m->Load(); },
+      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive),
+            worker_lease = std::move(worker_lease)]() { m->Load(); },
       std::move(owner));
 }
 
@@ -341,8 +361,10 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
   if (!manager_keepalive) {
     return env.Undefined();
   }
+  auto worker_lease = MakeWorkerLease(lifecycle_);
   return PromiseWorkerVoid::Run(
-      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive)]() { m->Unload(); },
+      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive),
+            worker_lease = std::move(worker_lease)]() { m->Unload(); },
       std::move(owner));
 }
 
@@ -355,13 +377,14 @@ namespace {
 class DownloadWorker : public Napi::AsyncWorker {
  public:
   DownloadWorker(Napi::Env env, foundry_local::IModel* impl, std::shared_ptr<void> keepalive,
-                 std::shared_ptr<foundry_local::Manager> manager_keepalive, Napi::ObjectReference owner,
-                 Napi::ThreadSafeFunction tsfn)
+                 std::shared_ptr<foundry_local::Manager> manager_keepalive, std::shared_ptr<void> worker_lease,
+                 Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
         keepalive_(std::move(keepalive)),
         manager_keepalive_(std::move(manager_keepalive)),
+        worker_lease_(std::move(worker_lease)),
         owner_(std::move(owner)),
         tsfn_(std::move(tsfn)) {}
 
@@ -427,6 +450,7 @@ class DownloadWorker : public Napi::AsyncWorker {
   foundry_local::IModel* impl_;
   std::shared_ptr<void> keepalive_;
   std::shared_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<void> worker_lease_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
   std::string err_msg_;
@@ -461,7 +485,8 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto* w = new DownloadWorker(env, impl_, keepalive_, std::move(manager_keepalive), std::move(owner),
+  auto* w = new DownloadWorker(env, impl_, keepalive_, std::move(manager_keepalive), MakeWorkerLease(lifecycle_),
+                               std::move(owner),
                                std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();

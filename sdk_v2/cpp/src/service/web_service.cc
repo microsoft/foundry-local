@@ -227,13 +227,9 @@ class UnmatchedRouteInterceptor : public oatpp::web::server::interceptor::Reques
       return nullptr;  // a handler will serve this request
     }
 
-    std::string user_agent;
-    if (auto ua = request->getHeader("User-Agent")) {
-      user_agent = *ua;
-    }
     {
       ActionTracker tracker(Action::kServiceRequestUnmatched, telemetry_,
-                            InvocationContext::Direct(user_agent));
+                            InvocationContext::Direct(GetUserAgent(request)));
       tracker.SetStatus(ActionStatus::kClientError);
     }
 

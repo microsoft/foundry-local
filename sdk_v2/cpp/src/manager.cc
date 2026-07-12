@@ -510,6 +510,9 @@ void Manager::StartWebService() {
       FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                        "cannot start local web service when external_service_url is configured");
     }
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+      FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot start web service during shutdown");
+    }
 
     web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
                                                 *session_manager_, *telemetry_,
@@ -530,6 +533,7 @@ void Manager::StartWebService() {
         // carry ext.app.sesId and the backend gets session duration.
         try {
           telemetry_->StartSession();
+          web_service_session_started_ = true;
         } catch (const std::exception& ex) {
           logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
         } catch (...) {
@@ -549,6 +553,7 @@ void Manager::StartWebService() {
 
   if (stop_after_start) {
     StopWebService();
+    FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "web service stopped because shutdown was requested");
   }
 
   tracker.SetStatus(ActionStatus::kSuccess);
@@ -582,12 +587,15 @@ void Manager::StopWebService() {
   web_service_.reset();
   web_service_running_ = false;
   bound_urls_.clear();
-  try {
-    telemetry_->EndSession();
-  } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
-  } catch (...) {
-    logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
+  if (web_service_session_started_) {
+    web_service_session_started_ = false;
+    try {
+      telemetry_->EndSession();
+    } catch (const std::exception& ex) {
+      logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+    } catch (...) {
+      logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
+    }
   }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else

@@ -150,6 +150,7 @@ class Manager {
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> web_service_running_{false};
   mutable std::mutex web_service_mutex_;
+  bool web_service_session_started_ = false;
   std::vector<std::string> bound_urls_;
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
