@@ -70,8 +70,8 @@ Napi::Value WrapOwnedModelOrUndefined(Napi::Env env, std::unique_ptr<foundry_loc
   return Model::NewInstance(env, std::move(token));
 }
 
-// Extract IModel* from a JS Model arg, or return nullptr if not a Model.
-foundry_local::IModel* ExtractIModel(const Napi::Value& v) {
+// Extract Model* from a JS Model arg, or return nullptr if not a Model.
+Model* ExtractModel(const Napi::Value& v) {
   if (!v.IsObject()) {
     return nullptr;
   }
@@ -84,8 +84,7 @@ foundry_local::IModel* ExtractIModel(const Napi::Value& v) {
   if (!obj.InstanceOf(ctor)) {
     return nullptr;
   }
-  Model* m = Napi::ObjectWrap<Model>::Unwrap(obj);
-  return m != nullptr ? m->native_impl() : nullptr;
+  return Napi::ObjectWrap<Model>::Unwrap(obj);
 }
 
 Napi::ObjectReference CloneManager(const Napi::ObjectReference& mgr) {
@@ -217,16 +216,19 @@ Napi::Value Catalog::GetLatestVersion(const Napi::CallbackInfo& info) {
     Napi::TypeError::New(env, "getLatestVersion(model: Model)").ThrowAsJavaScriptException();
     return env.Undefined();
   }
-  foundry_local::IModel* arg = ExtractIModel(info[0]);
-  if (arg == nullptr) {
+  Model* arg = ExtractModel(info[0]);
+  if (arg == nullptr || arg->native_impl() == nullptr) {
     Napi::TypeError::New(env, "getLatestVersion: argument must be a Model").ThrowAsJavaScriptException();
     return env.Undefined();
   }
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    if (arg->manager_disposed() || !arg->manager_keepalive()) {
+      throw foundry_local::Error("Manager has been disposed", FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    }
     (void)manager_alive;
-    auto owned = impl_->GetLatestVersion(*arg);
+    auto owned = impl_->GetLatestVersion(*arg->native_impl());
     return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_, lifecycle_);
   });
 }
