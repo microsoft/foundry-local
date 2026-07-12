@@ -22,13 +22,15 @@
 namespace fl {
 
 EmbeddingsSession::EmbeddingsSession(const fl::Model& catalog_model, GenAIModelInstance& model,
-                                     ILogger& logger, ITelemetry& telemetry)
+                                     ILogger& logger, ITelemetry& telemetry, bool session_ref_acquired)
     : Session(catalog_model, logger, telemetry, /*allow_concurrent_requests=*/true),
       logger_(logger),
       model_(model) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating EmbeddingsSession for model: {}", model.ModelId()));
   // Last so a throw above does not leak a refcount; nothing below can throw.
-  model_.AcquireSession();
+  if (!session_ref_acquired) {
+    model_.AcquireSession();
+  }
 }
 
 EmbeddingsSession::~EmbeddingsSession() {

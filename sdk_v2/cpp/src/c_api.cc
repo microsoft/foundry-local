@@ -393,10 +393,10 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
   {
     std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
     manager->urls_snapshots.push_back(std::move(snapshot));
+    *out_urls = snapshot_ptr->pointers.empty() ? nullptr : snapshot_ptr->pointers.data();
+    *out_num_urls = snapshot_ptr->pointers.size();
   }
 
-  *out_urls = snapshot_ptr->pointers.empty() ? nullptr : snapshot_ptr->pointers.data();
-  *out_num_urls = snapshot_ptr->pointers.size();
   return nullptr;
   API_IMPL_END
 }
@@ -408,6 +408,10 @@ FL_API_STATUS_IMPL(Manager_WebServiceStopImpl, flManager* manager) {
   }
 
   manager->impl.StopWebService();
+  {
+    std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
+    manager->urls_snapshots.clear();
+  }
   return nullptr;
   API_IMPL_END
 }

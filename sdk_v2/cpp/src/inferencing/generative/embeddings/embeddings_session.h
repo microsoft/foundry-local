@@ -22,7 +22,7 @@ class GenAIModelInstance;
 class EmbeddingsSession : public Session {
  public:
   EmbeddingsSession(const fl::Model& catalog_model, GenAIModelInstance& model,
-                    ILogger& logger, ITelemetry& telemetry);
+                    ILogger& logger, ITelemetry& telemetry, bool session_ref_acquired = false);
   ~EmbeddingsSession();
 
   EmbeddingsSession(EmbeddingsSession&&) = delete;

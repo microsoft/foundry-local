@@ -35,7 +35,8 @@ struct SpeechSegmentItem;
 ///         AudioTranscriptionResponse payload.
 class AudioSession : public Session {
  public:
-  AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry);
+  AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry,
+               bool session_ref_acquired = false);
   ~AudioSession();
 
   // Movable: transfers session refcount ownership to the moved-to instance.

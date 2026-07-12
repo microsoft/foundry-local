@@ -16,10 +16,19 @@ namespace foundry_local_node {
 
 namespace {
 
+std::shared_ptr<foundry_local::Manager> LockManagerOrThrow(
+    const std::weak_ptr<foundry_local::Manager>& manager_keepalive) {
+  auto manager = manager_keepalive.lock();
+  if (!manager) {
+    throw foundry_local::Error("Manager has been disposed", FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+  return manager;
+}
+
 // Wrap a ModelList (rvalue) into a JS array of Model handles, each pinning the
 // passed-in manager reference.
 Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml, Napi::ObjectReference manager,
-                          std::shared_ptr<foundry_local::Manager> manager_keepalive) {
+                          std::weak_ptr<foundry_local::Manager> manager_keepalive) {
   auto list = std::make_shared<foundry_local::ModelList>(std::move(ml));
   auto models = list->Models();
   Napi::Array arr = Napi::Array::New(env, models.size());
@@ -37,7 +46,7 @@ Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml, Napi::Obje
 // Wrap an owning unique_ptr<IModel> into a JS Model (or undefined when null).
 Napi::Value WrapOwnedModelOrUndefined(Napi::Env env, std::unique_ptr<foundry_local::IModel> owned,
                                       Napi::ObjectReference manager,
-                                      std::shared_ptr<foundry_local::Manager> manager_keepalive) {
+                                      std::weak_ptr<foundry_local::Manager> manager_keepalive) {
   if (!owned) {
     return env.Undefined();
   }
@@ -118,6 +127,8 @@ Catalog::Catalog(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Catalog>(inf
 Napi::Value Catalog::GetName(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+    (void)manager_alive;
     std::string_view name = impl_->GetName();
     return Napi::String::New(env, std::string(name));
   });
@@ -130,6 +141,8 @@ Napi::Value Catalog::GetModels(const Napi::CallbackInfo& info) {
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(
       env, [&]() -> Napi::Value {
+        auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+        (void)manager_alive;
         return WrapModelList(env, impl_->GetModels(), std::move(mgr), manager_keepalive_);
       });
 }
@@ -138,6 +151,8 @@ Napi::Value Catalog::GetCachedModels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+    (void)manager_alive;
     return WrapModelList(env, impl_->GetCachedModels(), std::move(mgr), manager_keepalive_);
   });
 }
@@ -146,6 +161,8 @@ Napi::Value Catalog::GetLoadedModels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+    (void)manager_alive;
     return WrapModelList(env, impl_->GetLoadedModels(), std::move(mgr), manager_keepalive_);
   });
 }
@@ -161,6 +178,8 @@ Napi::Value Catalog::GetModel(const Napi::CallbackInfo& info) {
   std::string alias = info[0].As<Napi::String>();
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+    (void)manager_alive;
     auto owned = impl_->GetModel(alias);
     return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_);
   });
@@ -175,6 +194,8 @@ Napi::Value Catalog::GetModelVariant(const Napi::CallbackInfo& info) {
   std::string model_id = info[0].As<Napi::String>();
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+    (void)manager_alive;
     auto owned = impl_->GetModelVariant(model_id);
     return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_);
   });
@@ -193,6 +214,8 @@ Napi::Value Catalog::GetLatestVersion(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_);
+    (void)manager_alive;
     auto owned = impl_->GetLatestVersion(*arg);
     return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_);
   });

@@ -58,13 +58,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+    const std::string& model_name, Model*& model, ModelLoadManager::LoadedModelLease& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.AcquireLoadedModel(model->Id());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
@@ -123,7 +123,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   // 3. Resolve model
   std::string model_name = req.model;
   Model* model = nullptr;
-  GenAIModelInstance* loaded = nullptr;
+  ModelLoadManager::LoadedModelLease loaded;
   if (auto err = ResolveModel(model_name, model, loaded)) {
     tracker->SetStatus(ActionStatus::kClientError);
     return err;
@@ -140,7 +140,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
   // 5. Dispatch to streaming or non-streaming
   try {
-    AudioSession session(*model, *loaded, ctx_.logger, ctx_.telemetry);
+    AudioSession session(*model, *loaded, ctx_.logger, ctx_.telemetry, true);
+    loaded.Release();
     {
       ActionTracker create_tracker(Action::kSessionCreate, ctx_.telemetry, session_ctx);
       create_tracker.SetModelId(model_name);

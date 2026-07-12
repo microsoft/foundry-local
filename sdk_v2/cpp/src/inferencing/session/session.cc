@@ -49,7 +49,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     }
 
     auto& lm = mgr.GetModelLoadManager();
-    auto* loaded = lm.GetLoadedModel(model.Id());
+    auto loaded = lm.AcquireLoadedModel(model.Id());
     if (!loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
     }
@@ -58,19 +58,22 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
 
     const auto& info = model.Info();
     if (info.task == "chat-completion" || info.task == "vision-language-chat") {
-      auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
+      auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry, true);
+      loaded.Release();
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
 
     if (info.task == "automatic-speech-recognition") {
-      auto session = std::make_unique<AudioSession>(model, *loaded, logger, telemetry);
+      auto session = std::make_unique<AudioSession>(model, *loaded, logger, telemetry, true);
+      loaded.Release();
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
 
     if (info.task == "embeddings") {
-      auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry);
+      auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry, true);
+      loaded.Release();
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
@@ -115,6 +118,9 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   const auto start = std::chrono::steady_clock::now();
   try {
     ProcessRequestImpl(request, response);
+    if (request.canceled.load(std::memory_order_relaxed)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled");
+    }
 
     tracker.SetStatus(ActionStatus::kSuccess);
   } catch (const std::exception& ex) {

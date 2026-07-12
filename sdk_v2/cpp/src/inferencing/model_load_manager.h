@@ -39,6 +39,33 @@ class ModelLoadManager {
     GenAIModelInstance* model = nullptr;  // non-owning pointer; lifetime managed by this class
   };
 
+  class LoadedModelLease {
+   public:
+    LoadedModelLease() = default;
+    ~LoadedModelLease();
+
+    LoadedModelLease(const LoadedModelLease&) = delete;
+    LoadedModelLease& operator=(const LoadedModelLease&) = delete;
+
+    LoadedModelLease(LoadedModelLease&& other) noexcept;
+    LoadedModelLease& operator=(LoadedModelLease&& other) noexcept;
+
+    explicit operator bool() const { return model_ != nullptr; }
+    GenAIModelInstance* get() const { return model_; }
+    GenAIModelInstance& operator*() const { return *model_; }
+    GenAIModelInstance* operator->() const { return model_; }
+
+    void Reset() noexcept;
+    void Release() noexcept { model_ = nullptr; }
+
+   private:
+    explicit LoadedModelLease(GenAIModelInstance* model) : model_(model) {}
+
+    GenAIModelInstance* model_ = nullptr;
+
+    friend class ModelLoadManager;
+  };
+
   ModelLoadManager(IEpDetector& ep_detector, ILogger& logger);
   ~ModelLoadManager();
 
@@ -66,6 +93,10 @@ class ModelLoadManager {
   /// Get a loaded model by ID. Returns nullptr if not loaded.
   /// The returned pointer is valid until UnloadModel is called for this model_id.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id);
+
+  /// Get a loaded model by ID and increment its live-session refcount while
+  /// holding the load-manager lock. Returns an empty lease if not loaded.
+  LoadedModelLease AcquireLoadedModel(std::string_view model_id);
 
   /// Reject all future LoadModel calls. Called by Manager::Shutdown().
   /// Idempotent and thread-safe.

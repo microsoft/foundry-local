@@ -62,6 +62,31 @@ ModelLoadManager::~ModelLoadManager() {
   loaded_models_.clear();
 }
 
+ModelLoadManager::LoadedModelLease::~LoadedModelLease() {
+  Reset();
+}
+
+ModelLoadManager::LoadedModelLease::LoadedModelLease(LoadedModelLease&& other) noexcept
+    : model_(other.model_) {
+  other.model_ = nullptr;
+}
+
+ModelLoadManager::LoadedModelLease& ModelLoadManager::LoadedModelLease::operator=(LoadedModelLease&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    model_ = other.model_;
+    other.model_ = nullptr;
+  }
+  return *this;
+}
+
+void ModelLoadManager::LoadedModelLease::Reset() noexcept {
+  if (model_ != nullptr) {
+    model_->ReleaseSession();
+    model_ = nullptr;
+  }
+}
+
 bool ModelLoadManager::HasEP(const std::string& ep_name) const {
   const auto& device_map = ep_detector_.GetAvailableDevicesToEPs();
   for (const auto& [device, eps] : device_map) {
@@ -268,6 +293,19 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id) 
   }
 
   return nullptr;
+}
+
+ModelLoadManager::LoadedModelLease ModelLoadManager::AcquireLoadedModel(std::string_view model_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::string id_str(model_id);
+  auto it = loaded_models_.find(id_str);
+  if (it == loaded_models_.end()) {
+    return {};
+  }
+
+  it->second->AcquireSession();
+  return LoadedModelLease(it->second.get());
 }
 
 }  // namespace fl
