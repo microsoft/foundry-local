@@ -12,6 +12,7 @@
 #include "http/http_download.h"
 
 #include "logger.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 
@@ -25,6 +26,7 @@
 
 namespace fs = std::filesystem;
 using namespace fl;
+using fl::test::TempPath;
 
 namespace {
 
@@ -52,33 +54,13 @@ class RecordingLogger : public ILogger {
   std::vector<std::pair<LogLevel, std::string>> entries;
 };
 
-/// RAII temp file that removes itself on construction and destruction so each run starts clean.
-class TempFile {
- public:
-  explicit TempFile(const std::string& name) {
-    path_ = fs::temp_directory_path() / name;
-    std::error_code ec;
-    fs::remove(path_, ec);
-  }
-
-  ~TempFile() {
-    std::error_code ec;
-    fs::remove(path_, ec);
-  }
-
-  const fs::path& path() const { return path_; }
-
- private:
-  fs::path path_;
-};
-
 }  // namespace
 
 // Downloads the real WebGPU EP zip and validates the success path end-to-end: returns
 // true, writes a non-empty file, and reports a terminal 100% progress callback.
 TEST(DISABLED_HttpDownload, DownloadsWebGpuZip) {
   RecordingLogger logger;
-  TempFile dest("fl_webgpu_ep_test.zip");
+  auto dest = TempPath::CreateTempFile("fl_webgpu_ep_test_");
 
   std::vector<float> progress;
   std::atomic<bool> cancel{false};
@@ -104,7 +86,7 @@ TEST(DISABLED_HttpDownload, DownloadsWebGpuZip) {
 // fast regardless of network conditions to real hosts.
 TEST(DISABLED_HttpDownload, ReturnsFalseAndWritesNoFileOnUnresolvableHost) {
   RecordingLogger logger;
-  TempFile dest("fl_webgpu_zip_unresolvable.zip");
+  auto dest = TempPath::CreateTempFile("fl_webgpu_zip_unresolvable_");
 
   bool ok = HttpDownloadFile("https://foundry-local-test.invalid/webgpu_ep_0.1.0_win-x64.zip", dest.path(),
                              kUserAgent, /*cancel_flag=*/nullptr, /*progress_cb=*/{}, logger);
