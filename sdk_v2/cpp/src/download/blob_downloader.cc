@@ -234,7 +234,10 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
                   "Resume sidecar for '" + local_path + "' is complete but unfinalized; starting fresh");
       std::error_code remove_ec;
       std::filesystem::remove(local_path, remove_ec);
-      BlobDownloadState::DeleteState(local_path, logger_);
+      if (remove_ec && std::filesystem::exists(local_path)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "failed to remove suspect completed blob before restart: " + local_path);
+      }
       state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
                                            static_cast<int32_t>(kChunkSize), num_chunks,
                                            chunk_ctx.blob_identity);

@@ -332,8 +332,10 @@ Model* BaseModelCatalog::GetLatestVersion(const Model* model) const {
   auto alias_it = idx->alias_index.find(std::string(model->Info().alias));
   if (alias_it != idx->alias_index.end()) {
     auto variants = alias_it->second->Variants();
-    if (!variants.empty()) {
-      return variants.front();
+    for (auto* variant : variants) {
+      if (variant != nullptr && variant->Info().name == model->Info().name) {
+        return variant;
+      }
     }
   }
 

@@ -173,6 +173,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   // Track cancellation from the progress callback
   bool cancelled = false;
   IEpBootstrapper::ProgressCallback wrapped_cb;
+  std::vector<std::string> unmatched_requested_names = names ? *names : std::vector<std::string>{};
 
   if (progress_cb) {
     wrapped_cb = [&progress_cb, &cancelled](const std::string& ep_name, float percent) -> bool {
@@ -202,6 +203,9 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       if (found == names->end()) {
         continue;
       }
+      unmatched_requested_names.erase(std::remove(unmatched_requested_names.begin(), unmatched_requested_names.end(),
+                                                  bs->Name()),
+                                      unmatched_requested_names.end());
     }
 
     ++telemetry_num_providers;
@@ -270,6 +274,12 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     result.cancelled = true;
     result.success = false;
     result.status = "EP download cancelled by user";
+  } else if (!unmatched_requested_names.empty()) {
+    result.success = false;
+    for (auto& name : unmatched_requested_names) {
+      result.failed_eps.push_back(std::move(name));
+    }
+    result.status = "Some requested EPs are not available";
   } else if (result.failed_eps.empty()) {
     result.status = "All requested EPs registered successfully";
   } else {

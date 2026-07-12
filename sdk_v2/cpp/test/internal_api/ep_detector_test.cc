@@ -199,24 +199,26 @@ TEST_F(EpDetectorTest, DownloadFiltered_UnknownNamesSkipped) {
   std::vector<std::string> names = {"CUDAExecutionProvider", "NonExistentProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
-  EXPECT_TRUE(result.success);
+  EXPECT_FALSE(result.success);
   ASSERT_EQ(result.registered_eps.size(), 1u);
   EXPECT_EQ(result.registered_eps[0], "CUDAExecutionProvider");
-  EXPECT_TRUE(result.failed_eps.empty());
+  ASSERT_EQ(result.failed_eps.size(), 1u);
+  EXPECT_EQ(result.failed_eps[0], "NonExistentProvider");
 
   EXPECT_TRUE(mocks[0]->download_called_);
 }
 
-TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknown_SucceedsWithNothing) {
+TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknownFailsWithRequestedName) {
   std::vector<MockEpBootstrapper*> mocks;
   auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}});
 
   std::vector<std::string> names = {"FakeProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
-  EXPECT_TRUE(result.success);
+  EXPECT_FALSE(result.success);
   EXPECT_TRUE(result.registered_eps.empty());
-  EXPECT_TRUE(result.failed_eps.empty());
+  ASSERT_EQ(result.failed_eps.size(), 1u);
+  EXPECT_EQ(result.failed_eps[0], "FakeProvider");
 
   EXPECT_FALSE(mocks[0]->download_called_);
 }
