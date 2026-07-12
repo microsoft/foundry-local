@@ -67,6 +67,7 @@ class Model : public Napi::ObjectWrap<Model> {
   // the parent Manager ObjectReference and pin it for the session lifetime.
   const Napi::ObjectReference& manager() const noexcept { return manager_; }
   std::shared_ptr<foundry_local::Manager> manager_keepalive() const noexcept { return manager_keepalive_.lock(); }
+  std::shared_ptr<ManagerLifecycle> manager_lifecycle() const noexcept { return lifecycle_; }
   bool manager_disposed() const noexcept;
 
  private:

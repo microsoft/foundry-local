@@ -5,6 +5,7 @@
 #include "addon_data.h"
 #include "errors.h"
 #include "items.h"
+#include "manager.h"
 #include "model.h"
 #include "promise_worker.h"
 #include "request.h"
@@ -21,6 +22,36 @@
 namespace foundry_local_node {
 
 namespace {
+
+struct SessionLease {
+  explicit SessionLease(std::shared_ptr<ManagerLifecycle> lifecycle)
+      : lifecycle_(std::move(lifecycle)) {
+    if (lifecycle_) {
+      lifecycle_->active_sessions.fetch_add(1, std::memory_order_acq_rel);
+    }
+  }
+
+  ~SessionLease() {
+    if (lifecycle_) {
+      lifecycle_->active_sessions.fetch_sub(1, std::memory_order_acq_rel);
+    }
+  }
+
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+};
+
+std::shared_ptr<void> MakeSessionLease(std::shared_ptr<ManagerLifecycle> lifecycle) {
+  return std::make_shared<SessionLease>(std::move(lifecycle));
+}
+
+template <typename SessT>
+void ReleaseSessionState(std::shared_ptr<SessT>& impl,
+                         std::shared_ptr<foundry_local::Manager>& manager_keepalive,
+                         std::shared_ptr<void>& session_lease) {
+  impl.reset();
+  manager_keepalive.reset();
+  session_lease.reset();
+}
 
 const char* FinishReasonToString(flFinishReason r) {
   switch (r) {
@@ -99,7 +130,8 @@ foundry_local::Request* UnwrapRequest(Napi::Env env, const Napi::Value& v) {
 template <typename SessT>
 Napi::Value ProcessRequestOn(Napi::Env env, std::shared_ptr<SessT> sess, const Napi::Value& request_arg,
                              Napi::ObjectReference manager_ref,
-                             std::shared_ptr<foundry_local::Manager> manager_keepalive) {
+                             std::shared_ptr<foundry_local::Manager> manager_keepalive,
+                             std::shared_ptr<void> session_lease) {
   foundry_local::Request* req = UnwrapRequest(env, request_arg);
   if (req == nullptr) return env.Undefined();  // pending exception
   Napi::ObjectReference req_pin = Napi::Reference<Napi::Object>::New(request_arg.As<Napi::Object>(), 1);
@@ -109,9 +141,10 @@ Napi::Value ProcessRequestOn(Napi::Env env, std::shared_ptr<SessT> sess, const N
     Napi::ObjectReference manager;
     Napi::ObjectReference request;
     std::shared_ptr<foundry_local::Manager> native_manager;
+    std::shared_ptr<void> session_lease;
   };
   auto pins = std::make_shared<Pins>(
-      Pins{std::move(manager_ref), std::move(req_pin), std::move(manager_keepalive)});
+      Pins{std::move(manager_ref), std::move(req_pin), std::move(manager_keepalive), std::move(session_lease)});
 
   return PromiseWorker<Result>::Run(
       env,
@@ -152,6 +185,7 @@ struct StreamCtx {
   Napi::ObjectReference manager;
   Napi::ObjectReference request;
   std::shared_ptr<foundry_local::Manager> native_manager;
+  std::shared_ptr<void> session_lease;
   std::shared_ptr<foundry_local::Response> response;
   std::string err_msg;
   int err_code = 0;
@@ -263,7 +297,8 @@ class StreamWorker : public Napi::AsyncWorker {
 template <typename SessT>
 Napi::Value ProcessStreamingRequestOn(Napi::Env env, std::shared_ptr<SessT> sess, const Napi::CallbackInfo& info,
                                       Napi::ObjectReference manager_ref,
-                                      std::shared_ptr<foundry_local::Manager> manager_keepalive) {
+                                      std::shared_ptr<foundry_local::Manager> manager_keepalive,
+                                      std::shared_ptr<void> session_lease) {
   if (info.Length() < 2 || !info[1].IsFunction()) {
     Napi::TypeError::New(env, "processStreamingRequest(request: Request, onItem: (item) => void)")
         .ThrowAsJavaScriptException();
@@ -278,6 +313,7 @@ Napi::Value ProcessStreamingRequestOn(Napi::Env env, std::shared_ptr<SessT> sess
                             std::move(manager_ref),
                             std::move(req_pin),
                             std::move(manager_keepalive),
+                            std::move(session_lease),
                             nullptr,
                             "",
                             0,
@@ -334,6 +370,8 @@ ChatSession::ChatSession(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Chat
       return;
     }
     impl_ = std::make_shared<foundry_local::ChatSession>(*native);
+    lifecycle_ = model->manager_lifecycle();
+    session_lease_ = MakeSessionLease(lifecycle_);
     manager_keepalive_ = std::move(manager_keepalive);
   } catch (const foundry_local::Error& e) {
     ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
@@ -343,6 +381,10 @@ ChatSession::ChatSession(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Chat
     return;
   }
   manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+}
+
+ChatSession::~ChatSession() {
+  ReleaseSessionState(impl_, manager_keepalive_, session_lease_);
 }
 
 bool ChatSession::ThrowIfDisposed(Napi::Env env) {
@@ -362,14 +404,14 @@ Napi::Value ChatSession::ProcessRequest(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  return ProcessRequestOn(env, impl_, info[0], std::move(owner), manager_keepalive_);
+  return ProcessRequestOn(env, impl_, info[0], std::move(owner), manager_keepalive_, session_lease_);
 }
 
 Napi::Value ChatSession::ProcessStreamingRequest(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (ThrowIfDisposed(env)) return env.Undefined();
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  return ProcessStreamingRequestOn(env, impl_, info, std::move(owner), manager_keepalive_);
+  return ProcessStreamingRequestOn(env, impl_, info, std::move(owner), manager_keepalive_, session_lease_);
 }
 
 Napi::Value ChatSession::SetOptions(const Napi::CallbackInfo& info) {
@@ -449,8 +491,7 @@ Napi::Value ChatSession::UndoTurns(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value ChatSession::Dispose(const Napi::CallbackInfo& info) {
-  impl_.reset();
-  manager_keepalive_.reset();
+  ReleaseSessionState(impl_, manager_keepalive_, session_lease_);
   return info.Env().Undefined();
 }
 
@@ -498,6 +539,8 @@ EmbeddingsSession::EmbeddingsSession(const Napi::CallbackInfo& info)
       return;
     }
     impl_ = std::make_shared<foundry_local::EmbeddingsSession>(*native);
+    lifecycle_ = model->manager_lifecycle();
+    session_lease_ = MakeSessionLease(lifecycle_);
     manager_keepalive_ = std::move(manager_keepalive);
   } catch (const foundry_local::Error& e) {
     ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
@@ -507,6 +550,10 @@ EmbeddingsSession::EmbeddingsSession(const Napi::CallbackInfo& info)
     return;
   }
   manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+}
+
+EmbeddingsSession::~EmbeddingsSession() {
+  ReleaseSessionState(impl_, manager_keepalive_, session_lease_);
 }
 
 bool EmbeddingsSession::ThrowIfDisposed(Napi::Env env) {
@@ -526,7 +573,7 @@ Napi::Value EmbeddingsSession::ProcessRequest(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  return ProcessRequestOn(env, impl_, info[0], std::move(owner), manager_keepalive_);
+  return ProcessRequestOn(env, impl_, info[0], std::move(owner), manager_keepalive_, session_lease_);
 }
 
 Napi::Value EmbeddingsSession::SetOptions(const Napi::CallbackInfo& info) {
@@ -545,8 +592,7 @@ Napi::Value EmbeddingsSession::SetOptions(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value EmbeddingsSession::Dispose(const Napi::CallbackInfo& info) {
-  impl_.reset();
-  manager_keepalive_.reset();
+  ReleaseSessionState(impl_, manager_keepalive_, session_lease_);
   return info.Env().Undefined();
 }
 
@@ -599,6 +645,8 @@ AudioSession::AudioSession(const Napi::CallbackInfo& info)
       return;
     }
     impl_ = std::make_shared<foundry_local::AudioSession>(*native);
+    lifecycle_ = model->manager_lifecycle();
+    session_lease_ = MakeSessionLease(lifecycle_);
     manager_keepalive_ = std::move(manager_keepalive);
   } catch (const foundry_local::Error& e) {
     ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
@@ -608,6 +656,10 @@ AudioSession::AudioSession(const Napi::CallbackInfo& info)
     return;
   }
   manager_ = Napi::Reference<Napi::Object>::New(model->manager().Value(), 1);
+}
+
+AudioSession::~AudioSession() {
+  ReleaseSessionState(impl_, manager_keepalive_, session_lease_);
 }
 
 bool AudioSession::ThrowIfDisposed(Napi::Env env) {
@@ -627,14 +679,14 @@ Napi::Value AudioSession::ProcessRequest(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  return ProcessRequestOn(env, impl_, info[0], std::move(owner), manager_keepalive_);
+  return ProcessRequestOn(env, impl_, info[0], std::move(owner), manager_keepalive_, session_lease_);
 }
 
 Napi::Value AudioSession::ProcessStreamingRequest(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (ThrowIfDisposed(env)) return env.Undefined();
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  return ProcessStreamingRequestOn(env, impl_, info, std::move(owner), manager_keepalive_);
+  return ProcessStreamingRequestOn(env, impl_, info, std::move(owner), manager_keepalive_, session_lease_);
 }
 
 Napi::Value AudioSession::SetOptions(const Napi::CallbackInfo& info) {
@@ -653,8 +705,7 @@ Napi::Value AudioSession::SetOptions(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value AudioSession::Dispose(const Napi::CallbackInfo& info) {
-  impl_.reset();
-  manager_keepalive_.reset();
+  ReleaseSessionState(impl_, manager_keepalive_, session_lease_);
   return info.Env().Undefined();
 }
 

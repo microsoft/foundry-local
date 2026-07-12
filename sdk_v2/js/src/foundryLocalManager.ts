@@ -211,10 +211,10 @@ export class FoundryLocalManager {
    * (and any method on a `Catalog` or `Model` obtained through this manager) throws a `FoundryLocalError`.
    */
   dispose(): void {
+    this.#native.dispose();
     if (liveManager === this) {
       liveManager = undefined;
     }
-    this.#native.dispose();
     this.#catalog = undefined;
     this.#urls = [];
   }

@@ -236,6 +236,11 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
 Napi::Value Manager::Dispose(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   // Idempotent — releasing an already-null unique_ptr is a no-op.
+  if (lifecycle_->active_sessions.load(std::memory_order_acquire) > 0) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "Manager has active sessions; dispose sessions before disposing the manager");
+    return env.Undefined();
+  }
   lifecycle_->disposed.store(true, std::memory_order_release);
   impl_.reset();
   return env.Undefined();
