@@ -9,6 +9,7 @@
 //   - Variant grouping behavior
 //
 #include "catalog/base_model_catalog.h"
+#include "exception.h"
 #include "internal_api/test_helpers.h"
 #include "logger.h"
 #include "model.h"
@@ -106,6 +107,38 @@ class QueryingTestCatalog : public BaseModelCatalog {
   mutable std::vector<Model> models_;
   mutable std::vector<Model> version_fetch_results_;
   mutable std::vector<Model> id_fetch_results_;
+};
+
+class FailingRefreshCatalog : public BaseModelCatalog {
+ public:
+  explicit FailingRefreshCatalog(ILogger& logger) : BaseModelCatalog("failing-refresh-catalog", logger) {}
+
+  void SetModels(std::vector<Model> models) {
+    models_ = std::move(models);
+  }
+
+  void FailNextFetch() {
+    fail_next_fetch_ = true;
+  }
+
+  int FetchCount() const {
+    return fetch_count_;
+  }
+
+ protected:
+  std::vector<Model> FetchModels() const override {
+    ++fetch_count_;
+    if (fail_next_fetch_) {
+      fail_next_fetch_ = false;
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "simulated refresh failure");
+    }
+    return std::move(models_);
+  }
+
+ private:
+  mutable std::vector<Model> models_;
+  mutable bool fail_next_fetch_ = false;
+  mutable int fetch_count_ = 0;
 };
 
 // Helper: create a Model from basic fields.
@@ -244,6 +277,25 @@ TEST_F(BaseModelCatalogTest, RefreshPreservesExplicitVariantSelection) {
   ASSERT_EQ(refreshed.size(), 1u);
   EXPECT_EQ(refreshed[0]->Variants().size(), 2u);
   EXPECT_EQ(container->Id(), "phi-3-mini-cpu:1");
+}
+
+TEST_F(BaseModelCatalogTest, ForcedRefreshFailureBacksOffWhenCatalogAlreadyPopulated) {
+  FailingRefreshCatalog catalog(logger_);
+  std::vector<Model> models;
+  models.push_back(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+  catalog.SetModels(std::move(models));
+
+  ASSERT_NE(catalog.GetModel("phi-3"), nullptr);
+  EXPECT_EQ(catalog.FetchCount(), 1);
+
+  catalog.FailNextFetch();
+  catalog.InvalidateCache();
+
+  EXPECT_EQ(catalog.ListModels().size(), 1u);
+  EXPECT_EQ(catalog.FetchCount(), 2);
+
+  EXPECT_EQ(catalog.ListModels().size(), 1u);
+  EXPECT_EQ(catalog.FetchCount(), 2);
 }
 
 TEST_F(BaseModelCatalogTest, GetModel_NotFound_ReturnsNullptr) {

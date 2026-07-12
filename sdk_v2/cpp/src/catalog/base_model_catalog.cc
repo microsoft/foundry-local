@@ -209,8 +209,9 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  bool needs_refresh = force_refresh_ ||
-                       (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
+  auto now = std::chrono::steady_clock::now();
+  bool needs_refresh = (force_refresh_ && now >= next_refresh_at_) ||
+                       (allow_refresh && now >= next_refresh_at_);
 
   if (populated_ && !needs_refresh) {
     return;
