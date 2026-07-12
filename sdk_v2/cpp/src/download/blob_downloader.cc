@@ -226,13 +226,6 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       }
     }
 
-    // Track cumulative bytes for progress reporting; seed with bytes already
-    // present on disk so percent stays monotonic across resume.
-    std::atomic<int64_t> bytes_completed{state->CalculateDownloadedSize()};
-    if (bytes_written_cb && bytes_completed.load() > 0) {
-      bytes_written_cb(bytes_completed.load());
-    }
-
     auto pending = state->GetPendingChunks();
     if (pending.empty()) {
       // A complete sidecar means a previous attempt finished all chunks but did not reach finalization. Do not trust
@@ -249,8 +242,14 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
         FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
                  "failed to persist reset download state for '" + local_path + "'");
       }
-      bytes_completed.store(0);
       pending = state->GetPendingChunks();
+    }
+
+    // Track cumulative bytes for progress reporting; seed with bytes already
+    // present on disk so percent stays monotonic across resume.
+    std::atomic<int64_t> bytes_completed{state->CalculateDownloadedSize()};
+    if (bytes_written_cb && bytes_completed.load() > 0) {
+      bytes_written_cb(bytes_completed.load());
     }
 
     // Open the file writer once for the whole download. Open() pre-allocates

@@ -1846,6 +1846,42 @@ TEST(AzureBlobDownloaderResumeTest, CleansUpSidecarOnEmptyBlob) {
   EXPECT_EQ(d.chunk_call_count.load(), 0);
 }
 
+TEST(AzureBlobDownloaderResumeTest, CompleteUnfinalizedSidecarDoesNotEmitRegressingProgress) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 2;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  {
+    std::ofstream f(local, std::ios::binary);
+    f.seekp(kBlobSize - 1);
+    f.put('\0');
+  }
+  {
+    auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+    for (int32_t i = 0; i < kNumChunks; ++i) {
+      state->MarkChunkComplete(i);
+    }
+    ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  }
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+  std::vector<int64_t> progress;
+
+  d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/2,
+                 [&](int64_t bytes) { progress.push_back(bytes); });
+
+  ASSERT_FALSE(progress.empty());
+  EXPECT_LT(progress.front(), kBlobSize);
+  for (size_t i = 1; i < progress.size(); ++i) {
+    EXPECT_GE(progress[i], progress[i - 1]);
+  }
+  EXPECT_EQ(progress.back(), kBlobSize);
+}
+
 TEST(AzureBlobDownloaderResumeTest, ChunkFailureCancelsInFlightPeersFast) {
   TempDir tmpdir;
   auto local = tmpdir.path() / "blob.bin";
