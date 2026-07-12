@@ -6,9 +6,9 @@
 
 namespace Microsoft.AI.Foundry.Local.Tests;
 
-using TUnit.Core;
-
 using System.Threading.Tasks;
+
+using TUnit.Core;
 
 public class SkipInCIAttribute() : SkipAttribute("This test is only supported locally. Skipped on CIs.")
 {

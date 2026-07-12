@@ -8,7 +8,9 @@
 // - DownloadManager (full flow orchestration)
 #include "catalog/azure_catalog_client.h"
 #include "catalog/azure_catalog_models.h"
+#include "download/blob_download_state.h"
 #include "download/blob_downloader.h"
+#include "download/cross_process_file_lock.h"
 #include "download/download_manager.h"
 #include "download/inference_model_writer.h"
 #include "download/model_registry_client.h"
@@ -23,10 +25,15 @@
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,14 +47,27 @@ using namespace fl;
 
 namespace {
 
-/// Create a temporary directory for test isolation.
+/// Create a temporary directory for test isolation. The name comes from MakeUniqueTempPath, so it is
+/// unique both across the separate processes CTest launches per test and across multiple TempDirs
+/// within one test. create_directory must succeed — the directory must not already exist — so a
+/// residual collision (e.g. a directory leaked by an earlier process that reused this pid) advances
+/// to the next name and retries instead of silently sharing an existing directory.
 class TempDir {
  public:
   TempDir() {
-    path_ = fs::temp_directory_path() / ("fl_test_" + std::to_string(std::hash<std::string>{}(
-                                                          std::to_string(reinterpret_cast<uintptr_t>(this)) +
-                                                          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))));
-    fs::create_directories(path_);
+    while (true) {
+      auto candidate = fl::test::MakeUniqueTempPath("fl_test_");
+      std::error_code ec;
+      if (fs::create_directory(candidate, ec)) {
+        path_ = std::move(candidate);
+        return;
+      }
+      if (ec) {
+        throw std::runtime_error("TempDir: failed to create '" + candidate.string() + "': " +
+                                 ec.message());
+      }
+      // candidate already existed — try the next name.
+    }
   }
   ~TempDir() {
     std::error_code ec;
@@ -515,6 +535,99 @@ TEST(BlobDownloadTest, HandlesEmptyBlobList) {
   DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
 
   EXPECT_TRUE(mock.downloaded_blobs.empty());
+}
+
+// ========================================================================
+// Skip-existing (Increment 1: resumable downloads)
+// ========================================================================
+
+TEST(BlobDownloadTest, SkipsExistingFilesWithCorrectSize) {
+  TempDir tmpdir;
+  // Pre-create one of the blobs at the expected size on disk.
+  std::ofstream(tmpdir.path() / "weights.safetensors") << std::string(1000, 'X');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {
+      {"weights.safetensors", 1000},
+      {"config.json", 100},
+  };
+
+  BlobDownloadOptions opts;
+  DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
+
+  // Only the missing blob should be downloaded.
+  ASSERT_EQ(mock.downloaded_blobs.size(), 1u);
+  EXPECT_EQ(mock.downloaded_blobs[0], "config.json");
+}
+
+TEST(BlobDownloadTest, RedownloadsFilesWithWrongSize) {
+  TempDir tmpdir;
+  // Existing file is truncated relative to the expected blob size.
+  std::ofstream(tmpdir.path() / "weights.safetensors") << std::string(500, 'X');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {
+      {"weights.safetensors", 1000},
+  };
+
+  BlobDownloadOptions opts;
+  DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
+
+  // Wrong-size files should be redownloaded (the mock overwrites them).
+  ASSERT_EQ(mock.downloaded_blobs.size(), 1u);
+  EXPECT_EQ(mock.downloaded_blobs[0], "weights.safetensors");
+}
+
+TEST(BlobDownloadTest, ReportsSkippedBytesInInitialProgress) {
+  TempDir tmpdir;
+  // 500 of 2000 bytes already on disk → initial progress should be 25%.
+  std::ofstream(tmpdir.path() / "already.bin") << std::string(500, 'X');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {
+      {"already.bin", 500},
+      {"missing.bin", 1500},
+  };
+
+  std::vector<float> progress_values;
+  BlobDownloadOptions opts;
+  opts.progress = [&](float pct) {
+    progress_values.push_back(pct);
+    return 0;
+  };
+
+  DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
+
+  ASSERT_FALSE(progress_values.empty());
+  // First emitted progress reflects the already-on-disk bytes (500/2000 = 25%).
+  EXPECT_NEAR(progress_values.front(), 100.0f * 500.0f / 2000.0f, 0.5f);
+  // Final progress must hit 100%.
+  EXPECT_FLOAT_EQ(progress_values.back(), 100.0f);
+}
+
+TEST(BlobDownloadTest, EmitsHundredPercentWhenEverythingIsCached) {
+  TempDir tmpdir;
+  std::ofstream(tmpdir.path() / "a.bin") << std::string(100, 'A');
+  std::ofstream(tmpdir.path() / "b.bin") << std::string(200, 'B');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {
+      {"a.bin", 100},
+      {"b.bin", 200},
+  };
+
+  std::vector<float> progress_values;
+  BlobDownloadOptions opts;
+  opts.progress = [&](float pct) {
+    progress_values.push_back(pct);
+    return 0;
+  };
+
+  DownloadBlobsToDirectory(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
+
+  EXPECT_TRUE(mock.downloaded_blobs.empty());
+  ASSERT_FALSE(progress_values.empty());
+  EXPECT_FLOAT_EQ(progress_values.front(), 100.0f);
 }
 
 // ========================================================================
@@ -1072,6 +1185,154 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
   }
 }
 
+// All model downloads serialize through the process-wide download_mutex_, even
+// for two *different* models. A concurrency probe records the peak number of
+// downloads running at once; correct serialization keeps that peak at 1 (the
+// second download can't enter until the first releases the mutex).
+TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
+  TempDir tmpdir;
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [](const std::string&) {
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
+      });
+  manager.SetModelRegistryClient(std::move(registry));
+
+  // Tracks the peak number of downloads running at once. The global download
+  // mutex must keep this at 1 even for different models.
+  class ConcurrencyProbe : public IBlobDownloader {
+   public:
+    std::atomic<int> active{0};
+    std::atomic<int> peak{0};
+
+    std::vector<BlobItemInfo> ListBlobs(const std::string&) override {
+      return {{"variant-cpu/weights.bin", 16}};
+    }
+
+    void DownloadBlob(const std::string&, const std::string& blob_name,
+                      const std::string& local_path, int,
+                      BlobBytesWrittenFn bytes_written_cb,
+                      std::atomic<bool>*) override {
+      int now = ++active;
+      int prev = peak.load();
+      while (now > prev && !peak.compare_exchange_weak(prev, now)) {
+      }
+      // Hold long enough that a second concurrent download would overlap here.
+      std::this_thread::sleep_for(std::chrono::milliseconds(150));
+      --active;
+
+      auto parent = fs::path(local_path).parent_path();
+      if (!parent.empty()) {
+        fs::create_directories(parent);
+      }
+      std::ofstream f(local_path);
+      f << "data for " << blob_name;
+      if (bytes_written_cb) {
+        bytes_written_cb(16);
+      }
+    }
+  };
+
+  auto probe = std::make_unique<ConcurrencyProbe>();
+  auto* probe_raw = probe.get();
+  manager.SetBlobDownloader(std::move(probe));
+
+  auto make_info = [](const char* id, const char* publisher) {
+    ModelInfo info;
+    info.model_id = id;
+    info.name = id;
+    info.uri = std::string("azureml://registries/test/models/") + id + "/versions/1";
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = publisher;
+    return info;
+  };
+  auto info_a = make_info("model-a:1", "PubA");
+  auto info_b = make_info("model-b:1", "PubB");
+
+  std::atomic<int> exceptions{0};
+  std::thread t1([&] {
+    try {
+      manager.DownloadModel(info_a);
+    } catch (...) {
+      ++exceptions;
+    }
+  });
+  std::thread t2([&] {
+    try {
+      manager.DownloadModel(info_b);
+    } catch (...) {
+      ++exceptions;
+    }
+  });
+  t1.join();
+  t2.join();
+
+  EXPECT_EQ(exceptions.load(), 0);
+  EXPECT_EQ(probe_raw->peak.load(), 1)
+      << "The global download mutex must serialize all model downloads, even for different models.";
+}
+
+// Exercise the cross-process file-lock branch of DownloadModel that
+// the in-process-only concurrency tests never reach. A second process (simulated
+// here by holding the lock directly) is mid-download on the same model directory.
+// DownloadModel must (1) observe the held lock, (2) block in WaitForDirectoryLock
+// without holding the in-process download mutex, and (3) once the lock releases
+// AND inference_model.json is present, return the cached result via the post-lock
+// recheck WITHOUT re-downloading anything.
+TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
+  TempDir tmpdir;
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  // Registry + downloader that must stay untouched if the post-lock recheck works.
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [](const std::string&) {
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
+      });
+  manager.SetModelRegistryClient(std::move(registry));
+
+  auto mock = std::make_unique<MockBlobDownloader>();
+  mock->blobs_to_return = {{"weights.bin", 100}};  // non-empty: a stray download would be visible
+  auto* mock_raw = mock.get();
+  manager.SetBlobDownloader(std::move(mock));
+
+  ModelInfo info;
+  info.model_id = "wait-model:1";
+  info.name = "wait-model";
+  info.uri = "azureml://registries/test/models/wait-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Pub";
+
+  // Simulate another process holding the model-directory lock mid-download.
+  auto model_dir = fs::path(tmpdir.string()) / "Pub" / "wait-model-1";
+  fs::create_directories(model_dir);
+  auto held = CrossProcessFileLock::TryAcquireForDirectory(model_dir, fl::test::NullLog());
+  ASSERT_NE(held, nullptr);
+
+  std::atomic<bool> done{false};
+  std::string result;
+  std::thread worker([&] { result = manager.DownloadModel(info); done.store(true); });
+
+  // The call must block on the cross-process lock rather than proceed to download.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  EXPECT_FALSE(done.load()) << "DownloadModel should block while another process holds the lock";
+
+  // The "other process" finishes: publish inference_model.json, then release the lock.
+  {
+    std::ofstream(model_dir / "inference_model.json") << "{}";
+  }
+  held.reset();
+
+  worker.join();
+
+  EXPECT_TRUE(done.load());
+  EXPECT_EQ(result, model_dir.string());
+  EXPECT_TRUE(mock_raw->downloaded_blobs.empty())
+      << "Model became available while waiting; the post-lock recheck must skip the download";
+}
+
 // HasInferenceModelJson must return false instead of throwing when the path
 // it's asked about is not a directory (e.g. a regular file). Previously the
 // underlying directory_iterator would throw filesystem_error.
@@ -1297,4 +1558,380 @@ TEST(DownloadManagerTest, AcceptsNormalModelIdAndPublisher) {
   EXPECT_NO_THROW(manager.GetModelCachePath(info));
   EXPECT_NO_THROW(manager.IsModelCached(info));
   EXPECT_FALSE(manager.IsModelCached(info));
+}
+
+// ========================================================================
+// AzureBlobDownloader resume + cancel-cascade tests
+// Use a subclass that overrides the protected GetBlobSize / DownloadChunkStreaming
+// virtuals to bypass the real Azure SDK and simulate per-chunk behavior.
+// ========================================================================
+
+namespace {
+
+/// Test double for AzureBlobDownloader. Overrides the protected virtuals so
+/// chunked-download orchestration can be exercised without network I/O.
+class FakeChunkAzureDownloader : public AzureBlobDownloader {
+ public:
+  int64_t blob_size = 0;
+
+  /// Per-call hook. Receives the chunk offset and size plus a `sink` callback
+  /// that forwards bytes to the file writer. Allowed to:
+  /// - call `sink` zero or more times with strictly contiguous, cumulative
+  ///   `size`-byte ranges to simulate a successful chunk
+  /// - throw to simulate a transient failure (sink calls so far still hit disk)
+  /// - sleep / poll cancellation
+  std::function<void(int64_t offset, int64_t size,
+                     const std::function<void(const uint8_t*, size_t)>& sink,
+                     const std::function<bool()>& is_cancelled)>
+      chunk_hook;
+
+  std::atomic<int> chunk_call_count{0};
+  std::mutex offsets_mutex;
+  std::vector<int64_t> requested_offsets;
+
+  using AzureBlobDownloader::AzureBlobDownloader;
+
+  // AzureBlobDownloader now requires a logger reference. Tests don't care about
+  // diagnostics, so default-construct against the shared null logger to keep the
+  // many `FakeChunkAzureDownloader d;` sites terse.
+  FakeChunkAzureDownloader() : AzureBlobDownloader(fl::test::NullLog()) {}
+
+ protected:
+  int64_t GetBlobSize(ChunkContext& /*ctx*/) override { return blob_size; }
+
+  void DownloadChunkStreaming(ChunkContext& ctx, int64_t offset, int64_t size,
+                              std::vector<uint8_t>& scratch,
+                              const std::function<void(const uint8_t*, size_t)>& sink) override {
+    chunk_call_count.fetch_add(1);
+    {
+      std::lock_guard<std::mutex> lock(offsets_mutex);
+      requested_offsets.push_back(offset);
+    }
+    if (chunk_hook) {
+      chunk_hook(offset, size, sink, [this, &ctx]() { return IsCancellationRequested(ctx); });
+      return;
+    }
+    // Default: stream the chunk to the sink in scratch-sized pieces, filled
+    // with the low byte of the offset for verification.
+    if (scratch.size() < 64 * 1024) {
+      scratch.resize(64 * 1024);
+    }
+    int64_t remaining = size;
+    while (remaining > 0) {
+      size_t to_emit =
+          static_cast<size_t>(std::min<int64_t>(remaining, static_cast<int64_t>(scratch.size())));
+      std::fill_n(scratch.begin(), to_emit, static_cast<uint8_t>(offset & 0xFF));
+      sink(scratch.data(), to_emit);
+      remaining -= static_cast<int64_t>(to_emit);
+    }
+  }
+};
+
+}  // namespace
+
+TEST(AzureBlobDownloaderResumeTest, SkipsChunksAlreadyMarkedCompleteInSidecar) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 10;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  // Pre-allocate the data file so the downloader takes the resume path.
+  {
+    std::ofstream f(local, std::ios::binary);
+    f.seekp(kBlobSize - 1);
+    f.put('\0');
+  }
+  // Pre-write a sidecar: chunks 0..4 done, 5..9 pending.
+  {
+    auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+    for (int32_t i = 0; i < 5; ++i) {
+      state->MarkChunkComplete(i);
+    }
+    state->SaveState(fl::test::NullLog());
+  }
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+
+  d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/2);
+
+  EXPECT_EQ(d.chunk_call_count.load(), 5);
+  std::sort(d.requested_offsets.begin(), d.requested_offsets.end());
+  std::vector<int64_t> expected{5 * int64_t{kChunkSize}, 6 * int64_t{kChunkSize},
+                                7 * int64_t{kChunkSize}, 8 * int64_t{kChunkSize},
+                                9 * int64_t{kChunkSize}};
+  EXPECT_EQ(d.requested_offsets, expected);
+
+  // Sidecar should be gone on full success.
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+}
+
+TEST(AzureBlobDownloaderResumeTest, IgnoresSidecarWhenDataFileTruncated) {
+  // A valid sidecar marks chunks complete, but the data file was truncated (e.g.
+  // an external cleanup) while the sidecar survived. The downloader must not trust
+  // the sidecar — those "completed" chunks are no longer on disk — and must
+  // re-download every chunk rather than leave them as zeros.
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 10;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  // Sidecar claims chunks 0..4 are done.
+  {
+    auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+    for (int32_t i = 0; i < 5; ++i) {
+      state->MarkChunkComplete(i);
+    }
+    state->SaveState(fl::test::NullLog());
+  }
+  // ...but the data file is truncated, far smaller than kBlobSize.
+  {
+    std::ofstream f(local, std::ios::binary | std::ios::trunc);
+    f << "truncated";
+  }
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+
+  d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/2);
+
+  // The stale sidecar is ignored: every chunk is downloaded, not just 5..9.
+  EXPECT_EQ(d.chunk_call_count.load(), kNumChunks);
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+  EXPECT_EQ(fs::file_size(local), static_cast<uintmax_t>(kBlobSize));
+}
+
+TEST(AzureBlobDownloaderResumeTest, DownloadsAllChunksWhenSidecarMissing) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 4;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+
+  d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/4);
+
+  EXPECT_EQ(d.chunk_call_count.load(), kNumChunks);
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+  // Local file is pre-allocated to blob_size during the first pass.
+  EXPECT_TRUE(fs::exists(local));
+  EXPECT_EQ(fs::file_size(local), static_cast<uintmax_t>(kBlobSize));
+}
+
+TEST(AzureBlobDownloaderResumeTest, PersistsSidecarOnChunkFailure) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 10;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+  // Fail when we see the offset of chunk 4 (specifically chosen so several
+  // chunks land before the failing one across threads).
+  constexpr int64_t kFailOffset = 4 * int64_t{kChunkSize};
+  d.chunk_hook = [&](int64_t offset, int64_t size,
+                     const std::function<void(const uint8_t*, size_t)>& sink,
+                     const std::function<bool()>& /*is_cancelled*/) {
+    if (offset == kFailOffset) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "simulated chunk failure");
+    }
+    std::vector<uint8_t> buf(static_cast<size_t>(size), static_cast<uint8_t>(offset & 0xFF));
+    sink(buf.data(), buf.size());
+  };
+
+  EXPECT_THROW(
+      d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/2),
+      fl::Exception);
+
+  // The sidecar should be persisted so a subsequent call can resume.
+  EXPECT_TRUE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+
+  // Verify the persisted sidecar records partial progress — some chunks completed
+  // before the failure, but not all — so a future resume can skip the ones already
+  // done and re-fetch only the rest.
+  auto retry_state = BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks,
+                                                  fl::test::NullLog());
+  ASSERT_NE(retry_state, nullptr);
+  EXPECT_GT(retry_state->completed_count, 0);
+  EXPECT_LT(retry_state->completed_count, kNumChunks);
+}
+
+// Regression: the sidecar must reach disk before the data file is pre-allocated,
+// not only after save_interval chunks. Open() pre-allocates the file to full
+// size, and IsDownloadNeeded treats "full-size data file + no sidecar" as a
+// completed download. So a crash in the window between pre-allocation and the
+// first periodic save would otherwise leave a full-size, empty file that the
+// next run skips — silently serving zeros. Verify a sidecar is already present
+// the moment the first chunk is requested.
+TEST(AzureBlobDownloaderResumeTest, SidecarExistsBeforeFirstChunkCompletes) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 100;  // far above the per-save chunk interval
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+
+  auto sidecar = BlobDownloadState::GetStateFilePath(local);
+  std::atomic<bool> recorded{false};
+  std::atomic<bool> sidecar_present_at_first_chunk{false};
+  d.chunk_hook = [&](int64_t /*offset*/, int64_t /*size*/,
+                     const std::function<void(const uint8_t*, size_t)>& /*sink*/,
+                     const std::function<bool()>&) {
+    if (!recorded.exchange(true)) {
+      // First chunk callback: CreateNew + the initial SaveState + Open() have
+      // all run, so the sidecar must already exist. Abort before any periodic
+      // save to mimic an early interruption.
+      sidecar_present_at_first_chunk.store(fs::exists(sidecar));
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "stop after first chunk");
+    }
+  };
+
+  EXPECT_THROW(d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/1),
+               fl::Exception);
+
+  EXPECT_TRUE(sidecar_present_at_first_chunk.load())
+      << "Sidecar must exist before any chunk completes so an early crash stays resumable.";
+  EXPECT_TRUE(fs::exists(sidecar));
+  EXPECT_TRUE(fs::exists(local));
+  EXPECT_EQ(fs::file_size(local), static_cast<uintmax_t>(kBlobSize));
+}
+
+TEST(AzureBlobDownloaderResumeTest, CleansUpSidecarOnEmptyBlob) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "empty.bin";
+  // Plant a stale sidecar.
+  {
+    std::ofstream f(BlobDownloadState::GetStateFilePath(local), std::ios::binary);
+    f << "stale";
+  }
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = 0;  // empty
+
+  d.DownloadBlob(/*sas_uri=*/"", "empty", local.string(), /*max_concurrency=*/4);
+
+  EXPECT_TRUE(fs::exists(local));
+  EXPECT_EQ(fs::file_size(local), 0u);
+  EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
+  EXPECT_EQ(d.chunk_call_count.load(), 0);
+}
+
+TEST(AzureBlobDownloaderResumeTest, ChunkFailureCancelsInFlightPeersFast) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 10;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+  constexpr int64_t kFailOffset = 4 * int64_t{kChunkSize};
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+  // The failing chunk throws fast. Every other chunk sleeps for up to 5 s in
+  // 50-ms slices, polling cancellation. If linked cancellation works, they
+  // observe it within one slice of the failure and exit promptly.
+  d.chunk_hook = [](int64_t offset, int64_t size,
+                    const std::function<void(const uint8_t*, size_t)>& sink,
+                    const std::function<bool()>& is_cancelled) {
+    if (offset == kFailOffset) {
+      // Give other workers a moment to enter their sleep loop before we throw,
+      // so we're meaningfully testing the cancel-while-in-flight path.
+      std::this_thread::sleep_for(std::chrono::milliseconds(75));
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "simulated chunk failure");
+    }
+    for (int i = 0; i < 100; ++i) {
+      if (is_cancelled()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "cancelled mid-chunk");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::vector<uint8_t> buf(static_cast<size_t>(size), 0);
+    sink(buf.data(), buf.size());
+  };
+
+  auto start = std::chrono::steady_clock::now();
+  EXPECT_THROW(
+      d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/kNumChunks),
+      fl::Exception);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+  // Without cancellation, the slow chunks would sleep ~5 s. With it, they
+  // should all exit within a few hundred ms of the failure (well under 2 s).
+  EXPECT_LT(elapsed_ms, 2000)
+      << "Cancel-cascade should drain in-flight peers fast; took " << elapsed_ms << " ms";
+}
+
+TEST(AzureBlobDownloaderResumeTest, UserCancelDrainsInFlightPeersFast) {
+  TempDir tmpdir;
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 10;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+
+  // Chunk 0 is the cancel trigger; chunks 1..9 are the in-flight peers. The peers
+  // announce themselves and then sleep up to 5 s in 50-ms slices, polling the
+  // Azure-context cancellation. Chunk 0 waits until every peer is parked in that
+  // sleep loop before it completes, so no peer is at the worker top-of-loop to
+  // observe the shared cancel flag directly -- the only way they can exit
+  // promptly is the azure_ctx.Cancel() driven by the user-cancel throw.
+  std::atomic<int> peers_parked{0};
+  d.chunk_hook = [&peers_parked](int64_t offset, int64_t size,
+                                 const std::function<void(const uint8_t*, size_t)>& sink,
+                                 const std::function<bool()>& is_cancelled) {
+    if (offset == 0) {
+      for (int i = 0; i < 400 && peers_parked.load() < kNumChunks - 1; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      std::vector<uint8_t> buf(static_cast<size_t>(size), 0);
+      sink(buf.data(), buf.size());
+      return;
+    }
+    peers_parked.fetch_add(1);
+    for (int i = 0; i < 100; ++i) {
+      if (is_cancelled()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "cancelled mid-chunk");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::vector<uint8_t> buf(static_cast<size_t>(size), 0);
+    sink(buf.data(), buf.size());
+  };
+
+  // Mirror per_chunk_progress: the first progress callback cancels by setting the
+  // shared flag and throwing.
+  std::atomic<bool> cancelled{false};
+  BlobBytesWrittenFn cancel_on_first_progress = [&cancelled](int64_t /*bytes*/) {
+    cancelled.store(true, std::memory_order_relaxed);
+    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled by user callback return value");
+  };
+
+  auto start = std::chrono::steady_clock::now();
+  EXPECT_THROW(d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/kNumChunks,
+                              cancel_on_first_progress, &cancelled),
+               fl::Exception);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+  // Without routing the user-cancel throw through azure_ctx.Cancel(), the parked
+  // peers would each sleep their full ~5 s before noticing. With it, they exit
+  // within a slice or two (well under 2 s).
+  EXPECT_LT(elapsed_ms, 2000)
+      << "User-cancel should drain in-flight peers fast; took " << elapsed_ms << " ms";
 }

@@ -13,11 +13,11 @@ using System.Text.Json.Serialization;
 using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Betalgo.Ranul.OpenAI.ObjectModels.ResponseModels;
 
-using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
-
 using Microsoft.AI.Foundry.Local;
 using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.Extensions.Logging;
+
+using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
 
 // https://platform.openai.com/docs/api-reference/chat/create
 // Using the Betalgo ChatCompletionCreateRequest and extending with the `metadata` field for additional parameters

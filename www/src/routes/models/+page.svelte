@@ -13,6 +13,7 @@
 	import { toast } from 'svelte-sonner';
 	import { ModelFilters, ModelGrid, ModelDetailsModal } from './components';
 	import { Terminal, Copy, Check, ExternalLink } from 'lucide-svelte';
+	import { detectModelFamily } from '$lib/utils/model-helpers';
 
 	// Known device names used as shorthand URL params (e.g. /models?cpu)
 	const KNOWN_DEVICES = ['cpu', 'gpu', 'npu'];
@@ -72,7 +73,7 @@
 
 	// Available filter options
 	let availableDevices: string[] = [];
-	let availableFamilies: string[] = ['deepseek', 'mistral', 'qwen', 'phi', 'whisper'];
+	let availableFamilies: string[] = [];
 	let availableAccelerations: string[] = [];
 
 	// Read filter state from URL search params
@@ -259,6 +260,14 @@
 	function updateFilterOptions() {
 		availableDevices = [...new Set(allModels.flatMap((m) => m.deviceSupport))].sort();
 
+		availableFamilies = [
+			...new Set(
+				allModels
+					.map((m) => detectModelFamily(m.alias ?? m.displayName))
+					.filter((f): f is string => Boolean(f))
+			)
+		].sort();
+
 		const accelerations = new Set<string>();
 		allModels.forEach((model) => {
 			if (model.acceleration) {
@@ -325,9 +334,7 @@
 				selectedDevices.length === 0 ||
 				selectedDevices.some((device) => model.deviceSupport.includes(device));
 			const matchesFamily =
-				!selectedFamily ||
-				model.displayName.toLowerCase().includes(selectedFamily.toLowerCase()) ||
-				model.alias.toLowerCase().includes(selectedFamily.toLowerCase());
+				!selectedFamily || detectModelFamily(model.alias ?? model.displayName) === selectedFamily;
 			const matchesAcceleration =
 				!selectedAcceleration ||
 				model.acceleration === selectedAcceleration ||
@@ -509,6 +516,7 @@
 
 	<div class="bg-white dark:bg-neutral-950">
 		<main id="main-content" class="mx-auto w-full max-w-6xl px-6 py-8 sm:px-8 lg:px-12">
+			<h1 class="sr-only">Foundry Local model catalog</h1>
 			<section
 				class="border-border/50 bg-muted/30 mb-4 rounded-lg border px-3 py-2.5 sm:px-4"
 				aria-label="CLI quick test"

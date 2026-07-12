@@ -11,6 +11,7 @@ add_executable(foundry_local_tests
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
     internal_api/base_model_catalog_test.cc
+    internal_api/blob_download_state_test.cc
     internal_api/c_api_test.cc
     internal_api/callback_handler_test.cc
     internal_api/catalog_cache_test.cc
@@ -21,6 +22,7 @@ add_executable(foundry_local_tests
     internal_api/chat_completions_test.cc
     internal_api/chat_completions_converter_test.cc
     internal_api/configuration_test.cc
+    internal_api/cross_process_file_lock_test.cc
     internal_api/download_test.cc
     internal_api/embeddings/contracts_embeddings_test.cc
     internal_api/embeddings/fp16_test.cc
@@ -29,6 +31,7 @@ add_executable(foundry_local_tests
     internal_api/execution_provider_test.cc
     internal_api/file_lock_test.cc
     internal_api/file_uri_test.cc
+    internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
     internal_api/http_retry_test.cc
     internal_api/item_test.cc
@@ -106,7 +109,7 @@ else()
 endif()
 
 include(GoogleTest)
-# DISCOVERY_TIMEOUT defaults to 5s, which is not enough for the WinML build:
+# DISCOVERY_TIMEOUT defaults to 5s, which is not enough for the Windows build:
 # foundry_local.dll links against Microsoft.Windows.AI.MachineLearning.dll
 # (delay-loaded) plus standalone ORT, and process startup + gtest enumeration
 # can exceed 5s on cold caches or slow CI agents. Bump to 60s for headroom.

@@ -1,346 +1,297 @@
-# Build + test stages for the sdk_v2 Python SDK, parameterized by variant.
+# Build + test stages for the sdk_v2 Python SDK (foundry-local-sdk).
 #
-#   variant: base   -> foundry-local-sdk         (build win-x64 + win-arm64 + linux-x64 + osx-arm64;
-#                                                 test win-x64 + linux-x64 + osx-arm64)
-#   variant: winml  -> foundry-local-sdk-winml   (build + test win-x64; build-only win-arm64)
+# Builds win-x64 + win-arm64 + linux-x64 + osx-arm64; tests win-x64 + linux-x64
+# + osx-arm64 (win-arm64 is build-only, matching the C# matrix).
 #
 # Each build stage depends on the matching native build stage from
-# stages-build-native.yml and consumes the `cpp-native-<rid>[-winml]`
-# pipeline artifact directly (no NuGet — the wheel bundles the native lib
-# at src/foundry_local_sdk/_native/<rid>/).
+# stages-build-native.yml and consumes the `cpp-native-<rid>` pipeline artifact
+# directly (no NuGet — the wheel bundles the native lib at
+# src/foundry_local_sdk/_native/<rid>/). On Windows that native artifact carries
+# the reg-free WinML 2.x runtime, so the single wheel includes WinML support.
 #
-# Each build stage emits one wheel under the
-# `python-sdk-<variant>-<rid>` pipeline artifact.
-
-parameters:
-- name: variant
-  type: string
-  default: 'base'
-  values: ['base', 'winml']
+# Each build stage emits one wheel under the `python-sdk-<rid>` pipeline artifact.
 
 stages:
 
 # =====================================================================
-# Base variant: build win-x64 / win-arm64 / linux-x64 / osx-arm64
+# Build win-x64 / win-arm64 / linux-x64 / osx-arm64
 # =====================================================================
-- ${{ if eq(parameters.variant, 'base') }}:
+- stage: python_build_win_x64
+  displayName: 'Python SDK: Build Windows x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-win-x64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-python.yml
+      parameters:
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
+        rid: 'win-x64'
+        outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
-    - stage: python_build_base_win_x64
-      displayName: 'Python SDK: Build Windows x64 (base)'
-      dependsOn:
-      - compute_version
-      - cpp_build_win_x64
-      jobs:
-      - job: build
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'version-info'
-            targetPath: '$(Pipeline.Workspace)/version-info'
-          - input: pipelineArtifact
-            artifactName: 'cpp-native-win-x64'
-            targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
-          outputs:
-          - output: pipelineArtifact
-            artifactName: 'python-sdk-base-win-x64'
-            targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
-        steps:
-        - checkout: self
-          clean: true
-        - template: steps-build-python.yml
-          parameters:
-            nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
-            rid: 'win-x64'
-            isWinML: false
-            outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+- stage: python_build_win_arm64
+  displayName: 'Python SDK: Build Windows ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_arm64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-win-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-python.yml
+      parameters:
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+        rid: 'win-arm64'
+        targetArch: 'arm64'
+        outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
-    - stage: python_build_base_win_arm64
-      displayName: 'Python SDK: Build Windows ARM64 (base)'
-      dependsOn:
-      - compute_version
-      - cpp_build_win_arm64
-      jobs:
-      - job: build
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'version-info'
-            targetPath: '$(Pipeline.Workspace)/version-info'
-          - input: pipelineArtifact
-            artifactName: 'cpp-native-win-arm64'
-            targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
-          outputs:
-          - output: pipelineArtifact
-            artifactName: 'python-sdk-base-win-arm64'
-            targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
-        steps:
-        - checkout: self
-          clean: true
-        - template: steps-build-python.yml
-          parameters:
-            nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
-            rid: 'win-arm64'
-            isWinML: false
-            targetArch: 'arm64'
-            outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+- stage: python_build_linux_x64
+  displayName: 'Python SDK: Build Linux x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_x64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-linux-x64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-python.yml
+      parameters:
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+        rid: 'linux-x64'
+        outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
-    - stage: python_build_base_linux_x64
-      displayName: 'Python SDK: Build Linux x64 (base)'
-      dependsOn:
-      - compute_version
-      - cpp_build_linux_x64
-      jobs:
-      - job: build
-        pool:
-          name: onnxruntime-Ubuntu2404-AMD-CPU
-          os: linux
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'version-info'
-            targetPath: '$(Pipeline.Workspace)/version-info'
-          - input: pipelineArtifact
-            artifactName: 'cpp-native-linux-x64'
-            targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
-          outputs:
-          - output: pipelineArtifact
-            artifactName: 'python-sdk-base-linux-x64'
-            targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
-        steps:
-        - checkout: self
-          clean: true
-        - template: steps-build-python.yml
-          parameters:
-            nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
-            rid: 'linux-x64'
-            isWinML: false
-            outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+- stage: python_build_osx_arm64
+  displayName: 'Python SDK: Build macOS ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_osx_arm64
+  jobs:
+  - job: build
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-osx-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-python.yml
+      parameters:
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+        rid: 'osx-arm64'
+        pythonArchitecture: 'arm64'
+        outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
-    - stage: python_build_base_osx_arm64
-      displayName: 'Python SDK: Build macOS ARM64 (base)'
-      dependsOn:
-      - compute_version
-      - cpp_build_osx_arm64
-      jobs:
-      - job: build
-        pool:
-          name: AcesShared
-          os: macOS
-          demands:
-          - ImageOverride -equals ACES_VM_SharedPool_Sequoia
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'version-info'
-            targetPath: '$(Pipeline.Workspace)/version-info'
-          - input: pipelineArtifact
-            artifactName: 'cpp-native-osx-arm64'
-            targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
-          outputs:
-          - output: pipelineArtifact
-            artifactName: 'python-sdk-base-osx-arm64'
-            targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
-        steps:
-        - checkout: self
-          clean: true
-        - template: steps-build-python.yml
-          parameters:
-            nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
-            rid: 'osx-arm64'
-            isWinML: false
-            pythonArchitecture: 'arm64'
-            outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+# =================================================================
+# Tests — win-x64, linux-x64, osx-arm64. win-arm64 is build-only.
+# =================================================================
+- stage: python_test_win_x64
+  displayName: 'Python SDK: Test Windows x64'
+  dependsOn:
+  - python_build_win_x64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-win-x64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-win-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-test-python.yml
+      parameters:
+        wheelDir: '$(Pipeline.Workspace)/python-sdk-win-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
-    # =================================================================
-    # Tests — base variant (win-x64, linux-x64, osx-arm64).
-    # win-arm64 is build-only (matches legacy + C# matrix).
-    # =================================================================
-    - stage: python_test_base_win_x64
-      displayName: 'Python SDK: Test Windows x64 (base)'
-      dependsOn:
-      - python_build_base_win_x64
-      jobs:
-      - job: test
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'python-sdk-base-win-x64'
-            targetPath: '$(Pipeline.Workspace)/python-sdk-base-win-x64'
-        steps:
-        - checkout: self
-          clean: true
-        - template: ../../templates/checkout-steps.yml@self
-          parameters:
-            repoName: test-data-shared
-        - template: steps-test-python.yml
-          parameters:
-            wheelDir: '$(Pipeline.Workspace)/python-sdk-base-win-x64'
-            testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-            isWinML: false
+- stage: python_test_linux_x64
+  displayName: 'Python SDK: Test Linux x64'
+  dependsOn:
+  - python_build_linux_x64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-test-python.yml
+      parameters:
+        wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
-    - stage: python_test_base_linux_x64
-      displayName: 'Python SDK: Test Linux x64 (base)'
-      dependsOn:
-      - python_build_base_linux_x64
-      jobs:
-      - job: test
-        pool:
-          name: onnxruntime-Ubuntu2404-AMD-CPU
-          os: linux
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'python-sdk-base-linux-x64'
-            targetPath: '$(Pipeline.Workspace)/python-sdk-base-linux-x64'
-        steps:
-        - checkout: self
-          clean: true
-        - template: ../../templates/checkout-steps.yml@self
-          parameters:
-            repoName: test-data-shared
-        - template: steps-test-python.yml
-          parameters:
-            wheelDir: '$(Pipeline.Workspace)/python-sdk-base-linux-x64'
-            testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-            isWinML: false
+- stage: python_test_osx_arm64
+  displayName: 'Python SDK: Test macOS ARM64'
+  dependsOn:
+  - python_build_osx_arm64
+  jobs:
+  - job: test
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-test-python.yml
+      parameters:
+        wheelDir: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        pythonArchitecture: 'arm64'
 
-    - stage: python_test_base_osx_arm64
-      displayName: 'Python SDK: Test macOS ARM64 (base)'
-      dependsOn:
-      - python_build_base_osx_arm64
-      jobs:
-      - job: test
-        pool:
-          name: AcesShared
-          os: macOS
-          demands:
-          - ImageOverride -equals ACES_VM_SharedPool_Sequoia
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'python-sdk-base-osx-arm64'
-            targetPath: '$(Pipeline.Workspace)/python-sdk-base-osx-arm64'
-        steps:
-        - checkout: self
-          clean: true
-        - bash: |
-              set -euo pipefail
-              if ! command -v git-lfs >/dev/null 2>&1; then
-                  brew install git-lfs
-              fi
-              git lfs install
-          displayName: 'Install git-lfs (macOS)'
-        - template: ../../templates/checkout-steps.yml@self
-          parameters:
-            repoName: test-data-shared
-        - template: steps-test-python.yml
-          parameters:
-            wheelDir: '$(Pipeline.Workspace)/python-sdk-base-osx-arm64'
-            testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-            isWinML: false
-            pythonArchitecture: 'arm64'
+# ================================================================
+# Aggregate all Python wheels into one artifact for distribution.
+# ================================================================
+- stage: python_pack_all_wheels
+  displayName: 'Python SDK: Pack all wheels (python-sdk-v2)'
+  dependsOn:
+  - python_build_win_x64
+  - python_build_win_arm64
+  - python_build_linux_x64
+  - python_build_osx_arm64
+  jobs:
+  - job: pack
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-win-x64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-win-x64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-win-arm64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-v2'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk-v2'
+    steps:
+    - checkout: none
+    - task: PowerShell@2
+      displayName: 'Collect all wheels'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
 
-# =====================================================================
-# WinML variant: Windows only (x64 + arm64); only x64 is tested.
-# =====================================================================
-- ${{ if eq(parameters.variant, 'winml') }}:
+          $sources = @(
+            '$(Pipeline.Workspace)/python-sdk-win-x64',
+            '$(Pipeline.Workspace)/python-sdk-win-arm64',
+            '$(Pipeline.Workspace)/python-sdk-linux-x64',
+            '$(Pipeline.Workspace)/python-sdk-osx-arm64'
+          )
 
-    - stage: python_build_winml_win_x64
-      displayName: 'Python SDK: Build Windows x64 (WinML)'
-      dependsOn:
-      - compute_version
-      - cpp_build_win_x64_winml
-      jobs:
-      - job: build
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'version-info'
-            targetPath: '$(Pipeline.Workspace)/version-info'
-          - input: pipelineArtifact
-            artifactName: 'cpp-native-win-x64-winml'
-            targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64-winml'
-          outputs:
-          - output: pipelineArtifact
-            artifactName: 'python-sdk-winml-win-x64'
-            targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
-        steps:
-        - checkout: self
-          clean: true
-        - template: steps-build-python.yml
-          parameters:
-            nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64-winml'
-            rid: 'win-x64'
-            isWinML: true
-            outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+          $outDir = '$(Build.ArtifactStagingDirectory)/python-sdk-v2'
+          if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-    - stage: python_build_winml_win_arm64
-      displayName: 'Python SDK: Build Windows ARM64 (WinML)'
-      dependsOn:
-      - compute_version
-      - cpp_build_win_arm64_winml
-      jobs:
-      - job: build
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'version-info'
-            targetPath: '$(Pipeline.Workspace)/version-info'
-          - input: pipelineArtifact
-            artifactName: 'cpp-native-win-arm64-winml'
-            targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64-winml'
-          outputs:
-          - output: pipelineArtifact
-            artifactName: 'python-sdk-winml-win-arm64'
-            targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
-        steps:
-        - checkout: self
-          clean: true
-        - template: steps-build-python.yml
-          parameters:
-            nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64-winml'
-            rid: 'win-arm64'
-            isWinML: true
-            targetArch: 'arm64'
-            outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+          foreach ($src in $sources) {
+            if (-not (Test-Path $src)) {
+              throw "Expected wheel artifact directory not found: $src"
+            }
 
-    - stage: python_test_winml_win_x64
-      displayName: 'Python SDK: Test Windows x64 (WinML)'
-      dependsOn:
-      - python_build_winml_win_x64
-      jobs:
-      - job: test
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        templateContext:
-          inputs:
-          - input: pipelineArtifact
-            artifactName: 'python-sdk-winml-win-x64'
-            targetPath: '$(Pipeline.Workspace)/python-sdk-winml-win-x64'
-        steps:
-        - checkout: self
-          clean: true
-        - template: ../../templates/checkout-steps.yml@self
-          parameters:
-            repoName: test-data-shared
-        - template: steps-test-python.yml
-          parameters:
-            wheelDir: '$(Pipeline.Workspace)/python-sdk-winml-win-x64'
-            testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-            isWinML: true
+            $wheels = @(Get-ChildItem -Path $src -Recurse -Filter '*.whl' -File)
+            if ($wheels.Count -eq 0) {
+              throw "No .whl files found under $src"
+            }
+
+            foreach ($wheel in $wheels) {
+              Copy-Item -Path $wheel.FullName -Destination (Join-Path $outDir $wheel.Name) -Force
+              Write-Host "Added wheel: $($wheel.Name)"
+            }
+          }
+
+          Write-Host "Final wheel set:"
+          Get-ChildItem -Path $outDir -Filter '*.whl' | ForEach-Object {
+            Write-Host "  $($_.Name)"
+          }

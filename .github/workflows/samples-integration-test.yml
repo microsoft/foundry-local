@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
@@ -91,7 +91,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
@@ -177,7 +177,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
@@ -199,17 +199,6 @@ jobs:
             /p:IsPacking=true `
             /p:TreatWarningsAsErrors=false `
             --configuration Release
-          
-          # Build WinML SDK package (Windows only)
-          if ($IsWindows) {
-            dotnet pack sdk/cs/src/Microsoft.AI.Foundry.Local.csproj `
-              -o local-packages `
-              /p:Version=0.9.0-dev-20260324 `
-              /p:UseWinML=true `
-              /p:IsPacking=true `
-              /p:TreatWarningsAsErrors=false `
-              --configuration Release
-          }
           
           Write-Host "Local packages:"
           Get-ChildItem local-packages/*.nupkg | ForEach-Object { Write-Host "  $($_.Name)" }
@@ -245,7 +234,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 

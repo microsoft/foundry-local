@@ -29,13 +29,6 @@
       <IncludeSymbols>true</IncludeSymbols>
       <SymbolPackageFormat>snupkg</SymbolPackageFormat>
       <GenerateDocumentationFile Condition="'$(Configuration)' == 'Release'">true</GenerateDocumentationFile>
-
-      <!-- 
-      Set to 'true' to enable EP download on Windows
-      Command line value overrides the default value here.
-       -->
-      <UseWinML>false</UseWinML>
-      <RuntimeIdentifiers Condition="'$(UseWinML)' == 'true'">win-x64;win-arm64</RuntimeIdentifiers>
     </PropertyGroup>
 
     <!-- 
@@ -68,7 +61,6 @@
         <Message Importance="Normal" Text="IsWindows: $(IsWindows)" />
         <Message Importance="Normal" Text="IsOSX: $(IsOSX)" />
         <Message Importance="Normal" Text="IsLinux: $(IsLinux)" />
-        <Message Importance="Normal" Text="UseWinML: $(UseWinML)" />
     </Target>
 
     <!-- This target runs after package resolution for diagnostics. -->
@@ -81,24 +73,6 @@
         <None Include="$(MSBuildThisFileDirectory)../README.md" Pack="true" PackagePath="" />
         <None Include="$(MSBuildThisFileDirectory)../LICENSE.txt" Pack="true" PackagePath="" />
     </ItemGroup>
-
-    <!-- override some values if we're doing a WinML build -->
-    <PropertyGroup Condition="'$(UseWinML)' == 'true'">
-      <AssemblyTitle>Microsoft AI Foundry Local for WinML</AssemblyTitle>
-      <Description>Microsoft Foundry Local SDK for WinML</Description>
-      <PackageId>Microsoft.AI.Foundry.Local.WinML</PackageId>
-      <AssemblyName>Microsoft.AI.Foundry.Local.WinML</AssemblyName>
-      <!--
-        The C# layer is a pure P/Invoke wrapper over foundry_local.dll. No source
-        references any Windows.* / Microsoft.Windows.* / WinRT API, so we share
-        the cross-platform net8.0;net9.0 TFM with the non-WinML SKU. The WinML
-        OS-version floor (Win10 19H1+) is enforced in C++ by
-        winml_ep_bootstrapper.cc (delay-loaded WindowsML::Api + OSVERSIONINFOW
-        check) and by the WinML EP catalog NuGet itself.
-      -->
-      <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
-      <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
-    </PropertyGroup>
     
 
 
@@ -144,11 +118,8 @@
          Option 2 (local build): set FoundryLocalNativeBinDir to point at a C++ build output, e.g.:
            dotnet build /p:FoundryLocalNativeBinDir=..\..\cpp\build\Windows\RelWithDebInfo\bin\RelWithDebInfo
          Option 3 (default): auto-detect the C++ build output from the repo-relative location. -->
-    <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == '' AND '$(UseWinML)' != 'true'">
+    <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == ''">
       <PackageReference Include="Microsoft.AI.Foundry.Local.Runtime" Version="$(FoundryLocalRuntimeVersion)" />
-    </ItemGroup>
-    <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == '' AND '$(UseWinML)' == 'true'">
-      <PackageReference Include="Microsoft.AI.Foundry.Local.Runtime.WinML" Version="$(FoundryLocalRuntimeVersion)" />
     </ItemGroup>
 
     <!-- Auto-detect C++ RelWithDebInfo build output when neither NuGet package nor explicit path is set.

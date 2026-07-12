@@ -225,41 +225,38 @@ async function installPackage(artifact, tempDir, binDir) {
     );
 }
 
-// Mirror the platform-specific post-build steps that sdk_v2/cpp/CMakeLists.txt
-// runs after building libfoundry_local. The Foundry ORT nupkg ships only the
-// unversioned `libonnxruntime.{so,dylib}`, but our libfoundry_local records
-// versioned SONAME/install_name dependencies, so we have to create the
-// matching alias next to it.
-function applyOrtPlatformAliases(binDir, ortVersion) {
+// libfoundry_local records a versioned SONAME/install_name dependency on ORT
+// (libonnxruntime.so.1 / libonnxruntime.1.dylib), but the Foundry ORT nupkg extracts
+// the unversioned libonnxruntime.{so,dylib}. Rename the extracted file to the versioned
+// soname so foundry_local resolves it via rpath. Windows uses onnxruntime.dll, which has
+// no soname.
+//
+// On macOS also expose the unversioned libonnxruntime.dylib as a symlink to the versioned
+// file. onnxruntime-genai references ORT under the unversioned name, and macOS dyld keys
+// loaded images by path: with only the versioned file present, the unversioned reference
+// resolves to a separate ORT image, and the two runtimes abort in ORT's global teardown
+// on process exit. One physical file under both names keeps the process to a single ORT
+// image. Linux's loader dedups by soname, so it needs only the versioned name.
+function normalizeOrtLibName(binDir, ortVersion) {
+    let unversioned;
+    let versioned;
     if (os.platform() === 'linux') {
-        const unv = path.join(binDir, 'libonnxruntime.so');
-        const soname = path.join(binDir, 'libonnxruntime.so.1');
-        if (fs.existsSync(unv) && !fs.existsSync(soname)) {
-            try {
-                fs.symlinkSync('libonnxruntime.so', soname);
-                console.log(`  Created symlink libonnxruntime.so.1 -> libonnxruntime.so`);
-            } catch (err) {
-                fs.copyFileSync(unv, soname);
-                console.log(`  Copied libonnxruntime.so -> libonnxruntime.so.1 (symlink failed: ${err.message})`);
-            }
-        }
+        unversioned = path.join(binDir, 'libonnxruntime.so');
+        versioned = path.join(binDir, 'libonnxruntime.so.1');
     } else if (os.platform() === 'darwin') {
         const major = ortVersion.split('.')[0];
-        const unv = path.join(binDir, 'libonnxruntime.dylib');
-        const versioned = path.join(binDir, `libonnxruntime.${major}.dylib`);
-        if (fs.existsSync(unv) && !fs.existsSync(versioned)) {
-            // libfoundry_local.dylib references @rpath/libonnxruntime.<major>.dylib
-            // (the install_name baked into the nupkg's dylib). Provide that file.
-            fs.renameSync(unv, versioned);
-            console.log(`  Renamed libonnxruntime.dylib -> libonnxruntime.${major}.dylib`);
-            // GenAI dlopen()s "libonnxruntime.dylib" at runtime and -lonnxruntime resolves it at link time.
-            try {
-                fs.symlinkSync(`libonnxruntime.${major}.dylib`, unv);
-                console.log(`  Created symlink libonnxruntime.dylib -> libonnxruntime.${major}.dylib`);
-            } catch (err) {
-                console.warn(`  Could not create libonnxruntime.dylib symlink: ${err.message}`);
-            }
-        }
+        unversioned = path.join(binDir, 'libonnxruntime.dylib');
+        versioned = path.join(binDir, `libonnxruntime.${major}.dylib`);
+    } else {
+        return;
+    }
+    if (!fs.existsSync(versioned) && fs.existsSync(unversioned)) {
+        fs.renameSync(unversioned, versioned);
+        console.log(`  Renamed ${path.basename(unversioned)} -> ${path.basename(versioned)}`);
+    }
+    if (os.platform() === 'darwin' && fs.existsSync(versioned) && !fs.existsSync(unversioned)) {
+        fs.symlinkSync(path.basename(versioned), unversioned);
+        console.log(`  Linked ${path.basename(unversioned)} -> ${path.basename(versioned)}`);
     }
 }
 
@@ -272,7 +269,7 @@ function applyOrtPlatformAliases(binDir, ortVersion) {
         for (const artifact of ARTIFACTS) {
             await installPackage(artifact, tempDir, BIN_DIR);
         }
-        applyOrtPlatformAliases(BIN_DIR, ortVersion);
+        normalizeOrtLibName(BIN_DIR, ortVersion);
         console.log('[foundry-local] Native runtime install complete.');
     } catch (err) {
         console.error('[foundry-local] Installation failed:', err instanceof Error ? err.message : err);

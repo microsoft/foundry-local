@@ -1,8 +1,8 @@
 # Inner steps to restore, build, sign, and pack the sdk_v2 C# SDK
-# (Microsoft.AI.Foundry.Local / Microsoft.AI.Foundry.Local.WinML).
+# (Microsoft.AI.Foundry.Local).
 #
 # The caller is responsible for placing the Foundry Local Runtime nupkg
-# (Microsoft.AI.Foundry.Local.Runtime[.WinML]) in `flNugetDir`, and for
+# (Microsoft.AI.Foundry.Local.Runtime) in `flNugetDir`, and for
 # downloading the `version-info` pipeline artifact so this template can
 # read $(Pipeline.Workspace)/version-info/sdkVersion.txt.
 
@@ -10,9 +10,6 @@ parameters:
 - name: flNugetDir
   type: string
   displayName: 'Path to directory containing the Foundry Local Runtime .nupkg'
-- name: isWinML
-  type: boolean
-  default: false
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/cs-sdk'
@@ -92,7 +89,6 @@ steps:
       if (-not (Test-Path $proj)) { throw "Project not found: $proj" }
       dotnet restore $proj `
         --configfile "$(customNugetConfig)" `
-        /p:UseWinML=${{ parameters.isWinML }} `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir=
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -105,7 +101,6 @@ steps:
     script: |
       dotnet build "$(Build.SourcesDirectory)/sdk_v2/cs/src/Microsoft.AI.Foundry.Local.csproj" `
         --no-restore --configuration Release `
-        /p:UseWinML=${{ parameters.isWinML }} `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir=
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -145,7 +140,6 @@ steps:
         --no-build --no-restore --configuration Release `
         --output "${{ parameters.outputDir }}" `
         /p:PackageVersion=$(packageVersion) `
-        /p:UseWinML=${{ parameters.isWinML }} `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir= `
         /p:IncludeSymbols=true `

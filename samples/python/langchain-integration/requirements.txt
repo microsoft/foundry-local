@@ -1,5 +1,4 @@
-foundry-local-sdk; sys_platform != "win32"
-foundry-local-sdk-winml; sys_platform == "win32"
+foundry-local-sdk
 openai
 langchain-openai
 langchain-core

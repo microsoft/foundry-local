@@ -2,8 +2,9 @@
 #
 # Composes:
 #   1. Native C++ build + pack    (templates/stages-build-native.yml)
-#   2. C# SDK base + WinML        (templates/stages-cs.yml × 2)
-#   3. Python SDK base + WinML    (templates/stages-python.yml × 2)
+#   2. C# SDK                     (templates/stages-cs.yml)
+#   3. Python SDK                 (templates/stages-python.yml)
+#   4. JS SDK                     (templates/stages-js.yml)
 #
 # Assumes the caller has already emitted a `compute_version` stage that
 # publishes the `version-info` pipeline artifact (containing sdkVersion.txt
@@ -31,25 +32,11 @@ stages:
     genaiVersion: ${{ parameters.genaiVersion }}
     winmlVersion: ${{ parameters.winmlVersion }}
 
-# ── C# SDK (base) ──
+# ── C# SDK ──
 - template: stages-cs.yml
-  parameters:
-    variant: base
 
-# ── C# SDK (WinML) ──
-- template: stages-cs.yml
-  parameters:
-    variant: winml
-
-# ── Python SDK (base) ──
+# ── Python SDK ──
 - template: stages-python.yml
-  parameters:
-    variant: base
-
-# ── Python SDK (WinML) ──
-- template: stages-python.yml
-  parameters:
-    variant: winml
 
 # ── JS SDK (single multi-platform tarball) ──
 - template: stages-js.yml

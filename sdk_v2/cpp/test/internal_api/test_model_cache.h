@@ -1,9 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 // Shared helper for tests that need access to the shared test model cache.
-// Mirrors the C# test setup pattern:
-//   - Default: look for "test-data-shared" in the parent of the git repo root
-//   - Override via FOUNDRY_TEST_DATA_DIR environment variable (absolute or relative path)
+// Requires FOUNDRY_TEST_DATA_DIR to be set to an existing model cache path.
 #pragma once
 
 #include "utils/safe_getenv.h"
@@ -17,56 +15,27 @@ namespace fs = std::filesystem;
 
 namespace fl::test {
 
-/// Walk up from source_dir to find the directory containing .git.
-inline fs::path FindRepoRoot(const fs::path& source_dir) {
-  fs::path dir = source_dir;
-
-  while (!dir.empty() && dir.has_parent_path()) {
-    if (fs::exists(dir / ".git")) {
-      return dir;
-    }
-
-    auto parent = dir.parent_path();
-    if (parent == dir) {
-      break;
-    }
-
-    dir = parent;
-  }
-
-  throw std::runtime_error("Could not find git repository root from: " + source_dir.string());
-}
-
-/// Default test-data-shared directory name.
-constexpr const char* kDefaultTestModelCacheDirName = "test-data-shared";
-
 /// Resolve the test model cache directory.
-/// Priority:
-///   1. FOUNDRY_TEST_DATA_DIR environment variable (absolute or relative path)
-///   2. Default: {repo_root}/../test-data-shared/
+/// FOUNDRY_TEST_DATA_DIR is required.
 inline fs::path GetTestModelCacheDir() {
-  // Check environment variable first
   std::string env_value = SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
-  if (!env_value.empty()) {
-    fs::path env_path(env_value);
-    if (!fs::exists(env_path)) {
-      throw std::runtime_error("FOUNDRY_TEST_DATA_DIR does not exist: " + env_path.string());
-    }
-
-    return fs::canonical(env_path);
-  }
-
-  // Default: {repo_root}/../test-data-shared/
-  fs::path repo_root = FindRepoRoot(fs::path(__FILE__).parent_path());
-  fs::path default_path = repo_root.parent_path() / kDefaultTestModelCacheDirName;
-
-  if (!fs::exists(default_path)) {
+  if (env_value.empty()) {
     throw std::runtime_error(
-        "Test model cache directory not found at default location: " + default_path.string() +
-        "\nSet FOUNDRY_TEST_DATA_DIR environment variable to override.");
+        "FOUNDRY_TEST_DATA_DIR is not set. Set it to a local model cache directory before running tests.");
   }
 
-  return fs::canonical(default_path);
+  fs::path env_path(env_value);
+  if (!fs::exists(env_path)) {
+    throw std::runtime_error("FOUNDRY_TEST_DATA_DIR does not exist: " + env_path.string());
+  }
+
+  fs::path publisher_path = env_path / "Microsoft";
+  if (!fs::exists(publisher_path)) {
+    throw std::runtime_error("FOUNDRY_TEST_DATA_DIR/Microsoft does not exist: " +
+                             publisher_path.string());
+  }
+
+  return fs::canonical(publisher_path);
 }
 
 /// Returns true when running under a known CI provider.

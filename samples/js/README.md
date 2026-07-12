@@ -48,4 +48,4 @@ These samples demonstrate how to use the Foundry Local JavaScript SDK (`foundry-
    ```
 
 > [!TIP]
-> Each sample's `package.json` includes `foundry-local-sdk` as a dependency and `foundry-local-sdk-winml` as an optional dependency. On **Windows**, the WinML variant installs automatically for broader hardware acceleration. On **macOS and Linux**, the standard SDK is used. Just run `npm install` — platform detection is handled for you.
+> Each sample's `package.json` includes the single `foundry-local-sdk` package. On **Windows**, it bundles WinML hardware acceleration automatically. Just run `npm install` — no separate package or flag is needed.

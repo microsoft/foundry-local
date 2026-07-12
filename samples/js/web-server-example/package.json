@@ -9,8 +9,5 @@
   "dependencies": {
     "foundry-local-sdk": "latest",
     "openai": "latest"
-  },
-  "optionalDependencies": {
-    "foundry-local-sdk-winml": "latest"
   }
 }

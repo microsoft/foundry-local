@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
 using Betalgo.Ranul.OpenAI.ObjectModels.RealtimeModels;
+
 using Microsoft.AI.Foundry.Local;
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 

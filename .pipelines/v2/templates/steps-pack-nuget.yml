@@ -4,21 +4,15 @@
 # Inputs are downloaded by the parent job's templateContext.inputs into
 # $(Pipeline.Workspace)/<artifactName>/.
 #
-# Variants:
-#   base  -> Microsoft.AI.Foundry.Local.Runtime
-#            (win-x64, win-arm64, linux-x64, osx-arm64)
-#   winml -> Microsoft.AI.Foundry.Local.Runtime.WinML
-#            (win-x64, win-arm64 only — both built with --use_winml)
+# Produces Microsoft.AI.Foundry.Local.Runtime (win-x64, win-arm64, linux-x64,
+# osx-arm64). On Windows the artifacts carry the reg-free WinML 2.x runtime DLL,
+# which pack.py forwards automatically.
 
 parameters:
 - name: ortVersion
   type: string
 - name: genaiVersion
   type: string
-- name: variant
-  type: string
-  default: 'base'
-  values: ['base', 'winml']
 
 steps:
 
@@ -45,58 +39,30 @@ steps:
         }
       }
 
-- ${{ if eq(parameters.variant, 'base') }}:
-  - task: PowerShell@2
-    displayName: 'Pack NuGet package (base)'
-    inputs:
-      targetType: inline
-      pwsh: true
-      script: |
-        $ErrorActionPreference = 'Stop'
+- task: PowerShell@2
+  displayName: 'Pack NuGet package'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
 
-        $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
-        Write-Host "Packing version: $version"
+      $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
+      Write-Host "Packing version: $version"
 
-        $outDir = "$(Build.ArtifactStagingDirectory)/nuget"
-        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+      $outDir = "$(Build.ArtifactStagingDirectory)/nuget"
+      New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-        python "$(Build.SourcesDirectory)/sdk_v2/cpp/nuget/pack.py" `
-          --version       "$version" `
-          --package_id    "Microsoft.AI.Foundry.Local.Runtime" `
-          --ort_version   "${{ parameters.ortVersion }}" `
-          --genai_version "${{ parameters.genaiVersion }}" `
-          --win_x64       "$(Pipeline.Workspace)/cpp-native-win-x64" `
-          --win_arm64     "$(Pipeline.Workspace)/cpp-native-win-arm64" `
-          --linux_x64     "$(Pipeline.Workspace)/cpp-native-linux-x64" `
-          --osx_arm64     "$(Pipeline.Workspace)/cpp-native-osx-arm64" `
-          --output_dir    "$outDir"
+      python "$(Build.SourcesDirectory)/sdk_v2/cpp/nuget/pack.py" `
+        --version       "$version" `
+        --package_id    "Microsoft.AI.Foundry.Local.Runtime" `
+        --ort_version   "${{ parameters.ortVersion }}" `
+        --genai_version "${{ parameters.genaiVersion }}" `
+        --win_x64       "$(Pipeline.Workspace)/cpp-native-win-x64" `
+        --win_arm64     "$(Pipeline.Workspace)/cpp-native-win-arm64" `
+        --linux_x64     "$(Pipeline.Workspace)/cpp-native-linux-x64" `
+        --osx_arm64     "$(Pipeline.Workspace)/cpp-native-osx-arm64" `
+        --output_dir    "$outDir"
 
-        Write-Host "Generated packages:"
-        Get-ChildItem $outDir -Filter '*.nupkg' | ForEach-Object { Write-Host "  $($_.Name)" }
-
-- ${{ if eq(parameters.variant, 'winml') }}:
-  - task: PowerShell@2
-    displayName: 'Pack NuGet package (WinML)'
-    inputs:
-      targetType: inline
-      pwsh: true
-      script: |
-        $ErrorActionPreference = 'Stop'
-
-        $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
-        Write-Host "Packing version: $version"
-
-        $outDir = "$(Build.ArtifactStagingDirectory)/nuget"
-        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-
-        python "$(Build.SourcesDirectory)/sdk_v2/cpp/nuget/pack.py" `
-          --version       "$version" `
-          --package_id    "Microsoft.AI.Foundry.Local.Runtime.WinML" `
-          --ort_version   "${{ parameters.ortVersion }}" `
-          --genai_version "${{ parameters.genaiVersion }}" `
-          --win_x64       "$(Pipeline.Workspace)/cpp-native-win-x64-winml" `
-          --win_arm64     "$(Pipeline.Workspace)/cpp-native-win-arm64-winml" `
-          --output_dir    "$outDir"
-
-        Write-Host "Generated packages:"
-        Get-ChildItem $outDir -Filter '*.nupkg' | ForEach-Object { Write-Host "  $($_.Name)" }
+      Write-Host "Generated packages:"
+      Get-ChildItem $outDir -Filter '*.nupkg' | ForEach-Object { Write-Host "  $($_.Name)" }

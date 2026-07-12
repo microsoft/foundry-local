@@ -15,22 +15,11 @@ The Foundry Local Python SDK is a native Python binding for the Foundry Local C+
 
 ## Installation
 
-Two package variants are published — choose the one that matches your target hardware:
-
-| Variant | Package | Native backends |
-|---|---|---|
-| Standard (cross-platform) | `foundry-local-sdk` | CPU / WebGPU / CUDA |
-| WinML (Windows only) | `foundry-local-sdk-winml` | Windows ML + all standard backends |
-
 ```bash
-# Standard (cross-platform — Linux, macOS, Windows)
 pip install foundry-local-sdk
-
-# WinML (Windows only)
-pip install foundry-local-sdk-winml
 ```
 
-The wheel ships the Foundry Local native library and pulls the matching ONNX Runtime + ONNX Runtime GenAI runtime packages as dependencies. The two variants are mutually exclusive — install only one per environment.
+The wheel ships the Foundry Local native library — bundling the reg-free WinML 2.x runtime on Windows for hardware acceleration — and pulls the matching ONNX Runtime + ONNX Runtime GenAI runtime packages as dependencies.
 
 ### Building from source
 
@@ -56,12 +45,7 @@ Then build the wheel:
 
 ```bash
 cd sdk_v2/python
-
-# Standard wheel
 python -m build --wheel
-
-# WinML wheel (uses the build_backend.py shim)
-python -m build --wheel -C winml=true
 ```
 
 For editable installs during development:
@@ -72,14 +56,10 @@ pip install -e .
 
 ### Installing native runtime dependencies for development / CI
 
-`foundry-local-install` is a convenience wrapper for end-user / CI environments that want the published wheel plus its ORT / ONNX Runtime GenAI runtime packages installed and verified in one step. It runs `pip install --upgrade foundry-local-sdk[-winml]` from PyPI and then probes that `onnxruntime[_core]` and `onnxruntime_genai[_core]` import cleanly.
+`foundry-local-install` is a convenience wrapper for end-user / CI environments that want the published wheel plus its ORT / ONNX Runtime GenAI runtime packages installed and verified in one step. It runs `pip install --upgrade foundry-local-sdk` from PyPI and then probes that `onnxruntime[_core]` and `onnxruntime_genai[_core]` import cleanly.
 
 ```bash
-# Standard
 foundry-local-install
-
-# WinML (Windows only)
-foundry-local-install --winml
 
 # Add --verbose to print resolved binary paths after installation.
 ```
@@ -425,7 +405,7 @@ Enums: `ItemType`, `TextItemType`, `MessageRole`, `TensorDataType`.
 
 | Function | CLI name | Description |
 |---|---|---|
-| `foundry_local_sdk._native.installer.main` | `foundry-local-install` | Install and verify native binaries (`--winml` for the WinML variant, `--verbose` to print resolved paths) |
+| `foundry_local_sdk._native.installer.main` | `foundry-local-install` | Install and verify native binaries (`--verbose` to print resolved paths) |
 
 ## Running tests
 
