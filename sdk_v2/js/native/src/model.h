@@ -32,6 +32,8 @@
 
 namespace foundry_local_node {
 
+struct ManagerLifecycle;
+
 struct ModelCtorToken {
   // The IModel accessor. Never null when the token is constructed.
   foundry_local::IModel* impl = nullptr;
@@ -40,6 +42,7 @@ struct ModelCtorToken {
   // lifetime.
   std::shared_ptr<void> keepalive;
   std::weak_ptr<foundry_local::Manager> manager_keepalive;
+  std::shared_ptr<ManagerLifecycle> lifecycle;
   // Pins the parent Manager so its native handle (and the Catalog's flCatalog*
   // which the IModel views into) cannot be released first.
   Napi::ObjectReference manager;
@@ -81,6 +84,7 @@ class Model : public Napi::ObjectWrap<Model> {
   foundry_local::IModel* impl_ = nullptr;
   std::shared_ptr<void> keepalive_;
   std::weak_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
   Napi::ObjectReference manager_;
 };
 

@@ -21,10 +21,13 @@
 
 namespace foundry_local_node {
 
+struct ManagerLifecycle;
+
 struct CatalogCtorToken {
   foundry_local::ICatalog* impl = nullptr;
   Napi::ObjectReference manager;  // pins the owning Manager
   std::weak_ptr<foundry_local::Manager> manager_keepalive;
+  std::shared_ptr<ManagerLifecycle> lifecycle;
 };
 
 class Catalog : public Napi::ObjectWrap<Catalog> {
@@ -46,6 +49,7 @@ class Catalog : public Napi::ObjectWrap<Catalog> {
   foundry_local::ICatalog* impl_ = nullptr;
   Napi::ObjectReference manager_;
   std::weak_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
 };
 
 }  // namespace foundry_local_node

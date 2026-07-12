@@ -381,7 +381,14 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
+  std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
   auto urls = manager->impl.GetWebServiceUrls();
+  if (urls.empty()) {
+    *out_urls = nullptr;
+    *out_num_urls = 0;
+    return nullptr;
+  }
+
   auto snapshot = std::make_unique<flManager::UrlSnapshot>();
   snapshot->strings = std::move(urls);
   snapshot->pointers.reserve(snapshot->strings.size());
@@ -390,13 +397,9 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
   }
 
   auto* snapshot_ptr = snapshot.get();
-  {
-    std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
-    manager->urls_snapshots.push_back(std::move(snapshot));
-    *out_urls = snapshot_ptr->pointers.empty() ? nullptr : snapshot_ptr->pointers.data();
-    *out_num_urls = snapshot_ptr->pointers.size();
-  }
-
+  manager->urls_snapshots.push_back(std::move(snapshot));
+  *out_urls = snapshot_ptr->pointers.data();
+  *out_num_urls = snapshot_ptr->pointers.size();
   return nullptr;
   API_IMPL_END
 }
@@ -407,11 +410,9 @@ FL_API_STATUS_IMPL(Manager_WebServiceStopImpl, flManager* manager) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null manager");
   }
 
+  std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
   manager->impl.StopWebService();
-  {
-    std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
-    manager->urls_snapshots.clear();
-  }
+  manager->urls_snapshots.clear();
   return nullptr;
   API_IMPL_END
 }

@@ -228,6 +228,7 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
     token.impl = &cat;
     token.manager = std::move(owner);
     token.manager_keepalive = impl_;
+    token.lifecycle = lifecycle_;
     return Catalog::NewInstance(env, std::move(token));
   });
 }
@@ -235,6 +236,7 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
 Napi::Value Manager::Dispose(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   // Idempotent — releasing an already-null unique_ptr is a no-op.
+  lifecycle_->disposed.store(true, std::memory_order_release);
   impl_.reset();
   return env.Undefined();
 }

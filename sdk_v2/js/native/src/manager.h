@@ -15,9 +15,14 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
 #include <memory>
 
 namespace foundry_local_node {
+
+struct ManagerLifecycle {
+  std::atomic<bool> disposed{false};
+};
 
 class Manager : public Napi::ObjectWrap<Manager> {
  public:
@@ -56,6 +61,7 @@ class Manager : public Napi::ObjectWrap<Manager> {
   bool ThrowIfDisposed(Napi::Env env);
 
   std::shared_ptr<foundry_local::Manager> impl_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_ = std::make_shared<ManagerLifecycle>();
 };
 
 }  // namespace foundry_local_node
