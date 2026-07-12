@@ -102,11 +102,15 @@ if(WIN32)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_windows.cc
         src/platform/windows/path.cc
+        src/platform/windows/file_io.cc
+        src/platform/windows/cross_process_file_lock.cc
     )
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_posix.cc
         src/platform/posix/path.cc
+        src/platform/posix/file_io.cc
+        src/platform/posix/cross_process_file_lock.cc
     )
 endif()
 
@@ -151,7 +155,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/configuration.cc
     src/download/blob_download_state.cc
     src/download/blob_downloader.cc
-    src/download/cross_process_file_lock.cc
+    src/platform/cross_process_file_lock.cc
     src/download/download_manager.cc
     src/download/file_writer.cc
     src/download/inference_model_writer.cc
@@ -247,6 +251,11 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
 
     if(WIN32)
         target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
+        # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
+        # WinHTTP is not available in UWP, so only define this on desktop Windows.
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
+        endif()
     endif()
 
     if(ANDROID)

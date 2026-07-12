@@ -148,6 +148,47 @@ stages:
           runTests: true
 
   # ====================================================================
+  # Pack — C++ SDK tgz bundles (base platforms)
+  # ====================================================================
+  - stage: cpp_pack_sdk_v2
+    displayName: 'C++ Native: Pack SDK tgz (base)'
+    dependsOn:
+    - cpp_build_win_x64
+    - cpp_build_win_arm64
+    - cpp_build_linux_x64
+    - cpp_build_osx_arm64
+    jobs:
+    - job: pack
+      pool:
+        name: onnxruntime-Win-CPU-2022
+        os: windows
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-include'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-include'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-win-x64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-win-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-linux-x64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-osx-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+        outputs:
+        - output: pipelineArtifact
+          artifactName: 'cpp-sdk-v2'
+          targetPath: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
+      steps:
+      - template: steps-pack-cpp-sdk.yml
+        parameters:
+          outputDir: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
+
+  # ====================================================================
   # Pack — NuGet package (all 4 platforms; Windows includes WinML)
   # ====================================================================
   - stage: cpp_pack_nuget

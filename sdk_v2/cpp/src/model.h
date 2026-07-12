@@ -59,9 +59,21 @@ class Model {
   static Model MakeContainer(Model first_variant);
 
   /// Add a variant to this container. Requires IsContainer() to be true.
-  /// If the new variant is cached and the current selection is not, the new variant
-  /// becomes the selected variant (matches C# behavior).
+  /// The variant is inserted to keep the container's variant order best-first
+  /// (device priority asc, version desc, created-at desc).
+  ///
+  /// Does not change the current selection. Call SelectDefaultVariant once the
+  /// container has its full variant set.
   void AddVariant(Model variant);
+
+  /// Choose the default selected variant from the current sorted variant list:
+  /// first cached variant if any, else the best variant.
+  /// Requires IsContainer() to be true.
+  void SelectDefaultVariant();
+
+  /// Best-first comparator: device priority asc, version desc, created-at desc, model_id asc.
+  /// Exposed so callers that return Model* lists can produce consistent ordering with Variants().
+  static bool CompareBestFirst(const Model& a, const Model& b);
 
   // --- Properties ---
 
@@ -154,8 +166,9 @@ class Model {
   DownloadManager* download_manager_ = nullptr;
   ModelLoadManager* model_load_manager_ = nullptr;
 
-  // Container data (empty/null for leaves).
-  std::vector<Model> variants_;
+  // Container data (empty/null for leaves). unique_ptr keeps Model addresses
+  // stable across vector growth/reordering.
+  std::vector<std::unique_ptr<Model>> variants_;
   Model* selected_variant_ = nullptr;  // non-null = this is a container
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants

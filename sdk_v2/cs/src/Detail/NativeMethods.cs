@@ -723,6 +723,9 @@ public delegate IntPtr FlCatalog_GetCachedModelsDelegate(IntPtr catalog, out Int
 public delegate IntPtr FlCatalog_GetLoadedModelsDelegate(IntPtr catalog, out IntPtr outModels);
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlCatalog_GetModelVersionsDelegate(IntPtr catalog, IntPtr modelAlias, IntPtr modelName, int maxVersions, out IntPtr outModels);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlCatalog_GetNameDelegate(IntPtr catalog, out IntPtr outName);
 
 // --- Model API (flModelApi) delegates ---
@@ -948,6 +951,7 @@ public struct FlCatalogApi
     public FlCatalog_GetLatestVersionDelegate GetLatestVersion;
     public FlCatalog_GetCachedModelsDelegate GetCachedModels;
     public FlCatalog_GetLoadedModelsDelegate GetLoadedModels;
+    public FlCatalog_GetModelVersionsDelegate GetModelVersions;
 }
 
 /// <summary>Model API table — model operations and ModelInfo accessors.</summary>

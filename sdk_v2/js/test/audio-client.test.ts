@@ -51,7 +51,7 @@ describe.skipIf(!haveTestModelCache)("AudioClient (real whisper-tiny model, V1 O
 
   beforeAll(async () => {
     fixture = await setupRealModelManager({
-      namePreference: "whisper-tiny",
+      namePreference: "openai-whisper-tiny-generic-cpu",
       task: "automatic-speech-recognition",
     });
     if (fixture !== undefined) {

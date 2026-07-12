@@ -13,16 +13,12 @@ import {
 } from "./detail/native.js";
 import type { EpDownloadResult, EpInfo } from "./types.js";
 
-// Once a native Manager exists, ONNX Runtime's process-wide teardown races with
-// Node's environment teardown on a natural exit and crashes — a long-standing
-// ORT-on-exit issue, independent of this SDK. It is avoided only by releasing
-// the Manager and then leaving via `process.exit()`, which skips that graceful
-// teardown. So track the live manager and do exactly that on the way out: dispose
-// on `beforeExit` then exit explicitly; an `exit` handler covers callers who
-// invoke `process.exit()` themselves (releasing the env before the C runtime
-// tears the ORT libraries down keeps their static destructors benign).
-// The native layer permits only one live Manager at a time, so a single
-// reference is enough.
+// A native Manager holds process-global native resources. Dispose the live
+// Manager on process exit so native teardown happens at a deterministic point
+// rather than being left entirely to environment finalizers. `beforeExit`
+// covers a natural event-loop drain; `exit` covers callers who invoke
+// `process.exit()` themselves. Both are idempotent. The native layer permits
+// only one live Manager at a time, so a single reference is enough.
 let liveManager: FoundryLocalManager | undefined;
 let exitHandlersInstalled = false;
 
@@ -45,7 +41,6 @@ function installExitHandlersOnce(): void {
   exitHandlersInstalled = true;
   process.on("beforeExit", () => {
     disposeLiveManager();
-    process.exit(process.exitCode ?? 0);
   });
   process.on("exit", () => {
     disposeLiveManager();

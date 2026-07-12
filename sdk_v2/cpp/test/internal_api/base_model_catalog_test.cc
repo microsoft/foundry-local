@@ -17,9 +17,14 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace fl;
+
+static Model MakeModel(const std::string& model_id, const std::string& name,
+                       int version, const std::string& alias,
+                       const std::string& local_path);
 
 // ========================================================================
 // Concrete test catalog — returns canned models from FetchModels()
@@ -40,6 +45,67 @@ class TestCatalog : public BaseModelCatalog {
 
  private:
   mutable std::vector<Model> models_;
+};
+
+class QueryingTestCatalog : public BaseModelCatalog {
+ public:
+  explicit QueryingTestCatalog(ILogger& logger) : BaseModelCatalog("querying-test-catalog", logger) {}
+
+  void AddModel(Model model) {
+    models_.push_back(std::move(model));
+  }
+
+  void SetVersionFetchResults(std::vector<Model> models) {
+    version_fetch_results_ = std::move(models);
+  }
+
+  void SetIdFetchResults(std::vector<Model> models) {
+    id_fetch_results_ = std::move(models);
+  }
+
+ protected:
+  std::vector<Model> FetchModels() const override {
+    return std::move(models_);
+  }
+
+  std::vector<Model> FetchModelVersions(const std::string& model_alias,
+                                        const std::string& model_name = "") const override {
+    std::vector<Model> result;
+    for (const auto& model : version_fetch_results_) {
+      const auto& info = model.Info();
+      if (info.alias != model_alias) {
+        continue;
+      }
+
+      if (!model_name.empty() && info.name != model_name) {
+        continue;
+      }
+
+      result.push_back(MakeModel(info.model_id, info.name, info.version, info.alias, model.LocalPath()));
+    }
+
+    return result;
+  }
+
+  std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override {
+    std::unordered_set<std::string> requested(model_ids.begin(), model_ids.end());
+    std::vector<Model> result;
+    for (const auto& model : id_fetch_results_) {
+      const auto& info = model.Info();
+      if (!requested.contains(info.model_id)) {
+        continue;
+      }
+
+      result.push_back(MakeModel(info.model_id, info.name, info.version, info.alias, model.LocalPath()));
+    }
+
+    return result;
+  }
+
+ private:
+  mutable std::vector<Model> models_;
+  mutable std::vector<Model> version_fetch_results_;
+  mutable std::vector<Model> id_fetch_results_;
 };
 
 // Helper: create a Model from basic fields.
@@ -256,4 +322,105 @@ TEST_F(BaseModelCatalogTest, GetModelVariant_ById_ReturnsVariantNotContainer) {
   Model* container = catalog.GetModel("phi-3");
   ASSERT_NE(container, nullptr);
   EXPECT_EQ(container->Variants().size(), 2u);
+}
+
+TEST_F(BaseModelCatalogTest, GetModelVersionsDoesNotIntegrateFetchedVariants) {
+  QueryingTestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini:2", "phi-3-mini", 2, "phi-3"));
+
+  std::vector<Model> version_results;
+  version_results.push_back(MakeModel("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));
+  catalog.SetVersionFetchResults(std::move(version_results));
+
+  auto versions = catalog.GetModelVersions("phi-3", "", 0);
+  ASSERT_EQ(versions.size(), 1u);
+  EXPECT_EQ(versions[0]->Info().model_id, "phi-3-mini:1");
+
+  auto* container = catalog.GetModel("phi-3");
+  ASSERT_NE(container, nullptr);
+  EXPECT_EQ(container->Variants().size(), 1u)
+      << "GetModelVersions should not add fetched versions to the catalog's main indices.";
+}
+
+TEST_F(BaseModelCatalogTest, GetModelVersionsCrossAliasPointersRemainValid) {
+  QueryingTestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));
+  catalog.AddModel(MakeModel("llama:1", "llama", 1, "llama"));
+
+  // Seed version results for both aliases.
+  std::vector<Model> phi3_versions;
+  phi3_versions.push_back(MakeModel("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));
+  phi3_versions.push_back(MakeModel("phi-3-mini:2", "phi-3-mini", 2, "phi-3"));
+  catalog.SetVersionFetchResults(std::move(phi3_versions));
+
+  // First query: phi-3
+  auto phi3_result = catalog.GetModelVersions("phi-3", "", 0);
+  ASSERT_EQ(phi3_result.size(), 2u);
+  Model* phi3_ptr = phi3_result[0];
+
+  // Second query: llama — must not invalidate phi3_ptr.
+  std::vector<Model> llama_versions;
+  llama_versions.push_back(MakeModel("llama:1", "llama", 1, "llama"));
+  llama_versions.push_back(MakeModel("llama:2", "llama", 2, "llama"));
+  catalog.SetVersionFetchResults(std::move(llama_versions));
+
+  auto llama_result = catalog.GetModelVersions("llama", "", 0);
+  ASSERT_EQ(llama_result.size(), 2u);
+
+  // phi3_ptr must still be alive and accessible.
+  EXPECT_EQ(phi3_ptr->Info().alias, "phi-3")
+      << "Querying a different alias should not invalidate pointers from a prior GetModelVersions call.";
+}
+
+    TEST_F(BaseModelCatalogTest, GetModelVersionsMaxVersionsSelectsLatestRegardlessOfFetchOrder) {
+      QueryingTestCatalog catalog(logger_);
+
+      std::vector<Model> version_results;
+      // Intentionally unsorted fetch order: v2, v1, v3.
+      version_results.push_back(MakeModel("phi-3-mini-generic-cpu:2", "phi-3-mini", 2, "phi-3"));
+      version_results.push_back(MakeModel("phi-3-mini-generic-cpu:1", "phi-3-mini", 1, "phi-3"));
+      version_results.push_back(MakeModel("phi-3-mini-generic-cpu:3", "phi-3-mini", 3, "phi-3"));
+      catalog.SetVersionFetchResults(std::move(version_results));
+
+      auto versions = catalog.GetModelVersions("phi-3", "", /*max_versions=*/1);
+      ASSERT_EQ(versions.size(), 1u);
+      EXPECT_EQ(versions.front()->Info().version, 3)
+      << "max_versions=1 should pick the latest version even when fetch order is arbitrary.";
+    }
+
+TEST_F(BaseModelCatalogTest, GetModelVariantIdIntegratesFetchedVariant) {
+  QueryingTestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini:2", "phi-3-mini", 2, "phi-3"));
+
+  std::vector<Model> id_results;
+  id_results.push_back(MakeModel("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));
+  catalog.SetIdFetchResults(std::move(id_results));
+
+  auto* fetched = catalog.GetModelVariant("phi-3-mini:1");
+  ASSERT_NE(fetched, nullptr);
+  EXPECT_EQ(fetched->Info().model_id, "phi-3-mini:1");
+
+  auto* container = catalog.GetModel("phi-3");
+  ASSERT_NE(container, nullptr);
+  EXPECT_EQ(container->Variants().size(), 2u)
+      << "ID-based fetches should still integrate so download-specific lookups persist in the catalog.";
+}
+
+TEST_F(BaseModelCatalogTest, GetModelVariantIdIntegrationPreservesPriorityOrdering) {
+  QueryingTestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini-generic-cpu:1", "phi-3-mini", 1, "phi-3"));
+
+  std::vector<Model> id_results;
+  id_results.push_back(MakeModel("phi-3-mini-npu:1", "phi-3-mini", 1, "phi-3"));
+  catalog.SetIdFetchResults(std::move(id_results));
+
+  auto* fetched = catalog.GetModelVariant("phi-3-mini-npu:1");
+  ASSERT_NE(fetched, nullptr);
+
+  auto* container = catalog.GetModel("phi-3");
+  ASSERT_NE(container, nullptr);
+  auto variants = container->Variants();
+  ASSERT_EQ(variants.size(), 2u);
+  EXPECT_EQ(variants.front()->Info().model_id, "phi-3-mini-npu:1")
+      << "Integrated variants should be re-sorted so higher-priority devices stay first.";
 }

@@ -122,7 +122,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
     FileLock lock(lock_path);
 
     // Check if package already exists and is valid
-    if (fl::VerifyEpPackage(ep_dir,
+    if (fl::VerifyEpBinaries(ep_dir,
             {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
              {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
             "CUDA EP", logger)) {
@@ -168,7 +168,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
       std::filesystem::remove(zip_path);
 
       // Verify
-      if (!fl::VerifyEpPackage(ep_dir,
+      if (!fl::VerifyEpBinaries(ep_dir,
                {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
                 {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
                "CUDA EP", logger)) {

@@ -73,8 +73,8 @@ shippable state. **No public C ABI changes** in any increment.
 
 **Files added**
 
-- `sdk_v2/cpp/src/download/cross_process_file_lock.h`
-- `sdk_v2/cpp/src/download/cross_process_file_lock.cc`
+- `sdk_v2/cpp/src/platform/cross_process_file_lock.h`
+- `sdk_v2/cpp/src/platform/cross_process_file_lock.cc`
 
 **Files modified**
 
