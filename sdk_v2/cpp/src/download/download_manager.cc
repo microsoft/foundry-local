@@ -28,6 +28,7 @@ namespace fl {
 namespace {
 
 const char* kDownloadSignalFileName = "download.tmp";
+const char* kDownloadSignalSidecarSafeMarker = "foundry-local-sidecar-safe-v1\n";
 const char* kGenAIConfigFileName = "genai_config.json";
 const char* kInferenceModelFileName = "inference_model.json";
 const char* kDefaultRegistryRegion = "centralus";
@@ -45,7 +46,6 @@ bool HasInferenceModelJson(const std::string& model_path) {
   if (ec) {
     return false;
   }
-
   for (const auto& entry : it) {
     if (entry.is_directory(ec)) {
       if (std::filesystem::exists(entry.path() / kInferenceModelFileName)) {
@@ -55,6 +55,17 @@ bool HasInferenceModelJson(const std::string& model_path) {
   }
 
   return false;
+}
+
+bool HasSidecarSafeDownloadSignal(const std::filesystem::path& signal_path) {
+  std::ifstream signal(signal_path);
+  if (!signal.is_open()) {
+    return false;
+  }
+
+  std::string marker;
+  std::getline(signal, marker);
+  return marker == "foundry-local-sidecar-safe-v1";
 }
 
 /// Resolve the effective model path — the directory containing genai_config.json.
@@ -349,10 +360,13 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     return ResolveEffectiveModelPath(model_path);
   }
 
+  const bool can_skip_completed_files =
+      !std::filesystem::exists(model_path) || HasSidecarSafeDownloadSignal(signal_path);
+
   // Create download signal file
   {
     std::ofstream signal(signal_path);
-    // Empty file — its presence indicates download is in progress
+    signal << kDownloadSignalSidecarSafeMarker;
   }
 
   // Emit 0% immediately so callers know the download process has started.
@@ -376,7 +390,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // and the blob container has all files at the root or in variant subdirectories.
     download_opts.path_prefix = "";
     download_opts.max_concurrency = max_concurrency_;
-    download_opts.skip_completed_files = true;
+    download_opts.skip_completed_files = can_skip_completed_files;
 
     if (progress_cb) {
       download_opts.progress = [&progress_cb](float percent) {
