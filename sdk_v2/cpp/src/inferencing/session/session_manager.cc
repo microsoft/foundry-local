@@ -85,11 +85,17 @@ size_t SessionManager::ActiveCount() const {
 
 // --- Session cache ---
 
-std::unique_ptr<ChatSession> SessionManager::CheckOut(const std::string& key) {
+std::unique_ptr<ChatSession> SessionManager::CheckOut(const std::string& key, const std::string& expected_model_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = cache_.find(key);
 
   if (it == cache_.end()) {
+    return nullptr;
+  }
+  if (!expected_model_id.empty() && it->second.model_id != expected_model_id) {
+    logger_.Log(LogLevel::Information,
+                fmt::format("SessionManager: cached session for '{}' uses model '{}', not requested model '{}'",
+                            key, it->second.model_id, expected_model_id));
     return nullptr;
   }
 
@@ -101,7 +107,7 @@ std::unique_ptr<ChatSession> SessionManager::CheckOut(const std::string& key) {
   return session;
 }
 
-void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession> session) {
+void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession> session, std::string model_id) {
   // Collect evicted sessions to destroy outside the lock.
   std::vector<std::unique_ptr<ChatSession>> evicted;
 
@@ -133,7 +139,7 @@ void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession
 
     // Insert new entry
     lru_order_.push_front(key);
-    cache_[key] = CacheEntry{std::move(session), lru_order_.begin()};
+    cache_[key] = CacheEntry{std::move(session), std::move(model_id), lru_order_.begin()};
 
     logger_.Log(LogLevel::Debug,
                 fmt::format("SessionManager: checked in session under '{}' (cache size: {})", key, cache_.size()));

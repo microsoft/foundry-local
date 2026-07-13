@@ -178,9 +178,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   std::string response_id = ResponseConverter::GenerateId("resp");
 
   std::unique_ptr<ChatSession> session;
+  const std::string resolved_model_id = model->Id();
 
   if (params.previous_response_id) {
-    session = ctx_.session_manager.CheckOut(*params.previous_response_id);
+    session = ctx_.session_manager.CheckOut(*params.previous_response_id, resolved_model_id);
 
     if (session) {
       ctx_.logger.Log(LogLevel::Information,
@@ -225,13 +226,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
       // The route action is recorded by the streaming thread when the stream
       // finishes — move the tracker in rather than marking success now.
-      return HandleStreaming(std::move(session), std::move(session_request), model_name,
+      return HandleStreaming(std::move(session), std::move(session_request), model_name, resolved_model_id,
                              response_id, created_at, params, req_json, std::move(tracker));
     } else {
       ctx_.logger.Log(LogLevel::Debug,
                       fmt::format("Creating response {} for model {}", response_id, model_name));
 
-      auto response = HandleNonStreaming(std::move(session), session_request, model_name,
+      auto response = HandleNonStreaming(std::move(session), session_request, model_name, resolved_model_id,
                                          response_id, created_at, params, req_json);
       tracker->SetStatus(ActionStatus::kSuccess);
 
@@ -253,7 +254,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNonStreaming(
     std::unique_ptr<ChatSession> session, Request& session_request,
-    const std::string& model_name, const std::string& response_id,
+    const std::string& model_name, const std::string& model_id, const std::string& response_id,
     int64_t created_at, const ResponseCreateParams& params,
     const nlohmann::json& req_json) {
   SessionRegistration reg(ctx_.session_manager, *session);
@@ -285,7 +286,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
     session->SetStreamingCallback(nullptr);
 
     // Cache the session for potential reuse on the next turn
-    ctx_.session_manager.CheckIn(response_id, std::move(session));
+    ctx_.session_manager.CheckIn(response_id, std::move(session), model_id);
   }
 
   return JsonResponse(Status::CODE_200, response_json);
@@ -293,7 +294,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleStreaming(
     std::unique_ptr<ChatSession> session, Request session_request,
-    const std::string& model_name, const std::string& response_id,
+    const std::string& model_name, const std::string& model_id, const std::string& response_id,
     int64_t created_at, const ResponseCreateParams& params,
     const nlohmann::json& req_json, std::unique_ptr<ActionTracker> route_tracker) {
   auto body = std::make_shared<SseStreamBody>();
@@ -340,6 +341,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                 session = std::move(session),
                                 req = stream_request,
                                 model_name, response_id, created_at,
+                                model_id,
                                 should_store, &store,
                                 req_copy = std::move(req_copy),
                                 params_copy = std::move(params_copy),
@@ -593,7 +595,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         session->SetStreamingCallback(nullptr);
 
         // Cache the session for potential reuse on the next turn
-        session_manager.CheckIn(response_id, std::move(session));
+        session_manager.CheckIn(response_id, std::move(session), model_id);
       }
 
       // Streamed to completion — record the route action as a success.

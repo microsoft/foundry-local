@@ -57,14 +57,14 @@ class ResponsesHandler : public HttpRequestHandler {
   // --- Inference dispatch ---
 
   std::shared_ptr<OutgoingResponse> HandleNonStreaming(std::unique_ptr<ChatSession> session, Request& session_request,
-                                                       const std::string& model_name, const std::string& response_id,
-                                                       int64_t created_at,
+                                                       const std::string& model_name, const std::string& model_id,
+                                                       const std::string& response_id, int64_t created_at,
                                                        const responses::ResponseCreateParams& params,
                                                        const nlohmann::json& req_json);
 
   std::shared_ptr<OutgoingResponse> HandleStreaming(std::unique_ptr<ChatSession> session, Request session_request,
-                                                    const std::string& model_name, const std::string& response_id,
-                                                    int64_t created_at,
+                                                    const std::string& model_name, const std::string& model_id,
+                                                    const std::string& response_id, int64_t created_at,
                                                     const responses::ResponseCreateParams& params,
                                                     const nlohmann::json& req_json,
                                                     std::unique_ptr<ActionTracker> route_tracker);

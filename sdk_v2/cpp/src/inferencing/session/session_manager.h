@@ -36,6 +36,8 @@ class ISessionManager {
 ///
 /// Cache semantics (check-out / check-in):
 /// - CheckOut(key) removes the session from the cache and transfers ownership to the caller.
+///   If expected_model_id is non-empty and the cached session was created for
+///   another model, returns nullptr and leaves the cached session untouched.
 ///   While checked out, the session cannot be evicted or accessed by concurrent requests.
 /// - CheckIn(key, session) inserts the session into the cache under the given key.
 ///   May evict the least-recently-used entry if at capacity.
@@ -74,12 +76,12 @@ class SessionManager : public ISessionManager {
 
   /// Remove a session from the cache by key and return it.
   /// Returns nullptr on cache miss. The session is still tracked (registered).
-  std::unique_ptr<ChatSession> CheckOut(const std::string& key);
+  std::unique_ptr<ChatSession> CheckOut(const std::string& key, const std::string& expected_model_id = {});
 
   /// Insert a session into the cache under the given key.
   /// May evict the least-recently-used entry if at capacity.
   /// The session remains tracked (registered) while cached.
-  void CheckIn(const std::string& key, std::unique_ptr<ChatSession> session);
+  void CheckIn(const std::string& key, std::unique_ptr<ChatSession> session, std::string model_id = {});
 
   /// Remove and destroy a cached session by key. Returns true if an entry was removed.
   ///
@@ -94,6 +96,7 @@ class SessionManager : public ISessionManager {
  private:
   struct CacheEntry {
     std::unique_ptr<ChatSession> session;
+    std::string model_id;
     std::list<std::string>::iterator lru_iter;
   };
 

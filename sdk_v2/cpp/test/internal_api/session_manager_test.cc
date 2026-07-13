@@ -145,6 +145,20 @@ TEST_F(SessionManagerTest, CheckInAndCheckOutRoundTrip) {
   EXPECT_EQ(mgr.CacheSize(), 0u);
 }
 
+TEST(SessionManagerStandaloneTest, CheckOutModelMismatchLeavesCachedSession) {
+  StderrLogger logger;
+  SessionManager mgr(logger);
+
+  mgr.CheckIn("resp-1", nullptr, "model-a");
+
+  EXPECT_EQ(mgr.CheckOut("resp-1", "model-b"), nullptr);
+  EXPECT_EQ(mgr.CacheSize(), 1u);
+
+  auto checked_out = mgr.CheckOut("resp-1", "model-a");
+  EXPECT_EQ(checked_out, nullptr);
+  EXPECT_EQ(mgr.CacheSize(), 0u);
+}
+
 TEST(SessionManagerStandaloneTest, CheckInAfterCancelAllDropsSession) {
   StderrLogger logger;
   SessionManager mgr(logger);
