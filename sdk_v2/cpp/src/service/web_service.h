@@ -5,6 +5,7 @@
 #include "logger.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -50,6 +51,9 @@ class StreamingThreadTracker {
       }
     }
     threads_.push_back(TrackedThread{std::move(t), std::move(done), std::move(abort)});
+    if (threads_.back().done && threads_.back().done->load(std::memory_order_acquire)) {
+      completion_cv_.notify_one();
+    }
   }
 
   void NotifyCompleted() {

@@ -82,6 +82,7 @@ struct flManager {
   std::unique_ptr<flCatalog> catalog;  // stores the flCatalog wrapper around impl.GetCatalog()
   mutable std::mutex urls_cache_mutex;
   mutable std::vector<std::unique_ptr<UrlSnapshot>> urls_snapshots;
+  mutable UrlSnapshot* current_urls_snapshot = nullptr;
 };
 
 // ========================================================================
@@ -386,18 +387,22 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
   if (urls.empty()) {
     *out_urls = nullptr;
     *out_num_urls = 0;
+    manager->current_urls_snapshot = nullptr;
     return nullptr;
   }
 
-  auto snapshot = std::make_unique<flManager::UrlSnapshot>();
-  snapshot->strings = std::move(urls);
-  snapshot->pointers.reserve(snapshot->strings.size());
-  for (const auto& u : snapshot->strings) {
-    snapshot->pointers.push_back(u.c_str());
+  if (manager->current_urls_snapshot == nullptr || manager->current_urls_snapshot->strings != urls) {
+    auto snapshot = std::make_unique<flManager::UrlSnapshot>();
+    snapshot->strings = std::move(urls);
+    snapshot->pointers.reserve(snapshot->strings.size());
+    for (const auto& u : snapshot->strings) {
+      snapshot->pointers.push_back(u.c_str());
+    }
+    manager->current_urls_snapshot = snapshot.get();
+    manager->urls_snapshots.push_back(std::move(snapshot));
   }
 
-  auto* snapshot_ptr = snapshot.get();
-  manager->urls_snapshots.push_back(std::move(snapshot));
+  auto* snapshot_ptr = manager->current_urls_snapshot;
   *out_urls = snapshot_ptr->pointers.data();
   *out_num_urls = snapshot_ptr->pointers.size();
   return nullptr;
@@ -411,7 +416,7 @@ FL_API_STATUS_IMPL(Manager_WebServiceStopImpl, flManager* manager) {
   }
   std::lock_guard<std::mutex> lock(manager->urls_cache_mutex);
   manager->impl.StopWebService();
-  manager->impl.StopWebService();
+  manager->current_urls_snapshot = nullptr;
   return nullptr;
   API_IMPL_END
 }
