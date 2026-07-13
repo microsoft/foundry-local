@@ -1023,6 +1023,60 @@ TEST(DownloadManagerTest, LegacyIncompleteRetryRedownloadsFullSizeBlobWithoutSid
             mock_downloader_ptr->downloaded_blobs.end());
 }
 
+TEST(DownloadManagerTest, FailedLegacyRepairDoesNotPromoteToSidecarSafeRetry) {
+  TempDir tmpdir;
+
+  int registry_calls = 0;
+  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [&registry_calls](const std::string&) {
+        ++registry_calls;
+        if (registry_calls == 1) {
+          return MakeRegistryResponse("temporary failure", 503);
+        }
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/container?sig=test"})");
+      });
+  manager->SetModelRegistryClient(std::move(registry));
+
+  auto mock_downloader = std::make_unique<MockBlobDownloader>();
+  auto* mock_downloader_ptr = mock_downloader.get();
+  mock_downloader->blobs_to_return = {
+      {"weights.safetensors", 1024},
+      {"config.json", 100},
+  };
+  manager->SetBlobDownloader(std::move(mock_downloader));
+
+  ModelInfo info;
+  info.model_id = "test-model:1";
+  info.name = "test-model";
+  info.uri = "azureml://registries/test/models/test-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "TestPublisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "TestPublisher" / "test-model-1";
+  fs::create_directories(model_dir);
+  {
+    std::ofstream signal(model_dir / "download.tmp");
+    signal << "legacy-incomplete-download";
+  }
+  {
+    std::ofstream f(model_dir / "weights.safetensors", std::ios::binary);
+    f.seekp(1023);
+    f.put('\0');
+  }
+
+  EXPECT_THROW(manager->DownloadModel(info), fl::Exception);
+  EXPECT_TRUE(mock_downloader_ptr->downloaded_blobs.empty());
+
+  manager->DownloadModel(info);
+
+  ASSERT_EQ(mock_downloader_ptr->downloaded_blobs.size(), 2u);
+  EXPECT_NE(std::find(mock_downloader_ptr->downloaded_blobs.begin(), mock_downloader_ptr->downloaded_blobs.end(),
+                      "weights.safetensors"),
+            mock_downloader_ptr->downloaded_blobs.end());
+}
+
 // --- Region resolution: detected region drives the download endpoint ---
 
 // Run one download and return the registry URL the manager hit.

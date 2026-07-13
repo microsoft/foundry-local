@@ -29,6 +29,7 @@ namespace {
 
 const char* kDownloadSignalFileName = "download.tmp";
 const char* kDownloadSignalSidecarSafeMarker = "foundry-local-sidecar-safe-v1\n";
+const char* kDownloadSignalLegacyRepairMarker = "foundry-local-legacy-repair\n";
 const char* kGenAIConfigFileName = "genai_config.json";
 const char* kInferenceModelFileName = "inference_model.json";
 const char* kDefaultRegistryRegion = "centralus";
@@ -366,7 +367,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
   // Create download signal file
   {
     std::ofstream signal(signal_path);
-    signal << kDownloadSignalSidecarSafeMarker;
+    signal << (can_skip_completed_files ? kDownloadSignalSidecarSafeMarker : kDownloadSignalLegacyRepairMarker);
   }
 
   // Emit 0% immediately so callers know the download process has started.
