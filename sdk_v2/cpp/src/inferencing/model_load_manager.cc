@@ -269,12 +269,14 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
 
   for (const auto& id : ids) {
     int remaining = 0;
-    while (clock::now() < deadline) {
+    bool unloaded = false;
+    while (true) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = loaded_models_.find(id);
         if (it == loaded_models_.end()) {
           remaining = 0;
+          unloaded = true;
           break;
         }
 
@@ -282,14 +284,19 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
         if (remaining == 0) {
           logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id));
           loaded_models_.erase(it);
+          unloaded = true;
           break;
         }
+      }
+
+      if (clock::now() >= deadline) {
+        break;
       }
 
       std::this_thread::sleep_for(kPollInterval);
     }
 
-    if (remaining > 0) {
+    if (!unloaded && remaining > 0) {
       logger_.Log(LogLevel::Warning,
                   fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; leaving loaded",
                               id, remaining, timeout.count()));
