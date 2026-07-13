@@ -130,6 +130,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   std::string path_str(model_path);
   std::string id_str(model_id);
   std::lock_guard<std::mutex> lock(mutex_);
+  if (shutdown_.load()) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "cannot load model during shutdown");
+  }
 
   // Check if model is already loaded
   auto it = loaded_models_.find(id_str);
