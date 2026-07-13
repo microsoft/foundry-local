@@ -536,6 +536,21 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            file(GLOB _ORT_GENAI_RUNTIME_LIBS CONFIGURE_DEPENDS
+                "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai*.so")
+            file(GLOB _ORT_PROVIDER_RUNTIME_LIBS CONFIGURE_DEPENDS
+                "${ORT_LIB_DIR}/libonnxruntime_providers_*.so")
+            set(_LINUX_OPTIONAL_RUNTIME_LIBS ${_ORT_GENAI_RUNTIME_LIBS} ${_ORT_PROVIDER_RUNTIME_LIBS})
+            if(_LINUX_OPTIONAL_RUNTIME_LIBS)
+                add_custom_command(TARGET foundry_local POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${_LINUX_OPTIONAL_RUNTIME_LIBS}
+                        $<TARGET_FILE_DIR:foundry_local>
+                )
+            endif()
+        endif()
     endif()
 endif()
 

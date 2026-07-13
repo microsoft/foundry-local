@@ -101,6 +101,12 @@ steps:
         echo "  staged $(basename "$f")"
       fi
     done
+    for f in "$src"/libonnxruntime-genai*.so; do
+      if [ -e "$f" ] && [ "$(basename "$f")" != "libonnxruntime-genai.so" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
     for f in "$src"/libonnxruntime_providers_*.so; do
       if [ -e "$f" ]; then
         cp -P "$f" "$dst/"
