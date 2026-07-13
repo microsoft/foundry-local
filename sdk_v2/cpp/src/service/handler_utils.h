@@ -12,6 +12,8 @@
 
 #include "telemetry/telemetry_redaction.h"
 
+#include <algorithm>
+#include <cctype>
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -74,7 +76,30 @@ inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::Incomi
   if (!ua) {
     return {};
   }
-  auto scrubbed = ScrubTelemetryErrorMessage(*ua);
+  std::string scrubbed;
+  scrubbed.reserve(std::min<size_t>(ua->size(), 256));
+  size_t run_length = 0;
+  for (char ch : *ua) {
+    unsigned char c = static_cast<unsigned char>(ch);
+    bool safe = std::isalnum(c) || ch == ' ' || ch == '.' || ch == '-' || ch == '_' || ch == '/' ||
+                ch == '(' || ch == ')' || ch == ';';
+    if (!safe) {
+      scrubbed.push_back('?');
+      run_length = 0;
+      continue;
+    }
+
+    if (std::isalnum(c)) {
+      ++run_length;
+      if (run_length > 32) {
+        scrubbed.push_back('?');
+        continue;
+      }
+    } else {
+      run_length = 0;
+    }
+    scrubbed.push_back(ch);
+  }
   constexpr size_t kMaxUserAgentLength = 256;
   if (scrubbed.size() > kMaxUserAgentLength) {
     scrubbed.resize(kMaxUserAgentLength);
