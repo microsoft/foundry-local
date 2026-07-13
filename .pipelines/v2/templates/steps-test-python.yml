@@ -3,7 +3,7 @@
 #
 # The caller is responsible for:
 #   * placing the built wheel (.whl) under `wheelDir`
-#   * checking out test-data-shared at `testDataSharedDir`
+#   * populating the model cache directory at `testDataSharedDir`
 
 parameters:
 - name: wheelDir

@@ -74,10 +74,9 @@ steps:
 
 # Tests need shared model files.
 - ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/checkout-steps.yml@self
+  - template: ../../templates/fetch-test-data-from-blob.yml@self
     parameters:
-      repoName: test-data-shared
-      basePath: '$(Agent.BuildDirectory)'
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-

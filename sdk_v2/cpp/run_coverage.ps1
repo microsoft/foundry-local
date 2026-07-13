@@ -5,7 +5,9 @@
 #
 # Prerequisites:
 #   - OpenCppCoverage installed (https://github.com/OpenCppCoverage/OpenCppCoverage)
-#   - A RelWithDebInfo build: .\build.bat --build --parallel
+#   - A Debug (or RelWithDebInfo) build: python build.py --build --config Debug --parallel
+#     Debug is preferred for coverage — its line tables map 1:1 to source lines, so per-line
+#     hit/miss reporting is more accurate than an optimized RelWithDebInfo build.
 #
 # Usage:
 #   .\run_coverage.ps1                         # default Debug for better matching of lines
@@ -62,6 +64,10 @@ Write-Host "`n=== Collecting unit test coverage ===" -ForegroundColor Cyan
 $unitCov  = Join-Path $covDir "unit.cov"
 $unitArgs = $commonArgs + @("--export_type", "binary:$unitCov", "--")
 $unitArgs += $unitExe
+
+# Include DISABLED_ tests (e.g. the real-network http_download manifest test) so the unit step
+# covers code paths that are network-gated off by default. Mirrors the integration step below.
+$unitArgs += "--gtest_also_run_disabled_tests"
 
 if ($TestFilter) {
     $unitArgs += "--gtest_filter=$TestFilter"

@@ -24,26 +24,12 @@ using namespace fl;
 
 namespace {
 
-class TempPath {
- public:
-  TempPath() {
-    path_ = fl::test::MakeUniqueTempPath("file_writer_test_");
-    path_ += ".bin";
-  }
-  ~TempPath() {
-    std::error_code ec;
-    fs::remove(path_, ec);
-  }
-  const fs::path& path() const { return path_; }
-
- private:
-  fs::path path_;
-};
+using fl::test::TempPath;
 
 }  // namespace
 
 TEST(FileWriterTest, OpenCreatesFileAtRequestedSize) {
-  TempPath p;
+  auto p = TempPath::CreateTempFile();
   FileWriter w(fl::test::NullLog());
   w.Open(p.path(), 4096);
   w.Close();
@@ -52,7 +38,7 @@ TEST(FileWriterTest, OpenCreatesFileAtRequestedSize) {
 }
 
 TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
-  TempPath p;
+  auto p = TempPath::CreateTempFile();
   // Pre-write a sentinel byte the writer must NOT overwrite.
   {
     std::ofstream f(p.path(), std::ios::binary);
@@ -78,7 +64,7 @@ TEST(FileWriterTest, OpenPreservesExistingFileAtSameSize) {
 }
 
 TEST(FileWriterTest, OpenRecreatesFileWhenSizeDiffers) {
-  TempPath p;
+  auto p = TempPath::CreateTempFile();
   {
     std::ofstream f(p.path(), std::ios::binary);
     f.seekp(100);
@@ -93,7 +79,7 @@ TEST(FileWriterTest, OpenRecreatesFileWhenSizeDiffers) {
 }
 
 TEST(FileWriterTest, SingleThreadWriteAt) {
-  TempPath p;
+  auto p = TempPath::CreateTempFile();
   FileWriter w(fl::test::NullLog());
   w.Open(p.path(), 1024);
 
@@ -111,7 +97,7 @@ TEST(FileWriterTest, SingleThreadWriteAt) {
 }
 
 TEST(FileWriterTest, ConcurrentDisjointWritesProduceCorrectFile) {
-  TempPath p;
+  auto p = TempPath::CreateTempFile();
   constexpr int kThreads = 8;
   constexpr int kRegionSize = 256 * 1024;  // 256 KB per thread
   constexpr int kPieceSize = 16 * 1024;    // 16 KB per WriteAt

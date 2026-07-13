@@ -8,41 +8,15 @@
 #include "inferencing/model_load_manager.h"
 #include "logger.h"
 
-#include <atomic>
+#include "utils/temp_path.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
-#include <process.h>  // _getpid
-#else
-#include <unistd.h>  // getpid
-#endif
-
 namespace fl::test {
-
-/// Current process id. CTest (gtest_discover_tests) launches a separate process per test, so
-/// temp paths must include the pid to stay unique across concurrent test processes. process.h
-/// is used instead of windows.h so callers that use std::min/std::max aren't broken by its macros.
-inline long CurrentPid() {
-#ifdef _WIN32
-  return ::_getpid();
-#else
-  return static_cast<long>(::getpid());
-#endif
-}
-
-/// Build a unique path under the system temp directory as `<prefix><pid>_<counter>`. The pid
-/// separates concurrent test processes and the per-process atomic counter separates callers
-/// within one process, so no two live temp paths collide — no randomness required.
-inline std::filesystem::path MakeUniqueTempPath(const std::string& prefix) {
-  static std::atomic<uint64_t> counter{0};
-  return std::filesystem::temp_directory_path() /
-         (prefix + std::to_string(CurrentPid()) + "_" +
-          std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
-}
 
 /// EP detector that only reports CPU — used by tests that load real models
 /// without requiring GPU hardware.
