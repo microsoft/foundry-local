@@ -285,6 +285,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
   // A valid cache hit requires: directory exists, no in-progress signal file, and
   // inference_model.json is present (written by DownloadModel on successful completion).
   auto signal_path = std::filesystem::path(model_path) / kDownloadSignalFileName;
+  const bool model_dir_existed_before_download = std::filesystem::exists(model_path);
   if (std::filesystem::exists(model_path) && !std::filesystem::exists(signal_path) &&
       HasInferenceModelJson(model_path)) {
     // Already cached and download was complete — cancellation request is
@@ -362,7 +363,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
   }
 
   const bool can_skip_completed_files =
-      !std::filesystem::exists(model_path) || HasSidecarSafeDownloadSignal(signal_path);
+      !model_dir_existed_before_download || HasSidecarSafeDownloadSignal(signal_path);
 
   // Create download signal file
   {
