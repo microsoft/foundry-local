@@ -346,6 +346,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                 route_tracker = std::move(route_tracker),
                                 &tracker,
                                 stream_done]() mutable {
+    bool terminal_sent = false;
     int seq = 2;
     std::string full_text;  // concatenation of all visible runs, used for output_text in completed_response
 
@@ -560,6 +561,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
       // Close whatever item is still open at end-of-generation so the SSE stream is well-formed.
       close_current();
+      if (req->canceled.load(std::memory_order_relaxed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
+      }
 
       auto completed_response = ResponseConverter::BuildResponseObject(
           response_id, created_at, model_name, params_copy, std::move(closed_items), full_text, bg_response.usage);
@@ -568,7 +572,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       completed.type = StreamEventType::kResponseCompleted;
       completed.sequence_number = seq++;
       completed.response = completed_response;
-      push_event("response.completed", completed);
+      if (!push_event("response.completed", completed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
+      }
+      if (!body_ptr->Push("data: [DONE]\n\n")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
+      }
+      terminal_sent = true;
 
       // Store if requested
       if (should_store) {
@@ -610,8 +620,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       }
     }
 
-    // Terminal event per spec
-    body_ptr->Push("data: [DONE]\n\n");
+    if (!terminal_sent) {
+      body_ptr->Push("data: [DONE]\n\n");
+    }
     body_ptr->Finish();
     stream_done->store(true, std::memory_order_release);
 

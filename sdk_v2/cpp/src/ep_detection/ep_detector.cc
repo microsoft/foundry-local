@@ -246,9 +246,12 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       // Update cached registration state in place under the cache lock so
       // GetDiscoverableEps[C] readers see the new value.
       std::lock_guard<std::mutex> cache_lock(cache_mutex_);
+      const bool registration_changed = !cached_eps_[i].is_registered;
       cached_eps_[i].is_registered = true;
-      PublishEpSnapshotLocked();
-      PublishCApiSnapshotLocked();
+      if (registration_changed) {
+        PublishEpSnapshotLocked();
+        PublishCApiSnapshotLocked();
+      }
 
       if (tracker) {
         tracker->RecordDownloadComplete(ActionStatus::kSuccess, "Installed");

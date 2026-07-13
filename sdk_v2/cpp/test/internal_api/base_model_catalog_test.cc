@@ -279,6 +279,19 @@ TEST_F(BaseModelCatalogTest, RefreshPreservesExplicitVariantSelection) {
   EXPECT_EQ(container->Id(), "phi-3-mini-cpu:1");
 }
 
+TEST_F(BaseModelCatalogTest, GetLatestVersionReturnsLatestSameModelName) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+  catalog.AddModel(MakeModel("phi-3-mini-gpu:2", "phi-3-mini-gpu", 2, "phi-3"));
+
+  Model* cpu_variant = catalog.GetModelVariant("phi-3-mini-cpu:1");
+  ASSERT_NE(cpu_variant, nullptr);
+
+  Model* latest = catalog.GetLatestVersion(cpu_variant);
+  ASSERT_NE(latest, nullptr);
+  EXPECT_EQ(latest->Info().name, "phi-3-mini-cpu");
+}
+
 TEST_F(BaseModelCatalogTest, ForcedRefreshFailureBacksOffWhenCatalogAlreadyPopulated) {
   FailingRefreshCatalog catalog(logger_);
   std::vector<Model> models;

@@ -271,10 +271,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
         usage.total_tokens = static_cast<int>(bg_response.usage.total_tokens);
         usage_chunk.usage = std::move(usage);
 
-        body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
+        if (!body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n")) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "chat completion stream cancelled");
+        }
       }
 
-      body_ptr->Push("data: [DONE]\n\n");
+      if (!body_ptr->Push("data: [DONE]\n\n")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "chat completion stream cancelled");
+      }
 
       // Inference streamed to completion — record the route action as a success.
       if (route_tracker) {

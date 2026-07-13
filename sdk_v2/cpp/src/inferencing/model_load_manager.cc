@@ -57,8 +57,24 @@ ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger)
     : ep_detector_(ep_detector), logger_(logger) {}
 
 ModelLoadManager::~ModelLoadManager() {
-  // Destroy all loaded models under the lock.
+  // Destroy all loaded models under the lock. If a caller violates the public
+  // lifetime contract and keeps direct sessions alive past Manager destruction,
+  // keep those model instances alive rather than leaving sessions with dangling
+  // GenAIModelInstance references.
   std::lock_guard<std::mutex> lock(mutex_);
+  for (auto it = loaded_models_.begin(); it != loaded_models_.end();) {
+    auto live_sessions = it->second->SessionRefCount();
+    if (live_sessions > 0) {
+      logger_.Log(LogLevel::Warning,
+                  fmt::format("ModelLoadManager destroyed while model '{}' still has {} live session(s); "
+                              "leaving model instance allocated to avoid dangling session references",
+                              it->first, live_sessions));
+      it->second.release();
+      it = loaded_models_.erase(it);
+    } else {
+      ++it;
+    }
+  }
   loaded_models_.clear();
 }
 

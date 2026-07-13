@@ -240,7 +240,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
       }
 
       // Send terminal event
-      body_ptr->Push("data: [DONE]\n\n");
+      if (!body_ptr->Push("data: [DONE]\n\n")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "audio transcription stream cancelled");
+      }
 
       if (route_tracker) {
         route_tracker->SetStatus(ActionStatus::kSuccess);
