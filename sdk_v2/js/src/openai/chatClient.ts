@@ -64,6 +64,9 @@ export class ChatClientSettings {
  * {@link Model.createChatClient}. The underlying model must already be loaded — call `await model.load()` first.
  * Each `completeChat` / `completeStreamingChat` call constructs and disposes its own `ChatSession`,
  * matching the v1 SDK's stateless behaviour — no conversation state is retained on the client.
+ *
+ * @deprecated The OpenAI direct client is deprecated and will be removed at the end of 2026. Use ChatSession instead.
+ * OpenAI types remain supported for the web-server path.
  */
 export class ChatClient {
   readonly #model: Model;

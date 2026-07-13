@@ -18,9 +18,25 @@ export type {
   ToolChoice,
 } from "./types.js";
 
+/**
+ * @deprecated Use ChatSession instead. The OpenAI direct client will be removed at the end of 2026.
+ * OpenAI types remain supported for the web-server path.
+ */
 export { ChatClient, ChatClientSettings } from "./openai/chatClient.js";
+/**
+ * @deprecated Use AudioSession instead. The OpenAI direct client will be removed at the end of 2026.
+ * OpenAI types remain supported for the web-server path.
+ */
 export { AudioClient, AudioClientSettings } from "./openai/audioClient.js";
+/**
+ * @deprecated Use EmbeddingsSession instead. The OpenAI direct client will be removed at the end of 2026.
+ * OpenAI types remain supported for the web-server path.
+ */
 export { EmbeddingClient } from "./openai/embeddingClient.js";
+/**
+ * @deprecated Use AudioSession streaming instead. The OpenAI direct client will be removed at the end of 2026.
+ * OpenAI types remain supported for the web-server path.
+ */
 export {
   LiveAudioTranscriptionOptions,
   LiveAudioTranscriptionSession,

@@ -18,6 +18,10 @@ using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 /// Embedding Client that uses the OpenAI API.
 /// Implemented using Betalgo.Ranul.OpenAI SDK types.
 /// </summary>
+[System.Obsolete(
+    "OpenAIEmbeddingClient is deprecated and will be removed at the end of 2026. " +
+    "Use EmbeddingsSession instead. OpenAI types remain supported for the web-server path.",
+    error: false)]
 public class OpenAIEmbeddingClient
 {
     private readonly string _modelId;

@@ -31,14 +31,24 @@ class DISABLED_DownloadFixture : public ::testing::Test {
 };
 
 TEST_F(DISABLED_DownloadFixture, RemoveAndRedownloadSmallestModel) {
-  // Find the smallest CPU model that is NOT already loaded by SharedTestEnv.
-  // Iterate all variants of each alias group — GetModels() only returns the
-  // selected variant, which may hide smaller CPU variants behind a GPU pick.
+  // Find the smallest CPU model to remove+redownload, EXCLUDING the models the shared
+  // environment reserves for its modality fixtures. Those (e.g. whisper for the audio
+  // fixture, qwen for chat) are loaded by other suites; removing one here would race the
+  // fixture that depends on it. Skipping the whole reserved set — not just "not currently
+  // loaded" — is what makes this robust: a reserved model may be unloaded right now but
+  // loaded by a later suite. Iterate all variants of each alias group — GetModels() only
+  // returns the selected variant, which may hide smaller CPU variants behind a GPU pick.
+  auto reserved = SharedTestEnv::Get().ReservedModels();
+
   foundry_local::IModel* target = nullptr;
   int64_t target_size = std::numeric_limits<int64_t>::max();
 
   for (const auto& m : model_list()) {
     if (m->IsLoaded()) {
+      continue;
+    }
+
+    if (reserved.count(m.get()) != 0) {
       continue;
     }
 
@@ -59,7 +69,7 @@ TEST_F(DISABLED_DownloadFixture, RemoveAndRedownloadSmallestModel) {
     }
   }
 
-  ASSERT_NE(target, nullptr) << "No unloaded CPU model found in catalog";
+  ASSERT_NE(target, nullptr) << "No unreserved, unloaded CPU model found in catalog";
 
   auto info = target->GetInfo();
   std::cout << "Download test model: " << info.Name()

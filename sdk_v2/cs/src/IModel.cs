@@ -61,6 +61,7 @@ public interface IModel
     /// </summary>
     /// <param name="ct">Optional cancellation token.</param>
     /// <returns>OpenAI.ChatClient</returns>
+    [System.Obsolete("Use new ChatSession(model) instead.", error: false)]
     Task<OpenAIChatClient> GetChatClientAsync(CancellationToken? ct = null);
 
     /// <summary>
@@ -68,6 +69,7 @@ public interface IModel
     /// </summary>
     /// <param name="ct">Optional cancellation token.</param>
     /// <returns>OpenAI.AudioClient</returns>
+    [System.Obsolete("Use new AudioSession(model) instead.", error: false)]
     Task<OpenAIAudioClient> GetAudioClientAsync(CancellationToken? ct = null);
 
     /// <summary>
@@ -75,6 +77,7 @@ public interface IModel
     /// </summary>
     /// <param name="ct">Optional cancellation token.</param>
     /// <returns>OpenAI.EmbeddingClient</returns>
+    [System.Obsolete("Use new EmbeddingsSession(model) instead.", error: false)]
     Task<OpenAIEmbeddingClient> GetEmbeddingClientAsync(CancellationToken? ct = null);
 
     /// <summary>

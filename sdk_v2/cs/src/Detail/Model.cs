@@ -115,6 +115,7 @@ public class Model : IModel
             $"Error removing model {Id} from cache", _logger, ct).ConfigureAwait(false);
     }
 
+    [System.Obsolete("Use new ChatSession(model) instead.", error: false)]
     public async Task<OpenAIChatClient> GetChatClientAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
@@ -125,11 +126,14 @@ public class Model : IModel
                     throw new FoundryLocalException($"Model {Id} is not loaded. Call LoadAsync first.");
                 }
 
+#pragma warning disable CS0618 // OpenAIChatClient is obsolete
                 return new OpenAIChatClient(Id, NativeModel);
+#pragma warning restore CS0618
             },
             "Error getting chat client for model", _logger).ConfigureAwait(false);
     }
 
+    [System.Obsolete("Use new AudioSession(model) instead.", error: false)]
     public async Task<OpenAIAudioClient> GetAudioClientAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
@@ -140,11 +144,14 @@ public class Model : IModel
                     throw new FoundryLocalException($"Model {Id} is not loaded. Call LoadAsync first.");
                 }
 
+#pragma warning disable CS0618 // OpenAIAudioClient is obsolete
                 return new OpenAIAudioClient(Id, NativeModel);
+#pragma warning restore CS0618
             },
             "Error getting audio client for model", _logger).ConfigureAwait(false);
     }
 
+    [System.Obsolete("Use new EmbeddingsSession(model) instead.", error: false)]
     public async Task<OpenAIEmbeddingClient> GetEmbeddingClientAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
@@ -155,7 +162,9 @@ public class Model : IModel
                     throw new FoundryLocalException($"Model {Id} is not loaded. Call LoadAsync first.");
                 }
 
+#pragma warning disable CS0618 // OpenAIEmbeddingClient is obsolete
                 return new OpenAIEmbeddingClient(Id, NativeModel);
+#pragma warning restore CS0618
             },
             "Error getting embedding client for model", _logger).ConfigureAwait(false);
     }

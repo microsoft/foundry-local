@@ -36,7 +36,9 @@ internal class ChatCompletionCreateRequestExtended : ChatCompletionCreateRequest
     internal static ChatCompletionCreateRequestExtended FromUserInput(string modelId,
                                                                       IEnumerable<OpenAIChatMessage> messages,
                                                                       IEnumerable<ToolDefinition>? tools,
+#pragma warning disable CS0618 // OpenAIChatClient is obsolete
                                                                       OpenAIChatClient.ChatSettings settings,
+#pragma warning restore CS0618
                                                                       bool stream)
     {
         var request = new ChatCompletionCreateRequestExtended

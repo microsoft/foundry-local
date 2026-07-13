@@ -15,7 +15,8 @@ class ILogger;
 /// Workers in a single download claim disjoint chunks, so concurrent `WriteAt`
 /// calls always target non-overlapping byte ranges. Backed by `pwrite` (POSIX)
 /// or `WriteFile` + `OVERLAPPED` (Windows): the OS arbitrates concurrent writes
-/// to disjoint ranges, so no user-space lock is taken.
+/// to disjoint ranges, so no user-space lock is taken. The OS-specific calls
+/// live in `src/platform/file_io.*`.
 class FileWriter {
  public:
   explicit FileWriter(ILogger& logger);
@@ -38,12 +39,9 @@ class FileWriter {
 
  private:
   ILogger& logger_;
-#ifdef _WIN32
-  // Win32 HANDLE. Holds a valid handle while open, nullptr otherwise.
-  void* handle_ = nullptr;
-#else
-  int fd_ = -1;
-#endif
+  // Native file handle (Win32 HANDLE or POSIX fd) as an integer; see
+  // src/platform/file_io.h. kInvalidFileHandle (-1) when not open.
+  std::intptr_t handle_ = -1;
 };
 
 }  // namespace fl
