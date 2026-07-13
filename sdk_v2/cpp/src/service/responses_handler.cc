@@ -627,6 +627,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     }
     body_ptr->Finish();
     stream_done->store(true, std::memory_order_release);
+    tracker.NotifyCompleted();
 
   });
 

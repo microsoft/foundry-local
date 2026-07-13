@@ -261,6 +261,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
     body_ptr->Finish();
     stream_done->store(true, std::memory_order_release);
+    thread_tracker.NotifyCompleted();
   });
 
   thread_tracker.Track(std::move(streaming_thread), stream_done, [body, stream_request] {

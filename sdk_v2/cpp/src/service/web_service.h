@@ -30,9 +30,19 @@ class StreamingThreadTracker {
   };
 
  public:
+  StreamingThreadTracker() {
+    StartReaperLocked();
+  }
+
+  ~StreamingThreadTracker() {
+    StopReaper();
+    JoinAll();
+  }
+
   /// Take ownership of a streaming thread.
   void Track(std::thread t, std::shared_ptr<std::atomic<bool>> done, std::function<void()> abort) {
     std::lock_guard<std::mutex> lock(mutex_);
+    StartReaperLocked();
     ReapCompletedLocked();
     if (stopping_) {
       if (abort) {
@@ -40,6 +50,10 @@ class StreamingThreadTracker {
       }
     }
     threads_.push_back(TrackedThread{std::move(t), std::move(done), std::move(abort)});
+  }
+
+  void NotifyCompleted() {
+    completion_cv_.notify_one();
   }
 
   void BeginStopping() {
@@ -56,6 +70,7 @@ class StreamingThreadTracker {
   void Reset() {
     std::lock_guard<std::mutex> lock(mutex_);
     stopping_ = false;
+    StartReaperLocked();
   }
 
   void AbortAllLocked() {
@@ -69,6 +84,8 @@ class StreamingThreadTracker {
   /// Join all remaining threads. Called by WebService::Stop().
   /// Moves entries out before joining so completed streaming threads are cleaned up safely.
   void JoinAll() {
+    StopReaper();
+
     std::vector<TrackedThread> local;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -83,6 +100,45 @@ class StreamingThreadTracker {
   }
 
  private:
+  bool HasCompletedLocked() const {
+    for (const auto& tracked : threads_) {
+      if (tracked.done && tracked.done->load(std::memory_order_acquire)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void StartReaperLocked() {
+    if (reaper_thread_.joinable()) {
+      return;
+    }
+    reaper_stop_ = false;
+    reaper_thread_ = std::thread([this]() { ReaperLoop(); });
+  }
+
+  void StopReaper() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      reaper_stop_ = true;
+    }
+    completion_cv_.notify_all();
+    if (reaper_thread_.joinable()) {
+      reaper_thread_.join();
+    }
+  }
+
+  void ReaperLoop() {
+    while (true) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      completion_cv_.wait(lock, [this]() { return reaper_stop_ || HasCompletedLocked(); });
+      if (reaper_stop_) {
+        return;
+      }
+      ReapCompletedLocked();
+    }
+  }
+
   void ReapCompletedLocked() {
     for (auto it = threads_.begin(); it != threads_.end();) {
       if (it->done && it->done->load(std::memory_order_acquire)) {
@@ -97,8 +153,11 @@ class StreamingThreadTracker {
   }
 
   std::mutex mutex_;
+  std::condition_variable completion_cv_;
   std::vector<TrackedThread> threads_;
+  std::thread reaper_thread_;
   bool stopping_ = false;
+  bool reaper_stop_ = false;
 };
 
 /// Context shared with all HTTP controllers.

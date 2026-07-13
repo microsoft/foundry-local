@@ -243,24 +243,21 @@ void ModelLoadManager::RejectNewLoads() {
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
-  // Snapshot ids+pointers under the lock; the GenAIModelInstance pointers stay valid
-  // because (a) only this method or UnloadModel can erase entries, and (b) we serialize
-  // the per-id erase below.
-  std::vector<std::pair<std::string, GenAIModelInstance*>> snapshot;
+  std::vector<std::string> ids;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    snapshot.reserve(loaded_models_.size());
+    ids.reserve(loaded_models_.size());
     for (auto& [id, instance] : loaded_models_) {
-      snapshot.emplace_back(id, instance.get());
+      ids.emplace_back(id);
     }
   }
 
-  if (snapshot.empty()) {
+  if (ids.empty()) {
     return;
   }
 
   logger_.Log(LogLevel::Information,
-              fmt::format("Shutdown: unloading {} model(s)", snapshot.size()));
+              fmt::format("Shutdown: unloading {} model(s)", ids.size()));
 
   using clock = std::chrono::steady_clock;
   constexpr auto kPollInterval = std::chrono::milliseconds(50);
@@ -270,27 +267,32 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
   // time linearly with model count.
   auto deadline = clock::now() + timeout;
 
-  for (auto& [id, instance] : snapshot) {
-    while (instance->SessionRefCount() > 0 && clock::now() < deadline) {
+  for (const auto& id : ids) {
+    int remaining = 0;
+    while (clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = loaded_models_.find(id);
+        if (it == loaded_models_.end()) {
+          remaining = 0;
+          break;
+        }
+
+        remaining = it->second->SessionRefCount();
+        if (remaining == 0) {
+          logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id));
+          loaded_models_.erase(it);
+          break;
+        }
+      }
+
       std::this_thread::sleep_for(kPollInterval);
     }
 
-    auto remaining = instance->SessionRefCount();
     if (remaining > 0) {
       logger_.Log(LogLevel::Warning,
                   fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; leaving loaded",
                               id, remaining, timeout.count()));
-      continue;
-    }
-
-    try {
-      UnloadModel(id);
-    } catch (const std::exception& ex) {
-      // A new session attached between our refcount poll and the lock acquisition inside
-      // UnloadModel. Log and move on — IsShutdownRequested-gated callers shouldn't be
-      // creating new sessions, but we don't crash shutdown over it.
-      logger_.Log(LogLevel::Warning,
-                  fmt::format("Shutdown: failed to unload '{}': {}", id, ex.what()));
     }
   }
 }
