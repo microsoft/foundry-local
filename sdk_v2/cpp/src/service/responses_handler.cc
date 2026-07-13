@@ -577,10 +577,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       if (!push_event("response.completed", completed)) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
       }
-      if (!body_ptr->Push("data: [DONE]\n\n")) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
-      }
-      terminal_sent = true;
 
       // Store if requested
       if (should_store) {
@@ -597,6 +593,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         // Cache the session for potential reuse on the next turn
         session_manager.CheckIn(response_id, std::move(session), model_id);
       }
+
+      if (!body_ptr->Push("data: [DONE]\n\n")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "response stream cancelled");
+      }
+      terminal_sent = true;
 
       // Streamed to completion — record the route action as a success.
       if (route_tracker) {
