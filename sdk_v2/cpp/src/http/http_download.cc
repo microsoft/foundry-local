@@ -6,9 +6,16 @@
 #include "util/string_utils.h"
 
 #include <azure/core/context.hpp>
-#include <azure/core/http/curl_transport.hpp>
 #include <azure/core/http/http.hpp>
 #include <azure/core/io/body_stream.hpp>
+
+// See http_client.cc: desktop Windows uses WinHTTP; UWP and non-Windows builds use libcurl.
+// FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT is set by CMake for non-UWP Windows builds.
+#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#include <azure/core/http/win_http_transport.hpp>
+#else
+#include <azure/core/http/curl_transport.hpp>
+#endif
 
 #include <filesystem>
 #include <fstream>
@@ -30,7 +37,11 @@ bool HttpDownloadFile(const std::string& url,
     std::filesystem::create_directories(parent);
   }
 
+#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+  WinHttpTransport transport;
+#else
   CurlTransport transport;
+#endif
   Request request(HttpMethod::Get, Url(url));
   request.SetHeader("User-Agent", user_agent);
 

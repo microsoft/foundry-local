@@ -23,6 +23,10 @@ export class AudioClientSettings {
   }
 }
 
+/**
+ * @deprecated The OpenAI direct client is deprecated and will be removed at the end of 2026. Use AudioSession instead.
+ * OpenAI types remain supported for the web-server path.
+ */
 export class AudioClient {
   readonly #model: Model;
   #disposed = false;

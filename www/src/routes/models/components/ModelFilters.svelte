@@ -9,7 +9,8 @@
 	import {
 		getDeviceIcon,
 		getAcceleratorLogoFromAcceleration,
-		getAcceleratorColorFromAcceleration
+		getAcceleratorColorFromAcceleration,
+		getFamilyDisplayName
 	} from '$lib/utils/model-helpers';
 
 	export let searchTerm = '';
@@ -47,7 +48,13 @@
 			<Card.Description>Results update automatically as you type or change filters</Card.Description
 			>
 		</div>
-		<Button variant="ghost" size="sm" onclick={onRefresh} disabled={loading} aria-label="Refresh models">
+		<Button
+			variant="ghost"
+			size="sm"
+			onclick={onRefresh}
+			disabled={loading}
+			aria-label="Refresh models"
+		>
 			<RefreshCw class={`mr-1 size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
 			Refresh
 		</Button>
@@ -58,7 +65,10 @@
 			<div class="lg:col-span-2">
 				<Label for="search">Search Models</Label>
 				<div class="relative">
-					<Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+					<Search
+						class="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-gray-400"
+						aria-hidden="true"
+					/>
 					<Input
 						id="search"
 						type="text"
@@ -153,9 +163,7 @@
 						{#snippet child({ props })}
 							<Button {...props} variant="outline" class="h-10 w-full justify-between font-normal">
 								<span>
-									{selectedFamily
-										? selectedFamily.charAt(0).toUpperCase() + selectedFamily.slice(1)
-										: 'All Families'}
+									{selectedFamily ? getFamilyDisplayName(selectedFamily) : 'All Families'}
 								</span>
 								<ChevronDown class="ml-2 size-4 opacity-50" />
 							</Button>
@@ -175,7 +183,7 @@
 								<Check
 									class="mr-2 size-4 {selectedFamily === family ? 'opacity-100' : 'opacity-0'}"
 								/>
-								{family.charAt(0).toUpperCase() + family.slice(1)}
+								{getFamilyDisplayName(family)}
 							</DropdownMenu.Item>
 						{/each}
 					</DropdownMenu.Content>
@@ -234,7 +242,7 @@
 		</div>
 
 		<!-- Filter Summary -->
-		<div class="mt-4 flex items-center justify-between border-t border-border/40 pt-4">
+		<div class="border-border/40 mt-4 flex items-center justify-between border-t pt-4">
 			<div class="text-sm text-gray-600 dark:text-gray-400">
 				{#if isFiltering}
 					<span class="inline-flex items-center">

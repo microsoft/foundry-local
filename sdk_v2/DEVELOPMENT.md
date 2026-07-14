@@ -87,6 +87,72 @@ pwsh ./build_and_test_all.ps1 -ContinueOnError
 
 See `pwsh ./build_and_test_all.ps1 -?` for the full parameter list.
 
+## Model cache for tests
+
+Model-dependent sdk_v2 tests require `FOUNDRY_TEST_DATA_DIR` to point to a
+local model cache directory.
+
+In CI, sdk_v2 pipelines pre-populate this directory from blob storage.
+For local runs, developers should populate a local cache first, then point
+`FOUNDRY_TEST_DATA_DIR` at it.
+
+### Local developer flow (recommended)
+
+Use the Foundry CLI/SDK locally to download the test models your SDK tests need.
+This keeps local setup simple and avoids requiring blob storage credentials.
+
+CLI Example:
+```powershell
+# 1) Inspect aliases available on your machine/region
+foundry model list
+
+# 2) Download the CPU models needed by sdk_v2 integration tests
+foundry model download qwen2.5-0.5b-instruct-generic-cpu
+foundry model download qwen3.5-0.8b-generic-cpu
+foundry model download deepseek-r1-distill-qwen-14b-generic-cpu
+foundry model download openai-whisper-tiny-generic-cpu
+foundry model download qwen3-embedding-0.6b-generic-cpu
+foundry model download nemotron-speech-streaming-en-0.6b-generic-cpu
+```
+
+Then set env var `FOUNDRY_TEST_DATA_DIR` to the cache path you want tests to use.
+
+Example:
+
+```powershell
+$env:FOUNDRY_TEST_DATA_DIR = '$env:USERPROFILE\.foundry\cache\models\Microsoft'
+pwsh ./build_and_test_all.ps1
+```
+
+The directory can have any name. What matters is that it already contains the
+model files expected by the tests you are running.
+
+### CI flow
+
+CI does not run `foundry model download ...`. Instead, pipelines fetch a fixed
+model set into `FOUNDRY_TEST_DATA_DIR` using:
+
+- `.pipelines/templates/fetch-test-data-from-blob.yml`
+
+That template downloads versioned model assets and writes `inference_model.json`
+entries expected by the local model scanner.
+
+### Updating the test models available in CI
+
+When tests need a different model/version set, update the model mapping list in:
+
+- `.pipelines/templates/fetch-test-data-from-blob.yml`
+
+Checklist:
+
+1. Add or update the model entry (`SourcePath` + `Version`) in `modelMappings`.
+2. Ensure the selected version path exists in blob storage (`v<Version>`).
+3. Keep at least one model per test task used across SDKs (chat, embeddings,
+  audio/ASR) so integration suites remain runnable.
+4. Validate by running `pwsh ./build_and_test_all.ps1` with
+  `FOUNDRY_TEST_DATA_DIR` set to a cache containing the same model set.
+5. If local instructions change, update this file so contributors can mirror CI.
+
 ## Troubleshooting
 
 * **`cl.exe ... HostX86\x86\cl.exe` during pip install** — your shell has

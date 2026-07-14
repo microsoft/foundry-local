@@ -488,6 +488,7 @@ typedef struct flCatalogApi {
     flStatusPtr (*GetLatestVersion)(const flCatalog* catalog, const flModel* model, flModel** out_model);
     flStatusPtr (*GetCachedModels)(const flCatalog* catalog, flModelList** out_models);
     flStatusPtr (*GetLoadedModels)(const flCatalog* catalog, flModelList** out_models);
+    flStatusPtr (*GetModelVersions)(const flCatalog* catalog, const char* model_alias, const char* model_name, int32_t max_versions, flModelList** out_models);
 } flCatalogApi;
 
 /* -----------------------------------------------------------------------

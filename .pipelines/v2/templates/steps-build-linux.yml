@@ -43,10 +43,9 @@ steps:
   displayName: 'Append version define'
 
 - ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/checkout-steps.yml@self
+  - template: ../../templates/fetch-test-data-from-blob.yml@self
     parameters:
-      repoName: test-data-shared
-      basePath: '$(Agent.BuildDirectory)'
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
 - bash: |
     set -euo pipefail

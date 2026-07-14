@@ -22,7 +22,9 @@ internal record AudioTranscriptionCreateRequestExtended : AudioCreateTranscripti
 {
     internal static AudioTranscriptionCreateRequestExtended FromUserInput(string modelId,
                                                                       string audioFilePath,
+#pragma warning disable CS0618 // OpenAIAudioClient is obsolete
                                                                       OpenAIAudioClient.AudioSettings settings)
+#pragma warning restore CS0618
     {
         return new AudioTranscriptionCreateRequestExtended
         {

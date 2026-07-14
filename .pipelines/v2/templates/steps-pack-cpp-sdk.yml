@@ -1,0 +1,117 @@
+# Package per-platform C++ SDK bundles as .tgz files.
+#
+# Each bundle has this layout:
+#   include/  -> public headers (from cpp-native-include artifact)
+#   lib/      -> platform native binaries
+#
+# Output:
+#   $(Build.ArtifactStagingDirectory)/cpp-sdk-v2/*.tgz
+
+parameters:
+- name: outputDir
+  type: string
+  default: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
+  displayName: 'Directory where per-platform .tgz bundles are staged'
+
+steps:
+
+- task: PowerShell@2
+  displayName: 'Create C++ SDK platform bundles (.tgz)'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $workspace = "$(Pipeline.Workspace)"
+      $outDir = "${{ parameters.outputDir }}"
+      $workRoot = Join-Path "$(Build.BinariesDirectory)" "cpp-sdk-v2-staging"
+
+      if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
+      if (Test-Path $workRoot) { Remove-Item -Recurse -Force $workRoot }
+      New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+      New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
+
+      $includeSrc = Join-Path $workspace 'cpp-native-include'
+      if (-not (Test-Path $includeSrc)) {
+        throw "cpp-native-include artifact not found at $includeSrc"
+      }
+
+      function New-SdkArchive {
+        param(
+          [string]$Rid,
+          [string]$NativeArtifact,
+          [string[]]$Files
+        )
+
+        $nativeSrc = Join-Path $workspace $NativeArtifact
+        if (-not (Test-Path $nativeSrc)) {
+          throw "Native artifact '$NativeArtifact' not found at $nativeSrc"
+        }
+
+        $root = Join-Path $workRoot $Rid
+        $includeDst = Join-Path $root 'include'
+        $libDst = Join-Path $root 'lib'
+        New-Item -ItemType Directory -Force -Path $includeDst | Out-Null
+        New-Item -ItemType Directory -Force -Path $libDst | Out-Null
+
+        Copy-Item -Path (Join-Path $includeSrc '*') -Destination $includeDst -Recurse -Force
+
+        # The SDK tgz should include only public wrapper headers.
+        $pathsToPrune = @(
+          (Join-Path $includeDst 'gsl'),
+          (Join-Path $includeDst '_manifest')
+        )
+        foreach ($pathToPrune in $pathsToPrune) {
+          if (Test-Path $pathToPrune) {
+            Remove-Item -Path $pathToPrune -Recurse -Force
+          }
+        }
+
+        foreach ($f in $Files) {
+          $src = Join-Path $nativeSrc $f
+          if (-not (Test-Path $src)) {
+            throw "Required native file not found: $src"
+          }
+          $dst = Join-Path $libDst (Split-Path -Leaf $src)
+          Copy-Item -Path $src -Destination $dst -Force
+        }
+
+        $archive = Join-Path $outDir ("cpp-sdk-v2-{0}.tgz" -f $Rid)
+        if (Test-Path $archive) { Remove-Item -Force $archive }
+
+        Push-Location $root
+        try {
+          tar -czf $archive include lib
+          if ($LASTEXITCODE -ne 0) {
+            throw "tar failed for RID '$Rid'"
+          }
+        } finally {
+          Pop-Location
+        }
+
+        Write-Host "Created $archive"
+      }
+
+      New-SdkArchive -Rid 'win-x64' -NativeArtifact 'cpp-native-win-x64' -Files @(
+        'foundry_local.dll',
+        'foundry_local.pdb',
+        'foundry_local.lib'
+      )
+
+      New-SdkArchive -Rid 'win-arm64' -NativeArtifact 'cpp-native-win-arm64' -Files @(
+        'foundry_local.dll',
+        'foundry_local.pdb',
+        'foundry_local.lib'
+      )
+
+      New-SdkArchive -Rid 'linux-x64' -NativeArtifact 'cpp-native-linux-x64' -Files @(
+        'libfoundry_local.so'
+      )
+
+      New-SdkArchive -Rid 'osx-arm64' -NativeArtifact 'cpp-native-osx-arm64' -Files @(
+        'libfoundry_local.dylib'
+      )
+
+      Write-Host "Staged archives:"
+      Get-ChildItem $outDir -Filter '*.tgz' | ForEach-Object { Write-Host "  $($_.Name)" }
