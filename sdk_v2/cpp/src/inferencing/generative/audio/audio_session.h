@@ -53,6 +53,16 @@ class AudioSession : public Session {
   void ProcessAudioTranscriptionJson(const std::string& request_json, const Request& original_request,
                                      Response& response);
 
+  bool IsNemotronSpeechModel() const;
+
+  void ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req, 
+                                        const Request& original_request,
+                                        Response& response);
+
+  void TrySetNemotronLanguageId(OgaGenerator& generator, const std::string& language) const;
+
+  static std::vector<float> LoadPcmWavAsFloatSample(const std::string&& audio_file_path);
+
   /// Process a streaming audio request: an AudioItem (format descriptor) + an ItemQueue (PCM chunks).
   void ProcessStreamingAudio(const AudioItem& format_item, ItemQueue& queue,
                              const Request& request, Response& response);

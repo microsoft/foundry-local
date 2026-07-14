@@ -73,6 +73,41 @@ std::string JoinTokens(const std::vector<std::string>& token_texts) {
 
 }  // namespace
 
+namespace {
+  const std::unordered_map<std::string, std::string> NemotronLangIdMap = {
+      ["en"] = "0", ["en-US"] = "0", ["en-GB"] = "1",
+      ["es-ES"] = "2", ["es"] = "3", ["es-US"] = "3",
+      ["zh-CN"] = "4",
+      ["hi"] = "6", ["hi-IN"] = "6", ["ar"] = "7", ["ar-AR"] = "7",
+      ["fr"] = "8", ["fr-FR"] = "8", ["fr-CA"] = "100",
+      ["de"] = "9", ["de-DE"] = "9",
+      ["ja"] = "10", ["ja-JP"] = "10", ["ru"] = "11", ["ru-RU"] = "11",
+      ["pt-BR"] = "12", ["pt"] = "13", ["pt-PT"] = "13",
+      ["ko"] = "14", ["ko-KR"] = "14", ["it"] = "15", ["it-IT"] = "15",
+      ["nl"] = "16", ["nl-NL"] = "16", ["pl"] = "17", ["pl-PL"] = "17",
+      ["tr"] = "18", ["tr-TR"] = "18", ["uk"] = "19", ["uk-UA"] = "19",
+      ["ro"] = "20", ["ro-RO"] = "20",
+      ["el"] = "21", ["el-GR"] = "21", ["cs"] = "22", ["cs-CZ"] = "22",
+      ["hu"] = "23", ["hu-HU"] = "23", ["sv"] = "24", ["sv-SE"] = "24",
+      ["da"] = "25", ["da-DK"] = "25",
+      ["fi"] = "26", ["fi-FI"] = "26", ["sk"] = "28", ["sk-SK"] = "28",
+      ["hr"] = "29", ["hr-HR"] = "29", ["bg"] = "30", ["bg-BG"] = "30",
+      ["lt"] = "31", ["lt-LT"] = "31", ["th"] = "32", ["th-TH"] = "32",
+      ["vi"] = "33", ["vi-VN"] = "33",
+      ["et"] = "60", ["et-EE"] = "60", ["lv"] = "61", ["lv-LV"] = "61",
+      ["sl"] = "62", ["sl-SI"] = "62", ["he"] = "64", ["he-IL"] = "64",
+      ["auto"] = "101",
+      ["mt"] = "102", ["mt-MT"] = "102", ["nb"] = "103", ["nb-NO"] = "103",
+      ["nn"] = "104", ["nn-NO"] = "104",
+    };
+
+    std::string ToLowerAscii(std::string s) {
+      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+      return s;
+    }
+  }  // namespace fl
+
+
 AudioSession::AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model,
                            ILogger& logger, ITelemetry& telemetry)
     : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
@@ -422,6 +457,13 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, fmt::format("Audio file not found: '{}'", req.filename));
   }
 
+  // If the model is a Nemotron speech model, process the transcription using the Nemotron-specific method.
+  // e.g. RNNT models require Nemotron-specific transcription handling.
+  if (IsNemotronSpeechModel()) {
+    ProcessNemotronFileTranscription(req, original_request, response);
+    return;
+  }
+
   // Build generation options from session defaults
   SearchOptions options = session_options_;
 
@@ -501,5 +543,156 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
               fmt::format("Audio transcription stats: Total Tokens: {}, Prompt Tokens: {}, Completion Tokens: {}",
                           total_tokens, prompt_tokens, completion_tokens));
 }
+
+
+bool AudioSession::IsNemotronSpeechModel() const {
+  const auto& cfg = Model().GetConfig();
+  return cfg.model.has_value() && cfg.model->type == "nemotron_speech";
+}
+
+
+void AudioSession::TryNemotronLanguageId(OgaGenerator& generator,
+                                         const std::string& language) const {
+    if (language.empty()) {
+      return;
+    }
+
+    const auto key = ToLowerAscii(language);
+    auto it = NemotronLanguageIdMap().find(key);
+    if (it == NemotronLanguageIdMap().end()) {
+      return;
+    }
+    
+    
+    try {
+      generator.SetRuntimeOption("lang_id", it->second.c_str());
+    } catch (const std::exception& e) {
+      logger_.Log(LogLevel::Error, fmt::format("Failed to set Nemotron language ID: {}", e.what()));
+    }
+  }
+
+
+  void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req,
+                                                      const Requests& original_request,
+                                                      const Response& response) {
+    
+    constexpr size_t kInitialTokenCapacity = 256;
+
+    if (original_request.canceled) {
+      response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+      return;
+    }
+
+    const float temperature = req.temperature.value_or(
+      session_options_.temperature.value_or(0.0f)
+    );
+
+    const std::string language = req.language.value_or("");
+
+    std::vector<float> samples = LoadPcmWavAsFloatSamples(req.audio_file_path);
+
+    auto& oga_model = Model().GetOgaModel();
+    
+    auto processor = OgaStreamingProcessor::Create(oga_model);
+
+    auto tokenizer_stream = OgaTokenizerStream::Create(Model().GetOgaModel());
+
+    std::vector<std::string> token_texts;
+
+    token_texts.reserve(kInitialTokenCapacity);
+
+    std::vector<std::unique_ptr<SpeechSegmentItem>> segments;
+
+    segments.reserve(kInitialSegmentCapacity);
+
+    int completion_tokens = 0;
+
+    auto callback = CreateCallbackHandler(original_request);
+
+    // Process initial tensors with fresh generator
+
+    if (!original_request.canceled) {
+      // Process initial tensors here
+
+      auto tensors = processor->Process(samples.data(), samples.size());
+
+      if (tensors) {
+        auto gen_params = OgaGeneratorParams::Create(oga_model);
+
+        gen_params->SetSearchOption("temperature", temperature);
+
+        auto generator = OgaGenerator::Create(oga_model, *gen_params);
+
+        TryNemotronLanguageId(*generator, language);
+
+        generator->SetInputs(*tensors);
+
+        DecodeTokens(*generator, *tokenizer_stream, token_texts, segments, 
+                     callback, original_request, completion_tokens);
+      }
+    }
+
+    // Flush tensors with fresh generator (Important: avoid done-state reuse bug)
+
+    if (!original_request.canceled) {
+      auto flush_tensors = processor->Flush();
+
+      if (flush_tensors) {
+
+        auto gen_params = OgaGeneratorParams::Create(oga_model);
+        
+        gen_params->SetSearchOption("temperature", temperature);
+
+        auto generator = OgaGenerator::Create(oga_model, *gen_params);
+
+        TryNemotronLanguageId(*generator, language);
+
+        generator->SetInputs(*flush_tensors);
+
+        DecodeTokens(*generator, *tokenizer_stream, token_texts, segments, 
+                     callback, original_request, completion_tokens);
+      }
+    }
+
+    std::string full_text = JoinTokens(token_texts);
+    response.items.push_back(BuildSpeechResult(std::move(full_text), std::move(segments)));
+
+    response.finish_reason = original_request.canceled ? FOUNDRY_FINISH_REASON_CANCELED : FOUNDRY_FINISH_REASON_COMPLETED;
+
+    response.usage.prompt_tokens = 0;
+
+    response.usage.completion_tokens = completion_tokens;
+
+    response.usage.total_tokens = response.usage.prompt_tokens + response.usage.completion_tokens;
+  }
+
+  std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
+
+    std::ifstream in(audio_file_path, std::ios::binary);
+
+    if (!in) {
+      FL_THROW("Failed to open audio file: " + audio_file_path);
+    }
+
+    // TODO:
+   // 1) Read RIFF/WAVE header, fail if invalid.
+   // 2) Iterate chunks safely:
+   //    - read chunk id + size
+   //    - bounds-check size
+  //    - if "fmt " and size < 16 => throw (GitOps feedback fix)
+  //    - parse format/channels/sampleRate/bitsPerSample
+  //    - capture "data" bytes
+  // 3) Enforce sampleRate == 16000
+  // 4) Convert:
+  //    - PCM16 -> float [-1,1], average channels to mono if needed
+  //    - (optional parity) float32 PCM -> mono float
+  // 5) return std::vector<float>
+
+  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+           "LoadPcmWavAsFloatSamples not implemented yet");
+}
+
+  }
+
 
 }  // namespace fl
