@@ -41,7 +41,11 @@ steps:
         param(
           [string]$Rid,
           [string]$NativeArtifact,
-          [string[]]$Files
+          [string[]]$Files,
+          # Optional: separate artifact containing companion symbol files (.dbg / .dSYM).
+          # Items may be files or directory bundles; directories are copied recursively.
+          [string]$SymbolsArtifact = '',
+          [string[]]$SymbolItems = @()
         )
 
         $nativeSrc = Join-Path $workspace $NativeArtifact
@@ -77,6 +81,21 @@ steps:
           Copy-Item -Path $src -Destination $dst -Force
         }
 
+        if ($SymbolsArtifact) {
+          $symbolsSrc = Join-Path $workspace $SymbolsArtifact
+          foreach ($item in $SymbolItems) {
+            $src = Join-Path $symbolsSrc $item
+            if (Test-Path $src -PathType Container) {
+              # Directory bundle (e.g. .dSYM) — copy the whole tree into lib/
+              Copy-Item -Path $src -Destination $libDst -Recurse -Force
+            } elseif (Test-Path $src) {
+              Copy-Item -Path $src -Destination $libDst -Force
+            } else {
+              Write-Warning "Symbol item not found (expected for non-RelWithDebInfo builds): $src"
+            }
+          }
+        }
+
         $archive = Join-Path $outDir ("cpp-sdk-v2-{0}.tgz" -f $Rid)
         if (Test-Path $archive) { Remove-Item -Force $archive }
 
@@ -107,10 +126,14 @@ steps:
 
       New-SdkArchive -Rid 'linux-x64' -NativeArtifact 'cpp-native-linux-x64' -Files @(
         'libfoundry_local.so'
+      ) -SymbolsArtifact 'cpp-native-symbols-linux-x64' -SymbolItems @(
+        'libfoundry_local.so.dbg'
       )
 
       New-SdkArchive -Rid 'osx-arm64' -NativeArtifact 'cpp-native-osx-arm64' -Files @(
         'libfoundry_local.dylib'
+      ) -SymbolsArtifact 'cpp-native-symbols-osx-arm64' -SymbolItems @(
+        'libfoundry_local.dylib.dSYM'
       )
 
       Write-Host "Staged archives:"
