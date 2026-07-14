@@ -7,7 +7,6 @@
 #include "log_level.h"
 #include "logger.h"
 #include "util/path_safety.h"
-#include "util/region_fallback.h"
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -177,13 +176,13 @@ std::string ResolveRegion(const std::string& config_region, const ModelInfo& inf
 }  // anonymous namespace
 
 DownloadManager::DownloadManager(std::string cache_directory, std::string_view catalog_region, int max_concurrency,
-                                 ILogger& logger, bool disable_region_fallback)
+                                 ILogger& logger)
     : cache_directory_(std::move(cache_directory)),
       config_region_(NormalizeConfiguredRegion(catalog_region)),
       max_concurrency_(max_concurrency),
       logger_(logger),
       registry_client_(std::make_unique<ModelRegistryClient>(
-          kDefaultRegistryRegion, logger, std::make_unique<RegionFallback>(logger, !disable_region_fallback))),
+          kDefaultRegistryRegion, logger)),
       blob_downloader_(std::make_unique<AzureBlobDownloader>(logger)) {}
 
 DownloadManager::~DownloadManager() = default;

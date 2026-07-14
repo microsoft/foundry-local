@@ -238,14 +238,12 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
                                        const IEpDetector& ep_detector,
                                        ILogger& logger,
                                        HttpPostResponseFn http_post,
-                                       std::string catalog_region,
-                                       bool region_fallback_enabled)
+                                       std::string catalog_region)
     : base_url_(base_url),
       model_filter_(CreateModelFilter(filter_override)),
       ep_detector_(ep_detector),
       logger_(logger),
-      http_post_response_(std::move(http_post)),
-      region_fallback_(logger, region_fallback_enabled) {
+      http_post_response_(std::move(http_post)) {
   if (!http_post_response_) {
     http_post_response_ = [](const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
@@ -387,11 +385,10 @@ std::unique_ptr<ICatalogClient> MakeCatalogClient(
     const IEpDetector& ep_detector,
     ILogger& logger,
     const std::string& /*cache_directory*/,
-    const std::string& catalog_region,
-    bool disable_region_fallback) {
+    const std::string& catalog_region) {
   return std::make_unique<AzureCatalogClient>(base_url, filter_override, ep_detector, logger,
                                               AzureCatalogClient::HttpPostResponseFn{},
-                                              catalog_region, !disable_region_fallback);
+                                              catalog_region);
 }
 
 }  // namespace fl

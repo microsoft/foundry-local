@@ -27,8 +27,7 @@ class AzureModelCatalog : public BaseModelCatalog {
                     const IEpDetector& ep_detector,
                     ILogger& logger,
                     bool cache_only = false,
-                    std::string catalog_region = "",
-                    bool disable_region_fallback = false);
+                    std::string catalog_region = "");
   ~AzureModelCatalog() override;
 
  protected:
@@ -49,7 +48,6 @@ class AzureModelCatalog : public BaseModelCatalog {
   bool cache_only_;
   // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
   std::string catalog_region_;
-  bool disable_region_fallback_;
 };
 
 }  // namespace fl

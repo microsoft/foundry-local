@@ -22,8 +22,7 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      const IEpDetector& ep_detector,
                                      ILogger& logger,
                                      bool cache_only,
-                                     std::string catalog_region,
-                                     bool disable_region_fallback)
+                                     std::string catalog_region)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
@@ -31,8 +30,7 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
       ep_detector_(ep_detector),
       logger_(logger),
       cache_only_(cache_only),
-      catalog_region_(std::move(catalog_region)),
-      disable_region_fallback_(disable_region_fallback) {
+      catalog_region_(std::move(catalog_region)) {
   if (catalog_urls_.empty()) {
     catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
   }
@@ -95,7 +93,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
     // Preserve byte-identical behavior for the "no override" case (previously stored as ""),
     // while letting callers explicitly request "" as a real filter override.
     auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir,
-                                    catalog_region_, disable_region_fallback_);
+                                    catalog_region_);
     auto model_infos = FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_);
 
     for (const auto& info : model_infos) {
@@ -149,7 +147,7 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
   for (const auto& [url, filter] : catalog_urls_) {
     try {
       auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
-                                      catalog_region_, disable_region_fallback_);
+                                      catalog_region_);
       auto model_infos = client->FetchAllVersionsByAlias(model_alias, model_name);
 
       out.reserve(out.size() + model_infos.size());
@@ -194,7 +192,7 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
 
     try {
       auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
-                                      catalog_region_, disable_region_fallback_);
+                                      catalog_region_);
       auto model_infos = client->FetchModelsByIds(remaining);
 
       for (auto& info : model_infos) {

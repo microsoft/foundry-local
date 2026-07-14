@@ -8,7 +8,6 @@
 #include "http/http_client.h"
 #include "logger.h"
 #include "model_info.h"
-#include "util/region_fallback.h"
 
 #include <functional>
 #include <optional>
@@ -26,7 +25,7 @@ namespace fl {
 /// downloads can target the matching regional model registry.
 class AzureCatalogClient : public ICatalogClient {
  public:
-  /// Response-aware HTTP POST. Used for region detection, catalog fetches, and regional fallback.
+  /// Response-aware HTTP POST. Used for region detection and catalog fetches.
   using HttpPostResponseFn =
       std::function<http::HttpResponse(const std::string& url, const std::string& body)>;
 
@@ -36,14 +35,12 @@ class AzureCatalogClient : public ICatalogClient {
   /// @param logger Logger.
   /// @param http_post HTTP POST implementation. The default uses `http::HttpPostWithResponse`.
   /// @param catalog_region Catalog region. Empty or "auto" detects from Azure headers; any other value is explicit.
-  /// @param region_fallback_enabled Enables retries through nearby regions when a regional endpoint is unhealthy.
   AzureCatalogClient(const std::string& base_url,
                      const std::string& filter_override,
                      const IEpDetector& ep_detector,
                      ILogger& logger,
                      HttpPostResponseFn http_post = {},
-                     std::string catalog_region = "",
-                     bool region_fallback_enabled = true);
+                     std::string catalog_region = "");
 
   /// Fetch every catalog model entry visible to the local hardware (raw form,
   /// before conversion to ModelInfo). One filter set per device, fully paginated.
@@ -68,12 +65,10 @@ class AzureCatalogClient : public ICatalogClient {
     std::string region;
   };
 
-  /// Run all pages of one filter set. In regional mode the first page goes through region fallback and later pages are
-  /// pinned to the serving region; a retryable region-health failure fails just this filter set (others continue).
+  /// Run all pages of one filter set.
   std::optional<FetchedFilterSet> FetchFilterSet(const std::vector<CatalogFilter>& filters);
 
-  /// Fetch every device filter set, dropping the ones that failed their region-health checks.
-  /// Used for unbounded "latest only" / by-id queries.
+  /// Fetch every device filter set.
   std::vector<FetchedFilterSet> FetchAllFilterSets();
 
   std::string base_url_;
@@ -81,7 +76,6 @@ class AzureCatalogClient : public ICatalogClient {
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   HttpPostResponseFn http_post_response_;
-  RegionFallback region_fallback_;
 
   // Region state used for model-registry routing after catalog discovery.
   std::string region_;
