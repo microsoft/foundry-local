@@ -19,6 +19,7 @@ struct OgaTokenizerStream;
 namespace fl {
 
 class GenAIModelInstance;
+struct AudioTranscriptionRequest;
 struct AudioItem;
 struct ItemQueue;
 struct SpeechSegmentItem;
@@ -61,7 +62,7 @@ class AudioSession : public Session {
 
   void TrySetNemotronLanguageId(OgaGenerator& generator, const std::string& language) const;
 
-  static std::vector<float> LoadPcmWavAsFloatSample(const std::string&& audio_file_path);
+  static std::vector<float> LoadPcmWavAsFloatSamples(const std::string& audio_file_path);
 
   /// Process a streaming audio request: an AudioItem (format descriptor) + an ItemQueue (PCM chunks).
   void ProcessStreamingAudio(const AudioItem& format_item, ItemQueue& queue,
