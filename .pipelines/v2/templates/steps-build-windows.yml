@@ -55,7 +55,7 @@ steps:
     echo @exit /b 0 > $(Build.BinariesDirectory)\tools\pkg-config.bat
   displayName: 'Bootstrap vcpkg'
 
-    displayName: 'Configure and build (arm64)'
+- template: steps-prefetch-nuget.yml
   parameters:
     ortVersion: ${{ parameters.ortVersion }}
     genaiVersion: ${{ parameters.genaiVersion }}
@@ -104,7 +104,7 @@ steps:
       --cmake_generator "Visual Studio 17 2022"
       --winml_sdk_version ${{ parameters.winmlVersion }}
       --cmake_extra_defines $(cmakeFetchDefines)
-    displayName: 'Configure and build (arm64 cross-compile)'
+    displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
