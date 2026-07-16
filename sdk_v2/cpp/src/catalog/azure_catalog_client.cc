@@ -167,46 +167,34 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
     const std::string& model_name = "") {
 
   // Full parameter-driven filter sets (keep for easy rollback once catalog models are updated):
-  // std::vector<std::vector<CatalogFilter>> filter_sets;
-  // for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
-  //   std::vector<CatalogFilter> filters;
-  //
-  //   std::vector<std::string> deployment_options = model_filter;
-  //   if (deployment_options.empty()) {
-  //     deployment_options.push_back("foundryLocalDevices");
-  //   }
-  //
-  //   filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
-  //   if (!model_alias.empty()) {
-  //     filters.push_back(MakeFilter("Alias", {model_alias}));
-  //   }
-  //   if (!model_name.empty()) {
-  //     filters.push_back(MakeFilter("Name", {model_name}));
-  //   }
-  //   filters.push_back(MakeFilter("VariantInformation/VariantMetadata/Device", {ToLower(device)}));
-  //   filters.push_back(MakeFilter("VariantInformation/VariantMetadata/ExecutionProvider", eps));
-  //
-  //   if (!latest_only) {
-  //     // Placeholder to keep the parameter part of the behavior contract.
-  //     // Asset-gallery query currently does not require an extra field to fetch all versions.
-  //   }
-  //
-  //   filter_sets.push_back(std::move(filters));
-  // }
-  // return filter_sets;
-
-  // Temporary CPU-only path for catalog validation.
-  (void)ep_detector;
-  (void)model_filter;
-  (void)latest_only;
-  (void)model_alias;
-  (void)model_name;
-
-  std::vector<CatalogFilter> filters;
-  filters.push_back(MakeFilter("VariantInformation/VariantMetadata/Device", {"cpu"}));
-
   std::vector<std::vector<CatalogFilter>> filter_sets;
-  filter_sets.push_back(std::move(filters));
+  for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
+    std::vector<CatalogFilter> filters;
+  
+    std::vector<std::string> deployment_options = model_filter;
+    // NOTE: The v2 catalog models do not yet have the "foundryLocalDevices" deployment option, 
+    // so we don't add it here. Once the catalog models are updated, we can re-enable this default.
+    // if (deployment_options.empty()) {
+    //   deployment_options.push_back("foundryLocalDevices");
+    // }
+  
+    // filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
+    if (!model_alias.empty()) {
+      filters.push_back(MakeFilter("Alias", {model_alias}));
+    }
+    if (!model_name.empty()) {
+      filters.push_back(MakeFilter("Name", {model_name}));
+    }
+    filters.push_back(MakeFilter("VariantInformation/VariantMetadata/Device", {ToLower(device)}));
+    filters.push_back(MakeFilter("VariantInformation/VariantMetadata/ExecutionProvider", eps));
+  
+    if (!latest_only) {
+      // Placeholder to keep the parameter part of the behavior contract.
+      // Asset-gallery query currently does not require an extra field to fetch all versions.
+    }
+  
+    filter_sets.push_back(std::move(filters));
+  }
   return filter_sets;
 }
 
