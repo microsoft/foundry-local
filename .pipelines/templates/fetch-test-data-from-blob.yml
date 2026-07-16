@@ -30,19 +30,21 @@ steps:
           exit 0
         }
 
-        if (Get-Command choco -ErrorAction SilentlyContinue) {
-          Write-Host 'Azure CLI not found. Installing via Chocolatey...'
-          choco install azure-cli -y --no-progress
-        } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+          throw 'Azure CLI is not installed and winget is not available on this Windows agent.'
+        }
+
+        try {
           Write-Host 'Azure CLI not found. Installing via winget...'
           winget install --id Microsoft.AzureCLI -e --accept-source-agreements --accept-package-agreements --silent
-        } else {
-          throw 'Azure CLI is not installed and neither choco nor winget is available to install it.'
+        }
+        catch {
+          throw "winget install failed: $($_.Exception.Message)"
         }
 
         $env:PATH = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
         if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-          throw 'Azure CLI install completed but az is still not on PATH.'
+          throw 'Azure CLI install attempted but az is still not on PATH.'
         }
         az --version | Select-Object -First 1 | Write-Host
 
