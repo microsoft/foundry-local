@@ -5,13 +5,52 @@ parameters:
 - name: destinationPath
   type: string
   default: '$(Build.SourcesDirectory)/test-data-shared'
+- name: scriptType
+  type: string
+  default: pscore
+  values: ['pscore', 'ps']
+- name: installAzCli
+  type: boolean
+  default: false
 
 steps:
+- ${{ if eq(parameters.installAzCli, true) }}:
+  - task: PowerShell@2
+    displayName: 'Ensure Azure CLI is installed (Windows)'
+    condition: eq(variables['Agent.OS'], 'Windows_NT')
+    inputs:
+      targetType: inline
+      pwsh: false
+      script: |
+        $ErrorActionPreference = 'Stop'
+
+        if (Get-Command az -ErrorAction SilentlyContinue) {
+          az --version | Select-Object -First 1 | Write-Host
+          Write-Host 'Azure CLI already installed.'
+          exit 0
+        }
+
+        if (Get-Command choco -ErrorAction SilentlyContinue) {
+          Write-Host 'Azure CLI not found. Installing via Chocolatey...'
+          choco install azure-cli -y --no-progress
+        } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+          Write-Host 'Azure CLI not found. Installing via winget...'
+          winget install --id Microsoft.AzureCLI -e --accept-source-agreements --accept-package-agreements --silent
+        } else {
+          throw 'Azure CLI is not installed and neither choco nor winget is available to install it.'
+        }
+
+        $env:PATH = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+          throw 'Azure CLI install completed but az is still not on PATH.'
+        }
+        az --version | Select-Object -First 1 | Write-Host
+
 - task: AzureCLI@2
   displayName: 'Fetch test data from blob'
   inputs:
     azureSubscription: 'ortcibuild_readonly_mi2-ONNX Runtime-AIFoundryLocal'
-    scriptType: pscore
+    scriptType: ${{ parameters.scriptType }}
     scriptLocation: inlineScript
     inlineScript: |
       $ErrorActionPreference = 'Stop'
