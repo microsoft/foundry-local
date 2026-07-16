@@ -95,4 +95,21 @@ steps:
     fi
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.so"
+
   displayName: 'Stage native artifacts'
+
+# Stage debug symbols into a separate artifact so they can be published
+# independently without being bundled into the Python wheel (which consumes
+# the native artifact wholesale and must not contain the .dbg file).
+- bash: |
+    set -euo pipefail
+    src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin'
+    dst='$(Build.ArtifactStagingDirectory)/symbols'
+    mkdir -p "$dst"
+
+    dbg="$src/libfoundry_local.so.dbg"
+    if [ -f "$dbg" ]; then
+      cp -P "$dbg" "$dst/"
+      echo "  staged libfoundry_local.so.dbg"
+    fi
+  displayName: 'Stage debug symbol artifacts'

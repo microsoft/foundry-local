@@ -27,6 +27,10 @@ using NativeSession = Microsoft.AI.Foundry.Local.Detail.Native.Session;
 /// Push PCM audio chunks via <see cref="AppendAsync"/> and consume transcription results
 /// via <see cref="GetStream"/>.
 /// </summary>
+[System.Obsolete(
+    "LiveAudioTranscriptionSession is deprecated and will be removed at the end of 2026. " +
+    "Use AudioSession streaming instead. OpenAI types remain supported for the web-server path.",
+    error: false)]
 public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 {
     private enum SessionState { Created, Started, Stopped, Disposed }

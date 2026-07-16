@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "download/download_manager.h"
-#include "download/cross_process_file_lock.h"
+#include "platform/cross_process_file_lock.h"
 #include "download/inference_model_writer.h"
 #include "exception.h"
 #include "log_level.h"

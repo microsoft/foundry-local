@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import json
+import warnings
 from typing import TYPE_CHECKING, Any, Generator
 
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from typing_extensions import deprecated
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -115,8 +117,17 @@ class ChatClientSettings:
             raise ValueError(f'ToolChoice with type "{choice_type}" should not have a name property.')
 
 
+@deprecated(
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use ChatSession. "
+    "OpenAI types remain supported for the web-server path."
+)
 class ChatClient:
     """OpenAI-compatible chat completions client backed by Foundry Local Core.
+
+    .. deprecated::
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
+        :class:`foundry_local_sdk.session.ChatSession`. OpenAI types remain
+        supported for the web-server path.
 
     Each call creates a fresh native session (stateless — no turn history).
     Supports non-streaming and streaming completions with optional tool calling.
@@ -127,6 +138,12 @@ class ChatClient:
     """
 
     def __init__(self, model_id: str, model: IModel) -> None:
+        warnings.warn(
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "ChatSession. OpenAI types remain supported for the web-server path.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model_id = model_id
         # Hold the IModel reference so the underlying native model pointer
         # cannot be released out from under us.

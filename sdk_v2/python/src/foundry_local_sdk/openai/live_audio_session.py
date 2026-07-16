@@ -35,8 +35,11 @@ from __future__ import annotations
 
 import queue
 import threading
+import warnings
 from enum import IntEnum
 from typing import TYPE_CHECKING, Iterator
+
+from typing_extensions import deprecated
 
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.openai.live_audio_types import (
@@ -68,8 +71,17 @@ class _State(IntEnum):
     DISPOSED = 3
 
 
+@deprecated(
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use AudioSession. "
+    "OpenAI types remain supported for the web-server path."
+)
 class LiveAudioTranscriptionSession:
     """Session for real-time audio streaming ASR (Automatic Speech Recognition).
+
+    .. deprecated::
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
+        :class:`foundry_local_sdk.session.AudioSession` for streaming
+        transcription. OpenAI types remain supported for the web-server path.
 
     Audio data from a microphone (or other source) is pushed in as PCM
     chunks via :meth:`append`, and transcription results are returned as a
@@ -107,6 +119,12 @@ class LiveAudioTranscriptionSession:
     """
 
     def __init__(self, model_id: str, model: "IModel") -> None:
+        warnings.warn(
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "AudioSession. OpenAI types remain supported for the web-server path.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model_id = model_id
         # Hold the IModel reference so the underlying native model pointer
         # cannot be released out from under us while this session is alive.

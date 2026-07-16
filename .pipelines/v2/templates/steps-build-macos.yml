@@ -100,4 +100,23 @@ steps:
     fi
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.dylib"
+
   displayName: 'Stage native artifacts'
+
+# Stage debug symbols into a separate artifact so they can be published
+# independently without being bundled into the Python wheel (which consumes
+# the native artifact wholesale and must not contain the .dSYM bundle;
+# the bundle is a directory whose inner DWARF file shares the name
+# libfoundry_local.dylib and would corrupt the wheel if copied flat).
+- bash: |
+    set -euo pipefail
+    src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/macOS/${{ parameters.buildConfig }}/bin'
+    dst='$(Build.ArtifactStagingDirectory)/symbols'
+    mkdir -p "$dst"
+
+    dsym="$src/libfoundry_local.dylib.dSYM"
+    if [ -d "$dsym" ]; then
+      cp -r "$dsym" "$dst/"
+      echo "  staged libfoundry_local.dylib.dSYM"
+    fi
+  displayName: 'Stage debug symbol artifacts'
