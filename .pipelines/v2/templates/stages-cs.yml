@@ -39,7 +39,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: steps-build-cs.yml
+    - template: .pipelines/v2/templates/steps-build-cs.yml@self
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         outputDir: '$(Build.ArtifactStagingDirectory)/cs-sdk'
@@ -68,7 +68,7 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-    - template: steps-test-cs.yml
+    - template: .pipelines/v2/templates/steps-test-cs.yml@self
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
@@ -97,7 +97,7 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-    - template: steps-test-cs.yml
+    - template: .pipelines/v2/templates/steps-test-cs.yml@self
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
@@ -125,7 +125,7 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-    - template: steps-test-cs.yml
+    - template: .pipelines/v2/templates/steps-test-cs.yml@self
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
