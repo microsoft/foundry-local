@@ -5,13 +5,14 @@
 # templateContext.outputs.
 #
 # Parameters:
-#   arch           – 'x64' or 'arm64' (arm64 is cross-compiled, no tests)
+#   arch           – 'x64' or 'arm64'
 #   buildConfig    – CMake config (Debug, Release, RelWithDebInfo, MinSizeRel)
 #   ortVersion     – Microsoft.ML.OnnxRuntime.Foundry version
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version
 #   runTests       – Whether to run tests
 #   stageHeaders   – Whether to stage public headers as a separate artifact
+#   pythonArchitecture – Python architecture installed by UsePythonVersion
 
 parameters:
 - name: arch
@@ -31,18 +32,21 @@ parameters:
 - name: stageHeaders
   type: boolean
   default: false
+- name: pythonArchitecture
+  type: string
+  default: 'x64'
+  values: ['x64', 'arm64']
 
 steps:
 
 # Windows hosted agents don't have python on PATH by default — the launcher
 # stub redirects to the Microsoft Store. UsePythonVersion installs and adds it
-# to PATH for the rest of the job. arm64 builds cross-compile on the x64
-# Windows host, so x64 Python is correct for both archs.
+# to PATH for the rest of the job.
 - task: UsePythonVersion@0
   displayName: 'Use Python 3.12'
   inputs:
     versionSpec: '3.12'
-    architecture: 'x64'
+    architecture: '${{ parameters.pythonArchitecture }}'
 
 - script: |
     git clone https://github.com/microsoft/vcpkg.git $(Build.BinariesDirectory)\vcpkg
@@ -51,7 +55,7 @@ steps:
     echo @exit /b 0 > $(Build.BinariesDirectory)\tools\pkg-config.bat
   displayName: 'Bootstrap vcpkg'
 
-- template: steps-prefetch-nuget.yml
+    displayName: 'Configure and build (arm64)'
   parameters:
     ortVersion: ${{ parameters.ortVersion }}
     genaiVersion: ${{ parameters.genaiVersion }}
@@ -106,7 +110,7 @@ steps:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
-- ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
+- ${{ if eq(parameters.runTests, true) }}:
   - script: python build.py --test --config ${{ parameters.buildConfig }}
     displayName: 'Run tests'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp

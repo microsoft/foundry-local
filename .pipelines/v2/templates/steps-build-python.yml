@@ -25,7 +25,7 @@ parameters:
   type: string
   default: 'native'
   values: ['native', 'arm64']
-  displayName: 'Cross-compile target arch on a Windows x64 host. Use "native" for no cross-compile.'
+  displayName: 'Optional Windows wheel target arch override. Use "native" for host-native builds.'
 - name: pythonArchitecture
   type: string
   default: 'x64'

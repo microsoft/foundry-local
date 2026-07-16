@@ -34,7 +34,7 @@ parameters:
   type: string
   default: 'native'
   values: ['native', 'arm64']
-  displayName: 'Cross-compile target arch for node-gyp on Windows x64 host. "native" = no cross.'
+  displayName: 'Optional node-gyp target arch override on Windows. "native" = host architecture.'
 - name: signWindows
   type: boolean
   default: false

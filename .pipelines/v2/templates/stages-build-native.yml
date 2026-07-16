@@ -56,7 +56,7 @@ stages:
           stageHeaders: true
 
   # ====================================================================
-  # Windows ARM64 — cross-compile only (no tests on x64 host)
+  # Windows ARM64 — build
   # ====================================================================
   - stage: cpp_build_win_arm64
     displayName: 'C++ Native: Windows ARM64'
@@ -65,8 +65,9 @@ stages:
     jobs:
     - job: build
       pool:
-        name: onnxruntime-Win-CPU-2022
+        name: onnxruntime-native-arm64-16core
         os: windows
+        hostArchitecture: arm64
       templateContext:
         inputs:
         - input: pipelineArtifact
@@ -86,6 +87,37 @@ stages:
           winmlVersion: ${{ parameters.winmlVersion }}
           runTests: false
           stageHeaders: false
+          pythonArchitecture: arm64
+
+  # ====================================================================
+  # Windows ARM64 (native) — test
+  # ====================================================================
+  - stage: cpp_test_win_arm64
+    displayName: 'C++ Native: Test Windows ARM64'
+    dependsOn:
+    - compute_version
+    jobs:
+    - job: test
+      pool:
+        name: onnxruntime-native-arm64-16core
+        os: windows
+        hostArchitecture: arm64
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'version-info'
+          targetPath: '$(Pipeline.Workspace)/version-info'
+      steps:
+      - template: steps-build-windows.yml
+        parameters:
+          arch: arm64
+          buildConfig: ${{ parameters.buildConfig }}
+          ortVersion: ${{ parameters.ortVersion }}
+          genaiVersion: ${{ parameters.genaiVersion }}
+          winmlVersion: ${{ parameters.winmlVersion }}
+          runTests: true
+          stageHeaders: false
+          pythonArchitecture: arm64
 
   # ====================================================================
   # Linux x64 — build + test

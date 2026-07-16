@@ -7,7 +7,7 @@
 parameters:
 - name: rid
   type: string
-  values: ['win-x64', 'linux-x64', 'osx-arm64']
+  values: ['win-x64', 'win-arm64', 'linux-x64', 'osx-arm64']
   displayName: 'ADO RID for the platform being tested (no cross-arch testing)'
 - name: prebuildArtifactDir
   type: string
@@ -23,7 +23,7 @@ steps:
   inputs:
     versionSpec: '20.x'
 
-- ${{ if eq(parameters.rid, 'win-x64') }}:
+- ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - pwsh: |
       $src = "${{ parameters.prebuildArtifactDir }}/prebuilds"
       $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
@@ -46,7 +46,7 @@ steps:
       find "$dst" -maxdepth 3 -print
     displayName: 'Drop prebuild into sdk_v2/js/prebuilds'
 
-- ${{ if eq(parameters.rid, 'win-x64') }}:
+- ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - task: Npm@1
     displayName: 'npm ci (runs install-native postinstall)'
     inputs:
