@@ -13,6 +13,7 @@
 #   runTests       – Whether to run tests
 #   stageHeaders   – Whether to stage public headers as a separate artifact
 #   pythonArchitecture – Python architecture installed by UsePythonVersion
+#   usePwsh        – Whether PowerShell tasks should use PowerShell Core
 
 parameters:
 - name: arch
@@ -36,6 +37,9 @@ parameters:
   type: string
   default: 'x64'
   values: ['x64', 'arm64']
+- name: usePwsh
+  type: boolean
+  default: true
 
 steps:
 
@@ -69,7 +73,7 @@ steps:
   displayName: 'Append version define'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
@@ -131,7 +135,7 @@ steps:
   displayName: 'Stage native artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $binDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/bin/${{ parameters.buildConfig }}'
       $linkDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/${{ parameters.buildConfig }}'
