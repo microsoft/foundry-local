@@ -30,21 +30,26 @@ steps:
           exit 0
         }
 
-        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-          throw 'Azure CLI is not installed and winget is not available on this Windows agent.'
-        }
-
         try {
-          Write-Host 'Azure CLI not found. Installing via winget...'
-          winget install --id Microsoft.AzureCLI -e --accept-source-agreements --accept-package-agreements --silent
+          $installerPath = Join-Path $env:TEMP 'azure-cli-installer.msi'
+          $installerUrl = 'https://aka.ms/installazurecliwindows'
+
+          Write-Host "Downloading Azure CLI installer from $installerUrl"
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+
+          Write-Host 'Installing Azure CLI via MSI...'
+          $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList "/i `"$installerPath`" /qn /norestart" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Azure CLI MSI install failed with exit code $($process.ExitCode)."
+          }
         }
         catch {
-          throw "winget install failed: $($_.Exception.Message)"
+          throw "Azure CLI install failed: $($_.Exception.Message)"
         }
 
         $env:PATH = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
         if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-          throw 'Azure CLI install attempted but az is still not on PATH.'
+          throw 'Azure CLI install was attempted but az is still not on PATH.'
         }
         az --version | Select-Object -First 1 | Write-Host
 
