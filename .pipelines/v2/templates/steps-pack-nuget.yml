@@ -5,8 +5,8 @@
 # $(Pipeline.Workspace)/<artifactName>/.
 #
 # Produces Microsoft.AI.Foundry.Local.Runtime (win-x64, win-arm64, linux-x64,
-# osx-arm64). On Windows the artifacts carry the reg-free WinML 2.x runtime DLL,
-# which pack.py forwards automatically.
+# linux-arm64, osx-arm64). On Windows the artifacts carry the reg-free WinML 2.x
+# runtime DLL, which pack.py forwards automatically. Linux ARM64 is CPU-only.
 
 parameters:
 - name: ortVersion
@@ -61,6 +61,7 @@ steps:
         --win_x64       "$(Pipeline.Workspace)/cpp-native-win-x64" `
         --win_arm64     "$(Pipeline.Workspace)/cpp-native-win-arm64" `
         --linux_x64     "$(Pipeline.Workspace)/cpp-native-linux-x64" `
+        --linux_arm64   "$(Pipeline.Workspace)/cpp-native-linux-arm64" `
         --osx_arm64     "$(Pipeline.Workspace)/cpp-native-osx-arm64" `
         --output_dir    "$outDir"
 

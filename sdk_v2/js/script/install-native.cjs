@@ -204,8 +204,13 @@ async function installPackage(artifact, tempDir, binDir) {
             const zip = new AdmZip(nupkgPath);
             const entries = nativeEntriesForRid(zip);
             if (entries.length === 0) {
-                console.warn(`    No files found for RID ${RID} in ${artifact.name}.`);
-                return;
+                throw new Error(
+                    [
+                        `No native files found for RID '${RID}' in ${artifact.name} ${artifact.version}.`,
+                        'The package may not yet support this platform.',
+                        'Set FOUNDRY_LOCAL_SKIP_INSTALL=1 to bypass if you are building from source.',
+                    ].join(' '),
+                );
             }
             for (const entry of entries) {
                 zip.extractEntryTo(entry, binDir, false, true);

@@ -130,6 +130,12 @@ steps:
         'libfoundry_local.so.dbg'
       )
 
+      New-SdkArchive -Rid 'linux-arm64' -NativeArtifact 'cpp-native-linux-arm64' -Files @(
+        'libfoundry_local.so'
+      ) -SymbolsArtifact 'cpp-native-symbols-linux-arm64' -SymbolItems @(
+        'libfoundry_local.so.dbg'
+      )
+
       New-SdkArchive -Rid 'osx-arm64' -NativeArtifact 'cpp-native-osx-arm64' -Files @(
         'libfoundry_local.dylib'
       ) -SymbolsArtifact 'cpp-native-symbols-osx-arm64' -SymbolItems @(

@@ -44,15 +44,22 @@ classifiers = [
 # If a wheel ever ships with ``==0.0.0`` it means the backend wasn't
 # invoked (e.g. raw setuptools bypass) — pip install will fail loudly
 # with "no matching version", which is the desired safety net.
+#
+# Linux is split by platform_machine:
+#   x86_64  → onnxruntime-gpu + onnxruntime-genai-cuda  (CUDA-capable)
+#   aarch64 → onnxruntime     + onnxruntime-genai        (CPU-only, ARM64)
+# non-Linux uses the -core/-genai-core packages (Windows, macOS).
 dependencies = [
     "cffi>=1.16",
     "typing_extensions>=4.5",
     "pydantic>=2.0.0",
     "requests>=2.32.4",
     "openai>=2.24.0",
-    "onnxruntime-gpu==0.0.0; platform_system == 'Linux'",
+    "onnxruntime-gpu==0.0.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "onnxruntime==0.0.0; platform_system == 'Linux' and platform_machine == 'aarch64'",
     "onnxruntime-core==0.0.0; platform_system != 'Linux'",
-    "onnxruntime-genai-cuda==0.0.0; platform_system == 'Linux'",
+    "onnxruntime-genai-cuda==0.0.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "onnxruntime-genai==0.0.0; platform_system == 'Linux' and platform_machine == 'aarch64'",
     "onnxruntime-genai-core==0.0.0; platform_system != 'Linux'",
 ]
 

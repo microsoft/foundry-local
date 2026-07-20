@@ -48,8 +48,15 @@ _DEPS_JSON = _PYPROJECT.parent.parent / "deps_versions.json"
 # Patterns for rewriting ORT/GenAI version pins in the dependencies list. Each
 # captures the package name + ``==`` and we substitute in the version read from
 # deps_versions.json.
-_ORT_PIN_PATTERN = re.compile(r'("onnxruntime(?:-core|-gpu)==)[^\s";]+')
-_GENAI_PIN_PATTERN = re.compile(r'("onnxruntime-genai(?:-core|-cuda)==)[^\s";]+')
+#
+# The suffix group is optional (``?``) so the patterns also match the plain
+# ``onnxruntime==`` and ``onnxruntime-genai==`` package names used for Linux
+# ARM64 (CPU-only). The ``==`` anchor prevents the ORT pattern from accidentally
+# matching ``onnxruntime-genai==`` — the regex engine tries the group first; if
+# neither ``-core`` nor ``-gpu`` match the next chars it collapses to zero length,
+# then ``==`` must follow immediately, which fails for ``-genai==``.
+_ORT_PIN_PATTERN = re.compile(r'("onnxruntime(?:-core|-gpu)?==)[^\s";]+')
+_GENAI_PIN_PATTERN = re.compile(r'("onnxruntime-genai(?:-core|-cuda)?==)[^\s";]+')
 
 
 def _read_versions() -> tuple[str, str]:

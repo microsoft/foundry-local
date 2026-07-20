@@ -75,13 +75,18 @@ const std::unordered_map<std::string_view, WebGpuPackageMetadata> kPackageMetada
 #endif
 
 // Platform-specific package metadata is baked into the binary to keep
-// verification inputs fixed at build time.
+// verification inputs fixed at build time. linux-arm64 is intentionally absent
+// from kPackageMetadata — there is no WebGPU EP payload for that target, so
+// GetPackageMetadata() throws and DownloadAndRegister returns false gracefully,
+// leaving CPU inference fully operational.
 #if defined(_WIN32) && defined(_M_ARM64)
 constexpr const char* kPlatformKey = "win-arm64";
 #elif defined(_WIN32)
 constexpr const char* kPlatformKey = "win-x64";
 #elif defined(__APPLE__)
 constexpr const char* kPlatformKey = "macos-arm64";
+#elif defined(__aarch64__)
+constexpr const char* kPlatformKey = "linux-arm64";
 #else
 constexpr const char* kPlatformKey = "linux-x64";
 #endif
@@ -145,19 +150,6 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
   auto parent_dir = ep_dir.parent_path();
 
   try {
-    const auto& package_metadata = GetPackageMetadata();
-  #if defined(_WIN32)
-    const auto expected_files = std::initializer_list<std::pair<std::string_view, std::string_view>>{
-      {kWebGpuProviderLib, package_metadata.provider_sha256},
-      {"dxcompiler.dll", package_metadata.dxcompiler_sha256},
-      {"dxil.dll", package_metadata.dxil_sha256},
-    };
-  #else
-    const auto expected_files = std::initializer_list<std::pair<std::string_view, std::string_view>>{
-      {kWebGpuProviderLib, package_metadata.provider_sha256},
-    };
-  #endif
-
     auto override_path = Utils::GetEnv(kWebGpuProviderOverrideEnv);
     if (override_path.has_value() && !override_path->empty()) {
       std::filesystem::path provider_path(*override_path);
@@ -195,6 +187,19 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
                              kWebGpuProviderOverrideEnv, provider_path.string()));
       return true;
     }
+
+    const auto& package_metadata = GetPackageMetadata();
+  #if defined(_WIN32)
+    const auto expected_files = std::initializer_list<std::pair<std::string_view, std::string_view>>{
+      {kWebGpuProviderLib, package_metadata.provider_sha256},
+      {"dxcompiler.dll", package_metadata.dxcompiler_sha256},
+      {"dxil.dll", package_metadata.dxil_sha256},
+    };
+  #else
+    const auto expected_files = std::initializer_list<std::pair<std::string_view, std::string_view>>{
+      {kWebGpuProviderLib, package_metadata.provider_sha256},
+    };
+  #endif
 
     // Check if package already exists and is valid
     logger.Log(LogLevel::Debug,

@@ -1,13 +1,17 @@
 # Build + test stages for the sdk_v2 Python SDK (foundry-local-sdk).
 #
-# Builds win-x64 + win-arm64 + linux-x64 + osx-arm64; tests win-x64 + linux-x64
-# + osx-arm64 (win-arm64 is build-only, matching the C# matrix).
+# Builds win-x64 + win-arm64 + linux-x64 + linux-arm64 + osx-arm64;
+# tests win-x64 + linux-x64 + linux-arm64 + osx-arm64
+# (win-arm64 is build-only, matching the C# matrix).
 #
 # Each build stage depends on the matching native build stage from
 # stages-build-native.yml and consumes the `cpp-native-<rid>` pipeline artifact
 # directly (no NuGet — the wheel bundles the native lib at
 # src/foundry_local_sdk/_native/<rid>/). On Windows that native artifact carries
 # the reg-free WinML 2.x runtime, so the single wheel includes WinML support.
+#
+# linux-arm64 is CPU-only; it uses onnxruntime + onnxruntime-genai (plain
+# packages) rather than the -gpu/-cuda variants used on linux-x64.
 #
 # Each build stage emits one wheel under the `python-sdk-<rid>` pipeline artifact.
 
@@ -110,6 +114,78 @@ stages:
         rid: 'linux-x64'
         outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
+- stage: python_build_linux_arm64
+  displayName: 'Python SDK: Build Linux ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_arm64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-linux-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-python.yml
+      parameters:
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        rid: 'linux-arm64'
+        pythonArchitecture: 'arm64'
+        outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    # Assert the produced wheel has the correct platform tag and bundles the
+    # linux-arm64 native library. This runs on the ARM64 agent immediately
+    # after the build so any packaging error is caught before the artifact is
+    # uploaded and replicated to downstream stages.
+    - task: Bash@3
+      displayName: 'Assert wheel is linux_aarch64 and contains native lib'
+      inputs:
+        targetType: inline
+        script: |
+          set -euo pipefail
+          whl=$(find "$(Build.ArtifactStagingDirectory)/python-sdk" -maxdepth 2 -name "*.whl" | head -n 1)
+          if [[ -z "$whl" ]]; then
+            echo "ERROR: no .whl found under $(Build.ArtifactStagingDirectory)/python-sdk"
+            exit 1
+          fi
+          echo "Wheel: $whl"
+          basename "$whl" | grep -q 'linux_aarch64' || {
+            echo "ERROR: expected linux_aarch64 platform tag in wheel name: $(basename $whl)"
+            exit 1
+          }
+          python3 - "$whl" <<'PY'
+          import sys
+          import zipfile
+
+          with zipfile.ZipFile(sys.argv[1]) as wheel:
+              names = wheel.namelist()
+
+          hits = [name for name in names if "_native/linux-arm64/libfoundry_local.so" in name]
+          if not hits:
+              print("ERROR: _native/linux-arm64/libfoundry_local.so not found in wheel")
+              print("Wheel entries containing .so or linux-arm64:")
+              for name in names:
+                  if ".so" in name or "linux-arm64" in name:
+                      print(" ", name)
+              sys.exit(1)
+
+          print("OK: found", hits[0])
+          PY
+          echo "Wheel validation passed."
+
 - stage: python_build_osx_arm64
   displayName: 'Python SDK: Build macOS ARM64'
   dependsOn:
@@ -195,6 +271,31 @@ stages:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-x64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
+- stage: python_test_linux_arm64
+  displayName: 'Python SDK: Test Linux ARM64'
+  dependsOn:
+  - python_build_linux_arm64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-test-python.yml
+      parameters:
+        wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        pythonArchitecture: 'arm64'
+
 - stage: python_test_osx_arm64
   displayName: 'Python SDK: Test macOS ARM64'
   dependsOn:
@@ -230,6 +331,7 @@ stages:
   - python_build_win_x64
   - python_build_win_arm64
   - python_build_linux_x64
+  - python_build_linux_arm64
   - python_build_osx_arm64
   jobs:
   - job: pack
@@ -247,6 +349,9 @@ stages:
       - input: pipelineArtifact
         artifactName: 'python-sdk-linux-x64'
         targetPath: '$(Pipeline.Workspace)/python-sdk-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
       - input: pipelineArtifact
         artifactName: 'python-sdk-osx-arm64'
         targetPath: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
@@ -268,6 +373,7 @@ stages:
             '$(Pipeline.Workspace)/python-sdk-win-x64',
             '$(Pipeline.Workspace)/python-sdk-win-arm64',
             '$(Pipeline.Workspace)/python-sdk-linux-x64',
+            '$(Pipeline.Workspace)/python-sdk-linux-arm64',
             '$(Pipeline.Workspace)/python-sdk-osx-arm64'
           )
 

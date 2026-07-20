@@ -12,10 +12,11 @@ Usage (after all platform builds have completed)::
         --version 0.1.0 \\
         --ort_version 1.24.4 \\
         --genai_version 0.13.1 \\
-        --win_x64  path/to/win-x64/bin \\
-        --win_arm64 path/to/win-arm64/bin \\
-        --linux_x64 path/to/linux-x64/bin \\
-        --osx_arm64 path/to/osx-arm64/bin \\
+        --win_x64    path/to/win-x64/bin \\
+        --win_arm64  path/to/win-arm64/bin \\
+        --linux_x64  path/to/linux-x64/bin \\
+        --linux_arm64 path/to/linux-arm64/bin \\
+        --osx_arm64  path/to/osx-arm64/bin \\
         --output_dir ./out
 
 Each ``--<rid>`` argument points to the directory containing the built
@@ -52,6 +53,7 @@ RIDS: dict[str, tuple[str, str]] = {
     "win_x64":    ("win-x64",    "foundry_local.dll"),
     "win_arm64":  ("win-arm64",  "foundry_local.dll"),
     "linux_x64":  ("linux-x64",  "libfoundry_local.so"),
+    "linux_arm64": ("linux-arm64", "libfoundry_local.so"),
     "osx_arm64":  ("osx-arm64",  "libfoundry_local.dylib"),
 }
 
