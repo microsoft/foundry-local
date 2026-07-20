@@ -51,10 +51,9 @@ _DEPS_JSON = _PYPROJECT.parent.parent / "deps_versions.json"
 #
 # The suffix group is optional (``?``) so the patterns also match the plain
 # ``onnxruntime==`` and ``onnxruntime-genai==`` package names used for Linux
-# ARM64 (CPU-only). The ``==`` anchor prevents the ORT pattern from accidentally
-# matching ``onnxruntime-genai==`` — the regex engine tries the group first; if
-# neither ``-core`` nor ``-gpu`` match the next chars it collapses to zero length,
-# then ``==`` must follow immediately, which fails for ``-genai==``.
+# ARM64 (CPU-only). The trailing ``==`` anchor keeps the ORT pattern from
+# matching ``onnxruntime-genai==`` (its optional suffix collapses to empty, then
+# ``==`` must follow immediately, which ``-genai==`` fails).
 _ORT_PIN_PATTERN = re.compile(r'("onnxruntime(?:-core|-gpu)?==)[^\s";]+')
 _GENAI_PIN_PATTERN = re.compile(r'("onnxruntime-genai(?:-core|-cuda)?==)[^\s";]+')
 

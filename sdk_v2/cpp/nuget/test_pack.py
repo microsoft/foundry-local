@@ -152,26 +152,6 @@ class TestStagingLayout(unittest.TestCase):
         self.assertEqual(rid_count, 1)
         self._check_native_file_present(layout, "linux-arm64", "libfoundry_local.so")
 
-    def test_linux_x64_staged_correctly(self):
-        layout, rid_count = self._run_stage("linux_x64")
-        self.assertEqual(rid_count, 1)
-        self._check_native_file_present(layout, "linux-x64", "libfoundry_local.so")
-
-    def test_win_x64_staged_correctly(self):
-        layout, rid_count = self._run_stage("win_x64")
-        self.assertEqual(rid_count, 1)
-        self._check_native_file_present(layout, "win-x64", "foundry_local.dll")
-
-    def test_win_arm64_staged_correctly(self):
-        layout, rid_count = self._run_stage("win_arm64")
-        self.assertEqual(rid_count, 1)
-        self._check_native_file_present(layout, "win-arm64", "foundry_local.dll")
-
-    def test_osx_arm64_staged_correctly(self):
-        layout, rid_count = self._run_stage("osx_arm64")
-        self.assertEqual(rid_count, 1)
-        self._check_native_file_present(layout, "osx-arm64", "libfoundry_local.dylib")
-
     def test_all_platforms_staged_together(self):
         """Staging all five platforms at once yields rid_count == 5."""
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -256,9 +236,6 @@ class TestArgParser(unittest.TestCase):
     """Verify that the argument parser accepts --linux_arm64."""
 
     def test_linux_arm64_arg_accepted(self):
-        parser_args = pack._parse_args.__wrapped__ if hasattr(pack._parse_args, "__wrapped__") else None
-        # Reconstruct via sys.argv override
-        import sys
         original_argv = sys.argv
         try:
             sys.argv = [
@@ -278,7 +255,6 @@ class TestArgParser(unittest.TestCase):
         self.assertEqual(args.linux_arm64, Path("/tmp/linux-arm64"))
 
     def test_all_rid_args_registered(self):
-        import sys
         original_argv = sys.argv
         try:
             sys.argv = [

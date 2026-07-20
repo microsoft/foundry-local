@@ -31,15 +31,39 @@ parameters:
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
+- name: useSystemPython
+  type: boolean
+  default: false
+  displayName: 'Use the agent system Python instead of the Azure Pipelines toolcache.'
 
 steps:
 
-- task: UsePythonVersion@0
-  displayName: 'Use Python 3.12'
-  inputs:
-    versionSpec: '3.12'
-    addToPath: true
-    architecture: '${{ parameters.pythonArchitecture }}'
+- ${{ if eq(parameters.useSystemPython, false) }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12'
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+      architecture: '${{ parameters.pythonArchitecture }}'
+
+- ${{ if eq(parameters.useSystemPython, true) }}:
+  - task: PowerShell@2
+    displayName: 'Configure system Python 3.12'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        python3 --version
+        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
+        $venvDir = "$(Agent.TempDirectory)/fl-py-build-$(System.JobId)"
+        if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
+        python3 -m venv $venvDir
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $venvBin = Join-Path $venvDir 'bin'
+        Write-Host "##vso[task.prependpath]$venvBin"
+        Write-Host "Using system Python through build venv: $venvDir"
 
 - task: PowerShell@2
   displayName: 'Set package version from pyVersion.txt'

@@ -108,26 +108,39 @@ class TestLibName:
 
 
 class TestFindLibraryWheelBundled:
-    """find_library() must probe the wheel-bundled path for the current RID."""
+    """find_library() must return the wheel-bundled native lib for the current RID.
 
-    def test_linux_arm64_probes_linux_arm64_subdir(self, tmp_path):
-        # Arrange: create a fake wheel-bundled layout under tmp_path.
-        lib_path = tmp_path / "linux-arm64" / "libfoundry_local.so"
-        lib_path.parent.mkdir()
+    Drives the real find_library() wheel-bundled branch (step 2 in its search
+    order) by pointing the module's ``__file__`` at a fake ``_native`` package
+    directory that contains a ``linux-arm64/libfoundry_local.so`` payload.
+    """
+
+    def test_linux_arm64_returns_bundled_native_lib(self, tmp_path, monkeypatch):
+        # Arrange: a fake _native package dir holding the linux-arm64 wheel payload.
+        native_pkg_dir = tmp_path / "_native"
+        (native_pkg_dir / "linux-arm64").mkdir(parents=True)
+        lib_path = native_pkg_dir / "linux-arm64" / "libfoundry_local.so"
         lib_path.touch()
 
-        # Point __file__ of the isolated module to the tmp_path parent so
-        # the resolve().parent gives us tmp_path.
-        fake_init = tmp_path / "__init__.py"
-        fake_init.touch()
+        # find_library() derives the package dir from ``__file__``; the env
+        # override (step 1) must be unset so it reaches the wheel-bundled branch.
+        monkeypatch.delenv("FOUNDRY_LOCAL_LIB_DIR", raising=False)
+        monkeypatch.setattr(_ll, "__file__", str(native_pkg_dir / "lib_loader.py"))
 
         with patch.object(_ll.sys, "platform", "linux"), \
-             patch.object(_ll.platform, "machine", return_value="aarch64"), \
-             patch("pathlib.Path.resolve", return_value=fake_init):
-            # We can't trivially patch __file__ on an already-loaded module,
-            # so just verify that _platform_subdir returns the right value
-            # and the wheel candidate path is constructed correctly.
-            subdir = _ll._platform_subdir()
-            assert subdir == "linux-arm64"
-            candidate = tmp_path / subdir / "libfoundry_local.so"
-            assert candidate.exists(), f"Expected fake native lib at {candidate}"
+             patch.object(_ll.platform, "machine", return_value="aarch64"):
+            resolved = _ll.find_library()
+
+        assert resolved == lib_path.resolve()
+
+    def test_returns_none_when_no_bundled_lib_and_no_dev_build(self, tmp_path, monkeypatch):
+        """No wheel payload and no sdk_v2/ dev tree → fall through to None (system path)."""
+        native_pkg_dir = tmp_path / "_native"
+        native_pkg_dir.mkdir()
+
+        monkeypatch.delenv("FOUNDRY_LOCAL_LIB_DIR", raising=False)
+        monkeypatch.setattr(_ll, "__file__", str(native_pkg_dir / "lib_loader.py"))
+
+        with patch.object(_ll.sys, "platform", "linux"), \
+             patch.object(_ll.platform, "machine", return_value="aarch64"):
+            assert _ll.find_library() is None

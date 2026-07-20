@@ -144,7 +144,7 @@ stages:
       parameters:
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
         rid: 'linux-arm64'
-        pythonArchitecture: 'arm64'
+        useSystemPython: true
         outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
     # Assert the produced wheel has the correct platform tag and bundles the
     # linux-arm64 native library. This runs on the ARM64 agent immediately
@@ -294,7 +294,7 @@ stages:
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-        pythonArchitecture: 'arm64'
+        useSystemPython: true
 
 - stage: python_test_osx_arm64
   displayName: 'Python SDK: Test macOS ARM64'
