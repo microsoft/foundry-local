@@ -25,6 +25,8 @@ steps:
         $ErrorActionPreference = 'Stop'
 
         if (Get-Command az -ErrorAction SilentlyContinue) {
+          $azDir = Split-Path -Path (Get-Command az).Source -Parent
+          Write-Host "##vso[task.prependpath]$azDir"
           az --version | Select-Object -First 1 | Write-Host
           Write-Host 'Azure CLI already installed.'
           exit 0
@@ -48,9 +50,11 @@ steps:
         }
 
         $env:PATH = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
-        if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        $azCommand = Get-Command az -ErrorAction SilentlyContinue
+        if (-not $azCommand) {
           throw 'Azure CLI install was attempted but az is still not on PATH.'
         }
+        Write-Host "##vso[task.prependpath]$(Split-Path -Path $azCommand.Source -Parent)"
         az version | Write-Host
 
 - task: AzureCLI@2
