@@ -75,21 +75,51 @@ steps:
       targetType: inline
       pwsh: ${{ parameters.usePwsh }}
       script: |
-        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+        $cmakePath = $null
+        $ctestPath = $null
 
-        $vsInstall = & $vswhere -latest -property installationPath
-        if (-not $vsInstall) { throw 'Could not locate a Visual Studio installation.' }
-
-        $cmakeDir = Join-Path $vsInstall 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
-        $cmakePath = Join-Path $cmakeDir 'cmake.exe'
-        $ctestPath = Join-Path $cmakeDir 'ctest.exe'
-
-        if (-not (Test-Path $cmakePath)) {
-          throw "cmake.exe not found at $cmakePath"
+        # Prefer already-resolved commands if the agent has CMake on PATH.
+        $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
+        $ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
+        if ($cmakeCmd -and $ctestCmd) {
+          $cmakePath = $cmakeCmd.Source
+          $ctestPath = $ctestCmd.Source
         }
-        if (-not (Test-Path $ctestPath)) {
-          throw "ctest.exe not found at $ctestPath"
+
+        # Fall back to common standalone CMake locations.
+        if (-not $cmakePath -or -not $ctestPath) {
+          $programFilesX86 = ${env:ProgramFiles(x86)}
+          $candidates = @(
+            @{ CMake = (Join-Path $env:ProgramFiles 'CMake\\bin\\cmake.exe'); CTest = (Join-Path $env:ProgramFiles 'CMake\\bin\\ctest.exe') },
+            @{ CMake = (Join-Path $programFilesX86 'CMake\\bin\\cmake.exe'); CTest = (Join-Path $programFilesX86 'CMake\\bin\\ctest.exe') }
+          )
+
+          foreach ($candidate in $candidates) {
+            if ((-not $cmakePath) -and (Test-Path $candidate.CMake)) { $cmakePath = $candidate.CMake }
+            if ((-not $ctestPath) -and (Test-Path $candidate.CTest)) { $ctestPath = $candidate.CTest }
+          }
+        }
+
+        # Fall back to VS-bundled CMake if vswhere is available.
+        if (-not $cmakePath -or -not $ctestPath) {
+          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vsInstall = & $vswhere -latest -property installationPath
+            if ($vsInstall) {
+              $cmakeDir = Join-Path $vsInstall 'Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin'
+              $vsCmake = Join-Path $cmakeDir 'cmake.exe'
+              $vsCtest = Join-Path $cmakeDir 'ctest.exe'
+              if ((-not $cmakePath) -and (Test-Path $vsCmake)) { $cmakePath = $vsCmake }
+              if ((-not $ctestPath) -and (Test-Path $vsCtest)) { $ctestPath = $vsCtest }
+            }
+          }
+        }
+
+        if (-not $cmakePath) {
+          throw 'Unable to locate cmake.exe. Ensure CMake is installed or available on PATH.'
+        }
+        if (-not $ctestPath) {
+          throw 'Unable to locate ctest.exe. Ensure CMake is installed or available on PATH.'
         }
 
         Write-Host "cmake.exe: $cmakePath"
