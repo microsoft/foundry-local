@@ -70,56 +70,35 @@ steps:
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - task: PowerShell@2
-    displayName: 'Locate CMake for ARM64 builds'
+    displayName: 'Install and locate CMake for ARM64 builds'
     inputs:
       targetType: inline
       pwsh: ${{ parameters.usePwsh }}
       script: |
-        $cmakePath = $null
-        $ctestPath = $null
+        # Main strategy for ARM64 agents: provision CMake from PyPI in the
+        # same Python environment used by the build step.
+        python -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed while provisioning CMake.' }
 
-        # Prefer already-resolved commands if the agent has CMake on PATH.
+        python -m pip install "cmake>=3.29,<4"
+        if ($LASTEXITCODE -ne 0) { throw 'pip install cmake failed.' }
+
+        $scriptsDir = (& python -c "import sysconfig; print(sysconfig.get_path('scripts'))").Trim()
+        if ($scriptsDir) {
+          Write-Host "##vso[task.prependpath]$scriptsDir"
+          $env:PATH = "$scriptsDir;$env:PATH"
+        }
+
         $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
         $ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
-        if ($cmakeCmd -and $ctestCmd) {
-          $cmakePath = $cmakeCmd.Source
-          $ctestPath = $ctestCmd.Source
-        }
-
-        # Fall back to common standalone CMake locations.
-        if (-not $cmakePath -or -not $ctestPath) {
-          $programFilesX86 = ${env:ProgramFiles(x86)}
-          $candidates = @(
-            @{ CMake = (Join-Path $env:ProgramFiles 'CMake\\bin\\cmake.exe'); CTest = (Join-Path $env:ProgramFiles 'CMake\\bin\\ctest.exe') },
-            @{ CMake = (Join-Path $programFilesX86 'CMake\\bin\\cmake.exe'); CTest = (Join-Path $programFilesX86 'CMake\\bin\\ctest.exe') }
-          )
-
-          foreach ($candidate in $candidates) {
-            if ((-not $cmakePath) -and (Test-Path $candidate.CMake)) { $cmakePath = $candidate.CMake }
-            if ((-not $ctestPath) -and (Test-Path $candidate.CTest)) { $ctestPath = $candidate.CTest }
-          }
-        }
-
-        # Fall back to VS-bundled CMake if vswhere is available.
-        if (-not $cmakePath -or -not $ctestPath) {
-          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
-          if (Test-Path $vswhere) {
-            $vsInstall = & $vswhere -latest -property installationPath
-            if ($vsInstall) {
-              $cmakeDir = Join-Path $vsInstall 'Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin'
-              $vsCmake = Join-Path $cmakeDir 'cmake.exe'
-              $vsCtest = Join-Path $cmakeDir 'ctest.exe'
-              if ((-not $cmakePath) -and (Test-Path $vsCmake)) { $cmakePath = $vsCmake }
-              if ((-not $ctestPath) -and (Test-Path $vsCtest)) { $ctestPath = $vsCtest }
-            }
-          }
-        }
+        $cmakePath = if ($cmakeCmd) { $cmakeCmd.Source } else { $null }
+        $ctestPath = if ($ctestCmd) { $ctestCmd.Source } else { $null }
 
         if (-not $cmakePath) {
-          throw 'Unable to locate cmake.exe. Ensure CMake is installed or available on PATH.'
+          throw 'Unable to locate cmake.exe after pip install.'
         }
         if (-not $ctestPath) {
-          throw 'Unable to locate ctest.exe. Ensure CMake is installed or available on PATH.'
+          throw 'Unable to locate ctest.exe after pip install.'
         }
 
         Write-Host "cmake.exe: $cmakePath"
