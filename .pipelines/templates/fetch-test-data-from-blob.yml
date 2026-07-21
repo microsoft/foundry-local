@@ -51,7 +51,7 @@ steps:
         if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
           throw 'Azure CLI install was attempted but az is still not on PATH.'
         }
-        az --version | Select-Object -First 1 | Write-Host
+        az version | Write-Host
 
 - task: AzureCLI@2
   displayName: 'Fetch test data from blob'
