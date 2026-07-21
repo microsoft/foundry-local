@@ -68,6 +68,35 @@ steps:
     shell: pwsh
     usePwsh: ${{ parameters.usePwsh }}
 
+- ${{ if eq(parameters.arch, 'arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Locate CMake for ARM64 builds'
+    inputs:
+      targetType: inline
+      pwsh: ${{ parameters.usePwsh }}
+      script: |
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+        $vsInstall = & $vswhere -latest -property installationPath
+        if (-not $vsInstall) { throw 'Could not locate a Visual Studio installation.' }
+
+        $cmakeDir = Join-Path $vsInstall 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+        $cmakePath = Join-Path $cmakeDir 'cmake.exe'
+        $ctestPath = Join-Path $cmakeDir 'ctest.exe'
+
+        if (-not (Test-Path $cmakePath)) {
+          throw "cmake.exe not found at $cmakePath"
+        }
+        if (-not (Test-Path $ctestPath)) {
+          throw "ctest.exe not found at $ctestPath"
+        }
+
+        Write-Host "cmake.exe: $cmakePath"
+        Write-Host "ctest.exe: $ctestPath"
+        Write-Host "##vso[task.setvariable variable=cmakePath]$cmakePath"
+        Write-Host "##vso[task.setvariable variable=ctestPath]$ctestPath"
+
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
 # matches the .nupkg version (e.g. 0.1.0-dev.202605111234) instead of the cmake default.
 - task: PowerShell@2
@@ -110,6 +139,8 @@ steps:
       --config ${{ parameters.buildConfig }}
       --cmake_generator "Visual Studio 17 2022"
       --winml_sdk_version ${{ parameters.winmlVersion }}
+      --cmake_path "$(cmakePath)"
+      --ctest_path "$(ctestPath)"
       --cmake_extra_defines $(cmakeFetchDefines)
     displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
@@ -118,12 +149,26 @@ steps:
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
 - ${{ if eq(parameters.runTests, true) }}:
-  - script: python build.py --test --config ${{ parameters.buildConfig }}
-    displayName: 'Run tests'
-    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-    env:
-      VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
-      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+  - ${{ if eq(parameters.arch, 'x64') }}:
+    - script: python build.py --test --config ${{ parameters.buildConfig }}
+      displayName: 'Run tests'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+
+  - ${{ if eq(parameters.arch, 'arm64') }}:
+    - script: >-
+        python build.py
+        --test
+        --config ${{ parameters.buildConfig }}
+        --cmake_path "$(cmakePath)"
+        --ctest_path "$(ctestPath)"
+      displayName: 'Run tests'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
 # Stage the redistributable native artifacts. vcpkg statically links
 # ORT/GenAI/azure-*/spdlog/fmt/libcurl/libssl/zlib/brotli* into foundry_local.dll

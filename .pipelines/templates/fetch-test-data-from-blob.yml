@@ -90,7 +90,7 @@ steps:
 
           brew update --quiet
           brew install --quiet azcopy
-        } elseif ($env:AGENT_OS -eq 'Windows_NT') {
+        } elseif ($env:AGENT_OS -eq 'Windows_NT' -and $env:AGENT_OSARCHITECTURE -eq 'ARM64') {
           Write-Host 'azcopy not found on Windows agent. Installing from official zip...'
           $zipPath = Join-Path $env:TEMP 'azcopy_windows.zip'
           $extractRoot = Join-Path $env:TEMP 'azcopy'
