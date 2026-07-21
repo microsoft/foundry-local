@@ -71,7 +71,17 @@ steps:
       $container = 'models'
       $prefix = 'foundrylocal/models'
 
-      if (-not (Get-Command azcopy -ErrorAction SilentlyContinue)) {
+      $azcopyAvailable = $false
+      try {
+        azcopy --version | Write-Host
+        if ($LASTEXITCODE -eq 0) {
+          $azcopyAvailable = $true
+        }
+      }
+      catch {
+      }
+
+      if (-not $azcopyAvailable) {
         if ($IsMacOS) {
           Write-Host 'azcopy not found on macOS agent. Installing via Homebrew...'
           if (-not (Get-Command brew -ErrorAction SilentlyContinue)) {
@@ -80,6 +90,20 @@ steps:
 
           brew update --quiet
           brew install --quiet azcopy
+        } elseif ($env:AGENT_OS -eq 'Windows_NT') {
+          Write-Host 'azcopy not found on Windows agent. Installing from official zip...'
+          $zipPath = Join-Path $env:TEMP 'azcopy_windows.zip'
+          $extractRoot = Join-Path $env:TEMP 'azcopy'
+          Invoke-WebRequest -Uri 'https://aka.ms/downloadazcopy-v10-windows' -OutFile $zipPath -UseBasicParsing
+          if (Test-Path $extractRoot) {
+            Remove-Item -Path $extractRoot -Recurse -Force
+          }
+          Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+          $azcopyExe = Get-ChildItem -Path $extractRoot -Filter 'azcopy.exe' -Recurse | Select-Object -First 1
+          if (-not $azcopyExe) {
+            throw 'azcopy install completed but azcopy.exe was not found.'
+          }
+          $env:PATH = "$($azcopyExe.Directory.FullName);$env:PATH"
         } else {
           throw 'azcopy is not installed on this agent.'
         }
