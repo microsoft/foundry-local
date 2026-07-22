@@ -94,8 +94,10 @@ steps:
 
         $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
         $ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
+        $ninjaCmd = Get-Command ninja -ErrorAction SilentlyContinue
         $cmakePath = if ($cmakeCmd) { $cmakeCmd.Source } else { $null }
         $ctestPath = if ($ctestCmd) { $ctestCmd.Source } else { $null }
+        $ninjaPath = if ($ninjaCmd) { $ninjaCmd.Source } else { $null }
 
         if (-not $cmakePath) {
           throw 'Unable to locate cmake.exe after pip install.'
@@ -103,11 +105,47 @@ steps:
         if (-not $ctestPath) {
           throw 'Unable to locate ctest.exe after pip install.'
         }
+        if (-not $ninjaPath) {
+          throw 'Unable to locate ninja.exe after pip install.'
+        }
 
         Write-Host "cmake.exe: $cmakePath"
         Write-Host "ctest.exe: $ctestPath"
+        Write-Host "ninja.exe: $ninjaPath"
         Write-Host "##vso[task.setvariable variable=cmakePath]$cmakePath"
         Write-Host "##vso[task.setvariable variable=ctestPath]$ctestPath"
+        Write-Host "##vso[task.setvariable variable=ninjaPath]$ninjaPath"
+
+  - task: PowerShell@2
+    displayName: 'Locate vcvarsall for ARM64 build toolchain'
+    inputs:
+      targetType: inline
+      pwsh: ${{ parameters.usePwsh }}
+      script: |
+        $programFilesX86 = ${env:ProgramFiles(x86)}
+        $roots = @($env:ProgramFiles, $programFilesX86) | Where-Object { $_ -and (Test-Path $_) }
+
+        $vcvars = $null
+        foreach ($root in $roots) {
+          $base = Join-Path $root 'Microsoft Visual Studio'
+          if (-not (Test-Path $base)) { continue }
+
+          $found = Get-ChildItem -Path $base -Filter vcvarsall.bat -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like '*\\VC\\Auxiliary\\Build\\vcvarsall.bat' } |
+            Select-Object -First 1
+
+          if ($found) {
+            $vcvars = $found.FullName
+            break
+          }
+        }
+
+        if (-not $vcvars) {
+          throw 'Unable to locate vcvarsall.bat. Install Visual Studio Build Tools with C++ workloads on this ARM64 agent.'
+        }
+
+        Write-Host "vcvarsall.bat: $vcvars"
+        Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
 
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
@@ -147,6 +185,7 @@ steps:
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - script: >-
+  call "$(vcvarsAllPath)" arm64 &&
       python build.py
       --configure --build --arm64
       --config ${{ parameters.buildConfig }}
@@ -154,6 +193,7 @@ steps:
       --winml_sdk_version ${{ parameters.winmlVersion }}
       --cmake_path "$(cmakePath)"
       --ctest_path "$(ctestPath)"
+  --cmake_extra_defines "CMAKE_MAKE_PROGRAM=$(ninjaPath)"
       --cmake_extra_defines $(cmakeFetchDefines)
     displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
