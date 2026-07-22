@@ -457,6 +457,11 @@ target_include_directories(foundry_local_cpp
 target_link_libraries(foundry_local_cpp INTERFACE foundry_local Microsoft.GSL::GSL)
 
 # --------------------------------------------------------------------------
+# Split debug symbols (Linux / macOS, RelWithDebInfo only)
+# --------------------------------------------------------------------------
+include(cmake/SplitDebugSymbols.cmake)
+
+# --------------------------------------------------------------------------
 # Tests
 # --------------------------------------------------------------------------
 if(FOUNDRY_LOCAL_BUILD_TESTS)
