@@ -185,7 +185,7 @@ steps:
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - script: >-
-  call "$(vcvarsAllPath)" arm64 &&
+      call "$(vcvarsAllPath)" arm64 &&
       python build.py
       --configure --build --arm64
       --config ${{ parameters.buildConfig }}
@@ -193,7 +193,7 @@ steps:
       --winml_sdk_version ${{ parameters.winmlVersion }}
       --cmake_path "$(cmakePath)"
       --ctest_path "$(ctestPath)"
-  --cmake_extra_defines "CMAKE_MAKE_PROGRAM=$(ninjaPath)"
+      --cmake_extra_defines "CMAKE_MAKE_PROGRAM=$(ninjaPath)"
       --cmake_extra_defines $(cmakeFetchDefines)
     displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
