@@ -16,9 +16,7 @@ class ILogger;
 /// Uses platform-specific package metadata (download URL and SHA-256 hash),
 /// downloads the binary, verifies integrity, then registers with ORT.
 ///
-/// Supported: Windows x64/ARM64, Linux x64, macOS ARM64.
-/// Linux ARM64: no WebGPU payload exists; DownloadAndRegister returns false,
-/// leaving CPU inference fully operational.
+/// Supports Windows x64/ARM64, Linux x64, and macOS ARM64.
 class WebGpuEpBootstrapper : public IEpBootstrapper {
  public:
   /// @param ep_dir  Base directory for EP packages (e.g., appdata/foundry-local).
