@@ -70,82 +70,59 @@ steps:
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - task: PowerShell@2
-    displayName: 'Install and locate CMake for ARM64 builds'
+    displayName: 'Ensure Visual Studio Build Tools and CMake for ARM64'
     inputs:
       targetType: inline
       pwsh: ${{ parameters.usePwsh }}
       script: |
-        # Main strategy for ARM64 agents: provision CMake from PyPI in the
-        # same Python environment used by the build step.
-        python -m pip install --upgrade pip
-        if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed while provisioning CMake.' }
+        $installRoot = 'C:\BuildTools'
+        $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+        $cmakeDir = Join-Path $installRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+        $cmakePath = Join-Path $cmakeDir 'cmake.exe'
+        $ctestPath = Join-Path $cmakeDir 'ctest.exe'
 
-        python -m pip install "ninja>=1.11"
-        if ($LASTEXITCODE -ne 0) { throw 'pip install ninja failed.' }
+        if (-not (Test-Path $vcvars) -or -not (Test-Path $cmakePath) -or -not (Test-Path $ctestPath)) {
+          Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+          $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
 
-        python -m pip install "cmake>=3.29,<4"
-        if ($LASTEXITCODE -ne 0) { throw 'pip install cmake failed.' }
+          $arguments = @(
+            '--quiet',
+            '--wait',
+            '--norestart',
+            '--nocache',
+            '--installPath', $installRoot,
+            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.CMake.Project',
+            '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+            '--includeRecommended'
+          )
 
-        $scriptsDir = (& python -c "import sysconfig; print(sysconfig.get_path('scripts'))").Trim()
-        if ($scriptsDir) {
-          Write-Host "##vso[task.prependpath]$scriptsDir"
-          $env:PATH = "$scriptsDir;$env:PATH"
-        }
-
-        $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
-        $ctestCmd = Get-Command ctest -ErrorAction SilentlyContinue
-        $ninjaCmd = Get-Command ninja -ErrorAction SilentlyContinue
-        $cmakePath = if ($cmakeCmd) { $cmakeCmd.Source } else { $null }
-        $ctestPath = if ($ctestCmd) { $ctestCmd.Source } else { $null }
-        $ninjaPath = if ($ninjaCmd) { $ninjaCmd.Source } else { $null }
-
-        if (-not $cmakePath) {
-          throw 'Unable to locate cmake.exe after pip install.'
-        }
-        if (-not $ctestPath) {
-          throw 'Unable to locate ctest.exe after pip install.'
-        }
-        if (-not $ninjaPath) {
-          throw 'Unable to locate ninja.exe after pip install.'
-        }
-
-        Write-Host "cmake.exe: $cmakePath"
-        Write-Host "ctest.exe: $ctestPath"
-        Write-Host "ninja.exe: $ninjaPath"
-        Write-Host "##vso[task.setvariable variable=cmakePath]$cmakePath"
-        Write-Host "##vso[task.setvariable variable=ctestPath]$ctestPath"
-        Write-Host "##vso[task.setvariable variable=ninjaPath]$ninjaPath"
-
-  - task: PowerShell@2
-    displayName: 'Locate vcvarsall for ARM64 build toolchain'
-    inputs:
-      targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
-      script: |
-        $programFilesX86 = ${env:ProgramFiles(x86)}
-        $roots = @($env:ProgramFiles, $programFilesX86) | Where-Object { $_ -and (Test-Path $_) }
-
-        $vcvars = $null
-        foreach ($root in $roots) {
-          $base = Join-Path $root 'Microsoft Visual Studio'
-          if (-not (Test-Path $base)) { continue }
-
-          $found = Get-ChildItem -Path $base -Filter vcvarsall.bat -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -like '*\\VC\\Auxiliary\\Build\\vcvarsall.bat' } |
-            Select-Object -First 1
-
-          if ($found) {
-            $vcvars = $found.FullName
-            break
+          $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
           }
         }
 
-        if (-not $vcvars) {
-          throw 'Unable to locate vcvarsall.bat. Install Visual Studio Build Tools with C++ workloads on this ARM64 agent.'
+        if (-not (Test-Path $vcvars)) {
+          throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+        }
+        if (-not (Test-Path $cmakePath)) {
+          throw "cmake.exe was not found at $cmakePath after Build Tools install."
+        }
+        if (-not (Test-Path $ctestPath)) {
+          throw "ctest.exe was not found at $ctestPath after Build Tools install."
         }
 
+        Write-Host "##vso[task.prependpath]$cmakeDir"
         Write-Host "vcvarsall.bat: $vcvars"
+        Write-Host "cmake.exe: $cmakePath"
+        Write-Host "ctest.exe: $ctestPath"
         Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
+        Write-Host "##vso[task.setvariable variable=cmakePath]$cmakePath"
+        Write-Host "##vso[task.setvariable variable=ctestPath]$ctestPath"
 
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
@@ -189,11 +166,10 @@ steps:
       python build.py
       --configure --build --arm64
       --config ${{ parameters.buildConfig }}
-      --cmake_generator "Ninja"
+      --cmake_generator "Visual Studio 17 2022"
       --winml_sdk_version ${{ parameters.winmlVersion }}
       --cmake_path "$(cmakePath)"
       --ctest_path "$(ctestPath)"
-      --cmake_extra_defines "CMAKE_MAKE_PROGRAM=$(ninjaPath)"
       --cmake_extra_defines $(cmakeFetchDefines)
     displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
