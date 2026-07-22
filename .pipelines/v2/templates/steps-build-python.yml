@@ -388,22 +388,22 @@ steps:
 
         $expected = "_native/${{ parameters.rid }}/$lib"
         $code = @'
-import sys, zipfile
+        import sys, zipfile
 
-whl, expected = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(whl) as wheel:
-    names = wheel.namelist()
+        whl, expected = sys.argv[1], sys.argv[2]
+        with zipfile.ZipFile(whl) as wheel:
+            names = wheel.namelist()
 
-hits = [name for name in names if name.endswith(expected)]
-if not hits:
-    print("ERROR: " + expected + " not found in wheel")
-    for name in names:
-        if name.endswith((".so", ".dll", ".dylib")):
-            print("  " + name)
-    sys.exit(1)
+        hits = [name for name in names if name.endswith(expected)]
+        if not hits:
+            print("ERROR: " + expected + " not found in wheel")
+            for name in names:
+                if name.endswith((".so", ".dll", ".dylib")):
+                    print("  " + name)
+            sys.exit(1)
 
-print("OK: found " + hits[0])
-'@
+        print("OK: found " + hits[0])
+        '@
         $code | python - "$($whl.FullName)" "$expected"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "Wheel validation passed."
