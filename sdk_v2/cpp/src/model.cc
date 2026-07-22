@@ -336,12 +336,12 @@ void Model::Load(ExecutionProvider ep) {
 
     // Infer support flags from the presence of valid tag IDs
     if (!info_.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT)) {
-      if (tag_info.bot_id >= 0) {
+      if (tag_info.bot_id.has_value()) {
         info_.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] = 1;
       }
     }
     if (!info_.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT)) {
-      if (tag_info.bor_id >= 0) {
+      if (tag_info.bor_id.has_value()) {
         info_.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] = 1;
       }
     }

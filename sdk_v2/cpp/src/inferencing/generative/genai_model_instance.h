@@ -10,6 +10,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
@@ -44,10 +45,10 @@ class GenAIModelInstance {
   ///   bot = beginning of tool (call), eot = end of tool (call)
   ///   bor = beginning of reasoning,   eor = end of reasoning
   struct TagInfo {
-    int32_t bot_id{-1};
-    int32_t eot_id{-1};
-    int32_t bor_id{-1};
-    int32_t eor_id{-1};
+    std::optional<int32_t> bot_id;
+    std::optional<int32_t> eot_id;
+    std::optional<int32_t> bor_id;
+    std::optional<int32_t> eor_id;
     std::string bot_str;
     std::string eot_str;
     std::string bor_str;
