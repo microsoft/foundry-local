@@ -55,13 +55,13 @@ steps:
 # (prebuilds/<plat>-<arch>/) so downstream consumers find the addon under
 # the directory matching `${process.platform}-${process.arch}` at runtime.
 - ${{ if eq(parameters.rid, 'win-x64') }}:
-  - pwsh: |
+  - powershell: |
       Write-Host "##vso[task.setvariable variable=prebuildDir]win32-x64"
       Write-Host "##vso[task.setvariable variable=nativeLib]foundry_local.dll"
     displayName: 'Set prebuild directory (win32-x64)'
 
 - ${{ if eq(parameters.rid, 'win-arm64') }}:
-  - pwsh: |
+  - powershell: |
       Write-Host "##vso[task.setvariable variable=prebuildDir]win32-arm64"
       Write-Host "##vso[task.setvariable variable=nativeLib]foundry_local.dll"
     displayName: 'Set prebuild directory (win32-arm64)'
@@ -94,7 +94,7 @@ steps:
 # we point INCLUDE_DIR at that artifact root, and the public include path
 # is added separately in binding.gyp via `../cpp/include`.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
-  - pwsh: |
+  - powershell: |
       $arch = '${{ parameters.targetArch }}'
       $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
       Write-Host "node-gyp $args"
@@ -128,7 +128,7 @@ steps:
 # into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy from there into the artifact
 # dir alongside the shared library.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
-  - pwsh: |
+  - powershell: |
       $dst = "${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"
       if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
       New-Item -ItemType Directory -Force -Path $dst | Out-Null

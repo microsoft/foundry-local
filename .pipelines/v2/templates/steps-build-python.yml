@@ -45,7 +45,7 @@ steps:
   displayName: 'Set package version from pyVersion.txt'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $versionFile = "$(Pipeline.Workspace)/version-info/pyVersion.txt"
         if (-not (Test-Path $versionFile)) { throw "Missing $versionFile" }
@@ -57,7 +57,7 @@ steps:
   displayName: 'Stamp version into pyproject.toml'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $pyproject = "$(Build.SourcesDirectory)/sdk_v2/python/pyproject.toml"
         $content = Get-Content $pyproject -Raw
@@ -78,7 +78,7 @@ steps:
   displayName: 'List downloaded native artifact'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Write-Host "Contents of ${{ parameters.nativeArtifactDir }}:"
         Get-ChildItem "${{ parameters.nativeArtifactDir }}" -Recurse -File |
@@ -88,7 +88,7 @@ steps:
   displayName: 'Stage native lib into _native/${{ parameters.rid }}/'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $dest = "$(Build.SourcesDirectory)/sdk_v2/python/src/foundry_local_sdk/_native/${{ parameters.rid }}"
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
@@ -127,7 +127,7 @@ steps:
   displayName: 'Clean stale build artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $py = "$(Build.SourcesDirectory)/sdk_v2/python"
         # Remove stale, untagged cffi extension from prior dev compiles.
@@ -153,7 +153,7 @@ steps:
   displayName: 'Install build tooling'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
         python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
@@ -164,7 +164,7 @@ steps:
     displayName: 'Locate MSVC arm64 cross-tools (vswhere)'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
       script: |
           # Resolve vcvarsall.bat once and stash the path in a pipeline variable. The actual
           # invocation happens inside the build step's child cmd.exe so its env is inherited
@@ -196,7 +196,7 @@ steps:
     condition: and(succeeded(), ne(variables.PYTHON_ARM64_CACHE_HIT, 'true'))
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
       script: |
           # We need arm64 Python's headers + python3.lib to link the cffi extension
           # for win-arm64 from an x64 host. We do NOT need to *run* the arm64
@@ -240,7 +240,7 @@ steps:
     displayName: 'Capture arm64 Python paths for cross-link'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
       script: |
           # Path is the same whether we just installed via NuGet above or restored
           # the directory from cache — both produce $stageRoot/pythonarm64/tools/.
@@ -263,7 +263,7 @@ steps:
   displayName: 'Build wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -326,7 +326,7 @@ steps:
   displayName: 'List produced wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl' |
             ForEach-Object { Write-Host ("{0,12}  {1}" -f $_.Length, $_.Name) }
