@@ -68,9 +68,6 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-      parameters:
-        scriptType: ps
-        installAzCli: true
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
@@ -98,9 +95,6 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-      parameters:
-        scriptType: ps
-        installAzCli: true
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'

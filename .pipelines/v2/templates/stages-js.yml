@@ -223,9 +223,6 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-      parameters:
-        scriptType: ps
-        installAzCli: true
     - template: steps-test-js.yml
       parameters:
         rid: 'win-arm64'
