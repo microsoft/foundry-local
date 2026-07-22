@@ -3,13 +3,13 @@
 
 """Focused unit tests for pack.py staging behaviour.
 
-Run with:
+The ``cpp_pack_nuget`` stage runs these tests before pack.py to guard the RID
+table and ``runtimes/<rid>/native`` staging layout without requiring nuget.exe or
+real build artifacts.
+
+Run manually with:
     python -m unittest test_pack        (from sdk_v2/cpp/nuget/)
     python test_pack.py                 (direct invocation)
-
-These tests use only the Python standard library (unittest, tempfile, pathlib)
-and do NOT require nuget.exe or any build artefacts on disk — they verify the
-staging logic itself by creating minimal fake artefact trees.
 """
 
 from __future__ import annotations
@@ -93,10 +93,12 @@ class TestRidsMapping(unittest.TestCase):
 class TestStagingLayout(unittest.TestCase):
     """Verify that stage() produces the expected runtimes/<rid>/native/ layout."""
 
-    def _run_stage(self, rid_arg: str) -> tuple[Path, Path]:
+    def _run_stage(self, rid_arg: str) -> tuple[set[str], int]:
         """
         Run pack.stage() with a single platform artifact.
-        Returns (staging_dir, artifact_dir).
+        Returns (layout, rid_count) where ``layout`` is the set of staged file
+        paths (relative to the staging dir, posix-style) and ``rid_count`` is the
+        number of RIDs pack.stage() staged.
         """
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
@@ -118,6 +120,7 @@ class TestStagingLayout(unittest.TestCase):
 
             # REPO_ROOT = SCRIPT_DIR.parent; make include/ optional
             (fake_script_dir.parent / "include").mkdir(exist_ok=True)
+            (fake_script_dir.parent / "LICENSE.txt").write_text("MIT", encoding="utf-8")
 
             original_script_dir = pack.SCRIPT_DIR
             original_repo_root = pack.REPO_ROOT
@@ -164,6 +167,7 @@ class TestStagingLayout(unittest.TestCase):
             (fake_script_dir / "build").mkdir()
             (fake_script_dir / "buildTransitive").mkdir()
             (fake_script_dir.parent / "include").mkdir(exist_ok=True)
+            (fake_script_dir.parent / "LICENSE.txt").write_text("MIT", encoding="utf-8")
 
             artifact_dirs = {
                 rid_arg: _make_fake_artifact(tmp / "artifacts", rid_arg)
@@ -212,6 +216,7 @@ class TestStagingLayout(unittest.TestCase):
             (fake_script_dir / "build").mkdir()
             (fake_script_dir / "buildTransitive").mkdir()
             (fake_script_dir.parent / "include").mkdir(exist_ok=True)
+            (fake_script_dir.parent / "LICENSE.txt").write_text("MIT", encoding="utf-8")
 
             staging_dir = tmp / "_staging"
             staging_dir.mkdir()

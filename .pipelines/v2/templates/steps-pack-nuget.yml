@@ -40,6 +40,16 @@ steps:
       }
 
 - task: PowerShell@2
+  displayName: 'Test pack.py staging logic'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      # Guards pack.py's RID mapping and runtimes/<rid>/native staging before packing.
+      python "$(Build.SourcesDirectory)/sdk_v2/cpp/nuget/test_pack.py"
+
+- task: PowerShell@2
   displayName: 'Pack NuGet package'
   inputs:
     targetType: inline

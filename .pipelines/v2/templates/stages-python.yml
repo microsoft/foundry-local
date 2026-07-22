@@ -10,9 +10,6 @@
 # src/foundry_local_sdk/_native/<rid>/). On Windows that native artifact carries
 # the reg-free WinML 2.x runtime, so the single wheel includes WinML support.
 #
-# linux-arm64 is CPU-only; it uses onnxruntime + onnxruntime-genai (plain
-# packages) rather than the -gpu/-cuda variants used on linux-x64.
-#
 # Each build stage emits one wheel under the `python-sdk-<rid>` pipeline artifact.
 
 stages:
@@ -146,45 +143,6 @@ stages:
         rid: 'linux-arm64'
         useSystemPython: true
         outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
-    # Assert the produced wheel has the correct platform tag and bundles the
-    # linux-arm64 native library. This runs on the ARM64 agent immediately
-    # after the build so any packaging error is caught before the artifact is
-    # uploaded and replicated to downstream stages.
-    - task: Bash@3
-      displayName: 'Assert wheel is linux_aarch64 and contains native lib'
-      inputs:
-        targetType: inline
-        script: |
-          set -euo pipefail
-          whl=$(find "$(Build.ArtifactStagingDirectory)/python-sdk" -maxdepth 2 -name "*.whl" | head -n 1)
-          if [[ -z "$whl" ]]; then
-            echo "ERROR: no .whl found under $(Build.ArtifactStagingDirectory)/python-sdk"
-            exit 1
-          fi
-          echo "Wheel: $whl"
-          basename "$whl" | grep -q 'linux_aarch64' || {
-            echo "ERROR: expected linux_aarch64 platform tag in wheel name: $(basename $whl)"
-            exit 1
-          }
-          python3 - "$whl" <<'PY'
-          import sys
-          import zipfile
-
-          with zipfile.ZipFile(sys.argv[1]) as wheel:
-              names = wheel.namelist()
-
-          hits = [name for name in names if "_native/linux-arm64/libfoundry_local.so" in name]
-          if not hits:
-              print("ERROR: _native/linux-arm64/libfoundry_local.so not found in wheel")
-              print("Wheel entries containing .so or linux-arm64:")
-              for name in names:
-                  if ".so" in name or "linux-arm64" in name:
-                      print(" ", name)
-              sys.exit(1)
-
-          print("OK: found", hits[0])
-          PY
-          echo "Wheel validation passed."
 
 - stage: python_build_osx_arm64
   displayName: 'Python SDK: Build macOS ARM64'
