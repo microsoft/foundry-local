@@ -80,6 +80,9 @@ steps:
         python -m pip install --upgrade pip
         if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed while provisioning CMake.' }
 
+        python -m pip install "ninja>=1.11"
+        if ($LASTEXITCODE -ne 0) { throw 'pip install ninja failed.' }
+
         python -m pip install "cmake>=3.29,<4"
         if ($LASTEXITCODE -ne 0) { throw 'pip install cmake failed.' }
 
@@ -105,6 +108,7 @@ steps:
         Write-Host "ctest.exe: $ctestPath"
         Write-Host "##vso[task.setvariable variable=cmakePath]$cmakePath"
         Write-Host "##vso[task.setvariable variable=ctestPath]$ctestPath"
+
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
 # matches the .nupkg version (e.g. 0.1.0-dev.202605111234) instead of the cmake default.
@@ -146,7 +150,7 @@ steps:
       python build.py
       --configure --build --arm64
       --config ${{ parameters.buildConfig }}
-      --cmake_generator "Visual Studio 17 2022"
+      --cmake_generator "Ninja"
       --winml_sdk_version ${{ parameters.winmlVersion }}
       --cmake_path "$(cmakePath)"
       --ctest_path "$(ctestPath)"
