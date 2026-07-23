@@ -17,6 +17,10 @@ parameters:
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
+- name: usePwsh
+  type: boolean
+  default: true
+  displayName: 'Use PowerShell Core (pwsh). Set false to use Windows PowerShell.'
 
 steps:
 
@@ -32,7 +36,7 @@ steps:
   displayName: 'Create test venv'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
         $venvDir = "$(Agent.TempDirectory)/fl-py-venv-$(System.JobId)"
         if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
@@ -51,7 +55,7 @@ steps:
   displayName: 'Install built wheel + test deps'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
         # Locate the wheel. Each job's wheel lands in its own artifact, so a
         # single match is expected.
@@ -75,7 +79,7 @@ steps:
   displayName: 'Run SDK tests'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
