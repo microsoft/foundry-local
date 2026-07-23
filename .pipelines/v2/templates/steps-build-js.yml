@@ -65,6 +65,47 @@ steps:
       versionSpec: '3.12'
       architecture: 'arm64'
 
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Ensure Visual Studio Build Tools for node-gyp (win-arm64)'
+    inputs:
+      targetType: inline
+      pwsh: false
+      script: |
+          $installRoot = 'C:\BuildTools'
+          $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+
+          if (-not (Test-Path $vcvars)) {
+              Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+              $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+              Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+              $arguments = @(
+                  '--quiet',
+                  '--wait',
+                  '--norestart',
+                  '--nocache',
+                  '--installPath', $installRoot,
+                  '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                  '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+                  '--includeRecommended'
+              )
+
+              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              }
+          }
+
+          if (-not (Test-Path $vcvars)) {
+              throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+          }
+
+          Write-Host "vcvarsall.bat: $vcvars"
+          Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
+
 # Map ADO RID -> Node-style platform-arch key used inside the npm tarball
 # (prebuilds/<plat>-<arch>/) so downstream consumers find the addon under
 # the directory matching `${process.platform}-${process.arch}` at runtime.
@@ -114,7 +155,15 @@ steps:
       $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
       Write-Host "node-gyp $args"
       Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
-      npx --no-install node-gyp $args.Split(' ')
+      if ('${{ parameters.rid }}' -eq 'win-arm64') {
+        $vcvars = "$(vcvarsAllPath)"
+        if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
+        $cmdLine = ('"{0}" arm64 && npx --no-install node-gyp {1}' -f $vcvars, $args)
+        Write-Host "cmd /c $cmdLine"
+        cmd /c $cmdLine
+      } else {
+        npx --no-install node-gyp $args.Split(' ')
+      }
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Build Node-API addon'
     env:
