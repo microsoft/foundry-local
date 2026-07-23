@@ -109,7 +109,7 @@ steps:
 # is added separately in binding.gyp via `../cpp/include`.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - powershell: |
-  python --version
+      python --version
       $arch = '${{ parameters.targetArch }}'
       $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
       Write-Host "node-gyp $args"
