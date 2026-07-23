@@ -75,6 +75,7 @@ stages:
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        usePwsh: false
 
 - stage: cs_test_win_arm64
   displayName: 'C# SDK: Test Windows ARM64'

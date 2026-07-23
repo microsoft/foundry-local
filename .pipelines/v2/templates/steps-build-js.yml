@@ -51,6 +51,20 @@ steps:
   inputs:
     versionSpec: '20.x'
 
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12 (x64)'
+    inputs:
+      versionSpec: '3.12'
+      architecture: 'x64'
+
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12 (arm64)'
+    inputs:
+      versionSpec: '3.12'
+      architecture: 'arm64'
+
 # Map ADO RID -> Node-style platform-arch key used inside the npm tarball
 # (prebuilds/<plat>-<arch>/) so downstream consumers find the addon under
 # the directory matching `${process.platform}-${process.arch}` at runtime.
@@ -95,6 +109,7 @@ steps:
 # is added separately in binding.gyp via `../cpp/include`.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - powershell: |
+  python --version
       $arch = '${{ parameters.targetArch }}'
       $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
       Write-Host "node-gyp $args"
@@ -103,6 +118,8 @@ steps:
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Build Node-API addon'
     env:
+      PYTHON: '$(pythonLocation)\python.exe'
+      npm_config_python: '$(pythonLocation)\python.exe'
       FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
       FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
       # Force the copy_addon_to_prebuilds destination to the target-arch dir.

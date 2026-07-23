@@ -191,9 +191,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/checkout-steps.yml@self
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
       parameters:
-        repoName: test-data-shared
+        scriptType: ps
+        installAzCli: true
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-arm64'
