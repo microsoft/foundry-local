@@ -53,7 +53,7 @@ steps:
   displayName: 'Fetch test data from blob'
   inputs:
     azureSubscription: 'ortcibuild_readonly_mi2-ONNX Runtime-AIFoundryLocal'
-    scriptType: $[eq(variables['Agent.OS'], 'Windows_NT') ? 'ps' : 'pscore']
+    scriptType: "$[eq(variables['Agent.OS'], 'Windows_NT') ? 'ps' : 'pscore']"
     scriptLocation: inlineScript
     inlineScript: |
       $ErrorActionPreference = 'Stop'
