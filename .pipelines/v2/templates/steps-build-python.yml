@@ -360,7 +360,7 @@ steps:
                 if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
                 $buildArgs = @('-m', 'build', '--wheel', '--outdir', $outDir) + $extraArgs
                 $quoted = ($buildArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
-                $cmdLine = "`\"$vcvars`\" arm64 && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python $quoted"
+                $cmdLine = ('"{0}" arm64 && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python {1}' -f $vcvars, $quoted)
                 Write-Host "cmd /c $cmdLine"
                 cmd /c $cmdLine
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
