@@ -1,9 +1,7 @@
 # PEP 517 backend shim for foundry-local-sdk.
 #
-# Delegates every hook to ``setuptools.build_meta``. The only added behavior is a
-# temporary patch of ``pyproject.toml`` during the build that rewrites the
-# ORT/GenAI version pins from ``deps_versions.json`` (the single source of truth),
-# so the dependency versions never drift from the native build.
+# Delegates every hook to ``setuptools.build_meta``. The added behavior keeps
+# dependency pins and native wheel tags aligned with the staged SDK payload.
 #
 # This is wired into pyproject.toml via::
 #
@@ -44,12 +42,20 @@ except ImportError:  # pragma: no cover - newer setuptools only
 
 _PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 _DEPS_JSON = _PYPROJECT.parent.parent / "deps_versions.json"
+_NATIVE_DIR = _PYPROJECT.parent / "src" / "foundry_local_sdk" / "_native"
 
 # Patterns for rewriting ORT/GenAI version pins in the dependencies list. Each
 # captures the package name + ``==`` and we substitute in the version read from
 # deps_versions.json.
 _ORT_PIN_PATTERN = re.compile(r'("onnxruntime(?:-core|-gpu)==)[^\s";]+')
 _GENAI_PIN_PATTERN = re.compile(r'("onnxruntime-genai(?:-core|-cuda)==)[^\s";]+')
+_NATIVE_PAYLOADS = {
+    "win-x64": ("foundry_local.dll", None),
+    "win-arm64": ("foundry_local.dll", None),
+    "linux-x64": ("libfoundry_local.so", None),
+    "linux-arm64": ("libfoundry_local.so", None),
+    "osx-arm64": ("libfoundry_local.dylib", "macosx_11_0_arm64"),
+}
 
 
 def _read_versions() -> tuple[str, str]:
@@ -72,6 +78,45 @@ def _patch_pyproject_text(original: str) -> str:
     patched = _ORT_PIN_PATTERN.sub(lambda m: f"{m.group(1)}{ort_ver}", original)
     patched = _GENAI_PIN_PATTERN.sub(lambda m: f"{m.group(1)}{genai_ver}", patched)
     return patched
+
+
+def _config_values(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in value]
+
+
+def _has_explicit_plat_name(config_settings) -> bool:
+    if not config_settings:
+        return False
+    build_options = _config_values(config_settings.get("--build-option"))
+    return any(option == "--plat-name" or option.startswith("--plat-name=") for option in build_options)
+
+
+def _auto_plat_name() -> str | None:
+    staged = [
+        (rid, plat_name)
+        for rid, (lib_name, plat_name) in _NATIVE_PAYLOADS.items()
+        if (_NATIVE_DIR / rid / lib_name).is_file()
+    ]
+    if len(staged) != 1:
+        return None
+    return staged[0][1]
+
+
+def _with_auto_plat_name(config_settings):
+    if _has_explicit_plat_name(config_settings):
+        return config_settings
+
+    plat_name = _auto_plat_name()
+    if plat_name is None:
+        return config_settings
+
+    updated = dict(config_settings or {})
+    updated["--build-option"] = _config_values(updated.get("--build-option")) + [f"--plat-name={plat_name}"]
+    return updated
 
 
 @contextlib.contextmanager
@@ -108,7 +153,7 @@ def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     with _rewrite_version_pins():
-        return _orig_build_wheel(wheel_directory, config_settings, metadata_directory)
+        return _orig_build_wheel(wheel_directory, _with_auto_plat_name(config_settings), metadata_directory)
 
 
 def get_requires_for_build_sdist(config_settings=None):

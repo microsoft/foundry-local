@@ -68,7 +68,7 @@ steps:
         & "$(venvPy)" -m pip install --upgrade pip
         & "$(venvPy)" -m pip install $wheel
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        & "$(venvPy)" -m pip install pytest pytest-cov
+        & "$(venvPy)" -m pip install pytest pytest-cov setuptools
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 - task: PowerShell@2
