@@ -143,6 +143,8 @@ steps:
   - template: ../../templates/fetch-test-data-from-blob.yml@self
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+      scriptType: ps
+      installAzCli: true
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-
