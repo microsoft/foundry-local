@@ -82,9 +82,9 @@ endif()
 # -----------------------------
 if(WIN32)
 
-set(FL_CORE_VERSION "1.3.0-dev-202606160314-bec8807e" CACHE STRING "Microsoft.AI.Foundry.Local.Core NuGet version")
-set(FL_ORT_VERSION "1.27.0-dev-20260601-2330-5ddf568f76" CACHE STRING "Microsoft.ML.OnnxRuntime.Foundry NuGet version")
-set(FL_ORTGENAI_VERSION "0.14.1" CACHE STRING "Microsoft.ML.OnnxRuntimeGenAI.Foundry NuGet version")
+set(FL_CORE_VERSION "1.3.0-dev-202607231959-200c04bf" CACHE STRING "Microsoft.AI.Foundry.Local.Core NuGet version")
+set(FL_ORT_VERSION "1.28.0-dev-20260722-1610-0368187f84" CACHE STRING "Microsoft.ML.OnnxRuntime NuGet version")
+set(FL_ORTGENAI_VERSION "0.15.0-dev202607231321155" CACHE STRING "Microsoft.ML.OnnxRuntimeGenAI.Foundry NuGet version")
 set(FL_ORTGENAI_CUDA_VERSION "${FL_ORTGENAI_VERSION}" CACHE STRING "Microsoft.ML.OnnxRuntimeGenAI.Cuda NuGet version")
 set(FL_NATIVE_DEPS_DIR "${CMAKE_CURRENT_BINARY_DIR}/_native_deps")
 
@@ -109,19 +109,19 @@ function(fl_ensure_nuget_package PKG_NAME PKG_VERSION)
 endfunction()
 
 fl_ensure_nuget_package("Microsoft.AI.Foundry.Local.Core" ${FL_CORE_VERSION})
-fl_ensure_nuget_package("Microsoft.ML.OnnxRuntime.Foundry" ${FL_ORT_VERSION})
+fl_ensure_nuget_package("Microsoft.ML.OnnxRuntime" ${FL_ORT_VERSION})
 fl_ensure_nuget_package("Microsoft.ML.OnnxRuntimeGenAI.Foundry" ${FL_ORTGENAI_VERSION})
 fl_ensure_nuget_package("Microsoft.ML.OnnxRuntimeGenAI.Cuda" ${FL_ORTGENAI_CUDA_VERSION})
 
 set(FL_CORE_DLL_DIR "${FL_NATIVE_DEPS_DIR}/Microsoft.AI.Foundry.Local.Core.${FL_CORE_VERSION}/runtimes/win-x64/native")
-set(FL_ORT_DLL_DIR "${FL_NATIVE_DEPS_DIR}/Microsoft.ML.OnnxRuntime.Foundry.${FL_ORT_VERSION}/runtimes/win-x64/native")
+set(FL_ORT_DLL_DIR "${FL_NATIVE_DEPS_DIR}/Microsoft.ML.OnnxRuntime.${FL_ORT_VERSION}/runtimes/win-x64/native")
 set(FL_ORTGENAI_DLL_DIR "${FL_NATIVE_DEPS_DIR}/Microsoft.ML.OnnxRuntimeGenAI.Foundry.${FL_ORTGENAI_VERSION}/runtimes/win-x64/native")
 set(FL_ORTGENAI_CUDA_DLL_DIR "${FL_NATIVE_DEPS_DIR}/Microsoft.ML.OnnxRuntimeGenAI.Cuda.${FL_ORTGENAI_CUDA_VERSION}/runtimes/win-x64/native")
 
 # fl_copy_runtime_dlls may be called from child/sample directories.
 # Store these as INTERNAL cache vars so they remain visible across directory scopes.
 set(FL_CORE_DLL_DIR "${FL_CORE_DLL_DIR}" CACHE INTERNAL "Foundry Local Core runtime DLL dir" FORCE)
-set(FL_ORT_DLL_DIR "${FL_ORT_DLL_DIR}" CACHE INTERNAL "ONNX Runtime Foundry DLL dir" FORCE)
+set(FL_ORT_DLL_DIR "${FL_ORT_DLL_DIR}" CACHE INTERNAL "ONNX Runtime DLL dir" FORCE)
 set(FL_ORTGENAI_DLL_DIR "${FL_ORTGENAI_DLL_DIR}" CACHE INTERNAL "ONNX Runtime GenAI Foundry DLL dir" FORCE)
 set(FL_ORTGENAI_CUDA_DLL_DIR "${FL_ORTGENAI_CUDA_DLL_DIR}" CACHE INTERNAL "ONNX Runtime GenAI CUDA DLL dir" FORCE)
 
