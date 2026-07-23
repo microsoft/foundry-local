@@ -159,6 +159,47 @@ steps:
         python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Ensure Visual Studio Build Tools for Windows ARM64 Python build'
+    inputs:
+      targetType: inline
+      pwsh: false
+      script: |
+          $installRoot = 'C:\BuildTools'
+          $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+
+          if (-not (Test-Path $vcvars)) {
+              Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+              $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+              Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+              $arguments = @(
+                  '--quiet',
+                  '--wait',
+                  '--norestart',
+                  '--nocache',
+                  '--installPath', $installRoot,
+                  '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                  '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+                  '--includeRecommended'
+              )
+
+              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              }
+          }
+
+          if (-not (Test-Path $vcvars)) {
+              throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+          }
+
+          Write-Host "vcvarsall.bat: $vcvars"
+          Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
+
 - ${{ if eq(parameters.targetArch, 'arm64') }}:
   - task: PowerShell@2
     displayName: 'Locate MSVC arm64 cross-tools (vswhere)'
@@ -313,6 +354,15 @@ steps:
                 $cmdLine = "`"$vcvars`" amd64_arm64 && set `"LIB=$arm64Libs;!LIB!`" && set `"INCLUDE=$arm64Include;!INCLUDE!`" && set `"FL_PYTHON_EXTRA_LIBRARY_DIRS=$arm64Libs`" && set `"FL_PYTHON_EXTRA_INCLUDE_DIRS=$arm64Include`" && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python $quoted"
                 Write-Host "cmd /v:on /c $cmdLine"
                 cmd /v:on /c $cmdLine
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              } elseif ('${{ parameters.rid }}' -eq 'win-arm64') {
+                $vcvars = "$(vcvarsAllPath)"
+                if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
+                $buildArgs = @('-m', 'build', '--wheel', '--outdir', $outDir) + $extraArgs
+                $quoted = ($buildArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
+                $cmdLine = "`\"$vcvars`\" arm64 && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python $quoted"
+                Write-Host "cmd /c $cmdLine"
+                cmd /c $cmdLine
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             } else {
                 python -m build --wheel --outdir $outDir @extraArgs
