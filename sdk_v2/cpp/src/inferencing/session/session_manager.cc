@@ -23,7 +23,7 @@ SessionManager::~SessionManager() {
 
 void SessionManager::Register(Session& session) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (shutting_down_.load(std::memory_order_relaxed)) {
+  if (shutting_down_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot create session during shutdown");
   }
 
@@ -56,18 +56,13 @@ void SessionManager::CancelAll() {
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    shutting_down_.store(true, std::memory_order_relaxed);
-    for (auto& [key, entry] : cache_) {
-      cached_sessions.push_back(std::move(entry.session));
-    }
-    cache_.clear();
-    lru_order_.clear();
+    shutting_down_ = true;
+    cached_sessions = MoveCacheToDestroyLocked();
     logger_.Log(LogLevel::Information,
                 fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
 
-    for (const auto& [session, count] : sessions_) {
-      (void)count;
-      session->Cancel();
+    for (const auto& session_entry : sessions_) {
+      session_entry.first->Cancel();
     }
   }
 }
@@ -105,9 +100,7 @@ std::unique_ptr<ChatSession> SessionManager::CheckOut(const std::string& key) {
     return nullptr;
   }
 
-  auto session = std::move(it->second.session);
-  lru_order_.erase(it->second.lru_iter);
-  cache_.erase(it);
+  auto session = RemoveCachedLocked(it);
 
   logger_.Log(LogLevel::Debug, fmt::format("SessionManager: checked out cached session for '{}'", key));
   return session;
@@ -119,29 +112,22 @@ void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (shutting_down_.load(std::memory_order_relaxed)) {
+    if (shutting_down_ || cache_capacity_ == 0) {
       evicted.push_back(std::move(session));
       return;
     }
 
-    // Replace existing entry for this key (if any)
     auto existing = cache_.find(key);
     if (existing != cache_.end()) {
-      evicted.push_back(std::move(existing->second.session));
-      lru_order_.erase(existing->second.lru_iter);
-      cache_.erase(existing);
+      evicted.push_back(RemoveCachedLocked(existing));
     }
 
-    // Evict LRU if at capacity
     while (cache_.size() >= cache_capacity_) {
       const auto& lru_key = lru_order_.back();
       auto lru_it = cache_.find(lru_key);
-      evicted.push_back(std::move(lru_it->second.session));
-      cache_.erase(lru_it);
-      lru_order_.pop_back();
+      evicted.push_back(RemoveCachedLocked(lru_it));
     }
 
-    // Insert new entry
     lru_order_.push_front(key);
     cache_[key] = CacheEntry{std::move(session), lru_order_.begin()};
 
@@ -173,13 +159,30 @@ bool SessionManager::EvictCached(const std::string& key) {
       return false;
     }
 
-    evicted = std::move(it->second.session);
-    lru_order_.erase(it->second.lru_iter);
-    cache_.erase(it);
+    evicted = RemoveCachedLocked(it);
   }
 
   logger_.Log(LogLevel::Debug, fmt::format("SessionManager: evicted cached session for '{}'", key));
   return true;
+}
+
+std::unique_ptr<ChatSession> SessionManager::RemoveCachedLocked(CacheMap::iterator it) {
+  auto session = std::move(it->second.session);
+  lru_order_.erase(it->second.lru_iter);
+  cache_.erase(it);
+  return session;
+}
+
+std::vector<std::unique_ptr<ChatSession>> SessionManager::MoveCacheToDestroyLocked() {
+  std::vector<std::unique_ptr<ChatSession>> to_destroy;
+
+  for (auto& cache_entry : cache_) {
+    to_destroy.push_back(std::move(cache_entry.second.session));
+  }
+
+  cache_.clear();
+  lru_order_.clear();
+  return to_destroy;
 }
 
 void SessionManager::ClearCache() {
@@ -187,16 +190,8 @@ void SessionManager::ClearCache() {
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    for (auto& [key, entry] : cache_) {
-      to_destroy.push_back(std::move(entry.session));
-    }
-
-    cache_.clear();
-    lru_order_.clear();
+    to_destroy = MoveCacheToDestroyLocked();
   }
-
-  // Destroy outside lock
 }
 
 }  // namespace fl
