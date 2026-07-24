@@ -60,30 +60,32 @@ if(NOT _WINML_PLATFORM_UPPER MATCHES "^(AMD64|X64|X86_64|ARM64|AARCH64)$")
     return()
 endif()
 
-include(cmake/nuget.cmake)
-
 # WINML_EP_CATALOG_FETCH_URL can be set externally (e.g. for CI where nuget.org is blocked).
 set(WINML_EP_CATALOG_FETCH_URL "" CACHE STRING "Override URL or local path for the WinML EP Catalog NuGet package")
 
-if(WINML_EP_CATALOG_FETCH_URL)
-    # Use FetchContent to download/extract the pre-downloaded package
-    include(FetchContent)
-    string(REPLACE "\\" "/" WINML_EP_CATALOG_FETCH_URL "${WINML_EP_CATALOG_FETCH_URL}")
-    if(WINML_EP_CATALOG_FETCH_URL MATCHES "\\.nupkg$" AND NOT WINML_EP_CATALOG_FETCH_URL MATCHES "^https?://")
-        set(_WINML_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/winml_ep_catalog-download/winml_ep_catalog.zip")
-        get_filename_component(_WINML_ZIP_DIR "${_WINML_ZIP_PATH}" DIRECTORY)
-        file(MAKE_DIRECTORY "${_WINML_ZIP_DIR}")
-        file(COPY_FILE "${WINML_EP_CATALOG_FETCH_URL}" "${_WINML_ZIP_PATH}")
-        set(WINML_EP_CATALOG_FETCH_URL "${_WINML_ZIP_PATH}")
-    endif()
-    FetchContent_Declare(winml_ep_catalog URL ${WINML_EP_CATALOG_FETCH_URL} DOWNLOAD_EXTRACT_TIMESTAMP TRUE DOWNLOAD_NAME winml_ep_catalog.zip)
-    FetchContent_MakeAvailable(winml_ep_catalog)
-    set(_WINML_EP_ROOT "${winml_ep_catalog_SOURCE_DIR}")
-    message(STATUS "WinML EP Catalog via FetchContent: ${_WINML_EP_ROOT}")
-else()
-    install_nuget_package(Microsoft.Windows.AI.MachineLearning ${WINML_EP_CATALOG_VERSION} _WINML_EP_ROOT
-        SOURCE https://api.nuget.org/v3/index.json)
+include(FetchContent)
+set(_WINML_EP_CATALOG_URL "${WINML_EP_CATALOG_FETCH_URL}")
+if(NOT _WINML_EP_CATALOG_URL)
+    set(_WINML_EP_CATALOG_URL
+        "https://api.nuget.org/v3-flatcontainer/microsoft.windows.ai.machinelearning/${WINML_EP_CATALOG_VERSION}/microsoft.windows.ai.machinelearning.${WINML_EP_CATALOG_VERSION}.nupkg")
 endif()
+
+string(REPLACE "\\" "/" _WINML_EP_CATALOG_URL "${_WINML_EP_CATALOG_URL}")
+if(_WINML_EP_CATALOG_URL MATCHES "\\.nupkg$" AND NOT _WINML_EP_CATALOG_URL MATCHES "^https?://")
+    set(_WINML_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/winml_ep_catalog-download/winml_ep_catalog.zip")
+    get_filename_component(_WINML_ZIP_DIR "${_WINML_ZIP_PATH}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_WINML_ZIP_DIR}")
+    configure_file("${_WINML_EP_CATALOG_URL}" "${_WINML_ZIP_PATH}" COPYONLY)
+    set(_WINML_EP_CATALOG_URL "${_WINML_ZIP_PATH}")
+endif()
+set(_WINML_FETCH_ARGS URL ${_WINML_EP_CATALOG_URL} DOWNLOAD_NAME winml_ep_catalog.zip)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+    list(APPEND _WINML_FETCH_ARGS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+endif()
+FetchContent_Declare(winml_ep_catalog ${_WINML_FETCH_ARGS})
+FetchContent_MakeAvailable(winml_ep_catalog)
+set(_WINML_EP_ROOT "${winml_ep_catalog_SOURCE_DIR}")
+message(STATUS "WinML EP Catalog via FetchContent: ${_WINML_EP_ROOT}")
 
 # Load the package's first-party CMake config for target discovery and layout
 # resolution. The config lives at build/cmake/<lowercased-package>-config.cmake

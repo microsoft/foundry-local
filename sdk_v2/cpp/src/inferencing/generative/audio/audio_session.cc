@@ -89,11 +89,13 @@ int64_t AudioDurationMsFromPcmBytes(int64_t bytes, int32_t sample_rate, int32_t 
 }  // namespace
 
 AudioSession::AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model,
-                           ILogger& logger, ITelemetry& telemetry)
+                           ILogger& logger, ITelemetry& telemetry, bool session_ref_acquired)
     : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating AudioSession for model: {}", model.ModelId()));
   // Last so a throw above does not leak a refcount; nothing below can throw.
-  model_.AcquireSession();
+  if (!session_ref_acquired) {
+    model_.AcquireSession();
+  }
 }
 
 AudioSession::~AudioSession() {
@@ -455,7 +457,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   // Validate file exists
   namespace fs = std::filesystem;
   if (!fs::exists(req.filename)) {
-    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Audio file not found");
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, fmt::format("Audio file not found: '{}'", req.filename));
   }
 
   // Build generation options from session defaults

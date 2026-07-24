@@ -442,8 +442,8 @@ Manager::Manager(const Configuration& config)
       config_.catalog_region.value_or("auto"),
       download_concurrency,
       *logger_,
-      *telemetry_,
-      disable_region_fallback);
+      disable_region_fallback,
+      *telemetry_);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   catalog_ = std::make_unique<AzureModelCatalog>(

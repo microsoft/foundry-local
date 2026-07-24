@@ -228,10 +228,11 @@ TEST_F(EpDetectorTest, DownloadFiltered_UnknownNamesSkipped) {
   std::vector<std::string> names = {"CUDAExecutionProvider", "NonExistentProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
-  EXPECT_TRUE(result.success);
+  EXPECT_FALSE(result.success);
   ASSERT_EQ(result.registered_eps.size(), 1u);
   EXPECT_EQ(result.registered_eps[0], "CUDAExecutionProvider");
-  EXPECT_TRUE(result.failed_eps.empty());
+  ASSERT_EQ(result.failed_eps.size(), 1u);
+  EXPECT_EQ(result.failed_eps[0], "NonExistentProvider");
 
   EXPECT_TRUE(mocks[0]->download_called_);
 }
@@ -244,14 +245,12 @@ TEST_F(EpDetectorTest, DownloadFiltered_TelemetryCountsRequestedNamesIncludingUn
   std::vector<std::string> names = {"CUDAExecutionProvider", "NonExistentProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
-  EXPECT_TRUE(result.success);
+  EXPECT_FALSE(result.success);
   ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
   EXPECT_EQ(telemetry.ep_attempt_calls[0].num_providers, 2);
   EXPECT_EQ(telemetry.ep_attempt_calls[0].attempts, 1);
   EXPECT_EQ(telemetry.ep_attempt_calls[0].succeeded, 1);
-  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
-  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSuccess);
-  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].failed, 1);
 }
 
 TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsSkippedTelemetry) {
@@ -269,26 +268,25 @@ TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsSkippedTelemetry) {
   EXPECT_TRUE(result.failed_eps.empty());
   ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
   EXPECT_EQ(telemetry.ep_attempt_calls[0].status, ActionStatus::kCanceled);
-  EXPECT_FALSE(telemetry.ep_attempt_calls[0].user_agent.empty());
   EXPECT_EQ(telemetry.ep_attempt_calls[0].attempts, 1);
   EXPECT_EQ(telemetry.ep_attempt_calls[0].succeeded, 0);
   EXPECT_EQ(telemetry.ep_attempt_calls[0].failed, 0);
   ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
-  EXPECT_FALSE(telemetry.ep_register_calls[0].user_agent.empty());
   EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSkipped);
   EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kCanceled);
 }
 
-TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknown_SucceedsWithNothing) {
+TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknownFailsWithRequestedName) {
   std::vector<MockEpBootstrapper*> mocks;
   auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}});
 
   std::vector<std::string> names = {"FakeProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
-  EXPECT_TRUE(result.success);
+  EXPECT_FALSE(result.success);
   EXPECT_TRUE(result.registered_eps.empty());
-  EXPECT_TRUE(result.failed_eps.empty());
+  ASSERT_EQ(result.failed_eps.size(), 1u);
+  EXPECT_EQ(result.failed_eps[0], "FakeProvider");
 
   EXPECT_FALSE(mocks[0]->download_called_);
 }

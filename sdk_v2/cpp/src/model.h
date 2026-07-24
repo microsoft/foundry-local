@@ -70,6 +70,9 @@ class Model {
   /// first cached variant if any, else the best variant.
   /// Requires IsContainer() to be true.
   void SelectDefaultVariant();
+  bool HasExplicitVariantSelection() const {
+    return explicit_variant_selected_.load(std::memory_order_acquire);
+  }
 
   /// Best-first comparator: device priority asc, version desc, created-at desc, model_id asc.
   /// Exposed so callers that return Model* lists can produce consistent ordering with Variants().
@@ -116,7 +119,7 @@ class Model {
   IOInfo GetInputOutputInfo() const;
 
   /// True if this is a multi-variant container.
-  bool IsContainer() const { return selected_variant_ != nullptr; }
+  bool IsContainer() const { return SelectedVariant() != nullptr; }
 
   // --- Mutation methods ---
 
@@ -169,11 +172,14 @@ class Model {
   // Container data (empty/null for leaves). unique_ptr keeps Model addresses
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
-  Model* selected_variant_ = nullptr;  // non-null = this is a container
+  std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
+  std::atomic<bool> explicit_variant_selected_{false};
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
   mutable std::mutex state_mutex_;
+
+  Model* SelectedVariant() const { return selected_variant_.load(std::memory_order_acquire); }
 };
 
 }  // namespace fl

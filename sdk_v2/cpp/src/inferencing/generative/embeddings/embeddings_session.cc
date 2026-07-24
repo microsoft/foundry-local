@@ -23,13 +23,15 @@
 namespace fl {
 
 EmbeddingsSession::EmbeddingsSession(const fl::Model& catalog_model, GenAIModelInstance& model,
-                                     ILogger& logger, ITelemetry& telemetry)
+                                     ILogger& logger, ITelemetry& telemetry, bool session_ref_acquired)
     : Session(catalog_model, logger, telemetry, /*allow_concurrent_requests=*/true),
       logger_(logger),
       model_(model) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating EmbeddingsSession for model: {}", model.ModelId()));
   // Last so a throw above does not leak a refcount; nothing below can throw.
-  model_.AcquireSession();
+  if (!session_ref_acquired) {
+    model_.AcquireSession();
+  }
 }
 
 EmbeddingsSession::~EmbeddingsSession() {
@@ -78,7 +80,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
   }
 
   // Single batched forward pass for all inputs.
-  auto embeddings = GenerateEmbeddingsBatch(inputs, request);
+  auto embeddings = GenerateEmbeddingsBatch(inputs);
 
   // Wrap each embedding as a TensorItem in the response. The vector is heap-allocated
   // and ownership is transferred to the TensorItem deleter via deleter_user_data_, so
@@ -100,7 +102,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
 }
 
 void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
-                                              const Request& original_request,
+                                              const Request& /*original_request*/,
                                               Response& response) {
   // Parse the OpenAI embeddings request. Let nlohmann::json::parse_error propagate —
   // matches AudioSession::ProcessAudioTranscriptionJson behavior.
@@ -122,7 +124,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   // Reuse GenerateEmbeddingsBatch so the typed and JSON paths stay bit-for-bit equal
   // under future refactors (parity test relies on this).
   if (!inputs.empty()) {
-    auto embeddings = GenerateEmbeddingsBatch(inputs, original_request);
+    auto embeddings = GenerateEmbeddingsBatch(inputs);
 
     output.data.reserve(embeddings.size());
     for (size_t i = 0; i < embeddings.size(); ++i) {
@@ -147,7 +149,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
 }
 
 std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
-    const std::vector<std::string>& inputs, const Request& request) {
+    const std::vector<std::string>& inputs) {
   // Process each input independently (batch_size=1 per forward pass).
   //
   // Embedding models like Qwen3-Embedding use bidirectional attention —
@@ -162,10 +164,7 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   results.reserve(inputs.size());
 
   for (const auto& input : inputs) {
-    if (request.canceled.load(std::memory_order_relaxed)) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "embeddings request canceled");
-    }
-    results.push_back(GenerateSingleEmbedding(input, request));
+    results.push_back(GenerateSingleEmbedding(input));
   }
 
   logger_.Log(LogLevel::Verbose,
@@ -174,11 +173,7 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   return results;
 }
 
-std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input, const Request& request) {
-  if (request.canceled.load(std::memory_order_relaxed)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "embeddings request canceled");
-  }
-
+std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input) {
   auto& oga_model = model_.GetOgaModel();
   auto& tokenizer = model_.GetOgaTokenizer();
 
@@ -201,13 +196,7 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   generator->AppendTokenSequences(*sequences);
 
   // 3. Single forward pass.
-  if (request.canceled.load(std::memory_order_relaxed)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "embeddings request canceled");
-  }
   generator->GenerateNextToken();
-  if (request.canceled.load(std::memory_order_relaxed)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "embeddings request canceled");
-  }
 
   // 4. Extract hidden_states. Shape: [1, token_count, hidden_size]
   auto hidden_states = generator->GetOutput("hidden_states");

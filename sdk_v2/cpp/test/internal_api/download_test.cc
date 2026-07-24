@@ -49,6 +49,10 @@ namespace {
 
 using fl::test::TempPath;
 
+ITelemetry& TestTelemetry() {
+  return fl::test::TestTelemetrySink();
+}
+
 /// Read entire file contents.
 std::string ReadFile(const fs::path& path) {
   std::ifstream f(path);
@@ -467,6 +471,7 @@ TEST(BlobDownloadTest, FiltersOutInferenceModelJson) {
   };
 
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   DownloadBlobsToDirectoryForTest(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
 
   ASSERT_EQ(mock.downloaded_blobs.size(), 2u);
@@ -530,11 +535,32 @@ TEST(BlobDownloadTest, SkipsExistingFilesWithCorrectSize) {
   };
 
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   DownloadBlobsToDirectoryForTest(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
 
   // Only the missing blob should be downloaded.
   ASSERT_EQ(mock.downloaded_blobs.size(), 1u);
   EXPECT_EQ(mock.downloaded_blobs[0], "config.json");
+}
+
+TEST(BlobDownloadTest, RedownloadsSameSizeFilesWhenIdentityRevalidationIsRequired) {
+  auto tmpdir = TempPath::CreateTempDir();
+  std::ofstream(tmpdir.path() / "weights.safetensors") << std::string(1000, 'X');
+
+  MockBlobDownloader mock;
+  mock.blobs_to_return = {
+      {"weights.safetensors", 1000, "etag-b"},
+      {"config.json", 100, "etag-config"},
+  };
+
+  BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
+  opts.require_completed_file_identity = true;
+  DownloadBlobsToDirectoryForTest(mock, "https://test.blob/c?sig=x", tmpdir.string(), opts);
+
+  ASSERT_EQ(mock.downloaded_blobs.size(), 2u);
+  EXPECT_EQ(mock.downloaded_blobs[0], "config.json");
+  EXPECT_EQ(mock.downloaded_blobs[1], "weights.safetensors");
 }
 
 TEST(BlobDownloadTest, RedownloadsFilesWithWrongSize) {
@@ -568,6 +594,7 @@ TEST(BlobDownloadTest, ReportsSkippedBytesInInitialProgress) {
 
   std::vector<float> progress_values;
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   opts.progress = [&](float pct) {
     progress_values.push_back(pct);
     return 0;
@@ -595,6 +622,7 @@ TEST(BlobDownloadTest, EmitsHundredPercentWhenEverythingIsCached) {
 
   std::vector<float> progress_values;
   BlobDownloadOptions opts;
+  opts.skip_completed_files = true;
   opts.progress = [&](float pct) {
     progress_values.push_back(pct);
     return 0;
@@ -855,13 +883,18 @@ TEST(VariantFixupTest, PreservesRootFileWhenNoSubdirs) {
 TEST(DownloadManagerTest, FullDownloadFlow) {
   auto tmpdir = TempPath::CreateTempDir();
 
+  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
+
+  // Mock the registry client
   auto registry = std::make_unique<ModelRegistryClient>(
       "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
       [](const std::string&) {
         return MakeRegistryResponse(
             R"({"blobSasUri": "https://storage.blob.core.windows.net/container?sig=test"})");
       });
+  manager->SetModelRegistryClient(std::move(registry));
 
+  // Mock the blob downloader
   auto mock_downloader = std::make_unique<MockBlobDownloader>();
   mock_downloader->expected_sas_uri =
       "https://storage.blob.core.windows.net/container?sig=test";
@@ -869,10 +902,7 @@ TEST(DownloadManagerTest, FullDownloadFlow) {
       {"weights.safetensors", 1024},
       {"config.json", 100},
   };
-
-  auto manager = std::make_unique<DownloadManager>(
-      tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-      /*disable_region_fallback=*/false, std::move(registry), std::move(mock_downloader));
+  manager->SetBlobDownloader(std::move(mock_downloader));
 
   ModelInfo info;
   info.model_id = "test-model:1";
@@ -898,12 +928,164 @@ TEST(DownloadManagerTest, FullDownloadFlow) {
   EXPECT_FALSE(progress_values.empty());
 }
 
+TEST(DownloadManagerTest, RetrySkipsCompletedBlobWithoutSidecar) {
+  auto tmpdir = TempPath::CreateTempDir();
+
+  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
+
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [](const std::string&) {
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/container?sig=test"})");
+      });
+  manager->SetModelRegistryClient(std::move(registry));
+
+  auto mock_downloader = std::make_unique<MockBlobDownloader>();
+  auto* mock_downloader_ptr = mock_downloader.get();
+  mock_downloader->blobs_to_return = {
+      {"weights.safetensors", 1024},
+      {"config.json", 100},
+  };
+  manager->SetBlobDownloader(std::move(mock_downloader));
+
+  ModelInfo info;
+  info.model_id = "test-model:1";
+  info.name = "test-model";
+  info.uri = "azureml://registries/test/models/test-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "TestPublisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "TestPublisher" / "test-model-1";
+  fs::create_directories(model_dir);
+  {
+    std::ofstream signal(model_dir / "download.tmp");
+    signal << "foundry-local-sidecar-safe-v1\n";
+  }
+  {
+    std::ofstream f(model_dir / "weights.safetensors", std::ios::binary);
+    f.seekp(1023);
+    f.put('\0');
+  }
+  ASSERT_EQ(fs::file_size(model_dir / "weights.safetensors"), static_cast<uintmax_t>(1024));
+
+  manager->DownloadModel(info);
+
+  ASSERT_EQ(mock_downloader_ptr->downloaded_blobs.size(), 1u);
+  EXPECT_EQ(mock_downloader_ptr->downloaded_blobs[0], "config.json");
+}
+
+TEST(DownloadManagerTest, LegacyIncompleteRetryRedownloadsFullSizeBlobWithoutSidecar) {
+  auto tmpdir = TempPath::CreateTempDir();
+
+  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
+
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [](const std::string&) {
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/container?sig=test"})");
+      });
+  manager->SetModelRegistryClient(std::move(registry));
+
+  auto mock_downloader = std::make_unique<MockBlobDownloader>();
+  auto* mock_downloader_ptr = mock_downloader.get();
+  mock_downloader->blobs_to_return = {
+      {"weights.safetensors", 1024},
+      {"config.json", 100},
+  };
+  manager->SetBlobDownloader(std::move(mock_downloader));
+
+  ModelInfo info;
+  info.model_id = "test-model:1";
+  info.name = "test-model";
+  info.uri = "azureml://registries/test/models/test-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "TestPublisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "TestPublisher" / "test-model-1";
+  fs::create_directories(model_dir);
+  {
+    std::ofstream signal(model_dir / "download.tmp");
+    signal << "legacy-incomplete-download";
+  }
+  {
+    std::ofstream f(model_dir / "weights.safetensors", std::ios::binary);
+    f.seekp(1023);
+    f.put('\0');
+  }
+
+  manager->DownloadModel(info);
+
+  ASSERT_EQ(mock_downloader_ptr->downloaded_blobs.size(), 2u);
+  EXPECT_NE(std::find(mock_downloader_ptr->downloaded_blobs.begin(), mock_downloader_ptr->downloaded_blobs.end(),
+                      "weights.safetensors"),
+            mock_downloader_ptr->downloaded_blobs.end());
+  EXPECT_NE(std::find(mock_downloader_ptr->downloaded_blobs.begin(), mock_downloader_ptr->downloaded_blobs.end(),
+                      "config.json"),
+            mock_downloader_ptr->downloaded_blobs.end());
+}
+
+TEST(DownloadManagerTest, FailedLegacyRepairDoesNotPromoteToSidecarSafeRetry) {
+  auto tmpdir = TempPath::CreateTempDir();
+
+  int registry_calls = 0;
+  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [&registry_calls](const std::string&) {
+        ++registry_calls;
+        if (registry_calls == 1) {
+          return MakeRegistryResponse("temporary failure", 503);
+        }
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/container?sig=test"})");
+      });
+  manager->SetModelRegistryClient(std::move(registry));
+
+  auto mock_downloader = std::make_unique<MockBlobDownloader>();
+  auto* mock_downloader_ptr = mock_downloader.get();
+  mock_downloader->blobs_to_return = {
+      {"weights.safetensors", 1024},
+      {"config.json", 100},
+  };
+  manager->SetBlobDownloader(std::move(mock_downloader));
+
+  ModelInfo info;
+  info.model_id = "test-model:1";
+  info.name = "test-model";
+  info.uri = "azureml://registries/test/models/test-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "TestPublisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "TestPublisher" / "test-model-1";
+  fs::create_directories(model_dir);
+  {
+    std::ofstream signal(model_dir / "download.tmp");
+    signal << "legacy-incomplete-download";
+  }
+  {
+    std::ofstream f(model_dir / "weights.safetensors", std::ios::binary);
+    f.seekp(1023);
+    f.put('\0');
+  }
+
+  EXPECT_THROW(manager->DownloadModel(info), fl::Exception);
+  EXPECT_TRUE(mock_downloader_ptr->downloaded_blobs.empty());
+
+  manager->DownloadModel(info);
+
+  ASSERT_EQ(mock_downloader_ptr->downloaded_blobs.size(), 2u);
+  EXPECT_NE(std::find(mock_downloader_ptr->downloaded_blobs.begin(), mock_downloader_ptr->downloaded_blobs.end(),
+                      "weights.safetensors"),
+            mock_downloader_ptr->downloaded_blobs.end());
+}
+
 // --- Region resolution: detected region drives the download endpoint ---
 
 // Run one download and return the registry URL the manager hit.
 static std::string CaptureRegistryUrlForDownload(const std::string& config_region,
                                                  const std::string& detected_region) {
   auto tmpdir = TempPath::CreateTempDir();
+  auto manager =
+      std::make_unique<DownloadManager>(tmpdir.string(), config_region, 64, fl::test::NullLog(), TestTelemetry());
 
   std::string captured_url;
   auto registry = std::make_unique<ModelRegistryClient>(
@@ -913,14 +1095,12 @@ static std::string CaptureRegistryUrlForDownload(const std::string& config_regio
         return MakeRegistryResponse(
             R"({"blobSasUri": "https://storage.blob.core.windows.net/container?sig=test"})");
       });
+  manager->SetModelRegistryClient(std::move(registry));
 
   auto mock_downloader = std::make_unique<MockBlobDownloader>();
   mock_downloader->expected_sas_uri = "https://storage.blob.core.windows.net/container?sig=test";
   mock_downloader->blobs_to_return = {{"config.json", 100}};
-
-  auto manager = std::make_unique<DownloadManager>(
-      tmpdir.string(), config_region, 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-      /*disable_region_fallback=*/false, std::move(registry), std::move(mock_downloader));
+  manager->SetBlobDownloader(std::move(mock_downloader));
 
   ModelInfo info;
   info.model_id = "test-model:1";
@@ -958,8 +1138,7 @@ TEST(DownloadManagerTest, Region_FallsBackToDefaultRegistryRegionWhenNoConfigAnd
 
 TEST(DownloadManagerTest, SkipsAlreadyCachedModel) {
   auto tmpdir = TempPath::CreateTempDir();
-  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog(),
-                                                   fl::test::TestTelemetrySink());
+  auto manager = std::make_unique<DownloadManager>(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "cached-model:1";
@@ -985,7 +1164,7 @@ TEST(DownloadManagerTest, SkipsAlreadyCachedModel) {
 
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseForMissing) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "nonexistent:1";
@@ -996,7 +1175,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForMissing) {
 
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseForIncomplete) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "incomplete:1";
@@ -1014,7 +1193,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForIncomplete) {
 
 TEST(DownloadManagerTest, IsModelCachedReturnsTrueForComplete) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "complete:2";
@@ -1033,7 +1212,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsTrueForComplete) {
 
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseForEmptyDir) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "empty:1";
@@ -1049,7 +1228,7 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForEmptyDir) {
 
 TEST(DownloadManagerTest, VersionSuffixConversion) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "mymodel:42";
@@ -1069,7 +1248,7 @@ TEST(DownloadManagerTest, VersionSuffixConversion) {
 
 TEST(DownloadManagerTest, ThrowsOnEmptyUri) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "test:1";
@@ -1083,12 +1262,14 @@ TEST(DownloadManagerTest, ThrowsOnEmptyUri) {
 // proceed in parallel — covered by the unrelated-model test below.
 TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
   auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   auto registry = std::make_unique<ModelRegistryClient>(
       "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
       [](const std::string&) {
         return MakeRegistryResponse(R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
       });
+  manager.SetModelRegistryClient(std::move(registry));
 
   // Counting mock — increments an atomic on every DownloadBlob call.
   class CountingDownloader : public IBlobDownloader {
@@ -1121,8 +1302,7 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
 
   auto counting = std::make_unique<CountingDownloader>();
   auto* counting_raw = counting.get();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-                          /*disable_region_fallback=*/false, std::move(registry), std::move(counting));
+  manager.SetBlobDownloader(std::move(counting));
 
   ModelInfo info;
   info.model_id = "concurrent-model:1";
@@ -1166,6 +1346,7 @@ TEST(DownloadManagerTest, ConcurrentDownloadsOfSameModelSerialize) {
 // second download can't enter until the first releases the mutex).
 TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
   auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   auto registry = std::make_unique<ModelRegistryClient>(
       "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
@@ -1173,6 +1354,7 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
         return MakeRegistryResponse(
             R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
       });
+  manager.SetModelRegistryClient(std::move(registry));
 
   // Tracks the peak number of downloads running at once. The global download
   // mutex must keep this at 1 even for different models.
@@ -1211,8 +1393,7 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
 
   auto probe = std::make_unique<ConcurrencyProbe>();
   auto* probe_raw = probe.get();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-                          /*disable_region_fallback=*/false, std::move(registry), std::move(probe));
+  manager.SetBlobDownloader(std::move(probe));
 
   auto make_info = [](const char* id, const char* publisher) {
     ModelInfo info;
@@ -1257,6 +1438,7 @@ TEST(DownloadManagerTest, ModelDownloadsSerializeUnderGlobalLock) {
 // recheck WITHOUT re-downloading anything.
 TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
   auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   // Registry + downloader that must stay untouched if the post-lock recheck works.
   auto registry = std::make_unique<ModelRegistryClient>(
@@ -1265,12 +1447,12 @@ TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
         return MakeRegistryResponse(
             R"({"blobSasUri": "https://storage.blob.core.windows.net/c?sig=test"})");
       });
+  manager.SetModelRegistryClient(std::move(registry));
 
   auto mock = std::make_unique<MockBlobDownloader>();
   mock->blobs_to_return = {{"weights.bin", 100}};  // non-empty: a stray download would be visible
   auto* mock_raw = mock.get();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink(),
-                          /*disable_region_fallback=*/false, std::move(registry), std::move(mock));
+  manager.SetBlobDownloader(std::move(mock));
 
   ModelInfo info;
   info.model_id = "wait-model:1";
@@ -1311,7 +1493,7 @@ TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
 // underlying directory_iterator would throw filesystem_error.
 TEST(DownloadManagerTest, IsModelCachedReturnsFalseWhenPathIsRegularFile) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "filemodel:1";
@@ -1379,7 +1561,7 @@ TEST(EndToEndTest, DISABLED_LiveCatalogAndDownload) {
   // 3. Download the model — use build output dir so reruns skip the download
   auto cache_path = fs::path(__FILE__).parent_path().parent_path() / "build" / "test_cache";
   fs::create_directories(cache_path);
-  DownloadManager dm(cache_path.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager dm(cache_path.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   std::vector<float> progress_values;
   std::string local_path = dm.DownloadModel(*smallest, [&](float pct) {
@@ -1452,7 +1634,7 @@ TEST(EndToEndTest, DISABLED_LiveCatalogAndDownload) {
 
 TEST(DownloadManagerTest, RejectsParentEscapeInModelId) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "../evil:1";
@@ -1464,7 +1646,7 @@ TEST(DownloadManagerTest, RejectsParentEscapeInModelId) {
 
 TEST(DownloadManagerTest, RejectsBackslashInPublisher) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "test:1";
@@ -1475,7 +1657,7 @@ TEST(DownloadManagerTest, RejectsBackslashInPublisher) {
 
 TEST(DownloadManagerTest, RejectsForwardSlashInPublisher) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "test:1";
@@ -1488,7 +1670,7 @@ TEST(DownloadManagerTest, RejectsColonInBareModelId) {
   // model_id "drive:c:1" splits as bare="drive:c", version="1"; the bare half then
   // contains a stray ':' that would let a Windows drive letter slip through.
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "drive:c:1";
@@ -1497,9 +1679,20 @@ TEST(DownloadManagerTest, RejectsColonInBareModelId) {
   EXPECT_THROW(manager.GetModelCachePath(info), fl::Exception);
 }
 
+TEST(DownloadManagerTest, RejectsNonNumericVersionSuffix) {
+  auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
+
+  ModelInfo info;
+  info.model_id = "test:preview";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Publisher";
+
+  EXPECT_THROW(manager.GetModelCachePath(info), fl::Exception);
+}
+
 TEST(DownloadManagerTest, RejectsTrailingDotInPublisher) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "test:1";
@@ -1510,7 +1703,7 @@ TEST(DownloadManagerTest, RejectsTrailingDotInPublisher) {
 
 TEST(DownloadManagerTest, RejectsEmptyModelId) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "";
@@ -1521,7 +1714,7 @@ TEST(DownloadManagerTest, RejectsEmptyModelId) {
 
 TEST(DownloadManagerTest, AcceptsNormalModelIdAndPublisher) {
   auto tmpdir = TempPath::CreateTempDir();
-  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), fl::test::TestTelemetrySink());
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), TestTelemetry());
 
   ModelInfo info;
   info.model_id = "phi-3-mini:1";
@@ -1535,7 +1728,7 @@ TEST(DownloadManagerTest, AcceptsNormalModelIdAndPublisher) {
 
 // ========================================================================
 // AzureBlobDownloader resume + cancel-cascade tests
-// Use a subclass that overrides the protected GetBlobSize / DownloadChunkStreaming
+// Use a subclass that overrides the protected GetBlobProperties / DownloadChunkStreaming
 // virtuals to bypass the real Azure SDK and simulate per-chunk behavior.
 // ========================================================================
 
@@ -1546,6 +1739,7 @@ namespace {
 class FakeChunkAzureDownloader : public AzureBlobDownloader {
  public:
   int64_t blob_size = 0;
+  std::string blob_identity;
 
   /// Per-call hook. Receives the chunk offset and size plus a `sink` callback
   /// that forwards bytes to the file writer. Allowed to:
@@ -1570,7 +1764,9 @@ class FakeChunkAzureDownloader : public AzureBlobDownloader {
   FakeChunkAzureDownloader() : AzureBlobDownloader(fl::test::NullLog()) {}
 
  protected:
-  int64_t GetBlobSize(ChunkContext& /*ctx*/) override { return blob_size; }
+  BlobProperties GetBlobProperties(ChunkContext& /*ctx*/) override {
+    return BlobProperties{blob_size, blob_identity};
+  }
 
   void DownloadChunkStreaming(ChunkContext& ctx, int64_t offset, int64_t size,
                               std::vector<uint8_t>& scratch,
@@ -1799,6 +1995,42 @@ TEST(AzureBlobDownloaderResumeTest, CleansUpSidecarOnEmptyBlob) {
   EXPECT_EQ(fs::file_size(local), 0u);
   EXPECT_FALSE(fs::exists(BlobDownloadState::GetStateFilePath(local)));
   EXPECT_EQ(d.chunk_call_count.load(), 0);
+}
+
+TEST(AzureBlobDownloaderResumeTest, CompleteUnfinalizedSidecarDoesNotEmitRegressingProgress) {
+  auto tmpdir = TempPath::CreateTempDir();
+  auto local = tmpdir.path() / "blob.bin";
+
+  constexpr int32_t kChunkSize = 2 * 1024 * 1024;
+  constexpr int32_t kNumChunks = 2;
+  constexpr int64_t kBlobSize = static_cast<int64_t>(kNumChunks) * kChunkSize;
+
+  {
+    std::ofstream f(local, std::ios::binary);
+    f.seekp(kBlobSize - 1);
+    f.put('\0');
+  }
+  {
+    auto state = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks);
+    for (int32_t i = 0; i < kNumChunks; ++i) {
+      state->MarkChunkComplete(i);
+    }
+    ASSERT_TRUE(state->SaveState(fl::test::NullLog()));
+  }
+
+  FakeChunkAzureDownloader d;
+  d.blob_size = kBlobSize;
+  std::vector<int64_t> progress;
+
+  d.DownloadBlob(/*sas_uri=*/"", "blob", local.string(), /*max_concurrency=*/2,
+                 [&](int64_t bytes) { progress.push_back(bytes); });
+
+  ASSERT_FALSE(progress.empty());
+  EXPECT_LT(progress.front(), kBlobSize);
+  for (size_t i = 1; i < progress.size(); ++i) {
+    EXPECT_GE(progress[i], progress[i - 1]);
+  }
+  EXPECT_EQ(progress.back(), kBlobSize);
 }
 
 TEST(AzureBlobDownloaderResumeTest, ChunkFailureCancelsInFlightPeersFast) {

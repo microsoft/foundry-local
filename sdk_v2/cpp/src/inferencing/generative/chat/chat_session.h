@@ -39,7 +39,8 @@ class ChatSession : public Session {
     // The assistant reply is at history_[history_start + input_count]
   };
 
-  ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry);
+  ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry,
+              bool session_ref_acquired = false);
   ~ChatSession();
 
   // Movable: transfers session refcount ownership to the moved-to instance.

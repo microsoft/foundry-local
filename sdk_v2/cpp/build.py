@@ -57,10 +57,25 @@ def _path_from_env_var(var: str) -> Path | None:
 # Subprocess runner
 # ---------------------------------------------------------------------------
 
+def _redact_command_arg(arg: str) -> str:
+    sensitive_words = ("token", "secret", "password", "passwd", "apikey", "api_key", "accesskey", "sig")
+    if "=" in arg:
+        key, value = arg.split("=", 1)
+        normalized_key = key.lstrip("-").lower()
+        if "://" in value:
+            return f"{key}=<redacted-url>"
+        if any(word in normalized_key for word in sensitive_words):
+            return f"{key}=<redacted>"
+    return arg
+
+
 def run(cmd: list[str], cwd: Path | str | None = None, env: dict[str, str] | None = None) -> None:
     """Run a command, logging and streaming output. Raises on non-zero exit."""
-    log.info("Running: %s", " ".join(str(c) for c in cmd))
-    subprocess.run(cmd, cwd=cwd, env=env, check=True)
+    redacted = " ".join(_redact_command_arg(str(c)) for c in cmd)
+    log.info("Running: %s", redacted)
+    result = subprocess.run(cmd, cwd=cwd, env=env, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"Command failed with exit code {result.returncode}: {redacted}")
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +344,12 @@ def _validate_args(args: argparse.Namespace) -> None:
     args.cmake_extra_defines = (
         [f"-D{d}" for j in args.cmake_extra_defines for d in j] if args.cmake_extra_defines else []
     )
+    for define in args.cmake_extra_defines:
+        if define.startswith("-DFOUNDRY_LOCAL_TELEMETRY_TOKEN"):
+            raise ValueError(
+                "FOUNDRY_LOCAL_TELEMETRY_TOKEN must be supplied as an environment variable, "
+                "not via --cmake_extra_defines or command-line arguments."
+            )
 
     # Cross-compilation
     if args.arm64:

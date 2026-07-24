@@ -4,6 +4,8 @@
 
 #include "logger.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -21,47 +23,145 @@ class ResponseStore;
 
 /// Tracks streaming threads so they can be joined on shutdown.
 /// Handlers call Track() instead of std::thread::detach().
-/// Threads call Remove() when done to clean up immediately.
 class StreamingThreadTracker {
+  struct TrackedThread {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+    std::function<void()> abort;
+  };
+
  public:
-  /// Take ownership of a streaming thread.
-  void Track(std::thread t) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    threads_.push_back(std::move(t));
+  StreamingThreadTracker() {
+    StartReaperLocked();
   }
 
-  /// Called from within a thread to untrack itself after work is done.
-  /// Detaches the thread (can't join itself) and removes the entry.
-  void Remove(std::thread::id id) {
+  ~StreamingThreadTracker() {
+    StopReaper();
+    JoinAll();
+  }
+
+  /// Take ownership of a streaming thread.
+  void Track(std::thread t, std::shared_ptr<std::atomic<bool>> done, std::function<void()> abort) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = threads_.begin(); it != threads_.end(); ++it) {
-      if (it->get_id() == id) {
-        it->detach();
-        threads_.erase(it);
-        return;
+    StartReaperLocked();
+    ReapCompletedLocked();
+    if (stopping_) {
+      if (abort) {
+        abort();
+      }
+    }
+    threads_.push_back(TrackedThread{std::move(t), std::move(done), std::move(abort)});
+    if (threads_.back().done && threads_.back().done->load(std::memory_order_acquire)) {
+      completion_cv_.notify_one();
+    }
+  }
+
+  void NotifyCompleted() {
+    completion_cv_.notify_one();
+  }
+
+  void BeginStopping() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = true;
+    AbortAllLocked();
+  }
+
+  void AbortAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    AbortAllLocked();
+  }
+
+  void Reset() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = false;
+    StartReaperLocked();
+  }
+
+  void AbortAllLocked() {
+    for (auto& tracked : threads_) {
+      if (tracked.abort) {
+        tracked.abort();
       }
     }
   }
 
   /// Join all remaining threads. Called by WebService::Stop().
-  /// Moves entries out before joining to avoid deadlock with Remove().
+  /// Moves entries out before joining so completed streaming threads are cleaned up safely.
   void JoinAll() {
-    std::vector<std::thread> local;
+    StopReaper();
+
+    std::vector<TrackedThread> local;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       local = std::move(threads_);
     }
 
-    for (auto& t : local) {
-      if (t.joinable()) {
-        t.join();
+    for (auto& tracked : local) {
+      if (tracked.thread.joinable()) {
+        tracked.thread.join();
       }
     }
   }
 
  private:
+  bool HasCompletedLocked() const {
+    for (const auto& tracked : threads_) {
+      if (tracked.done && tracked.done->load(std::memory_order_acquire)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void StartReaperLocked() {
+    if (reaper_thread_.joinable()) {
+      return;
+    }
+    reaper_stop_ = false;
+    reaper_thread_ = std::thread([this]() { ReaperLoop(); });
+  }
+
+  void StopReaper() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      reaper_stop_ = true;
+    }
+    completion_cv_.notify_all();
+    if (reaper_thread_.joinable()) {
+      reaper_thread_.join();
+    }
+  }
+
+  void ReaperLoop() {
+    while (true) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      completion_cv_.wait(lock, [this]() { return reaper_stop_ || HasCompletedLocked(); });
+      if (reaper_stop_) {
+        return;
+      }
+      ReapCompletedLocked();
+    }
+  }
+
+  void ReapCompletedLocked() {
+    for (auto it = threads_.begin(); it != threads_.end();) {
+      if (it->done && it->done->load(std::memory_order_acquire)) {
+        if (it->thread.joinable()) {
+          it->thread.join();
+        }
+        it = threads_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
   std::mutex mutex_;
-  std::vector<std::thread> threads_;
+  std::condition_variable completion_cv_;
+  std::vector<TrackedThread> threads_;
+  std::thread reaper_thread_;
+  bool stopping_ = false;
+  bool reaper_stop_ = false;
 };
 
 /// Context shared with all HTTP controllers.

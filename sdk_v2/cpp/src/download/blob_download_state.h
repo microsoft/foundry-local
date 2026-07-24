@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fl {
@@ -35,6 +36,7 @@ class BlobDownloadState {
   int64_t blob_size = 0;
   int32_t chunk_size = 0;
   int32_t total_chunks = 0;
+  std::string blob_identity;
 
   /// Serialization marker (always a multiple of 8): chunks below this index are
   /// complete and dropped from the sidecar's truncated bitmap. The in-memory
@@ -64,7 +66,8 @@ class BlobDownloadState {
                                                       const std::filesystem::path& local_file_path,
                                                       int64_t blob_size,
                                                       int32_t chunk_size,
-                                                      int32_t total_chunks);
+                                                      int32_t total_chunks,
+                                                      std::string blob_identity = {});
 
   /// Load existing state from `<local_file_path>.dlstate`. Returns nullptr if
   /// the file does not exist, is corrupted, or has incompatible
@@ -73,6 +76,13 @@ class BlobDownloadState {
   /// and the partial download is no longer valid).
   /// `logger` receives diagnostics for corrupt/incompatible state files. Required: the
   /// downloader always has a logger, so there is no optional/null case to handle.
+  static std::unique_ptr<BlobDownloadState> LoadState(std::string blob_name,
+                                                      const std::filesystem::path& local_file_path,
+                                                      int64_t expected_blob_size,
+                                                      int32_t expected_chunk_size,
+                                                      int32_t expected_total_chunks,
+                                                      std::string_view expected_blob_identity,
+                                                      ILogger& logger);
   static std::unique_ptr<BlobDownloadState> LoadState(std::string blob_name,
                                                       const std::filesystem::path& local_file_path,
                                                       int64_t expected_blob_size,

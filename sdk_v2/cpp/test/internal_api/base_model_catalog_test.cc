@@ -9,6 +9,7 @@
 //   - Variant grouping behavior
 //
 #include "catalog/base_model_catalog.h"
+#include "exception.h"
 #include "internal_api/test_helpers.h"
 #include "logger.h"
 #include "model.h"
@@ -106,6 +107,38 @@ class QueryingTestCatalog : public BaseModelCatalog {
   mutable std::vector<Model> models_;
   mutable std::vector<Model> version_fetch_results_;
   mutable std::vector<Model> id_fetch_results_;
+};
+
+class FailingRefreshCatalog : public BaseModelCatalog {
+ public:
+  explicit FailingRefreshCatalog(ILogger& logger) : BaseModelCatalog("failing-refresh-catalog", logger) {}
+
+  void SetModels(std::vector<Model> models) {
+    models_ = std::move(models);
+  }
+
+  void FailNextFetch() {
+    fail_next_fetch_ = true;
+  }
+
+  int FetchCount() const {
+    return fetch_count_;
+  }
+
+ protected:
+  std::vector<Model> FetchModels() const override {
+    ++fetch_count_;
+    if (fail_next_fetch_) {
+      fail_next_fetch_ = false;
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "simulated refresh failure");
+    }
+    return std::move(models_);
+  }
+
+ private:
+  mutable std::vector<Model> models_;
+  mutable bool fail_next_fetch_ = false;
+  mutable int fetch_count_ = 0;
 };
 
 // Helper: create a Model from basic fields.
@@ -206,6 +239,76 @@ TEST_F(BaseModelCatalogTest, GetModel_VariantsAccessible) {
   Model* container = catalog.GetModel("phi-3");
   ASSERT_NE(container, nullptr);
   EXPECT_EQ(container->Variants().size(), 2u);
+}
+
+TEST_F(BaseModelCatalogTest, RefreshMergesNewVariantsForExistingAlias) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+
+  Model* container = catalog.GetModel("phi-3");
+  ASSERT_NE(container, nullptr);
+  EXPECT_EQ(container->Variants().size(), 1u);
+  EXPECT_EQ(catalog.GetModelVariant("phi-3-mini-gpu:1"), nullptr);
+
+  catalog.AddModel(MakeModel("phi-3-mini-gpu:1", "phi-3-mini-gpu", 1, "phi-3"));
+  catalog.InvalidateCache();
+
+  auto refreshed = catalog.ListModels();
+  ASSERT_EQ(refreshed.size(), 1u);
+  EXPECT_EQ(refreshed[0]->Variants().size(), 2u);
+  EXPECT_NE(catalog.GetModelVariant("phi-3-mini-gpu:1"), nullptr);
+  EXPECT_EQ(catalog.GetModel("phi-3")->Id(), "phi-3-mini-gpu:1");
+}
+
+TEST_F(BaseModelCatalogTest, RefreshPreservesExplicitVariantSelection) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+
+  Model* container = catalog.GetModel("phi-3");
+  ASSERT_NE(container, nullptr);
+  Model* cpu_variant = catalog.GetModelVariant("phi-3-mini-cpu:1");
+  ASSERT_NE(cpu_variant, nullptr);
+  container->SelectVariant(*cpu_variant);
+
+  catalog.AddModel(MakeModel("phi-3-mini-gpu:1", "phi-3-mini-gpu", 1, "phi-3"));
+  catalog.InvalidateCache();
+
+  auto refreshed = catalog.ListModels();
+  ASSERT_EQ(refreshed.size(), 1u);
+  EXPECT_EQ(refreshed[0]->Variants().size(), 2u);
+  EXPECT_EQ(container->Id(), "phi-3-mini-cpu:1");
+}
+
+TEST_F(BaseModelCatalogTest, GetLatestVersionReturnsLatestSameModelName) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+  catalog.AddModel(MakeModel("phi-3-mini-gpu:2", "phi-3-mini-gpu", 2, "phi-3"));
+
+  Model* cpu_variant = catalog.GetModelVariant("phi-3-mini-cpu:1");
+  ASSERT_NE(cpu_variant, nullptr);
+
+  Model* latest = catalog.GetLatestVersion(cpu_variant);
+  ASSERT_NE(latest, nullptr);
+  EXPECT_EQ(latest->Info().name, "phi-3-mini-cpu");
+}
+
+TEST_F(BaseModelCatalogTest, ForcedRefreshFailureBacksOffWhenCatalogAlreadyPopulated) {
+  FailingRefreshCatalog catalog(logger_);
+  std::vector<Model> models;
+  models.push_back(MakeModel("phi-3-mini-cpu:1", "phi-3-mini-cpu", 1, "phi-3"));
+  catalog.SetModels(std::move(models));
+
+  ASSERT_NE(catalog.GetModel("phi-3"), nullptr);
+  EXPECT_EQ(catalog.FetchCount(), 1);
+
+  catalog.FailNextFetch();
+  catalog.InvalidateCache();
+
+  EXPECT_EQ(catalog.ListModels().size(), 1u);
+  EXPECT_EQ(catalog.FetchCount(), 2);
+
+  EXPECT_EQ(catalog.ListModels().size(), 1u);
+  EXPECT_EQ(catalog.FetchCount(), 2);
 }
 
 TEST_F(BaseModelCatalogTest, GetModel_NotFound_ReturnsNullptr) {

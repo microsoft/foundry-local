@@ -57,9 +57,50 @@ ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger)
     : ep_detector_(ep_detector), logger_(logger) {}
 
 ModelLoadManager::~ModelLoadManager() {
-  // Destroy all loaded models under the lock.
+  // Destroy all loaded models under the lock. If a caller violates the public
+  // lifetime contract and keeps direct sessions alive past Manager destruction,
+  // keep those model instances alive rather than leaving sessions with dangling
+  // GenAIModelInstance references.
   std::lock_guard<std::mutex> lock(mutex_);
+  for (auto it = loaded_models_.begin(); it != loaded_models_.end();) {
+    auto live_sessions = it->second->SessionRefCount();
+    if (live_sessions > 0) {
+      logger_.Log(LogLevel::Warning,
+                  fmt::format("ModelLoadManager destroyed while model '{}' still has {} live session(s); "
+                              "leaving model instance allocated to avoid dangling session references",
+                              it->first, live_sessions));
+      it->second.release();
+      it = loaded_models_.erase(it);
+    } else {
+      ++it;
+    }
+  }
   loaded_models_.clear();
+}
+
+ModelLoadManager::LoadedModelLease::~LoadedModelLease() {
+  Reset();
+}
+
+ModelLoadManager::LoadedModelLease::LoadedModelLease(LoadedModelLease&& other) noexcept
+    : model_(other.model_) {
+  other.model_ = nullptr;
+}
+
+ModelLoadManager::LoadedModelLease& ModelLoadManager::LoadedModelLease::operator=(LoadedModelLease&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    model_ = other.model_;
+    other.model_ = nullptr;
+  }
+  return *this;
+}
+
+void ModelLoadManager::LoadedModelLease::Reset() noexcept {
+  if (model_ != nullptr) {
+    model_->ReleaseSession();
+    model_ = nullptr;
+  }
 }
 
 bool ModelLoadManager::HasEP(const std::string& ep_name) const {
@@ -89,6 +130,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   std::string path_str(model_path);
   std::string id_str(model_id);
   std::lock_guard<std::mutex> lock(mutex_);
+  if (shutdown_.load()) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "cannot load model during shutdown");
+  }
 
   // Check if model is already loaded
   auto it = loaded_models_.find(id_str);
@@ -202,24 +247,21 @@ void ModelLoadManager::RejectNewLoads() {
 }
 
 void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
-  // Snapshot ids+pointers under the lock; the GenAIModelInstance pointers stay valid
-  // because (a) only this method or UnloadModel can erase entries, and (b) we serialize
-  // the per-id erase below.
-  std::vector<std::pair<std::string, GenAIModelInstance*>> snapshot;
+  std::vector<std::string> ids;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    snapshot.reserve(loaded_models_.size());
+    ids.reserve(loaded_models_.size());
     for (auto& [id, instance] : loaded_models_) {
-      snapshot.emplace_back(id, instance.get());
+      ids.emplace_back(id);
     }
   }
 
-  if (snapshot.empty()) {
+  if (ids.empty()) {
     return;
   }
 
   logger_.Log(LogLevel::Information,
-              fmt::format("Shutdown: unloading {} model(s)", snapshot.size()));
+              fmt::format("Shutdown: unloading {} model(s)", ids.size()));
 
   using clock = std::chrono::steady_clock;
   constexpr auto kPollInterval = std::chrono::milliseconds(50);
@@ -229,27 +271,39 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
   // time linearly with model count.
   auto deadline = clock::now() + timeout;
 
-  for (auto& [id, instance] : snapshot) {
-    while (instance->SessionRefCount() > 0 && clock::now() < deadline) {
+  for (const auto& id : ids) {
+    int remaining = 0;
+    bool unloaded = false;
+    while (true) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = loaded_models_.find(id);
+        if (it == loaded_models_.end()) {
+          remaining = 0;
+          unloaded = true;
+          break;
+        }
+
+        remaining = it->second->SessionRefCount();
+        if (remaining == 0) {
+          logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id));
+          loaded_models_.erase(it);
+          unloaded = true;
+          break;
+        }
+      }
+
+      if (clock::now() >= deadline) {
+        break;
+      }
+
       std::this_thread::sleep_for(kPollInterval);
     }
 
-    auto remaining = instance->SessionRefCount();
-    if (remaining > 0) {
+    if (!unloaded && remaining > 0) {
       logger_.Log(LogLevel::Warning,
                   fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; leaving loaded",
                               id, remaining, timeout.count()));
-      continue;
-    }
-
-    try {
-      UnloadModel(id);
-    } catch (const std::exception& ex) {
-      // A new session attached between our refcount poll and the lock acquisition inside
-      // UnloadModel. Log and move on — IsShutdownRequested-gated callers shouldn't be
-      // creating new sessions, but we don't crash shutdown over it.
-      logger_.Log(LogLevel::Warning,
-                  fmt::format("Shutdown: failed to unload '{}': {}", id, ex.what()));
     }
   }
 }
@@ -268,6 +322,19 @@ GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id) 
   }
 
   return nullptr;
+}
+
+ModelLoadManager::LoadedModelLease ModelLoadManager::AcquireLoadedModel(std::string_view model_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  std::string id_str(model_id);
+  auto it = loaded_models_.find(id_str);
+  if (it == loaded_models_.end()) {
+    return {};
+  }
+
+  it->second->AcquireSession();
+  return LoadedModelLease(it->second.get());
 }
 
 }  // namespace fl

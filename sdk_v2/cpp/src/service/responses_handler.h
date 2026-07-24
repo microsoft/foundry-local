@@ -4,6 +4,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "inferencing/model_load_manager.h"
 #include "service/handler_utils.h"
 
 #include <memory>
@@ -15,7 +16,6 @@ struct ServiceContext;
 struct Request;
 class ChatSession;
 class Model;
-class GenAIModelInstance;
 class ActionTracker;
 
 namespace responses {
@@ -44,7 +44,7 @@ class ResponsesHandler : public HttpRequestHandler {
   /// Look up model in catalog and verify it's loaded. Sets output pointers.
   /// Returns an error response on failure, nullptr on success.
   std::shared_ptr<OutgoingResponse> ResolveModel(const std::string& model_name,
-                                                 Model*& model, GenAIModelInstance*& loaded);
+                                                 Model*& model, ModelLoadManager::LoadedModelLease& loaded);
 
   /// Load previous response context when chaining via previous_response_id.
   /// The json storage objects are passed by reference because the output pointers alias into them.
@@ -57,14 +57,14 @@ class ResponsesHandler : public HttpRequestHandler {
   // --- Inference dispatch ---
 
   std::shared_ptr<OutgoingResponse> HandleNonStreaming(std::unique_ptr<ChatSession> session, Request& session_request,
-                                                       const std::string& model_name, const std::string& response_id,
-                                                       int64_t created_at,
+                                                       const std::string& model_name, const std::string& model_id,
+                                                       const std::string& response_id, int64_t created_at,
                                                        const responses::ResponseCreateParams& params,
                                                        const nlohmann::json& req_json);
 
   std::shared_ptr<OutgoingResponse> HandleStreaming(std::unique_ptr<ChatSession> session, Request session_request,
-                                                    const std::string& model_name, const std::string& response_id,
-                                                    int64_t created_at,
+                                                    const std::string& model_name, const std::string& model_id,
+                                                    const std::string& response_id, int64_t created_at,
                                                     const responses::ResponseCreateParams& params,
                                                     const nlohmann::json& req_json,
                                                     std::unique_ptr<ActionTracker> route_tracker);

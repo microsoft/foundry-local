@@ -7,6 +7,7 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "contracts/chat_completions.h"
+#include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session.h"
@@ -20,6 +21,7 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include <fmt/format.h>
+#include <optional>
 #include <thread>
 
 namespace fl {
@@ -60,13 +62,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+    const std::string& model_name, Model*& model, ModelLoadManager::LoadedModelLease& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.AcquireLoadedModel(model->Id());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
@@ -131,7 +133,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   // 2. Resolve model
   std::string model_name = req.model;
   Model* model = nullptr;
-  GenAIModelInstance* loaded = nullptr;
+  ModelLoadManager::LoadedModelLease loaded;
   if (auto err = ResolveModel(model_name, model, loaded)) {
     tracker->SetStatus(ActionStatus::kClientError);
     return err;
@@ -155,15 +157,15 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
 
   // 6. Run inference via ChatSession
   try {
-    std::unique_ptr<ChatSession> session;
+    std::optional<ChatSession> session;
     {
       ActionTracker create_tracker(Action::kSessionCreate, ctx_.telemetry, session_ctx);
       create_tracker.SetModelId(model_name);
-      session = std::make_unique<ChatSession>(*model, *loaded, ctx_.logger, ctx_.telemetry);
+      session.emplace(*model, *loaded, ctx_.logger, ctx_.telemetry, true);
+      loaded.Release();
       create_tracker.SetStatus(ActionStatus::kSuccess);
     }
-    ChatSession& session_ref = *session;
-    session_ref.SetRequestContext(session_ctx);
+    session->SetRequestContext(session_ctx);
 
     if (stream) {
       // The route action is recorded by the streaming thread when the stream
@@ -171,8 +173,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
       return HandleStreaming(std::move(*session), std::move(session_request), include_usage_in_stream,
                              std::move(tracker));
     } else {
-      SessionRegistration reg(ctx_.session_manager, session_ref);
-      auto response = HandleNonStreaming(session_ref, session_request);
+      SessionRegistration reg(ctx_.session_manager, *session);
+      auto response = HandleNonStreaming(*session, session_request);
       tracker->SetStatus(ResponseToActionStatus(response));
       return response;
     }
@@ -215,12 +217,15 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
   auto body_ptr = body;
   auto& logger = ctx_.logger;
   auto& thread_tracker = ctx_.thread_tracker;
+  auto stream_done = std::make_shared<std::atomic<bool>>(false);
+  auto stream_request = std::make_shared<Request>(std::move(session_request));
 
   std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request),
+                                req = stream_request,
                                 include_usage, &thread_tracker,
                                 route_tracker = std::move(route_tracker),
-                                &session_manager = ctx_.session_manager]() mutable {
+                                &session_manager = ctx_.session_manager,
+                                stream_done]() mutable {
     try {
       SessionRegistration reg(session_manager, bg_session);
       fl::Response bg_response;
@@ -236,7 +241,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
           if (!body_ptr->Push("data: " + text_item.text + "\n\n")) {
-            req.canceled.store(true, std::memory_order_relaxed);
             return 1;
           }
         } else {
@@ -248,7 +252,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      bg_session.ProcessRequest(*req, bg_response);
+      if (req->canceled.load(std::memory_order_relaxed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "chat completion stream cancelled");
+      }
 
       // Usage chunk — only if stream_options.include_usage was true
       if (include_usage) {
@@ -269,16 +276,17 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
         usage_chunk.usage = std::move(usage);
 
         if (!body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n")) {
-          req.canceled.store(true, std::memory_order_relaxed);
+          FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "chat completion stream cancelled");
         }
       }
 
-      body_ptr->Push("data: [DONE]\n\n");
+      if (!body_ptr->Push("data: [DONE]\n\n")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "chat completion stream cancelled");
+      }
 
-      // Record final route status after streaming completes.
+      // Inference streamed to completion — record the route action as a success.
       if (route_tracker) {
-        route_tracker->SetStatus(req.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
-                                                                              : ActionStatus::kSuccess);
+        route_tracker->SetStatus(ActionStatus::kSuccess);
       }
     } catch (const std::exception& ex) {
       nlohmann::json err = {
@@ -286,7 +294,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       };
       body_ptr->Push("data: " + err.dump() + "\n\n");
 
-      // Mid-stream failure: record the exception; the route action keeps kFailure.
+      // Mid-stream failure: record the exception. The route action keeps its
+      // default kFailure status.
       if (route_tracker) {
         route_tracker->RecordException(ex);
       }
@@ -295,11 +304,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
     body_ptr->Finish();
     // route_tracker is destroyed with this closure once the thread completes,
     // recording the route action with the full streaming duration and final status.
-    route_tracker.reset();
-    thread_tracker.Remove(std::this_thread::get_id());
+    stream_done->store(true, std::memory_order_release);
+    thread_tracker.NotifyCompleted();
   });
 
-  thread_tracker.Track(std::move(streaming_thread));
+  thread_tracker.Track(std::move(streaming_thread), stream_done, [body, stream_request] {
+    body->Abort();
+    stream_request->canceled.store(true, std::memory_order_relaxed);
+  });
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

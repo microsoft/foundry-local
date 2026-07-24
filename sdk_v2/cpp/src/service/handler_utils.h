@@ -10,8 +10,11 @@
 #include <oatpp/web/protocol/http/outgoing/Response.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 
+#include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry.h"
 
+#include <algorithm>
+#include <cctype>
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -88,7 +91,38 @@ inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::Incomi
     return {};
   }
   auto ua = request->getHeader("User-Agent");
-  return ua ? *ua : std::string{};
+  if (!ua) {
+    return {};
+  }
+  std::string scrubbed;
+  scrubbed.reserve(std::min<size_t>(ua->size(), 256));
+  size_t run_length = 0;
+  for (char ch : *ua) {
+    unsigned char c = static_cast<unsigned char>(ch);
+    bool safe = std::isalnum(c) || ch == ' ' || ch == '.' || ch == '-' || ch == '_' || ch == '/' ||
+                ch == '(' || ch == ')' || ch == ';';
+    if (!safe) {
+      scrubbed.push_back('?');
+      run_length = 0;
+      continue;
+    }
+
+    if (std::isalnum(c)) {
+      ++run_length;
+      if (run_length > 32) {
+        scrubbed.push_back('?');
+        continue;
+      }
+    } else {
+      run_length = 0;
+    }
+    scrubbed.push_back(ch);
+  }
+  constexpr size_t kMaxUserAgentLength = 256;
+  if (scrubbed.size() > kMaxUserAgentLength) {
+    scrubbed.resize(kMaxUserAgentLength);
+  }
+  return scrubbed;
 }
 
 // ========================================================================
@@ -99,14 +133,12 @@ inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::Incomi
 
 class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
  public:
-  SseStreamBody() : done_(false) {}
+  SseStreamBody() : done_(false), aborted_(false) {}
 
   /// Push a formatted SSE event (e.g. "data: {...}\n\n") into the queue.
   bool Push(std::string chunk) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (done_ || queue_.size() >= kMaxQueuedChunks) {
-      done_ = true;
-      cv_.notify_one();
+    if (aborted_) {
       return false;
     }
     queue_.push(std::move(chunk));
@@ -119,6 +151,18 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
     std::lock_guard<std::mutex> lock(mutex_);
     done_ = true;
     cv_.notify_one();
+  }
+
+  void Abort() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    aborted_ = true;
+    done_ = true;
+    cv_.notify_all();
+  }
+
+  bool IsAborted() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return aborted_;
   }
 
   // -- Body interface --
@@ -168,11 +212,11 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
   v_int64 getKnownSize() override { return -1; }  // unknown → chunked transfer
 
  private:
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::queue<std::string> queue_;
   bool done_;
-  static constexpr size_t kMaxQueuedChunks = 1024;
+  bool aborted_;
 };
 
 }  // namespace fl

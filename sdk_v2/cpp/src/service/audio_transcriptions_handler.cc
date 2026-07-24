@@ -7,6 +7,7 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "contracts/audio_transcriptions.h"
+#include "exception.h"
 #include "inferencing/generative/audio/audio_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
@@ -17,6 +18,7 @@
 
 #include <filesystem>
 #include <fmt/format.h>
+#include <optional>
 #include <thread>
 
 namespace fl {
@@ -57,13 +59,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+    const std::string& model_name, Model*& model, ModelLoadManager::LoadedModelLease& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.AcquireLoadedModel(model->Id());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
@@ -122,7 +124,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   // 3. Resolve model
   std::string model_name = req.model;
   Model* model = nullptr;
-  GenAIModelInstance* loaded = nullptr;
+  ModelLoadManager::LoadedModelLease loaded;
   if (auto err = ResolveModel(model_name, model, loaded)) {
     tracker->SetStatus(ActionStatus::kClientError);
     return err;
@@ -139,22 +141,22 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
   // 5. Dispatch to streaming or non-streaming
   try {
-    std::unique_ptr<AudioSession> session;
+    std::optional<AudioSession> session;
     {
       ActionTracker create_tracker(Action::kSessionCreate, ctx_.telemetry, session_ctx);
       create_tracker.SetModelId(model_name);
-      session = std::make_unique<AudioSession>(*model, *loaded, ctx_.logger, ctx_.telemetry);
+      session.emplace(*model, *loaded, ctx_.logger, ctx_.telemetry, true);
+      loaded.Release();
       create_tracker.SetStatus(ActionStatus::kSuccess);
     }
-    AudioSession& session_ref = *session;
-    session_ref.SetRequestContext(session_ctx);
+    session->SetRequestContext(session_ctx);
 
     if (stream) {
       // The route action is recorded by the streaming thread on completion.
       return HandleStreaming(std::move(*session), std::move(session_request), std::move(tracker));
     } else {
-      SessionRegistration reg(ctx_.session_manager, session_ref);
-      auto response = HandleNonStreaming(session_ref, session_request);
+      SessionRegistration reg(ctx_.session_manager, *session);
+      auto response = HandleNonStreaming(*session, session_request);
       tracker->SetStatus(ResponseToActionStatus(response));
       return response;
     }
@@ -201,11 +203,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   auto body_ptr = body;
   auto& logger = ctx_.logger;
   auto& thread_tracker = ctx_.thread_tracker;
+  auto stream_done = std::make_shared<std::atomic<bool>>(false);
+  auto stream_request = std::make_shared<Request>(std::move(session_request));
 
   std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request), &thread_tracker,
+                                req = stream_request, &thread_tracker,
                                 route_tracker = std::move(route_tracker),
-                                &session_manager = ctx_.session_manager]() mutable {
+                                &session_manager = ctx_.session_manager,
+                                stream_done]() mutable {
     try {
       SessionRegistration reg(session_manager, bg_session);
       fl::Response bg_response;
@@ -221,7 +226,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
           if (!body_ptr->Push("data: " + text_item.text + "\n\n")) {
-            req.canceled.store(true, std::memory_order_relaxed);
             return 1;
           }
         } else {
@@ -234,13 +238,18 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      bg_session.ProcessRequest(*req, bg_response);
+      if (req->canceled.load(std::memory_order_relaxed)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "audio transcription stream cancelled");
+      }
 
-      body_ptr->Push("data: [DONE]\n\n");
+      // Send terminal event
+      if (!body_ptr->Push("data: [DONE]\n\n")) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "audio transcription stream cancelled");
+      }
 
       if (route_tracker) {
-        route_tracker->SetStatus(req.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
-                                                                              : ActionStatus::kSuccess);
+        route_tracker->SetStatus(ActionStatus::kSuccess);
       }
     } catch (const std::exception& ex) {
       logger.Log(LogLevel::Error, fmt::format("Audio streaming transcription failed: {}", ex.what()));
@@ -255,11 +264,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
     }
 
     body_ptr->Finish();
-    route_tracker.reset();
-    thread_tracker.Remove(std::this_thread::get_id());
+    stream_done->store(true, std::memory_order_release);
+    thread_tracker.NotifyCompleted();
   });
 
-  thread_tracker.Track(std::move(streaming_thread));
+  thread_tracker.Track(std::move(streaming_thread), stream_done, [body, stream_request] {
+    body->Abort();
+    stream_request->canceled.store(true, std::memory_order_relaxed);
+  });
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(Status::CODE_200, body);
   response->putHeader("Content-Type", "text/event-stream");

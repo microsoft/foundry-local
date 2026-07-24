@@ -24,13 +24,37 @@ EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
       bootstrappers_(std::move(bootstrappers)),
       logger_(logger),
       telemetry_(telemetry) {
-  // Populate the cache from bootstrappers_. Reads return snapshots so callers do
-  // not observe concurrent writes to is_registered.
+  // Populate the C++ cache once from bootstrappers_. Name string storage is stable
+  // because cached_eps_ size is fixed for the detector's lifetime.
   cached_eps_.reserve(bootstrappers_.size());
 
   for (const auto& bs : bootstrappers_) {
     cached_eps_.push_back(EpInfo{bs->Name(), bs->IsRegistered()});
   }
+
+  PublishEpSnapshotLocked();
+  PublishCApiSnapshotLocked();
+}
+
+void EpDetector::PublishEpSnapshotLocked() {
+  auto& snapshot = cached_eps_snapshots_.emplace_back(cached_eps_);
+  current_cached_eps_ = &snapshot;
+}
+
+void EpDetector::PublishCApiSnapshotLocked() {
+  auto& snapshot = cached_eps_c_snapshots_.emplace_back();
+  if (current_cached_eps_ == nullptr) {
+    current_cached_eps_ = &cached_eps_;
+  }
+  snapshot.reserve(current_cached_eps_->size());
+  for (const auto& ep : *current_cached_eps_) {
+    snapshot.push_back(flEpInfo{
+        FOUNDRY_LOCAL_API_VERSION,
+        ep.name.c_str(),
+        ep.is_registered,
+    });
+  }
+  current_cached_eps_c_ = &snapshot;
 }
 
 std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesToEPs() const {
@@ -102,27 +126,20 @@ std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesT
 }
 
 const std::vector<EpInfo>& EpDetector::GetDiscoverableEps() const {
-  thread_local std::vector<EpInfo> snapshot;
   std::lock_guard<std::mutex> lock(cache_mutex_);
-  snapshot = cached_eps_;
-  return snapshot;
+  if (current_cached_eps_ == nullptr) {
+    static const std::vector<EpInfo> empty;
+    return empty;
+  }
+  return *current_cached_eps_;
 }
 
 std::span<const flEpInfo> EpDetector::GetDiscoverableEpsCApi() const {
-  thread_local std::vector<EpInfo> snapshot_eps;
-  thread_local std::vector<flEpInfo> snapshot_c;
   std::lock_guard<std::mutex> lock(cache_mutex_);
-  snapshot_eps = cached_eps_;
-  snapshot_c.clear();
-  snapshot_c.reserve(snapshot_eps.size());
-  for (const auto& ep : snapshot_eps) {
-    snapshot_c.push_back(flEpInfo{
-        FOUNDRY_LOCAL_API_VERSION,
-        ep.name.c_str(),
-        ep.is_registered,
-    });
+  if (current_cached_eps_c_ == nullptr) {
+    return {};
   }
-  return snapshot_c;
+  return *current_cached_eps_c_;
 }
 
 EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::string>* names,
@@ -150,7 +167,6 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   int telemetry_attempts = 0;
   int telemetry_succeeded = 0;
   int telemetry_failed = 0;
-  ActionStatus telemetry_status = ActionStatus::kSuccess;
   // Some bootstrappers may already be Registered before this call; if so, the
   // EPDownloadAttempt is considered "resolved" even when no work was done.
   bool telemetry_resolved = false;
@@ -162,14 +178,14 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
 
     telemetry_attempt_recorded = true;
     EpDownloadAttemptInfo attempt_info;
-    attempt_info.user_agent = DefaultUserAgent();
     attempt_info.correlation_id = telemetry_correlation_id;
     attempt_info.attempts = telemetry_attempts;
     attempt_info.num_providers = telemetry_num_providers;
     attempt_info.succeeded = telemetry_succeeded;
     attempt_info.failed = telemetry_failed;
     attempt_info.resolved = telemetry_resolved;
-    attempt_info.status = telemetry_status;
+    attempt_info.status = result.success ? ActionStatus::kSuccess
+                                         : (result.cancelled ? ActionStatus::kCanceled : ActionStatus::kFailure);
     attempt_info.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    std::chrono::steady_clock::now() - attempt_start)
                                    .count();
@@ -183,6 +199,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   // Track cancellation from the progress callback
   bool cancelled = false;
   IEpBootstrapper::ProgressCallback wrapped_cb;
+  std::vector<std::string> unmatched_requested_names = names ? *names : std::vector<std::string>{};
 
   if (progress_cb) {
     wrapped_cb = [&progress_cb, &cancelled](const std::string& ep_name, float percent) -> bool {
@@ -212,15 +229,17 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       if (found == names->end()) {
         continue;
       }
+      unmatched_requested_names.erase(std::remove(unmatched_requested_names.begin(), unmatched_requested_names.end(),
+                                                  bs->Name()),
+                                      unmatched_requested_names.end());
     }
 
     logger_.Log(LogLevel::Information, "Downloading and registering EP: " + bs->Name());
 
     // Per-provider EPDownloadAndRegister event via EpDownloadTracker.
     const bool was_registered_before = bs->IsRegistered();
-    EpDownloadTracker tracker(bs->Name(), /*user_agent=*/std::string{}, telemetry_correlation_id, telemetry_);
     const auto initial_ready_state = was_registered_before ? EpReadyState::kRegistered : EpReadyState::kNotPresent;
-    const auto unresolved_ready_state = was_registered_before ? EpReadyState::kRegistered : EpReadyState::kUnknown;
+    EpDownloadTracker tracker(bs->Name(), /*user_agent=*/std::string{}, telemetry_correlation_id, telemetry_);
     tracker.RecordInitialState(initial_ready_state);
 
     ++telemetry_attempts;
@@ -234,11 +253,6 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       ++telemetry_failed;
       result.failed_eps.push_back(bs->Name());
       result.success = false;
-      telemetry_status = ActionStatusFromException(ex);
-      if (telemetry_status == ActionStatus::kCanceled) {
-        cancelled = true;
-        result.cancelled = true;
-      }
       result.status = "Some EPs failed to register";
       tracker.RecordException(ex);
       record_attempt();
@@ -249,8 +263,8 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
 
     if (cancelled) {
       result.success = false;
-      telemetry_status = ActionStatus::kCanceled;
-      tracker.RecordRegisterComplete(ActionStatus::kCanceled, unresolved_ready_state);
+      tracker.RecordRegisterComplete(ActionStatus::kCanceled,
+                                     was_registered_before ? EpReadyState::kRegistered : EpReadyState::kUnknown);
     } else if (ok) {
       ++telemetry_succeeded;
       telemetry_resolved = true;
@@ -259,20 +273,26 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       // Update cached registration state in place under the cache lock so
       // GetDiscoverableEps[C] readers see the new value.
       std::lock_guard<std::mutex> cache_lock(cache_mutex_);
+      const bool registration_changed = !cached_eps_[i].is_registered;
       cached_eps_[i].is_registered = true;
+      if (registration_changed) {
+        PublishEpSnapshotLocked();
+        PublishCApiSnapshotLocked();
+      }
 
-      tracker.RecordDownloadComplete(was_registered_before ? ActionStatus::kSkipped : ActionStatus::kSuccess,
-                                     unresolved_ready_state);
+      tracker.RecordDownloadComplete(ActionStatus::kSkipped,
+                                     was_registered_before ? EpReadyState::kRegistered : EpReadyState::kUnknown);
       tracker.RecordRegisterComplete(ActionStatus::kSuccess, EpReadyState::kRegistered);
     } else {
       ++telemetry_failed;
       result.failed_eps.push_back(bs->Name());
       result.success = false;
-      telemetry_status = ActionStatus::kFailure;
       // The bootstrapper conflated download + register and returned false.
       // Record the combined operation as the register phase rather than fabricating a download/register split.
-      tracker.RecordDownloadComplete(ActionStatus::kSkipped, unresolved_ready_state);
-      tracker.RecordRegisterComplete(ActionStatus::kFailure, unresolved_ready_state);
+      tracker.RecordDownloadComplete(ActionStatus::kSkipped,
+                                     was_registered_before ? EpReadyState::kRegistered : EpReadyState::kUnknown);
+      tracker.RecordRegisterComplete(ActionStatus::kFailure,
+                                     was_registered_before ? EpReadyState::kRegistered : EpReadyState::kUnknown);
     }
   }
 
@@ -280,15 +300,17 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     result.cancelled = true;
     result.success = false;
     result.status = "EP download cancelled by user";
-    telemetry_status = ActionStatus::kCanceled;
+  } else if (!unmatched_requested_names.empty()) {
+    result.success = false;
+    telemetry_failed += static_cast<int>(unmatched_requested_names.size());
+    for (auto& name : unmatched_requested_names) {
+      result.failed_eps.push_back(std::move(name));
+    }
+    result.status = "Some requested EPs are not available";
   } else if (result.failed_eps.empty()) {
     result.status = "All requested EPs registered successfully";
-    telemetry_status = ActionStatus::kSuccess;
   } else {
     result.status = "Some EPs failed to register";
-    if (telemetry_status == ActionStatus::kSuccess) {
-      telemetry_status = ActionStatus::kFailure;
-    }
   }
 
   record_attempt();

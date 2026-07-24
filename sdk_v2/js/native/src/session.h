@@ -32,11 +32,14 @@
 
 namespace foundry_local_node {
 
+struct ManagerLifecycle;
+
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
   static Napi::Function Init(Napi::Env env);
 
   explicit ChatSession(const Napi::CallbackInfo& info);
+  ~ChatSession();
 
  private:
   Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
@@ -51,8 +54,11 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+  std::shared_ptr<void> session_lease_;
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -73,6 +79,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
   static Napi::Function Init(Napi::Env env);
 
   explicit EmbeddingsSession(const Napi::CallbackInfo& info);
+  ~EmbeddingsSession();
 
  private:
   Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
@@ -82,8 +89,11 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+  std::shared_ptr<void> session_lease_;
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -101,6 +111,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
   static Napi::Function Init(Napi::Env env);
 
   explicit AudioSession(const Napi::CallbackInfo& info);
+  ~AudioSession();
 
  private:
   Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
@@ -111,8 +122,11 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+  std::shared_ptr<void> session_lease_;
 };
 
 }  // namespace foundry_local_node

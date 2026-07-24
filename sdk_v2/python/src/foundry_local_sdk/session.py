@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from foundry_local_sdk.response import Response
     from foundry_local_sdk.session_types import RequestOptions
 
-_API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
 
 # Sentinel placed on the stream queue by the background thread when inference finishes.
 _DONE = object()

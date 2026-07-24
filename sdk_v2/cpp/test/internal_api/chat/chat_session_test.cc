@@ -13,9 +13,9 @@
 #include "logger.h"
 #include "model.h"
 #include "internal_api/null_session_manager.h"
-#include "telemetry/telemetry_logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "telemetry/telemetry_logger.h"
 #include "utils/string_utils.h"
 
 #include <gtest/gtest.h>

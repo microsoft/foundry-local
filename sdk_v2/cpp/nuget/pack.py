@@ -55,11 +55,16 @@ RIDS: dict[str, tuple[str, str]] = {
     "osx_arm64":  ("osx-arm64",  "libfoundry_local.dylib"),
 }
 
-# Sibling files copied into runtimes/<rid>/native/ when present in the upstream
-# artifact. Windows builds drop Microsoft.Windows.AI.MachineLearning.dll alongside
-# foundry_local.dll; other platforms don't, so presence alone drives inclusion.
+# Optional sibling files copied into runtimes/<rid>/native/ when present in the upstream
+# artifact. Non-Windows platforms do not have these files, so presence alone drives inclusion there.
 OPTIONAL_SIBLINGS: tuple[str, ...] = (
+)
+
+# Required Windows runtime siblings. The reg-free WinML runtime depends on DirectML, so a Windows RID
+# with only Microsoft.Windows.AI.MachineLearning.dll is incomplete and must fail packaging.
+WINDOWS_REQUIRED_SIBLINGS: tuple[str, ...] = (
     "Microsoft.Windows.AI.MachineLearning.dll",
+    "DirectML.dll",
 )
 
 log = logging.getLogger("pack")
@@ -158,6 +163,16 @@ def stage(args: argparse.Namespace, staging: Path) -> int:
         shutil.copy2(lib_path, native_dir)
         log.info("  %s → runtimes/%s/native/%s", lib_path, rid, lib_path.name)
         staged = 1
+
+        required_siblings = WINDOWS_REQUIRED_SIBLINGS if rid.startswith("win-") else ()
+        for sibling in required_siblings:
+            sibling_path = src_dir / sibling
+            if not sibling_path.is_file():
+                log.error("Expected Windows runtime dependency %s at %s but file not found.", sibling, src_dir)
+                sys.exit(1)
+            shutil.copy2(sibling_path, native_dir)
+            log.info("  %s → runtimes/%s/native/%s", sibling_path, rid, sibling)
+            staged += 1
 
         for sibling in OPTIONAL_SIBLINGS:
             sibling_path = src_dir / sibling

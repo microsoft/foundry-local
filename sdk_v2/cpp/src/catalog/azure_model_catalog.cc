@@ -24,8 +24,7 @@ namespace {
 /// Split a catalog URL into structured telemetry dimensions. The Azure Foundry
 /// catalog URL looks like "https://ai.azure.com/api/<region>/<format...>", e.g.
 /// "https://ai.azure.com/api/eastus/ux/v1.0" -> {ai.azure.com, eastus, ux/v1.0}.
-/// Custom URLs that don't follow the "/api/<region>/" convention keep an empty
-/// region and put the whole path in `format`. The embedded snapshot is "static".
+/// Custom/private URLs are bucketed so telemetry does not disclose hostnames or paths.
 struct ParsedCatalogUrl {
   std::string endpoint;
   std::string region;
@@ -56,9 +55,6 @@ ParsedCatalogUrl ParseCatalogUrl(const std::string& url) {
   if (auto at = out.endpoint.rfind('@'); at != std::string::npos) {
     out.endpoint = out.endpoint.substr(at + 1);
   }
-  if (out.endpoint != "ai.azure.com") {
-    return {"custom", "", ""};
-  }
 
   if (auto q = path.find_first_of("?#"); q != std::string::npos) {
     path = path.substr(0, q);
@@ -77,12 +73,13 @@ ParsedCatalogUrl ParseCatalogUrl(const std::string& url) {
     pos = next + 1;
   }
 
-  size_t format_start = 0;
-  if (segments.size() >= 2 && segments[0] == "api") {
-    out.region = segments[1];
-    format_start = 2;
+  if (out.endpoint != "ai.azure.com" || segments.size() < 4 || segments[0] != "api" ||
+      segments[2] != "ux" || segments[3].empty() || segments[3][0] != 'v') {
+    return {"custom", "", ""};
   }
-  for (size_t i = format_start; i < segments.size(); ++i) {
+
+  out.region = segments[1];
+  for (size_t i = 2; i < segments.size(); ++i) {
     if (!out.format.empty()) {
       out.format += '/';
     }
@@ -186,9 +183,8 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
     base_info.region = parsed.region;
     base_info.format = parsed.format;
     base_info.correlation_id = correlation_id;
-    base_info.user_agent = DefaultUserAgent();
 
-    auto model_infos = FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_, telemetry_, base_info);
+    auto model_infos = FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_, telemetry_, &base_info);
 
     for (const auto& info : model_infos) {
       // Check if the model is locally cached and pass the path if so.
@@ -203,14 +199,22 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
     }
   };
 
+  bool fetched_any_catalog = false;
   for (const auto& [url, filter] : catalog_urls_) {
     try {
       fetch_from(url, filter);
+      fetched_any_catalog = true;
     } catch (const std::exception& ex) {
       // One failing URL shouldn't block others — skip and continue.
+      auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("failed to fetch catalog from {}: {}", url, ex.what()));
+                  fmt::format("failed to fetch catalog from {}: {}", parsed.endpoint,
+                              ScrubStringForTelemetry(ex.what())));
     }
+  }
+
+  if (!fetched_any_catalog) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "failed to fetch any configured catalog source");
   }
 
   logger_.Log(LogLevel::Information,
@@ -249,8 +253,10 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
         out.push_back(model_factory_(std::move(info), /*local_path=*/""));
       }
     } catch (const std::exception& ex) {
+      auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("FetchModelVersions: failed to query {} — {}", url, ex.what()));
+                  fmt::format("FetchModelVersions: failed to query {} — {}", parsed.endpoint,
+                              ScrubStringForTelemetry(ex.what())));
     }
   }
 
@@ -305,8 +311,10 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
         models.push_back(model_factory_(std::move(info), std::move(local_path)));
       }
     } catch (const std::exception& ex) {
+      auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("FetchModelsByIds: failed to query {} — {}", url, ex.what()));
+                  fmt::format("FetchModelsByIds: failed to query {} — {}", parsed.endpoint,
+                              ScrubStringForTelemetry(ex.what())));
     }
   }
 

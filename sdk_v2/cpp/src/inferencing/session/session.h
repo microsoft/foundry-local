@@ -8,7 +8,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -54,9 +53,6 @@ class Session {
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
-
-  /// Signal all active requests in this session to stop.
-  void Cancel();
 
   /// Add a tool definition to this session.
   /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
@@ -182,9 +178,6 @@ class Session {
   std::optional<InvocationContext> request_context_;
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
-  mutable std::mutex active_requests_mutex_;
-  bool session_canceled_ = false;
-  std::unordered_set<const Request*> active_requests_;
 };
 
 }  // namespace fl

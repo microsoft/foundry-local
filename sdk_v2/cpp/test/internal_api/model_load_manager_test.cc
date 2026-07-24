@@ -213,6 +213,19 @@ TEST_F(ModelLoadManagerUnloadTest, UnloadThrowsWhenSessionsLive) {
   instance_->ReleaseSession();
 }
 
+TEST_F(ModelLoadManagerUnloadTest, AcquiredLoadedModelLeaseBlocksUnloadUntilReleased) {
+  auto lease = mgr_->AcquireLoadedModel(fl::test::kTestChatModelAlias);
+  ASSERT_TRUE(lease);
+  EXPECT_EQ(lease.get(), instance_);
+  EXPECT_EQ(instance_->SessionRefCount(), 1);
+
+  EXPECT_THROW(mgr_->UnloadModel(fl::test::kTestChatModelAlias), fl::Exception);
+
+  lease.Reset();
+  EXPECT_EQ(instance_->SessionRefCount(), 0);
+  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias));
+}
+
 TEST_F(ModelLoadManagerUnloadTest, UnloadFailsWhenInUseAndSucceedsAfterSessionsReleased) {
   instance_->AcquireSession();
   EXPECT_THROW(mgr_->UnloadModel(fl::test::kTestChatModelAlias), fl::Exception);

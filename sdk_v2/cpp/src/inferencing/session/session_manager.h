@@ -4,6 +4,7 @@
 
 #include "logger.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <list>
@@ -11,7 +12,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <vector>
+#include <unordered_set>
 
 namespace fl {
 
@@ -35,12 +36,14 @@ class ISessionManager {
 ///
 /// Cache semantics (check-out / check-in):
 /// - CheckOut(key) removes the session from the cache and transfers ownership to the caller.
+///   If expected_model_id is non-empty and the cached session was created for
+///   another model, returns nullptr and leaves the cached session untouched.
 ///   While checked out, the session cannot be evicted or accessed by concurrent requests.
 /// - CheckIn(key, session) inserts the session into the cache under the given key.
 ///   May evict the least-recently-used entry if at capacity.
 ///
-/// Cached sessions are NOT registered — they are idle. Only sessions actively processing requests should be registered
-/// via SessionRegistration.
+/// Cached sessions are NOT registered — they are idle. Only sessions actively
+/// processing requests should be registered via SessionRegistration.
 class SessionManager : public ISessionManager {
  public:
   static constexpr size_t kDefaultCacheCapacity = 5;
@@ -66,18 +69,19 @@ class SessionManager : public ISessionManager {
   /// Block until all sessions have deregistered, with timeout.
   void WaitForDrain(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
-  /// Number of currently active sessions.
+  /// Number of currently tracked sessions (active + cached).
   size_t ActiveCount() const;
 
   // --- Session cache (Responses API) ---
 
   /// Remove a session from the cache by key and return it.
-  /// Returns nullptr on cache miss.
-  std::unique_ptr<ChatSession> CheckOut(const std::string& key);
+  /// Returns nullptr on cache miss. The session is still tracked (registered).
+  std::unique_ptr<ChatSession> CheckOut(const std::string& key, const std::string& expected_model_id = {});
 
   /// Insert a session into the cache under the given key.
   /// May evict the least-recently-used entry if at capacity.
-  void CheckIn(const std::string& key, std::unique_ptr<ChatSession> session);
+  /// The session remains tracked (registered) while cached.
+  void CheckIn(const std::string& key, std::unique_ptr<ChatSession> session, std::string model_id = {});
 
   /// Remove and destroy a cached session by key. Returns true if an entry was removed.
   ///
@@ -92,24 +96,24 @@ class SessionManager : public ISessionManager {
  private:
   struct CacheEntry {
     std::unique_ptr<ChatSession> session;
+    std::string model_id;
     std::list<std::string>::iterator lru_iter;
   };
-  using CacheMap = std::unordered_map<std::string, CacheEntry>;
 
-  std::unique_ptr<ChatSession> RemoveCachedLocked(CacheMap::iterator it);
-  std::vector<std::unique_ptr<ChatSession>> MoveCacheToDestroyLocked();
+  /// Clear all cache entries. Acquires mutex_ to move entries out, then destroys
+  /// them outside the lock (destroyed sessions call Deregister, which acquires mutex_).
   void ClearCache();
 
   ILogger& logger_;
   size_t cache_capacity_;
-  bool shutting_down_ = false;
+  std::atomic<bool> shutting_down_{false};
   mutable std::mutex mutex_;
   std::condition_variable drain_cv_;
-  std::unordered_map<Session*, size_t> sessions_;
+  std::unordered_set<Session*> sessions_;
 
   // LRU cache: front of lru_order_ = most recently used
   std::list<std::string> lru_order_;
-  CacheMap cache_;
+  std::unordered_map<std::string, CacheEntry> cache_;
 };
 
 }  // namespace fl

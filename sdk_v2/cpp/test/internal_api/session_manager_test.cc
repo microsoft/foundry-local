@@ -10,9 +10,9 @@
 #include "exception.h"
 #include "logger.h"
 #include "model.h"
-#include "telemetry/telemetry_logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "telemetry/telemetry_logger.h"
 
 #include <gtest/gtest.h>
 
@@ -143,6 +143,31 @@ TEST_F(SessionManagerTest, CheckInAndCheckOutRoundTrip) {
   ASSERT_NE(checked_out, nullptr);
   EXPECT_EQ(checked_out.get(), raw);
   EXPECT_EQ(mgr.CacheSize(), 0u);
+}
+
+TEST(SessionManagerStandaloneTest, CheckOutModelMismatchLeavesCachedSession) {
+  StderrLogger logger;
+  SessionManager mgr(logger);
+
+  mgr.CheckIn("resp-1", nullptr, "model-a");
+
+  EXPECT_EQ(mgr.CheckOut("resp-1", "model-b"), nullptr);
+  EXPECT_EQ(mgr.CacheSize(), 1u);
+
+  auto checked_out = mgr.CheckOut("resp-1", "model-a");
+  EXPECT_EQ(checked_out, nullptr);
+  EXPECT_EQ(mgr.CacheSize(), 0u);
+}
+
+TEST(SessionManagerStandaloneTest, CheckInAfterCancelAllDropsSession) {
+  StderrLogger logger;
+  SessionManager mgr(logger);
+  mgr.CancelAll();
+
+  mgr.CheckIn("resp-1", nullptr);
+
+  EXPECT_EQ(mgr.CacheSize(), 0u);
+  EXPECT_EQ(mgr.CheckOut("resp-1"), nullptr);
 }
 
 TEST_F(SessionManagerTest, CheckOutRemovesFromCache) {

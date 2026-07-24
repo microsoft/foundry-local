@@ -13,6 +13,7 @@
 #include "service/handler_utils.h"
 #include "service/models_handlers.h"
 #include "service/responses_handler.h"
+#include "telemetry/telemetry_action_tracker.h"
 
 #include <fmt/format.h>
 #include <oatpp/network/Server.hpp>
@@ -20,6 +21,7 @@
 #include <oatpp/network/tcp/server/ConnectionProvider.hpp>
 #include <oatpp/web/server/HttpConnectionHandler.hpp>
 #include <oatpp/web/server/HttpRouter.hpp>
+#include <oatpp/web/server/interceptor/RequestInterceptor.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -37,6 +39,10 @@
 #endif
 
 namespace fl {
+
+namespace {
+
+}  // namespace
 
 // ========================================================================
 // ForceCloseConnectionProvider
@@ -135,7 +141,9 @@ class StatusHandler : public HttpRequestHandler {
  public:
   explicit StatusHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
+    (void)request;
+
     nlohmann::json body = {
         {"modelCachePath", ctx_.model_cache_dir},
         {"endpoints", ctx_.bound_urls},
@@ -163,9 +171,13 @@ class ShutdownHandler : public HttpRequestHandler {
       : shutdown_fn_(std::move(shutdown_fn)) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
-    shutdown_fn_();
-
     nlohmann::json body = {{"status", "shutting_down"}};
+    std::thread([fn = shutdown_fn_] {
+      try {
+        fn();
+      } catch (...) {
+      }
+    }).detach();
     return JsonResponse(Status::CODE_200, body);
   }
 
@@ -238,10 +250,12 @@ WebService::~WebService() {
 std::vector<std::string> WebService::Start(const std::vector<std::string>& endpoints) {
   auto& ctx = *impl_->context;
 
-  if (impl_->running.load()) {
+  if (impl_->running.exchange(true)) {
     ctx.logger.Log(LogLevel::Information, "Web service is already running.");
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Web service is already running");
   }
+
+  impl_->thread_tracker.Reset();
 
   // Create shared router and register all routes
   impl_->router = oatpp::web::server::HttpRouter::createShared();
@@ -275,88 +289,93 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
 
   std::vector<std::string> bound_urls;
 
-  for (const auto& endpoint : endpoints) {
-    // Parse "http://host:port" — strip scheme, extract host:port
-    std::string host = "127.0.0.1";
-    uint16_t port = 0;
+  try {
+    for (const auto& endpoint : endpoints) {
+      // Parse "http://host:port" — strip scheme, extract host:port
+      std::string host = "127.0.0.1";
+      uint16_t port = 0;
 
-    std::string addr = endpoint;
-    auto scheme_end = addr.find("://");
-    if (scheme_end != std::string::npos) {
-      addr = addr.substr(scheme_end + 3);
+      std::string addr = endpoint;
+      auto scheme_end = addr.find("://");
+      if (scheme_end != std::string::npos) {
+        addr = addr.substr(scheme_end + 3);
+      }
+
+      if (!addr.empty() && addr.back() == '/') {
+        addr.pop_back();
+      }
+
+      auto colon = addr.rfind(':');
+      if (colon != std::string::npos) {
+        host = addr.substr(0, colon);
+        port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
+      } else {
+        host = addr;
+      }
+
+      auto tcp_provider = oatpp::network::tcp::server::ConnectionProvider::createShared({host.c_str(), port});
+
+      // oatpp resolves ephemeral port 0 during construction via getsockname()
+      // and stores it in PROPERTY_PORT. getAddress().port is stale — use the property.
+      auto resolved_port = tcp_provider->getProperty(oatpp::network::ConnectionProvider::PROPERTY_PORT);
+
+      if (resolved_port) {
+        port = static_cast<uint16_t>(std::stoi(resolved_port.std_str()));
+      }
+
+      // Wrap with our force-close provider so that connection invalidation also unblocks any pending recv() in worker
+      // threads (via CancelIoEx on Windows; shutdown() suffices on POSIX). Without this, HttpConnectionHandler::stop()
+      // can wait ~120s for a single keep-alive client to drop its connection.
+      auto provider = std::static_pointer_cast<oatpp::network::ServerConnectionProvider>(
+          std::make_shared<ForceCloseConnectionProvider>(tcp_provider));
+
+      auto server = std::make_shared<oatpp::network::Server>(provider, impl_->connection_handler);
+
+      impl_->providers.push_back(provider);
+      impl_->servers.push_back(server);
+
+      // Start server on a background thread
+      impl_->listener_threads.emplace_back([server]() {
+        server->run();
+      });
+
+      // Wait until oatpp's server reports STATUS_RUNNING (i.e. the listener loop
+      // has started and is accepting connections). Bounded poll with a 5s timeout.
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (server->getStatus() != oatpp::network::Server::STATUS_RUNNING &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+
+      if (server->getStatus() != oatpp::network::Server::STATUS_RUNNING) {
+        // Tear down anything we already started in this call so we don't leak listener threads.
+        Stop();
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "Web service failed to reach RUNNING state for endpoint ", endpoint, " within 5s");
+      }
+
+      std::string bound_url = "http://" + host + ":" + std::to_string(port);
+      bound_urls.push_back(bound_url);
+
+      ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
     }
-
-    if (!addr.empty() && addr.back() == '/') {
-      addr.pop_back();
-    }
-
-    auto colon = addr.rfind(':');
-    if (colon != std::string::npos) {
-      host = addr.substr(0, colon);
-      port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
-    } else {
-      host = addr;
-    }
-
-    auto tcp_provider = oatpp::network::tcp::server::ConnectionProvider::createShared({host.c_str(), port});
-
-    // oatpp resolves ephemeral port 0 during construction via getsockname()
-    // and stores it in PROPERTY_PORT. getAddress().port is stale — use the property.
-    auto resolved_port = tcp_provider->getProperty(oatpp::network::ConnectionProvider::PROPERTY_PORT);
-
-    if (resolved_port) {
-      port = static_cast<uint16_t>(std::stoi(resolved_port.std_str()));
-    }
-
-    // Wrap with our force-close provider so that connection invalidation also unblocks any pending recv() in worker
-    // threads (via CancelIoEx on Windows; shutdown() suffices on POSIX). Without this, HttpConnectionHandler::stop()
-    // can wait ~120s for a single keep-alive client to drop its connection.
-    auto provider = std::static_pointer_cast<oatpp::network::ServerConnectionProvider>(
-        std::make_shared<ForceCloseConnectionProvider>(tcp_provider));
-
-    auto server = std::make_shared<oatpp::network::Server>(provider, impl_->connection_handler);
-
-    impl_->providers.push_back(provider);
-    impl_->servers.push_back(server);
-
-    // Start server on a background thread
-    impl_->listener_threads.emplace_back([server]() {
-      server->run();
-    });
-
-    // Wait until oatpp's server reports STATUS_RUNNING (i.e. the listener loop
-    // has started and is accepting connections). Bounded poll with a 5s timeout.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (server->getStatus() != oatpp::network::Server::STATUS_RUNNING &&
-           std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-
-    if (server->getStatus() != oatpp::network::Server::STATUS_RUNNING) {
-      // Tear down anything we already started in this call so we don't leak
-      // listener threads. `running` is still false, so the destructor would skip Stop().
-      impl_->running.store(true);
-      Stop();
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
-               "Web service failed to reach RUNNING state for endpoint ", endpoint, " within 5s");
-    }
-
-    std::string bound_url = "http://" + host + ":" + std::to_string(port);
-    bound_urls.push_back(bound_url);
-
-    ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
+  } catch (...) {
+    Stop();
+    throw;
   }
 
   ctx.bound_urls = bound_urls;
-  impl_->running.store(true);
 
   return bound_urls;
 }
 
 void WebService::Stop() {
-  if (!impl_->running.load()) {
+  if (!impl_->running.load() && impl_->servers.empty() && impl_->providers.empty() &&
+      impl_->listener_threads.empty() && !impl_->connection_handler) {
     return;
   }
+
+  impl_->thread_tracker.BeginStopping();
 
   // Stop accepting new connections first, then stop server loops.
   for (auto& provider : impl_->providers) {
@@ -366,6 +385,8 @@ void WebService::Stop() {
   for (auto& server : impl_->servers) {
     server->stop();
   }
+
+  impl_->thread_tracker.AbortAll();
 
   // Stop per-connection worker tasks before releasing router/handlers.
   //
@@ -378,15 +399,15 @@ void WebService::Stop() {
     impl_->connection_handler->stop();
   }
 
+  // Join streaming producers after connection shutdown so no new streaming
+  // thread can be tracked while Stop() is taking its join snapshot.
+  impl_->thread_tracker.JoinAll();
+
   for (auto& thread : impl_->listener_threads) {
     if (thread.joinable()) {
       thread.join();
     }
   }
-
-  // Streaming threads hold request/session state; Manager::Shutdown cancels active sessions
-  // and waits for drain before StopWebService reaches here.
-  impl_->thread_tracker.JoinAll();
 
   impl_->servers.clear();
   impl_->listener_threads.clear();

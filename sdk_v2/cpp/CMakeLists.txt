@@ -1,5 +1,5 @@
 # Copyright (c) Microsoft. All rights reserved.
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 # Android: web service not applicable on device.
 # Detect Android early via the vcpkg triplet name because the ANDROID variable
@@ -51,20 +51,18 @@ option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
 
-# Optional 1DS ingestion token override. Override only via environment so it does
-# not appear in CMake cache files.
-if(DEFINED CACHE{FOUNDRY_LOCAL_TELEMETRY_TOKEN}
-   AND NOT "$CACHE{FOUNDRY_LOCAL_TELEMETRY_TOKEN}" STREQUAL "")
-    message(FATAL_ERROR
-        "Do not pass FOUNDRY_LOCAL_TELEMETRY_TOKEN via -D or CMake cache. "
-        "Use the FOUNDRY_LOCAL_TELEMETRY_TOKEN environment variable for temporary test-tenant overrides.")
+# Optional 1DS ingestion-token override. Pass an override via the
+# FOUNDRY_LOCAL_TELEMETRY_TOKEN environment variable so it does not land in
+# process argv or CMakeCache.txt.
+get_property(_FL_TELEMETRY_TOKEN_IN_CACHE CACHE FOUNDRY_LOCAL_TELEMETRY_TOKEN PROPERTY TYPE SET)
+if(_FL_TELEMETRY_TOKEN_IN_CACHE)
+    get_property(_FL_TELEMETRY_TOKEN_CACHE_VALUE CACHE FOUNDRY_LOCAL_TELEMETRY_TOKEN PROPERTY VALUE)
+    unset(FOUNDRY_LOCAL_TELEMETRY_TOKEN CACHE)
+    if(_FL_TELEMETRY_TOKEN_CACHE_VALUE)
+        message(FATAL_ERROR "FOUNDRY_LOCAL_TELEMETRY_TOKEN must be supplied as an environment variable, not via -D.")
+    endif()
 endif()
-unset(FOUNDRY_LOCAL_TELEMETRY_TOKEN CACHE)
-
-set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
-if(DEFINED ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN})
-    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
-endif()
+set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
 if(FOUNDRY_LOCAL_TELEMETRY_TOKEN MATCHES "^\\$\\(")
     set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
 endif()
@@ -119,9 +117,6 @@ endif()
 
 # 1DS C++ client telemetry — provided by the cpp-client-telemetry vcpkg port.
 find_package(MSTelemetry CONFIG REQUIRED)
-if(NOT WIN32)
-    find_package(OpenSSL REQUIRED)
-endif()
 message(STATUS "1DS telemetry: enabled (cpp-client-telemetry found)")
 
 # --------------------------------------------------------------------------
@@ -305,8 +300,6 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
         endif()
-    else()
-        target_link_libraries(${TARGET} ${LINK_SCOPE} OpenSSL::Crypto)
     endif()
 
     if(APPLE)
@@ -420,6 +413,27 @@ if(WIN32)
             /DELAYLOAD:Microsoft.Windows.AI.MachineLearning.dll
         )
     endif()
+
+    # Strip unreferenced symbols and fold identical COMDATs in Release builds.
+    # MSVC's /DEBUG (needed for PDBs) silently disables /OPT:REF and /OPT:ICF
+    # unless they are explicitly re-enabled. /INCREMENTAL:NO is required because
+    # incremental linking also prevents dead-code elimination.
+    target_link_options(foundry_local PRIVATE
+        $<$<CONFIG:Release,RelWithDebInfo>:/OPT:REF>
+        $<$<CONFIG:Release,RelWithDebInfo>:/OPT:ICF>
+        $<$<CONFIG:Release,RelWithDebInfo>:/INCREMENTAL:NO>
+    )
+endif()
+
+# Strip unreferenced sections on Linux (GCC/Clang) and macOS (Apple ld).
+if(UNIX AND NOT APPLE)
+    target_link_options(foundry_local PRIVATE
+        $<$<CONFIG:Release,RelWithDebInfo>:-Wl,--gc-sections>
+    )
+elseif(APPLE)
+    target_link_options(foundry_local PRIVATE
+        $<$<CONFIG:Release,RelWithDebInfo>:-Wl,-dead_strip>
+    )
 endif()
 
 # --------------------------------------------------------------------------
@@ -469,6 +483,13 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+        if(WinMLEpCatalog_FOUND AND EXISTS "${WINML_EP_CATALOG_DLL_DIR}/DirectML.dll")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${WINML_EP_CATALOG_DLL_DIR}/DirectML.dll"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
     elseif(APPLE)
         # macOS: copy dylibs so consumers that only link libfoundry_local.dylib (e.g. cache_only_tests) find the correct
         # ORT version instead of any system-installed ORT, which would cause an Ort::InitApi() version mismatch.
@@ -500,12 +521,35 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
         )
 
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    libonnxruntime.so
+                    $<TARGET_FILE_DIR:foundry_local>/libonnxruntime.so.1
+            )
+        endif()
+
         if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_shared.so")
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${ORT_LIB_DIR}/libonnxruntime_providers_shared.so"
                     $<TARGET_FILE_DIR:foundry_local>
             )
+        endif()
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            file(GLOB _ORT_GENAI_RUNTIME_LIBS CONFIGURE_DEPENDS
+                "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai*.so")
+            file(GLOB _ORT_PROVIDER_RUNTIME_LIBS CONFIGURE_DEPENDS
+                "${ORT_LIB_DIR}/libonnxruntime_providers_*.so")
+            set(_LINUX_OPTIONAL_RUNTIME_LIBS ${_ORT_GENAI_RUNTIME_LIBS} ${_ORT_PROVIDER_RUNTIME_LIBS})
+            if(_LINUX_OPTIONAL_RUNTIME_LIBS)
+                add_custom_command(TARGET foundry_local POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${_LINUX_OPTIONAL_RUNTIME_LIBS}
+                        $<TARGET_FILE_DIR:foundry_local>
+                )
+            endif()
         endif()
     endif()
 endif()

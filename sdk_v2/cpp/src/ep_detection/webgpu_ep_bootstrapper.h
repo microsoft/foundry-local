@@ -30,6 +30,7 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
   WebGpuEpBootstrapper& operator=(const WebGpuEpBootstrapper&) = delete;
 
   const std::string& Name() const override;
+  static bool IsSupported();
   bool IsRegistered() const override;
   bool DownloadAndRegister(bool force,
                            const ProgressCallback& progress_cb,

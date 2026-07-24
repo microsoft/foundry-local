@@ -98,6 +98,7 @@ class BaseModelCatalog : public ICatalog {
   std::shared_ptr<const ModelIndex> GetIndex() const;
 
   mutable bool populated_ = false;
+  mutable bool force_refresh_ = false;
   mutable std::mutex mutex_;
   mutable std::chrono::steady_clock::time_point next_refresh_at_{};
 
@@ -111,6 +112,7 @@ class BaseModelCatalog : public ICatalog {
   /// present. For new aliases, creates a new container. Rebuilds the lookup
   /// index when the model set actually changed.
   void IntegrateVariants(std::vector<Model> variants) const;
+  void IntegrateVariantsLocked(std::vector<Model> variants) const;
 
   /// Build lookup indices from the current models_ collection.
   /// Builds a complete new ModelIndex locally, then atomically swaps it into index_.

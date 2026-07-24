@@ -3,6 +3,7 @@
 #include "catalog/catalog_client.h"
 #include "ep_detection/ep_detector.h"
 #include "telemetry/telemetry.h"
+#include "telemetry/telemetry_redaction.h"
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -26,7 +27,7 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     const std::vector<std::string>& cached_model_ids,
     ILogger& logger,
     ITelemetry& telemetry,
-    const CatalogFetchInfo& base_info) {
+    const CatalogFetchInfo* base_info) {
   auto now = [] { return std::chrono::steady_clock::now(); };
   auto elapsed_ms = [](std::chrono::steady_clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
@@ -34,7 +35,10 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
   };
   auto emit = [&](const std::string& operation, ActionStatus status, int64_t duration_ms,
                   int32_t model_count, const std::string& error) {
-    CatalogFetchInfo info = base_info;
+    if (base_info == nullptr) {
+      return;
+    }
+    CatalogFetchInfo info = *base_info;
     info.operation = operation;
     info.status = status;
     info.duration_ms = duration_ms;
@@ -53,7 +57,9 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     const auto start = now();
     try {
       result = client.FetchAllModelInfos();
-    } catch (const std::exception&) {
+    } catch (const std::exception& ex) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("catalog: failed to fetch models — {}", ScrubStringForTelemetry(ex.what())));
       emit("FetchAll", ActionStatus::kDependencyFailure, elapsed_ms(start), 0, kCatalogFetchFailure);
       throw;
     }
@@ -89,8 +95,9 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
       }
       emit("FetchByIds", ActionStatus::kSuccess, elapsed_ms(start), additional_count, "");
     } catch (const std::exception& ex) {
+      auto error_message = ScrubStringForTelemetry(ex.what());
       logger.Log(LogLevel::Warning,
-                 fmt::format("catalog: failed to fetch cached model IDs — {}", ex.what()));
+                 fmt::format("catalog: failed to fetch cached model IDs — {}", error_message));
       emit("FetchByIds", ActionStatus::kDependencyFailure, elapsed_ms(start), 0, kCatalogFetchFailure);
     } catch (...) {
       logger.Log(LogLevel::Warning, "catalog: failed to fetch cached model IDs — unknown error");

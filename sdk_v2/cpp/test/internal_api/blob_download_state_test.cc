@@ -252,6 +252,30 @@ TEST(BlobDownloadStateTest, LoadStateRejectsTotalChunksMismatch) {
   EXPECT_EQ(s, nullptr);
 }
 
+TEST(BlobDownloadStateTest, LoadStateRejectsBlobIdentityMismatchAndStartsFresh) {
+  auto d = TempPath::CreateTempDir();
+  auto local = d.path() / "blob.bin";
+  {
+    auto s = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks, "etag-a");
+    s->MarkChunkComplete(0);
+    s->MarkChunkComplete(3);
+    s->MarkChunkComplete(7);
+    ASSERT_TRUE(s->SaveState(fl::test::NullLog()));
+  }
+
+  auto stale = BlobDownloadState::LoadState("blob", local, kBlobSize, kChunkSize, kNumChunks, "etag-b",
+                                           fl::test::NullLog());
+  EXPECT_EQ(stale, nullptr);
+
+  auto fresh = BlobDownloadState::CreateNew("blob", local, kBlobSize, kChunkSize, kNumChunks, "etag-b");
+  std::vector<int32_t> expected_pending;
+  for (int32_t i = 0; i < kNumChunks; ++i) {
+    expected_pending.push_back(i);
+  }
+  EXPECT_EQ(fresh->GetPendingChunks(), expected_pending);
+  EXPECT_EQ(fresh->CalculateDownloadedSize(), 0);
+}
+
 TEST(BlobDownloadStateTest, DeleteStateRemovesSidecar) {
   auto d = TempPath::CreateTempDir();
   auto local = d.path() / "blob.bin";

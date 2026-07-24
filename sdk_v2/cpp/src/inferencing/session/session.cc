@@ -109,7 +109,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     }
 
     auto& lm = mgr.GetModelLoadManager();
-    auto* loaded = lm.GetLoadedModel(model.Id());
+    auto loaded = lm.AcquireLoadedModel(model.Id());
     if (!loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
     }
@@ -118,19 +118,22 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
 
     const auto& info = model.Info();
     if (info.task == "chat-completion" || info.task == "vision-language-chat") {
-      auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
+      auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry, true);
+      loaded.Release();
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
 
     if (info.task == "automatic-speech-recognition") {
-      auto session = std::make_unique<AudioSession>(model, *loaded, logger, telemetry);
+      auto session = std::make_unique<AudioSession>(model, *loaded, logger, telemetry, true);
+      loaded.Release();
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
 
     if (info.task == "embeddings") {
-      auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry);
+      auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry, true);
+      loaded.Release();
       tracker.SetStatus(ActionStatus::kSuccess);
       return session;
     }
@@ -162,22 +165,6 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     lock.lock();
   }
 
-  struct ActiveRequestGuard {
-    Session& session;
-    const Request& request;
-    ActiveRequestGuard(Session& session, const Request& request) : session(session), request(request) {
-      std::lock_guard<std::mutex> lock(session.active_requests_mutex_);
-      session.active_requests_.insert(&request);
-      if (session.session_canceled_) {
-        request.canceled.store(true, std::memory_order_relaxed);
-      }
-    }
-    ~ActiveRequestGuard() {
-      std::lock_guard<std::mutex> lock(session.active_requests_mutex_);
-      session.active_requests_.erase(&request);
-    }
-  } active_request_guard(*this, request);
-
   // Use the context the caller staged (an HTTP route stages an indirect child
   // with the route's correlation id); otherwise mint a direct context per call
   // for direct SDK use.
@@ -196,9 +183,11 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   const auto start = std::chrono::steady_clock::now();
   try {
     ProcessRequestImpl(request, response);
+    if (request.canceled.load(std::memory_order_relaxed)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled");
+    }
 
-    tracker.SetStatus(request.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
-                                                                       : ActionStatus::kSuccess);
+    tracker.SetStatus(ActionStatus::kSuccess);
   } catch (const std::exception& ex) {
     tracker.RecordException(ex);
     throw;
@@ -228,14 +217,6 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     RecordAdditionalModelUsage(request, response, context, usage.total_time_ms, streaming);
   } catch (...) {
     // Telemetry is best-effort and must not turn successful inference into an API failure.
-  }
-}
-
-void Session::Cancel() {
-  std::lock_guard<std::mutex> lock(active_requests_mutex_);
-  session_canceled_ = true;
-  for (const Request* request : active_requests_) {
-    request->canceled.store(true, std::memory_order_relaxed);
   }
 }
 

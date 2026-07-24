@@ -4,6 +4,7 @@
 
 #include "addon_data.h"
 #include "errors.h"
+#include "manager.h"
 #include "promise_worker.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -17,6 +18,24 @@
 namespace foundry_local_node {
 
 namespace {
+
+struct WorkerLease {
+  explicit WorkerLease(std::shared_ptr<ManagerLifecycle> lifecycle) : lifecycle_(std::move(lifecycle)) {
+    if (lifecycle_) {
+      lifecycle_->active_workers.fetch_add(1, std::memory_order_acq_rel);
+    }
+  }
+  ~WorkerLease() {
+    if (lifecycle_) {
+      lifecycle_->active_workers.fetch_sub(1, std::memory_order_acq_rel);
+    }
+  }
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+};
+
+std::shared_ptr<void> MakeWorkerLease(std::shared_ptr<ManagerLifecycle> lifecycle) {
+  return std::make_shared<WorkerLease>(std::move(lifecycle));
+}
 
 const char* DeviceTypeToString(flDeviceType dt) {
   switch (dt) {
@@ -71,6 +90,46 @@ void SetPromptTemplate(Napi::Env env, Napi::Object obj, const foundry_local::Mod
   SetOptionalString(env, template_obj, "assistant", assistant);
   SetOptionalString(env, template_obj, "prompt", prompt);
   obj.Set("promptTemplate", template_obj);
+}
+
+std::shared_ptr<foundry_local::Manager> LockManager(
+    const std::weak_ptr<foundry_local::Manager>& manager_keepalive) {
+  return manager_keepalive.lock();
+}
+
+void ThrowFoundryLocalError(Napi::Env env, int code, const std::string& msg) {
+  Napi::Error err = Napi::Error::New(env, msg);
+  Napi::Object value = err.Value();
+  value.Set("name", Napi::String::New(env, "FoundryLocalError"));
+  value.Set("code", Napi::Number::New(env, code));
+  err.ThrowAsJavaScriptException();
+}
+
+std::shared_ptr<foundry_local::Manager> LockManagerOrThrow(
+    const std::weak_ptr<foundry_local::Manager>& manager_keepalive,
+    const std::shared_ptr<ManagerLifecycle>& lifecycle) {
+  if (!lifecycle || lifecycle->disposed.load(std::memory_order_acquire)) {
+    throw foundry_local::Error("Manager has been disposed", FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+  auto manager = LockManager(manager_keepalive);
+  if (!manager) {
+    throw foundry_local::Error("Manager has been disposed", FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+  return manager;
+}
+
+std::shared_ptr<foundry_local::Manager> LockManagerOrThrowJs(
+    Napi::Env env, const std::weak_ptr<foundry_local::Manager>& manager_keepalive,
+    const std::shared_ptr<ManagerLifecycle>& lifecycle) {
+  if (!lifecycle || lifecycle->disposed.load(std::memory_order_acquire)) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
+    return nullptr;
+  }
+  auto manager = LockManager(manager_keepalive);
+  if (!manager) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
+  }
+  return manager;
 }
 
 void SetModelSettings(Napi::Env env, Napi::Object obj, const foundry_local::ModelInfo& info) {
@@ -144,7 +203,9 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
 // Drain a ModelList into a JS array, with each entry wrapped as a JS Model
 // whose keepalive holds the shared ModelList.
 Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelList> list,
-                          Napi::ObjectReference manager) {
+                          Napi::ObjectReference manager,
+                          std::weak_ptr<foundry_local::Manager> manager_keepalive,
+                          std::shared_ptr<ManagerLifecycle> lifecycle) {
   auto models = list->Models();
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
@@ -153,6 +214,8 @@ Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelLis
     token.keepalive = list;  // shared_ptr copy keeps the ModelList alive
     // Cloning the manager ObjectReference per Model so each entry pins it.
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);
+    token.manager_keepalive = manager_keepalive;
+    token.lifecycle = lifecycle;
     arr.Set(static_cast<uint32_t>(i), Model::NewInstance(env, std::move(token)));
   }
   return arr;
@@ -198,12 +261,20 @@ Model::Model(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Model>(info) {
   }
   impl_ = token->impl;
   keepalive_ = std::move(token->keepalive);
+  manager_keepalive_ = std::move(token->manager_keepalive);
+  lifecycle_ = std::move(token->lifecycle);
   manager_ = std::move(token->manager);
+}
+
+bool Model::manager_disposed() const noexcept {
+  return !lifecycle_ || lifecycle_->disposed.load(std::memory_order_acquire);
 }
 
 Napi::Value Model::GetInfo(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    (void)manager_alive;
     foundry_local::ModelInfo mi = impl_->GetInfo();
     Napi::Object snapshot = SnapshotModelInfo(env, mi);
     snapshot.Set("cached", Napi::Boolean::New(env, impl_->IsCached()));
@@ -214,6 +285,8 @@ Napi::Value Model::GetInfo(const Napi::CallbackInfo& info) {
 Napi::Value Model::IsCached(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    (void)manager_alive;
     return Napi::Boolean::New(env, impl_->IsCached());
   });
 }
@@ -221,6 +294,8 @@ Napi::Value Model::IsCached(const Napi::CallbackInfo& info) {
 Napi::Value Model::IsLoaded(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    (void)manager_alive;
     return Napi::Boolean::New(env, impl_->IsLoaded());
   });
 }
@@ -228,6 +303,8 @@ Napi::Value Model::IsLoaded(const Napi::CallbackInfo& info) {
 Napi::Value Model::GetPath(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    (void)manager_alive;
     std::string_view p = impl_->GetPath();
     return Napi::String::New(env, std::string(p));
   });
@@ -237,18 +314,19 @@ Napi::Value Model::GetVariants(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference owner_clone = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    (void)manager_alive;
     auto list = std::make_shared<foundry_local::ModelList>(impl_->GetVariants());
-    return WrapModelList(env, std::move(list), std::move(owner_clone));
+    return WrapModelList(env, std::move(list), std::move(owner_clone), manager_keepalive_, lifecycle_);
   });
 }
 
 // ── Async lifecycle ─────────────────────────────────────────────────────────
 //
 // Load/Unload/Download dispatch the underlying virtual call onto a libuv
-// worker so the event loop stays responsive. The Model itself is pinned
-// against GC for the duration of the worker via an ObjectReference to the
-// parent Manager (the Manager owns the catalog whose ModelList views the
-// IModel*).
+// worker so the event loop stays responsive. Each worker captures the model's
+// native keepalives so explicit Manager.dispose() or JS GC cannot release the
+// underlying Manager/ModelList/owned IModel before the worker finishes.
 
 Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
@@ -258,8 +336,16 @@ Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
+  auto keepalive = keepalive_;
+  auto manager_keepalive = LockManagerOrThrowJs(env, manager_keepalive_, lifecycle_);
+  if (!manager_keepalive) {
+    return env.Undefined();
+  }
+  auto worker_lease = MakeWorkerLease(lifecycle_);
   return PromiseWorkerVoid::Run(
-      env, [m]() { m->Load(); }, std::move(owner));
+      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive),
+            worker_lease = std::move(worker_lease)]() { m->Load(); },
+      std::move(owner));
 }
 
 Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
@@ -270,8 +356,16 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
+  auto keepalive = keepalive_;
+  auto manager_keepalive = LockManagerOrThrowJs(env, manager_keepalive_, lifecycle_);
+  if (!manager_keepalive) {
+    return env.Undefined();
+  }
+  auto worker_lease = MakeWorkerLease(lifecycle_);
   return PromiseWorkerVoid::Run(
-      env, [m]() { m->Unload(); }, std::move(owner));
+      env, [m, keepalive = std::move(keepalive), manager_keepalive = std::move(manager_keepalive),
+            worker_lease = std::move(worker_lease)]() { m->Unload(); },
+      std::move(owner));
 }
 
 namespace {
@@ -282,11 +376,15 @@ namespace {
 // worker queues and released in OnOK/OnError.
 class DownloadWorker : public Napi::AsyncWorker {
  public:
-  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, Napi::ObjectReference owner,
-                 Napi::ThreadSafeFunction tsfn)
+  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, std::shared_ptr<void> keepalive,
+                 std::shared_ptr<foundry_local::Manager> manager_keepalive, std::shared_ptr<void> worker_lease,
+                 Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
+        keepalive_(std::move(keepalive)),
+        manager_keepalive_(std::move(manager_keepalive)),
+        worker_lease_(std::move(worker_lease)),
         owner_(std::move(owner)),
         tsfn_(std::move(tsfn)) {}
 
@@ -350,6 +448,9 @@ class DownloadWorker : public Napi::AsyncWorker {
 
   Napi::Promise::Deferred deferred_;
   foundry_local::IModel* impl_;
+  std::shared_ptr<void> keepalive_;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<void> worker_lease_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
   std::string err_msg_;
@@ -366,6 +467,11 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
 
+  auto manager_keepalive = LockManagerOrThrowJs(env, manager_keepalive_, lifecycle_);
+  if (!manager_keepalive) {
+    return env.Undefined();
+  }
+
   Napi::ThreadSafeFunction tsfn;
   if (info.Length() >= 1 && info[0].IsFunction()) {
     tsfn = Napi::ThreadSafeFunction::New(env, info[0].As<Napi::Function>(),
@@ -379,7 +485,9 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto* w = new DownloadWorker(env, impl_, std::move(owner), std::move(tsfn));
+  auto* w = new DownloadWorker(env, impl_, keepalive_, std::move(manager_keepalive), MakeWorkerLease(lifecycle_),
+                               std::move(owner),
+                               std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;
@@ -395,6 +503,8 @@ Napi::Value Model::RemoveFromCache(const Napi::CallbackInfo& info) {
   // V1's contract is `removeFromCache(): void` so we do not bounce to a
   // worker.
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    (void)manager_alive;
     impl_->RemoveFromCache();
     return env.Undefined();
   });
@@ -422,6 +532,10 @@ Napi::Value Model::SelectVariant(const Napi::CallbackInfo& info) {
   }
 
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto manager_alive = LockManagerOrThrow(manager_keepalive_, lifecycle_);
+    auto variant_manager_alive = LockManagerOrThrow(variant->manager_keepalive_, variant->lifecycle_);
+    (void)manager_alive;
+    (void)variant_manager_alive;
     impl_->SelectVariant(*variant->impl_);
     return env.Undefined();
   });

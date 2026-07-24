@@ -5,8 +5,8 @@
 #include "download/blob_downloader.h"
 #include "download/model_registry_client.h"
 #include "model_info.h"
-#include "util/region_fallback.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -39,11 +39,20 @@ class DownloadManager {
                   std::string_view catalog_region,
                   int max_concurrency,
                   ILogger& logger,
-                  ITelemetry& telemetry,
-                  bool disable_region_fallback = false,
-                  std::unique_ptr<ModelRegistryClient> registry_client = nullptr,
-                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr);
+                  ITelemetry& telemetry);
+  DownloadManager(std::string cache_directory,
+                  std::string_view catalog_region,
+                  int max_concurrency,
+                  ILogger& logger,
+                  bool disable_region_fallback,
+                  ITelemetry& telemetry);
   ~DownloadManager();
+
+  /// Override the model registry client (for testing).
+  void SetModelRegistryClient(std::unique_ptr<ModelRegistryClient> client);
+
+  /// Override the blob downloader (for testing).
+  void SetBlobDownloader(std::unique_ptr<IBlobDownloader> downloader);
 
   /// Download a model to the local cache.
   /// progress_cb reports 0.0 to 100.0 percentage.
@@ -54,6 +63,20 @@ class DownloadManager {
   std::string DownloadModel(const ModelInfo& info,
                             std::function<int(float)> progress_cb = nullptr,
                             const std::string& user_agent = "");
+
+  /// Preserve the existing `DownloadModel(info, nullptr)` call shape now that
+  /// a user-agent-first overload also accepts string-like second arguments.
+  std::string DownloadModel(const ModelInfo& info, std::nullptr_t progress_cb) {
+    return DownloadModel(info, std::function<int(float)>(progress_cb), "");
+  }
+
+  /// Download a model while passing telemetry user-agent attribution first.
+  /// This avoids forcing callers that only have a user-agent to pass a dummy progress callback.
+  std::string DownloadModel(const ModelInfo& info,
+                            const std::string& user_agent,
+                            std::function<int(float)> progress_cb = nullptr) {
+    return DownloadModel(info, progress_cb, user_agent);
+  }
 
   /// Check if a model is cached locally (directory exists and download is complete).
   bool IsModelCached(const ModelInfo& info) const;

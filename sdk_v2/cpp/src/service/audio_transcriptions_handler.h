@@ -4,6 +4,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "inferencing/model_load_manager.h"
 #include "service/handler_utils.h"
 
 #include <memory>
@@ -15,7 +16,6 @@ struct ServiceContext;
 struct AudioTranscriptionRequest;
 class AudioSession;
 class Model;
-class GenAIModelInstance;
 class ActionTracker;
 struct Request;
 
@@ -36,7 +36,7 @@ class AudioTranscriptionsHandler : public HttpRequestHandler {
 
   /// Look up model in catalog and verify it's loaded and supports audio.
   std::shared_ptr<OutgoingResponse> ResolveModel(const std::string& model_name,
-                                                 Model*& model, GenAIModelInstance*& loaded);
+                                                 Model*& model, ModelLoadManager::LoadedModelLease& loaded);
 
   /// Build a Request with an OPENAI_JSON-tagged TEXT item from the original body string.
   void BuildOpenAIJsonRequest(const std::string& body, Request& session_request);

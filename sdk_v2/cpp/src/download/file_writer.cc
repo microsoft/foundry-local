@@ -17,6 +17,13 @@ namespace fs = std::filesystem;
 
 namespace {
 
+void LogBestEffort(ILogger& logger, LogLevel level, std::string_view message) noexcept {
+  try {
+    logger.Log(level, message);
+  } catch (...) {
+  }
+}
+
 /// Ensure the data file exists at exactly `expected_size`, recreating it at the
 /// new size if it currently differs (larger or smaller). An existing file that
 /// is already the right size is left intact — the resume path relies on this.
@@ -58,7 +65,15 @@ void EnsureFileExistsAtSize(const fs::path& path, int64_t expected_size) {
 
 FileWriter::FileWriter(ILogger& logger) : logger_(logger) {}
 
-FileWriter::~FileWriter() { Close(); }
+FileWriter::~FileWriter() {
+  try {
+    Close();
+  } catch (const std::exception& ex) {
+    LogBestEffort(logger_, LogLevel::Warning, std::string("FileWriter: close failed in destructor: ") + ex.what());
+  } catch (...) {
+    LogBestEffort(logger_, LogLevel::Warning, "FileWriter: close failed in destructor with unknown error");
+  }
+}
 
 void FileWriter::Open(const fs::path& path, int64_t expected_size) {
   EnsureFileExistsAtSize(path, expected_size);
@@ -81,7 +96,8 @@ void FileWriter::Close() {
   if (handle_ != platform::kInvalidFileHandle) {
     std::string error;
     if (!platform::CloseFile(handle_, error)) {
-      logger_.Log(LogLevel::Warning, "FileWriter: " + error);
+      handle_ = platform::kInvalidFileHandle;
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "FileWriter " + error);
     }
     handle_ = platform::kInvalidFileHandle;
   }

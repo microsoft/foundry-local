@@ -7,6 +7,7 @@ find_package(httplib CONFIG REQUIRED)
 # Links against the static library with access to internal src/ headers.
 # ==========================================================================
 add_executable(foundry_local_tests
+    test_main.cc
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
@@ -67,7 +68,7 @@ target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIO
 target_link_libraries(foundry_local_tests
     PRIVATE
         foundry_local_static
-        GTest::gtest_main
+        GTest::gtest
         httplib::httplib
 )
 
@@ -127,6 +128,7 @@ gtest_discover_tests(foundry_local_tests
 # ==========================================================================
 
 add_executable(sdk_integration_tests
+    test_main.cc
     sdk_api/audio_transcriptions_test.cc
     sdk_api/cpp_api_test.cc
     sdk_api/catalog_test.cc
@@ -163,7 +165,7 @@ target_include_directories(sdk_integration_tests
 target_link_libraries(sdk_integration_tests
     PRIVATE
         foundry_local_cpp
-        GTest::gtest_main
+        GTest::gtest
         nlohmann_json::nlohmann_json
         httplib::httplib
 )
@@ -211,6 +213,7 @@ set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
 # their own Manager instances with different configurations.
 # ==========================================================================
 add_executable(cache_only_tests
+    test_main.cc
     sdk_api/cache_only_test.cc
     sdk_api/catalog_live_test.cc
     sdk_api/manager_web_service_test.cc
@@ -228,7 +231,7 @@ target_include_directories(cache_only_tests
 target_link_libraries(cache_only_tests
     PRIVATE
         foundry_local_cpp
-        GTest::gtest_main
+        GTest::gtest
         nlohmann_json::nlohmann_json
 )
 

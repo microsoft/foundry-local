@@ -49,6 +49,7 @@ constexpr size_t kStreamingBufferBytes = 64 * 1024;
 struct AzureBlobDownloader::ChunkContext {
   const Azure::Storage::Blobs::BlobClient& blob_client;
   const Azure::Core::Context& azure_ctx;
+  std::string blob_identity;
 };
 
 AzureBlobDownloader::AzureBlobDownloader(ILogger& logger) : logger_(logger) {}
@@ -63,6 +64,11 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
         BlobItemInfo info;
         info.name = blob.Name;
         info.content_length = blob.BlobSize;
+        if (blob.Details.ETag.HasValue()) {
+          info.blob_identity = blob.Details.ETag.ToString();
+        } else if (blob.VersionId.HasValue()) {
+          info.blob_identity = blob.VersionId.Value();
+        }
         items.push_back(std::move(info));
       }
     }
@@ -74,9 +80,14 @@ std::vector<BlobItemInfo> AzureBlobDownloader::ListBlobs(const std::string& sas_
   }
 }
 
-int64_t AzureBlobDownloader::GetBlobSize(ChunkContext& ctx) {
+AzureBlobDownloader::BlobProperties AzureBlobDownloader::GetBlobProperties(ChunkContext& ctx) {
   auto props = ctx.blob_client.GetProperties({}, ctx.azure_ctx).Value;
-  return props.BlobSize;
+  BlobProperties result;
+  result.content_length = props.BlobSize;
+  if (props.ETag.HasValue()) {
+    result.blob_identity = props.ETag.ToString();
+  }
+  return result;
 }
 
 bool AzureBlobDownloader::IsCancellationRequested(const ChunkContext& ctx) const {
@@ -88,6 +99,9 @@ void AzureBlobDownloader::DownloadChunkStreaming(
     const std::function<void(const uint8_t*, size_t)>& sink) {
   Azure::Storage::Blobs::DownloadBlobOptions range_opts;
   range_opts.Range = Azure::Core::Http::HttpRange{offset, size};
+  if (!ctx.blob_identity.empty()) {
+    range_opts.AccessConditions.IfMatch = Azure::ETag(ctx.blob_identity);
+  }
   auto result = ctx.blob_client.Download(range_opts, ctx.azure_ctx);
   auto& body_stream = *result.Value.BodyStream;
 
@@ -155,9 +169,11 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // or by external cancellation; checked by workers between iterations.
     std::atomic<bool> internal_cancel{false};
 
-    ChunkContext chunk_ctx{blob_client, azure_ctx};
+    ChunkContext chunk_ctx{blob_client, azure_ctx, ""};
 
-    int64_t blob_size = GetBlobSize(chunk_ctx);
+    auto blob_properties = GetBlobProperties(chunk_ctx);
+    int64_t blob_size = blob_properties.content_length;
+    chunk_ctx.blob_identity = std::move(blob_properties.blob_identity);
 
     if (blob_size == 0) {
       EnsureEmptyBlobFile(local_path);
@@ -172,7 +188,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // Resume from existing sidecar if it matches the current blob layout.
     auto state = BlobDownloadState::LoadState(blob_name, local_path, blob_size,
                                               static_cast<int32_t>(kChunkSize),
-                                              num_chunks, logger_);
+                                              num_chunks, chunk_ctx.blob_identity, logger_);
     if (state) {
       // Only trust the sidecar if the data file it describes is actually on disk
       // at full size. If the data file was truncated or removed (e.g. an external
@@ -192,7 +208,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     if (!state) {
       state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
-                                           static_cast<int32_t>(kChunkSize), num_chunks);
+                                           static_cast<int32_t>(kChunkSize), num_chunks,
+                                           chunk_ctx.blob_identity);
       // Persist the sidecar now, before Open() pre-allocates the data file.
       // IsDownloadNeeded treats "data file at full size + no sidecar" as a
       // completed download and skips it. The periodic save below does not run
@@ -209,21 +226,33 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       }
     }
 
+    auto pending = state->GetPendingChunks();
+    if (pending.empty()) {
+      // A complete sidecar means a previous attempt finished all chunks but did not reach finalization. Do not trust
+      // that state: a late close error may have left a full-size corrupt file. Start a fresh all-chunks pass.
+      logger_.Log(LogLevel::Information,
+                  "Resume sidecar for '" + local_path + "' is complete but unfinalized; starting fresh");
+      std::error_code remove_ec;
+      std::filesystem::remove(local_path, remove_ec);
+      if (remove_ec && std::filesystem::exists(local_path)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "failed to remove suspect completed blob before restart: " + local_path);
+      }
+      state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
+                                           static_cast<int32_t>(kChunkSize), num_chunks,
+                                           chunk_ctx.blob_identity);
+      if (!state->SaveState(logger_)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "failed to persist reset download state for '" + local_path + "'");
+      }
+      pending = state->GetPendingChunks();
+    }
+
     // Track cumulative bytes for progress reporting; seed with bytes already
     // present on disk so percent stays monotonic across resume.
     std::atomic<int64_t> bytes_completed{state->CalculateDownloadedSize()};
     if (bytes_written_cb && bytes_completed.load() > 0) {
       bytes_written_cb(bytes_completed.load());
-    }
-
-    auto pending = state->GetPendingChunks();
-    if (pending.empty()) {
-      // Already complete on disk — drop the sidecar.
-      BlobDownloadState::DeleteState(local_path, logger_);
-      if (bytes_written_cb) {
-        bytes_written_cb(blob_size);
-      }
-      return;
     }
 
     // Open the file writer once for the whole download. Open() pre-allocates
@@ -360,7 +389,54 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     // Release the OS handle before persisting / deleting the sidecar so any
     // observer that watches the data file sees a fully-closed handle.
-    writer.Close();
+    try {
+      writer.Close();
+    } catch (...) {
+      bool safe_to_delete_state = false;
+      std::error_code remove_ec;
+      if (std::filesystem::remove(local_path, remove_ec) || !std::filesystem::exists(local_path)) {
+        safe_to_delete_state = true;
+      } else {
+        logger_.Log(LogLevel::Warning,
+                    "failed to remove blob file after close failure: " + local_path +
+                        " (" + remove_ec.message() + ")");
+
+        const std::filesystem::path invalid_path = local_path + ".invalid";
+        std::error_code cleanup_ec;
+        std::filesystem::remove(invalid_path, cleanup_ec);
+        std::error_code rename_ec;
+        std::filesystem::rename(local_path, invalid_path, rename_ec);
+        if (!rename_ec) {
+          safe_to_delete_state = true;
+        } else {
+          logger_.Log(LogLevel::Warning,
+                      "failed to quarantine blob file after close failure: " + local_path +
+                          " (" + rename_ec.message() + ")");
+
+          std::error_code resize_ec;
+          std::filesystem::resize_file(local_path, 0, resize_ec);
+          if (!resize_ec) {
+            safe_to_delete_state = true;
+          } else {
+            logger_.Log(LogLevel::Warning,
+                        "failed to truncate blob file after close failure: " + local_path +
+                            " (" + resize_ec.message() + ")");
+            auto fresh_state = BlobDownloadState::CreateNew(blob_name, local_path, blob_size,
+                                                            static_cast<int32_t>(kChunkSize), num_chunks,
+                                                            chunk_ctx.blob_identity);
+            if (!fresh_state->SaveState(logger_)) {
+              logger_.Log(LogLevel::Error,
+                          "failed to reset download state after close failure for '" + local_path + "'");
+            }
+          }
+        }
+      }
+
+      if (safe_to_delete_state) {
+        BlobDownloadState::DeleteState(local_path, logger_);
+      }
+      throw;
+    }
 
     const bool was_cancelled = cancelled && cancelled->load(std::memory_order_relaxed);
     if (first_error || was_cancelled) {
@@ -410,12 +486,11 @@ std::string ComputeRelativePath(const std::string& prefix, const std::string& bl
   return blob_name.substr(trim);
 }
 
-/// Returns false if a file at `local_path` already matches the blob's expected
-/// `content_length` exactly AND has no `.dlstate` sidecar — in which case the
-/// caller can skip the download. Returns true (download needed) for any of:
-/// missing file, size mismatch, sidecar present (file may be pre-allocated
-/// with holes), or filesystem-stat errors (treat as "redownload to be safe").
-bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path) {
+/// Returns false if a file at `local_path` already matches the blob's expected `content_length` exactly AND has no
+/// `.dlstate` sidecar — in which case the caller can skip the download. Returns true (download needed) for any of:
+/// missing file, size mismatch, sidecar present (file may be pre-allocated with holes), identity revalidation
+/// required, or filesystem-stat errors (treat as "redownload to be safe").
+bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path, bool require_completed_file_identity) {
   std::error_code ec;
   auto status = std::filesystem::status(local_path, ec);
   if (ec || !std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
@@ -433,6 +508,9 @@ bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path) {
   // AzureBlobDownloader resume from the sidecar.
   auto sidecar = BlobDownloadState::GetStateFilePath(local_path);
   if (std::filesystem::exists(sidecar, ec)) {
+    return true;
+  }
+  if (require_completed_file_identity && !blob.blob_identity.empty()) {
     return true;
   }
   return false;
@@ -523,13 +601,14 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   int32_t skipped_file_count = 0;
   blobs_to_download.erase(
       std::remove_if(blobs_to_download.begin(), blobs_to_download.end(),
-                     [&skipped_bytes, &skipped_file_count](const auto& pair) {
-                       if (IsDownloadNeeded(pair.first, pair.second)) {
-                         return false;
-                       }
-                       skipped_bytes += pair.first.content_length;
-                       ++skipped_file_count;
-                       return true;
+                     [&skipped_bytes, &skipped_file_count, &options](const auto& pair) {
+                      if (!options.skip_completed_files ||
+                          IsDownloadNeeded(pair.first, pair.second, options.require_completed_file_identity)) {
+                       return false;
+                     }
+                      skipped_bytes += pair.first.content_length;
+                      ++skipped_file_count;
+                      return true;
                      }),
       blobs_to_download.end());
 

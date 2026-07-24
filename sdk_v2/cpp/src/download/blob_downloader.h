@@ -28,6 +28,16 @@ struct BlobDownloadOptions {
   /// Maximum concurrent chunk downloads per blob. Default matches C# desktop.
   int max_concurrency = 64;
 
+  /// When false, full-size files without a sidecar are redownloaded instead of
+  /// skipped. Use this while recovering an incomplete model directory.
+  bool skip_completed_files = false;
+
+  /// When true, same-size files without a sidecar are redownloaded because their
+  /// remote blob identity cannot be verified. Used when repairing an incomplete
+  /// model directory, where previously-completed files may belong to an older
+  /// remote blob version.
+  bool require_completed_file_identity = false;
+
   /// Progress callback (optional). Return non-zero to cancel the download.
   DownloadProgressFn progress;
 };
@@ -36,6 +46,7 @@ struct BlobDownloadOptions {
 struct BlobItemInfo {
   std::string name;
   int64_t content_length = 0;
+  std::string blob_identity{};
 };
 
 /// Interface for blob download operations. Enables testing via mock implementations.
@@ -90,8 +101,14 @@ class AzureBlobDownloader : public IBlobDownloader {
   /// SDK BlobClient + Context pointers used by the production virtuals.
   struct ChunkContext;
 
-  /// Return the blob size in bytes. Production calls `BlobClient::GetProperties`.
-  virtual int64_t GetBlobSize(ChunkContext& ctx);
+  struct BlobProperties {
+    int64_t content_length = 0;
+    std::string blob_identity{};
+  };
+
+  /// Return the blob size and identity from one properties read so chunk planning
+  /// and conditional range reads refer to the same remote blob version.
+  virtual BlobProperties GetBlobProperties(ChunkContext& ctx);
 
   /// Read `size` bytes starting at `offset` from the blob and forward them
   /// piecewise to `sink`. Pulls from the blob client referenced by `ctx`.

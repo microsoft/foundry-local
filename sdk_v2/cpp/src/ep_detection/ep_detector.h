@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -34,16 +35,17 @@ class IEpDetector {
   /// Example: { "CPU" → ["CPUExecutionProvider"], "GPU" → ["CudaExecutionProvider"] }
   virtual std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const = 0;
 
-  /// Returns a recent snapshot of all discoverable EPs (those with bootstrappers).
-  /// The returned reference is valid until this method is next called on the same thread.
+  /// Returns metadata for all discoverable EPs (those with bootstrappers).
   /// Default: empty — no discoverable EPs beyond what's already registered.
   virtual const std::vector<EpInfo>& GetDiscoverableEps() const {
     static const std::vector<EpInfo> empty;
     return empty;
   }
 
-  /// C ABI view of a recent discoverable EPs snapshot. Pointers are valid until
-  /// this method is next called on the same thread.
+  /// C ABI view of the discoverable EPs. Pointers, struct addresses, and name
+  /// strings are stable for the detector's lifetime. is_registered values
+  /// reflect a recent snapshot — concurrent DownloadAndRegisterEps may have
+  /// updated them since the call returned.
   /// Default: empty span.
   virtual std::span<const flEpInfo> GetDiscoverableEpsCApi() const {
     return {};
@@ -71,8 +73,9 @@ class EpDetector : public IEpDetector {
   /// @param ort_env  The ORT environment singleton.
   /// @param bootstrappers  EP bootstrappers for download/registration.
   /// @param logger  Logger instance.
-  /// @param telemetry  Telemetry sink. DownloadAndRegisterEps emits one EPDownloadAndRegister event per provider via
-  ///                   EpDownloadTracker, plus one aggregate EPDownloadAttempt event for the whole call.
+  /// @param telemetry  Telemetry sink. DownloadAndRegisterEps emits one
+  ///                   EPDownloadAndRegister event per provider via EpDownloadTracker,
+  ///                   plus one aggregate EPDownloadAttempt event for the whole call.
   EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
              std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
              ILogger& logger,
@@ -99,9 +102,17 @@ class EpDetector : public IEpDetector {
   std::mutex download_mutex_;
   std::atomic<bool> download_in_progress_{false};
   mutable std::mutex cache_mutex_;
-  // Populated once in the constructor; mutated only under cache_mutex_ and copied
-  // into per-thread snapshots for callers.
+  // cached_eps_ is updated under cache_mutex_. Each C ABI view is an immutable
+  // snapshot retained for the detector lifetime so previously returned spans are
+  // never mutated or freed while callers may still read them.
   std::vector<EpInfo> cached_eps_;
+  std::deque<std::vector<EpInfo>> cached_eps_snapshots_;
+  const std::vector<EpInfo>* current_cached_eps_ = nullptr;
+  std::deque<std::vector<flEpInfo>> cached_eps_c_snapshots_;
+  const std::vector<flEpInfo>* current_cached_eps_c_ = nullptr;
+
+  void PublishEpSnapshotLocked();
+  void PublishCApiSnapshotLocked();
 };
 
 }  // namespace fl

@@ -4,6 +4,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "inferencing/model_load_manager.h"
 #include "service/handler_utils.h"
 
 #include <memory>
@@ -15,7 +16,6 @@ struct ServiceContext;
 struct ChatCompletionRequest;
 class ChatSession;
 class Model;
-class GenAIModelInstance;
 class ActionTracker;
 struct Request;
 
@@ -38,7 +38,7 @@ class ChatCompletionsHandler : public HttpRequestHandler {
   /// Look up model in catalog and verify it's loaded. Sets output pointers.
   /// Returns an error response on failure, nullptr on success.
   std::shared_ptr<OutgoingResponse> ResolveModel(const std::string& model_name,
-                                                 Model*& model, GenAIModelInstance*& loaded);
+                                                 Model*& model, ModelLoadManager::LoadedModelLease& loaded);
 
   /// Build a Request with an OPENAI_JSON-tagged TEXT item from the original body string.
   /// Populates catalog defaults and model-specific options (tool_call_start/end).
