@@ -15,6 +15,10 @@ parameters:
 - name: testDataSharedDir
   type: string
   displayName: 'Path to the model cache directory used by tests'
+- name: usePwsh
+  type: boolean
+  default: true
+  displayName: 'Use PowerShell Core (pwsh) for Windows PowerShell tasks'
 
 steps:
 
@@ -24,15 +28,19 @@ steps:
     versionSpec: '20.x'
 
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
-  - pwsh: |
-      $src = "${{ parameters.prebuildArtifactDir }}/prebuilds"
-      $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
-      if (-not (Test-Path $src)) { throw "Prebuild artifact missing: $src" }
-      if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
-      New-Item -ItemType Directory -Force -Path $dst | Out-Null
-      Copy-Item "$src/*" -Destination $dst -Recurse -Force
-      Get-ChildItem -Recurse $dst | ForEach-Object { Write-Host "  $($_.FullName)" }
+  - task: PowerShell@2
     displayName: 'Drop prebuild into sdk_v2/js/prebuilds'
+    inputs:
+      targetType: inline
+      pwsh: ${{ parameters.usePwsh }}
+      script: |
+        $src = "${{ parameters.prebuildArtifactDir }}/prebuilds"
+        $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
+        if (-not (Test-Path $src)) { throw "Prebuild artifact missing: $src" }
+        if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+        New-Item -ItemType Directory -Force -Path $dst | Out-Null
+        Copy-Item "$src/*" -Destination $dst -Recurse -Force
+        Get-ChildItem -Recurse $dst | ForEach-Object { Write-Host "  $($_.FullName)" }
 
 - ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
@@ -54,20 +62,28 @@ steps:
       workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
       customCommand: 'ci --no-audit --no-fund'
 
-  - pwsh: |
-      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
-      npm run build:ts
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  - task: PowerShell@2
     displayName: 'Build TypeScript'
+    inputs:
+      targetType: inline
+      pwsh: ${{ parameters.usePwsh }}
+      script: |
+        Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+        npm run build:ts
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  - pwsh: |
-      Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
-      Write-Host "FOUNDRY_TEST_DATA_DIR=$env:FOUNDRY_TEST_DATA_DIR"
-      if (-not (Test-Path $env:FOUNDRY_TEST_DATA_DIR)) { throw "FOUNDRY_TEST_DATA_DIR does not exist: $env:FOUNDRY_TEST_DATA_DIR" }
-      Get-ChildItem -Path $env:FOUNDRY_TEST_DATA_DIR -Force | ForEach-Object { Write-Host "  $($_.FullName)" }
-      npx --no-install vitest run --reporter=verbose
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  - task: PowerShell@2
     displayName: 'Run vitest'
+    inputs:
+      targetType: inline
+      pwsh: ${{ parameters.usePwsh }}
+      script: |
+        Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
+        Write-Host "FOUNDRY_TEST_DATA_DIR=$env:FOUNDRY_TEST_DATA_DIR"
+        if (-not (Test-Path $env:FOUNDRY_TEST_DATA_DIR)) { throw "FOUNDRY_TEST_DATA_DIR does not exist: $env:FOUNDRY_TEST_DATA_DIR" }
+        Get-ChildItem -Path $env:FOUNDRY_TEST_DATA_DIR -Force | ForEach-Object { Write-Host "  $($_.FullName)" }
+        npx --no-install vitest run --reporter=verbose
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     env:
       FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
 

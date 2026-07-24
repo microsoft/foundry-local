@@ -106,6 +106,7 @@ stages:
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        usePwsh: false
 
 # ====================================================================
 # Test — Linux x64 / macOS ARM64

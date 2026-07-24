@@ -29,6 +29,9 @@ def _lib_name() -> str:
 
 def _platform_subdir() -> str:
     if sys.platform == "win32":
+        machine = platform.machine().lower()
+        if machine in {"arm64", "aarch64"}:
+            return "win-arm64"
         return "win-x64"
     if sys.platform == "darwin":
         return "osx-arm64" if platform.machine() == "arm64" else "osx-x64"
