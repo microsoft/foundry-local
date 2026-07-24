@@ -25,7 +25,6 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 #include <ort_genai.h>
-#include <unordered_set>
 
 namespace fl {
 
@@ -62,18 +61,6 @@ std::unique_ptr<SpeechResultItem> BuildSpeechResult(
 constexpr size_t kInitialTokenCapacity = 256;
 constexpr int32_t kDefaultStreamingSampleRate = 16000;
 constexpr int32_t kDefaultStreamingChannels = 1;
-
-std::string TelemetryLanguage(std::string_view language) {
-  static const std::unordered_set<std::string_view> kValidLanguages = {
-      "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar",
-      "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu",
-      "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa",
-      "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn",
-      "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
-      "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn",
-      "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"};
-  return kValidLanguages.contains(language) ? std::string(language) : std::string{};
-}
 
 // Concatenate the per-token strings into a single buffer with one allocation.
 std::string JoinTokens(const std::vector<std::string>& token_texts) {
@@ -225,7 +212,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   auto generator = OnnxAudioGenerator::Create(audio_path, temperature, Model(), language);
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "file",
-      .language = TelemetryLanguage(language),
+      .language = language,
   };
   int prompt_tokens = generator->PromptTokenCount();
 
@@ -496,7 +483,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   auto generator = OnnxAudioGenerator::Create(req.filename, temperature, Model(), language);
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "openai_json_file",
-      .language = TelemetryLanguage(language),
+      .language = language,
   };
   int prompt_tokens = generator->PromptTokenCount();
 
