@@ -43,18 +43,14 @@ const destDir = resolve(pkgRoot, "prebuilds", `${process.platform}-${process.arc
 mkdirSync(destDir, { recursive: true });
 
 // foundry_local is required; ORT/GenAI siblings are excluded (fetched at install
-// time). The WinML EP catalog DLL is an optional sibling bundled on Windows.
+// time). The WinML EP catalog and DirectML DLLs are required siblings on Windows.
 const wanted = (() => {
-  if (process.platform === "win32") return ["foundry_local.dll"];
+  if (process.platform === "win32") return ["foundry_local.dll", "Microsoft.Windows.AI.MachineLearning.dll", "DirectML.dll"];
   if (process.platform === "darwin") return ["libfoundry_local.dylib"];
   return ["libfoundry_local.so"];
 })();
 
-// Optional native siblings — copied when present, skipped (with a warning) when
-// not. The reg-free WinML 2.x runtime ships next to foundry_local.dll on Windows
-// so WinML hardware EPs work out of the box without an install-time download.
-const optional =
-  process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll"] : [];
+const optional = [];
 
 let copied = 0;
 const available = new Set(readdirSync(sourceDir));

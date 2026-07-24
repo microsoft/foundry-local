@@ -61,9 +61,8 @@ steps:
 
         Copy-Item -Path (Join-Path $includeSrc '*') -Destination $includeDst -Recurse -Force
 
-        # The SDK tgz should include only public wrapper headers.
+        # The SDK tgz should include public wrapper headers and their header-only dependencies.
         $pathsToPrune = @(
-          (Join-Path $includeDst 'gsl'),
           (Join-Path $includeDst '_manifest')
         )
         foreach ($pathToPrune in $pathsToPrune) {
@@ -72,13 +71,17 @@ steps:
           }
         }
 
-        foreach ($f in $Files) {
-          $src = Join-Path $nativeSrc $f
-          if (-not (Test-Path $src)) {
-            throw "Required native file not found: $src"
+        foreach ($entry in $Files) {
+          $optional = $entry.StartsWith('?')
+          $pattern = if ($optional) { $entry.Substring(1) } else { $entry }
+          $matches = @(Get-ChildItem -Path $nativeSrc -Filter $pattern -File -ErrorAction SilentlyContinue)
+          if ($matches.Count -eq 0 -and -not $optional) {
+            throw "Required native file not found: $(Join-Path $nativeSrc $pattern)"
           }
-          $dst = Join-Path $libDst (Split-Path -Leaf $src)
-          Copy-Item -Path $src -Destination $dst -Force
+          foreach ($match in $matches) {
+            $dst = Join-Path $libDst $match.Name
+            Copy-Item -Path $match.FullName -Destination $dst -Force
+          }
         }
 
         if ($SymbolsArtifact) {
@@ -115,23 +118,40 @@ steps:
       New-SdkArchive -Rid 'win-x64' -NativeArtifact 'cpp-native-win-x64' -Files @(
         'foundry_local.dll',
         'foundry_local.pdb',
-        'foundry_local.lib'
+        'foundry_local.lib',
+        'Microsoft.Windows.AI.MachineLearning.dll',
+        'DirectML.dll',
+        'onnxruntime.dll',
+        'onnxruntime-genai.dll',
+        '?onnxruntime_providers_*.dll'
       )
 
       New-SdkArchive -Rid 'win-arm64' -NativeArtifact 'cpp-native-win-arm64' -Files @(
         'foundry_local.dll',
         'foundry_local.pdb',
-        'foundry_local.lib'
+        'foundry_local.lib',
+        'Microsoft.Windows.AI.MachineLearning.dll',
+        'DirectML.dll',
+        'onnxruntime.dll',
+        'onnxruntime-genai.dll',
+        '?onnxruntime_providers_*.dll'
       )
 
       New-SdkArchive -Rid 'linux-x64' -NativeArtifact 'cpp-native-linux-x64' -Files @(
-        'libfoundry_local.so'
+        'libfoundry_local.so',
+        'libonnxruntime-genai.so',
+        '?libonnxruntime-genai*.so',
+        '?libonnxruntime_providers_*.so',
+        'libonnxruntime.so*'
       ) -SymbolsArtifact 'cpp-native-symbols-linux-x64' -SymbolItems @(
         'libfoundry_local.so.dbg'
       )
 
       New-SdkArchive -Rid 'osx-arm64' -NativeArtifact 'cpp-native-osx-arm64' -Files @(
-        'libfoundry_local.dylib'
+        'libfoundry_local.dylib',
+        'libonnxruntime-genai.dylib',
+        'libonnxruntime*.dylib',
+        '?libonnxruntime_providers_*.dylib'
       ) -SymbolsArtifact 'cpp-native-symbols-osx-arm64' -SymbolItems @(
         'libfoundry_local.dylib.dSYM'
       )

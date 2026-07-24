@@ -75,27 +75,44 @@ steps:
   displayName: 'Dump vcpkg error logs'
   condition: failed()
 
-# Stage the redistributable native artifact. Vcpkg uses static linkage on
-# Linux (see sdk_v2/cpp/triplets/x64-linux.cmake), so libfoundry_local.so
-# carries its transitive deps (azure-*, spdlog, fmt, libcurl, libssl/libcrypto,
-# zlib, brotli*) inside itself — the only file we need to forward downstream
-# is libfoundry_local.so. ORT/GenAI .so files are also present in bin/ but are
-# supplied to consumers separately (pip on the Python side, NuGet on the C#
-# side); test/example binaries are not part of the redistributable surface.
+# Stage the redistributable native artifacts for standalone C++ consumers.
 - bash: |
     set -euo pipefail
     src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin'
     dst='$(Build.ArtifactStagingDirectory)/native'
     mkdir -p "$dst"
 
-    primary="$src/libfoundry_local.so"
-    if [ ! -f "$primary" ]; then
-      echo "ERROR: libfoundry_local.so not found at $primary" >&2
-      exit 1
-    fi
-    cp -P "$primary" "$dst/"
-    echo "  staged libfoundry_local.so"
-
+    required=(
+      "$src/libfoundry_local.so"
+      "$src/libonnxruntime-genai.so"
+      "$src/libonnxruntime.so"
+    )
+    for f in "${required[@]}"; do
+      if [ ! -e "$f" ]; then
+        echo "ERROR: required native artifact not found: $f" >&2
+        exit 1
+      fi
+      cp -P "$f" "$dst/"
+      echo "  staged $(basename "$f")"
+    done
+    for f in "$src"/libonnxruntime.so.*; do
+      if [ -e "$f" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
+    for f in "$src"/libonnxruntime-genai*.so; do
+      if [ -e "$f" ] && [ "$(basename "$f")" != "libonnxruntime-genai.so" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
+    for f in "$src"/libonnxruntime_providers_*.so; do
+      if [ -e "$f" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
   displayName: 'Stage native artifacts'
 
 # Stage debug symbols into a separate artifact so they can be published
