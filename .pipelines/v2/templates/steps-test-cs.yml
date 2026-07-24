@@ -41,6 +41,45 @@ steps:
     version: '8.0.x'
 
 - task: PowerShell@2
+  displayName: 'Bootstrap VC++ ARM64 runtime'
+  condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
+  inputs:
+    targetType: inline
+    pwsh: ${{ parameters.usePwsh }}
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $url = 'https://aka.ms/vs/17/release/vc_redist.arm64.exe'
+      $installer = Join-Path $env:TEMP 'vc_redist.arm64.exe'
+      $logPath = Join-Path $env:TEMP 'vc_redist_arm64_install.log'
+
+      Write-Host "Downloading ARM64 VC++ runtime from: $url"
+      Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+
+      $arguments = @('/install', '/quiet', '/norestart', '/log', $logPath)
+      $proc = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+      if ($proc.ExitCode -notin @(0, 3010, 1638)) {
+        throw "VC++ ARM64 runtime installer failed with exit code $($proc.ExitCode). Log: $logPath"
+      }
+
+      if ($proc.ExitCode -eq 3010) {
+        Write-Host 'VC++ ARM64 runtime installed; reboot is required by installer but deferred in CI.'
+      } elseif ($proc.ExitCode -eq 1638) {
+        Write-Host 'A newer/same VC++ ARM64 runtime is already installed.'
+      } else {
+        Write-Host 'VC++ ARM64 runtime installation completed successfully.'
+      }
+
+      $runtimeDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+      foreach ($dll in $runtimeDlls) {
+        $path = Join-Path "$env:WINDIR\System32" $dll
+        if (-not (Test-Path $path)) {
+          throw "Expected ARM64 VC runtime DLL not found: $path"
+        }
+        $ver = (Get-Item $path).VersionInfo.FileVersion
+        Write-Host "  $dll => $path (version: $ver)"
+      }
+
+- task: PowerShell@2
   displayName: 'Set package version'
   inputs:
     targetType: inline
