@@ -78,6 +78,7 @@ std::string JoinTokens(const std::vector<std::string>& token_texts) {
 }
 
 const std::unordered_map<std::string, std::string>& NemotronLanguageIdMap() {
+  // Language id 5 is intentionally missing because upstream Nemotron lang_id assignments skip it.
   static const std::unordered_map<std::string, std::string> kMap = {
       {"en", "0"},       {"en-us", "0"},    {"en-gb", "1"},    {"es-es", "2"},   {"es", "3"},
       {"es-us", "3"},    {"zh-cn", "4"},    {"hi", "6"},       {"hi-in", "6"},   {"ar", "7"},
@@ -324,9 +325,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   auto effective_kvp = MergedOptions(request.options);
   SearchOptions options = SearchOptions::FromParameters(effective_kvp);
 
-  if (options.temperature.has_value()) {
-    gen_params->SetSearchOption("temperature", *options.temperature);
-  }
+  gen_params->SetSearchOption("temperature", options.temperature.value_or(0.0f));
 
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
   auto tokenizer_stream = OgaTokenizerStream::Create(Model().GetOgaTokenizer());
@@ -467,8 +466,8 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, fmt::format("Audio file not found: '{}'", req.filename));
   }
 
-  // If the model is a Nemotron speech model, process the transcription using the Nemotron-specific method.
-  // e.g. RNNT models require Nemotron-specific transcription handling.
+  // Nemotron speech models are RNNT-based and do not use the Whisper-oriented OnnxAudioGenerator path below.
+  // Route file transcription through StreamingProcessor so nemotron_speech models can decode correctly.
   if (IsNemotronSpeechModel()) {
     ProcessNemotronFileTranscription(req, original_request, response);
     return;
@@ -476,13 +475,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
 
   // Build generation options from session defaults
   SearchOptions options = session_options_;
-
-  std::optional<float> temperature;
-  if (req.temperature.has_value()) {
-    temperature = *req.temperature;
-  } else {
-    temperature = options.temperature;
-  }
+  std::optional<float> temperature = req.temperature.has_value() ? req.temperature : options.temperature;
 
   // Language from request, falling back to session-level option
   std::string language;
@@ -560,7 +553,7 @@ bool AudioSession::IsNemotronSpeechModel() const {
   return cfg.model.has_value() && cfg.model->type == "nemotron_speech";
 }
 
-void AudioSession::TrySetNemotronLanguageId(OgaGenerator& generator, const std::string& language) const {
+void AudioSession::TryNemotronLanguageId(OgaGenerator& generator, const std::string& language) const {
   if (language.empty()) {
     return;
   }
@@ -578,6 +571,56 @@ void AudioSession::TrySetNemotronLanguageId(OgaGenerator& generator, const std::
                 fmt::format("Failed to set Nemotron lang_id '{}' for '{}': {}",
                             it->second, language, e.what()));
   }
+}
+
+void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream, std::string& text,
+                                        const std::unique_ptr<CallbackHandler>& streaming_callback,
+                                        const std::string& response_id, const Request& original_request,
+                                        int& completion_tokens) const {
+  const bool is_streaming = (streaming_callback != nullptr);
+
+  while (!generator.IsDone() && !original_request.canceled) {
+    generator.GenerateNextToken();
+    auto next_tokens = generator.GetNextTokens();
+    if (next_tokens.empty()) {
+      continue;
+    }
+
+    ++completion_tokens;
+    const char* decoded = tokenizer_stream.Decode(next_tokens[0]);
+    if (!decoded || decoded[0] == '\0') {
+      continue;
+    }
+
+    std::string token(decoded);
+    if (IsLanguageToken(token)) {
+      continue;
+    }
+
+    text += token;
+
+    if (is_streaming) {
+      AudioTranscriptionResponse chunk;
+      chunk.id = response_id;
+      chunk.text = token;
+      streaming_callback->PushItem(std::make_unique<TextItem>(nlohmann::json(chunk).dump(),
+                                                              FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    }
+  }
+}
+
+void AudioSession::RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensors, OgaGenerator& generator,
+                                         OgaTokenizerStream& tokenizer_stream, std::string& text,
+                                         const std::unique_ptr<CallbackHandler>& streaming_callback,
+                                         const std::string& response_id, const Request& original_request,
+                                         int& completion_tokens) const {
+  if (!tensors || original_request.canceled) {
+    return;
+  }
+
+  generator.SetInputs(*tensors);
+  DecodeNemotronTokens(generator, tokenizer_stream, text, streaming_callback, response_id, original_request,
+                       completion_tokens);
 }
 
 void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req,
@@ -606,70 +649,29 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   auto tokenizer = OgaTokenizer::Create(oga_model);
   auto tokenizer_stream = OgaTokenizerStream::Create(*tokenizer);
   auto generator_params = OgaGeneratorParams::Create(oga_model);
-  if (temperature.has_value()) {
-    generator_params->SetSearchOption("temperature", *temperature);
-  } else {
-    generator_params->SetSearchOption("temperature", 0.0f);
-  }
+  generator_params->SetSearchOption("temperature", temperature.value_or(0.0f));
   auto generator = OgaGenerator::Create(oga_model, *generator_params);
-  TrySetNemotronLanguageId(*generator, language);
+  TryNemotronLanguageId(*generator, language);
 
   auto streaming_callback = CreateCallbackHandler(original_request);
-  const bool is_streaming = (streaming_callback != nullptr);
   std::string response_id = ResponseConverter::GenerateId("audio");
 
   std::string text;
   text.reserve(512);
   int completion_tokens = 0;
 
-  auto decode_all_tokens = [&]() {
-    while (!generator->IsDone() && !original_request.canceled) {
-      generator->GenerateNextToken();
-      auto next_tokens = generator->GetNextTokens();
-      if (next_tokens.empty()) {
-        continue;
-      }
-
-      ++completion_tokens;
-      const char* decoded = tokenizer_stream->Decode(next_tokens[0]);
-      if (!decoded || decoded[0] == '\0') {
-        continue;
-      }
-
-      std::string token(decoded);
-      if (IsLanguageToken(token)) {
-        continue;
-      }
-
-      text += token;
-
-      if (is_streaming) {
-        AudioTranscriptionResponse chunk;
-        chunk.id = response_id;
-        chunk.text = token;
-        streaming_callback->PushItem(std::make_unique<TextItem>(nlohmann::json(chunk).dump(),
-                                                                FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
-      }
-    }
-  };
-
-  auto run_one_pass = [&](std::unique_ptr<OgaNamedTensors> tensors) {
-    if (!tensors || original_request.canceled) {
-      return;
-    }
-    generator->SetInputs(*tensors);
-    decode_all_tokens();
-  };
-
   constexpr size_t kNemotronSamplesPerChunk = 1600;  // 100ms at 16kHz
   for (size_t offset = 0; offset < samples.size() && !original_request.canceled;
        offset += kNemotronSamplesPerChunk) {
     size_t count = std::min(kNemotronSamplesPerChunk, samples.size() - offset);
-    run_one_pass(processor->Process(samples.data() + offset, count));
+    RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *tokenizer_stream, text,
+                          streaming_callback, response_id, original_request, completion_tokens);
   }
-  run_one_pass(processor->Flush());
+  RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
+                        original_request, completion_tokens);
 
   response.finish_reason = original_request.canceled ? FOUNDRY_LOCAL_FINISH_NONE : FOUNDRY_LOCAL_FINISH_STOP;
+  // Nemotron file-transcription path feeds audio tensors directly and does not expose prompt token accounting.
   response.usage.prompt_tokens = 0;
   response.usage.completion_tokens = completion_tokens;
   response.usage.total_tokens = completion_tokens;
@@ -723,9 +725,7 @@ std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& aud
 
     const std::string chunk_id(chunk_id_chars, sizeof(chunk_id_chars));
     const std::streamoff chunk_start = in.tellg();
-    if (chunk_start < 0 ||
-        chunk_start + static_cast<std::streamoff>(chunk_size) >
-            file_size - (chunk_size % 2 == 1 ? 1 : 0)) {
+    if (chunk_start < 0 || chunk_start + static_cast<std::streamoff>(chunk_size) > file_size) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Corrupted WAV chunk.");
     }
 
@@ -752,7 +752,24 @@ std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& aud
       if (!in) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Corrupted WAV fmt chunk.");
       }
+
+      if (channels <= 0 || sample_rate <= 0 || bits_per_sample <= 0) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Missing or invalid WAV fmt fields.");
+      }
+      if (sample_rate != 16000) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 fmt::format("Expected 16kHz WAV input, got {}Hz.", sample_rate));
+      }
+      if ((audio_format != 1 || bits_per_sample != 16) && (audio_format != 3 || bits_per_sample != 32)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 fmt::format("Unsupported WAV format: audioFormat={}, bitsPerSample={}.", audio_format,
+                             bits_per_sample));
+      }
     } else if (chunk_id == "data") {
+      if (channels <= 0 || sample_rate <= 0 || bits_per_sample <= 0) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Missing WAV fmt chunk before data.");
+      }
+
       data.resize(chunk_size);
       if (chunk_size > 0) {
         in.read(reinterpret_cast<char*>(data.data()), chunk_size);
@@ -760,6 +777,7 @@ std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& aud
       if (!in) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Corrupted WAV data chunk.");
       }
+      break;
     } else {
       in.seekg(chunk_size, std::ios::cur);
       if (!in) {

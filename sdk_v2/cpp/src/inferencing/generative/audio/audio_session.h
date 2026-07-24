@@ -60,7 +60,18 @@ class AudioSession : public Session {
                                         const Request& original_request,
                                         Response& response);
 
-  void TrySetNemotronLanguageId(OgaGenerator& generator, const std::string& language) const;
+  void RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensors, OgaGenerator& generator,
+                             OgaTokenizerStream& tokenizer_stream, std::string& text,
+                             const std::unique_ptr<CallbackHandler>& streaming_callback,
+                             const std::string& response_id, const Request& original_request,
+                             int& completion_tokens) const;
+
+  void DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream, std::string& text,
+                            const std::unique_ptr<CallbackHandler>& streaming_callback,
+                            const std::string& response_id, const Request& original_request,
+                            int& completion_tokens) const;
+
+  void TryNemotronLanguageId(OgaGenerator& generator, const std::string& language) const;
 
   static std::vector<float> LoadPcmWavAsFloatSamples(const std::string& audio_file_path);
 
