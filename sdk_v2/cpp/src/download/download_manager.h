@@ -5,6 +5,7 @@
 #include "download/blob_downloader.h"
 #include "download/model_registry_client.h"
 #include "model_info.h"
+#include "util/region_fallback.h"
 
 #include <functional>
 #include <memory>
@@ -15,6 +16,7 @@
 namespace fl {
 
 class ILogger;
+class ITelemetry;
 
 /// Orchestrates the full model download flow:
 /// 1. Compute local cache path
@@ -32,24 +34,26 @@ class DownloadManager {
   /// @param logger Logger forwarded to the registry client for retry diagnostics.
   /// @param disable_region_fallback When true, the registry uses a single region attempt
   ///        with no cross-region fallback.
+  /// @param telemetry Telemetry sink. A Download event is emitted per DownloadModel call.
   DownloadManager(std::string cache_directory,
                   std::string_view catalog_region,
                   int max_concurrency,
                   ILogger& logger,
-                  bool disable_region_fallback = false);
+                  ITelemetry& telemetry,
+                  bool disable_region_fallback = false,
+                  std::unique_ptr<ModelRegistryClient> registry_client = nullptr,
+                  std::unique_ptr<IBlobDownloader> blob_downloader = nullptr);
   ~DownloadManager();
-
-  /// Override the model registry client (for testing).
-  void SetModelRegistryClient(std::unique_ptr<ModelRegistryClient> client);
-
-  /// Override the blob downloader (for testing).
-  void SetBlobDownloader(std::unique_ptr<IBlobDownloader> downloader);
 
   /// Download a model to the local cache.
   /// progress_cb reports 0.0 to 100.0 percentage.
+  /// user_agent identifies the calling API surface for telemetry attribution; pass an
+  /// empty string when called outside of an HTTP request context.
   /// Returns the local path where the model was downloaded.
   /// Throws fl::Exception on failure.
-  std::string DownloadModel(const ModelInfo& info, std::function<int(float)> progress_cb = nullptr);
+  std::string DownloadModel(const ModelInfo& info,
+                            std::function<int(float)> progress_cb = nullptr,
+                            const std::string& user_agent = "");
 
   /// Check if a model is cached locally (directory exists and download is complete).
   bool IsModelCached(const ModelInfo& info) const;
@@ -77,6 +81,7 @@ class DownloadManager {
   ILogger& logger_;
   std::unique_ptr<ModelRegistryClient> registry_client_;
   std::unique_ptr<IBlobDownloader> blob_downloader_;
+  ITelemetry& telemetry_;
 
   /// Serializes all model downloads in this process: only one runs at a time, so
   /// each gets the full network/disk instead of competing with another download.

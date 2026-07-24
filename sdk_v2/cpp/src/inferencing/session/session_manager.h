@@ -12,7 +12,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace fl {
 
@@ -106,7 +105,7 @@ class SessionManager : public ISessionManager {
   std::atomic<bool> shutting_down_{false};
   mutable std::mutex mutex_;
   std::condition_variable drain_cv_;
-  std::unordered_set<Session*> sessions_;
+  std::unordered_map<Session*, size_t> sessions_;
 
   // LRU cache: front of lru_order_ = most recently used
   std::list<std::string> lru_order_;

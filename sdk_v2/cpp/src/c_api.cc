@@ -21,6 +21,7 @@
 #include "items/tool_result_item.h"
 #include "manager.h"
 #include "ep_detection/ep_bootstrapper.h"
+#include "inferencing/session/session_registration.h"
 
 #include <functional>
 #include <map>
@@ -372,7 +373,7 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  const auto& urls = manager->impl.GetWebServiceUrls();
+  const auto urls = manager->impl.GetWebServiceUrls();
   manager->urls_cache.clear();
   manager->urls_cache.reserve(urls.size());
   for (const auto& u : urls) {
@@ -1766,6 +1767,7 @@ FL_API_STATUS_IMPL(Session_ProcessRequestImpl, flSession* session, const flReque
   }
 
   // ProcessRequest handles session option overlay and streaming callback wiring.
+  fl::SessionRegistration reg(fl::Manager::Instance().GetSessionManager(), *AsImpl(session));
   AsImpl(session)->ProcessRequest(*AsImpl(request), *target);
 
   if (owned) {

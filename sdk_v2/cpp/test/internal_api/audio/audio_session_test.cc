@@ -18,7 +18,7 @@
 #include "logger.h"
 #include "model.h"
 #include "internal_api/null_session_manager.h"
-#include "internal_api/null_telemetry.h"
+#include "telemetry/telemetry_logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 
@@ -107,7 +107,7 @@ class AudioSessionTest : public ::testing::Test {
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
       ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
-  fl::test::NullTelemetry null_telemetry_;
+  TelemetryLogger telemetry_{"foundry-local-test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };
 
@@ -159,7 +159,7 @@ class AudioSessionInferenceTest : public ::testing::Test {
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
       ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
-  fl::test::NullTelemetry null_telemetry_;
+  TelemetryLogger telemetry_{"foundry-local-test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };
 
@@ -168,7 +168,7 @@ class AudioSessionInferenceTest : public ::testing::Test {
 // ===========================================================================
 
 TEST_F(AudioSessionTest, TypeReturnsAudio) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
   EXPECT_EQ(session.Type(), SessionType::kAudio);
 }
 
@@ -177,7 +177,7 @@ TEST_F(AudioSessionTest, TypeReturnsAudio) {
 // ===========================================================================
 
 TEST_F(AudioSessionTest, ThrowsWhenFirstItemIsNotAudio) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   // Request with a text item instead of an audio item
   Request request;
@@ -199,7 +199,7 @@ TEST_F(AudioSessionTest, ThrowsWhenFirstItemIsNotAudio) {
 }
 
 TEST_F(AudioSessionTest, ThrowsWhenAudioItemHasNoUriOrData) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   // Audio item with no uri and no data
   Request request;
@@ -221,7 +221,7 @@ TEST_F(AudioSessionTest, ThrowsWhenAudioItemHasNoUriOrData) {
 }
 
 TEST_F(AudioSessionTest, ThrowsWhenRequestHasNoItems) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   Response response;
@@ -239,7 +239,7 @@ TEST_F(AudioSessionTest, ThrowsWhenRequestHasNoItems) {
 }
 
 TEST_F(AudioSessionTest, ThrowsWhenTooManyItems) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   auto audio = std::make_unique<AudioItem>();
@@ -264,7 +264,7 @@ TEST_F(AudioSessionTest, ThrowsWhenTooManyItems) {
 }
 
 TEST_F(AudioSessionTest, ThrowsWhenSecondItemIsNotQueue) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   auto audio = std::make_unique<AudioItem>();
@@ -291,7 +291,7 @@ TEST_F(AudioSessionTest, ThrowsWhenSecondItemIsNotQueue) {
 // ===========================================================================
 
 TEST_F(AudioSessionTest, StreamingThrowsWhenFormatIsNotPcm) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   auto audio = std::make_unique<AudioItem>();
@@ -315,7 +315,7 @@ TEST_F(AudioSessionTest, StreamingThrowsWhenFormatIsNotPcm) {
 }
 
 TEST_F(AudioSessionTest, StreamingThrowsWhenSampleRateIsWrong) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   auto audio = std::make_unique<AudioItem>();
@@ -340,7 +340,7 @@ TEST_F(AudioSessionTest, StreamingThrowsWhenSampleRateIsWrong) {
 }
 
 TEST_F(AudioSessionTest, StreamingThrowsWhenChannelsIsWrong) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   auto audio = std::make_unique<AudioItem>();
@@ -369,7 +369,7 @@ TEST_F(AudioSessionTest, StreamingThrowsWhenChannelsIsWrong) {
 // ===========================================================================
 
 TEST_F(AudioSessionTest, OpenAIJsonWithEmptyFileFieldThrows) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   nlohmann::json req_json = {
       {"model", "openai-whisper-tiny-generic-cpu-4"},
@@ -395,7 +395,7 @@ TEST_F(AudioSessionTest, OpenAIJsonWithEmptyFileFieldThrows) {
 }
 
 TEST_F(AudioSessionTest, OpenAIJsonWithNonexistentFileThrows) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   nlohmann::json req_json = {
       {"model", "openai-whisper-tiny-generic-cpu-4"},
@@ -421,7 +421,7 @@ TEST_F(AudioSessionTest, OpenAIJsonWithNonexistentFileThrows) {
 }
 
 TEST_F(AudioSessionTest, OpenAIJsonWithInvalidJsonThrows) {
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   request.AddOwnedItem(std::make_unique<TextItem>("not valid json {{{",
@@ -444,7 +444,7 @@ TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {
   auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
   ASSERT_TRUE(fs::exists(audio_path)) << "Test audio file not found: " << audio_path;
 
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   auto audio_item = std::make_unique<AudioItem>(audio_path.string());
@@ -479,7 +479,7 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
   auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
   ASSERT_TRUE(fs::exists(audio_path)) << "Test audio file not found: " << audio_path;
 
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   nlohmann::json req_json = {
       {"model", "openai-whisper-tiny-generic-cpu-2"},

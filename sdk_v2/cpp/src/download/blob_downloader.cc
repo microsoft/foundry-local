@@ -443,7 +443,11 @@ bool IsDownloadNeeded(const BlobItemInfo& blob, const std::string& local_path) {
 void DownloadBlobsToDirectory(IBlobDownloader& downloader,
                               const std::string& sas_uri,
                               const std::string& output_directory,
-                              const BlobDownloadOptions& options) {
+                              const BlobDownloadOptions& options,
+                              BlobDownloadStats& stats) {
+  using clock = std::chrono::steady_clock;
+  auto enum_start = clock::now();
+
   // Step 1: Enumerate all blobs
   auto all_blobs = downloader.ListBlobs(sas_uri);
 
@@ -486,6 +490,9 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
                           blobs_to_download.end());
 
   if (blobs_to_download.empty()) {
+    stats.enumeration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               clock::now() - enum_start)
+                               .count();
     return;
   }
 
@@ -502,20 +509,32 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
     total_size += blob.content_length;
   }
 
+  stats.file_count = static_cast<int32_t>(blobs_to_download.size());
+  stats.total_size_bytes = total_size;
+  stats.enumeration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             clock::now() - enum_start)
+                             .count();
+  auto download_start = clock::now();
+
   // Step 5: Skip blobs already present at the expected size. Their bytes
   // count toward "downloaded" so the percentage stays accurate when this is a
   // resume of a partially-completed download.
   int64_t skipped_bytes = 0;
+  int32_t skipped_file_count = 0;
   blobs_to_download.erase(
       std::remove_if(blobs_to_download.begin(), blobs_to_download.end(),
-                     [&skipped_bytes](const auto& pair) {
+                     [&skipped_bytes, &skipped_file_count](const auto& pair) {
                        if (IsDownloadNeeded(pair.first, pair.second)) {
                          return false;
                        }
                        skipped_bytes += pair.first.content_length;
+                       ++skipped_file_count;
                        return true;
                      }),
       blobs_to_download.end());
+
+  stats.already_cached_bytes = skipped_bytes;
+  stats.skipped_file_count = skipped_file_count;
 
   // Step 6: Emit initial progress reflecting any already-on-disk bytes.
   // If everything was skipped, emit 100% directly and return.
@@ -523,6 +542,9 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
     if (options.progress) {
       options.progress(100.0f);
     }
+    stats.download_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            clock::now() - download_start)
+                            .count();
     return;
   }
 
@@ -596,6 +618,10 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   if (options.progress) {
     options.progress(100.0f);
   }
+
+  stats.download_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          clock::now() - download_start)
+                          .count();
 }
 
 }  // namespace fl

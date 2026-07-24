@@ -5,6 +5,7 @@
 
 #include "contracts/chat_completions.h"
 #include "contracts/chat_completions_converter.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/genai_model_instance.h"
@@ -75,6 +76,10 @@ ChatSession::ChatSession(ChatSession&& other) noexcept
 
 SessionType ChatSession::Type() const {
   return SessionType::kChat;
+}
+
+std::string ChatSession::ExecutionProvider() const {
+  return std::string(EPUtils::EPtoRegistrationName(model_.EP()));
 }
 
 void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {

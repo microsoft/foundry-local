@@ -16,6 +16,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ORT_TELEMETRY_DISABLED: '1'
+
 jobs:
   # ── Python Samples ──────────────────────────────────────────────────
   python-samples:

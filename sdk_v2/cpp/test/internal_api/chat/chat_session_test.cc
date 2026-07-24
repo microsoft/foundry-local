@@ -13,7 +13,7 @@
 #include "logger.h"
 #include "model.h"
 #include "internal_api/null_session_manager.h"
-#include "internal_api/null_telemetry.h"
+#include "telemetry/telemetry_logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "utils/string_utils.h"
@@ -68,7 +68,7 @@ class ChatSessionTest : public ::testing::Test {
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
       ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
-  fl::test::NullTelemetry null_telemetry_;
+  TelemetryLogger telemetry_{"foundry-local-test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };
 
@@ -77,7 +77,7 @@ class ChatSessionTest : public ::testing::Test {
 // ===========================================================================
 
 TEST_F(ChatSessionTest, ConstructWithModelOnly) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
   EXPECT_EQ(session.MessageCount(), 0u);
   EXPECT_TRUE(session.GetHistory().empty());
   EXPECT_EQ(session.TurnCount(), 0u);
@@ -113,7 +113,7 @@ std::string GetAssistantText(const Response& response) {
 // ===========================================================================
 
 TEST_F(ChatSessionTest, RunBasic) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What is 2+2? Answer with just the number."));
@@ -141,7 +141,7 @@ TEST_F(ChatSessionTest, RunBasic) {
 }
 
 TEST_F(ChatSessionTest, RunWithStreaming) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   // Use a multi-token prompt with deterministic substrings so we can validate:
   //   1. Streaming actually delivers multiple deltas (callback_count >= 2),
@@ -242,7 +242,7 @@ TEST_F(ChatSessionTest, RunWithStreaming) {
 }
 
 TEST_F(ChatSessionTest, RunMultiTurn) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   // Turn 1
   Request req1;
@@ -273,7 +273,7 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
 }
 
 TEST_F(ChatSessionTest, RunStreamingCancellation) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, telemetry_);
 
   Request request;
   request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Count from 1 to 100."));

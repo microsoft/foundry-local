@@ -58,6 +58,12 @@ public class Configuration
     public string? CatalogRegion { get; init; }
 
     /// <summary>
+    /// Optional. Disable non-essential telemetry. Foundry Local may still send a minimal ProcessInfo event.
+    /// Defaults to false (telemetry enabled).
+    /// </summary>
+    public bool DisableNonessentialTelemetry { get; init; }
+
+    /// <summary>
     /// Catalog URLs with optional per-catalog filter overrides.
     /// Each entry is a (url, filter) pair where filter may be null to use the default.
     /// Defaults to the Azure Foundry Local Catalog if empty.

@@ -10,6 +10,8 @@
 #include <oatpp/web/protocol/http/outgoing/Response.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 
+#include "telemetry/telemetry.h"
+
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -52,6 +54,23 @@ inline std::shared_ptr<HttpRequestHandler::OutgoingResponse> ErrorResponse(const
   return JsonResponse(status, body);
 }
 
+inline ActionStatus HttpStatusToActionStatus(const Status& status) {
+  if (status.code == 408 || status.code == 504) {
+    return ActionStatus::kTimeout;
+  }
+  if (status.code >= 500) {
+    return ActionStatus::kFailure;
+  }
+  if (status.code >= 400) {
+    return ActionStatus::kClientError;
+  }
+  return ActionStatus::kSuccess;
+}
+
+inline ActionStatus ResponseToActionStatus(const std::shared_ptr<HttpRequestHandler::OutgoingResponse>& response) {
+  return response ? HttpStatusToActionStatus(response->getStatus()) : ActionStatus::kFailure;
+}
+
 /// Generate a random ID with the given prefix (e.g. "chatcmpl").
 inline std::string GenerateCompletionId(const std::string& prefix) {
   static thread_local std::mt19937_64 rng(std::random_device{}());
@@ -60,6 +79,16 @@ inline std::string GenerateCompletionId(const std::string& prefix) {
   std::ostringstream ss;
   ss << prefix << "-" << std::hex << std::setfill('0') << std::setw(16) << dist(rng);
   return ss.str();
+}
+
+/// Extract the User-Agent header from an incoming request ("" if absent), for
+/// attribution on the telemetry events the request drives.
+inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::IncomingRequest>& request) {
+  if (!request) {
+    return {};
+  }
+  auto ua = request->getHeader("User-Agent");
+  return ua ? *ua : std::string{};
 }
 
 // ========================================================================
@@ -73,10 +102,16 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
   SseStreamBody() : done_(false) {}
 
   /// Push a formatted SSE event (e.g. "data: {...}\n\n") into the queue.
-  void Push(std::string chunk) {
+  bool Push(std::string chunk) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (done_ || queue_.size() >= kMaxQueuedChunks) {
+      done_ = true;
+      cv_.notify_one();
+      return false;
+    }
     queue_.push(std::move(chunk));
     cv_.notify_one();
+    return true;
   }
 
   /// Signal that no more data will be pushed.
@@ -137,6 +172,7 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
   std::condition_variable cv_;
   std::queue<std::string> queue_;
   bool done_;
+  static constexpr size_t kMaxQueuedChunks = 1024;
 };
 
 }  // namespace fl

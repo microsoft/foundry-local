@@ -7,6 +7,7 @@
 #include "logger.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -79,8 +80,14 @@ class AudioSession : public Session {
                     const Request& request,
                     int& completion_tokens);
 
+  void RecordAdditionalModelUsage(const Request& request, const Response& response,
+                                 const InvocationContext& context, int64_t total_time_ms,
+                                 bool streaming) override;
+
   GenAIModelInstance& Model() { return model_; }
   const GenAIModelInstance& Model() const { return model_; }
+
+  std::string ExecutionProvider() const override;
 
   ILogger& logger_;
   GenAIModelInstance& model_;
@@ -88,6 +95,15 @@ class AudioSession : public Session {
   // moved-from instance so the refcount transfers cleanly across moves.
   bool owns_session_ = true;
   SearchOptions session_options_;
+
+  struct AudioTelemetryDetails {
+    std::string source;
+    std::string language;
+    int64_t duration_ms = -1;
+    int32_t sample_rate = 0;
+    int32_t channels = 0;
+  };
+  std::optional<AudioTelemetryDetails> audio_telemetry_details_;
 };
 
 }  // namespace fl

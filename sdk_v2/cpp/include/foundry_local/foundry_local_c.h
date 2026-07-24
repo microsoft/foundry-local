@@ -362,13 +362,11 @@ typedef struct flUsage {
 } flUsage;
 
 /// Information about a discoverable execution provider.
-/// Returned by Manager_GetDiscoverableEps. Storage is owned by the Manager; the
-/// returned pointers and `name` strings are stable for the Manager's lifetime.
-/// `is_registered` may be updated by a concurrent Manager_DownloadAndRegisterEps;
-/// readers see a recent snapshot.
+/// Returned by Manager_GetDiscoverableEps as a snapshot. Storage is owned by the implementation
+/// and remains valid until Manager_GetDiscoverableEps is next called on the same thread.
 typedef struct flEpInfo {
   uint32_t version;    ///< Set by impl to FOUNDRY_LOCAL_API_VERSION.
-  const char* name;    ///< UTF-8 EP name. Stable for Manager lifetime.
+  const char* name;    ///< UTF-8 EP name. Stable for the snapshot lifetime.
   bool is_registered;  ///< Whether the EP is currently registered with ORT.
   /* V2 fields go here. */
 } flEpInfo;
@@ -671,11 +669,9 @@ typedef struct flApi {
 
   /* EP detection */
 
-  /// Get discoverable execution providers. Returns a pointer to an internal
-  /// array of versioned flEpInfo structs. The array, the structs, and the
-  /// `name` strings are owned by the Manager and remain valid for its lifetime.
-  /// `is_registered` values reflect a recent snapshot; concurrent calls to
-  /// Manager_DownloadAndRegisterEps may update them in place.
+  /// Get discoverable execution providers. Returns a pointer to a snapshot array
+  /// of versioned flEpInfo structs. The array, structs, and `name` strings remain
+  /// valid until Manager_GetDiscoverableEps is next called on the same thread.
   FL_API_STATUS(Manager_GetDiscoverableEps, _In_ const flManager* manager,
                 _Outptr_result_buffer_(*out_count) const flEpInfo** out_eps,
                 _Out_ size_t* out_count);

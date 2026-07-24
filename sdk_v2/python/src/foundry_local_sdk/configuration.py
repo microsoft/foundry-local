@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import LogLevel
+from foundry_local_sdk.version import __version__
 
 # Maps Python LogLevel → native flLogLevel integer values (from foundry_local_c.h)
 _LOG_LEVEL_MAP: dict[LogLevel, int] = {
@@ -47,6 +48,8 @@ class Configuration:
             Each entry is a ``(url, filter)`` tuple where filter may be ``None``.
             Defaults to the Azure Foundry Local Catalog when empty or ``None``.
         catalog_region: Region hint forwarded to the catalog service
+        disable_nonessential_telemetry: When True, disable non-essential telemetry. Foundry
+            Local may still send a minimal ProcessInfo event. Defaults to False.
         external_service_url: URL of an external Foundry Local service. When
             set, the catalog operates in cache-only mode — it reads only the
             local disk cache populated by that external service and skips
@@ -86,6 +89,7 @@ class Configuration:
         additional_settings: dict[str, str] | None = None,
         catalog_urls: list[tuple[str, str | None]] | None = None,
         catalog_region: str | None = None,
+        disable_nonessential_telemetry: bool = False,
     ) -> None:
         self.app_name = app_name
         # v1-compat no-op: native loading happens at import time in
@@ -99,6 +103,7 @@ class Configuration:
         self.additional_settings = additional_settings
         self.catalog_urls = catalog_urls
         self.catalog_region = catalog_region
+        self.disable_nonessential_telemetry = disable_nonessential_telemetry
 
     def validate(self) -> None:
         """Validate the configuration.
@@ -140,6 +145,7 @@ class Configuration:
         config_values: dict[str, str] = {
             "AppName": self.app_name,
             "LogLevel": str(self.log_level),
+            "UserAgent": f"foundry-local-python/{__version__}",
         }
 
         if self.app_data_dir:
@@ -220,7 +226,6 @@ class Configuration:
                     native_config, self.catalog_region.encode("utf-8")
                 )
             )
-
         # Web service configuration
         if self.web is not None:
             if self.web.urls is not None:
@@ -239,21 +244,26 @@ class Configuration:
                 )
 
         # Additional key/value settings
+        additional_settings = {"UserAgent": f"foundry-local-python/{__version__}"}
+        if self.disable_nonessential_telemetry:
+            additional_settings["DisableNonessentialTelemetry"] = "true"
         if self.additional_settings:
-            kvp_out = ffi.new("flKeyValuePairs**")
-            api.root.CreateKeyValuePairs(kvp_out)
-            kvp = kvp_out[0]
-            try:
-                for key, value in self.additional_settings.items():
-                    if not key:
-                        continue
-                    api.root.AddKeyValuePair(
-                        kvp,
-                        key.encode("utf-8"),
-                        (value if value is not None else "").encode("utf-8"),
-                    )
-                api.check_status(api.config.SetAdditionalOptions(native_config, kvp))
-            finally:
-                api.root.KeyValuePairs_Release(kvp)
+            additional_settings.update(self.additional_settings)
+
+        kvp_out = ffi.new("flKeyValuePairs**")
+        api.root.CreateKeyValuePairs(kvp_out)
+        kvp = kvp_out[0]
+        try:
+            for key, value in additional_settings.items():
+                if not key:
+                    continue
+                api.root.AddKeyValuePair(
+                    kvp,
+                    key.encode("utf-8"),
+                    (value if value is not None else "").encode("utf-8"),
+                )
+            api.check_status(api.config.SetAdditionalOptions(native_config, kvp))
+        finally:
+            api.root.KeyValuePairs_Release(kvp)
 
         return native_config

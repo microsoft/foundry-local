@@ -16,6 +16,7 @@ struct ChatCompletionRequest;
 class ChatSession;
 class Model;
 class GenAIModelInstance;
+class ActionTracker;
 struct Request;
 
 // ========================================================================
@@ -47,9 +48,13 @@ class ChatCompletionsHandler : public HttpRequestHandler {
   /// Non-streaming inference — processes request, extracts the OPENAI_JSON-tagged TEXT response.
   std::shared_ptr<OutgoingResponse> HandleNonStreaming(ChatSession& session, Request& session_request);
 
-  /// Streaming inference — runs inference in background thread with SSE output.
+  /// Streaming inference — runs inference in a background thread with SSE output.
+  /// Takes ownership of the route ActionTracker so the route action is recorded
+  /// when the stream actually finishes (real duration + terminal status),
+  /// instead of when this handler returns.
   std::shared_ptr<OutgoingResponse> HandleStreaming(ChatSession&& session, Request session_request,
-                                                    bool include_usage);
+                                                    bool include_usage,
+                                                    std::unique_ptr<ActionTracker> route_tracker);
 
   ServiceContext& ctx_;
 };

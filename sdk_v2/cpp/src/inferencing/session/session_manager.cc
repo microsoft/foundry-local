@@ -22,24 +22,28 @@ SessionManager::~SessionManager() {
 }
 
 void SessionManager::Register(Session& session) {
-  if (shutting_down_.load()) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (shutting_down_.load(std::memory_order_relaxed)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot create session during shutdown");
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  sessions_.insert(&session);
+  ++sessions_[&session];
 }
 
 void SessionManager::Deregister(Session& session) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto erased = sessions_.erase(&session);
+  auto it = sessions_.find(&session);
 
-  if (erased == 0) {
+  if (it == sessions_.end()) {
     // Bug: session was not registered. Log loudly but don't throw — this may be
     // called from a destructor where throwing would call std::terminate().
     logger_.Log(LogLevel::Error, "SessionManager::Deregister called for unregistered session");
     assert(false && "SessionManager::Deregister called for unregistered session");
     return;
+  }
+
+  if (--it->second == 0) {
+    sessions_.erase(it);
   }
 
   if (sessions_.empty()) {
@@ -48,16 +52,24 @@ void SessionManager::Deregister(Session& session) {
 }
 
 void SessionManager::CancelAll() {
-  shutting_down_.store(true);
+  std::vector<std::unique_ptr<ChatSession>> cached_sessions;
 
-  // Clear cache — frees idle cached sessions so they don't block drain.
-  ClearCache();
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    shutting_down_.store(true, std::memory_order_relaxed);
+    for (auto& [key, entry] : cache_) {
+      cached_sessions.push_back(std::move(entry.session));
+    }
+    cache_.clear();
+    lru_order_.clear();
+    logger_.Log(LogLevel::Information,
+                fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  logger_.Log(LogLevel::Information,
-              fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
-
-  // Future (Phase 3): iterate sessions_ and call Cancel() on each
+    for (const auto& [session, count] : sessions_) {
+      (void)count;
+      session->Cancel();
+    }
+  }
 }
 
 void SessionManager::WaitForDrain(std::chrono::milliseconds timeout) {
@@ -107,6 +119,10 @@ void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (shutting_down_.load(std::memory_order_relaxed)) {
+      evicted.push_back(std::move(session));
+      return;
+    }
 
     // Replace existing entry for this key (if any)
     auto existing = cache_.find(key);

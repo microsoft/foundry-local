@@ -2,7 +2,7 @@
   "name": "foundry-local",
   "version-semver": "0.1.0",
   "description": "Foundry Local C++ SDK",
-  "builtin-baseline": "256acc64012b23a13041d8705805e1f23b43a024",
+  "builtin-baseline": "44819aa2a6c10e56065e2b0330e7d6c89d1d2574",
   "dependencies": [
     "azure-storage-blobs-cpp",
     {
@@ -30,6 +30,20 @@
       "description": "Build web service support (not available on Android)",
       "dependencies": [
         "oatpp"
+      ]
+    },
+    "telemetry": {
+      "description": "Build with 1DS (cpp-client-telemetry) telemetry uploads",
+      "dependencies": [
+        {
+          "name": "cpp-client-telemetry",
+          "platform": "!uwp"
+        },
+        {
+          "name": "sqlite3",
+          "default-features": false,
+          "platform": "!uwp"
+        }
       ]
     },
     "tests": {

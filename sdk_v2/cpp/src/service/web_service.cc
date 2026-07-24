@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <stdexcept>
 #include <thread>
 
@@ -357,9 +358,6 @@ void WebService::Stop() {
     return;
   }
 
-  // Join streaming threads first — they may still be pushing to SSE bodies.
-  impl_->thread_tracker.JoinAll();
-
   // Stop accepting new connections first, then stop server loops.
   for (auto& provider : impl_->providers) {
     provider->stop();
@@ -385,6 +383,10 @@ void WebService::Stop() {
       thread.join();
     }
   }
+
+  // Streaming threads hold request/session state; Manager::Shutdown cancels active sessions
+  // and waits for drain before StopWebService reaches here.
+  impl_->thread_tracker.JoinAll();
 
   impl_->servers.clear();
   impl_->listener_threads.clear();
