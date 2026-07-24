@@ -208,10 +208,8 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
       fetch_from(url, filter);
     } catch (const std::exception& ex) {
       // One failing URL shouldn't block others — skip and continue.
-      const auto parsed = ParseCatalogUrl(url);
       logger_.Log(LogLevel::Error,
-                  fmt::format("failed to fetch catalog from endpoint={} region={} format={}: {}",
-                              parsed.endpoint, parsed.region, parsed.format, ScrubStringForTelemetry(ex.what())));
+                  fmt::format("failed to fetch catalog from {}: {}", url, ex.what()));
     }
   }
 
