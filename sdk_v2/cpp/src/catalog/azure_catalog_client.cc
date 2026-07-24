@@ -3,7 +3,6 @@
 #include "catalog/azure_catalog_client.h"
 
 #include "http/http_client.h"
-#include "telemetry/telemetry_redaction.h"
 #include "utils.h"
 
 #include <nlohmann/json.hpp>
@@ -160,10 +159,6 @@ std::string BuildRequestUrl(const std::string& base_url,
   return base_url + kEntitiesPath;
 }
 
-std::string CatalogFailureSummary(const http::HttpResponse& response) {
-  return response.status == 0 ? "transport failure" : "HTTP " + std::to_string(response.status);
-}
-
 std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
                              const std::optional<int>& skip,
                              const std::optional<std::string>& continuation_token) {
@@ -308,8 +303,7 @@ std::optional<AzureCatalogClient::FetchedFilterSet> AzureCatalogClient::FetchFil
         region_ = fallback_result.region;  // active region biases later filter sets
       } catch (const std::exception& ex) {
         logger_.Log(LogLevel::Warning,
-                    std::string("catalog: filter set failed across all regions: ") +
-                        ScrubStringForTelemetry(ex.what()));
+                    std::string("catalog: filter set failed across all regions: ") + ex.what());
         return std::nullopt;
       }
     } else if (regional) {
@@ -326,11 +320,15 @@ std::optional<AzureCatalogClient::FetchedFilterSet> AzureCatalogClient::FetchFil
         // Region-health failure (including mid-pagination on the pinned region): fail this filter set only. Because
         // models are committed atomically below, a later page failure cannot leak a partial filter-set result.
         logger_.Log(LogLevel::Warning,
-                    "catalog: filter set failed (" + CatalogFailureSummary(response) + "); skipping this filter set.");
+                    "catalog: filter set failed (" + http::DescribeFailure(response) + "); skipping this filter set.");
         return std::nullopt;
       }
 
-      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "catalog request failed: " + CatalogFailureSummary(response));
+      const std::string url = regional && pinned_region
+                                  ? BuildRegionalUrl(url_prefix_, url_suffix_, *pinned_region)
+                                  : BuildRequestUrl(base_url_, regional, region_, url_prefix_, url_suffix_);
+      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
+               "catalog request to " + url + " failed: " + http::DescribeFailure(response));
     }
 
     const auto parsed = nlohmann::json::parse(response.body).get<AzureCatalogResponse>();
