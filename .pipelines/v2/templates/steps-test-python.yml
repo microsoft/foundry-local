@@ -76,6 +76,82 @@ steps:
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 - task: PowerShell@2
+  displayName: 'ARM64 native loader diagnostics (Python)'
+  condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
+  inputs:
+    targetType: inline
+    pwsh: ${{ parameters.usePwsh }}
+    script: |
+        $ErrorActionPreference = 'Continue'
+        Write-Host "Agent.OS=$env:AGENT_OS"
+        Write-Host "Agent.OSArchitecture=$env:AGENT_OSARCHITECTURE"
+        Write-Host "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+
+        $dumpbin = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        $linkExe = (Get-Command link.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+
+        function Show-DllDiagnostics([string]$dllPath) {
+          if (-not (Test-Path $dllPath)) {
+            Write-Warning "Missing target DLL: $dllPath"
+            return
+          }
+
+          Write-Host ""
+          Write-Host "=== Diagnostics for $dllPath ==="
+          $output = @()
+          if ($dumpbin) {
+            $output = & $dumpbin /dependents $dllPath 2>&1
+          } elseif ($linkExe) {
+            $output = & $linkExe /dump /dependents $dllPath 2>&1
+          } else {
+            Write-Warning 'Neither dumpbin.exe nor link.exe found on PATH.'
+          }
+
+          if ($output.Count -gt 0) {
+            $output | ForEach-Object { Write-Host $_ }
+            $deps = @($output |
+              ForEach-Object {
+                $line = $_.ToString().Trim()
+                if ($line -match '^[A-Za-z0-9._-]+\\.dll$') { $line.ToLowerInvariant() }
+              } |
+              Where-Object { $_ } |
+              Select-Object -Unique)
+
+            $probeDirs = @(
+              (Split-Path -Parent $dllPath),
+              "$env:WINDIR\\System32",
+              "$env:WINDIR\\SysWOW64"
+            )
+            foreach ($dep in $deps) {
+              $resolved = $null
+              foreach ($d in $probeDirs) {
+                $p = Join-Path $d $dep
+                if (Test-Path $p) { $resolved = $p; break }
+              }
+              if ($resolved) {
+                Write-Host "  resolved: $dep -> $resolved"
+              } else {
+                Write-Warning "  unresolved: $dep"
+              }
+            }
+          }
+        }
+
+        $wheelNativeDir = & "$(venvPy)" -c "import pathlib,foundry_local_sdk._native.lib_loader as l; print((pathlib.Path(l.__file__).resolve().parent / 'win-arm64'))"
+        $wheelNativeDir = $wheelNativeDir.Trim()
+        Write-Host "Wheel native dir: $wheelNativeDir"
+        if (Test-Path $wheelNativeDir) {
+            Get-ChildItem -Path $wheelNativeDir -Force | ForEach-Object { Write-Host "  $($_.Name)" }
+        }
+
+        $ortDll = & "$(venvPy)" -c "import importlib.util,pathlib; s=importlib.util.find_spec('onnxruntime_core'); print((pathlib.Path(s.origin).resolve().parent / 'bin' / 'onnxruntime.dll') if s else '')"
+        $genaiDll = & "$(venvPy)" -c "import importlib.util,pathlib; s=importlib.util.find_spec('onnxruntime_genai_core'); print((pathlib.Path(s.origin).resolve().parent / 'bin' / 'onnxruntime-genai.dll') if s else '')"
+
+        Show-DllDiagnostics (Join-Path $wheelNativeDir 'foundry_local.dll')
+        if ($ortDll) { Show-DllDiagnostics $ortDll.Trim() }
+        if ($genaiDll) { Show-DllDiagnostics $genaiDll.Trim() }
+
+- task: PowerShell@2
   displayName: 'Run SDK tests'
   inputs:
     targetType: inline

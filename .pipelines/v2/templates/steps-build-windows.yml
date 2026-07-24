@@ -235,6 +235,7 @@ steps:
         Write-Host "  staged $(Split-Path -Leaf $s)"
       }
 
+
 - ${{ if eq(parameters.stageHeaders, true) }}:
   - task: CopyFiles@2
     displayName: 'Stage public headers'
