@@ -138,7 +138,13 @@ steps:
         (Join-Path $binDir  'foundry_local.dll'),
         (Join-Path $binDir  'foundry_local.pdb'),
         (Join-Path $linkDir 'foundry_local.lib'),
-        (Join-Path $binDir  'Microsoft.Windows.AI.MachineLearning.dll')
+        (Join-Path $binDir  'Microsoft.Windows.AI.MachineLearning.dll'),
+        (Join-Path $binDir  'DirectML.dll'),
+        (Join-Path $binDir  'onnxruntime.dll'),
+        (Join-Path $binDir  'onnxruntime-genai.dll')
+      )
+      $optionalPatterns = @(
+        'onnxruntime_providers_*.dll'
       )
 
       foreach ($s in $sources) {
@@ -148,6 +154,12 @@ steps:
         }
         Copy-Item -Path $s -Destination $dst -Force
         Write-Host "  staged $(Split-Path -Leaf $s)"
+      }
+      foreach ($pattern in $optionalPatterns) {
+        Get-ChildItem -Path $binDir -Filter $pattern -File -ErrorAction SilentlyContinue | ForEach-Object {
+          Copy-Item -Path $_.FullName -Destination $dst -Force
+          Write-Host "  staged $($_.Name)"
+        }
       }
 
 - ${{ if eq(parameters.stageHeaders, true) }}:

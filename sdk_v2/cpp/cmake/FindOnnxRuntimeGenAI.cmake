@@ -160,7 +160,7 @@ else()
             message(STATUS "Downloading ${_GENAI_PACKAGE_NAME} ${ORT_GENAI_VERSION} from nuget.org")
         endif()
     else()
-        message(STATUS "Using caller-provided GENAI_FETCH_URL: ${GENAI_FETCH_URL}")
+        message(STATUS "Using caller-provided GENAI_FETCH_URL")
     endif()
 
     # Normalize to forward slashes — backslashes from Windows paths cause CMake
@@ -173,15 +173,19 @@ else()
         set(_GENAI_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/genai-download/genai.zip")
         get_filename_component(_GENAI_ZIP_DIR "${_GENAI_ZIP_PATH}" DIRECTORY)
         file(MAKE_DIRECTORY "${_GENAI_ZIP_DIR}")
-        file(COPY_FILE "${GENAI_FETCH_URL}" "${_GENAI_ZIP_PATH}")
+        configure_file("${GENAI_FETCH_URL}" "${_GENAI_ZIP_PATH}" COPYONLY)
         set(GENAI_FETCH_URL "${_GENAI_ZIP_PATH}")
-        message(STATUS "Copied .nupkg to .zip for CMake extraction: ${GENAI_FETCH_URL}")
+        message(STATUS "Copied local GenAI .nupkg to .zip for CMake extraction")
     endif()
 
-    FetchContent_Declare(genailib
+    set(_GENAI_FETCH_ARGS
         URL ${GENAI_FETCH_URL}
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        DOWNLOAD_NAME genai.zip  # .nupkg is a ZIP; force CMake to recognize the format
+        DOWNLOAD_NAME genai.zip)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+        list(APPEND _GENAI_FETCH_ARGS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    endif()
+    FetchContent_Declare(genailib
+        ${_GENAI_FETCH_ARGS}
     )
     FetchContent_MakeAvailable(genailib)
 

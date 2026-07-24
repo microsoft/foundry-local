@@ -156,6 +156,14 @@ steps:
         throw "WinML runtime DLL not found in native artifact: $winmlDll"
       }
 
+      $directMlDll = Join-Path "${{ parameters.nativeArtifactDir }}" 'DirectML.dll'
+      if (Test-Path $directMlDll) {
+        Copy-Item $directMlDll -Destination $dst -Force
+        Write-Host "  staged DirectML.dll"
+      } else {
+        throw "DirectML.dll not found in native artifact: $directMlDll"
+      }
+
       Get-ChildItem $dst | ForEach-Object { Write-Host "    $($_.Name)  $($_.Length) bytes" }
     displayName: 'Stage prebuild directory'
 

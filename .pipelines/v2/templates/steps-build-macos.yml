@@ -81,26 +81,38 @@ steps:
   displayName: 'Dump vcpkg error logs'
   condition: failed()
 
-# Stage the redistributable native artifact. macOS has no triplet overlay so
-# vcpkg uses its default arm64-osx triplet, which is static — libfoundry_local.dylib
-# carries its transitive deps (azure-*, spdlog, fmt, libcurl, libssl/libcrypto,
-# zlib, brotli*) inside itself. ORT/GenAI .dylib files are supplied to consumers
-# separately (pip on the Python side, NuGet on the C# side); test/example binaries
-# are not part of the redistributable surface.
+# Stage the redistributable native artifacts for standalone C++ consumers.
 - bash: |
     set -euo pipefail
     src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/macOS/${{ parameters.buildConfig }}/bin'
     dst='$(Build.ArtifactStagingDirectory)/native'
     mkdir -p "$dst"
 
-    primary="$src/libfoundry_local.dylib"
-    if [ ! -f "$primary" ]; then
-      echo "ERROR: libfoundry_local.dylib not found at $primary" >&2
-      exit 1
-    fi
-    cp -P "$primary" "$dst/"
-    echo "  staged libfoundry_local.dylib"
-
+    required=(
+      "$src/libfoundry_local.dylib"
+      "$src/libonnxruntime-genai.dylib"
+      "$src/libonnxruntime.dylib"
+    )
+    for f in "${required[@]}"; do
+      if [ ! -e "$f" ]; then
+        echo "ERROR: required native artifact not found: $f" >&2
+        exit 1
+      fi
+      cp -P "$f" "$dst/"
+      echo "  staged $(basename "$f")"
+    done
+    for f in "$src"/libonnxruntime.*.dylib; do
+      if [ -e "$f" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
+    for f in "$src"/libonnxruntime_providers_*.dylib; do
+      if [ -e "$f" ]; then
+        cp -P "$f" "$dst/"
+        echo "  staged $(basename "$f")"
+      fi
+    done
   displayName: 'Stage native artifacts'
 
 # Stage debug symbols into a separate artifact so they can be published
