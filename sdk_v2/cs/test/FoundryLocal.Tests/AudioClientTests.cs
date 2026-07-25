@@ -17,6 +17,11 @@ internal sealed class OpenAIAudioClientTests
 {
     private static IModel? model;
 
+    // ARM64 runs can produce punctuation-only transcript variance (for example an
+    // extra comma) while the spoken content is semantically identical. Strip commas
+    // before comparison to avoid platform-specific false negatives.
+    private static string WithoutCommas(string text) => text.Replace(",", string.Empty);
+
     [Before(Class)]
     public static async Task Setup()
     {
@@ -68,7 +73,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await Assert.That(content).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+        await Assert.That(WithoutCommas(content)).IsEqualTo(WithoutCommas(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links."));
         Console.WriteLine($"Response: {content}");
     }
 
@@ -93,7 +98,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await Assert.That(content).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+        await Assert.That(WithoutCommas(content)).IsEqualTo(WithoutCommas(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links."));
         Console.WriteLine($"Response: {content}");
     }
 
@@ -157,7 +162,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+    await Assert.That(WithoutCommas(fullResponse)).IsEqualTo(WithoutCommas(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links."));
 
 
     }
@@ -191,7 +196,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+    await Assert.That(WithoutCommas(fullResponse)).IsEqualTo(WithoutCommas(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links."));
 
 
     }
