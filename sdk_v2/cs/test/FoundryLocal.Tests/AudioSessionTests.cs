@@ -23,7 +23,7 @@ internal sealed class AudioSessionTests
         " behind the scenes photo gallery and album to purchase like these next few links.";
 
     private const string ExpectedTranscriptionArm64 =
-        " And lots of times you need to give people more than one link at a time." +
+        " And lots of times, you need to give people more than one link at a time." +
         " You a band could give their fans a couple new videos from a live concert" +
         " behind the scenes photo gallery and album to purchase like these next few links.";
 
