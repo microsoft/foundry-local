@@ -526,9 +526,16 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
     return;
   }
   auto ev = MakeEvent("ProcessInfo");
+  ev.SetProperty("appVersion", info.app_version);
+  ev.SetProperty("appName", info.app_name);
+  ev.SetProperty("osName", info.os_name);
+  ev.SetProperty("osVersion", info.os_version);
+  ev.SetProperty("architecture", info.cpu_arch);
+  ev.SetProperty("processName", info.process_name);
   ev.SetProperty("DeviceInfo.Status", info.device_id_status);
   ev.SetProperty("cpuCount", static_cast<int64_t>(info.cpu_count));
   ev.SetProperty("totalMemoryMB", info.total_memory_mb);
+  ev.SetProperty("locale", info.locale);
   SafeLog(impl_->logger, ev);
 }
 
