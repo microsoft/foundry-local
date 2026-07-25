@@ -270,6 +270,8 @@ class ChatClient:
         Consume with a standard ``for`` loop::
 
             for chunk in client.complete_streaming_chat(messages):
+                if not chunk.choices:  # the final chunk can carry no choices
+                    continue
                 if chunk.choices[0].delta.content:
                     print(chunk.choices[0].delta.content, end="", flush=True)
 
