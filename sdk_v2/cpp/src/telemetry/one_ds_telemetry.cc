@@ -4,6 +4,7 @@
 #include "telemetry/one_ds_telemetry.h"
 
 #include "telemetry/device_id.h"
+#include "telemetry/telemetry_context.h"
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_redaction.h"
 #include "telemetry/telemetry_sampling.h"
@@ -218,14 +219,18 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
       return;
     }
     log_manager_initialized = true;
-    if (!disable_nonessential_telemetry && impl_->logger->GetSemanticContext() != nullptr) {
-      auto* semantic_context = impl_->logger->GetSemanticContext();
-      const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
-      if (!hashed_device_id.empty()) {
-        semantic_context->SetDeviceId(hashed_device_id);
+    if (auto* semantic_context = impl_->logger->GetSemanticContext(); semantic_context != nullptr) {
+      (void)TelemetryInternal::TrySuppressContext(
+          [&] { TelemetryInternal::SuppressUnneededCommonContext(*semantic_context); });
+      if (!disable_nonessential_telemetry) {
+        const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
+        if (!hashed_device_id.empty()) {
+          semantic_context->SetDeviceId(hashed_device_id);
+        }
       }
     }
     SetCommonContext(impl_->logger, metadata_);
+    network_context_suppressed_.store(false, std::memory_order_release);
     logger_.Log(LogLevel::Information,
                 fmt::format("[Telemetry] 1DS initialized; AppName={} AppVersion={} Version={} Os={} {} Arch={}",
                             metadata_.app_name, metadata_.app_version, metadata_.version, metadata_.os_name,
@@ -279,6 +284,21 @@ OneDsTelemetry::~OneDsTelemetry() {
   impl_.reset();
 }
 
+void OneDsTelemetry::SuppressNetworkContextForEvent(const char* event_name) {
+  if (std::string_view(event_name) == "ProcessInfo" ||
+      network_context_suppressed_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard<std::mutex> context_lock(semantic_context_mutex_);
+  if (network_context_suppressed_.load(std::memory_order_relaxed) || !impl_ || impl_->logger == nullptr ||
+      impl_->logger->GetSemanticContext() == nullptr) {
+    return;
+  }
+  (void)TelemetryInternal::TrySuppressContext(
+      [&] { TelemetryInternal::SuppressNetworkContext(*impl_->logger->GetSemanticContext()); });
+  network_context_suppressed_.store(true, std::memory_order_release);
+}
+
 void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const InvocationContext& context,
                                   int64_t duration_ms) {
   local_log_.RecordAction(action, status, context, duration_ms);
@@ -289,6 +309,7 @@ void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const Invo
   if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("Action");
   auto ev = MakeEvent("Action");
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("Status", std::string(ActionStatusToString(status)));
@@ -309,6 +330,7 @@ void OneDsTelemetry::RecordException(Action action, const std::exception& except
   if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("Error");
   auto ev = MakeEvent("Error");
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("UserAgent", context.user_agent);
@@ -331,6 +353,7 @@ void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("Model");
   auto ev = MakeEvent("Model");
   ev.SetProperty("ModelId", info.model_id);
   ev.SetProperty("ExecutionProvider", info.execution_provider);
@@ -358,6 +381,7 @@ void OneDsTelemetry::RecordAudioUsage(const AudioUsageInfo& info) {
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("AudioModel");
   auto ev = MakeEvent("AudioModel");
   ev.SetProperty("ModelId", info.model_id);
   ev.SetProperty("ExecutionProvider", info.execution_provider);
@@ -387,6 +411,7 @@ void OneDsTelemetry::RecordModelId(Action action, const std::string& model_id,
   if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("ModelId");
   auto ev = MakeEvent("ModelId");
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("ModelId", model_id);
@@ -405,6 +430,7 @@ void OneDsTelemetry::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) 
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("EPDownloadAttempt");
   auto ev = MakeEvent("EPDownloadAttempt");
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
@@ -427,6 +453,7 @@ void OneDsTelemetry::RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("EPDownloadAndRegister");
   auto ev = MakeEvent("EPDownloadAndRegister");
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
@@ -450,6 +477,7 @@ void OneDsTelemetry::RecordDownload(const DownloadInfo& info) {
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("Download");
   auto ev = MakeEvent("Download");
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
@@ -476,6 +504,7 @@ void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
+  SuppressNetworkContextForEvent("CatalogFetch");
   auto ev = MakeEvent("CatalogFetch");
   ev.SetProperty("Operation", info.operation);
   ev.SetProperty("Endpoint", info.endpoint);
@@ -497,16 +526,9 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
     return;
   }
   auto ev = MakeEvent("ProcessInfo");
-  ev.SetProperty("appVersion", info.app_version);
-  ev.SetProperty("appName", info.app_name);
-  ev.SetProperty("osName", info.os_name);
-  ev.SetProperty("osVersion", info.os_version);
-  ev.SetProperty("architecture", info.cpu_arch);
-  ev.SetProperty("processName", info.process_name);
   ev.SetProperty("DeviceInfo.Status", info.device_id_status);
   ev.SetProperty("cpuCount", static_cast<int64_t>(info.cpu_count));
   ev.SetProperty("totalMemoryMB", info.total_memory_mb);
-  ev.SetProperty("locale", info.locale);
   SafeLog(impl_->logger, ev);
 }
 
@@ -516,6 +538,7 @@ void OneDsTelemetry::RecordHardwareInfo(const HardwareInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
+  SuppressNetworkContextForEvent("HardwareInfo");
   auto ev = MakeEvent("HardwareInfo");
   ev.SetProperty("DeviceTypes", info.device_types);
   ev.SetProperty("ExecutionProviders", info.execution_providers);
@@ -533,6 +556,7 @@ void OneDsTelemetry::StartSession() {
   if (!lock.owns_lock()) {
     return;
   }
+  SuppressNetworkContextForEvent("Session");
   // LogSession(Started) opens an app-usage session; the SDK stamps ext.app.sesId
   // on subsequent events and records session duration on End.
   auto ev = MakeEvent("Session");
@@ -545,6 +569,7 @@ void OneDsTelemetry::EndSession() {
   if (!lock.owns_lock()) {
     return;
   }
+  SuppressNetworkContextForEvent("Session");
   auto ev = MakeEvent("Session");
   impl_->logger->LogSession(SessionState::Session_Ended, ev);
 }

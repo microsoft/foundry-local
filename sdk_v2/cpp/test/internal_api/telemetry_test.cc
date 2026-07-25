@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "logger.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "telemetry/telemetry_context.h"
 #include "telemetry/device_id.h"
 #include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_logger.h"
@@ -15,6 +16,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -75,6 +77,15 @@ class RecordingLogger : public ILogger {
   }
 
   std::vector<LogEntry> entries;
+};
+
+class RecordingSemanticContext {
+ public:
+  void SetCommonField(const std::string& name, const std::string& value) {
+    fields[name] = value;
+  }
+
+  std::map<std::string, std::string> fields;
 };
 
 struct ActionCall {
@@ -141,6 +152,28 @@ TEST(TelemetryEnvironmentTest, DetectsCiEnvironmentFlag) {
 TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
   ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
   EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
+}
+
+TEST(TelemetryContextTest, SuppressesUnneededCommonContext) {
+  RecordingSemanticContext context;
+
+  TelemetryInternal::SuppressUnneededCommonContext(context);
+
+  ASSERT_EQ(context.fields.size(), TelemetryInternal::kSuppressedCommonContextFields.size());
+  for (const char* field : TelemetryInternal::kSuppressedCommonContextFields) {
+    EXPECT_EQ(context.fields.at(field), "");
+  }
+}
+
+TEST(TelemetryContextTest, SuppressesNetworkContextAfterProcessInfo) {
+  RecordingSemanticContext context;
+
+  TelemetryInternal::SuppressNetworkContext(context);
+
+  ASSERT_EQ(context.fields.size(), TelemetryInternal::kProcessInfoOnlyNetworkContextFields.size());
+  for (const char* field : TelemetryInternal::kProcessInfoOnlyNetworkContextFields) {
+    EXPECT_EQ(context.fields.at(field), "");
+  }
 }
 
 TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {

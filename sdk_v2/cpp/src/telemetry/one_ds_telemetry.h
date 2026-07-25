@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 
@@ -60,13 +61,16 @@ class OneDsTelemetry : public ITelemetry {
   struct Impl;
 
   std::shared_lock<std::shared_mutex> LockForLogging(bool require_upload = true) const;
+  void SuppressNetworkContextForEvent(const char* event_name);
 
   TelemetryLogger local_log_;
   TelemetryMetadata metadata_;       // Cached at construction.
   std::unique_ptr<Impl> impl_;
   std::atomic<bool> initialized_{false};
   std::atomic<bool> upload_enabled_{true};  // False when non-essential uploads are suppressed.
+  std::atomic<bool> network_context_suppressed_{false};
   mutable std::shared_mutex mutex_;  // Serializes logging calls with teardown.
+  std::mutex semantic_context_mutex_;
   ILogger& logger_;
 };
 
