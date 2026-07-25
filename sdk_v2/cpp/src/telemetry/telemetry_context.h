@@ -16,12 +16,6 @@ inline constexpr std::array<const char*, 5> kSuppressedCommonContextFields{
     "M365aInfo.EnrolledTenantId",
 };
 
-inline constexpr std::array<const char*, 3> kProcessInfoOnlyNetworkContextFields{
-    "DeviceInfo.NetworkCost",
-    "DeviceInfo.NetworkProvider",
-    "DeviceInfo.NetworkType",
-};
-
 template <typename Suppression>
 bool TrySuppressContext(Suppression&& suppression) noexcept {
   try {
@@ -35,13 +29,6 @@ bool TrySuppressContext(Suppression&& suppression) noexcept {
 template <typename SemanticContext>
 void SuppressUnneededCommonContext(SemanticContext& context) {
   for (const char* field : kSuppressedCommonContextFields) {
-    context.SetCommonField(field, std::string{});
-  }
-}
-
-template <typename SemanticContext>
-void SuppressNetworkContext(SemanticContext& context) {
-  for (const char* field : kProcessInfoOnlyNetworkContextFields) {
     context.SetCommonField(field, std::string{});
   }
 }

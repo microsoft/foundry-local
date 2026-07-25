@@ -165,17 +165,6 @@ TEST(TelemetryContextTest, SuppressesUnneededCommonContext) {
   }
 }
 
-TEST(TelemetryContextTest, SuppressesNetworkContextAfterProcessInfo) {
-  RecordingSemanticContext context;
-
-  TelemetryInternal::SuppressNetworkContext(context);
-
-  ASSERT_EQ(context.fields.size(), TelemetryInternal::kProcessInfoOnlyNetworkContextFields.size());
-  for (const char* field : TelemetryInternal::kProcessInfoOnlyNetworkContextFields) {
-    EXPECT_EQ(context.fields.at(field), "");
-  }
-}
-
 TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
   // In test processes, hard suppression prevents 1DS upload entirely. Outside tests/CI,
   // manager disable_nonessential_telemetry initializes 1DS but suppresses non-ProcessInfo uploads.
