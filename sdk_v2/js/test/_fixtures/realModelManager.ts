@@ -107,9 +107,11 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     });
     if (matching.length === 0) {
       manager.dispose();
-      throw new Error(
-        `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`,
-      );
+      const message = `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`;
+      if (isCi) {
+        throw new SkipFixture(`[CI] ${message}`);
+      }
+      throw new Error(message);
     }
     matching.sort(
       (a, b) =>

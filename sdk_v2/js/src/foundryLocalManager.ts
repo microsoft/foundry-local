@@ -105,6 +105,15 @@ export class FoundryLocalManager {
         }
       }
     }
+    const rawAdditionalSettings: unknown = config.additionalSettings;
+    if (
+      rawAdditionalSettings !== undefined &&
+      (typeof rawAdditionalSettings !== "object" ||
+        rawAdditionalSettings === null ||
+        Array.isArray(rawAdditionalSettings))
+    ) {
+      throw new TypeError("additionalSettings must be an object");
+    }
     const additionalSettings = {
       UserAgent: `foundry-local-js/${SDK_VERSION}`,
       ...config.additionalSettings,
