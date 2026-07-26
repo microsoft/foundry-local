@@ -59,7 +59,7 @@ internal sealed class OpenAIAudioClientTests
         }
 
         // Pick the CPU variant — CUDA/DML variants require an EP bootstrapper that may not be registered.
-            var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU);
+        var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU);
 
         if (model == null)
         {
