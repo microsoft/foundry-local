@@ -10,7 +10,7 @@
 // paths against the chat fixture too (a client that never inferred has no
 // session-type dependency) and rely on their respective integration test
 // files for the with-session paths.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AudioClient } from "../src/openai/audioClient.js";
 import { ChatClient } from "../src/openai/chatClient.js";
@@ -19,6 +19,7 @@ import { EmbeddingClient } from "../src/openai/embeddingClient.js";
 import {
   type RealModelManagerFixture,
   haveTestModelCache,
+  SkipFixture,
   setupRealModelManager,
   teardownRealModelManager,
   testModelCacheDiagnostic,
@@ -30,10 +31,26 @@ if (!haveTestModelCache) {
 
 describe.skipIf(!haveTestModelCache)("OpenAI client dispose()", () => {
   let fixture: RealModelManagerFixture | undefined;
+  let skipReason: string | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager();
+    try {
+      fixture = await setupRealModelManager();
+    } catch (error) {
+      if (error instanceof SkipFixture) {
+        skipReason = error.message;
+        console.warn(error.message);
+        return;
+      }
+      throw error;
+    }
   }, 5 * 60_000);
+
+  beforeEach((context) => {
+    if (skipReason !== undefined) {
+      context.skip(skipReason);
+    }
+  });
 
   afterAll(() => {
     teardownRealModelManager(fixture);
