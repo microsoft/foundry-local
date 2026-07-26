@@ -52,6 +52,7 @@ describe.skipIf(!haveTestModelCache)("EmbeddingClient (real model, V1 OpenAI-JSO
       fixture = await setupRealModelManager({
         task: "embeddings",
         namePreference: "qwen3-embedding-0.6b-generic-cpu",
+        skipUnavailableInCi: true,
       });
     } catch (error) {
       if (error instanceof SkipFixture) {
