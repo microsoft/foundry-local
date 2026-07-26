@@ -71,17 +71,7 @@ steps:
       $container = 'models'
       $prefix = 'foundrylocal/models'
 
-      $azcopyAvailable = $false
-      try {
-        azcopy --version | Write-Host
-        if ($LASTEXITCODE -eq 0) {
-          $azcopyAvailable = $true
-        }
-      }
-      catch {
-      }
-
-      if (-not $azcopyAvailable) {
+      if (-not (Get-Command azcopy -ErrorAction SilentlyContinue)) {
         if ($IsMacOS) {
           Write-Host 'azcopy not found on macOS agent. Installing via Homebrew...'
           if (-not (Get-Command brew -ErrorAction SilentlyContinue)) {
@@ -107,9 +97,14 @@ steps:
         } else {
           throw 'azcopy is not installed on this agent.'
         }
+
+        $azcopyCommand = Get-Command azcopy -ErrorAction SilentlyContinue
+        if (-not $azcopyCommand) {
+          throw 'azcopy installation was attempted but azcopy is still not on PATH.'
+        }
       }
 
-      azcopy --version
+      & $azcopyCommand.Source --version | Write-Host
 
       New-Item -ItemType Directory -Path $destination -Force | Out-Null
       $publisherRoot = Join-Path $destination 'Microsoft'
