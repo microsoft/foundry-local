@@ -53,7 +53,7 @@ internal sealed class AudioSessionTests
             var manager = FoundryLocalManager.Instance;
             var catalog = await manager.GetCatalogAsync();
 
-            var aliasModel = await catalog.GetModelVariantAsync("openai-whisper-tiny-generic-cpu:4").ConfigureAwait(false);
+            var aliasModel = await catalog.GetModelAsync("whisper-tiny").ConfigureAwait(false);
 
             if (aliasModel == null)
             {
