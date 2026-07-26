@@ -385,6 +385,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   response.usage.total_tokens = completion_tokens;
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "streaming_pcm",
+      .language = {},
       .duration_ms = AudioDurationMsFromPcmBytes(audio_bytes, sample_rate, channels),
       .sample_rate = sample_rate,
       .channels = channels,
