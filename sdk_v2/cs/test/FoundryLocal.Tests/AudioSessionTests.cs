@@ -25,26 +25,6 @@ internal sealed class AudioSessionTests
         "like these next few links",
     ];
 
-    private static async Task AssertTranscriptSemanticallyMatches(string transcript)
-    {
-        var normalized = NormalizeTranscript(transcript);
-        foreach (var phrase in RequiredTranscriptPhrases)
-        {
-            await Assert.That(normalized).Contains(phrase);
-        }
-    }
-
-    private static string NormalizeTranscript(string value)
-    {
-        var normalized = new StringBuilder(value.Length);
-        foreach (var c in value.ToLowerInvariant())
-        {
-            normalized.Append(char.IsLetterOrDigit(c) || char.IsWhiteSpace(c) ? c : ' ');
-        }
-
-        return string.Join(' ', normalized.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
-    }
-
     [Before(Class)]
     public static async Task Setup()
     {
@@ -127,7 +107,7 @@ internal sealed class AudioSessionTests
         }
 
         await Assert.That(text).IsNotNull().And.IsNotEmpty();
-        await AssertTranscriptSemanticallyMatches(text!);
+        await Utils.AssertTranscriptSemanticallyMatches(text!, RequiredTranscriptPhrases);
         await Assert.That(segmentCount).IsGreaterThan(0);
         Console.WriteLine($"Response: {text} ({segmentCount} segments)");
     }
@@ -171,7 +151,7 @@ internal sealed class AudioSessionTests
         var fullResponse = sb.ToString();
         Console.WriteLine($"Streaming response ({callbackCount} callbacks): {fullResponse}");
         await Assert.That(callbackCount).IsGreaterThan(0);
-        await AssertTranscriptSemanticallyMatches(fullResponse);
+        await Utils.AssertTranscriptSemanticallyMatches(fullResponse, RequiredTranscriptPhrases);
     }
 
     [Test]
@@ -213,7 +193,7 @@ internal sealed class AudioSessionTests
         }
 
         await Assert.That(streamedCount).IsGreaterThan(0);
-        await AssertTranscriptSemanticallyMatches(sb.ToString());
+        await Utils.AssertTranscriptSemanticallyMatches(sb.ToString(), RequiredTranscriptPhrases);
 
         using var final = await stream.FinalResponse;
 
@@ -232,7 +212,7 @@ internal sealed class AudioSessionTests
         }
 
         await Assert.That(aggregated).IsNotNull();
-        await AssertTranscriptSemanticallyMatches(aggregated!);
+        await Utils.AssertTranscriptSemanticallyMatches(aggregated!, RequiredTranscriptPhrases);
     }
 
     [Test]

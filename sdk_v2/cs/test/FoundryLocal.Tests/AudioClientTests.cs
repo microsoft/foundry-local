@@ -26,26 +26,6 @@ internal sealed class OpenAIAudioClientTests
         "like these next few links",
     ];
 
-    private static async Task AssertTranscriptSemanticallyMatches(string transcript)
-    {
-        var normalized = NormalizeTranscript(transcript);
-        foreach (var phrase in RequiredTranscriptPhrases)
-        {
-            await Assert.That(normalized).Contains(phrase);
-        }
-    }
-
-    private static string NormalizeTranscript(string value)
-    {
-        var normalized = new StringBuilder(value.Length);
-        foreach (var c in value.ToLowerInvariant())
-        {
-            normalized.Append(char.IsLetterOrDigit(c) || char.IsWhiteSpace(c) ? c : ' ');
-        }
-
-        return string.Join(' ', normalized.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
-    }
-
     [Before(Class)]
     public static async Task Setup()
     {
@@ -98,7 +78,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await AssertTranscriptSemanticallyMatches(content);
+        await Utils.AssertTranscriptSemanticallyMatches(content, RequiredTranscriptPhrases);
         Console.WriteLine($"Response: {content}");
     }
 
@@ -123,7 +103,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await AssertTranscriptSemanticallyMatches(content);
+        await Utils.AssertTranscriptSemanticallyMatches(content, RequiredTranscriptPhrases);
         Console.WriteLine($"Response: {content}");
     }
 
@@ -188,7 +168,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await AssertTranscriptSemanticallyMatches(fullResponse);
+        await Utils.AssertTranscriptSemanticallyMatches(fullResponse, RequiredTranscriptPhrases);
 
 
     }
@@ -222,7 +202,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await AssertTranscriptSemanticallyMatches(fullResponse);
+        await Utils.AssertTranscriptSemanticallyMatches(fullResponse, RequiredTranscriptPhrases);
 
 
     }
