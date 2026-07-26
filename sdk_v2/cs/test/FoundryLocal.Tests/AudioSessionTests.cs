@@ -53,18 +53,15 @@ internal sealed class AudioSessionTests
             var manager = FoundryLocalManager.Instance;
             var catalog = await manager.GetCatalogAsync();
 
-            var aliasModel = await catalog.GetModelAsync("whisper-tiny").ConfigureAwait(false)
-                ?? await catalog.GetModelAsync("openai-whisper-tiny-generic-cpu").ConfigureAwait(false)
-                ?? await catalog.GetModelVariantAsync("openai-whisper-tiny-generic-cpu:4").ConfigureAwait(false);
+            var aliasModel = await catalog.GetModelVariantAsync("openai-whisper-tiny-generic-cpu:4").ConfigureAwait(false);
 
             if (aliasModel == null)
             {
                 return;
             }
 
-            // Prefer CPU variants; fall back to first available variant when runtime metadata is incomplete.
-            var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU)
-                ?? aliasModel.Variants.FirstOrDefault();
+            // Pick the CPU variant — CUDA/DML variants require an EP bootstrapper that may not be registered.
+            var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU);
 
             if (model == null)
             {
@@ -74,7 +71,7 @@ internal sealed class AudioSessionTests
             if (!await model.IsCachedAsync())
             {
                 throw new InvalidOperationException(
-                    "AudioSessionTests requires a pre-cached whisper tiny model variant. " +
+                    "AudioSessionTests requires 'whisper-tiny' to be pre-cached. " +
                     "Test setup is cached-only and will not download models.");
             }
 

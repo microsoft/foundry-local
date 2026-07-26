@@ -51,18 +51,15 @@ internal sealed class OpenAIAudioClientTests
     {
         var manager = FoundryLocalManager.Instance; // initialized by Utils
         var catalog = await manager.GetCatalogAsync();
-        var aliasModel = await catalog.GetModelVariantAsync("openai-whisper-tiny-generic-cpu:4").ConfigureAwait(false)
-            ?? await catalog.GetModelAsync("openai-whisper-tiny-generic-cpu").ConfigureAwait(false)
-            ?? await catalog.GetModelAsync("whisper-tiny").ConfigureAwait(false);
+        var aliasModel = await catalog.GetModelAsync("whisper-tiny").ConfigureAwait(false);
 
         if (aliasModel == null)
         {
             return;
         }
 
-        // Prefer CPU variants; fall back to first available variant when runtime metadata is incomplete.
-        var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU)
-            ?? aliasModel.Variants.FirstOrDefault();
+        // Pick the CPU variant — CUDA/DML variants require an EP bootstrapper that may not be registered.
+            var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU);
 
         if (model == null)
         {
