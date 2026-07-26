@@ -27,13 +27,15 @@ export class ModelLoadManager {
     public async load(modelId: string): Promise<void> {
         if (this.externalServiceUrl) {
             const url = new URL(`models/load/${encodeURIComponent(modelId)}`, this.externalServiceUrl);
+            let response: Response;
             try {
-                const response = await fetch(url.toString(), { headers: this.headers });
-                if (!response.ok) {
-                    throw new Error(`Error loading model ${modelId} from ${this.externalServiceUrl}: ${response.statusText}`);
-                }
-            } catch (error: any) {
-                throw new Error(`Network error occurred while loading model ${modelId} from ${this.externalServiceUrl}: ${error.message}`);
+                response = await fetch(url.toString(), { headers: this.headers });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                throw new Error(`Network error occurred while loading model ${modelId} from ${this.externalServiceUrl}: ${message}`);
+            }
+            if (!response.ok) {
+                throw new Error(`Error loading model ${modelId} from ${this.externalServiceUrl}: ${response.status} ${response.statusText}`);
             }
             return;
         }
