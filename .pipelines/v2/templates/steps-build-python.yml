@@ -299,6 +299,10 @@ steps:
             $extraArgs += '--config-setting=--build-option=--plat-name=win_arm64'
             Write-Host "Cross-compile: forcing wheel plat tag win_arm64"
         }
+        if ('${{ parameters.rid }}' -eq 'osx-arm64') {
+            $extraArgs += '--config-setting=--build-option=--plat-name=macosx_11_0_arm64'
+            Write-Host "Forcing wheel plat tag macosx_11_0_arm64"
+        }
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
             if ($targetArch -eq 'arm64') {
