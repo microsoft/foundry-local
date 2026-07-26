@@ -47,7 +47,7 @@ internal static class Utils
             normalized.Append(char.IsLetterOrDigit(c) || char.IsWhiteSpace(c) ? c : ' ');
         }
 
-        return string.Join(' ', normalized.ToString().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+        return string.Join(" ", normalized.ToString().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
     }
 
     internal struct TestCatalogInfo
