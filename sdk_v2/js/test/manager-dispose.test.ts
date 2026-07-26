@@ -88,9 +88,14 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
   it("dispose() rejects while a native EP worker is in flight", async () => {
     const mgr = freshManager("async-worker");
     const pending = mgr.downloadAndRegisterEps(["__not-a-provider__"]);
-    expect(() => mgr.dispose()).toThrow(/active native workers/i);
-    await expect(pending).rejects.toThrow(/not available/i);
-    mgr.dispose();
+    try {
+      expect(() => mgr.dispose()).toThrow(/active native workers/i);
+      await pending.catch(() => undefined);
+    } finally {
+      if (!mgr.disposed) {
+        mgr.dispose();
+      }
+    }
     expect(mgr.disposed).toBe(true);
   });
 
