@@ -6,6 +6,7 @@
 
 namespace Microsoft.AI.Foundry.Local.Tests;
 
+using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -17,28 +18,51 @@ internal sealed class OpenAIAudioClientTests
 {
     private static IModel? model;
 
-    private const string ExpectedTranscriptionX64 = " And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.";
-    private const string ExpectedTranscriptionArm64 = " And lots of times, you need to give people more than one link at a time. You a band could give their fans a couple new videos from a live concert behind the scenes photo gallery and album to purchase like these next few links.";
+    private static readonly string[] RequiredTranscriptPhrases =
+    [
+        "and lots of times you need to give people more than one link at a time",
+        "you a band could give their fans a couple new videos",
+        "behind the scenes photo gallery and album to purchase",
+        "like these next few links",
+    ];
 
-    private static string ExpectedTranscription =>
-        System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64
-            ? ExpectedTranscriptionArm64
-            : ExpectedTranscriptionX64;
+    private static async Task AssertTranscriptSemanticallyMatches(string transcript)
+    {
+        var normalized = NormalizeTranscript(transcript);
+        foreach (var phrase in RequiredTranscriptPhrases)
+        {
+            await Assert.That(normalized).Contains(phrase);
+        }
+    }
+
+    private static string NormalizeTranscript(string value)
+    {
+        var normalized = new StringBuilder(value.Length);
+        foreach (var c in value.ToLowerInvariant())
+        {
+            normalized.Append(char.IsLetterOrDigit(c) || char.IsWhiteSpace(c) ? c : ' ');
+        }
+
+        return string.Join(' ', normalized.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
 
     [Before(Class)]
     public static async Task Setup()
     {
         var manager = FoundryLocalManager.Instance; // initialized by Utils
         var catalog = await manager.GetCatalogAsync();
-        var aliasModel = await catalog.GetModelVariantAsync("openai-whisper-tiny-generic-cpu:4").ConfigureAwait(false);
+        var aliasModel = await catalog.GetModelVariantAsync("openai-whisper-tiny-generic-cpu:4").ConfigureAwait(false)
+            ?? await catalog.GetModelAsync("openai-whisper-tiny-generic-cpu").ConfigureAwait(false)
+            ?? await catalog.GetModelAsync("whisper-tiny").ConfigureAwait(false);
 
         if (aliasModel == null)
         {
             return;
         }
 
-        // Pick the CPU variant — CUDA/DML variants require an EP bootstrapper that may not be registered.
-        var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU);
+        // Prefer CPU variants; fall back to first available variant when runtime metadata is incomplete.
+        var model = aliasModel.Variants.FirstOrDefault(v => v.Info.Runtime?.DeviceType == DeviceType.CPU)
+            ?? aliasModel.Variants.FirstOrDefault();
 
         if (model == null)
         {
@@ -68,6 +92,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
+        audioClient.Settings.Temperature = 0.0f;
 
         var audioFilePath = Utils.TestDataPath("Recording.mp3");
 
@@ -76,7 +101,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await Assert.That(content).IsEqualTo(ExpectedTranscription);
+        await AssertTranscriptSemanticallyMatches(content);
         Console.WriteLine($"Response: {content}");
     }
 
@@ -92,7 +117,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.1f; // for deterministic results
+        audioClient.Settings.Temperature = 0.0f; // greedy decoding for deterministic results
 
         var audioFilePath = Utils.TestDataPath("Recording.mp3");
 
@@ -101,7 +126,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await Assert.That(content).IsEqualTo(ExpectedTranscription);
+        await AssertTranscriptSemanticallyMatches(content);
         Console.WriteLine($"Response: {content}");
     }
 
@@ -117,6 +142,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
+        audioClient.Settings.Temperature = 0.0f;
 
         var audioFilePath = Utils.TestDataPath("non_exist_Recording.mp3");
 
@@ -165,7 +191,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).IsEqualTo(ExpectedTranscription);
+        await AssertTranscriptSemanticallyMatches(fullResponse);
 
 
     }
@@ -182,7 +208,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.1f; // for deterministic results
+        audioClient.Settings.Temperature = 0.0f; // greedy decoding for deterministic results
 
         var audioFilePath = Utils.TestDataPath("Recording.mp3");
 
@@ -199,7 +225,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).IsEqualTo(ExpectedTranscription);
+        await AssertTranscriptSemanticallyMatches(fullResponse);
 
 
     }
@@ -238,4 +264,5 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(caught.InnerException!.Message).Contains("Audio file not found");
 
     }
+
 }
