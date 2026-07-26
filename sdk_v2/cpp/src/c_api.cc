@@ -73,6 +73,7 @@ struct flCatalog {
 struct flManager {
   fl::Manager& impl;
   std::unique_ptr<flCatalog> catalog;  // stores the flCatalog wrapper around impl.GetCatalog()
+  mutable std::vector<std::string> urls_storage;
   mutable std::vector<const char*> urls_cache;
 };
 
@@ -373,10 +374,10 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  const auto urls = manager->impl.GetWebServiceUrls();
+  manager->urls_storage = manager->impl.GetWebServiceUrls();
   manager->urls_cache.clear();
-  manager->urls_cache.reserve(urls.size());
-  for (const auto& u : urls) {
+  manager->urls_cache.reserve(manager->urls_storage.size());
+  for (const auto& u : manager->urls_storage) {
     manager->urls_cache.push_back(u.c_str());
   }
 
