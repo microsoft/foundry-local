@@ -35,7 +35,7 @@ describe.skipIf(!haveTestModelCache)("OpenAI client dispose()", () => {
 
   beforeAll(async () => {
     try {
-      fixture = await setupRealModelManager();
+      fixture = await setupRealModelManager({ skipUnavailableInCi: true });
     } catch (error) {
       if (error instanceof SkipFixture) {
         skipReason = error.message;
