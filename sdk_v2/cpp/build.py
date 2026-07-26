@@ -438,6 +438,10 @@ def configure(args: argparse.Namespace) -> None:
     if triplets_dir.is_dir():
         command += [f"-DVCPKG_OVERLAY_TRIPLETS={triplets_dir}"]
 
+    ports_dir = SCRIPT_DIR / "ports"
+    if ports_dir.is_dir():
+        command += [f"-DVCPKG_OVERLAY_PORTS={ports_dir}"]
+
     # Project options
     build_tests = "ON"
 
