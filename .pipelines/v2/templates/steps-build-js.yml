@@ -18,7 +18,7 @@
 parameters:
 - name: rid
   type: string
-  values: ['win-x64', 'win-arm64', 'linux-x64', 'osx-arm64']
+  values: ['win-x64', 'win-arm64', 'linux-x64', 'linux-arm64', 'osx-arm64']
   displayName: 'ADO RID for the platform being built'
 - name: nativeArtifactDir
   type: string
@@ -127,6 +127,12 @@ steps:
       echo "##vso[task.setvariable variable=nativeLib]libfoundry_local.so"
     displayName: 'Set prebuild directory (linux-x64)'
 
+- ${{ if eq(parameters.rid, 'linux-arm64') }}:
+  - bash: |
+      echo "##vso[task.setvariable variable=prebuildDir]linux-arm64"
+      echo "##vso[task.setvariable variable=nativeLib]libfoundry_local.so"
+    displayName: 'Set prebuild directory (linux-arm64)'
+
 - ${{ if eq(parameters.rid, 'osx-arm64') }}:
   - bash: |
       echo "##vso[task.setvariable variable=prebuildDir]darwin-arm64"
@@ -177,7 +183,7 @@ steps:
       # cross-compiling to arm64.
       FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
 
-- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
@@ -225,7 +231,7 @@ steps:
       Get-ChildItem $dst | ForEach-Object { Write-Host "    $($_.Name)  $($_.Length) bytes" }
     displayName: 'Stage prebuild directory'
 
-- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
       set -euo pipefail
       dst="${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"

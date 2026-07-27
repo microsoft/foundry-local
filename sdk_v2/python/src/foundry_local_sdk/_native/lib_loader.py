@@ -35,6 +35,11 @@ def _platform_subdir() -> str:
         return "win-x64"
     if sys.platform == "darwin":
         return "osx-arm64" if platform.machine() == "arm64" else "osx-x64"
+    # Linux: both "aarch64" (kernel convention) and "arm64" (some distros) map
+    # to the linux-arm64 RID; everything else (x86_64, riscv64, etc.) falls
+    # through to linux-x64 (only x64 is currently supported on non-arm64 Linux).
+    if platform.machine() in ("aarch64", "arm64"):
+        return "linux-arm64"
     return "linux-x64"
 
 

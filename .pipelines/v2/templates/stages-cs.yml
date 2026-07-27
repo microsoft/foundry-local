@@ -109,7 +109,7 @@ stages:
         usePwsh: false
 
 # ====================================================================
-# Test — Linux x64 / macOS ARM64
+# Test — Linux x64
 # ====================================================================
 - stage: cs_test_linux_x64
   displayName: 'C# SDK: Test Linux x64'
@@ -137,6 +137,39 @@ stages:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
+# ====================================================================
+# Test — Linux ARM64
+# ====================================================================
+- stage: cs_test_linux_arm64
+  displayName: 'C# SDK: Test Linux ARM64'
+  dependsOn:
+  - cs_build
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-test-cs.yml
+      parameters:
+        flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+# ====================================================================
+# Test — macOS ARM64
+# ====================================================================
 - stage: cs_test_osx_arm64
   displayName: 'C# SDK: Test macOS ARM64'
   dependsOn:

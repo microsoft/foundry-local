@@ -11,7 +11,7 @@
     <description>
       Native runtime libraries for the Microsoft AI Foundry Local SDK.
       Contains platform-specific foundry_local binaries for
-      Windows (x64, ARM64), Linux (x64), and macOS (ARM64).
+      Windows (x64, ARM64), Linux (x64, ARM64 CPU-only), and macOS (ARM64).
     </description>
     <copyright>© Microsoft Corporation. All rights reserved.</copyright>
     <tags>Microsoft AI Foundry Local Runtime Native</tags>

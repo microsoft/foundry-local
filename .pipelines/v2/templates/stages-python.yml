@@ -1,7 +1,7 @@
 # Build + test stages for the sdk_v2 Python SDK (foundry-local-sdk).
 #
-# Builds win-x64 + win-arm64 + linux-x64 + osx-arm64; tests win-x64 +
-# win-arm64 + linux-x64 + osx-arm64.
+# Builds win-x64 + win-arm64 + linux-x64 + linux-arm64 + osx-arm64;
+# tests win-x64 + win-arm64 + linux-x64 + linux-arm64 + osx-arm64;
 #
 # Each build stage depends on the matching native build stage from
 # stages-build-native.yml and consumes the `cpp-native-<rid>` pipeline artifact
@@ -109,6 +109,39 @@ stages:
       parameters:
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         rid: 'linux-x64'
+        outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
+
+- stage: python_build_linux_arm64
+  displayName: 'Python SDK: Build Linux ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_arm64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'python-sdk-linux-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/python-sdk'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-python.yml
+      parameters:
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        rid: 'linux-arm64'
+        useSystemPython: true
         outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
 - stage: python_build_osx_arm64
@@ -225,6 +258,31 @@ stages:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-x64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
+- stage: python_test_linux_arm64
+  displayName: 'Python SDK: Test Linux ARM64'
+  dependsOn:
+  - python_build_linux_arm64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-test-python.yml
+      parameters:
+        wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        useSystemPython: true
+
 - stage: python_test_osx_arm64
   displayName: 'Python SDK: Test macOS ARM64'
   dependsOn:
@@ -260,6 +318,7 @@ stages:
   - python_build_win_x64
   - python_build_win_arm64
   - python_build_linux_x64
+  - python_build_linux_arm64
   - python_build_osx_arm64
   jobs:
   - job: pack
@@ -277,6 +336,9 @@ stages:
       - input: pipelineArtifact
         artifactName: 'python-sdk-linux-x64'
         targetPath: '$(Pipeline.Workspace)/python-sdk-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
       - input: pipelineArtifact
         artifactName: 'python-sdk-osx-arm64'
         targetPath: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
@@ -298,6 +360,7 @@ stages:
             '$(Pipeline.Workspace)/python-sdk-win-x64',
             '$(Pipeline.Workspace)/python-sdk-win-arm64',
             '$(Pipeline.Workspace)/python-sdk-linux-x64',
+            '$(Pipeline.Workspace)/python-sdk-linux-arm64',
             '$(Pipeline.Workspace)/python-sdk-osx-arm64'
           )
 

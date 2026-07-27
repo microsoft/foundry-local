@@ -44,15 +44,26 @@ classifiers = [
 # If a wheel ever ships with ``==0.0.0`` it means the backend wasn't
 # invoked (e.g. raw setuptools bypass) — pip install will fail loudly
 # with "no matching version", which is the desired safety net.
+#
+# Platform-specific ORT/GenAI packages. The -gpu/-cuda variants are only
+# published for Linux x86_64, so ARM64 (and non-Linux) use CPU/core packages:
+#
+#   platform                     ORT package       GenAI package
+#   ---------------------------  ----------------  ----------------------
+#   Linux x86_64 (CUDA-capable)  onnxruntime-gpu   onnxruntime-genai-cuda
+#   Linux aarch64/arm64 (CPU)    onnxruntime       onnxruntime-genai
+#   Windows / macOS              onnxruntime-core  onnxruntime-genai-core
 dependencies = [
     "cffi>=1.16",
     "typing_extensions>=4.5",
     "pydantic>=2.0.0",
     "requests>=2.32.4",
     "openai>=2.24.0",
-    "onnxruntime-gpu==0.0.0; platform_system == 'Linux'",
+    "onnxruntime-gpu==0.0.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "onnxruntime==0.0.0; platform_system == 'Linux' and (platform_machine == 'aarch64' or platform_machine == 'arm64')",
     "onnxruntime-core==0.0.0; platform_system != 'Linux'",
-    "onnxruntime-genai-cuda==0.0.0; platform_system == 'Linux'",
+    "onnxruntime-genai-cuda==0.0.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "onnxruntime-genai==0.0.0; platform_system == 'Linux' and (platform_machine == 'aarch64' or platform_machine == 'arm64')",
     "onnxruntime-genai-core==0.0.0; platform_system != 'Linux'",
 ]
 

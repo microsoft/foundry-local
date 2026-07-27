@@ -6,7 +6,8 @@
 # (PR and main):
 #
 #   pack_nuget  – Microsoft.AI.Foundry.Local.Runtime
-#                 (win-x64, win-arm64, linux-x64, osx-arm64; Windows ships WinML)
+#                 (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64;
+#                  Windows ships WinML; ARM64 Linux is CPU-only)
 
 parameters:
 - name: buildConfig
@@ -117,6 +118,41 @@ stages:
       steps:
       - template: steps-build-linux.yml
         parameters:
+          arch: x64
+          buildConfig: ${{ parameters.buildConfig }}
+          ortVersion: ${{ parameters.ortVersion }}
+          genaiVersion: ${{ parameters.genaiVersion }}
+          runTests: true
+
+  # ====================================================================
+  # Linux ARM64 — build + test (native, CPU-only)
+  # ====================================================================
+  - stage: cpp_build_linux_arm64
+    displayName: 'C++ Native: Linux ARM64'
+    dependsOn:
+    - compute_version
+    jobs:
+    - job: build
+      pool:
+        name: onnxruntime-linux-ARM64-CPU-2019
+        os: linux
+        hostArchitecture: arm64
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'version-info'
+          targetPath: '$(Pipeline.Workspace)/version-info'
+        outputs:
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-linux-arm64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/native'
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-symbols-linux-arm64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/symbols'
+      steps:
+      - template: steps-build-linux.yml
+        parameters:
+          arch: arm64
           buildConfig: ${{ parameters.buildConfig }}
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
@@ -165,6 +201,7 @@ stages:
     - cpp_build_win_x64
     - cpp_build_win_arm64
     - cpp_build_linux_x64
+    - cpp_build_linux_arm64
     - cpp_build_osx_arm64
     jobs:
     - job: pack
@@ -189,6 +226,12 @@ stages:
           artifactName: 'cpp-native-symbols-linux-x64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-symbols-linux-x64'
         - input: pipelineArtifact
+          artifactName: 'cpp-native-linux-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-symbols-linux-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-symbols-linux-arm64'
+        - input: pipelineArtifact
           artifactName: 'cpp-native-osx-arm64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         - input: pipelineArtifact
@@ -204,7 +247,7 @@ stages:
           outputDir: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
 
   # ====================================================================
-  # Pack — NuGet package (all 4 platforms; Windows includes WinML)
+  # Pack — NuGet package (all 5 platforms; Windows includes WinML)
   # ====================================================================
   - stage: cpp_pack_nuget
     displayName: 'C++ Native: Pack NuGet'
@@ -213,6 +256,7 @@ stages:
     - cpp_build_win_x64
     - cpp_build_win_arm64
     - cpp_build_linux_x64
+    - cpp_build_linux_arm64
     - cpp_build_osx_arm64
     jobs:
     - job: pack
@@ -233,6 +277,9 @@ stages:
         - input: pipelineArtifact
           artifactName: 'cpp-native-linux-x64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-linux-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
         - input: pipelineArtifact
           artifactName: 'cpp-native-osx-arm64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'

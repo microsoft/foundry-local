@@ -21,15 +21,39 @@ parameters:
   type: boolean
   default: true
   displayName: 'Use PowerShell Core (pwsh). Set false to use Windows PowerShell.'
+- name: useSystemPython
+  type: boolean
+  default: false
+  displayName: 'Use the agent system Python instead of the Azure Pipelines toolcache.'
 
 steps:
 
-- task: UsePythonVersion@0
-  displayName: 'Use Python 3.12'
-  inputs:
-    versionSpec: '3.12'
-    addToPath: true
-    architecture: '${{ parameters.pythonArchitecture }}'
+- ${{ if eq(parameters.useSystemPython, false) }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12'
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+      architecture: '${{ parameters.pythonArchitecture }}'
+
+- ${{ if eq(parameters.useSystemPython, true) }}:
+  - task: PowerShell@2
+    displayName: 'Configure system Python 3.12'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        python3 --version
+        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
+        $userBase = & python3 -c "import site; print(site.USER_BASE)"
+        $userBin = Join-Path $userBase 'bin'
+        New-Item -ItemType Directory -Force -Path $userBin | Out-Null
+        $python3Path = (& which python3).Trim()
+        & ln -sf $python3Path (Join-Path $userBin 'python')
+
+        Write-Host "##vso[task.prependpath]$userBin"
+        Write-Host "Using system Python: $python3Path"
 
 - task: PowerShell@2
   displayName: 'Bootstrap VC++ ARM64 runtime'

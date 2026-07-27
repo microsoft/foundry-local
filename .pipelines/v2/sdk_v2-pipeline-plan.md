@@ -13,7 +13,8 @@ In scope: `sdk_v2/cpp` (native runtime), `sdk_v2/cs/src` (C# SDK),
 for both C# (via NuGet) and Python (bundled in the wheel), replacing the
 legacy `foundry-local-core` from neutron-server.
 
-Out of scope: JS, Rust, and a standalone `foundry-local-runtime` Python wheel.
+JS is documented separately in `sdk_v2-js-pipeline-plan.md`. Rust and a standalone
+`foundry-local-runtime` Python wheel remain out of scope.
 
 ## Top-level pipelines
 
@@ -31,6 +32,7 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 | Windows x64     | `onnxruntime-Win-CPU-2022`        | ✅    | ✅   | Also stages public headers              |
 | Windows ARM64   | `onnxruntime-Win-CPU-2022`        | ✅    | ❌   | Cross-compiled from x64 host            |
 | Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Pulls extra `OnnxRuntime.Gpu.Linux` pkg |
+| Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | Native CPU-only build                   |
 | macOS ARM64     | `AcesShared` (Sequoia)            | ✅    | ✅   | Native                                  |
 
 ## Architectural decisions (locked)
@@ -86,7 +88,8 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
    for the wheel install path:
    - `onnxruntime-core` (Windows/macOS)
    - `onnxruntime-genai-core` (Windows/macOS)
-   - `onnxruntime-gpu` / `onnxruntime-genai-cuda` (Linux)
+   - `onnxruntime-gpu` / `onnxruntime-genai-cuda` (Linux x64)
+   - `onnxruntime` / `onnxruntime-genai` (Linux ARM64, CPU-only)
 
    Import-name mapping is platform-dependent: Linux uses `onnxruntime` /
    `onnxruntime_genai`; Windows/macOS use `onnxruntime_core` /
@@ -136,10 +139,11 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 ```
 .pipelines/v2/
 └── templates/
-    ├── stages-sdk-v2.yml             # Coordinator: native + cs + python
-    ├── stages-build-native.yml       # 4 build stages + 1 pack stage (C++)
+    ├── stages-sdk-v2.yml             # Coordinator: native + C# + Python + JS
+    ├── stages-build-native.yml       # 5 native build stages + C++/NuGet pack stages
     ├── stages-cs.yml                 # C# build + test
     ├── stages-python.yml             # Python build + test
+    ├── stages-js.yml                 # JS build + test + combined npm pack
     ├── steps-prefetch-nuget.yml      # ORT/GenAI/WinML NuGet pre-fetch (pwsh + bash)
     ├── steps-build-windows.yml       # arch: x64 | arm64 (always bundles WinML)
     ├── steps-build-linux.yml
@@ -162,14 +166,17 @@ compute_version
    |
    |-- cpp_build_win_x64 ----------+
    |-- cpp_build_win_arm64 --------|
-   |-- cpp_build_linux_x64 --------+--> pack_nuget --+--> cs_build --+--> cs_test_win_x64
-   |-- cpp_build_osx_arm64 --------+                 |               |--> cs_test_linux_x64
-   |                                                 |               +--> cs_test_osx_arm64
-   |                                                 +--> (cs-sdk-v2 artifact)
+   |-- cpp_build_linux_x64 --------|
+   |-- cpp_build_linux_arm64 ------+--> pack_nuget --> cs_build --+--> cs_test_win_x64
+   |-- cpp_build_osx_arm64 --------+                              |--> cs_test_linux_x64
+   |                                                              |--> cs_test_linux_arm64
+   |                                                              +--> cs_test_osx_arm64
    |
-   |   +--> py_build_win_x64    --> py_test_win_x64
-   +-->|--> py_build_linux_x64  --> py_test_linux_x64
-       +--> py_build_osx_arm64  --> py_test_osx_arm64
+   |-- python_build_win_x64 ------> python_test_win_x64
+   |-- python_build_win_arm64 ----> (build-only)
+   |-- python_build_linux_x64 ----> python_test_linux_x64
+   |-- python_build_linux_arm64 --> python_test_linux_arm64
+   +-- python_build_osx_arm64 ----> python_test_osx_arm64
 ```
 
 * All build stages are independent (`dependsOn: [compute_version]`) and run
@@ -178,7 +185,7 @@ compute_version
 * The Windows native build always bundles the reg-free WinML 2.x runtime,
   which links against the same `ortVersion` as every other platform — there
   is no separate WinML-aligned ORT pin or build flavor.
-* Tests run on `cpp_build_win_x64`, `cpp_build_linux_x64`, and
+* Tests run on `cpp_build_win_x64`, both Linux native stages, and
   `cpp_build_osx_arm64`. The ARM64 Windows stage cross-compiles from an x64
   host and skips tests.
 
@@ -193,6 +200,7 @@ Published via 1ES `templateContext.outputs` (no manual `PublishPipelineArtifact`
 | `cpp_build_win_x64`         | `cpp-native-include`           | Public headers (sourced once, from win-x64)                |
 | `cpp_build_win_arm64`       | `cpp-native-win-arm64`         | `foundry_local.dll`, `.pdb`, `.lib` + `Microsoft.Windows.AI.MachineLearning.dll` |
 | `cpp_build_linux_x64`       | `cpp-native-linux-x64`         | `libfoundry_local.so`                                      |
+| `cpp_build_linux_arm64`     | `cpp-native-linux-arm64`       | `libfoundry_local.so` (CPU-only)                           |
 | `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | `libfoundry_local.dylib`                                   |
 | `cpp_pack_nuget`            | `cpp-nuget`                    | `Microsoft.AI.Foundry.Local.Runtime.<version>.nupkg` (bundles WinML on Windows) |
 
@@ -276,6 +284,7 @@ Test data is fetched on every stage that runs tests:
 
 * `cpp_build_win_x64`
 * `cpp_build_linux_x64`
+* `cpp_build_linux_arm64`
 * `cpp_build_osx_arm64`
 * All `cs_test_*` and `py_test_*` stages
 
@@ -309,15 +318,14 @@ Build output directories follow `build.py`'s convention:
 * **ESRP signing of native binaries.** Slot a signing stage between the
   builds and pack once the unsigned end-to-end is fully stable.
 * **Publishing.** No push to NuGet/internal feeds from this pipeline.
-* **Linux ARM64 / macOS x64.** Add when there's a customer ask; pools and
-  pack support are both ready.
+* **macOS x64.** Add when there's a customer ask.
 * **Code coverage upload.** `run_coverage.ps1` exists for local use but is
   not wired into CI.
 
 ## Things explicitly out of scope
 
 - No `foundry-local-runtime` standalone wheel.
-- No JS or Rust sdk_v2 stages.
+- No Rust sdk_v2 stages.
 - No multi-repo `Foundry-Local`/`test-data-shared` path-juggling logic in
   the sdk_v2 templates — sdk_v2 paths are repo-relative.
 - No private Azure DevOps feed dependency for the Python wheel install
