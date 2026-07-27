@@ -79,7 +79,8 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   // Preference 1: exact name / alias hit (V1 throws on miss, so swallow).
   let model: IModel | undefined;
   try {
-    model = await catalog.getModel(namePref);
+    const exact = await catalog.getModel(namePref);
+    model = exact.info.deviceType === "CPU" ? exact : undefined;
   } catch {
     model = undefined;
   }
@@ -90,7 +91,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   // filter — caller-specified names should win over "smallest by task".
   if (model === undefined && opts.namePreference !== undefined) {
     const all = await catalog.getModels();
-    const prefixed = all.find((m) => m.info.name.startsWith(namePref));
+    const prefixed = all.find((m) => m.info.deviceType === "CPU" && m.info.name.startsWith(namePref));
     if (prefixed !== undefined) {
       model = prefixed;
     }
@@ -112,7 +113,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     }
     matching.sort(
       (a, b) =>
-        (a.info.filesizeMb ?? Number.POSITIVE_INFINITY) - (b.info.filesizeMb ?? Number.POSITIVE_INFINITY),
+        (a.info.fileSizeMb ?? Number.POSITIVE_INFINITY) - (b.info.fileSizeMb ?? Number.POSITIVE_INFINITY),
     );
     model = matching[0];
   }

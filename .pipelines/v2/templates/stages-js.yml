@@ -4,7 +4,7 @@
 # Each per-platform build stage produces a `js-prebuild-<rid>` artifact
 # containing prebuilds/<plat>-<arch>/ (two .node addons + the matching
 # foundry_local shared library). The final `js_pack` stage downloads all
-# four prebuild artifacts, merges them under sdk_v2/js/prebuilds/, stamps
+# five prebuild artifacts, merges them under sdk_v2/js/prebuilds/, stamps
 # the version, and runs `npm pack` to produce a single .tgz.
 #
 # Build stages depend on:
@@ -136,6 +136,43 @@ stages:
         includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
 
+- stage: js_build_linux_arm64
+  displayName: 'JS SDK: Build Linux ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_arm64
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-include'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'js-prebuild-linux-arm64'
+        targetPath: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-js.yml
+      parameters:
+        rid: 'linux-arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
+        outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
+
 - stage: js_build_osx_arm64
   displayName: 'JS SDK: Build macOS ARM64'
   dependsOn:
@@ -198,9 +235,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/checkout-steps.yml@self
-      parameters:
-        repoName: test-data-shared
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'win-x64'
@@ -224,13 +259,36 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/checkout-steps.yml@self
-      parameters:
-        repoName: test-data-shared
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'linux-x64'
         prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-linux-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: js_test_linux_arm64
+  displayName: 'JS SDK: Test Linux ARM64'
+  dependsOn:
+  - js_build_linux_arm64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-linux-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-test-js.yml
+      parameters:
+        rid: 'linux-arm64'
+        prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-linux-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: js_test_osx_arm64
@@ -252,16 +310,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - bash: |
-          set -euo pipefail
-          if ! command -v git-lfs >/dev/null 2>&1; then
-              brew install git-lfs
-          fi
-          git lfs install
-      displayName: 'Install git-lfs (macOS)'
-    - template: ../../templates/checkout-steps.yml@self
-      parameters:
-        repoName: test-data-shared
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'osx-arm64'
@@ -269,7 +318,7 @@ stages:
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # =====================================================================
-# Pack stage — runs after all four builds. Pure packaging on Windows.
+# Pack stage — runs after all five builds. Pure packaging on Windows.
 # =====================================================================
 
 - stage: js_pack
@@ -278,6 +327,7 @@ stages:
   - js_build_win_x64
   - js_build_win_arm64
   - js_build_linux_x64
+  - js_build_linux_arm64
   - js_build_osx_arm64
   jobs:
   - job: pack
@@ -298,6 +348,9 @@ stages:
       - input: pipelineArtifact
         artifactName: 'js-prebuild-linux-x64'
         targetPath: '$(Pipeline.Workspace)/js-prebuild-linux-x64'
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-linux-arm64'
       - input: pipelineArtifact
         artifactName: 'js-prebuild-osx-arm64'
         targetPath: '$(Pipeline.Workspace)/js-prebuild-osx-arm64'

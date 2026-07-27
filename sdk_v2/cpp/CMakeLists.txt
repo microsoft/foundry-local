@@ -43,7 +43,6 @@ endif()
 option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
-option(FOUNDRY_LOCAL_USE_WINML "Enable the WinML 2.x EP catalog (Microsoft.Windows.AI.MachineLearning) for hardware EP discovery" OFF)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
 
 # Android: interactive examples and host tools don't run on device
@@ -81,9 +80,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
 find_package(OnnxRuntime REQUIRED)
 
-# WinML EP Catalog — Windows-only, for EP discovery and download. Only fetched
-# when the WinML SKU is requested so non-WinML builds don't pull the catalog DLL.
-if(FOUNDRY_LOCAL_USE_WINML)
+# WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
+# WinML 2.x runtime is reg-free, delay-loaded, and degrades gracefully when the
+# DLL is absent, so it is always included on Windows; other platforms skip it.
+if(WIN32)
     find_package(WinMLEpCatalog)
 endif()
 
@@ -102,19 +102,23 @@ if(WIN32)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_windows.cc
         src/platform/windows/path.cc
+        src/platform/windows/file_io.cc
+        src/platform/windows/cross_process_file_lock.cc
     )
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_posix.cc
         src/platform/posix/path.cc
+        src/platform/posix/file_io.cc
+        src/platform/posix/cross_process_file_lock.cc
     )
 endif()
 
 # WinML EP bootstrapper is only built when the WinML EP catalog package is
-# available — the source unconditionally references its headers/types. Other
-# Windows builds (no WinML SKU) skip it entirely; manager.cc gates the call
-# site on FOUNDRY_LOCAL_HAS_EP_CATALOG so DiscoverProviders is only invoked
-# when this translation unit is linked in.
+# available — the source unconditionally references its headers/types, which
+# exist only on Windows. manager.cc gates the call site on
+# FOUNDRY_LOCAL_HAS_EP_CATALOG so DiscoverProviders is only invoked when this
+# translation unit is linked in.
 if(WinMLEpCatalog_FOUND)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/ep_detection/winml_ep_bootstrapper.cc
@@ -149,8 +153,11 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/configuration.cc
+    src/download/blob_download_state.cc
     src/download/blob_downloader.cc
+    src/platform/cross_process_file_lock.cc
     src/download/download_manager.cc
+    src/download/file_writer.cc
     src/download/inference_model_writer.cc
     src/download/model_registry_client.cc
     src/ep_detection/cuda_ep_bootstrapper.cc
@@ -244,6 +251,11 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
 
     if(WIN32)
         target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
+        # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
+        # WinHTTP is not available in UWP, so only define this on desktop Windows.
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
+        endif()
     endif()
 
     if(ANDROID)
@@ -396,9 +408,10 @@ if(TARGET OnnxRuntime::OnnxRuntime)
         # macOS: copy dylibs so consumers that only link libfoundry_local.dylib (e.g. cache_only_tests) find the correct
         # ORT version instead of any system-installed ORT, which would cause an Ort::InitApi() version mismatch.
         #
-        # The ORT nupkg's libonnxruntime.dylib has install_name @rpath/libonnxruntime.<major>.dylib (the major version
-        # is the soname; e.g. libonnxruntime.1.dylib), so foundry_local records exactly that name as its ORT dependency.
-        # Copy the real library under the soname so dyld resolves it at load time.
+        # The ORT nupkg ships the library as libonnxruntime.dylib with install_name @rpath/libonnxruntime.<major>.dylib
+        # (the major version is the soname; e.g. libonnxruntime.1.dylib). foundry_local records that soname as its ORT
+        # dependency, while GenAI dlopen()s the unversioned libonnxruntime.dylib at runtime — so we keep the shipped file
+        # under its own name and add a soname symlink beside it. Mirrors the Linux libonnxruntime.so / .so.1 layout below.
         string(REGEX MATCH "^[0-9]+" ORT_VERSION_MAJOR "${ORT_VERSION}")
         add_custom_command(TARGET foundry_local POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -406,14 +419,10 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ORT_LIB_DIR}/libonnxruntime.dylib"
-                "$<TARGET_FILE_DIR:foundry_local>/libonnxruntime.${ORT_VERSION_MAJOR}.dylib"
-        )
-
-        # Unversioned symlink: GenAI dlopen()s "libonnxruntime.dylib" at runtime, and -lonnxruntime resolves it at link time.
-        add_custom_command(TARGET foundry_local POST_BUILD
+                $<TARGET_FILE_DIR:foundry_local>
             COMMAND ${CMAKE_COMMAND} -E create_symlink
-                libonnxruntime.${ORT_VERSION_MAJOR}.dylib
-                $<TARGET_FILE_DIR:foundry_local>/libonnxruntime.dylib
+                libonnxruntime.dylib
+                $<TARGET_FILE_DIR:foundry_local>/libonnxruntime.${ORT_VERSION_MAJOR}.dylib
         )
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         # Linux and Android both use .so files
@@ -446,6 +455,11 @@ target_include_directories(foundry_local_cpp
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(foundry_local_cpp INTERFACE foundry_local Microsoft.GSL::GSL)
+
+# --------------------------------------------------------------------------
+# Split debug symbols (Linux / macOS, RelWithDebInfo only)
+# --------------------------------------------------------------------------
+include(cmake/SplitDebugSymbols.cmake)
 
 # --------------------------------------------------------------------------
 # Tests

@@ -7,6 +7,7 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
+#include <set>
 #include <string_view>
 
 #include "catalog.h"
@@ -23,6 +24,7 @@
 #include "spdlog_logger.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/telemetry_logger.h"
+#include "util/string_utils.h"
 #include "utils.h"
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
@@ -41,6 +43,7 @@ namespace fl {
 
 namespace {
 
+std::atomic<ILogger*> s_ort_logger{nullptr};
 std::atomic<ILogger*> s_oga_logger{nullptr};
 
 bool IsTruthyConfigValue(const std::string& value) {
@@ -85,13 +88,13 @@ LogLevel MapOrtLogLevel(OrtLoggingLevel severity) {
   }
 }
 
-void ORT_API_CALL OrtLogCallback(void* logger_param,
+void ORT_API_CALL OrtLogCallback(void* /*logger_param*/,
                                  OrtLoggingLevel severity,
                                  const char* category,
                                  const char* logid,
                                  const char* code_location,
                                  const char* message) {
-  auto* logger = static_cast<ILogger*>(logger_param);
+  auto* logger = s_ort_logger.load(std::memory_order_acquire);
   if (logger == nullptr) {
     return;
   }
@@ -181,6 +184,7 @@ Manager::Manager(const Configuration& config)
   const auto logger_level = genai_verbose_logging ? LogLevel::Verbose : config_.log_level;
 
   logger_ = std::make_unique<SpdlogLogger>(logger_level, config_.logs_dir.value_or(""));
+  s_ort_logger.store(logger_.get(), std::memory_order_release);
 
   if (genai_verbose_logging) {
     SetOgaLogCallback(logger_.get());
@@ -203,7 +207,7 @@ Manager::Manager(const Configuration& config)
 
   {
     OrtStatus* status = ort_api_->CreateEnvWithCustomLogger(
-        OrtLogCallback, logger_.get(), GetDefaultOrtLoggingLevel(genai_verbose_logging), "foundry_local", &ort_env_);
+        OrtLogCallback, nullptr, GetDefaultOrtLoggingLevel(genai_verbose_logging), "foundry_local", &ort_env_);
     if (status != nullptr) {
       const char* msg = ort_api_->GetErrorMessage(status);
       std::string err = std::string("Failed to create OrtEnv: ") + (msg ? msg : "unknown");
@@ -241,29 +245,58 @@ Manager::Manager(const Configuration& config)
   // Discover bootstrappers from available EP sources
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
 
+  // Detected once and reused below for both the WinML-catalog skip-list and the
+  // Foundry CUDA bootstrapper. HasNvidiaGpu() shells out to nvidia-smi, so caching
+  // the result here avoids a second subprocess spawn.
+  const bool has_nvidia_gpu = CudaEpBootstrapper::HasNvidiaGpu();
+
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
   // WinML EPs — enumerate from the OS EP catalog (Windows 10 19H1+ reg-free runtime).
   // Only present when the WinML EP catalog NuGet package was successfully resolved
   // at CMake time (gated on WinMLEpCatalog_FOUND in sdk_v2/cpp/CMakeLists.txt).
+  //
+  // Skip catalog entries for EPs that Foundry installs and registers itself through
+  // the CDN bootstrappers below — WebGPU always, and CUDA when an NVIDIA GPU is
+  // present. For WebGPU the catalog reports a library path next to onnxruntime.dll
+  // rather than the Foundry cache where the EP is actually installed; that path is
+  // absent in our deployments, so keeping the catalog entry would add a second
+  // bootstrapper for the same provider with a non-existent path and leave
+  // GetDiscoverableEps reporting the EP as unregistered even after the Foundry
+  // bootstrapper registered it under the correct cache path. Names are stored
+  // lowercase and matched case-insensitively because the provider name's casing
+  // ("WebGpu" vs "WebGPU") is not consistent across sources.
+  std::set<std::string> foundry_managed_ep_names;
+  foundry_managed_ep_names.insert("webgpuexecutionprovider");
+  if (has_nvidia_gpu) {
+    foundry_managed_ep_names.insert("cudaexecutionprovider");
+  }
+
   auto winml_providers = WinMLEpBootstrapper::DiscoverProviders(register_ep, *logger_);
   for (auto& p : winml_providers) {
+    if (foundry_managed_ep_names.count(ToLower(p->Name())) != 0) {
+      logger_->Log(LogLevel::Information,
+                   "WinML EP skipped: " + p->Name() +
+                       " (Foundry installs and registers this EP via its own bootstrapper)");
+      continue;
+    }
     bootstrappers.push_back(std::move(p));
   }
 #endif
 
-  if (config_.model_cache_dir.has_value()) {
-    const auto cache_dir = std::filesystem::path(*config_.model_cache_dir).parent_path();
+  const auto cache_dir = std::filesystem::path(*config_.model_cache_dir).parent_path();
 
-    // CUDA EP — only if an NVIDIA GPU is detected
-    if (CudaEpBootstrapper::HasNvidiaGpu()) {
-      const auto cuda_ep_dir = cache_dir / "cuda-ep";
-      bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_dir.string(), register_ep));
-    }
-
-    // WebGPU EP — always available (no hardware detection needed).
-    const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
-    bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
+  // CUDA EP — only if an NVIDIA GPU is detected
+  if (has_nvidia_gpu) {
+    const auto cuda_ep_dir = cache_dir / "cuda-ep";
+    bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_dir.string(), register_ep));
   }
+
+  // WebGPU EP — only on platforms that ship a WebGPU EP payload (Windows
+  // x64/ARM64, macOS ARM64). Not injected on Linux or Android.
+#if defined(_WIN32) || defined(__APPLE__)
+  const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
+  bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
+#endif
 
   ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
 
@@ -355,6 +388,11 @@ Manager::~Manager() {
   }
 
   logger_->Log(LogLevel::Information, "Manager is being disposed.");
+
+  // ORT may still emit late teardown logs from internal static cleanup after Manager destruction
+  // due to GenAI keeping the OrtEnv alive until the process exits.
+  // Clear s_ort_logger so OrtLogCallback does not dereference a dangling pointer and ignores late logs.
+  s_ort_logger.store(nullptr, std::memory_order_release);
 }
 
 Manager& Manager::Create(const Configuration& config) {

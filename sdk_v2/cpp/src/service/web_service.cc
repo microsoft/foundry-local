@@ -188,6 +188,23 @@ struct WebService::Impl {
   std::unique_ptr<ServiceContext> context;
   std::atomic<bool> running{false};
 
+#ifdef FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT
+  // oatpp does not call WSAStartup() itself; it relies on the application to have done so.
+  // On desktop Windows (FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT), libcurl is absent, so its DllMain no longer
+  // initialises Winsock as a side effect. We must do it explicitly so that oatpp's getaddrinfo() call in
+  // ConnectionProvider::instantiateServer() succeeds. UWP Windows still uses libcurl and is unaffected.
+  struct WsaGuard {
+    bool ok;
+    WSADATA data{};
+    WsaGuard() : ok(WSAStartup(MAKEWORD(2, 2), &data) == 0) {}
+    ~WsaGuard() {
+      if (ok) {
+        WSACleanup();
+      }
+    }
+  } wsa_guard_;
+#endif
+
   Impl(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
        ITelemetry& telemetry, std::function<void()> shutdown_callback)

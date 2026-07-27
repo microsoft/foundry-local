@@ -18,8 +18,7 @@ pip install -r requirements.txt
 
 That installs:
 
-- `foundry-local-sdk` on non-Windows platforms
-- `foundry-local-sdk-winml` on Windows
+- `foundry-local-sdk`, which bundles WinML hardware acceleration on Windows automatically
 - `openai`
 
 The sample downloads/registers Foundry Local execution providers and downloads the `qwen2.5-0.5b` model the first time it runs.

@@ -7,15 +7,7 @@
     <TargetFramework>net9.0</TargetFramework>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(RuntimeIdentifier)'==''">
-    <RuntimeIdentifier>$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
-  </PropertyGroup>
-
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <PackageReference Include="Microsoft.AI.Foundry.Local.WinML" />
-  </ItemGroup>
-
-  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+  <ItemGroup>
     <PackageReference Include="Microsoft.AI.Foundry.Local" />
   </ItemGroup>
 

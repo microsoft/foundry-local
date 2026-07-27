@@ -1,1 +1,1 @@
-foundry-local-sdk-winml
+foundry-local-sdk

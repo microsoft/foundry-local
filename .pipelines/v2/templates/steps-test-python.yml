@@ -3,7 +3,7 @@
 #
 # The caller is responsible for:
 #   * placing the built wheel (.whl) under `wheelDir`
-#   * checking out test-data-shared at `testDataSharedDir`
+#   * populating the model cache directory at `testDataSharedDir`
 
 parameters:
 - name: wheelDir
@@ -12,23 +12,44 @@ parameters:
 - name: testDataSharedDir
   type: string
   displayName: 'Absolute path to a checked-out test-data-shared working tree'
-- name: isWinML
-  type: boolean
-  default: false
 - name: pythonArchitecture
   type: string
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
+- name: useSystemPython
+  type: boolean
+  default: false
+  displayName: 'Use the agent system Python instead of the Azure Pipelines toolcache.'
 
 steps:
 
-- task: UsePythonVersion@0
-  displayName: 'Use Python 3.12'
-  inputs:
-    versionSpec: '3.12'
-    addToPath: true
-    architecture: '${{ parameters.pythonArchitecture }}'
+- ${{ if eq(parameters.useSystemPython, false) }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12'
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+      architecture: '${{ parameters.pythonArchitecture }}'
+
+- ${{ if eq(parameters.useSystemPython, true) }}:
+  - task: PowerShell@2
+    displayName: 'Configure system Python 3.12'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        python3 --version
+        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
+        $userBase = & python3 -c "import site; print(site.USER_BASE)"
+        $userBin = Join-Path $userBase 'bin'
+        New-Item -ItemType Directory -Force -Path $userBin | Out-Null
+        $python3Path = (& which python3).Trim()
+        & ln -sf $python3Path (Join-Path $userBin 'python')
+
+        Write-Host "##vso[task.prependpath]$userBin"
+        Write-Host "Using system Python: $python3Path"
 
 # Job-local venv so installs never pollute the agent's site-packages.
 - task: PowerShell@2
@@ -56,8 +77,8 @@ steps:
     targetType: inline
     pwsh: true
     script: |
-        # Locate the wheel. Both variants land in their own per-job artifact
-        # so a single match is expected.
+        # Locate the wheel. Each job's wheel lands in its own artifact, so a
+        # single match is expected.
         $wheels = @(Get-ChildItem "${{ parameters.wheelDir }}" -Recurse -Filter '*.whl')
         if ($wheels.Count -eq 0) { throw "No .whl found under ${{ parameters.wheelDir }}" }
         if ($wheels.Count -gt 1) {

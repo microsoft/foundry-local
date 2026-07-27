@@ -7,13 +7,7 @@
     <TargetFramework>net9.0</TargetFramework>
   </PropertyGroup>
 
-  <!-- Windows: WinML for hardware acceleration -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <PackageReference Include="Microsoft.AI.Foundry.Local.WinML" />
-  </ItemGroup>
-
-  <!-- Non-Windows: standard SDK -->
-  <ItemGroup Condition="!$([MSBuild]::IsOSPlatform('Windows'))">
+  <ItemGroup>
     <PackageReference Include="Microsoft.AI.Foundry.Local" />
   </ItemGroup>
 

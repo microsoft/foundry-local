@@ -13,7 +13,8 @@ In scope: `sdk_v2/cpp` (native runtime), `sdk_v2/cs/src` (C# SDK),
 for both C# (via NuGet) and Python (bundled in the wheel), replacing the
 legacy `foundry-local-core` from neutron-server.
 
-Out of scope: JS, Rust, and a standalone `foundry-local-runtime` Python wheel.
+JS is documented separately in `sdk_v2-js-pipeline-plan.md`. Rust and a standalone
+`foundry-local-runtime` Python wheel remain out of scope.
 
 ## Top-level pipelines
 
@@ -31,6 +32,7 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 | Windows x64     | `onnxruntime-Win-CPU-2022`        | ✅    | ✅   | Also stages public headers              |
 | Windows ARM64   | `onnxruntime-Win-CPU-2022`        | ✅    | ❌   | Cross-compiled from x64 host            |
 | Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Pulls extra `OnnxRuntime.Gpu.Linux` pkg |
+| Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | Native CPU-only build                   |
 | macOS ARM64     | `AcesShared` (Sequoia)            | ✅    | ✅   | Native                                  |
 
 ## Architectural decisions (locked)
@@ -39,9 +41,10 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
    `/p:FoundryLocalRuntimeVersion=$(sdkVersion)` where `sdkVersion` is the
    same string used to pack the Runtime nupkg. SDK and Runtime always ship
    as a matched pair.
-2. **C# WinML SKU.** `UseWinML=true` flips the `PackageReference` to
-   `Microsoft.AI.Foundry.Local.Runtime.WinML`. The csproj has two
-   `UseWinML`-conditional blocks (one for `.Runtime`, one for `.Runtime.WinML`).
+2. **Single C# package bundles WinML.** The SDK csproj references one
+   `Microsoft.AI.Foundry.Local.Runtime` package, which carries the reg-free
+   WinML 2.x runtime on Windows. There is no separate WinML SKU or
+   `UseWinML` switch.
 3. **Python SDK wheel bundles `foundry_local` directly** at
    `_native/<rid>/foundry_local.{ext}`. No separate `foundry-local-runtime`
    wheel. Trade-off accepted: SDK and runtime upgrade together. Non-SDK
@@ -62,11 +65,11 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
    per-track files (`sdkVersion.txt`, `pyVersion.txt`, plus `*.v1.txt`
    counterparts). Both the sdk_v2 and sdk_v1 coordinators read from this
    artifact rather than recomputing a timestamp.
-7. **Python WinML wheel name via custom PEP 517 backend.** The build
-   backend at `sdk_v2/python/_build_backend/__init__.py` wraps
-   `setuptools.build_meta` and rewrites the project name to
-   `foundry-local-sdk-winml` when `FL_PYTHON_PACKAGE_NAME` is set in the
-   environment. The same backend also handles ORT pin rewriting (decision 8).
+7. **Single Python wheel name; custom PEP 517 backend rewrites ORT pins.**
+   One wheel, `foundry-local-sdk`, bundles the WinML runtime on Windows. The
+   build backend at `sdk_v2/python/_build_backend/__init__.py` wraps
+   `setuptools.build_meta` solely to rewrite the ORT/GenAI pins (decision 8);
+   it no longer rewrites the project name.
 8. **Single source of truth for ORT/GenAI versions.** ORT and GenAI versions
    live in `sdk_v2/deps_versions.json`. The file shape is
    `{ "onnxruntime": { "version": "..." }, "onnxruntime-genai": { "version": "..." } }`.
@@ -80,12 +83,13 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
      at wheel-build time. If the backend is ever bypassed, `pip install`
      fails fast with "no matching version" (intentional loud failure).
 
-   Bumping ORT/GenAI is a one-file edit per variant.
+   Bumping ORT/GenAI is a one-file edit.
 9. **ORT/GenAI come from public PyPI.** No private feed plumbing required
    for the wheel install path:
-   - `onnxruntime-core` (Windows/macOS, standard + WinML variants)
+   - `onnxruntime-core` (Windows/macOS)
    - `onnxruntime-genai-core` (Windows/macOS)
-   - `onnxruntime-gpu` / `onnxruntime-genai-cuda` (Linux)
+   - `onnxruntime-gpu` / `onnxruntime-genai-cuda` (Linux x64)
+   - `onnxruntime` / `onnxruntime-genai` (Linux ARM64, CPU-only)
 
    Import-name mapping is platform-dependent: Linux uses `onnxruntime` /
    `onnxruntime_genai`; Windows/macOS use `onnxruntime_core` /
@@ -97,15 +101,21 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
     copy the artifact verbatim — they do not re-filter. This keeps the
     "what ships next to `foundry_local`" decision in exactly one place.
 
-    Staging includes all `*.dll`/`*.pdb` (Windows), `*.so`/`*.so.*`/`lib*.so*`
-    (Linux), `*.dylib` (macOS) from the build output bin directory and
-    excludes:
-    - ORT/GenAI (`onnxruntime*`, `Microsoft.Windows.AI.MachineLearning.*`) —
-      provided by pip on the Python side and by NuGet on the C# side.
-    - Test/example binaries (`*_tests.*`, `*_example.*`, `gtest*`,
-      `cmake_test_discovery_*`).
+    Each staging step copies an explicit allow-list, not a glob: just the
+    redistributable `foundry_local` library (`.dll` + `.pdb` + `.lib` on
+    Windows, `libfoundry_local.so` / `.dylib` elsewhere). vcpkg statically
+    links the rest of the closure (ORT/GenAI/azure-*/curl/ssl/zlib/spdlog/fmt)
+    into `foundry_local` itself, so nothing else needs to travel. ORT/GenAI
+    are resolved separately at runtime — from pip on the Python side and from
+    NuGet on the C# side.
 
-    The step fails loudly if `foundry_local` itself is missing.
+    On Windows the allow-list also includes the delay-loaded
+    `Microsoft.Windows.AI.MachineLearning.dll` (the reg-free WinML 2.x
+    runtime, ~922 KB, Microsoft-signed). It is the single payload difference
+    that used to distinguish the WinML SKU; bundling it unconditionally is
+    what lets one package serve every consumer.
+
+    Each step fails loudly if its primary library is missing.
 11. **Python runtime ORT discovery.** `lib_loader.py::prepare_native_dependencies()`
     bridges between the in-wheel `foundry_local` and the pip-installed ORT
     packages:
@@ -120,7 +130,7 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 12. **`foundry-local-install` CLI.** Declared via `[project.scripts]` in
     `pyproject.toml`, backed by
     `sdk_v2/python/src/foundry_local_sdk/_native/installer.py`. Flags:
-    `--winml`, `--verbose`. Verifies installed packages via
+    `--verbose`. Verifies installed packages via
     `importlib.util.find_spec` to avoid triggering DLL load during
     verification.
 
@@ -129,19 +139,20 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 ```
 .pipelines/v2/
 └── templates/
-    ├── stages-sdk-v2.yml             # Coordinator: native + cs + python
-    ├── stages-build-native.yml       # 6 build stages + 2 pack stages (C++)
-    ├── stages-cs.yml                 # C# build + test (variant: base | winml)
-    ├── stages-python.yml             # Python build + test (variant: base | winml)
+    ├── stages-sdk-v2.yml             # Coordinator: native + C# + Python + JS
+    ├── stages-build-native.yml       # 5 native build stages + C++/NuGet pack stages
+    ├── stages-cs.yml                 # C# build + test
+    ├── stages-python.yml             # Python build + test
+    ├── stages-js.yml                 # JS build + test + combined npm pack
     ├── steps-prefetch-nuget.yml      # ORT/GenAI/WinML NuGet pre-fetch (pwsh + bash)
-    ├── steps-build-windows.yml       # arch: x64 | arm64; useWinml: true | false
+    ├── steps-build-windows.yml       # arch: x64 | arm64 (always bundles WinML)
     ├── steps-build-linux.yml
     ├── steps-build-macos.yml
     ├── steps-build-cs.yml            # restore + build + ESRP-sign + pack + ESRP-sign nupkg
     ├── steps-test-cs.yml             # restore + build + run tests
     ├── steps-build-python.yml        # pass-through copy + python -m build --wheel
     ├── steps-test-python.yml         # install wheel + pytest
-    └── steps-pack-nuget.yml          # Runs sdk_v2/cpp/nuget/pack.py (variant: base | winml)
+    └── steps-pack-nuget.yml          # Runs sdk_v2/cpp/nuget/pack.py
 ```
 
 The repo-shared `.pipelines/templates/checkout-steps.yml` is reused for
@@ -155,32 +166,28 @@ compute_version
    |
    |-- cpp_build_win_x64 ----------+
    |-- cpp_build_win_arm64 --------|
-   |-- cpp_build_linux_x64 --------+--> pack_nuget --+--> cs_build_base --+--> cs_test_win_x64
-   |-- cpp_build_osx_arm64 --------+                 |                    |--> cs_test_linux_x64
-   |                                                 |                    +--> cs_test_osx_arm64
-   |                                                 +--> (cs-sdk-v2-base artifact)
+   |-- cpp_build_linux_x64 --------|
+   |-- cpp_build_linux_arm64 ------+--> pack_nuget --> cs_build --+--> cs_test_win_x64
+   |-- cpp_build_osx_arm64 --------+                              |--> cs_test_linux_x64
+   |                                                              |--> cs_test_linux_arm64
+   |                                                              +--> cs_test_osx_arm64
    |
-   |   +--> py_build_base_win_x64    --> py_test_base_win_x64
-   +-->|--> py_build_base_linux_x64  --> py_test_base_linux_x64
-   |   +--> py_build_base_osx_arm64  --> py_test_base_osx_arm64
-   |
-   |-- cpp_build_win_x64_winml ---+
-   |-- cpp_build_win_arm64_winml -+--> pack_nuget_winml --> cs_build_winml --> cs_test_win_x64_winml
-   |                              |
-   |                              +--> py_build_winml_win_x64 --> py_test_winml_win_x64
-   |                                   py_build_winml_win_arm64  (no test — cross-compile)
+   |-- python_build_win_x64 ------> python_test_win_x64
+   |-- python_build_win_arm64 ----> (build-only)
+   |-- python_build_linux_x64 ----> python_test_linux_x64
+   |-- python_build_linux_arm64 --> python_test_linux_arm64
+   +-- python_build_osx_arm64 ----> python_test_osx_arm64
 ```
 
 * All build stages are independent (`dependsOn: [compute_version]`) and run
   in parallel.
-* Both pack stages run on every build (PR and `main`).
-* WinML and non-WinML build stages link against the same ORT version
-  (`ortVersion`, currently 1.25.x). WinML 2.x is reg-free and uses the
-  standard ORT package, so a separate WinML-aligned ORT pin is no longer
-  required.
-* Tests run on `cpp_build_win_x64`, `cpp_build_win_x64_winml`,
-  `cpp_build_linux_x64`, and `cpp_build_osx_arm64`. The two ARM64 Windows
-  stages cross-compile from an x64 host and skip tests.
+* The pack stage runs on every build (PR and `main`).
+* The Windows native build always bundles the reg-free WinML 2.x runtime,
+  which links against the same `ortVersion` as every other platform — there
+  is no separate WinML-aligned ORT pin or build flavor.
+* Tests run on `cpp_build_win_x64`, both Linux native stages, and
+  `cpp_build_osx_arm64`. The ARM64 Windows stage cross-compiles from an x64
+  host and skips tests.
 
 ## Per-stage artifacts
 
@@ -189,15 +196,13 @@ Published via 1ES `templateContext.outputs` (no manual `PublishPipelineArtifact`
 | Stage                       | Artifact name                  | Contents                                                   |
 |-----------------------------|--------------------------------|------------------------------------------------------------|
 | `compute_version`           | `version-info`                 | `sdkVersion.txt`, `pyVersion.txt`, `flcVersion.txt`        |
-| `cpp_build_win_x64`         | `cpp-native-win-x64`           | `foundry_local.dll`, `foundry_local.pdb` + vcpkg closure   |
+| `cpp_build_win_x64`         | `cpp-native-win-x64`           | `foundry_local.dll`, `.pdb`, `.lib` + `Microsoft.Windows.AI.MachineLearning.dll` |
 | `cpp_build_win_x64`         | `cpp-native-include`           | Public headers (sourced once, from win-x64)                |
-| `cpp_build_win_arm64`       | `cpp-native-win-arm64`         | `foundry_local.dll`, `foundry_local.pdb` + vcpkg closure   |
-| `cpp_build_linux_x64`       | `cpp-native-linux-x64`         | `libfoundry_local.so` + vcpkg closure                      |
-| `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | `libfoundry_local.dylib` + vcpkg closure                   |
-| `cpp_build_win_x64_winml`   | `cpp-native-win-x64-winml`     | `foundry_local.dll`, `foundry_local.pdb` (WinML)           |
-| `cpp_build_win_arm64_winml` | `cpp-native-win-arm64-winml`   | `foundry_local.dll`, `foundry_local.pdb` (WinML)           |
-| `cpp_pack_nuget`            | `cpp-nuget`                    | `Microsoft.AI.Foundry.Local.Runtime.<version>.nupkg`       |
-| `cpp_pack_nuget_winml`      | `cpp-nuget-winml`              | `Microsoft.AI.Foundry.Local.Runtime.WinML.<version>.nupkg` |
+| `cpp_build_win_arm64`       | `cpp-native-win-arm64`         | `foundry_local.dll`, `.pdb`, `.lib` + `Microsoft.Windows.AI.MachineLearning.dll` |
+| `cpp_build_linux_x64`       | `cpp-native-linux-x64`         | `libfoundry_local.so`                                      |
+| `cpp_build_linux_arm64`     | `cpp-native-linux-arm64`       | `libfoundry_local.so` (CPU-only)                           |
+| `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | `libfoundry_local.dylib`                                   |
+| `cpp_pack_nuget`            | `cpp-nuget`                    | `Microsoft.AI.Foundry.Local.Runtime.<version>.nupkg` (bundles WinML on Windows) |
 
 ## Versioning
 
@@ -278,13 +283,13 @@ set the env var. SDK *build* stages do not need test-data-shared.
 Test data is fetched on every stage that runs tests:
 
 * `cpp_build_win_x64`
-* `cpp_build_win_x64_winml`
 * `cpp_build_linux_x64`
+* `cpp_build_linux_arm64`
 * `cpp_build_osx_arm64`
 * All `cs_test_*` and `py_test_*` stages
 
-Skipped on `cpp_build_win_arm64` and `cpp_build_win_arm64_winml`
-(cross-compile, no test execution on the host).
+Skipped on `cpp_build_win_arm64` (cross-compile, no test execution on the
+host).
 
 ## Build commands
 
@@ -313,15 +318,14 @@ Build output directories follow `build.py`'s convention:
 * **ESRP signing of native binaries.** Slot a signing stage between the
   builds and pack once the unsigned end-to-end is fully stable.
 * **Publishing.** No push to NuGet/internal feeds from this pipeline.
-* **Linux ARM64 / macOS x64.** Add when there's a customer ask; pools and
-  pack support are both ready.
+* **macOS x64.** Add when there's a customer ask.
 * **Code coverage upload.** `run_coverage.ps1` exists for local use but is
   not wired into CI.
 
 ## Things explicitly out of scope
 
 - No `foundry-local-runtime` standalone wheel.
-- No JS or Rust sdk_v2 stages.
+- No Rust sdk_v2 stages.
 - No multi-repo `Foundry-Local`/`test-data-shared` path-juggling logic in
   the sdk_v2 templates — sdk_v2 paths are repo-relative.
 - No private Azure DevOps feed dependency for the Python wheel install

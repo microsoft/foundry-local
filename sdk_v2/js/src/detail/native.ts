@@ -258,6 +258,8 @@ function loadAddon(): NativeAddon {
       `Native addon not found at ${addonPath}.\nBuild it locally with:\n  npm run copy-native:dev && npm run build:native\n(requires the C++ SDK to be built first via\n \`python sdk_v2/cpp/build.py --configure --build --config RelWithDebInfo\`).\nAlternatively, pass \`libraryPath\` in the FoundryLocalConfig (or call \`configureNativeLoader\`) to point at a directory containing the native library.`,
     );
   }
+  // Point GenAI at the ORT bundled next to the addon before the addon loads.
+  applyOrtLibPath(prebuildDir);
   const require = createRequire(import.meta.url);
   return require(addonPath) as NativeAddon;
 }
@@ -284,18 +286,42 @@ function nativeLibBasename(): string {
 
 /**
  * Candidate basenames for an ORT-family library on the current platform. The loader tries them in order and
- * uses the first that exists on disk. macOS stages the real ORT library under its soversion
- * (`libonnxruntime.1.dylib`, ORT's install_name). Linux ships `libonnxruntime.so` with a `.so.1` soname
- * fallback for packaging variants that omit the unversioned symlink. GenAI has no versioned variant.
+ * uses the first that exists on disk. We ship the versioned soname (`libonnxruntime.so.1` /
+ * `libonnxruntime.1.dylib`) — the name libfoundry_local records — and point GenAI at it via ORT_LIB_PATH
+ * (see applyOrtLibPath). The unversioned name is kept only as a tolerant fallback for layouts that still
+ * stage it (e.g. the raw C++ build output). GenAI has no versioned variant of its own.
  */
 function ortCandidateBasenames(name: "onnxruntime" | "onnxruntime-genai"): string[] {
   if (process.platform === "win32") return [`${name}.dll`];
   if (process.platform === "darwin") {
-    if (name === "onnxruntime") return ["libonnxruntime.1.dylib"];
+    if (name === "onnxruntime") return ["libonnxruntime.1.dylib", "libonnxruntime.dylib"];
     return [`lib${name}.dylib`];
   }
-  if (name === "onnxruntime") return ["libonnxruntime.so", "libonnxruntime.so.1"];
+  if (name === "onnxruntime") return ["libonnxruntime.so.1", "libonnxruntime.so"];
   return [`lib${name}.so`];
+}
+
+/**
+ * Point onnxruntime-genai at the exact ORT we ship, via the `ORT_LIB_PATH` env var.
+ *
+ * On macOS/Linux the GenAI library (built with dlopen support) resolves ORT in its `InitApi()` by first
+ * dlopen-ing `$ORT_LIB_PATH`, then falling back to the unversioned `libonnxruntime.{dylib,so}` leafname. We
+ * ship only the versioned soname (the name libfoundry_local records), so setting `ORT_LIB_PATH` to it is what
+ * lets the package omit the unversioned alias entirely. Windows links ORT directly (no dlopen), so this is a
+ * no-op there.
+ *
+ * Must run before the addon loads (GenAI's `InitApi` is lazy, fired by the first model load). Never clobbers a
+ * caller-provided `ORT_LIB_PATH`.
+ */
+function applyOrtLibPath(directory: string): void {
+  if (process.platform === "win32" || process.env.ORT_LIB_PATH) return;
+  for (const basename of ortCandidateBasenames("onnxruntime")) {
+    const fullPath = resolve(directory, basename);
+    if (existsSync(fullPath)) {
+      process.env.ORT_LIB_PATH = fullPath;
+      return;
+    }
+  }
 }
 
 /**
@@ -376,6 +402,9 @@ export function configureNativeLoader(opts: { libraryPath?: string }): void {
   // NEEDED entries at load time; if ORT isn't already resident the load fails. See the ORT loading contract
   // (.github/instructions/ort-loading-contract.instructions.md) — every binding must do this.
   preloadOrtIfPresent(libraryPath);
+
+  // Point GenAI at the ORT in this directory (takes precedence over the default prebuilds lookup).
+  applyOrtLibPath(libraryPath);
 
   try {
     getPreloadAddon().preloadLibrary(fullPath);

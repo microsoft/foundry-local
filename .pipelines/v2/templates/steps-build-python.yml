@@ -13,13 +13,10 @@
 parameters:
 - name: nativeArtifactDir
   type: string
-  displayName: 'Path to the downloaded cpp-native-<rid>[-winml] artifact directory'
+  displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
 - name: rid
   type: string
   displayName: 'Runtime identifier (win-x64, win-arm64, linux-x64, osx-arm64)'
-- name: isWinML
-  type: boolean
-  default: false
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/python-sdk'
@@ -34,15 +31,39 @@ parameters:
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
+- name: useSystemPython
+  type: boolean
+  default: false
+  displayName: 'Use the agent system Python instead of the Azure Pipelines toolcache.'
 
 steps:
 
-- task: UsePythonVersion@0
-  displayName: 'Use Python 3.12'
-  inputs:
-    versionSpec: '3.12'
-    addToPath: true
-    architecture: '${{ parameters.pythonArchitecture }}'
+- ${{ if eq(parameters.useSystemPython, false) }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12'
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+      architecture: '${{ parameters.pythonArchitecture }}'
+
+- ${{ if eq(parameters.useSystemPython, true) }}:
+  - task: PowerShell@2
+    displayName: 'Configure system Python 3.12'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        python3 --version
+        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
+        $venvDir = "$(Agent.TempDirectory)/fl-py-build-$(System.JobId)"
+        if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
+        python3 -m venv $venvDir
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $venvBin = Join-Path $venvDir 'bin'
+        Write-Host "##vso[task.prependpath]$venvBin"
+        Write-Host "Using system Python through build venv: $venvDir"
 
 - task: PowerShell@2
   displayName: 'Set package version from pyVersion.txt'
@@ -270,13 +291,6 @@ steps:
     script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-        $isWinML = [bool]::Parse('${{ parameters.isWinML }}')
-        if ($isWinML) {
-            $env:FL_PYTHON_PACKAGE_NAME = 'foundry-local-sdk-winml'
-            Write-Host "WinML variant: FL_PYTHON_PACKAGE_NAME=$env:FL_PYTHON_PACKAGE_NAME"
-        } else {
-            Remove-Item Env:FL_PYTHON_PACKAGE_NAME -ErrorAction SilentlyContinue
-        }
         $targetArch = '${{ parameters.targetArch }}'
         $extraArgs = @()
         if ($targetArch -eq 'arm64') {
@@ -284,6 +298,10 @@ steps:
             # tags it win_amd64 because the host interpreter is x64.
             $extraArgs += '--config-setting=--build-option=--plat-name=win_arm64'
             Write-Host "Cross-compile: forcing wheel plat tag win_arm64"
+        }
+        if ('${{ parameters.rid }}' -eq 'osx-arm64') {
+            $extraArgs += '--config-setting=--build-option=--plat-name=macosx_11_0_arm64'
+            Write-Host "Forcing wheel plat tag macosx_11_0_arm64"
         }
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
@@ -340,3 +358,56 @@ steps:
     script: |
         Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl' |
             ForEach-Object { Write-Host ("{0,12}  {1}" -f $_.Length, $_.Name) }
+
+# Assert every build stage produced the expected platform-specific wheel.
+- task: PowerShell@2
+  displayName: 'Assert wheel platform tag and bundled native lib'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+        $ErrorActionPreference = 'Stop'
+        switch ('${{ parameters.rid }}') {
+            'win-x64'     { $tags = @('win_amd64');             $lib = 'foundry_local.dll' }
+            'win-arm64'   { $tags = @('win_arm64');             $lib = 'foundry_local.dll' }
+            'linux-x64'   { $tags = @('linux_x86_64');          $lib = 'libfoundry_local.so' }
+            'linux-arm64' { $tags = @('linux_aarch64');         $lib = 'libfoundry_local.so' }
+            'osx-arm64'   { $tags = @('macosx', 'arm64');       $lib = 'libfoundry_local.dylib' }
+            default       { throw "Unknown rid: ${{ parameters.rid }}" }
+        }
+
+        $wheels = @(Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl')
+        if ($wheels.Count -ne 1) {
+            throw "Expected exactly one .whl under ${{ parameters.outputDir }}, found $($wheels.Count)"
+        }
+
+        $whl = $wheels[0]
+        Write-Host "Wheel: $($whl.Name)"
+
+        foreach ($tag in $tags) {
+            if ($whl.Name -notlike "*$tag*") {
+                throw "Expected platform tag '$tag' in wheel name: $($whl.Name)"
+            }
+        }
+
+        $expected = "_native/${{ parameters.rid }}/$lib"
+        $code = @'
+        import sys, zipfile
+
+        whl, expected = sys.argv[1], sys.argv[2]
+        with zipfile.ZipFile(whl) as wheel:
+            names = wheel.namelist()
+
+        hits = [name for name in names if name.endswith(expected)]
+        if not hits:
+            print("ERROR: " + expected + " not found in wheel")
+            for name in names:
+                if name.endswith((".so", ".dll", ".dylib")):
+                    print("  " + name)
+            sys.exit(1)
+
+        print("OK: found " + hits[0])
+        '@
+        $code | python - "$($whl.FullName)" "$expected"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "Wheel validation passed."

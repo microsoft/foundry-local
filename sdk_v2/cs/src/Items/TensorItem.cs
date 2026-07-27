@@ -1,12 +1,14 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
+﻿// --------------------------------------------------------------------------------------------------------------------
+// <copyright company="Microsoft">
+//   Copyright (c) Microsoft. All rights reserved.
+// </copyright>
+// --------------------------------------------------------------------------------------------------------------------
 
+namespace Microsoft.AI.Foundry.Local;
 using System.Runtime.InteropServices;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 using Microsoft.AI.Foundry.Local.Detail.Native;
-
-namespace Microsoft.AI.Foundry.Local;
 
 public sealed class TensorItem : Item
 {

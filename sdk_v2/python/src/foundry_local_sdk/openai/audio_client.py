@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generator
+
+from typing_extensions import deprecated
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -42,8 +45,17 @@ class AudioTranscriptionResponse:
     text: str
 
 
+@deprecated(
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use AudioSession. "
+    "OpenAI types remain supported for the web-server path."
+)
 class AudioClient:
     """OpenAI-compatible audio transcription client backed by Foundry Local Core.
+
+    .. deprecated::
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
+        :class:`foundry_local_sdk.session.AudioSession`. OpenAI types remain
+        supported for the web-server path.
 
     Each call creates a fresh native session (stateless — no session history).
     Supports non-streaming and streaming transcription of audio files.
@@ -54,6 +66,12 @@ class AudioClient:
     """
 
     def __init__(self, model_id: str, model: IModel) -> None:
+        warnings.warn(
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "AudioSession. OpenAI types remain supported for the web-server path.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model_id = model_id
         # Hold the IModel reference so the underlying native model pointer
         # cannot be released out from under us.

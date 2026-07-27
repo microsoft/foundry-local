@@ -5,10 +5,8 @@
 // --------------------------------------------------------------------------------------------------------------------
 
 namespace Microsoft.AI.Foundry.Local.Tests;
-
-using System.Text.Json;
-using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.OpenAI;
+
 using TUnit.Core.Exceptions;
 
 internal sealed class LiveAudioTranscriptionTests

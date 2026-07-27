@@ -30,9 +30,12 @@ struct AddonData {
   //
   // Created once at addon Init with an initial thread count of 1 (the
   // addon's own reference). Each MakePinnedDeleter call Acquires; each
-  // deleter invocation Releases. The addon's reference is released by
-  // ~AddonData at env teardown so the TSFN finalizes after all pending
-  // pinned-buffer deleters have drained.
+  // deleter invocation Releases. The addon's own reference is released by an
+  // env cleanup hook registered in Init (napi_add_env_cleanup_hook) — NOT by
+  // ~AddonData — so the TSFN's uv_async handle is finalized while the event
+  // loop is still alive. Releasing it from the instance-data destructor runs
+  // too late in node::FreeEnvironment and races the loop teardown, causing a
+  // process-exit access violation. See the Init comment in addon.cc.
   Napi::ThreadSafeFunction buffer_release_tsfn;
 
   ~AddonData();

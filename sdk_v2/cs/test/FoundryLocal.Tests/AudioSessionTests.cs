@@ -47,8 +47,9 @@ internal sealed class AudioSessionTests
 
             if (!await model.IsCachedAsync())
             {
-                await model.DownloadAsync().ConfigureAwait(false);
-                // return;
+                throw new InvalidOperationException(
+                    "AudioSessionTests requires 'whisper-tiny' to be pre-cached. " +
+                    "Test setup is cached-only and will not download models.");
             }
 
             await model.LoadAsync().ConfigureAwait(false);

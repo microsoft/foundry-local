@@ -14,7 +14,6 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 
 using Microsoft.AI.Foundry.Local.Detail;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 #pragma warning disable CS0618 // Test helpers exercise PromptTemplate/ModelSettings which are obsolete but still supported.
@@ -62,58 +61,24 @@ internal static class Utils
 
         ILogger logger = loggerFactory.CreateLogger("FoundryLocalSdkTest");
 
-        // Read configuration from appsettings.Test.json
-        logger.LogDebug("Reading configuration from appsettings.Test.json");
-        var configuration = new ConfigurationBuilder()
-            .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile("appsettings.Test.json", optional: true, reloadOnChange: false)
-            .Build();
-
-        // Prefer the FOUNDRY_TEST_DATA_DIR env var when set (used by CI). If it points at
-        // an existing directory we treat it as an absolute path. Otherwise fall back to
-        // the appsettings.Test.json TestModelCacheDirName logic for inner-loop / VS use.
+        // FOUNDRY_TEST_DATA_DIR is required for model-dependent tests.
         var envCacheDir = Environment.GetEnvironmentVariable("FOUNDRY_TEST_DATA_DIR");
-        string testDataSharedPath;
-        if (!string.IsNullOrWhiteSpace(envCacheDir) && Directory.Exists(envCacheDir))
+        if (string.IsNullOrWhiteSpace(envCacheDir))
         {
-            testDataSharedPath = Path.GetFullPath(envCacheDir);
-            logger.LogInformation(
-                "Using test model cache directory from FOUNDRY_TEST_DATA_DIR env var: {TestDataSharedPath}",
-                testDataSharedPath);
+            logger.LogWarning(
+                "FOUNDRY_TEST_DATA_DIR is not set. Integration tests will be skipped.");
+            Console.Error.WriteLine(
+                "[Utils::Utils] FOUNDRY_TEST_DATA_DIR is not set. Integration tests will be skipped.");
+            return;
         }
-        else
-        {
-            if (!string.IsNullOrWhiteSpace(envCacheDir))
-            {
-                logger.LogWarning(
-                    "FOUNDRY_TEST_DATA_DIR is set to '{EnvCacheDir}' but the directory does not exist; falling back to appsettings.Test.json.",
-                    envCacheDir);
-            }
 
-            var testModelCacheDirName = configuration["TestModelCacheDirName"] ?? "test-data-shared";
-            if (Path.IsPathRooted(testModelCacheDirName) ||
-                testModelCacheDirName.Contains(Path.DirectorySeparatorChar) ||
-                testModelCacheDirName.Contains(Path.AltDirectorySeparatorChar))
-            {
-                // It's a relative or complete filepath, resolve from current directory
-                testDataSharedPath = Path.GetFullPath(testModelCacheDirName);
-            }
-            else
-            {
-                // It's just a directory name, combine with repo root parent
-                testDataSharedPath = Path.GetFullPath(Path.Combine(GetRepoRoot(), "..", testModelCacheDirName));
-            }
-
-            logger.LogInformation(
-                "Using test model cache directory from appsettings.Test.json: {TestDataSharedPath}",
-                testDataSharedPath);
-        }
+        string testDataSharedPath = Path.GetFullPath(envCacheDir);
+        logger.LogInformation(
+            "Using test model cache directory: {TestDataSharedPath}",
+            testDataSharedPath);
 
         if (!Directory.Exists(testDataSharedPath))
         {
-            // Do NOT throw — that would abort every test in the assembly, including pure unit
-            // tests that don't touch the manager. Instead leave IntegrationTestsAvailable=false
-            // so integration tests skip via [SkipUnlessIntegration] while unit tests still run.
             logger.LogWarning(
                 "Test model cache directory does not exist: {TestDataSharedPath}. Integration tests will be skipped. See LOCAL_MODEL_TESTING.md.",
                 testDataSharedPath);

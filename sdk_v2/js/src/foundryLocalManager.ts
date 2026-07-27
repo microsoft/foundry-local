@@ -13,6 +13,40 @@ import {
 } from "./detail/native.js";
 import type { EpDownloadResult, EpInfo } from "./types.js";
 
+// A native Manager holds process-global native resources. Dispose the live
+// Manager on process exit so native teardown happens at a deterministic point
+// rather than being left entirely to environment finalizers. `beforeExit`
+// covers a natural event-loop drain; `exit` covers callers who invoke
+// `process.exit()` themselves. Both are idempotent. The native layer permits
+// only one live Manager at a time, so a single reference is enough.
+let liveManager: FoundryLocalManager | undefined;
+let exitHandlersInstalled = false;
+
+function disposeLiveManager(): void {
+  const manager = liveManager;
+  if (manager === undefined) {
+    return;
+  }
+  try {
+    manager.dispose();
+  } catch {
+    // Best-effort: a dispose failure must not block process exit.
+  }
+}
+
+function installExitHandlersOnce(): void {
+  if (exitHandlersInstalled) {
+    return;
+  }
+  exitHandlersInstalled = true;
+  process.on("beforeExit", () => {
+    disposeLiveManager();
+  });
+  process.on("exit", () => {
+    disposeLiveManager();
+  });
+}
+
 export class FoundryLocalManager {
   readonly #native: NativeManager;
   #catalog: Catalog | undefined;
@@ -58,6 +92,8 @@ export class FoundryLocalManager {
       }
     }
     this.#native = new (getAddon().Manager)(config);
+    liveManager = this;
+    installExitHandlersOnce();
   }
 
   /**
@@ -179,6 +215,9 @@ export class FoundryLocalManager {
    * (and any method on a `Catalog` or `Model` obtained through this manager) throws a `FoundryLocalError`.
    */
   dispose(): void {
+    if (liveManager === this) {
+      liveManager = undefined;
+    }
     this.#native.dispose();
     this.#catalog = undefined;
     this.#urls = [];

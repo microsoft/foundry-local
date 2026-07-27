@@ -48,10 +48,6 @@ User data never leaves the device, responses start immediately with zero network
 1. Install the SDK:
 
     ```bash
-    # Windows (recommended for hardware acceleration)
-    npm install foundry-local-sdk-winml
-    
-    # macOS/linux
     npm install foundry-local-sdk
     ```
 
@@ -90,10 +86,6 @@ User data never leaves the device, responses start immediately with zero network
 1. Install the SDK:
 
     ```bash
-    # Windows (recommended for hardware acceleration)
-    pip install foundry-local-sdk-winml
-
-    # macOS/Linux
     pip install foundry-local-sdk
     ```
 

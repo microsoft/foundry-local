@@ -5,6 +5,18 @@
   "builtin-baseline": "256acc64012b23a13041d8705805e1f23b43a024",
   "dependencies": [
     "azure-storage-blobs-cpp",
+    {
+      "name": "azure-core-cpp",
+      "default-features": false,
+      "features": ["winhttp"],
+      "platform": "windows & !uwp"
+    },
+    {
+      "name": "azure-core-cpp",
+      "default-features": false,
+      "features": ["curl"],
+      "platform": "!windows | uwp"
+    },
     "ms-gsl",
     "nlohmann-json",
     "spdlog"

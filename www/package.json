@@ -53,6 +53,9 @@
 	"dependencies": {
 		"@vercel/analytics": "^2.0.1"
 	},
+	"overrides": {
+		"cookie": "^0.7.0"
+	},
 	"keywords": [
 		"microsoft",
 		"azure",

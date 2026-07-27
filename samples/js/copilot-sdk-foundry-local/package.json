@@ -12,9 +12,6 @@
     "foundry-local-sdk": "latest",
     "zod": "^3.0.0"
   },
-  "optionalDependencies": {
-    "foundry-local-sdk-winml": "latest"
-  },
   "devDependencies": {
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"

@@ -598,6 +598,21 @@ class SharedTestEnv : public ::testing::Environment {
   bool has_cuda() const { return has_cuda_; }
   bool has_webgpu() const { return has_webgpu_; }
 
+  // Models this environment reserves for its modality fixtures (chat, tool, audio, streaming
+  // audio, embeddings, vision, reasoning). Returned regardless of current load state: a reserved
+  // model may be unloaded right now but loaded by a later suite via AcquireModels(). Tests that
+  // mutate the cache (remove/redownload) must skip this set so they don't race the fixtures that
+  // depend on these models.
+  std::set<foundry_local::IModel*> ReservedModels() const {
+    std::set<foundry_local::IModel*> reserved;
+    for (auto* p : AllSelectedModels()) {
+      if (p) {
+        reserved.insert(p);
+      }
+    }
+    return reserved;
+  }
+
  private:
   // Return `m` only if the suite acquired it. Reflects "did
   // SetUpTestSuite ask for this and did the load succeed?", NOT the

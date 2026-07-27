@@ -13,10 +13,8 @@ class ILogger;
 
 /// Bootstrapper for the WebGPU execution provider.
 ///
-/// Fetches a manifest from Azure CDN to discover the current WebGPU EP
-/// package URL and expected SHA-256 hash, downloads the binary, verifies
-/// integrity, then registers with ORT.  The manifest-driven approach allows
-/// updating WebGPU EP binaries without shipping a new Foundry Local release.
+/// Uses platform-specific package metadata (download URL and SHA-256 hash),
+/// downloads the binary, verifies integrity, then registers with ORT.
 ///
 /// Supports Windows x64/ARM64, Linux x64, and macOS ARM64.
 class WebGpuEpBootstrapper : public IEpBootstrapper {

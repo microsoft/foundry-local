@@ -52,8 +52,6 @@
 		icon: string;
 		crossPlatformId: string;
 		crossPlatformCommand: string;
-		winmlId: string;
-		winmlCommand: string;
 	};
 
 	const cliInstallOptions: CliInstallOption[] = [
@@ -83,36 +81,28 @@
 			label: 'Python SDK',
 			icon: PythonIcon,
 			crossPlatformId: 'python-cross-platform',
-			crossPlatformCommand: 'pip install foundry-local-sdk',
-			winmlId: 'python-winml',
-			winmlCommand: 'pip install foundry-local-sdk-winml'
+			crossPlatformCommand: 'pip install foundry-local-sdk'
 		},
 		{
 			id: 'javascript',
 			label: 'JavaScript SDK',
 			icon: JavaScriptIcon,
 			crossPlatformId: 'javascript-cross-platform',
-			crossPlatformCommand: 'npm install foundry-local-sdk',
-			winmlId: 'javascript-winml',
-			winmlCommand: 'npm install foundry-local-sdk-winml'
+			crossPlatformCommand: 'npm install foundry-local-sdk'
 		},
 		{
 			id: 'csharp',
 			label: 'C# SDK',
 			icon: CSharpIcon,
 			crossPlatformId: 'csharp-cross-platform',
-			crossPlatformCommand: 'dotnet add package Microsoft.AI.Foundry.Local',
-			winmlId: 'csharp-winml',
-			winmlCommand: 'dotnet add package Microsoft.AI.Foundry.Local.WinML'
+			crossPlatformCommand: 'dotnet add package Microsoft.AI.Foundry.Local'
 		},
 		{
 			id: 'rust',
 			label: 'Rust SDK',
 			icon: RustIcon,
 			crossPlatformId: 'rust-cross-platform',
-			crossPlatformCommand: 'cargo add foundry-local-sdk',
-			winmlId: 'rust-winml',
-			winmlCommand: 'cargo add foundry-local-sdk --features winml'
+			crossPlatformCommand: 'cargo add foundry-local-sdk'
 		}
 	];
 
@@ -163,42 +153,17 @@
 						<span class="font-medium">{item.label}</span>
 					</div>
 
-					<div class="space-y-1.5 pl-6">
+					<div class="pl-6">
 						<button
 							type="button"
 							class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors outline-none"
 							onclick={() => copyToClipboard(item.crossPlatformCommand, item.crossPlatformId)}
-							aria-label={`Copy cross-platform ${item.label} installation command`}
+							aria-label={`Copy ${item.label} installation command`}
 						>
-							<span
-								class="border-border bg-muted/50 text-muted-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase"
-								>Cross-platform</span
-							>
 							<code class="text-muted-foreground min-w-0 flex-1 text-xs break-all"
 								>{item.crossPlatformCommand}</code
 							>
 							{#if copiedItemId === item.crossPlatformId}
-								<Check class="size-4 shrink-0 text-green-600" aria-hidden="true" />
-								<span class="sr-only">Copied</span>
-							{:else}
-								<Copy class="size-4 shrink-0 opacity-50" aria-hidden="true" />
-							{/if}
-						</button>
-
-						<button
-							type="button"
-							class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors outline-none"
-							onclick={() => copyToClipboard(item.winmlCommand, item.winmlId)}
-							aria-label={`Copy Windows WinML ${item.label} installation command`}
-						>
-							<span
-								class="border-primary/30 bg-primary/10 text-primary rounded border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase"
-								>Windows</span
-							>
-							<code class="text-muted-foreground min-w-0 flex-1 text-xs break-all"
-								>{item.winmlCommand}</code
-							>
-							{#if copiedItemId === item.winmlId}
 								<Check class="size-4 shrink-0 text-green-600" aria-hidden="true" />
 								<span class="sr-only">Copied</span>
 							{:else}

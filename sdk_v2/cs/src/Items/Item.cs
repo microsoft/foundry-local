@@ -1,8 +1,8 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
-using Microsoft.AI.Foundry.Local.Detail.Interop;
-using Microsoft.AI.Foundry.Local.Detail.Native;
+﻿// --------------------------------------------------------------------------------------------------------------------
+// <copyright company="Microsoft">
+//   Copyright (c) Microsoft. All rights reserved.
+// </copyright>
+// --------------------------------------------------------------------------------------------------------------------
 
 // Suppress IDisposableAnalyzers warnings for the Item base:
 // - IDISP023: Dispose accesses static Api which is always available
@@ -11,6 +11,8 @@ using Microsoft.AI.Foundry.Local.Detail.Native;
 #pragma warning disable IDISP025
 
 namespace Microsoft.AI.Foundry.Local;
+using Microsoft.AI.Foundry.Local.Detail.Interop;
+using Microsoft.AI.Foundry.Local.Detail.Native;
 
 public class Item : IDisposable
 {
@@ -41,18 +43,18 @@ public class Item : IDisposable
 
         return type switch
         {
-            ItemType.Bytes      => new BytesItem(ptr, ownsHandle),
-            ItemType.Text       => new TextItem(ptr, ownsHandle),
-            ItemType.Message    => new MessageItem(ptr, ownsHandle),
-            ItemType.Image      => new ImageItem(ptr, ownsHandle),
-            ItemType.Audio      => new AudioItem(ptr, ownsHandle),
+            ItemType.Bytes => new BytesItem(ptr, ownsHandle),
+            ItemType.Text => new TextItem(ptr, ownsHandle),
+            ItemType.Message => new MessageItem(ptr, ownsHandle),
+            ItemType.Image => new ImageItem(ptr, ownsHandle),
+            ItemType.Audio => new AudioItem(ptr, ownsHandle),
             ItemType.SpeechSegment => new SpeechSegmentItem(ptr, ownsHandle),
-            ItemType.SpeechResult  => new SpeechResultItem(ptr, ownsHandle),
-            ItemType.ToolCall   => new ToolCallItem(ptr, ownsHandle),
+            ItemType.SpeechResult => new SpeechResultItem(ptr, ownsHandle),
+            ItemType.ToolCall => new ToolCallItem(ptr, ownsHandle),
             ItemType.ToolResult => new ToolResultItem(ptr, ownsHandle),
-            ItemType.Tensor     => new TensorItem(ptr, ownsHandle),
-            ItemType.Queue      => new ItemQueue(ptr, ownsHandle),
-            _                   => new Item(ptr, ownsHandle),
+            ItemType.Tensor => new TensorItem(ptr, ownsHandle),
+            ItemType.Queue => new ItemQueue(ptr, ownsHandle),
+            _ => new Item(ptr, ownsHandle),
         };
     }
 

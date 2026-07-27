@@ -74,13 +74,14 @@ class DownloadManager {
   // from config.
   std::string config_region_;
   int max_concurrency_;
+  ILogger& logger_;
   std::unique_ptr<ModelRegistryClient> registry_client_;
   std::unique_ptr<IBlobDownloader> blob_downloader_;
 
-  /// Serializes all DownloadModel calls. Only one model downloads at a time — simpler
-  /// than per-model locking and avoids contending with the per-blob chunk parallelism
-  /// (`max_concurrency_`) inside a single download.
-  mutable std::mutex download_mutex_;
+  /// Serializes all model downloads in this process: only one runs at a time, so
+  /// each gets the full network/disk instead of competing with another download.
+  /// Cross-process serialization is handled separately by CrossProcessFileLock.
+  std::mutex download_mutex_;
 };
 
 }  // namespace fl

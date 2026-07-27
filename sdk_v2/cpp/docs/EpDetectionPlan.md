@@ -141,7 +141,7 @@ STDAPI WinMLEpEnsureReadyAsync(WinMLEpHandle ep, WinMLAsyncBlock* async);
 - Model catalog headers (we have our own)
 
 **CMake integration:**
-- `find_package(WinMLEpCatalog)` — gated behind `FOUNDRY_LOCAL_USE_WINML`
+- `find_package(WinMLEpCatalog)` — gated behind `if(WIN32)` (always enabled on Windows)
 - Windows-only.
 - Linked with `/DELAYLOAD:Microsoft.Windows.AI.MachineLearning.dll` — the DLL may
   not be present on older systems
