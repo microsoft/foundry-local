@@ -120,7 +120,6 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.1f;
 
         var audioFilePath = Utils.TestDataPath("non_exist_Recording.mp3");
 
