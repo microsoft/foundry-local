@@ -1,4 +1,5 @@
 //! OpenAI-compatible audio transcription client.
+#![allow(deprecated)] // this module implements the deprecated OpenAI facade
 
 use std::path::Path;
 
@@ -111,6 +112,11 @@ impl AudioClientSettings {
 pub type AudioTranscriptionStream = JsonStream<AudioTranscriptionResponse>;
 
 /// Client for OpenAI-compatible audio transcription backed by a local model.
+#[deprecated(
+    since = "2.0.0",
+    note = "The OpenAI direct clients are deprecated; use the Session API instead \
+            (`AudioSession::new(&model)`)."
+)]
 pub struct AudioClient {
     model_id: String,
     model: NativeModel,
@@ -195,6 +201,12 @@ impl AudioClient {
     ///
     /// Configure the session's [`settings`](LiveAudioTranscriptionSession::settings)
     /// before calling [`start`](LiveAudioTranscriptionSession::start).
+    #[deprecated(
+        since = "2.0.0",
+        note = "The OpenAI direct clients are deprecated; use `AudioSession::new(&model)` \
+                with streaming instead."
+    )]
+    #[allow(deprecated)]
     pub fn create_live_transcription_session(&self) -> LiveAudioTranscriptionSession {
         LiveAudioTranscriptionSession::new(&self.model_id, self.model.clone())
     }

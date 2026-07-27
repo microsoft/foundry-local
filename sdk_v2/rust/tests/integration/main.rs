@@ -5,6 +5,7 @@
 //! Running them as separate binaries causes "already initialized" errors
 //! because the .NET native runtime retains state across process-level
 //! library loads.
+#![allow(deprecated)] // some suites still exercise the deprecated OpenAI facade
 
 mod common;
 

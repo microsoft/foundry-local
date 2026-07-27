@@ -1,6 +1,7 @@
 //! Interactive chat example — a simple terminal chatbot powered by Foundry Local.
 //!
 //! Run with: `cargo run --example interactive_chat`
+#![allow(deprecated)] // intentionally demonstrates the deprecated OpenAI facade
 
 use std::io::{self, Write};
 

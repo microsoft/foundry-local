@@ -175,12 +175,17 @@ pub struct Model { /* private fields */ }
 | `load` | `async fn load(&self) -> Result<(), FoundryLocalError>` | Load the selected variant into memory. |
 | `unload` | `async fn unload(&self) -> Result<(), FoundryLocalError>` | Unload the selected variant from memory. |
 | `remove_from_cache` | `async fn remove_from_cache(&self) -> Result<(), FoundryLocalError>` | Remove the selected variant from the local cache. |
-| `create_chat_client` | `fn create_chat_client(&self) -> ChatClient` | Create a ChatClient bound to the selected variant. |
-| `create_audio_client` | `fn create_audio_client(&self) -> AudioClient` | Create an AudioClient bound to the selected variant. |
+| `create_chat_client` | `fn create_chat_client(&self) -> ChatClient` | **Deprecated** — use `ChatSession::new(&model)`. Create a ChatClient bound to the selected variant. |
+| `create_audio_client` | `fn create_audio_client(&self) -> AudioClient` | **Deprecated** — use `AudioSession::new(&model)`. Create an AudioClient bound to the selected variant. |
 
 ---
 
 ## OpenAI Clients
+
+> **Deprecated.** The OpenAI direct clients (`ChatClient`, `EmbeddingClient`, `AudioClient`,
+> `LiveAudioTranscriptionSession`) are deprecated in favor of the Session API
+> ([`ChatSession`](#chatsession), [`EmbeddingsSession`](#embeddingssession),
+> [`AudioSession`](#audiosession)). They remain available for backward compatibility.
 
 ### ChatClient
 

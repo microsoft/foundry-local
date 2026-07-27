@@ -1,4 +1,5 @@
 //! OpenAI-compatible embedding client.
+#![allow(deprecated)] // this module implements the deprecated OpenAI facade
 
 use async_openai::types::embeddings::CreateEmbeddingResponse;
 use serde_json::{json, Value};
@@ -9,6 +10,11 @@ use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
 
 /// Client for OpenAI-compatible embedding generation backed by a local model.
+#[deprecated(
+    since = "2.0.0",
+    note = "The OpenAI direct clients are deprecated; use the Session API instead \
+            (`EmbeddingsSession::new(&model)`)."
+)]
 pub struct EmbeddingClient {
     model_id: String,
     model: NativeModel,

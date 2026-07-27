@@ -306,18 +306,34 @@ impl Model {
     }
 
     /// Create a [`ChatClient`](crate::openai::ChatClient) bound to the (selected) variant.
+    #[deprecated(
+        since = "2.0.0",
+        note = "The OpenAI direct clients are deprecated; use `ChatSession::new(&model)` instead."
+    )]
+    #[allow(deprecated)]
     pub fn create_chat_client(&self) -> crate::openai::ChatClient {
         let v = self.selected_variant();
         crate::openai::ChatClient::new(&v.info.id, v.native.clone())
     }
 
     /// Create an [`AudioClient`](crate::openai::AudioClient) bound to the (selected) variant.
+    #[deprecated(
+        since = "2.0.0",
+        note = "The OpenAI direct clients are deprecated; use `AudioSession::new(&model)` instead."
+    )]
+    #[allow(deprecated)]
     pub fn create_audio_client(&self) -> crate::openai::AudioClient {
         let v = self.selected_variant();
         crate::openai::AudioClient::new(&v.info.id, v.native.clone())
     }
 
     /// Create an [`EmbeddingClient`](crate::openai::EmbeddingClient) bound to the (selected) variant.
+    #[deprecated(
+        since = "2.0.0",
+        note = "The OpenAI direct clients are deprecated; use `EmbeddingsSession::new(&model)` \
+                instead."
+    )]
+    #[allow(deprecated)]
     pub fn create_embedding_client(&self) -> crate::openai::EmbeddingClient {
         let v = self.selected_variant();
         crate::openai::EmbeddingClient::new(&v.info.id, v.native.clone())

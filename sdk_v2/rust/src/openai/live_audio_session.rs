@@ -28,6 +28,7 @@
 //!
 //! session.stop(None).await?;
 //! ```
+#![allow(deprecated)] // this module implements the deprecated OpenAI facade
 
 use std::os::raw::c_int;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -234,6 +235,11 @@ struct SessionState {
 ///
 /// All lifecycle methods accept an optional [`CancellationToken`]. Pass `None`
 /// to use the default (no cancellation).
+#[deprecated(
+    since = "2.0.0",
+    note = "The OpenAI direct clients are deprecated; use the Session API instead \
+            (`AudioSession::new(&model)` with streaming)."
+)]
 pub struct LiveAudioTranscriptionSession {
     model: NativeModel,
     /// Audio format settings. Must be configured before calling [`start`](Self::start).

@@ -45,6 +45,7 @@ pub use async_openai::types::chat::{
 };
 
 // Re-export OpenAI response types for convenience.
+#[allow(deprecated)] // re-export includes the deprecated `LiveAudioTranscriptionSession`
 pub use crate::openai::{
     AudioTranscriptionResponse, AudioTranscriptionStream, ChatCompletionStream, ContentPart,
     CoreErrorResponse, LiveAudioTranscriptionOptions, LiveAudioTranscriptionResponse,

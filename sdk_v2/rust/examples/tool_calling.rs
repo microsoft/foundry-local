@@ -1,6 +1,7 @@
 //! Tool-calling example demonstrating how to define tools, handle
 //! `tool_calls` in streaming responses, execute the tool locally,
 //! and feed results back for a multi-turn conversation.
+#![allow(deprecated)] // intentionally demonstrates the deprecated OpenAI facade
 
 use std::collections::HashMap;
 use std::io::{self, Write};

@@ -1,3 +1,5 @@
+#![allow(deprecated)] // re-exports the deprecated OpenAI facade types
+
 mod audio_client;
 mod chat_client;
 mod embedding_client;

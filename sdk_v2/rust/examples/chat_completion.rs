@@ -1,5 +1,6 @@
 //! Basic chat completion example demonstrating synchronous and streaming
 //! usage of the Foundry Local SDK.
+#![allow(deprecated)] // intentionally demonstrates the deprecated OpenAI facade
 
 use std::io::{self, Write};
 

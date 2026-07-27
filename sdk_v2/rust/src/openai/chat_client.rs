@@ -1,4 +1,5 @@
 //! OpenAI-compatible chat completions client.
+#![allow(deprecated)] // this module implements the deprecated OpenAI facade
 
 use std::collections::HashMap;
 
@@ -73,34 +74,31 @@ impl ChatClientSettings {
                 }
                 ChatResponseFormat::JsonSchema(schema) => {
                     rf_map.insert("type".into(), json!("json_schema"));
-                    rf_map.insert("jsonSchema".into(), json!(schema));
+                    rf_map.insert("json_schema".into(), json!(schema));
                 }
                 ChatResponseFormat::LarkGrammar(grammar) => {
                     rf_map.insert("type".into(), json!("lark_grammar"));
-                    rf_map.insert("larkGrammar".into(), json!(grammar));
+                    rf_map.insert("lark_grammar".into(), json!(grammar));
                 }
             }
             map.insert("response_format".into(), Value::Object(rf_map));
         }
 
         if let Some(ref tc) = self.tool_choice {
-            let mut tc_map = serde_json::Map::new();
-            match tc {
-                ChatToolChoice::None => {
-                    tc_map.insert("type".into(), json!("none"));
-                }
-                ChatToolChoice::Auto => {
-                    tc_map.insert("type".into(), json!("auto"));
-                }
-                ChatToolChoice::Required => {
-                    tc_map.insert("type".into(), json!("required"));
-                }
-                ChatToolChoice::Function(name) => {
-                    tc_map.insert("type".into(), json!("function"));
-                    tc_map.insert("name".into(), json!(name));
-                }
-            }
-            map.insert("tool_choice".into(), Value::Object(tc_map));
+            // Match the native `*-json` contract (see MapGuidance /
+            // chat_completions_converter.cc): `none`/`auto`/`required` are plain
+            // strings, while a named function is `{"type":"function",
+            // "function":{"name":"…"}}`.
+            let tc_value = match tc {
+                ChatToolChoice::None => json!("none"),
+                ChatToolChoice::Auto => json!("auto"),
+                ChatToolChoice::Required => json!("required"),
+                ChatToolChoice::Function(name) => json!({
+                    "type": "function",
+                    "function": { "name": name },
+                }),
+            };
+            map.insert("tool_choice".into(), tc_value);
         }
 
         // Foundry-specific metadata for settings that don't map directly to
@@ -126,6 +124,11 @@ impl ChatClientSettings {
 pub type ChatCompletionStream = JsonStream<CreateChatCompletionStreamResponse>;
 
 /// Client for OpenAI-compatible chat completions backed by a local model.
+#[deprecated(
+    since = "2.0.0",
+    note = "The OpenAI direct clients are deprecated; use the Session API instead \
+            (`ChatSession::new(&model)`)."
+)]
 pub struct ChatClient {
     model_id: String,
     model: NativeModel,
@@ -314,4 +317,86 @@ fn normalize_chat_chunk(text: String) -> Option<String> {
     }
 
     serde_json::to_string(&value).ok().or(Some(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ChatResponseFormat, ChatToolChoice};
+
+    fn serialize_with(f: impl FnOnce(&mut ChatClientSettings)) -> Value {
+        let mut s = ChatClientSettings::default();
+        f(&mut s);
+        s.serialize()
+    }
+
+    #[test]
+    fn response_format_json_schema_uses_snake_case_key() {
+        // The native `*-json` converter (MapGuidance) reads `json_schema`, not
+        // `jsonSchema`; a camelCase key is silently dropped.
+        let v = serialize_with(|s| {
+            s.response_format = Some(ChatResponseFormat::JsonSchema(
+                "{\"type\":\"object\"}".into(),
+            ));
+        });
+        let rf = &v["response_format"];
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"], "{\"type\":\"object\"}");
+        assert!(
+            rf.get("jsonSchema").is_none(),
+            "must not emit camelCase key"
+        );
+    }
+
+    #[test]
+    fn response_format_lark_grammar_uses_snake_case_key() {
+        let v = serialize_with(|s| {
+            s.response_format = Some(ChatResponseFormat::LarkGrammar("start: WORD+".into()));
+        });
+        let rf = &v["response_format"];
+        assert_eq!(rf["type"], "lark_grammar");
+        assert_eq!(rf["lark_grammar"], "start: WORD+");
+        assert!(
+            rf.get("larkGrammar").is_none(),
+            "must not emit camelCase key"
+        );
+    }
+
+    #[test]
+    fn tool_choice_simple_modes_are_plain_strings() {
+        // Native reads none/auto/required as JSON strings (tc.is_string()).
+        for (choice, expected) in [
+            (ChatToolChoice::None, "none"),
+            (ChatToolChoice::Auto, "auto"),
+            (ChatToolChoice::Required, "required"),
+        ] {
+            let v = serialize_with(|s| s.tool_choice = Some(choice));
+            assert_eq!(v["tool_choice"], expected);
+        }
+    }
+
+    #[test]
+    fn tool_choice_function_nests_name_under_function() {
+        // Native reads the target as tc["function"]["name"].
+        let v = serialize_with(|s| {
+            s.tool_choice = Some(ChatToolChoice::Function("get_weather".into()));
+        });
+        let tc = &v["tool_choice"];
+        assert_eq!(tc["type"], "function");
+        assert_eq!(tc["function"]["name"], "get_weather");
+        assert!(
+            tc.get("name").is_none(),
+            "name must be nested under `function`"
+        );
+    }
+
+    #[test]
+    fn foundry_metadata_carries_top_k_and_random_seed() {
+        let v = serialize_with(|s| {
+            s.top_k = Some(40);
+            s.random_seed = Some(7);
+        });
+        assert_eq!(v["metadata"]["top_k"], "40");
+        assert_eq!(v["metadata"]["random_seed"], "7");
+    }
 }
