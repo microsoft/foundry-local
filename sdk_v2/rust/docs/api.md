@@ -23,6 +23,21 @@
   - [TranscriptionSegment](#transcriptionsegment)
   - [TranscriptionWord](#transcriptionword)
   - [JsonStream\<T\>](#jsonstreamt)
+- [Inference API](#inference-api)
+  - [Session](#session)
+  - [ChatSession](#chatsession)
+  - [EmbeddingsSession](#embeddingssession)
+  - [AudioSession](#audiosession)
+  - [ItemQueue](#itemqueue)
+  - [ItemStream](#itemstream)
+  - [Item](#item)
+  - [Message](#message)
+  - [Tensor](#tensor)
+  - [Request](#request)
+  - [RequestOptions](#requestoptions)
+  - [Response](#response)
+  - [FinishReason](#finishreason)
+  - [ToolDefinition](#tooldefinition)
 - [Types](#types)
   - [ModelInfo](#modelinfo)
   - [ChatResponseFormat](#chatresponseformat)
@@ -355,6 +370,317 @@ impl<T: DeserializeOwned> Stream for JsonStream<T> {
 
 ---
 
+## Inference API
+
+The low-level, modality-agnostic inference API, mirroring the C++/C#/Python/JS SDKs
+but expressed idiomatically in Rust. Submit a [`Request`](#request) of
+[`Item`](#item)s to a [`Session`](#session) and receive a [`Response`](#response)
+of `Item`s.
+
+The design splits types by whether they own a native lifetime:
+
+- **Pure-data values** — `Item`, `Request`, `Response`, and their option/enum
+  types are plain owned data: `Send + Sync + Clone`, holding no native handle.
+  Build them freely, move them across threads, and drop them at will; the native
+  layer copies whatever it needs when a request is processed.
+- **Handle-backed** — `Session` (and the typed `ChatSession` /
+  `EmbeddingsSession` / `AudioSession`) and `ItemQueue` wrap a shared native
+  object (`Arc`), so cloning yields another handle to the same underlying
+  session/queue.
+
+### Session
+
+A stateful inference session bound to a loaded [`Model`](#model). The base,
+modality-agnostic entry point.
+
+```rust
+pub struct Session { /* private fields */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<Session, FoundryLocalError>` | Open a session on a loaded model. |
+| `process_request` | `async fn process_request(&self, request: Request) -> Result<Response, FoundryLocalError>` | Process a request and return the complete response. Cancel-on-drop: dropping the future (e.g. via `tokio::time::timeout` or `select!`) cancels the in-flight request. |
+| `process_streaming_request` | `fn process_streaming_request(&self, request: Request) -> ItemStream` | Process a request, streaming each output item as it is produced. Dropping the stream cancels generation. |
+| `set_options` | `async fn set_options(&self, options: RequestOptions) -> Result<(), FoundryLocalError>` | Apply session-scoped options that persist across subsequent requests. |
+| `create_input_queue` | `fn create_input_queue(&self) -> Result<ItemQueue, FoundryLocalError>` | Create an [`ItemQueue`](#itemqueue) for streaming incremental input into a request. |
+
+### ChatSession
+
+A chat-oriented session adding tool registration and turn management.
+Dereferences to [`Session`](#session), so all base methods are available.
+
+```rust
+pub struct ChatSession { /* private fields */ }
+impl Deref for ChatSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. |
+| `add_tool_definition` | `async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<(), FoundryLocalError>` | Register a tool for the lifetime of the session. |
+| `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |
+| `turn_count` | `fn turn_count(&self) -> usize` | The number of completed conversation turns. |
+| `undo_turns` | `async fn undo_turns(&self, count: usize) -> Result<(), FoundryLocalError>` | Rewind the last `count` turns. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### EmbeddingsSession
+
+An embeddings-oriented session producing dense vectors for text input.
+Dereferences to [`Session`](#session).
+
+```rust
+pub struct EmbeddingsSession { /* private fields */ }
+impl Deref for EmbeddingsSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<EmbeddingsSession, FoundryLocalError>` | Open an embeddings session on a loaded model. |
+| `embed` | `async fn embed(&self, input: impl Into<String>) -> Result<Vec<f32>, FoundryLocalError>` | Embed a single text input. |
+| `embed_batch` | `async fn embed_batch(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, FoundryLocalError>` | Embed a batch of inputs, one vector per input (in order). |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### AudioSession
+
+An audio-oriented session for speech tasks (e.g. transcription).
+Dereferences to [`Session`](#session).
+
+```rust
+pub struct AudioSession { /* private fields */ }
+impl Deref for AudioSession { type Target = Session; }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `async fn new(model: &Model) -> Result<AudioSession, FoundryLocalError>` | Open an audio session on a loaded model. |
+| `transcribe` | `async fn transcribe(&self, audio: Item) -> Result<String, FoundryLocalError>` | Transcribe a single audio item, returning the recognized text. |
+| `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### ItemQueue
+
+A thread-safe, multi-producer / multi-consumer queue of [`Item`](#item)s for
+streaming incremental input into a request (e.g. live audio). Create one from a
+session via [`Session::create_input_queue`](#session) and attach it to a request
+with [`Request::with_input_queue`](#request). Cloning yields another handle to the
+same underlying queue.
+
+```rust
+pub struct ItemQueue { /* private fields */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `push` | `fn push(&self, item: &Item) -> Result<(), FoundryLocalError>` | Push an item, transferring a native copy into the queue. |
+| `try_pop` | `fn try_pop(&self) -> Option<Item>` | Pop the next item, or `None` if currently empty. |
+| `len` | `fn len(&self) -> usize` | Number of items currently buffered. |
+| `is_empty` | `fn is_empty(&self) -> bool` | Whether the queue currently holds no items. |
+| `mark_finished` | `fn mark_finished(&self)` | Signal that no more items will be pushed. |
+| `is_finished` | `fn is_finished(&self) -> bool` | Whether `mark_finished` has been called. |
+
+### ItemStream
+
+An asynchronous stream of output [`Item`](#item)s from
+[`Session::process_streaming_request`](#session). Implements
+[`futures_core::Stream`]; dropping it cancels generation.
+
+```rust
+pub struct ItemStream { /* private fields */ }
+
+impl Unpin for ItemStream {}
+impl Stream for ItemStream {
+    type Item = Result<Item, FoundryLocalError>;
+}
+```
+
+### Item
+
+A single unit of input or output data exchanged with a session. A pure-data,
+owned enum (`Send + Sync + Clone`) — construct with the associated functions and
+inspect by pattern matching.
+
+```rust
+pub enum Item {
+    Text { text: String, kind: TextKind },
+    Message(Message),
+    Bytes(Vec<u8>),
+    Tensor(Tensor),
+    Image(Image),
+    Audio(Audio),
+    ToolCall(ToolCall),
+    ToolResult(ToolResult),
+    SpeechSegment(SpeechSegment), // output-only
+    SpeechResult(SpeechResult),   // output-only
+}
+```
+
+**Constructors:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `text` | `fn text(text: impl Into<String>) -> Item` | A `Default`-kind text item. |
+| `reasoning` | `fn reasoning(text: impl Into<String>) -> Item` | A `Reasoning`-kind text item. |
+| `message` | `fn message(role: MessageRole, content: impl Into<Vec<Item>>) -> Item` | A chat message with content parts. |
+| `system_message` / `user_message` / `assistant_message` / `developer_message` / `tool_message` | `fn(content: impl Into<Vec<Item>>) -> Item` | Role-specific message constructors. |
+| `bytes` | `fn bytes(data: impl Into<Vec<u8>>) -> Item` | An opaque byte buffer. |
+| `tensor` | `fn tensor(data_type: TensorDataType, shape: impl Into<Vec<i64>>, data: impl Into<Vec<u8>>) -> Item` | A numeric tensor from raw bytes. |
+| `float_tensor` | `fn float_tensor(shape: impl Into<Vec<i64>>, data: &[f32]) -> Item` | A `Float`-typed tensor from `f32` values. |
+| `image_data` / `image_uri` | `fn(…, format: Option<impl Into<String>>) -> Item` | An inline or URI-referenced image. |
+| `audio_data` / `audio_uri` | `fn(…) -> Item` | An inline or URI-referenced audio clip. |
+| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call. |
+| `tool_result` | `fn tool_result(call_id: impl Into<String>, result: impl Into<String>) -> Item` | The result of executing a tool call. |
+
+**Accessors:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `item_type` | `fn item_type(&self) -> ItemType` | The discriminant of this item. |
+| `as_text` | `fn as_text(&self) -> Option<&str>` | The text, if this is a `Text` item. |
+| `as_message` | `fn as_message(&self) -> Option<&Message>` | The message, if this is a `Message` item. |
+| `as_tensor` | `fn as_tensor(&self) -> Option<&Tensor>` | The tensor, if this is a `Tensor` item. |
+| `as_tool_call` | `fn as_tool_call(&self) -> Option<&ToolCall>` | The tool call, if this is a `ToolCall` item. |
+| `as_speech_result` | `fn as_speech_result(&self) -> Option<&SpeechResult>` | The speech result, if this is a `SpeechResult` item. |
+
+Supporting enums: `ItemType`, `TextKind` (`Default`, `Reasoning`, `OpenAiJson`),
+`MessageRole` (`None`, `System`, `User`, `Assistant`, `Tool`, `Developer`),
+`TensorDataType`, `SpeechSegmentKind`, and `MediaSource` (`Data(Vec<u8>)` /
+`Uri(String)`).
+
+### Message
+
+A chat message with a role and nested content parts.
+
+```rust
+pub struct Message {
+    pub role: MessageRole,
+    pub content: Vec<Item>,
+    pub name: Option<String>,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(role: MessageRole, content: impl Into<Vec<Item>>) -> Message` | Construct a message. |
+| `with_name` | `fn with_name(mut self, name: impl Into<String>) -> Message` | Attach a participant name (builder-style). |
+| `is_simple_text` | `fn is_simple_text(&self) -> bool` | Whether the content is a single text part. |
+| `text` | `fn text(&self) -> String` | The concatenated text of all text content parts. |
+
+### Tensor
+
+A numeric tensor payload (e.g. an embedding vector).
+
+```rust
+pub struct Tensor {
+    pub data_type: TensorDataType,
+    pub shape: Vec<i64>,
+    pub data: Vec<u8>,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `as_f32` | `fn as_f32(&self) -> Option<Vec<f32>>` | Reinterpret the bytes as `f32` values, if `data_type` is `Float`. |
+
+### Request
+
+A unit of work submitted to a session. Pure data: owned input items, an optional
+streaming [`ItemQueue`](#itemqueue), and optional [`RequestOptions`](#requestoptions).
+
+```rust
+pub struct Request {
+    pub items: Vec<Item>,
+    pub input_queue: Option<ItemQueue>,
+    pub options: Option<RequestOptions>,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new() -> Request` | An empty request. |
+| `from_items` | `fn from_items(items: impl Into<Vec<Item>>) -> Request` | A request from a list of input items. |
+| `with_item` | `fn with_item(mut self, item: Item) -> Request` | Append an input item (builder-style). |
+| `with_input_queue` | `fn with_input_queue(mut self, queue: ItemQueue) -> Request` | Attach a streaming input queue (builder-style). |
+| `with_options` | `fn with_options(mut self, options: RequestOptions) -> Request` | Attach per-request options (builder-style). |
+
+### RequestOptions
+
+Sampling / decoding parameters applied to a request (or, via
+[`Session::set_options`](#session), to a session). Typed `search` fields and
+`tool_choice` take precedence over `additional_options` on key collision.
+
+```rust
+pub struct RequestOptions {
+    pub search: SearchOptions,
+    pub tool_choice: Option<ToolChoice>,
+    pub additional_options: Vec<(String, String)>,
+}
+
+pub struct SearchOptions {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<i32>,
+    pub max_output_tokens: Option<i32>,
+    pub frequency_penalty: Option<f32>,
+    pub presence_penalty: Option<f32>,
+    pub seed: Option<i64>,
+    pub early_stopping: Option<bool>,
+    pub do_sample: Option<bool>,
+}
+
+pub enum ToolChoice { Auto, None, Required }
+```
+
+### Response
+
+The result of processing a request: output items plus the finish reason and token
+usage.
+
+```rust
+pub struct Response {
+    pub items: Vec<Item>,
+    pub finish_reason: FinishReason,
+    pub usage: Usage,
+}
+
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `text` | `fn text(&self) -> String` | The concatenated text of all text output items. |
+
+### FinishReason
+
+Why generation stopped. (Distinct from the OpenAI facade's finish reason, which is
+re-exported as [`ChatFinishReason`](#re-exported-openai-types).)
+
+```rust
+pub enum FinishReason { None, Error, Stop, Length, ToolCalls }
+```
+
+### ToolDefinition
+
+A tool the model may call, registered on a [`ChatSession`](#chatsession).
+
+```rust
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: Option<String>,
+    pub json_schema: String,
+}
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A tool with a name and JSON-schema parameters. |
+| `with_description` | `fn with_description(mut self, description: impl Into<String>) -> ToolDefinition` | Attach a description (builder-style). |
+
+---
+
 ## Types
 
 ### ModelInfo
@@ -542,7 +868,8 @@ The following types from `async_openai` are re-exported at the crate root for co
 - `ChatCompletionResponseMessage`
 - `ChatCompletionStreamResponseDelta`
 - `CompletionUsage`
-- `FinishReason`
+- `ChatFinishReason` (OpenAI finish reason; re-exported under this name to avoid
+  colliding with the core inference [`FinishReason`](#finishreason))
 
 **Tool call types:**
 - `ChatCompletionMessageToolCall`

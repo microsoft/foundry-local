@@ -11,7 +11,7 @@ use tokio_stream::StreamExt;
 use foundry_local_sdk::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
     ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage, ChatCompletionTools,
-    ChatToolChoice, FinishReason, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager,
+    ChatFinishReason, ChatToolChoice, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager,
 };
 
 /// Convenience alias matching the SDK's internal Result type.
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            if choice.finish_reason == Some(FinishReason::ToolCalls) {
+            if choice.finish_reason == Some(ChatFinishReason::ToolCalls) {
                 for (_, call) in state.pending.drain() {
                     state.completed.push(json!({
                         "id": call.id,

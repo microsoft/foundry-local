@@ -307,7 +307,7 @@ Define functions the model can call and handle the multi-turn conversation:
 ```rust
 use foundry_local_sdk::{
     ChatCompletionRequestMessage, ChatCompletionRequestToolMessage,
-    ChatCompletionTools, ChatToolChoice, FinishReason,
+    ChatCompletionTools, ChatFinishReason, ChatToolChoice,
 };
 use serde_json::json;
 
@@ -339,7 +339,7 @@ let mut messages: Vec<ChatCompletionRequestMessage> = vec![
 let response = client.complete_chat(&messages, Some(&tools)).await?;
 let choice = &response.choices[0];
 
-if choice.finish_reason == Some(FinishReason::ToolCalls) {
+if choice.finish_reason == Some(ChatFinishReason::ToolCalls) {
     if let Some(tool_calls) = &choice.message.tool_calls {
         for tc in tool_calls {
             // Execute the tool (your application logic)
@@ -366,7 +366,7 @@ if choice.finish_reason == Some(FinishReason::ToolCalls) {
 }
 ```
 
-Tool calling also works with streaming via `complete_streaming_chat` — accumulate tool call fragments during streaming and check for `FinishReason::ToolCalls`.
+Tool calling also works with streaming via `complete_streaming_chat` — accumulate tool call fragments during streaming and check for `ChatFinishReason::ToolCalls`.
 
 ### Response Format Options
 

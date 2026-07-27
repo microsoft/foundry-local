@@ -8,14 +8,16 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use super::api::Api;
+use super::api::{Api, Kvps};
 use super::ffi::*;
 use super::items::{
-    make_bytes_item, make_openai_json_item, read_speech_result_text, read_text_item,
+    item_from_native, item_to_native, make_bytes_item, make_openai_json_item,
+    read_speech_result_text, read_text_item,
 };
 use super::manager::NativeManager;
 use super::native::NativeModel;
 use crate::error::{FoundryLocalError, Result};
+use crate::item::Item;
 
 /// Per-item transform applied to streamed TEXT payloads before they are emitted.
 pub(crate) type StreamTransform = Box<dyn Fn(String) -> Option<String> + Send>;
@@ -26,6 +28,14 @@ pub(crate) struct NativeRequest {
     api: Arc<Api>,
     ptr: *mut flRequest,
 }
+
+// SAFETY: the raw `flRequest` pointer is only *mutated* (add_item / set_options /
+// process) from the single blocking worker that owns the request. The one method
+// callable from another thread is `cancel`, which the native layer implements as
+// an atomic-flag store (`Request_Cancel`), so concurrent cancel-vs-process is
+// well-defined. This mirrors the Send+Sync story of `NativeSession`.
+unsafe impl Send for NativeRequest {}
+unsafe impl Sync for NativeRequest {}
 
 impl NativeRequest {
     pub(crate) fn new(api: Arc<Api>) -> Result<Self> {
@@ -39,6 +49,42 @@ impl NativeRequest {
         let status =
             unsafe { (self.api.inference_api().Request_AddItem)(self.ptr, item, take_ownership) };
         self.api.check(status)
+    }
+
+    /// Build a native item from a public [`Item`] and add it, transferring
+    /// ownership to the request. Releases the transient item if the add fails.
+    pub(crate) fn add_item_value(&self, item: &Item) -> Result<()> {
+        let native = item_to_native(&self.api, item)?;
+        if let Err(e) = self.add_item(native, true) {
+            // The add did not take ownership on failure — reclaim to avoid a leak.
+            unsafe { (self.api.item_api().Item_Release)(native) };
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Add a streaming input queue to the request as a *borrowed* item: the queue
+    /// remains owned by its [`NativeItemQueue`] and must outlive processing.
+    pub(crate) fn add_input_queue(&self, queue: &NativeItemQueue) -> Result<()> {
+        self.add_item(queue.as_item_ptr(), false)
+    }
+
+    /// Apply request-scoped options from a native key/value collection.
+    pub(crate) fn set_options(&self, options: *const flKeyValuePairs) -> Result<()> {
+        let status = unsafe { (self.api.inference_api().Request_SetOptions)(self.ptr, options) };
+        self.api.check(status)
+    }
+
+    /// Signal cancellation of an in-flight request.
+    ///
+    /// The native layer records this as an atomic flag (`Request_Cancel`), so it
+    /// is safe to call from a thread other than the one running
+    /// [`NativeSession::process_request`]; in-progress generation stops as soon
+    /// as possible. Best-effort: any status is released and the error ignored,
+    /// which is appropriate for the drop-cancel path.
+    pub(crate) fn cancel(&self) {
+        let status = unsafe { (self.api.inference_api().Request_Cancel)(self.ptr) };
+        let _ = self.api.check(status);
     }
 }
 
@@ -83,6 +129,53 @@ impl NativeResponse {
             return None;
         }
         unsafe { read_speech_result_text(&self.api, item) }
+    }
+
+    /// Read the response item at `idx` into an owned [`Item`].
+    pub(crate) fn item(&self, idx: usize) -> Option<Item> {
+        let mut item: *const flItem = ptr::null();
+        let status =
+            unsafe { (self.api.inference_api().Response_GetItem)(self.ptr, idx, &mut item) };
+        if self.api.check(status).is_err() {
+            return None;
+        }
+        unsafe { item_from_native(&self.api, item) }
+    }
+
+    /// Collect all response items into owned [`Item`]s.
+    pub(crate) fn items(&self) -> Vec<Item> {
+        let count = self.item_count();
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            if let Some(item) = self.item(i) {
+                out.push(item);
+            }
+        }
+        out
+    }
+
+    /// The native finish-reason discriminant for the response.
+    pub(crate) fn finish_reason(&self) -> flFinishReason {
+        unsafe { (self.api.inference_api().Response_GetFinishReason)(self.ptr) }
+    }
+
+    /// Token usage as `(prompt, completion, total)`; zeros if unavailable.
+    pub(crate) fn usage(&self) -> (i64, i64, i64) {
+        let mut usage = flUsage {
+            version: FOUNDRY_LOCAL_API_VERSION,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+        };
+        let status = unsafe { (self.api.inference_api().Response_GetUsage)(self.ptr, &mut usage) };
+        if self.api.check(status).is_err() {
+            return (0, 0, 0);
+        }
+        (
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+        )
     }
 }
 
@@ -143,6 +236,38 @@ impl NativeItemQueue {
         self.push_item(item)
     }
 
+    /// Build a native item from a public [`Item`] and push it into the queue.
+    pub(crate) fn push_value(&self, item: &Item) -> Result<()> {
+        let native = item_to_native(&self.api, item)?;
+        // `push_item` consumes `native` on every path (see its docs).
+        self.push_item(native)
+    }
+
+    /// Pop the next item, if any, decoding it into an owned [`Item`].
+    ///
+    /// Returns `None` when the queue is currently empty. Ownership of the popped
+    /// native item transfers to us, so it is released after decoding.
+    pub(crate) fn try_pop_value(&self) -> Option<Item> {
+        let mut item: *mut flItem = ptr::null_mut();
+        let popped = unsafe { (self.api.item_api().ItemQueue_TryPop)(self.ptr, &mut item) };
+        if !popped || item.is_null() {
+            return None;
+        }
+        let decoded = unsafe { item_from_native(&self.api, item) };
+        unsafe { (self.api.item_api().Item_Release)(item) };
+        decoded
+    }
+
+    /// The number of items currently buffered in the queue.
+    pub(crate) fn size(&self) -> usize {
+        unsafe { (self.api.item_api().ItemQueue_Size)(self.ptr) }
+    }
+
+    /// Whether the queue has been marked finished (no further pushes expected).
+    pub(crate) fn is_finished(&self) -> bool {
+        unsafe { (self.api.item_api().ItemQueue_IsFinished)(self.ptr) }
+    }
+
     /// Signal that no more items will be pushed.
     pub(crate) fn mark_finished(&self) {
         unsafe { (self.api.item_api().ItemQueue_MarkFinished)(self.ptr) };
@@ -196,6 +321,62 @@ impl NativeSession {
         let status = unsafe {
             (self.api.inference_api().Session_SetStreamingCallback)(self.ptr, callback, user_data)
         };
+        self.api.check(status)
+    }
+
+    /// Apply session-scoped options from a native key/value collection.
+    pub(crate) fn set_options(&self, options: *const flKeyValuePairs) -> Result<()> {
+        let status = unsafe { (self.api.inference_api().Session_SetOptions)(self.ptr, options) };
+        self.api.check(status)
+    }
+
+    /// Register a tool definition for the lifetime of the session.
+    pub(crate) fn add_tool_definition(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        json_schema: &str,
+    ) -> Result<()> {
+        let name_c = super::api::to_cstring(name)?;
+        let desc_c = match description {
+            Some(d) => Some(super::api::to_cstring(d)?),
+            None => None,
+        };
+        let schema_c = super::api::to_cstring(json_schema)?;
+        let def = flToolDefinition {
+            version: FOUNDRY_LOCAL_API_VERSION,
+            name: name_c.as_ptr(),
+            description: desc_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+            json_schema: schema_c.as_ptr(),
+        };
+        let status =
+            unsafe { (self.api.inference_api().Session_AddToolDefinition)(self.ptr, &def) };
+        self.api.check(status)
+    }
+
+    /// Remove a previously-registered tool by name. Returns whether one was removed.
+    pub(crate) fn remove_tool_definition(&self, name: &str) -> Result<bool> {
+        let name_c = super::api::to_cstring(name)?;
+        let mut removed = false;
+        let status = unsafe {
+            (self.api.inference_api().Session_RemoveToolDefinition)(
+                self.ptr,
+                name_c.as_ptr(),
+                &mut removed,
+            )
+        };
+        self.api.check(status)?;
+        Ok(removed)
+    }
+
+    /// The number of completed turns.
+    pub(crate) fn turn_count(&self) -> usize {
+        unsafe { (self.api.inference_api().Session_GetTurnCount)(self.ptr) }
+    }
+
+    /// Rewind the last `count` turns, dropping their messages and replies.
+    pub(crate) fn undo_turns(&self, count: usize) -> Result<()> {
+        let status = unsafe { (self.api.inference_api().Session_UndoTurns)(self.ptr, count) };
         self.api.check(status)
     }
 
@@ -319,6 +500,107 @@ pub(crate) fn run_openai_json_streaming(
             let request = NativeRequest::new(Arc::clone(&session.api))?;
             let item = make_openai_json_item(&session.api, &request_json)?;
             request.add_item(item, true)?;
+            let _response = session.process_request(&request)?;
+            Ok(())
+        })();
+        if let Err(e) = run {
+            let _ = tx.send(Err(e));
+        }
+
+        // Uninstall the callback before the context/session are dropped.
+        let _ = session.set_streaming_callback(None, ptr::null_mut());
+        drop(ctx);
+        drop(session);
+    });
+
+    rx
+}
+
+// ── Generic item streaming bridge ─────────────────────────────────────────────
+
+struct ItemStreamCtx {
+    api: Arc<Api>,
+    tx: UnboundedSender<Result<Item>>,
+}
+
+unsafe extern "C" fn item_stream_trampoline(
+    data: flStreamingCallbackData,
+    user_data: *mut std::ffi::c_void,
+) -> c_int {
+    if user_data.is_null() {
+        return 0;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let ctx = &*(user_data as *const ItemStreamCtx);
+        let queue = data.item_queue;
+        if queue.is_null() {
+            return 0;
+        }
+        let item_api = ctx.api.item_api();
+        loop {
+            let mut item: *mut flItem = ptr::null_mut();
+            let popped = (item_api.ItemQueue_TryPop)(queue, &mut item);
+            if !popped {
+                break;
+            }
+            if item.is_null() {
+                continue;
+            }
+            // Ownership of `item` transferred to us — decode then release.
+            let decoded = item_from_native(&ctx.api, item);
+            (item_api.Item_Release)(item);
+            if let Some(decoded) = decoded {
+                if ctx.tx.send(Ok(decoded)).is_err() {
+                    return 1; // receiver dropped — cancel generation
+                }
+            }
+        }
+        0
+    }));
+    result.unwrap_or(1)
+}
+
+/// Run a request on a blocking worker, streaming each output item back through a
+/// channel.
+///
+/// Input is provided as owned `items` plus an optional borrowed `input_queue`;
+/// `option_pairs` are applied as request options. The channel closes when
+/// generation completes or errors; dropping the receiver cancels generation.
+pub(crate) fn run_item_streaming(
+    session: Arc<NativeSession>,
+    items: Vec<Item>,
+    input_queue: Option<Arc<NativeItemQueue>>,
+    option_pairs: Vec<(String, String)>,
+) -> UnboundedReceiver<Result<Item>> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Item>>();
+
+    tokio::task::spawn_blocking(move || {
+        let ctx = Box::new(ItemStreamCtx {
+            api: Arc::clone(&session.api),
+            tx: tx.clone(),
+        });
+        let ctx_ptr = &*ctx as *const ItemStreamCtx as *mut std::ffi::c_void;
+
+        if let Err(e) = session.set_streaming_callback(Some(item_stream_trampoline), ctx_ptr) {
+            let _ = tx.send(Err(e));
+            return;
+        }
+
+        let run = (|| -> Result<()> {
+            let request = NativeRequest::new(Arc::clone(&session.api))?;
+            for item in &items {
+                request.add_item_value(item)?;
+            }
+            if let Some(queue) = &input_queue {
+                request.add_input_queue(queue)?;
+            }
+            if !option_pairs.is_empty() {
+                let kvps = Kvps::from_pairs(
+                    Arc::clone(&session.api),
+                    option_pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+                )?;
+                request.set_options(kvps.as_ptr())?;
+            }
             let _response = session.process_request(&request)?;
             Ok(())
         })();

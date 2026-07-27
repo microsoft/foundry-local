@@ -72,6 +72,31 @@ pub const FOUNDRY_LOCAL_DEVICE_GPU: flDeviceType = 2;
 pub const FOUNDRY_LOCAL_DEVICE_NPU: flDeviceType = 3;
 
 pub type flTensorDataType = c_int;
+pub const FOUNDRY_LOCAL_TENSOR_UNDEFINED: flTensorDataType = 0;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT: flTensorDataType = 1;
+pub const FOUNDRY_LOCAL_TENSOR_UINT8: flTensorDataType = 2;
+pub const FOUNDRY_LOCAL_TENSOR_INT8: flTensorDataType = 3;
+pub const FOUNDRY_LOCAL_TENSOR_UINT16: flTensorDataType = 4;
+pub const FOUNDRY_LOCAL_TENSOR_INT16: flTensorDataType = 5;
+pub const FOUNDRY_LOCAL_TENSOR_INT32: flTensorDataType = 6;
+pub const FOUNDRY_LOCAL_TENSOR_INT64: flTensorDataType = 7;
+pub const FOUNDRY_LOCAL_TENSOR_STRING: flTensorDataType = 8;
+pub const FOUNDRY_LOCAL_TENSOR_BOOL: flTensorDataType = 9;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT16: flTensorDataType = 10;
+pub const FOUNDRY_LOCAL_TENSOR_DOUBLE: flTensorDataType = 11;
+pub const FOUNDRY_LOCAL_TENSOR_UINT32: flTensorDataType = 12;
+pub const FOUNDRY_LOCAL_TENSOR_UINT64: flTensorDataType = 13;
+pub const FOUNDRY_LOCAL_TENSOR_COMPLEX64: flTensorDataType = 14;
+pub const FOUNDRY_LOCAL_TENSOR_COMPLEX128: flTensorDataType = 15;
+pub const FOUNDRY_LOCAL_TENSOR_BFLOAT16: flTensorDataType = 16;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT8E4M3FN: flTensorDataType = 17;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT8E4M3FNUZ: flTensorDataType = 18;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT8E5M2: flTensorDataType = 19;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT8E5M2FNUZ: flTensorDataType = 20;
+pub const FOUNDRY_LOCAL_TENSOR_UINT4: flTensorDataType = 21;
+pub const FOUNDRY_LOCAL_TENSOR_INT4: flTensorDataType = 22;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT4E2M1: flTensorDataType = 23;
+pub const FOUNDRY_LOCAL_TENSOR_FLOAT8E8M0: flTensorDataType = 24;
 
 pub type flItemType = c_int;
 pub const FOUNDRY_LOCAL_ITEM_UNKNOWN: flItemType = 0;
@@ -140,6 +165,8 @@ pub const FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS: &str = "max_output_tokens";
 pub const FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY: &str = "frequency_penalty";
 pub const FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY: &str = "presence_penalty";
 pub const FOUNDRY_LOCAL_PARAM_SEED: &str = "seed";
+pub const FOUNDRY_LOCAL_PARAM_EARLY_STOPPING: &str = "early_stopping";
+pub const FOUNDRY_LOCAL_PARAM_DO_SAMPLE: &str = "do_sample";
 pub const FOUNDRY_LOCAL_PARAM_TOOL_CHOICE: &str = "tool_choice";
 
 // ── Versioned data structs ───────────────────────────────────────────────────
