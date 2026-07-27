@@ -1,0 +1,30 @@
+name: Feature Request
+description: requests for new Foundry Local features
+title: "[Feature Request] "
+labels: ["feature request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting your request, please review existing issues to avoid duplicates.
+  - type: textarea
+    id: feature-description
+    attributes:
+      label: Describe the feature request
+      placeholder: Describe the feature you want, why it should be added, and alternatives you've considered.
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Describe scenario use case
+      placeholder: Explain the capability and user scenario this request supports.
+    validations:
+      required: true
+  - type: textarea
+    id: customer-requirement
+    attributes:
+      label: Customer requirement and impact
+      placeholder: Explain which customers or customer segments are asking for this feature and the impact this feature would have for them.
+    validations:
+      required: true
