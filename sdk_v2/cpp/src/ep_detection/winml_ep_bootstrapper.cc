@@ -11,8 +11,11 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // WinML EP Catalog C API — delay-loaded via Microsoft.Windows.AI.MachineLearning.dll
@@ -25,6 +28,20 @@
 namespace fl {
 
 namespace {
+
+constexpr std::array<std::string_view, 6> kTrustedProviderNames = {
+    "MIGraphXExecutionProvider",
+    "NvTensorRtRtxExecutionProvider",
+    "OpenVINOExecutionProvider",
+    "QNNExecutionProvider",
+    "RyzenAILightExecutionProvider",
+    "VitisAIExecutionProvider",
+};
+
+bool IsTrustedProvider(std::string_view provider_name) {
+  return std::find(kTrustedProviderNames.begin(), kTrustedProviderNames.end(),
+                   provider_name) != kTrustedProviderNames.end();
+}
 
 /// Look up the running Windows build number via ``ntdll!RtlGetVersion``,
 /// resolved through ``GetProcAddress`` to avoid pulling ``<winternl.h>`` and
@@ -287,6 +304,9 @@ std::vector<std::unique_ptr<WinMLEpBootstrapper>> WinMLEpBootstrapper::DiscoverP
         auto* ctx = static_cast<EnumContext*>(context);
 
         std::string provider_name = info->name ? info->name : "";
+        if (!IsTrustedProvider(provider_name)) {
+          return TRUE;  // continue enumeration
+        }
 
         ctx->logger->Log(
             LogLevel::Information,

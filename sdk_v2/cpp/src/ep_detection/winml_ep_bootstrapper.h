@@ -46,7 +46,7 @@ class WinMLEpBootstrapper : public IEpBootstrapper {
                            const ProgressCallback& progress_cb,
                            ILogger& logger) override;
 
-  /// Discovers all WinML EPs available on this system.
+  /// Discovers trusted WinML EPs available on this system.
   /// Returns empty on unsupported OS version or missing WinML DLL.
   /// @param register_ep  Callback called after EnsureReady to register the EP with ORT.
   /// @param logger  Logger for diagnostic output.
