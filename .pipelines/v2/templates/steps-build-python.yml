@@ -265,7 +265,7 @@ steps:
   displayName: 'Assert wheel platform tag and bundled native lib'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $ErrorActionPreference = 'Stop'
         switch ('${{ parameters.rid }}') {
