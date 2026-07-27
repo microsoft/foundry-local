@@ -70,7 +70,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.0f;
+        audioClient.Settings.Temperature = 0.1f; // for deterministic results
 
         var audioFilePath = Utils.TestDataPath("Recording.mp3");
 
@@ -95,7 +95,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.0f; // greedy decoding for deterministic results
+        audioClient.Settings.Temperature = 0.1f; // for deterministic results
 
         var audioFilePath = Utils.TestDataPath("Recording.mp3");
 
@@ -120,7 +120,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.0f;
+        audioClient.Settings.Temperature = 0.1f;
 
         var audioFilePath = Utils.TestDataPath("non_exist_Recording.mp3");
 
@@ -186,7 +186,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(audioClient).IsNotNull();
 
         audioClient.Settings.Language = "en";
-        audioClient.Settings.Temperature = 0.0f; // greedy decoding for deterministic results
+        audioClient.Settings.Temperature = 0.1f; // for deterministic results
 
         var audioFilePath = Utils.TestDataPath("Recording.mp3");
 

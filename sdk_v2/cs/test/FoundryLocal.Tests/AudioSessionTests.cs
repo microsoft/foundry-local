@@ -79,7 +79,6 @@ internal sealed class AudioSessionTests
         using var session = new AudioSession(model!);
         session.SetOptions(new RequestOptions
         {
-            Search = new SearchOptions { Temperature = 0.0f },
             AdditionalOptions = new Dictionary<string, string> { ["language"] = "en" },
         });
 
@@ -124,7 +123,6 @@ internal sealed class AudioSessionTests
         using var session = new AudioSession(model!);
         session.SetOptions(new RequestOptions
         {
-            Search = new SearchOptions { Temperature = 0.0f },
             AdditionalOptions = new Dictionary<string, string> { ["language"] = "en" },
         });
         session.SetStreaming(true);
@@ -166,7 +164,6 @@ internal sealed class AudioSessionTests
         using var session = new AudioSession(model!);
         session.SetOptions(new RequestOptions
         {
-            Search = new SearchOptions { Temperature = 0.0f },
             AdditionalOptions = new Dictionary<string, string> { ["language"] = "en" },
         });
         session.SetStreaming(true);
