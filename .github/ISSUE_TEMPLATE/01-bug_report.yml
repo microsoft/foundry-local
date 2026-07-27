@@ -44,6 +44,7 @@ body:
         - Linux ARM64
         - macOS Apple Silicon
         - Android ARM64
+        - Android x86_64 (emulator)
         - Other / Unknown
     validations:
       required: true
