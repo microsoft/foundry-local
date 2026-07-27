@@ -25,7 +25,7 @@ parameters:
   type: string
   default: 'native'
   values: ['native', 'arm64']
-  displayName: 'Cross-compile target arch on a Windows x64 host. Use "native" for no cross-compile.'
+  displayName: 'Optional Windows wheel target arch override. Use "native" for host-native builds.'
 - name: pythonArchitecture
   type: string
   default: 'x64'
@@ -69,7 +69,7 @@ steps:
   displayName: 'Set package version from pyVersion.txt'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $versionFile = "$(Pipeline.Workspace)/version-info/pyVersion.txt"
         if (-not (Test-Path $versionFile)) { throw "Missing $versionFile" }
@@ -81,7 +81,7 @@ steps:
   displayName: 'Stamp version into pyproject.toml'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $pyproject = "$(Build.SourcesDirectory)/sdk_v2/python/pyproject.toml"
         $content = Get-Content $pyproject -Raw
@@ -102,7 +102,7 @@ steps:
   displayName: 'List downloaded native artifact'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Write-Host "Contents of ${{ parameters.nativeArtifactDir }}:"
         Get-ChildItem "${{ parameters.nativeArtifactDir }}" -Recurse -File |
@@ -112,7 +112,7 @@ steps:
   displayName: 'Stage native lib into _native/${{ parameters.rid }}/'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $dest = "$(Build.SourcesDirectory)/sdk_v2/python/src/foundry_local_sdk/_native/${{ parameters.rid }}"
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
@@ -151,7 +151,7 @@ steps:
   displayName: 'Clean stale build artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $py = "$(Build.SourcesDirectory)/sdk_v2/python"
         # Remove stale, untagged cffi extension from prior dev compiles.
@@ -177,18 +177,59 @@ steps:
   displayName: 'Install build tooling'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
         python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Ensure Visual Studio Build Tools for Windows ARM64 Python build'
+    inputs:
+      targetType: inline
+      pwsh: false
+      script: |
+          $installRoot = 'C:\BuildTools'
+          $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+
+          if (-not (Test-Path $vcvars)) {
+              Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+              $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+              Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+              $arguments = @(
+                  '--quiet',
+                  '--wait',
+                  '--norestart',
+                  '--nocache',
+                  '--installPath', $installRoot,
+                  '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                  '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+                  '--includeRecommended'
+              )
+
+              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              }
+          }
+
+          if (-not (Test-Path $vcvars)) {
+              throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+          }
+
+          Write-Host "vcvarsall.bat: $vcvars"
+          Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
 
 - ${{ if eq(parameters.targetArch, 'arm64') }}:
   - task: PowerShell@2
     displayName: 'Locate MSVC arm64 cross-tools (vswhere)'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
       script: |
           # Resolve vcvarsall.bat once and stash the path in a pipeline variable. The actual
           # invocation happens inside the build step's child cmd.exe so its env is inherited
@@ -220,7 +261,7 @@ steps:
     condition: and(succeeded(), ne(variables.PYTHON_ARM64_CACHE_HIT, 'true'))
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
       script: |
           # We need arm64 Python's headers + python3.lib to link the cffi extension
           # for win-arm64 from an x64 host. We do NOT need to *run* the arm64
@@ -264,7 +305,7 @@ steps:
     displayName: 'Capture arm64 Python paths for cross-link'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
       script: |
           # Path is the same whether we just installed via NuGet above or restored
           # the directory from cache — both produce $stageRoot/pythonarm64/tools/.
@@ -287,7 +328,7 @@ steps:
   displayName: 'Build wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -342,6 +383,15 @@ steps:
                 Write-Host "cmd /v:on /c $cmdLine"
                 cmd /v:on /c $cmdLine
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              } elseif ('${{ parameters.rid }}' -eq 'win-arm64') {
+                $vcvars = "$(vcvarsAllPath)"
+                if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
+                $buildArgs = @('-m', 'build', '--wheel', '--outdir', $outDir) + $extraArgs
+                $quoted = ($buildArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
+                $cmdLine = ('"{0}" arm64 && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python {1}' -f $vcvars, $quoted)
+                Write-Host "cmd /c $cmdLine"
+                cmd /c $cmdLine
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             } else {
                 python -m build --wheel --outdir $outDir @extraArgs
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -354,7 +404,7 @@ steps:
   displayName: 'List produced wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl' |
             ForEach-Object { Write-Host ("{0,12}  {1}" -f $_.Length, $_.Name) }

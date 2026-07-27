@@ -68,10 +68,45 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
+      parameters:
+        scriptType: ps
+        installAzCli: true
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        usePwsh: false
+
+- stage: cs_test_win_arm64
+  displayName: 'C# SDK: Test Windows ARM64'
+  dependsOn:
+  - cs_build
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-native-arm64-16core
+      os: windows
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+      parameters:
+        scriptType: ps
+        installAzCli: true
+    - template: steps-test-cs.yml
+      parameters:
+        flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        usePwsh: false
 
 # ====================================================================
 # Test — Linux x64
