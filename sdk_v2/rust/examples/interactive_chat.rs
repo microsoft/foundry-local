@@ -1,14 +1,12 @@
 //! Interactive chat example — a simple terminal chatbot powered by Foundry Local.
 //!
 //! Run with: `cargo run --example interactive_chat`
-#![allow(deprecated)] // intentionally demonstrates the deprecated OpenAI facade
 
 use std::io::{self, Write};
 
 use foundry_local_sdk::{
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage, FoundryLocalConfig,
-    FoundryLocalManager,
+    ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, Request, RequestOptions,
+    SearchOptions,
 };
 use tokio_stream::StreamExt;
 
@@ -51,11 +49,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Ready! Type your messages below. Press Ctrl-D (or type 'quit') to exit.\n");
 
     // ── Chat loop ────────────────────────────────────────────────────────
-    let client = model.create_chat_client().temperature(0.7).max_tokens(512);
-
-    let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from("You are a helpful, concise assistant.").into(),
-    ];
+    // `ChatSession` retains conversation history internally, so each turn only
+    // needs to send the new user message — no manual message bookkeeping.
+    let session = ChatSession::new(&model).await?;
+    session
+        .set_options(RequestOptions {
+            search: SearchOptions {
+                temperature: Some(0.7),
+                max_output_tokens: Some(512),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await?;
 
     loop {
         print!("You: ");
@@ -74,34 +80,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        messages.push(ChatCompletionRequestUserMessage::from(input).into());
+        // Seed the system prompt on the first turn only; the session keeps it.
+        let mut items = Vec::new();
+        if session.turn_count() == 0 {
+            items.push(Item::system_message(vec![Item::text(
+                "You are a helpful, concise assistant.",
+            )]));
+        }
+        items.push(Item::user_message(vec![Item::text(input)]));
 
-        // Stream the response token by token
+        // Stream the response token by token. The session records the turn, so
+        // there is no need to append the reply to a local history buffer.
         print!("Assistant: ");
         io::stdout().flush()?;
 
-        let mut full_response = String::new();
-        let mut stream = client.complete_streaming_chat(&messages, None).await?;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            if let Some(choice) = chunk.choices.first() {
-                if let Some(ref content) = choice.delta.content {
-                    print!("{content}");
-                    io::stdout().flush().ok();
-                    full_response.push_str(content);
-                }
+        let mut stream = session.process_streaming_request(Request::from_items(items));
+        while let Some(item) = stream.next().await {
+            if let Some(text) = item?.as_text() {
+                print!("{text}");
+                io::stdout().flush().ok();
             }
         }
         println!("\n");
-
-        // Add assistant reply to history for multi-turn conversation
-        messages.push(
-            ChatCompletionRequestAssistantMessage {
-                content: Some(full_response.into()),
-                ..Default::default()
-            }
-            .into(),
-        );
     }
 
     // ── Cleanup ──────────────────────────────────────────────────────────

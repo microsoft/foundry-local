@@ -1,12 +1,11 @@
 //! Basic chat completion example demonstrating synchronous and streaming
-//! usage of the Foundry Local SDK.
-#![allow(deprecated)] // intentionally demonstrates the deprecated OpenAI facade
+//! usage of the Foundry Local SDK's `Session` API.
 
 use std::io::{self, Write};
 
 use foundry_local_sdk::{
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager,
+    ChatSession, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager, Item, Request,
+    RequestOptions, SearchOptions,
 };
 use tokio_stream::StreamExt;
 
@@ -50,46 +49,50 @@ async fn main() -> Result<()> {
     println!("Loading model '{}'…", model.alias());
     model.load().await?;
 
-    // ── 4. Synchronous chat completion ───────────────────────────────────
-    let client = model.create_chat_client().temperature(0.7).max_tokens(256);
+    // ── 4. Open a chat session ───────────────────────────────────────────
+    // `ChatSession` retains conversation state across turns; options set here
+    // persist, so each request only needs to carry the new input.
+    let session = ChatSession::new(&model).await?;
+    session
+        .set_options(RequestOptions {
+            search: SearchOptions {
+                temperature: Some(0.7),
+                max_output_tokens: Some(256),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await?;
 
-    let messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from("You are a helpful assistant.").into(),
-        ChatCompletionRequestUserMessage::from("What is Rust's ownership model?").into(),
-    ];
+    // ── 5. Synchronous request ───────────────────────────────────────────
+    let request = Request::from_items(vec![
+        Item::system_message(vec![Item::text("You are a helpful assistant.")]),
+        Item::user_message(vec![Item::text("What is Rust's ownership model?")]),
+    ]);
 
     println!("\n--- Synchronous completion ---");
-    let response = client.complete_chat(&messages, None).await?;
-    if let Some(choice) = response.choices.first() {
-        if let Some(ref content) = choice.message.content {
-            println!("Assistant: {content}");
-        }
-    }
+    let response = session.process_request(request).await?;
+    println!("Assistant: {}", response.text());
 
-    // ── 5. Streaming chat completion ─────────────────────────────────────
+    // ── 6. Streaming request (continues the same conversation) ───────────
+    // The session already holds the system prompt and the previous turn, so we
+    // only send the new user message here.
     println!("\n--- Streaming completion ---");
-    let stream_messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from("You are a helpful assistant.").into(),
-        ChatCompletionRequestUserMessage::from("Explain the borrow checker in two sentences.")
-            .into(),
-    ];
+    let streaming = Request::from_items(vec![Item::user_message(vec![Item::text(
+        "Explain the borrow checker in two sentences.",
+    )])]);
 
     print!("Assistant: ");
-    let mut stream = client
-        .complete_streaming_chat(&stream_messages, None)
-        .await?;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if let Some(choice) = chunk.choices.first() {
-            if let Some(ref content) = choice.delta.content {
-                print!("{content}");
-                io::stdout().flush().ok();
-            }
+    let mut stream = session.process_streaming_request(streaming);
+    while let Some(item) = stream.next().await {
+        if let Some(text) = item?.as_text() {
+            print!("{text}");
+            io::stdout().flush().ok();
         }
     }
     println!();
 
-    // ── 6. Unload the model──────────────────────────────────────────────
+    // ── 7. Unload the model──────────────────────────────────────────────
     println!("\nUnloading model…");
     model.unload().await?;
     println!("Done.");

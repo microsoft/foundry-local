@@ -1,18 +1,15 @@
-//! Tool-calling example demonstrating how to define tools, handle
-//! `tool_calls` in streaming responses, execute the tool locally,
-//! and feed results back for a multi-turn conversation.
-#![allow(deprecated)] // intentionally demonstrates the deprecated OpenAI facade
+//! Tool-calling example demonstrating how to define tools with the `Session`
+//! API, handle streamed `Item::ToolCall`s, execute the tool locally, and feed
+//! results back for a multi-turn conversation.
 
-use std::collections::HashMap;
 use std::io::{self, Write};
 
 use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
 use foundry_local_sdk::{
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage, ChatCompletionTools,
-    ChatFinishReason, ChatToolChoice, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager,
+    ChatSession, FoundryLocalConfig, FoundryLocalError, FoundryLocalManager, Item, Request,
+    RequestOptions, SearchOptions, ToolChoice, ToolDefinition,
 };
 
 /// Convenience alias matching the SDK's internal Result type.
@@ -34,21 +31,6 @@ fn invoke_tool(name: &str, arguments: &Value) -> Result<String> {
         }
         _ => Ok(format!("Unknown tool: {name}")),
     }
-}
-
-#[derive(Default, Clone)]
-struct StreamedToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-#[derive(Default)]
-struct ToolCallState {
-    /// In-progress tool calls indexed by their stream position.
-    pending: HashMap<u32, StreamedToolCall>,
-    /// Finalized tool calls ready for execution.
-    completed: Vec<Value>,
 }
 
 #[tokio::main]
@@ -73,128 +55,91 @@ async fn main() -> Result<()> {
     println!("Loading model '{}'…", model.alias());
     model.load().await?;
 
-    // ── 3. Create a chat client with tool_choice = required ──────────────
-    let client = model
-        .create_chat_client()
-        .tool_choice(ChatToolChoice::Required)
-        .max_tokens(512);
-
-    let tools: Vec<ChatCompletionTools> = serde_json::from_value(json!([{
-        "type": "function",
-        "function": {
-            "name": "multiply",
-            "description": "Multiply two numbers together.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "a": { "type": "number", "description": "First operand" },
-                    "b": { "type": "number", "description": "Second operand" }
-                },
-                "required": ["a", "b"]
-            }
-        }
-    }]))
-    .expect("Failed to parse tool definitions");
-
-    let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestSystemMessage::from(
-            "You are a helpful calculator assistant. Use the multiply tool when asked to multiply.",
+    // ── 3. Open a chat session and register the tool ─────────────────────
+    // Tools are registered once and remain available for every request on the
+    // session. `json_schema` describes just the tool's parameters.
+    let session = ChatSession::new(model).await?;
+    let multiply_params = json!({
+        "type": "object",
+        "properties": {
+            "a": { "type": "number", "description": "First operand" },
+            "b": { "type": "number", "description": "Second operand" }
+        },
+        "required": ["a", "b"]
+    });
+    session
+        .add_tool_definition(
+            ToolDefinition::new("multiply", multiply_params.to_string())
+                .with_description("Multiply two numbers together."),
         )
-        .into(),
-        ChatCompletionRequestUserMessage::from("What is 6 times 7?").into(),
-    ];
-
-    // ── 4. First streaming call – expect tool_calls ──────────────────────
-    println!("Sending initial request…");
-
-    let mut state = ToolCallState::default();
-    let mut stream = client
-        .complete_streaming_chat(&messages, Some(&tools))
         .await?;
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if let Some(choice) = chunk.choices.first() {
-            if let Some(ref tool_calls) = choice.delta.tool_calls {
-                for tc in tool_calls {
-                    let idx = tc.index;
-                    let entry = state.pending.entry(idx).or_default();
-                    if let Some(ref func) = tc.function {
-                        if let Some(ref name) = func.name {
-                            entry.name = name.clone();
-                        }
-                        if let Some(ref args) = func.arguments {
-                            entry.arguments.push_str(args);
-                        }
-                    }
-                    if let Some(ref id) = tc.id {
-                        entry.id = id.clone();
-                    }
-                }
-            }
+    // ── 4. First turn: force a tool call ─────────────────────────────────
+    // `tool_choice = Required` makes the model call a tool. Streamed items
+    // arrive as complete `Item::ToolCall`s — no delta reassembly needed.
+    let request = Request::from_items(vec![
+        Item::system_message(vec![Item::text(
+            "You are a helpful calculator assistant. Use the multiply tool when asked to multiply.",
+        )]),
+        Item::user_message(vec![Item::text("What is 6 times 7?")]),
+    ])
+    .with_options(RequestOptions {
+        search: SearchOptions {
+            max_output_tokens: Some(512),
+            ..Default::default()
+        },
+        tool_choice: Some(ToolChoice::Required),
+        ..Default::default()
+    });
 
-            if choice.finish_reason == Some(ChatFinishReason::ToolCalls) {
-                for (_, call) in state.pending.drain() {
-                    state.completed.push(json!({
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": call.arguments,
-                        }
-                    }));
-                }
-            }
+    println!("Sending initial request…");
+    let mut tool_results = Vec::new();
+    let mut stream = session.process_streaming_request(request);
+    while let Some(item) = stream.next().await {
+        let item = item?;
+        if let Some(call) = item.as_tool_call() {
+            let args: Value = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+            println!("Tool call: {}({})", call.name, args);
+            let result = invoke_tool(&call.name, &args)?;
+            println!("Tool result: {result}");
+            tool_results.push(Item::tool_result(call.call_id.clone(), result));
+        } else if let Some(text) = item.as_text() {
+            print!("{text}");
+            io::stdout().flush().ok();
         }
     }
-    // ── 5. Execute the tool(s)───────────────────────────────────────────
-    for tc in &state.completed {
-        let func = &tc["function"];
-        let name = func["name"].as_str().unwrap_or_default();
-        let args_str = func["arguments"].as_str().unwrap_or("{}");
-        let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
 
-        println!("Tool call: {name}({args})");
-        let result = invoke_tool(name, &args)?;
-        println!("Tool result: {result}");
-
-        // Append the assistant's tool_calls message and the tool result.
-        let assistant_msg: ChatCompletionRequestMessage = serde_json::from_value(json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [tc],
-        }))
-        .expect("Failed to construct assistant message");
-        messages.push(assistant_msg);
-        messages.push(
-            ChatCompletionRequestToolMessage {
-                content: result.into(),
-                tool_call_id: tc["id"].as_str().unwrap_or_default().to_string(),
-            }
-            .into(),
-        );
+    if tool_results.is_empty() {
+        println!("(model did not request any tool calls)");
+        model.unload().await?;
+        return Ok(());
     }
 
-    // ── 6. Continue the conversation with auto tool_choice ───────────────
-    let client = client.tool_choice(ChatToolChoice::Auto);
+    // ── 5. Second turn: feed the results back for a final answer ─────────
+    // The session already retains the user question and the assistant's tool
+    // call, so only the tool results need to be sent. `tool_choice = None`
+    // asks the model to reply in natural language rather than call again.
+    let follow_up = Request::from_items(tool_results).with_options(RequestOptions {
+        search: SearchOptions {
+            max_output_tokens: Some(512),
+            ..Default::default()
+        },
+        tool_choice: Some(ToolChoice::None),
+        ..Default::default()
+    });
 
     println!("\nContinuing conversation…");
     print!("Assistant: ");
-    let mut stream = client
-        .complete_streaming_chat(&messages, Some(&tools))
-        .await?;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if let Some(choice) = chunk.choices.first() {
-            if let Some(ref content) = choice.delta.content {
-                print!("{content}");
-                io::stdout().flush().ok();
-            }
+    let mut stream = session.process_streaming_request(follow_up);
+    while let Some(item) = stream.next().await {
+        if let Some(text) = item?.as_text() {
+            print!("{text}");
+            io::stdout().flush().ok();
         }
     }
     println!();
 
-    // ── 7. Clean up──────────────────────────────────────────────────────
+    // ── 6. Clean up──────────────────────────────────────────────────────
     println!("\nUnloading model…");
     model.unload().await?;
     println!("Done.");
