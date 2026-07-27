@@ -30,11 +30,6 @@ parameters:
   type: string
   default: '$(Build.ArtifactStagingDirectory)/js-prebuild'
   displayName: 'Directory under which prebuilds/<plat>-<arch>/ is produced'
-- name: targetArch
-  type: string
-  default: 'native'
-  values: ['native', 'arm64']
-  displayName: 'Optional node-gyp target arch override on Windows. "native" = host architecture.'
 - name: signWindows
   type: boolean
   default: false
@@ -157,18 +152,16 @@ steps:
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - powershell: |
       python --version
-      $arch = '${{ parameters.targetArch }}'
-      $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
-      Write-Host "node-gyp $args"
+      Write-Host "node-gyp rebuild"
       Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
       if ('${{ parameters.rid }}' -eq 'win-arm64') {
         $vcvars = "$(vcvarsAllPath)"
         if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
-        $cmdLine = ('"{0}" arm64 && npx --no-install node-gyp {1}' -f $vcvars, $args)
+        $cmdLine = ('"{0}" arm64 && npx --no-install node-gyp rebuild' -f $vcvars)
         Write-Host "cmd /c $cmdLine"
         cmd /c $cmdLine
       } else {
-        npx --no-install node-gyp $args.Split(' ')
+        npx --no-install node-gyp rebuild
       }
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Build Node-API addon'

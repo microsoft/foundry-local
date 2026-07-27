@@ -214,7 +214,7 @@ stages:
         signMac: true
 
 # ================================================================
-# Test stages — same-platform only (including native win-arm64).
+# Test stages - same platform only.
 # ================================================================
 
 - stage: js_test_win_x64

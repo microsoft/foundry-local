@@ -106,7 +106,7 @@ steps:
         throw 'azcopy is not available on PATH after installation/probe.'
       }
 
-      & $azcopyCommand.Source --version | Write-Host
+      azcopy --version
 
       New-Item -ItemType Directory -Path $destination -Force | Out-Null
       $publisherRoot = Join-Path $destination 'Microsoft'
