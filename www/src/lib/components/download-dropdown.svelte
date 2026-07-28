@@ -6,7 +6,7 @@
 	import { IsMobile } from '$lib/hooks/is-mobile.svelte';
 
 	const CLI_RELEASE_URL =
-		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
+		'https://github.com/microsoft/Foundry-Local/releases';
 
 	interface Props {
 		variant?: 'default' | 'ghost' | 'outline';
@@ -195,7 +195,7 @@
 							<span class="mt-0.5 inline-flex shrink-0" aria-hidden="true">{@html item.icon}</span>
 							<div class="flex flex-1 flex-col gap-1 px-2">
 								<span class="font-medium">{item.label}</span>
-								<code class="text-muted-foreground text-xs break-all">cli-preview-0.10.0 on GitHub</code>
+								<code class="text-muted-foreground text-xs break-all">GitHub releases</code>
 							</div>
 							<ExternalLink class="size-4 shrink-0 opacity-50" aria-hidden="true" />
 						</a>

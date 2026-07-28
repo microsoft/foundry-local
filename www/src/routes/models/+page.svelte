@@ -20,7 +20,7 @@
 	const MODEL_QUERY_PARAM = 'model';
 	const CLI_RUN_COMMAND = 'foundry run qwen2.5-0.5b';
 	const CLI_RELEASE_URL =
-		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
+		'https://github.com/microsoft/Foundry-Local/releases';
 	const CLI_INSTALL_LINKS = [
 		{
 			id: 'windows-cli',
