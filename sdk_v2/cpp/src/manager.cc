@@ -328,21 +328,33 @@ Manager::Manager(const Configuration& config)
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
 
-  std::vector<std::pair<std::string, std::optional<std::string>>> catalog_url_pairs;
-  catalog_url_pairs.reserve(config_.catalog_urls.size());
-  for (const auto& source : config_.catalog_urls) {
-    catalog_url_pairs.emplace_back(source.url, source.filter);
+  // Build one AzureModelCatalog per registered source (single URL each) so each
+  // catalog is separately addressable by name. No aggregation across catalogs.
+  auto make_catalog = [&](std::vector<std::pair<std::string, std::optional<std::string>>> urls) {
+    return std::make_unique<AzureModelCatalog>(
+        std::move(urls),
+        download_manager_->GetCacheDirectory(),
+        [this](ModelInfo info, std::string local_path) {
+          return CreateModel(std::move(info), std::move(local_path));
+        },
+        *ep_detector_, *logger_,
+        config_.external_service_url.has_value(),
+        config_.catalog_region.value_or("auto"),
+        disable_region_fallback);
+  };
+
+  if (config_.catalog_urls.empty()) {
+    // No catalogs registered: expose the built-in Azure Foundry catalog as the
+    // default "public" catalog.
+    catalogs_.push_back({std::string(kDefaultCatalogName), make_catalog({})});
+  } else {
+    // The first registered source is the default returned by the no-arg
+    // GetCatalog(); the rest are reached by name.
+    for (const auto& source : config_.catalog_urls) {
+      std::vector<std::pair<std::string, std::optional<std::string>>> single{{source.url, source.filter}};
+      catalogs_.push_back({source.name, make_catalog(std::move(single))});
+    }
   }
-  catalog_ = std::make_unique<AzureModelCatalog>(
-      catalog_url_pairs,
-      download_manager_->GetCacheDirectory(),
-      [this](ModelInfo info, std::string local_path) {
-        return CreateModel(std::move(info), std::move(local_path));
-      },
-      *ep_detector_, *logger_,
-      config_.external_service_url.has_value(),
-      config_.catalog_region.value_or("auto"),
-      disable_region_fallback);
 }
 
 Manager::~Manager() {
@@ -367,7 +379,7 @@ Manager::~Manager() {
   session_manager_.reset();
   model_load_manager_.reset();
   download_manager_.reset();
-  catalog_.reset();
+  catalogs_.clear();
   telemetry_.reset();
   ep_detector_.reset();
 
@@ -447,7 +459,26 @@ void Manager::Destroy() {
 }
 
 ICatalog& Manager::GetCatalog() {
-  return *catalog_;
+  return *catalogs_.front().catalog;
+}
+
+ICatalog& Manager::GetCatalog(const std::string& name) {
+  for (auto& entry : catalogs_) {
+    if (entry.name == name) {
+      return *entry.catalog;
+    }
+  }
+  FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   fmt::format("unknown catalog: '{}'", name));
+}
+
+std::vector<std::string> Manager::ListCatalogNames() const {
+  std::vector<std::string> names;
+  names.reserve(catalogs_.size());
+  for (const auto& entry : catalogs_) {
+    names.push_back(entry.name);
+  }
+  return names;
 }
 
 void Manager::StartWebService() {
@@ -463,7 +494,7 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
+  web_service_ = std::make_unique<WebService>(GetCatalog(), *logger_, *config_.model_cache_dir, *model_load_manager_,
                                               *session_manager_, *telemetry_,
                                               [this]() { Shutdown(); });
 
@@ -585,7 +616,9 @@ EpDownloadResult Manager::DownloadAndRegisterEps(
   // EP registration changes which device/EP filters the catalog uses.
   // Invalidate so the next catalog query re-fetches with updated filters.
   if (result.success && !result.registered_eps.empty()) {
-    catalog_->InvalidateCache();
+    for (auto& entry : catalogs_) {
+      entry.catalog->InvalidateCache();
+    }
   }
 
   return result;
