@@ -908,8 +908,17 @@ struct flConfigurationApi {
   FL_API_STATUS(SetModelCacheDir, _In_ flConfiguration* config, _In_ const char* dir);
   /// Optional. Add a catalog URL. Defaults to the Azure Foundry Local Catalog if none added.
   /// Multiple catalogs can be added. Catalogs priority is determined by the order they were added.
+  /// The catalog is registered under an auto-derived name (its URL); to give it an explicit
+  /// name for scoped operations, use AddCatalog instead.
   /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
   FL_API_STATUS(AddCatalogUrl, _In_ flConfiguration* config, _In_ const char* url,
+                _In_opt_ const char* filter_override);
+  /// Optional. Add a named catalog. Defaults to the Azure Foundry Local Catalog if none added.
+  /// Multiple catalogs can be added; each must have a unique name. Priority follows add-order.
+  /// The name is used to address the catalog for scoped list/download operations.
+  /// The name "public" is reserved for the built-in default catalog.
+  /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
+  FL_API_STATUS(AddCatalog, _In_ flConfiguration* config, _In_ const char* name, _In_ const char* url,
                 _In_opt_ const char* filter_override);
   /// Optional. Azure region for the model registry download endpoint
   /// (https://{region}.api.azureml.ms/modelregistry/...). Resolves a model's

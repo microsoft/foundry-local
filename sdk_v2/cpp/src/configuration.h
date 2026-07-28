@@ -12,6 +12,22 @@
 
 namespace fl {
 
+/// Reserved name of the built-in default (public) Azure Foundry Local catalog.
+/// Used when no catalogs are explicitly added, and returned by the un-named
+/// Manager::GetCatalog(). Applications must not register a catalog under this name.
+inline constexpr const char* kDefaultCatalogName = "public";
+
+/// A named model catalog source.
+/// `name` identifies the catalog for scoped operations (list/download by catalog).
+/// `url` is the catalog endpoint. `filter` is an optional per-catalog filter override;
+/// `nullopt` means "use the catalog's default filter", while an empty string is a
+/// distinct, valid override value.
+struct CatalogSource {
+  std::string name;
+  std::string url;
+  std::optional<std::string> filter;
+};
+
 /// Top-level configuration for Manager.
 /// Mirrors the C API's flConfiguration design.
 struct Configuration {
@@ -21,11 +37,10 @@ struct Configuration {
   std::optional<std::string> logs_dir;
   LogLevel log_level = LogLevel::Warning;
 
-  /// Catalog URLs with optional per-catalog filter overrides.
-  /// `nullopt` filter means "use the catalog's default filter"; an empty string is a
-  /// distinct, valid override value.
-  /// Defaults to the Azure Foundry Local Catalog if empty.
-  std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls;
+  /// Registered catalog sources, each with a unique name.
+  /// Defaults to a single default (public) Azure Foundry Local catalog named
+  /// `kDefaultCatalogName` if empty. Catalog priority follows add-order.
+  std::vector<CatalogSource> catalog_urls;
 
   /// Azure region for the model registry download endpoint
   /// (https://{catalog_region}.api.azureml.ms/modelregistry/...).

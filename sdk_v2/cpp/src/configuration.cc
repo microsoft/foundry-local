@@ -42,9 +42,12 @@ void Configuration::Validate() {
   }
 
   // Validate catalog URLs are non-empty strings if present
-  for (const auto& [url, filter] : catalog_urls) {
-    if (url.empty()) {
+  for (const auto& source : catalog_urls) {
+    if (source.url.empty()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
+    }
+    if (source.name.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog name must not be empty");
     }
   }
 

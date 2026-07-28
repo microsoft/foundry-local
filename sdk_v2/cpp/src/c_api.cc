@@ -241,9 +241,26 @@ FL_API_STATUS_IMPL(AddCatalogUrlImpl, flConfiguration* config, const char* url,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  AsImpl(config)->catalog_urls.emplace_back(
-      url,
-      filter_override ? std::optional<std::string>{filter_override} : std::nullopt);
+  // No explicit name provided: derive the catalog name from its URL.
+  AsImpl(config)->catalog_urls.push_back(fl::CatalogSource{
+      /*name=*/url,
+      /*url=*/url,
+      filter_override ? std::optional<std::string>{filter_override} : std::nullopt});
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(AddCatalogImpl, flConfiguration* config, const char* name, const char* url,
+                   const char* filter_override) {
+  API_IMPL_BEGIN
+  if (!config || !name || !url) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  AsImpl(config)->catalog_urls.push_back(fl::CatalogSource{
+      /*name=*/name,
+      /*url=*/url,
+      filter_override ? std::optional<std::string>{filter_override} : std::nullopt});
   return nullptr;
   API_IMPL_END
 }
@@ -305,6 +322,7 @@ static const flConfigurationApi g_configuration_api = {
     SetLogsDirImpl,
     SetModelCacheDirImpl,
     AddCatalogUrlImpl,
+    AddCatalogImpl,
     SetCatalogRegionImpl,
     AddWebServiceEndpointImpl,
     SetExternalServiceUrlImpl,

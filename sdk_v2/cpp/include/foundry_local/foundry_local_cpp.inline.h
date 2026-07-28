@@ -160,6 +160,14 @@ inline Configuration& Configuration::AddCatalogUrl(
   return *this;
 }
 
+inline Configuration& Configuration::AddCatalog(
+    const std::string& name, const std::string& url, const std::optional<std::string>& filter_override) {
+  Check(detail::config_api()->AddCatalog(
+      handle_.get_mutable(), name.c_str(), url.c_str(),
+      filter_override ? filter_override->c_str() : nullptr));
+  return *this;
+}
+
 inline Configuration& Configuration::AddWebServiceEndpoint(const std::string& url) {
   Check(detail::config_api()->AddWebServiceEndpoint(handle_.get_mutable(), url.c_str()));
   return *this;

@@ -249,8 +249,17 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// The catalog is registered under an auto-derived name (its URL); use AddCatalog to
+  /// assign an explicit name for scoped list/download operations.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
+
+  /// Optional. Add a named catalog to connect to.
+  /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// Each catalog must have a unique name; the name is used to address the catalog for
+  /// scoped operations. The name "public" is reserved for the built-in default catalog.
+  Configuration& AddCatalog(const std::string& name, const std::string& url,
+                            const std::optional<std::string>& filter_override = std::nullopt);
 
   /// Optional. Add an endpoint for the web service to bind to.
   /// Defaults to "http://127.0.0.1:0" (ephemeral port) if none are added.

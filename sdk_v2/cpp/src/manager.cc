@@ -327,8 +327,14 @@ Manager::Manager(const Configuration& config)
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
+
+  std::vector<std::pair<std::string, std::optional<std::string>>> catalog_url_pairs;
+  catalog_url_pairs.reserve(config_.catalog_urls.size());
+  for (const auto& source : config_.catalog_urls) {
+    catalog_url_pairs.emplace_back(source.url, source.filter);
+  }
   catalog_ = std::make_unique<AzureModelCatalog>(
-      config_.catalog_urls,
+      catalog_url_pairs,
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {
         return CreateModel(std::move(info), std::move(local_path));
