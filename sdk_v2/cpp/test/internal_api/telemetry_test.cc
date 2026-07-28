@@ -150,6 +150,11 @@ TEST(TelemetryEnvironmentTest, DetectsCiEnvironmentFlag) {
 }
 
 TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
+  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "true");
+  EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
+}
+
+TEST(TelemetryEnvironmentTest, DetectsLegacyTelemetryOptOutAlias) {
   ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
   EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
 }

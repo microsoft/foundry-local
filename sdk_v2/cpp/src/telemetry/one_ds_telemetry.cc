@@ -160,7 +160,7 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
   }
   if (TelemetryEnvironment::IsTelemetryDisabledByEnvVar()) {
     logger_.Log(LogLevel::Information,
-                "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; 1DS upload disabled "
+                "[Telemetry] Disabled via telemetry environment variable; 1DS upload disabled "
                 "(events still logged locally)");
     return;
   }

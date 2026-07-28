@@ -14,6 +14,10 @@ Telemetry is turned **ON** by default.
 
 Foundry Local uses the cross-platform 1DS SDK (cpp_client_telemetry) to send trace events to Microsoft's telemetry backend over HTTPS. Based on user consent, this data is handled following GDPR and privacy regulations for anonymity and data access controls.
 
+All telemetry uploads can be disabled by setting `ORT_DISABLE_TELEMETRY=1` before creating a Foundry Local manager.
+The legacy `ORT_TELEMETRY_DISABLED` name is also accepted. Telemetry events may still be written to the application's
+local diagnostic logger.
+
 Non-essential telemetry can be disabled as follows. Foundry Local may still send a minimal ProcessInfo event.
 
 - **Disable via manager config.** Set the disable-nonessential-telemetry option before creating the manager:
