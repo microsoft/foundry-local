@@ -1055,7 +1055,7 @@ def build_dashboard() -> dict[str, object]:
             }
         ],
         "__requires": [
-            {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.4.0"},
+            {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.6.11"},
             {"type": "datasource", "id": PLUGIN_ID, "name": "Azure Data Explorer", "version": PLUGIN_VERSION},
             {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
             {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},

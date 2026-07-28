@@ -6,7 +6,8 @@ telemetry in Aria.
 ## Import
 
 1. Install the Grafana Azure Data Explorer datasource plugin
-   (`grafana-azure-data-explorer-datasource`).
+   (`grafana-azure-data-explorer-datasource`) version `7.2.8`. The dashboard targets Grafana `11.6.11`; newer
+   Grafana versions must also satisfy the plugin's compatibility requirements.
 2. Configure a datasource that can query:
    - Cluster: `https://kusto.aria.microsoft.com`
    - Database: `9d5ddaec61e24567b788a20aea324631`

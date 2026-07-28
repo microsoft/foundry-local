@@ -14,7 +14,7 @@
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
-      "version": "10.4.0"
+      "version": "11.6.11"
     },
     {
       "type": "datasource",
