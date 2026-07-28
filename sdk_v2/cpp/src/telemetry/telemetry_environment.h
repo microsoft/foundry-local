@@ -16,9 +16,6 @@ class TelemetryEnvironment {
   /// In CI, OneDsTelemetry skips Initialize entirely — no 1DS events emitted.
   static bool IsCiEnvironment();
 
-  /// Returns true when the shared ORT telemetry opt-out environment variable or its legacy alias is set.
-  static bool IsTelemetryDisabledByEnvVar();
-
   /// Truthy-value semantics: a non-empty, non-whitespace string whose trimmed
   /// value is not "0", "false", "no", or "off" (case-insensitive).
   static bool IsTruthyValue(std::string_view value);

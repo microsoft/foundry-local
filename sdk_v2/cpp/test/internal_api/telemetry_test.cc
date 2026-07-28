@@ -149,16 +149,6 @@ TEST(TelemetryEnvironmentTest, DetectsCiEnvironmentFlag) {
   EXPECT_TRUE(TelemetryEnvironment::IsCiEnvironment());
 }
 
-TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
-  ScopedEnvVar disabled("ORT_DISABLE_TELEMETRY", "true");
-  EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
-}
-
-TEST(TelemetryEnvironmentTest, DetectsLegacyTelemetryOptOutAlias) {
-  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
-  EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
-}
-
 TEST(TelemetryContextTest, SuppressesUnneededCommonContext) {
   RecordingSemanticContext context;
 
