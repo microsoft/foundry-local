@@ -25,8 +25,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -57,6 +61,86 @@ static void ExpectTranscriptionContent(const std::string& text) {
     EXPECT_NE(lower.find(phrase), std::string::npos)
         << "Expected transcription to contain '" << phrase << "'.\nGot: " << text;
   }
+}
+
+template <typename T>
+void WriteLe(std::ofstream& out, T value) {
+  out.write(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+void WriteBytes(std::ofstream& out, const char* data, size_t size) {
+  out.write(data, static_cast<std::streamsize>(size));
+}
+
+void WriteWavPcm16(const std::filesystem::path& path, int sample_rate_hz, int channels,
+                   const std::vector<int16_t>& samples) {
+  const uint16_t audio_format = 1;  // PCM
+  const uint16_t bits_per_sample = 16;
+  const uint16_t block_align = static_cast<uint16_t>((channels * bits_per_sample) / 8);
+  const uint32_t byte_rate = static_cast<uint32_t>(sample_rate_hz * block_align);
+  const uint32_t data_size = static_cast<uint32_t>(samples.size() * sizeof(int16_t));
+  const uint32_t riff_size = 4 + (8 + 16) + (8 + data_size);
+
+  std::ofstream out(path, std::ios::binary);
+  ASSERT_TRUE(out.is_open()) << "Failed to create temp WAV: " << path.string();
+
+  WriteBytes(out, "RIFF", 4);
+  WriteLe<uint32_t>(out, riff_size);
+  WriteBytes(out, "WAVE", 4);
+
+  WriteBytes(out, "fmt ", 4);
+  WriteLe<uint32_t>(out, 16);
+  WriteLe<uint16_t>(out, audio_format);
+  WriteLe<uint16_t>(out, static_cast<uint16_t>(channels));
+  WriteLe<uint32_t>(out, static_cast<uint32_t>(sample_rate_hz));
+  WriteLe<uint32_t>(out, byte_rate);
+  WriteLe<uint16_t>(out, block_align);
+  WriteLe<uint16_t>(out, bits_per_sample);
+
+  WriteBytes(out, "data", 4);
+  WriteLe<uint32_t>(out, data_size);
+  if (!samples.empty()) {
+    out.write(reinterpret_cast<const char*>(samples.data()),
+              static_cast<std::streamsize>(samples.size() * sizeof(int16_t)));
+  }
+}
+
+void WriteRawFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes) {
+  std::ofstream out(path, std::ios::binary);
+  ASSERT_TRUE(out.is_open()) << "Failed to create temp file: " << path.string();
+  if (!bytes.empty()) {
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+}
+
+class ScopedModelTypeOverride {
+ public:
+  ScopedModelTypeOverride(GenAIModelInstance& model, std::string model_type)
+      : cfg_(const_cast<GenAIConfig&>(model.GetGenAIConfig())), old_model_(cfg_.model) {
+    if (!cfg_.model.has_value()) {
+      cfg_.model = GenAIConfig::OnnxModel{};
+    }
+    cfg_.model->type = std::move(model_type);
+  }
+
+  ~ScopedModelTypeOverride() {
+    cfg_.model = old_model_;
+  }
+
+ private:
+  GenAIConfig& cfg_;
+  std::optional<GenAIConfig::OnnxModel> old_model_;
+};
+
+Request BuildOpenAiJsonAudioRequest(const std::filesystem::path& file_path) {
+  nlohmann::json req_json = {
+      {"model", "nemotron-speech-streaming-en-0.6b-generic-cpu"},
+      {"filename", file_path.string()},
+      {"language", "en"}};
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(req_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  return request;
 }
 
 }  // namespace
@@ -429,6 +513,145 @@ TEST_F(AudioSessionTest, OpenAIJsonWithInvalidJsonThrows) {
 
   Response response;
   EXPECT_THROW(session.ProcessRequest(request, response), nlohmann::json::parse_error);
+}
+
+TEST_F(AudioSessionTest, NemotronOpenAIJsonWithInvalidRiffThrows) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ScopedModelTypeOverride force_nemotron(GetModel(), "nemotron_speech");
+  auto temp = fl::test::TempPath::CreateTempFile("audio_bad_riff_");
+  WriteRawFile(temp.path(), {0x4E, 0x4F, 0x54, 0x57});  // "NOTW"
+
+  auto request = BuildOpenAiJsonAudioRequest(temp.path());
+  Response response;
+
+  EXPECT_THROW(
+      {
+        try {
+          session.ProcessRequest(request, response);
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+          EXPECT_NE(std::string(e.what()).find("RIFF/WAVE"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
+}
+
+TEST_F(AudioSessionTest, NemotronOpenAIJsonWithCorruptedChunkBoundsThrows) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ScopedModelTypeOverride force_nemotron(GetModel(), "nemotron_speech");
+  auto temp = fl::test::TempPath::CreateTempFile("audio_bad_chunk_");
+
+  // RIFF/WAVE + a "data" chunk that claims size far larger than file content.
+  std::vector<uint8_t> bytes = {
+      'R', 'I', 'F', 'F', 0x24, 0x00, 0x00, 0x00, 'W', 'A', 'V', 'E',
+      'd', 'a', 't', 'a', 0xFF, 0xFF, 0x00, 0x00};
+  WriteRawFile(temp.path(), bytes);
+
+  auto request = BuildOpenAiJsonAudioRequest(temp.path());
+  Response response;
+
+  EXPECT_THROW(
+      {
+        try {
+          session.ProcessRequest(request, response);
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+          EXPECT_NE(std::string(e.what()).find("Corrupted WAV chunk"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
+}
+
+TEST_F(AudioSessionTest, NemotronOpenAIJsonMissingFmtBeforeDataThrows) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ScopedModelTypeOverride force_nemotron(GetModel(), "nemotron_speech");
+  auto temp = fl::test::TempPath::CreateTempFile("audio_missing_fmt_");
+
+  // Valid RIFF/WAVE header, but "data" appears before any "fmt " chunk.
+  std::vector<uint8_t> bytes = {
+      'R', 'I', 'F', 'F', 0x14, 0x00, 0x00, 0x00, 'W', 'A', 'V', 'E',
+      'd', 'a', 't', 'a', 0x00, 0x00, 0x00, 0x00};
+  WriteRawFile(temp.path(), bytes);
+
+  auto request = BuildOpenAiJsonAudioRequest(temp.path());
+  Response response;
+
+  EXPECT_THROW(
+      {
+        try {
+          session.ProcessRequest(request, response);
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+          EXPECT_NE(std::string(e.what()).find("Missing WAV fmt chunk before data"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
+}
+
+TEST_F(AudioSessionTest, NemotronOpenAIJsonRejectsUnsupportedSampleRateBeforeDataRead) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ScopedModelTypeOverride force_nemotron(GetModel(), "nemotron_speech");
+  auto temp = fl::test::TempPath::CreateTempFile("audio_bad_sr_");
+  // 8 kHz PCM WAV should fail fast in fmt parsing path.
+  WriteWavPcm16(temp.path(), /*sample_rate_hz=*/8000, /*channels=*/1, {0, 1, 2, 3});
+
+  auto request = BuildOpenAiJsonAudioRequest(temp.path());
+  Response response;
+
+  EXPECT_THROW(
+      {
+        try {
+          session.ProcessRequest(request, response);
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+          EXPECT_NE(std::string(e.what()).find("16kHz"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
+}
+
+TEST_F(AudioSessionTest, NemotronOpenAIJsonRejectsUnsupportedWavFormatInFmtChunk) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ScopedModelTypeOverride force_nemotron(GetModel(), "nemotron_speech");
+  auto temp = fl::test::TempPath::CreateTempFile("audio_bad_fmt_");
+
+  // RIFF/WAVE with fmt chunk that advertises PCM 24-bit (unsupported by this path).
+  std::ofstream out(temp.path(), std::ios::binary);
+  ASSERT_TRUE(out.is_open()) << "Failed to create temp WAV: " << temp.path().string();
+  WriteBytes(out, "RIFF", 4);
+  WriteLe<uint32_t>(out, 36);
+  WriteBytes(out, "WAVE", 4);
+  WriteBytes(out, "fmt ", 4);
+  WriteLe<uint32_t>(out, 16);
+  WriteLe<uint16_t>(out, 1);      // PCM
+  WriteLe<uint16_t>(out, 1);      // mono
+  WriteLe<uint32_t>(out, 16000);  // sample rate
+  WriteLe<uint32_t>(out, 48000);  // byte rate for 24-bit mono
+  WriteLe<uint16_t>(out, 3);      // block align
+  WriteLe<uint16_t>(out, 24);     // unsupported bits-per-sample
+  WriteBytes(out, "data", 4);
+  WriteLe<uint32_t>(out, 0);
+  out.flush();
+  out.close();
+
+  auto request = BuildOpenAiJsonAudioRequest(temp.path());
+  Response response;
+
+  EXPECT_THROW(
+      {
+        try {
+          session.ProcessRequest(request, response);
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+          EXPECT_NE(std::string(e.what()).find("Unsupported WAV format"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
 }
 
 // ===========================================================================
