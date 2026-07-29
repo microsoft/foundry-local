@@ -61,7 +61,7 @@ This uses the `x64-debug` preset which:
 - Resolves C++ dependencies via **vcpkg** (`nlohmann-json`, `ms-gsl`, `gtest`)
 - Builds with the `x64-windows-static-md` triplet
 - Auto-downloads native runtime DLLs via **NuGet**:
-  - `Microsoft.AI.Foundry.Local.Core` (1.2.1) — Foundry Local core runtime
+  - `Microsoft.AI.Foundry.Local.Core` (1.2.4) — Foundry Local core runtime
   - `Microsoft.ML.OnnxRuntime.Foundry` (1.26.0) — ONNX Runtime
   - `Microsoft.ML.OnnxRuntimeGenAI.Foundry` (0.14.1) — ONNX Runtime GenAI
 
