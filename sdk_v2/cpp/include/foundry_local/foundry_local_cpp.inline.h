@@ -211,6 +211,30 @@ inline ICatalog& Manager::GetCatalog() const {
   return *catalog_;
 }
 
+inline ICatalog& Manager::GetCatalog(const std::string& name) const {
+  std::lock_guard<std::mutex> lock(*named_catalogs_mutex_);
+  auto it = named_catalogs_.find(name);
+  if (it == named_catalogs_.end()) {
+    flCatalog* cat = nullptr;
+    Check(detail::api()->Manager_GetCatalogByName(handle_.get(), name.c_str(), &cat));
+    it = named_catalogs_.emplace(name, std::unique_ptr<Catalog>(new Catalog(*cat))).first;
+  }
+  return *it->second;
+}
+
+inline std::vector<std::string> Manager::ListCatalogNames() const {
+  const char* const* names = nullptr;
+  size_t count = 0;
+  Check(detail::api()->Manager_ListCatalogNames(handle_.get(), &names, &count));
+
+  std::vector<std::string> result;
+  result.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    result.emplace_back(names[i]);
+  }
+  return result;
+}
+
 inline void Manager::StartWebService() {
   Check(detail::api()->Manager_WebServiceStart(handle_.get_mutable()));
 }

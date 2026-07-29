@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <functional>
 #include <gsl/span>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -838,8 +839,16 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get the catalog for querying models. Creates on first call, caches internally.
+  /// Get the default (public) catalog for querying models. Creates on first call, caches internally.
   ICatalog& GetCatalog() const;
+
+  /// Get a registered catalog by name. Throws if no catalog with that name is registered.
+  /// The returned catalog is cached, so repeated calls with the same name yield the same object.
+  ICatalog& GetCatalog(const std::string& name) const;
+
+  /// Enumerate the names of all registered catalogs, in registration order. The first name
+  /// corresponds to the default catalog returned by the no-argument GetCatalog().
+  std::vector<std::string> ListCatalogNames() const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -876,6 +885,9 @@ class Manager {
   Configuration config_;
   mutable std::unique_ptr<Catalog> catalog_;
   mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
+  // Cache of named catalog wrappers, guarded by named_catalogs_mutex_ for concurrent access.
+  mutable std::map<std::string, std::unique_ptr<Catalog>> named_catalogs_;
+  mutable std::unique_ptr<std::mutex> named_catalogs_mutex_{std::make_unique<std::mutex>()};
 };
 
 // ===========================================================================
