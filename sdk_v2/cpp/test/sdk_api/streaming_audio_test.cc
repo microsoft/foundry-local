@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-using fl::test::to_lower;
+using fl::test::ToLower;
 
 // ========================================================================
 // StreamingAudioFixture — exercises AudioItem + ItemQueue with a nemotron
@@ -72,7 +72,7 @@ class StreamingAudioFixture : public ::testing::Test {
 
   /// Verify that the transcription contains key phrases from the expected output.
   static void ExpectTranscriptionContent(const std::string& text) {
-    std::string lower = to_lower(text);
+    std::string lower = ToLower(text);
 
     static const char* key_phrases[] = {
         "give people",
@@ -260,12 +260,12 @@ TEST_F(StreamingAudioFixture, StreamingCallbackReceivesTokens) {
     // Wrap in Item for RAII release and checked accessors.
     Item item(*raw_item);
 
-    if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
-      auto text = item.GetText().text;
-      if (!text.empty()) {
-        std::lock_guard<std::mutex> lock(text_mutex);
-        streamed_text += text;
-      }
+    // Audio output is always a SpeechSegmentItem per token.
+    EXPECT_EQ(item.GetType(), FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
+    auto seg = item.GetSpeechSegment();
+    if (!seg.text.empty()) {
+      std::lock_guard<std::mutex> lock(text_mutex);
+      streamed_text.append(seg.text.data(), seg.text.size());
     }
 
     callback_count++;

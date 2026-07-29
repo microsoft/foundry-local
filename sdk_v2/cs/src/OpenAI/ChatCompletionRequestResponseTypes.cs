@@ -13,11 +13,11 @@ using System.Text.Json.Serialization;
 using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Betalgo.Ranul.OpenAI.ObjectModels.ResponseModels;
 
-using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
-
 using Microsoft.AI.Foundry.Local;
 using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.Extensions.Logging;
+
+using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
 
 // https://platform.openai.com/docs/api-reference/chat/create
 // Using the Betalgo ChatCompletionCreateRequest and extending with the `metadata` field for additional parameters
@@ -36,7 +36,9 @@ internal class ChatCompletionCreateRequestExtended : ChatCompletionCreateRequest
     internal static ChatCompletionCreateRequestExtended FromUserInput(string modelId,
                                                                       IEnumerable<OpenAIChatMessage> messages,
                                                                       IEnumerable<ToolDefinition>? tools,
+#pragma warning disable CS0618 // OpenAIChatClient is obsolete
                                                                       OpenAIChatClient.ChatSettings settings,
+#pragma warning restore CS0618
                                                                       bool stream)
     {
         var request = new ChatCompletionCreateRequestExtended

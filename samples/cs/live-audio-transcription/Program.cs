@@ -28,7 +28,7 @@ var catalog = await mgr.GetCatalogAsync();
 // English-only:
 var modelAlias = "nemotron-speech-streaming-en-0.6b";
 // Multi-lingual (supports 30+ languages including auto-detect):
-// var modelAlias = "nvidia-nemotron-3.5-asr-streaming-multilingual-0.6b";
+// var modelAlias = "nemotron-3.5-asr-streaming-0.6b";
 
 var model = await catalog.GetModelAsync(modelAlias) ?? throw new Exception($"Model \"{modelAlias}\" not found in catalog");
 

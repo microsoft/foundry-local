@@ -1,10 +1,17 @@
 # Reusable Linux build steps for the Foundry Local C++ SDK.
 #
-# Pool: onnxruntime-Ubuntu2404-AMD-CPU. Has the toolchain pre-installed but we
-# still bootstrap vcpkg and pre-download NuGet packages from the aiinfra feed
-# for version pinning.
+# Supports both linux-x64 (pool: onnxruntime-Ubuntu2404-AMD-CPU) and
+# linux-arm64 (pool: onnxruntime-linux-ARM64-CPU-2019) via the `arch`
+# parameter. Each pool has the toolchain pre-installed; we still bootstrap
+# vcpkg and pre-download NuGet packages from the aiinfra feed for version
+# pinning. x64 also pre-downloads Microsoft.ML.OnnxRuntime.Gpu.Linux for
+# CUDA support; arm64 is CPU-only and skips that package.
 
 parameters:
+- name: arch
+  type: string
+  default: x64
+  values: ['x64', 'arm64']
 - name: buildConfig
   type: string
 - name: ortVersion
@@ -29,7 +36,7 @@ steps:
     genaiVersion: ${{ parameters.genaiVersion }}
     winmlVersion: ''
     includeWinml: false
-    includeOrtGpuLinux: true
+    includeOrtGpuLinux: ${{ eq(parameters.arch, 'x64') }}
     shell: bash
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
@@ -43,10 +50,9 @@ steps:
   displayName: 'Append version define'
 
 - ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/checkout-steps.yml@self
+  - template: ../../templates/fetch-test-data-from-blob.yml@self
     parameters:
-      repoName: test-data-shared
-      basePath: '$(Agent.BuildDirectory)'
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
 - bash: |
     set -euo pipefail
@@ -96,4 +102,21 @@ steps:
     fi
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.so"
+
   displayName: 'Stage native artifacts'
+
+# Stage debug symbols into a separate artifact so they can be published
+# independently without being bundled into the Python wheel (which consumes
+# the native artifact wholesale and must not contain the .dbg file).
+- bash: |
+    set -euo pipefail
+    src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin'
+    dst='$(Build.ArtifactStagingDirectory)/symbols'
+    mkdir -p "$dst"
+
+    dbg="$src/libfoundry_local.so.dbg"
+    if [ -f "$dbg" ]; then
+      cp -P "$dbg" "$dst/"
+      echo "  staged libfoundry_local.so.dbg"
+    fi
+  displayName: 'Stage debug symbol artifacts'

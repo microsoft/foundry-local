@@ -1,11 +1,6 @@
 # 🚀 Foundry Local C# Samples
 
-These samples demonstrate how to use the Foundry Local C# SDK. Each sample uses a **unified project file** that automatically detects your operating system and selects the optimal NuGet package:
-
-- **Windows**: Uses `Microsoft.AI.Foundry.Local.WinML` for hardware acceleration via Windows ML.
-- **macOS / Linux**: Uses `Microsoft.AI.Foundry.Local` for cross-platform support.
-
-Both packages provide the same APIs, so the same source code works on all platforms.
+These samples demonstrate how to use the Foundry Local C# SDK. Each sample uses the `Microsoft.AI.Foundry.Local` NuGet package, which bundles the WinML runtime on Windows automatically.
 
 ## Samples
 
@@ -15,6 +10,7 @@ Both packages provide the same APIs, so the same source code works on all platfo
 | [embeddings](embeddings/) | Generate single and batch text embeddings using the Foundry Local SDK. |
 | [audio-transcription-example](audio-transcription-example/) | Transcribe audio files using the Foundry Local SDK. |
 | [foundry-local-web-server](foundry-local-web-server/) | Set up a local OpenAI-compliant web server. |
+| [foundry-local-web-server-responses-vision](foundry-local-web-server-responses-vision/) | Stream a vision (image understanding) response from the local web server using the Responses API. |
 | [tool-calling-foundry-local-sdk](tool-calling-foundry-local-sdk/) | Use tool calling with native chat completions. |
 | [tool-calling-foundry-local-web-server](tool-calling-foundry-local-web-server/) | Use tool calling with the local web server. |
 | [model-management-example](model-management-example/) | Manage models, variant selection, and updates. |

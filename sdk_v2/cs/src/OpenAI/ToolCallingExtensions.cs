@@ -6,9 +6,9 @@
 
 namespace Microsoft.AI.Foundry.Local.OpenAI;
 
-using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
-
 using System.Text.Json.Serialization;
+
+using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 
 // Extend response format beyond the OpenAI spec for LARK grammars.
 // Note: this type is registered in JsonSerializationContext for source-generated (AOT-safe)

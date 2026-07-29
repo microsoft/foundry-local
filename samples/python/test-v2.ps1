@@ -97,11 +97,11 @@ if ($IsWindows -or $env:OS -eq 'Windows_NT') {
     # in a sibling directory (one level up from bin/).
     $nativeLibSubdir = "$platform\RelWithDebInfo\RelWithDebInfo"
     $nativeFiles = @('foundry_local.dll', 'foundry_local.pdb')
-    # WinML builds add a hard-link dependency on the Windows App Runtime
-    # bootstrapper; without it foundry_local.dll fails to load with a generic
-    # "module not found" error. Staged best-effort — missing-file checks
-    # below tolerate non-WinML builds where these don't exist.
-    $winmlExtraFiles = @('Microsoft.WindowsAppRuntime.Bootstrap.dll', 'Microsoft.Windows.AI.MachineLearning.dll')
+    # WinML 2.x builds co-locate the registration-free ML runtime
+    # (Microsoft.Windows.AI.MachineLearning.dll) next to foundry_local.dll.
+    # Staged best-effort — missing-file checks below tolerate non-WinML builds
+    # where it doesn't exist.
+    $winmlExtraFiles = @('Microsoft.Windows.AI.MachineLearning.dll')
     $nativeLibFiles = @('foundry_local.lib')
 }
 elseif ($IsLinux) {

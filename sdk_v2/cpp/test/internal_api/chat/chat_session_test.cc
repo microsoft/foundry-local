@@ -185,7 +185,7 @@ TEST_F(ChatSessionTest, RunWithStreaming) {
   EXPECT_FALSE(text.empty());
 
   // Lowercase the final text for case-insensitive substring matches.
-  std::string lower = fl::test::to_lower(text);
+  std::string lower = fl::test::ToLower(text);
 
   const std::vector<std::string> uk_countries = {"england", "scotland", "wales", "ireland"};
   int found = 0;
@@ -223,7 +223,7 @@ TEST_F(ChatSessionTest, RunWithStreaming) {
 
   EXPECT_FALSE(text2.empty());
 
-  std::string lower2 = fl::test::to_lower(text2);
+  std::string lower2 = fl::test::ToLower(text2);
 
   const std::vector<std::string> uk_capitals = {"london", "edinburgh", "cardiff", "belfast"};
   int found2 = 0;

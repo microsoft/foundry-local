@@ -2,24 +2,21 @@
 // Licensed under the MIT License.
 #include "ep_detection/cuda_ep_bootstrapper.h"
 
+#include "ep_detection/ep_utils.h"
 #include "logger.h"
 #include "util/file_lock.h"
+#include "utils.h"
 #include "http/http_download.h"
-#include "util/sha256.h"
 #include "util/zip_extract.h"
 
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <string>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
 
 namespace {
 
@@ -28,63 +25,23 @@ constexpr const char* kLockFileName = "cuda-ep.lock";
 constexpr const char* kUserAgent = "FoundryLocal";
 constexpr int kMaxInstallAttempts = 5;
 
-// CUDA EP package is built against the ONNX Runtime version we link against, so
-// WinML and non-WinML builds need separate downloads. Hashes mirror the C# core
-// (see neutron.main/src/Service/Providers/Detector/CudaEpBootstrapper.cs).
-//   WinML build  -> ORT 1.23.2 (cuda-ep-20260501-182408.zip)
-//   Non-WinML    -> ORT 1.25.1 (cuda-ep-20260501-062935.zip)
-#if defined(FOUNDRY_LOCAL_USE_WINML) && FOUNDRY_LOCAL_USE_WINML
-constexpr const char* kDownloadUrl =
-    "https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/cuda-ep-20260501-182408.zip";
-#else
+// CUDA EP package is built against the ONNX Runtime version we link against.
 constexpr const char* kDownloadUrl =
     "https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/cuda-ep-20260501-062935.zip";
-#endif
 
 struct ExpectedBinary {
   const char* filename;
   const char* sha256;
 };
 
-#if defined(FOUNDRY_LOCAL_USE_WINML) && FOUNDRY_LOCAL_USE_WINML
-constexpr ExpectedBinary kExpectedBinaries[] = {
-    {"onnxruntime_providers_cuda.dll", "4CEF18654878CEFCFCF8488E9C3A705EB5327AA9B5556155C319C9CBB2D98FCF"},
-    {"onnxruntime-genai-cuda.dll", "BC953F8E2AAFC6219B2D723B65AB8F1A9426A6B7724D6A01ED756FAE8C3DE6AE"},
-};
-#else
 constexpr ExpectedBinary kExpectedBinaries[] = {
     {"onnxruntime_providers_cuda.dll", "DD540FCFECFBC68B4675C9ADF09C2858CF6B054563859D79598AA2524406A76F"},
     {"onnxruntime-genai-cuda.dll", "BC953F8E2AAFC6219B2D723B65AB8F1A9426A6B7724D6A01ED756FAE8C3DE6AE"},
 };
-#endif
 
 constexpr const char* kRegistrationName = "Foundry.CUDA";
 constexpr const char* kCudaProviderDll = "onnxruntime_providers_cuda.dll";
-
-/// Verify all expected binaries exist and have correct SHA256 hashes.
-bool VerifyPackage(const std::filesystem::path& dir, fl::ILogger& logger) {
-  for (const auto& expected : kExpectedBinaries) {
-    auto file_path = dir / expected.filename;
-
-    if (!std::filesystem::exists(file_path)) {
-      return false;
-    }
-
-    auto hash = fl::Sha256File(file_path);
-
-    // Case-insensitive comparison
-    std::string expected_hash(expected.sha256);
-    if (!std::equal(hash.begin(), hash.end(), expected_hash.begin(), expected_hash.end(),
-                    [](char a, char b) { return std::toupper(a) == std::toupper(b); })) {
-      logger.Log(fl::LogLevel::Warning,
-                 fmt::format("CUDA EP: hash mismatch for {}: got {}, expected {}",
-                             expected.filename, hash, expected.sha256));
-      return false;
-    }
-  }
-
-  return true;
-}
+constexpr const char* kCudaProviderOverrideEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
 
 }  // anonymous namespace
 
@@ -123,11 +80,52 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
   auto zip_path = ep_dir.parent_path() / kPackageFileName;
 
   try {
+    auto override_path = Utils::GetEnv(kCudaProviderOverrideEnv);
+    if (override_path.has_value() && !override_path->empty()) {
+      std::filesystem::path provider_path(*override_path);
+
+      if (!std::filesystem::exists(provider_path)) {
+        logger.Log(LogLevel::Warning,
+                   fmt::format("CUDA EP: {} set but file does not exist ({})",
+                               kCudaProviderOverrideEnv, provider_path.string()));
+        return false;
+      }
+
+      if (progress_cb) {
+        progress_cb(name_, 90.0f);
+      }
+
+      // Prepend the override directory to PATH so sibling dependency DLLs are discoverable,
+      // matching the normal install path. The provider DLL delay-loads CUDA/cuDNN dependencies.
+      PrependDirToProcessPath(provider_path.parent_path());
+
+      if (!register_ep_(kRegistrationName, provider_path)) {
+        logger.Log(LogLevel::Warning,
+                   fmt::format("CUDA EP: ORT registration failed for override {}={}",
+                               kCudaProviderOverrideEnv, provider_path.string()));
+        return false;
+      }
+
+      registered_ = true;
+
+      if (progress_cb) {
+        progress_cb(name_, 100.0f);
+      }
+
+      logger.Log(LogLevel::Information,
+                 fmt::format("CUDA EP: ready (override_env={} install_path={})",
+                             kCudaProviderOverrideEnv, provider_path.string()));
+      return true;
+    }
+
     // Cross-process lock to prevent concurrent installs
     FileLock lock(lock_path);
 
     // Check if package already exists and is valid
-    if (VerifyPackage(ep_dir, logger)) {
+    if (fl::VerifyEpBinaries(ep_dir,
+            {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
+             {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
+            "CUDA EP", logger)) {
       logger.Log(LogLevel::Information, "CUDA EP: package already valid, skipping download");
     } else {
       // Clean up any partial install
@@ -170,7 +168,10 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
       std::filesystem::remove(zip_path);
 
       // Verify
-      if (!VerifyPackage(ep_dir, logger)) {
+      if (!fl::VerifyEpBinaries(ep_dir,
+               {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
+                {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
+               "CUDA EP", logger)) {
         logger.Log(LogLevel::Warning, "CUDA EP: verification failed after download");
         return false;
       }
@@ -188,18 +189,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
     //   - onnxruntime_providers_cuda.dll delay-loads some dependencies
     //   - onnxruntime-genai-cuda.dll is loaded later at model-load time
     //   - ORT creates CUDA sessions after registration
-    {
-      DWORD len = GetEnvironmentVariableW(L"PATH", nullptr, 0);
-      std::wstring prev_path;
-      if (len > 0) {
-        prev_path.resize(len);
-        GetEnvironmentVariableW(L"PATH", prev_path.data(), len);
-        prev_path.resize(len - 1);  // remove trailing null
-      }
-
-      std::wstring new_path = ep_dir.wstring() + L";" + prev_path;
-      SetEnvironmentVariableW(L"PATH", new_path.c_str());
-    }
+    PrependDirToProcessPath(ep_dir);
 #endif
 
     auto cuda_dll_path = ep_dir / kCudaProviderDll;

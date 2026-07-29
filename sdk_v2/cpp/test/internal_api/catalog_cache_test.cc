@@ -117,6 +117,26 @@ TEST_F(CatalogCacheTest, SaveAndLoadRoundTrip) {
   }
 }
 
+TEST_F(CatalogCacheTest, DetectedRegionRoundTrip) {
+  ModelInfo model = MakeTestModel("phi-4-mini:3", 3);
+  model.detected_region = "westus2";
+
+  {
+    CatalogCache cache(test_dir_, logger_);
+    cache.Save({model});
+  }
+
+  {
+    CatalogCache cache(test_dir_, logger_);
+    cache.Load();
+    auto loaded = cache.GetCachedModels();
+
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->size(), 1u);
+    EXPECT_EQ((*loaded)[0].detected_region, "westus2");
+  }
+}
+
 TEST_F(CatalogCacheTest, EmptyModelListRoundTrip) {
   std::vector<ModelInfo> empty_models;
 

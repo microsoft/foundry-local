@@ -37,16 +37,25 @@ using json = nlohmann::json;
 namespace {
 
 std::string TestHttpGet(const std::string& url, const std::string& user_agent = "") {
-  return http::HttpGet(url, user_agent, true);
+  http::HttpRequestOptions options;
+  options.user_agent = user_agent;
+  options.close_connection = true;
+  return http::HttpGet(url, options);
 }
 
 std::string TestHttpPost(const std::string& url, const std::string& json_body,
                          const std::string& user_agent = "") {
-  return http::HttpPost(url, json_body, user_agent, true);
+  http::HttpRequestOptions options;
+  options.user_agent = user_agent;
+  options.close_connection = true;
+  return http::HttpPost(url, json_body, options);
 }
 
 std::string TestHttpDelete(const std::string& url, const std::string& user_agent = "") {
-  return http::HttpDelete(url, user_agent, true);
+  http::HttpRequestOptions options;
+  options.user_agent = user_agent;
+  options.close_connection = true;
+  return http::HttpDelete(url, options);
 }
 
 }  // namespace

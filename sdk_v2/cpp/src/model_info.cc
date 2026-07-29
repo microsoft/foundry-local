@@ -102,6 +102,10 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j) {
     info.uri = j["uri"].get<std::string>();
   }
 
+  if (j.contains("detectedRegion") && j["detectedRegion"].is_string()) {
+    info.detected_region = j["detectedRegion"].get<std::string>();
+  }
+
   // String properties — named top-level fields → string_properties map
   ReadStringProp(j, "providerType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
   ReadStringProp(j, "modelType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
@@ -198,6 +202,11 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   j["version"] = info.version;
   j["alias"] = info.alias;
   j["uri"] = info.uri;
+
+  // detectedRegion — only emit when set so BYO models and pre-region caches are unaffected.
+  if (!info.detected_region.empty()) {
+    j["detectedRegion"] = info.detected_region;
+  }
 
   // providerType — required in C#, defaults to empty
   const auto* provider = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);

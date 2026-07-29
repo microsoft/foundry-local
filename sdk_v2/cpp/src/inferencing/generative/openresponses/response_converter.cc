@@ -497,22 +497,15 @@ std::string ExtractResponsesToolDefinitions(const ResponseCreateParams& params, 
   // which uses StringComparer.OrdinalIgnoreCase). Applied after tool_choice so a ForcedFunction
   // that names a tool excluded by allowed_tools collapses to an empty set — same strict semantics.
   if (params.allowed_tools.has_value()) {
-    auto to_lower = [](std::string s) {
-      for (auto& ch : s) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-      }
-      return s;
-    };
-
     std::unordered_set<std::string> allowed;
     allowed.reserve(params.allowed_tools->size());
     for (const auto& name : *params.allowed_tools) {
-      allowed.insert(to_lower(name));
+      allowed.insert(ToLower(name));
     }
 
     std::vector<responses::ToolDefinition> intersected;
     for (const auto& tool : filtered) {
-      if (allowed.count(to_lower(tool.function.name)) > 0) {
+      if (allowed.count(ToLower(tool.function.name)) > 0) {
         intersected.push_back(tool);
       }
     }

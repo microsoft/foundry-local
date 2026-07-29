@@ -8,6 +8,10 @@
 #include "inferencing/model_load_manager.h"
 #include "logger.h"
 
+#include "utils/temp_path.h"
+
+#include <cstdint>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>

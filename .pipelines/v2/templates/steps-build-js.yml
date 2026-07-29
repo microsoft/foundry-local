@@ -18,7 +18,7 @@
 parameters:
 - name: rid
   type: string
-  values: ['win-x64', 'win-arm64', 'linux-x64', 'osx-arm64']
+  values: ['win-x64', 'win-arm64', 'linux-x64', 'linux-arm64', 'osx-arm64']
   displayName: 'ADO RID for the platform being built'
 - name: nativeArtifactDir
   type: string
@@ -72,6 +72,12 @@ steps:
       echo "##vso[task.setvariable variable=nativeLib]libfoundry_local.so"
     displayName: 'Set prebuild directory (linux-x64)'
 
+- ${{ if eq(parameters.rid, 'linux-arm64') }}:
+  - bash: |
+      echo "##vso[task.setvariable variable=prebuildDir]linux-arm64"
+      echo "##vso[task.setvariable variable=nativeLib]libfoundry_local.so"
+    displayName: 'Set prebuild directory (linux-arm64)'
+
 - ${{ if eq(parameters.rid, 'osx-arm64') }}:
   - bash: |
       echo "##vso[task.setvariable variable=prebuildDir]darwin-arm64"
@@ -111,7 +117,7 @@ steps:
       # cross-compiling to arm64.
       FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
 
-- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
@@ -123,9 +129,10 @@ steps:
       FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
 
 # Stage prebuilds/<plat>-<arch>/ with the two .node addons + foundry_local
-# shared library. binding.gyp's copy_addon_to_prebuilds target already
-# drops the .node files into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy
-# from there into the artifact dir alongside the shared library.
+# shared library (and, on Windows, the reg-free WinML 2.x runtime DLL).
+# binding.gyp's copy_addon_to_prebuilds target already drops the .node files
+# into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy from there into the artifact
+# dir alongside the shared library.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - pwsh: |
       $dst = "${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"
@@ -145,10 +152,20 @@ steps:
       Copy-Item $nativeLibPath -Destination $dst -Force
       Write-Host "  staged $(nativeLib)"
 
+      # WinML 2.x runtime ships next to foundry_local.dll so WinML EPs work out
+      # of the box. It is Microsoft-signed (NuGet) — excluded from ESRP signing.
+      $winmlDll = Join-Path "${{ parameters.nativeArtifactDir }}" 'Microsoft.Windows.AI.MachineLearning.dll'
+      if (Test-Path $winmlDll) {
+        Copy-Item $winmlDll -Destination $dst -Force
+        Write-Host "  staged Microsoft.Windows.AI.MachineLearning.dll"
+      } else {
+        throw "WinML runtime DLL not found in native artifact: $winmlDll"
+      }
+
       Get-ChildItem $dst | ForEach-Object { Write-Host "    $($_.Name)  $($_.Length) bytes" }
     displayName: 'Stage prebuild directory'
 
-- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
       set -euo pipefail
       dst="${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"

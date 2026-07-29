@@ -1,5 +1,8 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
+﻿// --------------------------------------------------------------------------------------------------------------------
+// <copyright company="Microsoft">
+//   Copyright (c) Microsoft. All rights reserved.
+// </copyright>
+// --------------------------------------------------------------------------------------------------------------------
 
 namespace Microsoft.AI.Foundry.Local;
 
@@ -12,9 +15,25 @@ public enum ItemType
     Message = 21,
     Image = 25,
     Audio = 30,
+    SpeechSegment = 31,
+    SpeechResult = 32,
     ToolCall = 100,
     ToolResult = 101,
     Queue = 200,
+}
+
+/// <summary>
+/// Discriminator for a <see cref="SpeechSegmentItem"/>. PARTIAL/FINAL describe the
+/// state of the current segment hypothesis in a streaming callback — PARTIAL is the
+/// evolving guess for the in-progress segment, FINAL closes it. They do not describe
+/// the overall response. NONE is used for segments embedded in the aggregate
+/// <see cref="SpeechResultItem"/>, where the streaming distinction no longer applies.
+/// </summary>
+public enum SpeechSegmentKind
+{
+    None = 0,
+    Partial = 1,
+    Final = 2,
 }
 
 /// <summary>

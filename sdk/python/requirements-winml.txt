@@ -2,6 +2,6 @@ pydantic>=2.0.0
 requests>=2.32.4
 openai>=2.24.0
 # WinML native binary packages from the ORT-Nightly PyPI feed.
-foundry-local-core-winml==1.2.0
+foundry-local-core-winml==1.2.3
 onnxruntime-core==1.26.0
-onnxruntime-genai-core==0.14.0
+onnxruntime-genai-core==0.14.1

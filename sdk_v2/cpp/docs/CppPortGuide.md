@@ -399,7 +399,7 @@ HuggingFace, NIM, and WCR providers were not ported.
 | `EpDetector` | `EpDetector` (implements `IEpDetector`) | Real detection via ORT `GetAvailableProviders()` + `GetEpDevices()` |
 | `IEpBootstrapper` | `IEpBootstrapper` (interface) | Bootstrapping interface for EP package download/registration |
 | `CudaEpBootstrapper` | `CudaEpBootstrapper` | Downloads CUDA EP zip, extracts, prepends to PATH, registers with ORT |
-| `WinMLEpBootstrapper` | `WinMLEpBootstrapper` | Discovers WinML EPs via `Microsoft.Windows.AI.MachineLearning.dll` catalog API. Windows 11 24H2+ (build 26100). |
+| `WinMLEpBootstrapper` | `WinMLEpBootstrapper` | Discovers WinML EPs via `Microsoft.Windows.AI.MachineLearning.dll` catalog API. WinML 2.x reg-free runtime, Windows 10 19H1+ (build 18362). |
 
 ---
 
@@ -474,7 +474,6 @@ It ensures all threads are joined during shutdown. The C# equivalent relies on
 FOUNDRY_LOCAL_BUILD_TESTS=ON       # Unit tests (default ON)
 FOUNDRY_LOCAL_BUILD_EXAMPLES=ON    # Example programs (default ON)
 FOUNDRY_LOCAL_BUILD_SERVICE=ON     # Web service (requires oatpp) (default ON)
-FOUNDRY_LOCAL_USE_WINML=OFF        # WinML support
 ```
 
 ---

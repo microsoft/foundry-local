@@ -58,7 +58,7 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
 }
 
 DeviceType ParseDeviceType(const std::string& device) {
-  const auto lower = to_lower(device);
+  const auto lower = ToLower(device);
   if (lower == "cpu") {
     return DeviceType::kCPU;
   }
@@ -338,7 +338,7 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
         return;
       }
 
-      const auto v = to_lower(*tag);
+      const auto v = ToLower(*tag);
       if (v == "true") {
         info.int_properties[key] = 1;
       } else if (v == "false") {
@@ -417,7 +417,7 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = bytes / (1024 * 1024);
   }
 
-  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "AzureFoundry";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
 
   // Parent model URI
   if (!parent_uri.empty()) {

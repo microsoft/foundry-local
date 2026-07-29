@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -16,6 +16,7 @@
 namespace Microsoft.AI.Foundry.Local.Detail;
 
 using System.Runtime.InteropServices;
+
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 
 internal static partial class DllLoader

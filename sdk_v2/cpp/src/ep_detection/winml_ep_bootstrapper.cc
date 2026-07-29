@@ -1,75 +1,133 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+//
+// This translation unit is only compiled when the WinML EP catalog NuGet
+// package was resolved at CMake time (WinMLEpCatalog_FOUND). See
+// sdk_v2/cpp/CMakeLists.txt for the source-list gating. The corresponding
+// header (and this file) unconditionally reference WinML 2.x catalog APIs.
 #include "ep_detection/winml_ep_bootstrapper.h"
 
 #include "logger.h"
 
 #include <fmt/format.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
-
 // WinML EP Catalog C API — delay-loaded via Microsoft.Windows.AI.MachineLearning.dll
-#if FOUNDRY_LOCAL_HAS_EP_CATALOG
+#include <WinMLAsync.h>
 #include <WinMLEpCatalog.h>
-#endif
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-namespace {
-
-/// Checks for Windows 10 build 26100+ (Windows 11 24H2), the minimum OS
-/// version that ships the WinML EP catalog.
-///
-/// Uses RtlGetVersion (ntdll) because VerifyVersionInfoW lies without a
-/// compatibility manifest — it caps the reported version at 6.2 (Win 8.1)
-/// unless the app declares support for newer Windows versions.
-bool IsWindows11_24H2OrLater() {
-  // RtlGetVersion is always available and always returns the true OS version.
-  using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
-  auto* ntdll = GetModuleHandleW(L"ntdll.dll");
-  if (!ntdll) {
-    return false;
-  }
-
-  auto rtl_get_version = reinterpret_cast<RtlGetVersionFn>(
-      GetProcAddress(ntdll, "RtlGetVersion"));
-  if (!rtl_get_version) {
-    return false;
-  }
-
-  OSVERSIONINFOW osvi = {};
-  osvi.dwOSVersionInfoSize = sizeof(osvi);
-  if (rtl_get_version(&osvi) != 0) {
-    return false;
-  }
-
-  // Windows 11 24H2 = build 26100+
-  if (osvi.dwMajorVersion > 10) {
-    return true;
-  }
-  if (osvi.dwMajorVersion == 10 && osvi.dwMinorVersion == 0) {
-    return osvi.dwBuildNumber >= 26100;
-  }
-
-  return false;
-}
-
-}  // anonymous namespace
-
 namespace fl {
 
-#if FOUNDRY_LOCAL_HAS_EP_CATALOG
+namespace {
+
+/// Look up the running Windows build number via ``ntdll!RtlGetVersion``,
+/// resolved through ``GetProcAddress`` to avoid pulling ``<winternl.h>`` and
+/// its macro pollution. ``RtlGetVersion`` accepts an ``OSVERSIONINFOW``
+/// (typedef-aliased to ``RTL_OSVERSIONINFOW`` in ``<winnt.h>``).
+/// Returns 0 on failure; the value is purely diagnostic and never gates behavior.
+DWORD QueryWindowsBuild() {
+  using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+  HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+  if (!ntdll) {
+    return 0;
+  }
+  auto rtl_get_version = reinterpret_cast<RtlGetVersionFn>(
+      ::GetProcAddress(ntdll, "RtlGetVersion"));
+  if (!rtl_get_version) {
+    return 0;
+  }
+  OSVERSIONINFOW info{};
+  info.dwOSVersionInfoSize = sizeof(info);
+  if (rtl_get_version(&info) != 0) {
+    return 0;
+  }
+  return info.dwBuildNumber;
+}
+
+/// Try to load ``Microsoft.Windows.AI.MachineLearning.dll`` from the directory
+/// that hosts ``foundry_local.dll`` (i.e., the module containing this code).
+/// Returns ``NULL`` if the module path cannot be resolved or the sibling file
+/// is absent — callers should fall back to a bare-name ``LoadLibraryW`` so a
+/// system-installed copy on the default search path still wins.
+///
+/// Rationale: bindings that load ``foundry_local.dll`` from a non-default
+/// directory (e.g., the JS prebuilds folder) don't push that directory onto
+/// the process search path, so a bare ``LoadLibraryW("Microsoft.Windows.AI.MachineLearning.dll")``
+/// silently misses the sibling DLL and EP discovery returns zero providers.
+/// Resolving the path explicitly removes that dependency on caller-side
+/// PATH / ``os.add_dll_directory`` setup.
+HMODULE LoadWinMLDllFromOwnDirectory() {
+  HMODULE own_module = nullptr;
+  if (!::GetModuleHandleExW(
+          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCWSTR>(&LoadWinMLDllFromOwnDirectory),
+          &own_module) ||
+      own_module == nullptr) {
+    return nullptr;
+  }
+
+  // Resolve own directory to find the sibling WinML DLL.
+  // Dynamic buffer supports long paths (>MAX_PATH) when enabled.
+  std::wstring buf(MAX_PATH, L'\0');
+  DWORD len;
+  while ((len = ::GetModuleFileNameW(own_module, buf.data(),
+                                     static_cast<DWORD>(buf.size()))) == buf.size()) {
+    buf.resize(buf.size() * 2);
+  }
+  if (len == 0) {
+    return nullptr;
+  }
+
+  auto dll_path = std::filesystem::path(buf.data(), buf.data() + len)
+                      .parent_path() / L"Microsoft.Windows.AI.MachineLearning.dll";
+
+  return ::LoadLibraryExW(dll_path.c_str(), nullptr,
+                          LOAD_WITH_ALTERED_SEARCH_PATH);
+}
+
+/// Context handed to ``WinMLAsyncBlock`` so the progress thunk can forward
+/// fractional progress to the caller-supplied percentage callback and signal
+/// cancellation back through ``WinMLAsyncCancel``.
+struct EnsureReadyAsyncCtx {
+  const std::string* name = nullptr;
+  const fl::IEpBootstrapper::ProgressCallback* progress_cb = nullptr;
+  std::atomic<bool> cancel_requested{false};
+};
+
+/// Forwards WinML's download progress to our percentage callback. WinML
+/// reports a percent value (0-100) directly, matching how the WinRT
+/// projection's IAsyncOperationWithProgress<_, double> reports progress.
+void CALLBACK EnsureReadyProgressThunk(WinMLAsyncBlock* async, double progress) {
+  auto* ctx = static_cast<EnsureReadyAsyncCtx*>(async->context);
+  if (!ctx || !ctx->progress_cb || !*ctx->progress_cb) {
+    return;
+  }
+
+  double pct = progress;
+  if (pct < 0.0) pct = 0.0;
+  if (pct > 100.0) pct = 100.0;
+
+  if (!(*ctx->progress_cb)(*ctx->name, static_cast<float>(pct))) {
+    ctx->cancel_requested.store(true, std::memory_order_release);
+    WinMLAsyncCancel(async);
+  }
+}
+
+}  // namespace
+
 WinMLEpBootstrapper::WinMLEpBootstrapper(std::string name, EpRegistrationCallback register_ep,
                                          std::shared_ptr<void> catalog_ref, WinMLEpHandle ep_handle)
     : name_(std::move(name)),
       register_ep_(std::move(register_ep)),
       catalog_ref_(std::move(catalog_ref)),
       ep_handle_(ep_handle) {}
-#endif
 
 const std::string& WinMLEpBootstrapper::Name() const {
   return name_;
@@ -89,48 +147,67 @@ bool WinMLEpBootstrapper::DownloadAndRegister(bool force,
     return true;
   }
 
-#if !FOUNDRY_LOCAL_HAS_EP_CATALOG
-  logger.Log(LogLevel::Warning,
-             fmt::format("WinML EP {}: EP catalog not available at compile time", name_));
-  return false;
-#else
-  // Ask the OS to download/prepare the EP if needed.
-  HRESULT hr = WinMLEpEnsureReady(ep_handle_);
+  // Ask the OS to download/prepare the EP if needed. We use the async variant
+  // so we can forward fractional download progress to the caller and respect
+  // cancellation; WinMLAsyncGetStatus(..., TRUE) gives us a synchronous wait.
+  EnsureReadyAsyncCtx ctx;
+  ctx.name = &name_;
+  ctx.progress_cb = &progress_cb;
+
+  WinMLAsyncBlock block{};
+  block.context = &ctx;
+  block.callback = nullptr;
+  block.progress = (progress_cb ? &EnsureReadyProgressThunk : nullptr);
+
+  HRESULT hr = WinMLEpEnsureReadyAsync(ep_handle_, &block);
+  if (SUCCEEDED(hr)) {
+    hr = WinMLAsyncGetStatus(&block, TRUE);
+  }
+  WinMLAsyncClose(&block);
 
   if (FAILED(hr)) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("WinML EP {}: EnsureReady failed (hr=0x{:08X})", name_, static_cast<unsigned>(hr)));
+    if (ctx.cancel_requested.load(std::memory_order_acquire)) {
+      logger.Log(LogLevel::Information,
+                 fmt::format("WinML EP {}: cancelled by caller", name_));
+    } else {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("WinML EP {}: EnsureReady failed (hr=0x{:08X})", name_,
+                             static_cast<unsigned>(hr)));
+    }
     return false;
   }
 
-  // Retrieve the library path from the EP handle.
-  size_t path_size = 0;
-  hr = WinMLEpGetLibraryPathSize(ep_handle_, &path_size);
+  // Reuse the path captured during enumeration when the EP was already Ready;
+  // otherwise fetch it now that EnsureReady has populated it.
+  if (library_path_.empty()) {
+    size_t path_size = 0;
+    hr = WinMLEpGetLibraryPathSize(ep_handle_, &path_size);
 
-  if (FAILED(hr) || path_size == 0) {
-    logger.Log(LogLevel::Warning, fmt::format("WinML EP {}: failed to get library path size (hr=0x{:08X})", name_,
-                                              static_cast<unsigned>(hr)));
-    return false;
+    if (FAILED(hr) || path_size == 0) {
+      logger.Log(LogLevel::Warning, fmt::format("WinML EP {}: failed to get library path size (hr=0x{:08X})", name_,
+                                                static_cast<unsigned>(hr)));
+      return false;
+    }
+
+    std::string path(path_size, '\0');
+    hr = WinMLEpGetLibraryPath(ep_handle_, path.size(), path.data(), nullptr);
+
+    if (FAILED(hr)) {
+      logger.Log(LogLevel::Warning, fmt::format("WinML EP {}: failed to get library path (hr=0x{:08X})", name_,
+                                                static_cast<unsigned>(hr)));
+      return false;
+    }
+
+    // The API may include a trailing null in the reported size.
+    if (!path.empty() && path.back() == '\0') {
+      path.pop_back();
+    }
+
+    library_path_ = std::move(path);
   }
-
-  std::string path(path_size, '\0');
-  hr = WinMLEpGetLibraryPath(ep_handle_, path.size(), path.data(), nullptr);
-
-  if (FAILED(hr)) {
-    logger.Log(LogLevel::Warning, fmt::format("WinML EP {}: failed to get library path (hr=0x{:08X})", name_,
-                                              static_cast<unsigned>(hr)));
-    return false;
-  }
-
-  // The API may include a trailing null in the reported size.
-  if (!path.empty() && path.back() == '\0') {
-    path.pop_back();
-  }
-
-  library_path_ = path;
 
   // Register with ORT via the callback.
-  if (!register_ep_(name_, std::filesystem::path(path))) {
+  if (!register_ep_(name_, std::filesystem::path(library_path_))) {
     logger.Log(LogLevel::Warning, fmt::format("WinML EP {}: ORT registration failed", name_));
     return false;
   }
@@ -144,31 +221,34 @@ bool WinMLEpBootstrapper::DownloadAndRegister(bool force,
   // Library path + version are logged by the central register_ep callback;
   // no extra bootstrapper-side line needed.
   return true;
-#endif
 }
 
 std::vector<std::unique_ptr<WinMLEpBootstrapper>> WinMLEpBootstrapper::DiscoverProviders(
     EpRegistrationCallback register_ep,
     ILogger& logger) {
-#if !FOUNDRY_LOCAL_HAS_EP_CATALOG
-  (void)register_ep;
-  (void)logger;
-  return {};
-#else
-  if (!IsWindows11_24H2OrLater()) {
-    logger.Log(LogLevel::Information,
-               "WinML EP catalog: requires Windows 11 24H2+ (build 26100)");
-    return {};
-  }
-
   // Pre-check that the WinML DLL is loadable. The DLL is delay-loaded, so
   // calling WinML functions without it present would cause a structured
   // exception. Loading it explicitly is cleaner than SEH.
-  HMODULE winml_dll = LoadLibraryW(L"Microsoft.Windows.AI.MachineLearning.dll");
+  //
+  // Try the sibling-of-foundry_local.dll location first so bindings that
+  // distribute the WinML DLL alongside foundry_local.dll (JS prebuilds,
+  // Python wheels, C# packed runtimes) don't need to also push that
+  // directory onto the process PATH. Fall back to the bare-name lookup
+  // so a system-installed copy on the default search path still wins.
+  HMODULE winml_dll = LoadWinMLDllFromOwnDirectory();
+  if (!winml_dll) {
+    winml_dll = LoadLibraryW(L"Microsoft.Windows.AI.MachineLearning.dll");
+  }
 
   if (!winml_dll) {
+    // Microsoft.Windows.AI.MachineLearning.dll only ships on Windows 10 19H1
+    // (build 18362) and newer. Log GetLastError() and the OS build for diagnostics.
+    DWORD load_err = ::GetLastError();
+    DWORD os_build = QueryWindowsBuild();
     logger.Log(LogLevel::Information,
-               "WinML EP catalog: DLL not available — EP discovery disabled");
+               fmt::format("WinML EP catalog: DLL not available — EP discovery disabled "
+                           "(LoadLibrary err={}, Windows build {})",
+                           load_err, os_build));
     return {};
   }
   // Keep the DLL loaded — the delay-load stubs will resolve against it.
@@ -237,9 +317,6 @@ std::vector<std::unique_ptr<WinMLEpBootstrapper>> WinMLEpBootstrapper::DiscoverP
              fmt::format("WinML EP catalog: discovered {} provider(s)", ctx.bootstrappers.size()));
 
   return std::move(ctx.bootstrappers);
-#endif
 }
 
 }  // namespace fl
-
-#endif  // _WIN32

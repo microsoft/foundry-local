@@ -1,4 +1,4 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
@@ -73,13 +73,18 @@ internal sealed class ChatSessionTests
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
 
+        // Greedy decoding (temperature 0) for reproducible content checks; a
+        // sampled 0.5B model otherwise sometimes asks a clarifying question
+        // instead of answering, which makes CI flaky.
+        session.SetOptions(new RequestOptions { Search = new SearchOptions { Temperature = 0.0f } });
+
         // Use a multi-token prompt with deterministic substrings so we can validate:
         //   1. Streaming actually delivers multiple TextItem deltas (not a single coalesced item).
         //   2. The streamed content matches expectations (at least 2 of the 4 UK
         //      constituent country names appear). A 0.5B model may abbreviate or
         //      reorder; requiring a subset stays robust.
         using var request = new Request();
-        request.AddItem(MessageItem.User("Name the countries in the United Kingdom."));
+        request.AddItem(MessageItem.User("List the four countries that make up the United Kingdom."));
 
         var sb = new StringBuilder();
         int itemCount = 0;

@@ -1,12 +1,11 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
 // --------------------------------------------------------------------------------------------------------------------
 
-using Microsoft.AI.Foundry.Local.Detail.Native;
-
 namespace Microsoft.AI.Foundry.Local;
+using Microsoft.AI.Foundry.Local.Detail.Native;
 
 public sealed class Request : IDisposable
 {

@@ -12,19 +12,22 @@ using System.Text.Json;
 using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Betalgo.Ranul.OpenAI.ObjectModels.ResponseModels;
 
-using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
-using OpenAIToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolChoice;
-
 using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.OpenAI;
 using Microsoft.Extensions.Logging;
 
 using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
+using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
+using OpenAIToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolChoice;
 
 /// <summary>
 /// Chat Client that uses the OpenAI API.
 /// Implemented using Betalgo.Ranul.OpenAI SDK types.
 /// </summary>
+[System.Obsolete(
+    "OpenAIChatClient is deprecated and will be removed at the end of 2026. " +
+    "Use ChatSession instead. OpenAI types remain supported for the web-server path.",
+    error: false)]
 public class OpenAIChatClient
 {
     private readonly string _modelId;

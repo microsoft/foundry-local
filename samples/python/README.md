@@ -45,4 +45,4 @@ These samples demonstrate how to use Foundry Local with Python.
    ```
 
 > [!TIP]
-> Each sample's `requirements.txt` uses environment markers to automatically install the right SDK for your platform. On **Windows**, `foundry-local-sdk-winml` is installed for broader hardware acceleration. On **macOS and Linux**, the standard `foundry-local-sdk` is used. Just run `pip install -r requirements.txt` — platform detection is handled for you.
+> Each sample's `requirements.txt` installs the single `foundry-local-sdk` package. On **Windows**, it bundles WinML hardware acceleration automatically. Just run `pip install -r requirements.txt` — no separate package or flag is needed.

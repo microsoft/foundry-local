@@ -75,7 +75,7 @@ TEST_F(EpDetectionApiTest, IsEpDownloadInProgress_ConsistentAcrossCalls) {
 }
 
 #ifdef _WIN32
-// On Windows 11 24H2+, WinML should discover at least one EP.
+// WinML 2.x reg-free runtime supports Windows 10 19H1 (build 18362) and later.
 // This test verifies the full Manager → EpDetector → WinMLEpBootstrapper chain.
 TEST_F(EpDetectionApiTest, GetDiscoverableEps_WindowsHasWinMLProviders) {
   auto eps = manager().GetDiscoverableEps();
@@ -91,5 +91,47 @@ TEST_F(EpDetectionApiTest, GetDiscoverableEps_WindowsHasWinMLProviders) {
       EXPECT_FALSE(ep.name.empty());
     }
   }
+}
+
+// Exercises the WinML 2.x download/register path end-to-end:
+//   WinMLEpEnsureReady → WinMLEpGetLibraryPath → ORT RegisterExecutionProvider.
+// Picks the first discoverable EP that is not already registered. SharedTestEnv
+// pre-registers Foundry's CUDA + WebGPU, so the unregistered candidate is always
+// served by the OS WinML catalog.
+// Skipped on minimal images where the OS exposes no WinML EPs.
+TEST_F(EpDetectionApiTest, DownloadAndRegister_WinMLEp_RegistersFromOsCatalog) {
+  auto eps_before = manager().GetDiscoverableEps();
+
+  std::string target;
+  for (const auto& ep : eps_before) {
+    if (!ep.is_registered) {
+      target = ep.name;
+      break;
+    }
+  }
+
+  if (target.empty()) {
+    GTEST_SKIP() << "No unregistered WinML-catalog EP available on this machine";
+  }
+
+  std::cout << "[  INFO    ] Registering WinML EP via 2.x catalog: " << target << std::endl;
+
+  ASSERT_NO_THROW(manager().DownloadAndRegisterEps(
+      {target}, [](std::string_view name, float pct) {
+        std::cout << "  " << name << ": " << static_cast<int>(pct) << "%" << std::endl;
+        return true;
+      })) << "DownloadAndRegisterEps threw for " << target;
+
+  // Verify the post-register state surfaces through the public API.
+  auto eps_after = manager().GetDiscoverableEps();
+  bool found_registered = false;
+  for (const auto& ep : eps_after) {
+    if (ep.name == target) {
+      EXPECT_TRUE(ep.is_registered) << target << " should be marked registered after EnsureReady";
+      found_registered = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_registered) << target << " disappeared from discoverable list";
 }
 #endif

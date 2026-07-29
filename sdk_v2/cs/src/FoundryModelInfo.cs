@@ -10,7 +10,6 @@ using System;
 using System.Text.Json.Serialization;
 
 using NativeModelType = Microsoft.AI.Foundry.Local.Detail.Native.Model;
-using NativeModelInfo = Microsoft.AI.Foundry.Local.Detail.Native.ModelInfo;
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeviceType>))]
 public enum DeviceType

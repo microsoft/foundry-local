@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "foundry-local-webserver",
+    "foundry-local-webserver-responses-vision",
     "tool-calling-foundry-local",
     "native-chat-completions",
     "audio-transcription-example",

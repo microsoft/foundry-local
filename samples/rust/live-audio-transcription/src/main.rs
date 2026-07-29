@@ -18,7 +18,7 @@ use tokio_stream::StreamExt;
 // English-only:
 const ALIAS: &str = "nemotron-speech-streaming-en-0.6b";
 // Multi-lingual (supports 30+ languages including auto-detect):
-// const ALIAS: &str = "nvidia-nemotron-3.5-asr-streaming-multilingual-0.6b";
+// const ALIAS: &str = "nemotron-3.5-asr-streaming-0.6b";
 
 // Global flag for Ctrl+C graceful shutdown (mirrors JS process.on('SIGINT'))
 static RUNNING: AtomicBool = AtomicBool::new(true);

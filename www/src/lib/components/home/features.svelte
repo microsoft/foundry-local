@@ -201,7 +201,7 @@
 						<div
 							class="hw-card hw-2 border-border bg-secondary/50 flex flex-col items-center rounded-xl border p-3"
 						>
-							<div class="text-2xl font-bold text-cyan-500">GPU</div>
+							<div class="text-2xl font-bold text-cyan-600">GPU</div>
 							<div class="text-muted-foreground text-xs whitespace-nowrap">Graphics Card</div>
 						</div>
 						<div
@@ -391,7 +391,7 @@
 						PY
 					</div>
 					<div
-						class="lang-badge lang-2 flex size-8 items-center justify-center rounded-lg bg-yellow-500/10 text-xs font-bold text-yellow-600 dark:text-yellow-400"
+						class="lang-badge lang-2 flex size-8 items-center justify-center rounded-lg bg-yellow-500/10 text-xs font-bold text-yellow-700 dark:text-yellow-400"
 					>
 						JS
 					</div>
@@ -401,7 +401,7 @@
 						C#
 					</div>
 					<div
-						class="lang-badge lang-4 flex size-8 items-center justify-center rounded-lg bg-orange-500/10 text-xs font-bold text-orange-600 dark:text-orange-400"
+						class="lang-badge lang-4 flex size-8 items-center justify-center rounded-lg bg-orange-500/10 text-xs font-bold text-orange-700 dark:text-orange-400"
 					>
 						RS
 					</div>

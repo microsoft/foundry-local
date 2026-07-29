@@ -38,9 +38,7 @@ def is_running_in_ci() -> bool:
 
 IS_CI: bool = is_running_in_ci()
 
-# Optional override that points the SDK at a pre-staged model cache so
-# integration tests can find cached models without downloading.
-# Mirrors the C++ FOUNDRY_TEST_DATA_DIR env var.
+# Required model cache path for sdk_v2 Python tests.
 FOUNDRY_TEST_DATA_DIR: str | None = os.environ.get("FOUNDRY_TEST_DATA_DIR") or None
 
 
@@ -66,13 +64,18 @@ def manager():
     # and must not close it on teardown.
     created_here = False
 
+    if not FOUNDRY_TEST_DATA_DIR:
+        pytest.skip("FOUNDRY_TEST_DATA_DIR is required for sdk_v2 Python tests.")
+
+    if not os.path.isdir(FOUNDRY_TEST_DATA_DIR):
+        pytest.skip(f"FOUNDRY_TEST_DATA_DIR does not exist: {FOUNDRY_TEST_DATA_DIR}")
+
     if FoundryLocalManager.instance is None:
         config_kwargs = {
             "app_name": "FoundryLocalPythonTests",
             "log_level": LogLevel.WARNING,
+            "model_cache_dir": FOUNDRY_TEST_DATA_DIR,
         }
-        if FOUNDRY_TEST_DATA_DIR:
-            config_kwargs["model_cache_dir"] = FOUNDRY_TEST_DATA_DIR
 
         config = Configuration(**config_kwargs)
         FoundryLocalManager.initialize(config)
@@ -234,6 +237,19 @@ def whisper_audio_model(manager):
     """
     return _model_fixture_or_skip(
         manager, "automatic-speech-recognition", "whisper-audio", load=True, name_substr="whisper"
+    )
+
+
+@pytest.fixture(scope="session")
+def streaming_audio_model(manager):
+    """Smallest cached nemotron-family ASR model, loaded. Skips if none cached.
+
+    The live-streaming PCM path (``AudioItem`` format-descriptor + ``ItemQueue``) requires a streaming-capable
+    decoder. Whisper-style models load but fail when fed unbounded streamed PCM, so constrain selection to
+    models whose id/alias contains ``nemotron``.
+    """
+    return _model_fixture_or_skip(
+        manager, "automatic-speech-recognition", "streaming-audio", load=True, name_substr="nemotron"
     )
 
 

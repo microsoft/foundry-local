@@ -7,7 +7,7 @@
 # Parameters:
 #   ortVersion     – Microsoft.ML.OnnxRuntime.Foundry version
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
-#   winmlVersion   – Microsoft.WindowsAppSDK.ML version (Windows only)
+#   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
 #   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
 #   includeOrtGpuLinux – Also download Microsoft.ML.OnnxRuntime.Gpu.Linux (Linux only)
 #   shell          – 'pwsh' (Windows/macOS) or 'bash' (Linux)
@@ -31,6 +31,39 @@ parameters:
   values: ['pwsh', 'bash']
 
 steps:
+
+# Fail fast if the pipeline-pinned versions drift from the cmake source of
+# truth in sdk_v2/deps_versions.json.
+- task: PowerShell@2
+  displayName: 'Validate pinned versions match deps_versions.json'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $depsFile = Join-Path "$(Build.SourcesDirectory)" "sdk_v2/deps_versions.json"
+      if (-not (Test-Path $depsFile)) { throw "deps_versions.json not found at $depsFile" }
+      $deps = Get-Content $depsFile -Raw | ConvertFrom-Json
+      $expected = @{
+        'onnxruntime'                = '${{ parameters.ortVersion }}'
+        'onnxruntime-genai'          = '${{ parameters.genaiVersion }}'
+      }
+      if ('${{ parameters.winmlVersion }}' -ne '') {
+        $expected['windows-ai-machinelearning'] = '${{ parameters.winmlVersion }}'
+      }
+      $errors = @()
+      foreach ($key in $expected.Keys) {
+        $actual = $deps.$key.version
+        if ($actual -ne $expected[$key]) {
+          $errors += "  $key`: pipeline says '$($expected[$key])', deps_versions.json says '$actual'"
+        }
+      }
+      if ($errors.Count -gt 0) {
+        Write-Host "Version drift detected between pipeline literals and sdk_v2/deps_versions.json:"
+        $errors | ForEach-Object { Write-Host $_ }
+        throw "Bump the matching cpp*Version variable in .pipelines/foundry-local-packaging.yml"
+      }
+      Write-Host "Pinned versions agree with sdk_v2/deps_versions.json."
 
 - ${{ if eq(parameters.shell, 'pwsh') }}:
   - task: PowerShell@2
@@ -74,34 +107,15 @@ steps:
         }
 
         if ($${{ parameters.includeWinml }}) {
-          # WinML's bootstrap dep (Microsoft.WindowsAppSDK.Foundation) is a transitive dep of
-          # Microsoft.WindowsAppSDK.ML, and nuget min-version semantics mean the exact min
-          # version often isn't published — only later patches are. Defer to `nuget install`
-          # so the real resolver picks a satisfying version.
-          $winmlDir = "$cacheDir/winml-resolved"
-          if (Test-Path $winmlDir) { Remove-Item -Recurse -Force $winmlDir }
-          New-Item -ItemType Directory -Force -Path $winmlDir | Out-Null
-          Write-Host "Resolving Microsoft.WindowsAppSDK.ML ${{ parameters.winmlVersion }} via nuget install"
-          nuget install Microsoft.WindowsAppSDK.ML `
-            -Version '${{ parameters.winmlVersion }}' `
-            -OutputDirectory $winmlDir `
-            -Source 'https://api.nuget.org/v3/index.json' `
-            -DependencyVersion Lowest `
-            -PackageSaveMode nupkg `
-            -DirectDownload `
-            -Verbosity quiet
-          if ($LASTEXITCODE -ne 0) { throw "nuget install Microsoft.WindowsAppSDK.ML failed (exit $LASTEXITCODE)" }
-
-          $mlNupkg = Get-ChildItem $winmlDir -Recurse -Filter 'Microsoft.WindowsAppSDK.ML.*.nupkg' |
-            Select-Object -First 1
-          $foundationNupkg = Get-ChildItem $winmlDir -Recurse -Filter 'Microsoft.WindowsAppSDK.Foundation.*.nupkg' |
-            Select-Object -First 1
-          if (-not $mlNupkg) { throw "Microsoft.WindowsAppSDK.ML .nupkg not found under $winmlDir after nuget install" }
-          if (-not $foundationNupkg) { throw "Microsoft.WindowsAppSDK.Foundation .nupkg not found under $winmlDir after nuget install" }
-          Write-Host "  -> $($mlNupkg.FullName) ($($mlNupkg.Length) bytes)"
-          Write-Host "  -> $($foundationNupkg.FullName) ($($foundationNupkg.Length) bytes)"
-          $defines += "WINML_EP_CATALOG_FETCH_URL=$($mlNupkg.FullName)"
-          $defines += "WINAPPSDK_FOUNDATION_FETCH_URL=$($foundationNupkg.FullName)"
+          # WinML 2.x (Microsoft.Windows.AI.MachineLearning) is reg-free — a single self-contained
+          # native package with no transitive Windows App SDK Foundation dependency to resolve.
+          $winmlUrl = "$feed/Microsoft.Windows.AI.MachineLearning/${{ parameters.winmlVersion }}"
+          $winmlOut = "$cacheDir/winml.nupkg"
+          Write-Host "Downloading Microsoft.Windows.AI.MachineLearning ${{ parameters.winmlVersion }}"
+          Invoke-WebRequest -Uri $winmlUrl -OutFile $winmlOut
+          if (-not (Test-Path $winmlOut)) { throw "WinML download failed" }
+          Write-Host "  -> $winmlOut ($((Get-Item $winmlOut).Length) bytes)"
+          $defines += "WINML_EP_CATALOG_FETCH_URL=$winmlOut"
         }
 
         $joined = ($defines | ForEach-Object { "`"$_`"" }) -join ' '
@@ -126,8 +140,6 @@ steps:
       )
       if [ "${{ parameters.includeWinml }}" = "True" ]; then
         # WinML is Windows-only; the bash branch should never receive includeWinml=true.
-        # If this fires, the prefetch needs to mirror the pwsh logic that resolves the
-        # Microsoft.WindowsAppSDK.Foundation version from the .ML nuspec dependency list.
         echo "ERROR: includeWinml=true is not supported on the bash prefetch branch (WinML is Windows-only)." >&2
         exit 1
       fi

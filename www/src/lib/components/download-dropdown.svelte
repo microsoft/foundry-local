@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { buttonVariants } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import { Download, Copy, Check } from 'lucide-svelte';
+	import { Download, Copy, Check, ExternalLink } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { IsMobile } from '$lib/hooks/is-mobile.svelte';
+
+	const CLI_RELEASE_URL =
+		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
 
 	interface Props {
 		variant?: 'default' | 'ghost' | 'outline';
@@ -26,6 +29,8 @@
 
 	const WindowsIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M6.555 1.375 0 2.237v5.45h6.555V1.375zM0 13.795l6.555.933V8.313H0v5.482zm7.278-5.4.026 6.378L16 16V8.395H7.278zM16 0 7.33 1.244v6.414H16V0z"/></svg>`;
 
+	const LinuxIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.633 16.747c.196.198.41.42.692.572.281.153.586.255.794.255.207 0 .39-.097.448-.21a.343.343 0 00.043-.165c0-.115-.07-.27-.21-.485-.276-.42-.866-.99-1.728-1.41-.6-.298-1.176-.385-1.74-.385-.564 0-1.097.21-1.586.585-.495.388-.954.954-1.36 1.717-.276.486-.346.79-.346.972 0 .093.024.165.058.21.058.094.158.165.31.21.301.094.722.094 1.176-.094.448-.187.882-.518 1.258-.852.282-.252.564-.518.752-.728.187-.21.282-.39.282-.42-.094.094-.094.187 0 .227z"/></svg>`;
+
 	const PythonIcon = `<svg role="img" width="16" height="16" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Python</title><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg>`;
 
 	const JavaScriptIcon = `<svg role="img" width="16" height="16" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>JavaScript</title><path d="M0 0h24v24H0V0zm22.034 18.276c-.175-1.095-.888-2.015-3.003-2.873-.736-.345-1.554-.585-1.797-1.14-.091-.33-.105-.51-.046-.705.15-.646.915-.84 1.515-.66.39.12.75.42.976.9 1.034-.676 1.034-.676 1.755-1.125-.27-.42-.404-.601-.586-.78-.63-.705-1.469-1.065-2.834-1.034l-.705.089c-.676.165-1.32.525-1.71 1.005-1.14 1.291-.811 3.541.569 4.471 1.365 1.02 3.361 1.244 3.616 2.205.24 1.17-.87 1.545-1.966 1.41-.811-.18-1.26-.586-1.755-1.336l-1.83 1.051c.21.48.45.689.81 1.109 1.74 1.756 6.09 1.666 6.871-1.004.029-.09.24-.705.074-1.65l.046.067zm-8.983-7.245h-2.248c0 1.938-.009 3.864-.009 5.805 0 1.232.063 2.363-.138 2.711-.33.689-1.18.601-1.566.48-.396-.196-.597-.466-.83-.855-.063-.105-.11-.196-.127-.196l-1.825 1.125c.305.63.75 1.172 1.324 1.517.855.51 2.004.675 3.207.405.783-.226 1.458-.691 1.811-1.411.51-.93.402-2.07.397-3.346.012-2.054 0-4.109 0-6.179l.004-.056z"/></svg>`;
@@ -37,7 +42,7 @@
 	type CliInstallOption = {
 		id: string;
 		label: string;
-		command: string;
+		href: string;
 		icon: string;
 	};
 
@@ -47,22 +52,26 @@
 		icon: string;
 		crossPlatformId: string;
 		crossPlatformCommand: string;
-		winmlId: string;
-		winmlCommand: string;
 	};
 
 	const cliInstallOptions: CliInstallOption[] = [
 		{
 			id: 'windows',
 			label: 'Windows CLI',
-			command: 'winget install Microsoft.FoundryLocal',
+			href: CLI_RELEASE_URL,
 			icon: WindowsIcon
 		},
 		{
 			id: 'macos',
 			label: 'macOS CLI',
-			command: 'brew install microsoft/foundrylocal/foundrylocal',
+			href: CLI_RELEASE_URL,
 			icon: AppleIcon
+		},
+		{
+			id: 'linux',
+			label: 'Linux CLI',
+			href: CLI_RELEASE_URL,
+			icon: LinuxIcon
 		}
 	];
 
@@ -72,36 +81,28 @@
 			label: 'Python SDK',
 			icon: PythonIcon,
 			crossPlatformId: 'python-cross-platform',
-			crossPlatformCommand: 'pip install foundry-local-sdk',
-			winmlId: 'python-winml',
-			winmlCommand: 'pip install foundry-local-sdk-winml'
+			crossPlatformCommand: 'pip install foundry-local-sdk'
 		},
 		{
 			id: 'javascript',
 			label: 'JavaScript SDK',
 			icon: JavaScriptIcon,
 			crossPlatformId: 'javascript-cross-platform',
-			crossPlatformCommand: 'npm install foundry-local-sdk',
-			winmlId: 'javascript-winml',
-			winmlCommand: 'npm install foundry-local-sdk-winml'
+			crossPlatformCommand: 'npm install foundry-local-sdk'
 		},
 		{
 			id: 'csharp',
 			label: 'C# SDK',
 			icon: CSharpIcon,
 			crossPlatformId: 'csharp-cross-platform',
-			crossPlatformCommand: 'dotnet add package Microsoft.AI.Foundry.Local',
-			winmlId: 'csharp-winml',
-			winmlCommand: 'dotnet add package Microsoft.AI.Foundry.Local.WinML'
+			crossPlatformCommand: 'dotnet add package Microsoft.AI.Foundry.Local'
 		},
 		{
 			id: 'rust',
 			label: 'Rust SDK',
 			icon: RustIcon,
 			crossPlatformId: 'rust-cross-platform',
-			crossPlatformCommand: 'cargo add foundry-local-sdk',
-			winmlId: 'rust-winml',
-			winmlCommand: 'cargo add foundry-local-sdk --features winml'
+			crossPlatformCommand: 'cargo add foundry-local-sdk'
 		}
 	];
 
@@ -152,42 +153,17 @@
 						<span class="font-medium">{item.label}</span>
 					</div>
 
-					<div class="space-y-1.5 pl-6">
+					<div class="pl-6">
 						<button
 							type="button"
 							class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors outline-none"
 							onclick={() => copyToClipboard(item.crossPlatformCommand, item.crossPlatformId)}
-							aria-label={`Copy cross-platform ${item.label} installation command`}
+							aria-label={`Copy ${item.label} installation command`}
 						>
-							<span
-								class="border-border bg-muted/50 text-muted-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase"
-								>Cross-platform</span
-							>
 							<code class="text-muted-foreground min-w-0 flex-1 text-xs break-all"
 								>{item.crossPlatformCommand}</code
 							>
 							{#if copiedItemId === item.crossPlatformId}
-								<Check class="size-4 shrink-0 text-green-600" aria-hidden="true" />
-								<span class="sr-only">Copied</span>
-							{:else}
-								<Copy class="size-4 shrink-0 opacity-50" aria-hidden="true" />
-							{/if}
-						</button>
-
-						<button
-							type="button"
-							class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left transition-colors outline-none"
-							onclick={() => copyToClipboard(item.winmlCommand, item.winmlId)}
-							aria-label={`Copy Windows WinML ${item.label} installation command`}
-						>
-							<span
-								class="border-primary/30 bg-primary/10 text-primary rounded border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase"
-								>Windows</span
-							>
-							<code class="text-muted-foreground min-w-0 flex-1 text-xs break-all"
-								>{item.winmlCommand}</code
-							>
-							{#if copiedItemId === item.winmlId}
 								<Check class="size-4 shrink-0 text-green-600" aria-hidden="true" />
 								<span class="sr-only">Copied</span>
 							{:else}
@@ -201,50 +177,54 @@
 
 		<DropdownMenu.Separator />
 		<DropdownMenu.Label class="text-muted-foreground text-xs font-normal">
-			Optional CLI tools
+			Optional CLI tools (preview)
 		</DropdownMenu.Label>
 
 		<DropdownMenu.Group>
 			{#each cliInstallOptions as item}
-				<button
-					type="button"
-					class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground relative flex min-h-[44px] w-full cursor-pointer items-start justify-between rounded-sm px-2 py-2.5 text-left text-sm transition-colors outline-none select-none"
-					onclick={() => copyToClipboard(item.command, item.id)}
-					aria-label={`Copy ${item.label} installation command`}
-				>
-					<span class="mt-0.5 inline-flex shrink-0" aria-hidden="true">{@html item.icon}</span>
-					<div class="flex flex-1 flex-col gap-1 px-2">
-						<span class="font-medium">{item.label}</span>
-						<code class="text-muted-foreground text-xs break-all">{item.command}</code>
-					</div>
-					{#if copiedItemId === item.id}
-						<Check class="size-4 shrink-0 text-green-600" aria-hidden="true" />
-						<span class="sr-only">Copied</span>
-					{:else}
-						<Copy class="size-4 shrink-0 opacity-50" aria-hidden="true" />
-					{/if}
-				</button>
+				<DropdownMenu.Item class="p-0">
+					{#snippet child({ props })}
+						<a
+							{...props}
+							href={item.href}
+							target="_blank"
+							rel="noopener noreferrer"
+							class="relative flex min-h-[44px] w-full items-start justify-between rounded-sm px-2 py-2.5 text-left text-sm select-none"
+							aria-label={`Download ${item.label} from the GitHub release (opens in new tab)`}
+						>
+							<span class="mt-0.5 inline-flex shrink-0" aria-hidden="true">{@html item.icon}</span>
+							<div class="flex flex-1 flex-col gap-1 px-2">
+								<span class="font-medium">{item.label}</span>
+								<code class="text-muted-foreground text-xs break-all">cli-preview-0.10.0 on GitHub</code>
+							</div>
+							<ExternalLink class="size-4 shrink-0 opacity-50" aria-hidden="true" />
+						</a>
+					{/snippet}
+				</DropdownMenu.Item>
 			{/each}
 		</DropdownMenu.Group>
 
 		<DropdownMenu.Separator />
 
 		<DropdownMenu.Group>
-			<DropdownMenu.Item>
-				<a
-					href="https://github.com/microsoft/foundry-local/releases"
-					target="_blank"
-					rel="noopener noreferrer"
-					class="flex w-full items-center"
-					aria-label="View all releases on GitHub (opens in new tab)"
-				>
-					<svg class="mr-2 size-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"
-						><path
-							d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"
-						/></svg
+			<DropdownMenu.Item class="p-0">
+				{#snippet child({ props })}
+					<a
+						{...props}
+						href="https://github.com/microsoft/foundry-local/releases"
+						target="_blank"
+						rel="noopener noreferrer"
+						class="relative flex w-full items-center rounded-sm px-2 py-1.5 text-sm select-none"
+						aria-label="View all releases on GitHub (opens in new tab)"
 					>
-					<span>All Releases</span>
-				</a>
+						<svg class="mr-2 size-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"
+							><path
+								d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"
+							/></svg
+						>
+						<span>All Releases</span>
+					</a>
+				{/snippet}
 			</DropdownMenu.Item>
 		</DropdownMenu.Group>
 	</DropdownMenu.Content>

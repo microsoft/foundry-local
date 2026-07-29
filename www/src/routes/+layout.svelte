@@ -1,10 +1,11 @@
 <script lang="ts">
 	import '../app.css';
-	let { children } = $props();
 	import { ModeWatcher } from 'mode-watcher';
 	import { Toaster } from '$lib/components/ui/sonner';
 	import { onNavigate } from '$app/navigation';
 	import { inject } from '@vercel/analytics';
+
+	let { children } = $props();
 
 	// Inject Vercel Analytics
 	inject();

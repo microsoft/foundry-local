@@ -178,14 +178,26 @@ export class Model implements IModel {
     this.#native.selectVariant(nativeVariant);
   }
 
+  /**
+   * @deprecated Use a `ChatSession` instead.
+   * The OpenAI direct client is deprecated and will be removed at the end of 2026.
+   */
   createChatClient(): ChatClient {
     return new ChatClient(this);
   }
 
+  /**
+   * @deprecated Use an `AudioSession` instead.
+   * The OpenAI direct client is deprecated and will be removed at the end of 2026.
+   */
   createAudioClient(): AudioClient {
     return new AudioClient(this);
   }
 
+  /**
+   * @deprecated Use an `EmbeddingsSession` instead.
+   * The OpenAI direct client is deprecated and will be removed at the end of 2026.
+   */
   createEmbeddingClient(): EmbeddingClient {
     return new EmbeddingClient(this);
   }

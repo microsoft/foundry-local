@@ -26,11 +26,15 @@
 
 	const setupSnippets: Record<SdkLanguage, Snippet> = {
 		python: {
-			raw: `FoundryLocalManager.initialize(Configuration(app_name="my-app"))
+			raw: `from foundry_local_sdk import Configuration, FoundryLocalManager
+	
+FoundryLocalManager.initialize(Configuration(app_name="my-app"))
 model = FoundryLocalManager.instance.catalog.get_model("qwen2.5-0.5b")
 model.download(); model.load()
 client = model.get_chat_client()`,
-			html: `<span class="code-type">FoundryLocalManager</span>.<span class="code-call">initialize</span>(<span class="code-type">Configuration</span>(app_name=<span class="code-string">"my-app"</span>))
+			html: `<span class="code-keyword">from</span> <span class="code-type">foundry_local_sdk</span> <span class="code-keyword">import</span> <span class="code-type">Configuration</span>, <span class="code-type">FoundryLocalManager</span>
+
+<span class="code-type">FoundryLocalManager</span>.<span class="code-call">initialize</span>(<span class="code-type">Configuration</span>(app_name=<span class="code-string">"my-app"</span>))
 model = <span class="code-type">FoundryLocalManager</span>.instance.catalog.<span class="code-call">get_model</span>(<span class="code-string">"qwen2.5-0.5b"</span>)
 model.<span class="code-call">download</span>(); model.<span class="code-call">load</span>()
 client = model.<span class="code-call">get_chat_client</span>()`
@@ -204,7 +208,7 @@ let response = client.complete_chat(&messages, None).await?;`,
 	class="border-primary/20 bg-primary/5 hover:border-primary/40 relative w-full rounded-xl border p-4 transition-all duration-300 hover:shadow-lg sm:p-5"
 >
 	<div class="mb-4 text-center">
-		<h3 class="text-foreground text-sm font-semibold sm:text-base">Start with the SDK</h3>
+		<h2 class="text-foreground text-sm font-semibold sm:text-base">Start with the SDK</h2>
 		<p class="text-muted-foreground mx-auto mt-1 max-w-xl text-xs">
 			Install one package, load a model, then run inference in-process.
 		</p>
@@ -307,7 +311,7 @@ let response = client.complete_chat(&messages, None).await?;`,
 					>
 					<Code2 class="text-muted-foreground/60 size-4 shrink-0" aria-hidden="true" />
 					<span class="font-medium">Load a model</span>
-					<span class="text-muted-foreground/50 ml-auto hidden shrink-0 sm:inline"
+					<span class="text-muted-foreground ml-auto hidden shrink-0 sm:inline"
 						>copy step 1 or click to reveal</span
 					>
 				</span>
@@ -363,7 +367,7 @@ let response = client.complete_chat(&messages, None).await?;`,
 					>
 					<Bot class="text-muted-foreground/60 size-4 shrink-0" aria-hidden="true" />
 					<span class="font-medium">Run chat inference</span>
-					<span class="text-muted-foreground/50 ml-auto hidden shrink-0 sm:inline"
+					<span class="text-muted-foreground ml-auto hidden shrink-0 sm:inline"
 						>copy step 2 or click to reveal</span
 					>
 				</span>

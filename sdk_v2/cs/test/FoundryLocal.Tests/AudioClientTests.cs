@@ -209,7 +209,7 @@ internal sealed class OpenAIAudioClientTests
 
         audioClient.Settings.Language = "en";
 
-        var audioFilePath = Utils.TestDataPath("Record.mp3");
+        var audioFilePath = Utils.TestDataPath("invalid_path.mp3");
 
         FoundryLocalException? caught = null;
         try

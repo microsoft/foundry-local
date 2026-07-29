@@ -611,6 +611,19 @@ inline std::unique_ptr<IModel> Catalog::GetLatestVersion(const IModel& model) co
   return std::make_unique<Model>(*m);
 }
 
+inline ModelList Catalog::GetModelVersions(const std::string& model_alias,
+                                           const std::string& variant_name,
+                                           int max_versions) {
+  flModelList* models = nullptr;
+  Check(detail::catalog_api()->GetModelVersions(
+      handle_.get(),
+      model_alias.c_str(),
+      variant_name.empty() ? nullptr : variant_name.c_str(),
+      max_versions,
+      &models));
+  return ModelList(*models);
+}
+
 // ===========================================================================
 // Item
 // ===========================================================================
@@ -708,6 +721,66 @@ inline ToolResultContent Item::GetToolResult() const {
   Check(detail::item_api()->GetToolResult(handle_.get(), &tr));
   return {tr.call_id ? std::string_view{tr.call_id} : std::string_view{},
           tr.result ? std::string_view{tr.result} : std::string_view{}};
+}
+
+namespace detail {
+
+inline std::optional<int64_t> SpeechDuration(int64_t v) {
+  return v == FOUNDRY_LOCAL_DURATION_UNSET ? std::optional<int64_t>{} : std::optional<int64_t>{v};
+}
+
+inline std::optional<float> SpeechConfidence(float v) {
+  return v == FOUNDRY_LOCAL_CONFIDENCE_UNSET ? std::optional<float>{} : std::optional<float>{v};
+}
+
+inline std::optional<std::string_view> SpeechOptStr(const char* s) {
+  return s ? std::optional<std::string_view>{s} : std::optional<std::string_view>{};
+}
+
+}  // namespace detail
+
+inline SpeechSegmentContent Item::GetSpeechSegment() const {
+  flSpeechSegmentData s{};
+  s.version = FOUNDRY_LOCAL_API_VERSION;
+  Check(detail::item_api()->GetSpeechSegment(handle_.get(), &s));
+
+  SpeechSegmentContent out;
+  out.kind = s.kind;
+  out.text = s.text ? std::string_view{s.text} : std::string_view{};
+  out.start_time_ms = detail::SpeechDuration(s.start_time_ms);
+  out.end_time_ms = detail::SpeechDuration(s.end_time_ms);
+  out.utterance_start = s.utterance_start;
+  out.language = detail::SpeechOptStr(s.language);
+  out.words.reserve(s.words_count);
+  for (size_t i = 0; i < s.words_count; ++i) {
+    const flSpeechWord& w = s.words[i];
+    SpeechWord sw;
+    sw.text = w.text ? std::string_view{w.text} : std::string_view{};
+    sw.start_time_ms = detail::SpeechDuration(w.start_time_ms);
+    sw.end_time_ms = detail::SpeechDuration(w.end_time_ms);
+    sw.confidence = detail::SpeechConfidence(w.confidence);
+    sw.speaker_id = detail::SpeechOptStr(w.speaker_id);
+    out.words.push_back(std::move(sw));
+  }
+  return out;
+}
+
+inline SpeechResultContent Item::GetSpeechResult() const {
+  flSpeechResultData r{};
+  r.version = FOUNDRY_LOCAL_API_VERSION;
+  Check(detail::item_api()->GetSpeechResult(handle_.get(), &r));
+
+  SpeechResultContent out;
+  out.text = r.text ? std::string_view{r.text} : std::string_view{};
+  out.language = detail::SpeechOptStr(r.language);
+  out.duration_ms = detail::SpeechDuration(r.duration_ms);
+  out.segments.reserve(r.segments_count);
+  for (size_t i = 0; i < r.segments_count; ++i) {
+    if (r.segments[i]) {
+      out.segments.emplace_back(*r.segments[i]);
+    }
+  }
+  return out;
 }
 
 inline flItem* detail::CreateItem(flItemType type) {

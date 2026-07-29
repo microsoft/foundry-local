@@ -90,8 +90,8 @@ inline bool MatchesNameTaskDevice(const foundry_local::ModelInfo& info, const ch
     }
   }
 
-  std::string name = fl::test::to_lower(std::string(info.Name()));
-  std::string needle = fl::test::to_lower(std::string(name_substring));
+  std::string name = fl::test::ToLower(std::string(info.Name()));
+  std::string needle = fl::test::ToLower(std::string(name_substring));
   return name.find(needle) != std::string::npos;
 }
 
@@ -238,10 +238,10 @@ inline foundry_local::IModel* FindReasoningModel(foundry_local::ModelList& model
 /// Find a model by exact name prefix (case-insensitive).
 /// Returns nullptr if not found.
 inline foundry_local::IModel* FindModelByName(foundry_local::ModelList& models, const char* name_prefix) {
-  std::string needle = fl::test::to_lower(std::string(name_prefix));
+  std::string needle = fl::test::ToLower(std::string(name_prefix));
 
   for (const auto& m : models) {
-    std::string name = fl::test::to_lower(std::string(m->GetInfo().Name()));
+    std::string name = fl::test::ToLower(std::string(m->GetInfo().Name()));
 
     if (name.find(needle) == 0) {
       return m.get();
@@ -278,11 +278,7 @@ class SharedTestEnv : public ::testing::Environment {
     // surface during test runs and end up in the rotating log file.
     config.SetDefaultLogLevel(FOUNDRY_LOCAL_LOG_INFO);
 
-#if defined(FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT)
-    config.AddCatalogUrl("https://ai.azure.com/api/eastus/ux/v1.0");
-#else
-    config.AddCatalogUrl("static");
-#endif
+    config.AddCatalogUrl("https://ai.azure.com/api/centralus/ux/v1.0");
 
     // Point the model cache at the shared test data directory when available.
     auto cache_dir = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
@@ -601,6 +597,21 @@ class SharedTestEnv : public ::testing::Environment {
 
   bool has_cuda() const { return has_cuda_; }
   bool has_webgpu() const { return has_webgpu_; }
+
+  // Models this environment reserves for its modality fixtures (chat, tool, audio, streaming
+  // audio, embeddings, vision, reasoning). Returned regardless of current load state: a reserved
+  // model may be unloaded right now but loaded by a later suite via AcquireModels(). Tests that
+  // mutate the cache (remove/redownload) must skip this set so they don't race the fixtures that
+  // depend on these models.
+  std::set<foundry_local::IModel*> ReservedModels() const {
+    std::set<foundry_local::IModel*> reserved;
+    for (auto* p : AllSelectedModels()) {
+      if (p) {
+        reserved.insert(p);
+      }
+    }
+    return reserved;
+  }
 
  private:
   // Return `m` only if the suite acquired it. Reflects "did

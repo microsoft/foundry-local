@@ -138,6 +138,14 @@ impl Catalog {
             });
         }
         self.update_models().await?;
+        if let Some(model) = self.lock_state()?.models_by_alias.get(alias).cloned() {
+            return Ok(model);
+        }
+
+        // Self-heal: the alias may belong to a BYOM model added to the cache
+        // directory after our last catalog refresh.
+        self.invalidator.invalidate();
+        self.update_models().await?;
         let s = self.lock_state()?;
         s.models_by_alias.get(alias).cloned().ok_or_else(|| {
             let available: Vec<&str> = s.models_by_alias.keys().map(|k| k.as_str()).collect();
@@ -159,6 +167,14 @@ impl Catalog {
             });
         }
         self.update_models().await?;
+        if let Some(variant) = self.lock_state()?.variants_by_id.get(id).cloned() {
+            return Ok(variant);
+        }
+
+        // Self-heal: the id may belong to a BYOM model added to the cache
+        // directory after our last catalog refresh.
+        self.invalidator.invalidate();
+        self.update_models().await?;
         let s = self.lock_state()?;
         s.variants_by_id.get(id).cloned().ok_or_else(|| {
             let available: Vec<&str> = s.variants_by_id.keys().map(|k| k.as_str()).collect();
@@ -179,19 +195,34 @@ impl Catalog {
             return Ok(Vec::new());
         }
         let cached_ids: Vec<String> = serde_json::from_str(&raw)?;
-        let s = self.lock_state()?;
-        Ok(cached_ids
-            .iter()
-            .filter_map(|id| s.variants_by_id.get(id).cloned())
-            .collect())
+        self.resolve_model_ids(&cached_ids).await
     }
 
     /// Return model variants that are currently loaded into memory.
     pub async fn get_loaded_models(&self) -> Result<Vec<Arc<Model>>> {
         self.update_models().await?;
         let loaded_ids = self.model_load_manager.list_loaded().await?;
+        self.resolve_model_ids(&loaded_ids).await
+    }
+
+    /// Resolve a list of model ids against the in-memory catalog, self-healing
+    /// once if any id is unknown (e.g. a manually-added BYOM model the SDK has
+    /// not yet seen). Preserves the input order of `model_ids` (minus unknowns).
+    async fn resolve_model_ids(&self, model_ids: &[String]) -> Result<Vec<Arc<Model>>> {
+        let needs_refresh = {
+            let s = self.lock_state()?;
+            model_ids
+                .iter()
+                .any(|id| !s.variants_by_id.contains_key(id))
+        };
+
+        if needs_refresh {
+            self.invalidator.invalidate();
+            self.update_models().await?;
+        }
+
         let s = self.lock_state()?;
-        Ok(loaded_ids
+        Ok(model_ids
             .iter()
             .filter_map(|id| s.variants_by_id.get(id).cloned())
             .collect())
@@ -269,15 +300,47 @@ impl Catalog {
                 .add_variant(variant);
         }
 
-        let alias_map: HashMap<String, Arc<Model>> = alias_map_build
+        let fresh_alias_map: HashMap<String, Arc<Model>> = alias_map_build
             .into_iter()
             .map(|(k, v)| (k, Arc::new(v)))
             .collect();
 
-        // Atomic swap under a single lock — no split-brain reads.
+        // Incremental refresh: hold the data lock for the entire compare-and-
+        // swap so the merged maps are computed against the same `old` snapshot
+        // they will replace. Reuse the existing `Arc<Model>` whenever the
+        // per-key `(id, cached)` fingerprint is unchanged so externally held
+        // references keep working with up-to-date metadata and (for aliased
+        // models) keep any explicit `select_variant` choice across refreshes.
         let mut s = self.lock_state()?;
-        s.models_by_alias = alias_map;
-        s.variants_by_id = id_map;
+
+        let merged_alias_map: HashMap<String, Arc<Model>> = fresh_alias_map
+            .into_iter()
+            .map(|(alias, fresh_arc)| {
+                let reuse = s
+                    .models_by_alias
+                    .get(&alias)
+                    .filter(|old_arc| alias_fingerprint(old_arc) == alias_fingerprint(&fresh_arc))
+                    .map(Arc::clone);
+                (alias, reuse.unwrap_or(fresh_arc))
+            })
+            .collect();
+
+        let merged_id_map: HashMap<String, Arc<Model>> = id_map
+            .into_iter()
+            .map(|(id, fresh_arc)| {
+                let reuse = s
+                    .variants_by_id
+                    .get(&id)
+                    .filter(|old_arc| {
+                        variant_fingerprint(old_arc) == variant_fingerprint(&fresh_arc)
+                    })
+                    .map(Arc::clone);
+                (id, reuse.unwrap_or(fresh_arc))
+            })
+            .collect();
+
+        s.models_by_alias = merged_alias_map;
+        s.variants_by_id = merged_id_map;
         s.last_refresh = Some(Instant::now());
 
         Ok(())
@@ -288,4 +351,23 @@ impl Catalog {
             reason: "catalog state mutex poisoned".into(),
         })
     }
+}
+
+/// Fingerprint of an alias-grouped `Model`: the `(id, cached)` of every
+/// variant in catalog order. Two fingerprints are equal exactly when reusing
+/// the old `Arc<Model>` would surface the same `ModelInfo` data as a freshly
+/// built one — i.e. no variants were added, removed, reordered, or had their
+/// `cached` flag flipped. Per the [crate::types::ModelInfo] contract, all
+/// other fields on a given `id` are treated as immutable.
+fn alias_fingerprint(model: &Model) -> Vec<(String, bool)> {
+    model
+        .variants()
+        .iter()
+        .map(|v| (v.info().id.clone(), v.info().cached))
+        .collect()
+}
+
+/// Fingerprint of a single-variant `Model`: just its `(id, cached)`.
+fn variant_fingerprint(model: &Model) -> (String, bool) {
+    (model.info().id.clone(), model.info().cached)
 }

@@ -6,7 +6,6 @@
 
 namespace Microsoft.AI.Foundry.Local.Tests;
 
-using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -17,23 +16,13 @@ using TUnit.Core.Exceptions;
 [SkipUnlessIntegration]
 internal sealed class VisionTests
 {
-#pragma warning disable CS0649 // assigned in non-WinML Setup; under USE_WINML the field is never written
     private static IModel? model;
-#pragma warning restore CS0649
 
     private static string TestImagePath => Utils.TestDataPath("Taittinger.jpg");
 
     [Before(Class)]
     public static async Task Setup()
     {
-#if USE_WINML
-        // The WinML variant pins an older ORT than the base SDK. Cataloged vision
-        // models use ops (e.g. com.microsoft:CausalConvWithState) that aren't
-        // registered in that ORT, so no vision model can load. Skip the whole suite.
-        Console.WriteLine("VisionTests: skipped on WinML build (ORT version lacks required ops)");
-        await Task.CompletedTask;
-        return;
-#else
         try
         {
             var manager = FoundryLocalManager.Instance;
@@ -86,7 +75,6 @@ internal sealed class VisionTests
             Console.WriteLine($"VisionTests setup failed: {ex}");
             throw;
         }
-#endif
     }
 
     [Test]

@@ -12,22 +12,30 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { toast } from 'svelte-sonner';
 	import { ModelFilters, ModelGrid, ModelDetailsModal } from './components';
-	import { Terminal, Copy, Check } from 'lucide-svelte';
+	import { Terminal, Copy, Check, ExternalLink } from 'lucide-svelte';
+	import { detectModelFamily } from '$lib/utils/model-helpers';
 
 	// Known device names used as shorthand URL params (e.g. /models?cpu)
 	const KNOWN_DEVICES = ['cpu', 'gpu', 'npu'];
 	const MODEL_QUERY_PARAM = 'model';
-	const CLI_RUN_COMMAND = 'foundry model run qwen2.5-0.5b';
-	const CLI_INSTALL_COMMANDS = [
+	const CLI_RUN_COMMAND = 'foundry run qwen2.5-0.5b';
+	const CLI_RELEASE_URL =
+		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
+	const CLI_INSTALL_LINKS = [
 		{
 			id: 'windows-cli',
 			label: 'Windows',
-			command: 'winget install Microsoft.FoundryLocal'
+			href: CLI_RELEASE_URL
 		},
 		{
 			id: 'macos-cli',
 			label: 'macOS',
-			command: 'brew install microsoft/foundrylocal/foundrylocal'
+			href: CLI_RELEASE_URL
+		},
+		{
+			id: 'linux-cli',
+			label: 'Linux',
+			href: CLI_RELEASE_URL
 		}
 	];
 
@@ -65,7 +73,7 @@
 
 	// Available filter options
 	let availableDevices: string[] = [];
-	let availableFamilies: string[] = ['deepseek', 'mistral', 'qwen', 'phi', 'whisper'];
+	let availableFamilies: string[] = [];
 	let availableAccelerations: string[] = [];
 
 	// Read filter state from URL search params
@@ -252,6 +260,14 @@
 	function updateFilterOptions() {
 		availableDevices = [...new Set(allModels.flatMap((m) => m.deviceSupport))].sort();
 
+		availableFamilies = [
+			...new Set(
+				allModels
+					.map((m) => detectModelFamily(m.alias ?? m.displayName))
+					.filter((f): f is string => Boolean(f))
+			)
+		].sort();
+
 		const accelerations = new Set<string>();
 		allModels.forEach((model) => {
 			if (model.acceleration) {
@@ -318,9 +334,7 @@
 				selectedDevices.length === 0 ||
 				selectedDevices.some((device) => model.deviceSupport.includes(device));
 			const matchesFamily =
-				!selectedFamily ||
-				model.displayName.toLowerCase().includes(selectedFamily.toLowerCase()) ||
-				model.alias.toLowerCase().includes(selectedFamily.toLowerCase());
+				!selectedFamily || detectModelFamily(model.alias ?? model.displayName) === selectedFamily;
 			const matchesAcceleration =
 				!selectedAcceleration ||
 				model.acceleration === selectedAcceleration ||
@@ -373,7 +387,7 @@
 
 	async function copyRunCommand(modelId: string) {
 		try {
-			const command = `foundry model run ${modelId}`;
+			const command = `foundry run ${modelId}`;
 			await navigator.clipboard.writeText(command);
 			copiedModelId = `run-${modelId}`;
 			toast.success('Run command copied to clipboard');
@@ -502,6 +516,7 @@
 
 	<div class="bg-white dark:bg-neutral-950">
 		<main id="main-content" class="mx-auto w-full max-w-6xl px-6 py-8 sm:px-8 lg:px-12">
+			<h1 class="sr-only">Foundry Local model catalog</h1>
 			<section
 				class="border-border/50 bg-muted/30 mb-4 rounded-lg border px-3 py-2.5 sm:px-4"
 				aria-label="CLI quick test"
@@ -518,32 +533,22 @@
 					</div>
 
 					<div
-						class="grid min-w-0 flex-1 gap-2 md:grid-cols-[minmax(11rem,0.9fr)_minmax(11rem,0.9fr)_minmax(21rem,1.1fr)]"
+						class="grid min-w-0 flex-1 gap-2 md:grid-cols-[repeat(3,minmax(6rem,auto))_minmax(18rem,1fr)]"
 					>
-						{#each CLI_INSTALL_COMMANDS as item}
-							<button
-								type="button"
-								class="border-border/60 bg-background/60 hover:bg-background focus:ring-primary flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-none"
-								onclick={() => copyCliCommand(item.command, item.id)}
-								aria-label={`Copy ${item.label} CLI installation command`}
+						{#each CLI_INSTALL_LINKS as item}
+							<a
+								href={item.href}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="border-border/60 bg-background/60 hover:bg-background focus:ring-primary flex min-h-11 items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-none"
+								aria-label={`${item.label} CLI download on GitHub (opens in new tab)`}
 							>
-								<span class="min-w-0">
-									<span class="block truncate text-sm font-medium">{item.label} install</span>
+								<span class="text-sm font-medium">{item.label}</span>
+								<span class="text-primary flex shrink-0 items-center gap-1 text-xs font-medium">
+									<ExternalLink class="size-4" aria-hidden="true" />
+									GitHub
 								</span>
-								{#if copiedCliCommandId === item.id}
-									<span
-										class="flex shrink-0 items-center gap-1.5 text-xs font-medium text-green-600"
-									>
-										<Check class="size-4" aria-hidden="true" />
-										Copied
-									</span>
-								{:else}
-									<span class="text-primary flex shrink-0 items-center gap-1.5 text-xs font-medium">
-										<Copy class="size-4" aria-hidden="true" />
-										Copy
-									</span>
-								{/if}
-							</button>
+							</a>
 						{/each}
 
 						<button

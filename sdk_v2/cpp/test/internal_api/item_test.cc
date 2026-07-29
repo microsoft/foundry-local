@@ -9,6 +9,8 @@
 #include "items/image_item.h"
 #include "items/item_queue.h"
 #include "items/message_item.h"
+#include "items/speech_result_item.h"
+#include "items/speech_segment_item.h"
 #include "items/tensor_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -16,6 +18,7 @@
 #include "inferencing/session/session.h"
 #include "exception.h"
 
+#include <foundry_local/foundry_local_cpp.h>
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -142,6 +145,18 @@ TEST(ItemCreateTest, UnknownTypeReturnsNullptr) {
   EXPECT_EQ(item, nullptr);
 }
 
+TEST(ItemCreateTest, SpeechSegmentNotCreatable) {
+  // SPEECH_SEGMENT is output-only; the factory does not produce one.
+  auto item = Item::Create(FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
+  EXPECT_EQ(item, nullptr);
+}
+
+TEST(ItemCreateTest, SpeechResultNotCreatable) {
+  // SPEECH_RESULT is output-only; the factory does not produce one.
+  auto item = Item::Create(FOUNDRY_LOCAL_ITEM_SPEECH_RESULT);
+  EXPECT_EQ(item, nullptr);
+}
+
 TEST(ItemCreateTest, InvalidEnumValueReturnsNullptr) {
   auto item = Item::Create(static_cast<flItemType>(9999));
   EXPECT_EQ(item, nullptr);
@@ -186,6 +201,159 @@ TEST(ToolResultItemTest, ConstructWithValues) {
   EXPECT_TRUE(item.type == FOUNDRY_LOCAL_ITEM_TOOL_RESULT);
   EXPECT_EQ(item.call_id, "call_123");
   EXPECT_EQ(item.result, "72 degrees");
+}
+
+// ========================================================================
+// Speech items (output-only)
+// ========================================================================
+
+TEST(SpeechSegmentItemTest, DefaultsAreEmpty) {
+  SpeechSegmentItem item;
+  EXPECT_TRUE(item.type == FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
+  EXPECT_EQ(item.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE);
+  EXPECT_TRUE(item.text.empty());
+  EXPECT_FALSE(item.start_time_ms.has_value());
+  EXPECT_FALSE(item.end_time_ms.has_value());
+  EXPECT_FALSE(item.utterance_start);
+  EXPECT_TRUE(item.words.empty());
+  EXPECT_TRUE(item.language.empty());
+}
+
+TEST(SpeechSegmentItemTest, ConstructWithKindAndText) {
+  SpeechSegmentItem item(FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL, "hello");
+  EXPECT_EQ(item.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL);
+  EXPECT_EQ(item.text, "hello");
+}
+
+TEST(SpeechSegmentItemTest, GetApiDataMapsOptionalsToSentinel) {
+  SpeechSegmentItem item(FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL, "the cat sat");
+  item.utterance_start = true;
+  item.start_time_ms = 100;
+  item.end_time_ms = 1500;
+  item.language = "en";
+  item.words.push_back({"the", 100, 200, 0.95f, ""});
+  item.words.push_back({"cat", std::nullopt, std::nullopt, std::nullopt, "spk_1"});
+  item.Finalize();
+
+  flSpeechSegmentData out{};
+  out.version = FOUNDRY_LOCAL_API_VERSION;
+  item.GetApiData(out);
+
+  EXPECT_EQ(out.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
+  EXPECT_STREQ(out.text, "the cat sat");
+  EXPECT_EQ(out.start_time_ms, 100);
+  EXPECT_EQ(out.end_time_ms, 1500);
+  EXPECT_TRUE(out.utterance_start);
+  EXPECT_STREQ(out.language, "en");
+  ASSERT_EQ(out.words_count, 2u);
+
+  EXPECT_STREQ(out.words[0].text, "the");
+  EXPECT_EQ(out.words[0].start_time_ms, 100);
+  EXPECT_EQ(out.words[0].end_time_ms, 200);
+  EXPECT_FLOAT_EQ(out.words[0].confidence, 0.95f);
+  EXPECT_EQ(out.words[0].speaker_id, nullptr);
+
+  EXPECT_STREQ(out.words[1].text, "cat");
+  EXPECT_EQ(out.words[1].start_time_ms, FOUNDRY_LOCAL_DURATION_UNSET);
+  EXPECT_EQ(out.words[1].end_time_ms, FOUNDRY_LOCAL_DURATION_UNSET);
+  EXPECT_EQ(out.words[1].confidence, FOUNDRY_LOCAL_CONFIDENCE_UNSET);
+  EXPECT_STREQ(out.words[1].speaker_id, "spk_1");
+}
+
+TEST(SpeechSegmentItemTest, GetApiDataEmptyOptionalsBecomeSentinel) {
+  SpeechSegmentItem item;
+  item.Finalize();
+  flSpeechSegmentData out{};
+  out.version = FOUNDRY_LOCAL_API_VERSION;
+  item.GetApiData(out);
+
+  EXPECT_EQ(out.start_time_ms, FOUNDRY_LOCAL_DURATION_UNSET);
+  EXPECT_EQ(out.end_time_ms, FOUNDRY_LOCAL_DURATION_UNSET);
+  EXPECT_EQ(out.language, nullptr);
+  EXPECT_EQ(out.words, nullptr);
+  EXPECT_EQ(out.words_count, 0u);
+}
+
+TEST(SpeechResultItemTest, DefaultsAreEmpty) {
+  SpeechResultItem item;
+  EXPECT_TRUE(item.type == FOUNDRY_LOCAL_ITEM_SPEECH_RESULT);
+  EXPECT_TRUE(item.text.empty());
+  EXPECT_TRUE(item.language.empty());
+  EXPECT_FALSE(item.duration_ms.has_value());
+  EXPECT_TRUE(item.segments.empty());
+}
+
+TEST(SpeechResultItemTest, GetApiDataExposesSegmentsAsItemPointers) {
+  SpeechResultItem result("the cat sat");
+  result.language = "en";
+  result.duration_ms = 1500;
+  result.segments.push_back(std::make_unique<SpeechSegmentItem>(FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL, "the cat"));
+  result.segments.push_back(std::make_unique<SpeechSegmentItem>(FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL, "sat"));
+  result.Finalize();
+
+  flSpeechResultData out{};
+  out.version = FOUNDRY_LOCAL_API_VERSION;
+  result.GetApiData(out);
+
+  EXPECT_STREQ(out.text, "the cat sat");
+  EXPECT_STREQ(out.language, "en");
+  EXPECT_EQ(out.duration_ms, 1500);
+  ASSERT_EQ(out.segments_count, 2u);
+
+  // Each segment pointer should resolve back to a SPEECH_SEGMENT item.
+  for (size_t i = 0; i < out.segments_count; ++i) {
+    ASSERT_NE(out.segments[i], nullptr);
+    EXPECT_TRUE(reinterpret_cast<const Item*>(out.segments[i])->type == FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
+  }
+}
+
+// Wrapper translation: sentinel int64 ↔ std::optional<int64>, NULL ↔ std::optional<string_view>,
+// and that segments are exposed as a vector<Item> of SPEECH_SEGMENT items.
+TEST(SpeechWrapperTest, ReadsThroughPublicCppApi) {
+  SpeechSegmentItem seg(FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL, "the cat sat");
+  seg.start_time_ms = 100;
+  seg.utterance_start = true;
+  // end_time_ms intentionally left unset.
+  seg.words.push_back({"the", 100, 200, 0.95f, ""});
+  seg.words.push_back({"cat", std::nullopt, std::nullopt, std::nullopt, ""});
+  seg.Finalize();
+
+  const fl::SpeechSegmentItem& cseg = seg;
+  foundry_local::Item view(*cseg.AsApiType());
+  auto content = view.GetSpeechSegment();
+  EXPECT_EQ(content.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
+  EXPECT_EQ(content.text, "the cat sat");
+  ASSERT_TRUE(content.start_time_ms.has_value());
+  EXPECT_EQ(*content.start_time_ms, 100);
+  EXPECT_FALSE(content.end_time_ms.has_value());
+  EXPECT_TRUE(content.utterance_start);
+  EXPECT_FALSE(content.language.has_value());
+  ASSERT_EQ(content.words.size(), 2u);
+
+  EXPECT_EQ(content.words[0].text, "the");
+  ASSERT_TRUE(content.words[0].confidence.has_value());
+  EXPECT_FLOAT_EQ(*content.words[0].confidence, 0.95f);
+  EXPECT_FALSE(content.words[0].speaker_id.has_value());
+
+  EXPECT_FALSE(content.words[1].start_time_ms.has_value());
+  EXPECT_FALSE(content.words[1].confidence.has_value());
+}
+
+TEST(SpeechWrapperTest, ResultExposesSegmentsAsItemViews) {
+  SpeechResultItem result("hi");
+  result.duration_ms = 1500;
+  result.segments.push_back(std::make_unique<SpeechSegmentItem>(FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL, "hi"));
+  result.Finalize();
+
+  const fl::SpeechResultItem& cresult = result;
+  foundry_local::Item view(*cresult.AsApiType());
+  auto content = view.GetSpeechResult();
+  EXPECT_EQ(content.text, "hi");
+  ASSERT_TRUE(content.duration_ms.has_value());
+  EXPECT_EQ(*content.duration_ms, 1500);
+  ASSERT_EQ(content.segments.size(), 1u);
+  EXPECT_EQ(content.segments[0].GetType(), FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
+  EXPECT_EQ(content.segments[0].GetSpeechSegment().text, "hi");
 }
 
 TEST(JsonItemTest, OpenAIJsonTextItem) {

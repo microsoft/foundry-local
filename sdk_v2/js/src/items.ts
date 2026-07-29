@@ -99,6 +99,51 @@ export interface ToolResultItem {
 }
 
 /**
+ * Discriminator for a {@link SpeechSegmentItem}. PARTIAL/FINAL describe the state of the current segment
+ * hypothesis in a streaming callback — PARTIAL is the evolving guess for the in-progress segment, FINAL closes
+ * it. They do not describe the overall response. NONE is used for segments embedded in the aggregate
+ * {@link SpeechResultItem}, where the streaming distinction no longer applies.
+ */
+export type SpeechSegmentKind = "none" | "partial" | "final";
+
+/** One word inside a {@link SpeechSegmentItem}. Timing, confidence, and speaker fields are omitted when unset. */
+export interface SpeechWord {
+  readonly text: string;
+  readonly startTimeMs?: number;
+  readonly endTimeMs?: number;
+  readonly confidence?: number;
+  readonly speakerId?: string;
+}
+
+/**
+ * Recognized/translated speech segment from an `AudioSession` (output-only). In a streaming callback, `text`
+ * for a PARTIAL segment is the cumulative current hypothesis for the segment, not a delta. As an entry of a
+ * {@link SpeechResultItem}, `kind` is `"final"` (or `"none"` for a single non-segmented transcript).
+ */
+export interface SpeechSegmentItem {
+  readonly type: "speechSegment";
+  readonly kind: SpeechSegmentKind;
+  readonly text: string;
+  readonly startTimeMs?: number;
+  readonly endTimeMs?: number;
+  readonly utteranceStart: boolean;
+  readonly words: ReadonlyArray<SpeechWord>;
+  readonly language?: string;
+}
+
+/**
+ * Final aggregate transcription from an `AudioSession` (output-only). `segments` carries the per-segment
+ * breakdown owned by the result; each entry's `kind` is `"final"` or `"none"`.
+ */
+export interface SpeechResultItem {
+  readonly type: "speechResult";
+  readonly text: string;
+  readonly language?: string;
+  readonly durationMs?: number;
+  readonly segments: ReadonlyArray<SpeechSegmentItem>;
+}
+
+/**
  * Tagged union of all item shapes the JS surface understands. Outputs from
  * `Session.send` are always one of these; inputs to `Request.addItem` accept
  * the same shapes. Raw-bytes inputs (bytes/tensor/image-from-data/
@@ -114,7 +159,9 @@ export type Item =
   | ImageItem
   | AudioItem
   | ToolCallItem
-  | ToolResultItem;
+  | ToolResultItem
+  | SpeechSegmentItem
+  | SpeechResultItem;
 
 /**
  * Factory helpers for building Item objects with the right shape. Mirrors
@@ -214,78 +261,4 @@ export const Item = Object.freeze({
   audioDescriptor(format: string, sampleRate: number, channels: number): AudioItem {
     return { type: "audio", format, sampleRate, channels };
   },
-  /**
-   * Decode a {@link TensorItem}'s raw byte buffer into the appropriate
-   * `TypedArray` for its `dataType`. Zero-copy when the underlying buffer is
-   * aligned for the element type; otherwise the bytes are copied into a
-   * fresh aligned buffer.
-   *
-   * Returned types by `dataType`:
-   * `float` → `Float32Array`, `double` → `Float64Array`,
-   * `uint8`/`bool` → `Uint8Array`, `int8` → `Int8Array`,
-   * `uint16`/`float16` → `Uint16Array` (float16 returns raw bits),
-   * `int16` → `Int16Array`, `int32` → `Int32Array`, `uint32` → `Uint32Array`,
-   * `int64` → `BigInt64Array`, `uint64` → `BigUint64Array`.
-   *
-   * Throws for `string` and `unknown` tensors — read `data` directly.
-   */
-  tensorValues(tensor: TensorItem): TensorTypedArray {
-    return decodeTensorValues(tensor);
-  },
 } as const);
-
-/** Union of all `TypedArray` shapes {@link Item.tensorValues} can return. */
-export type TensorTypedArray =
-  | Float32Array
-  | Float64Array
-  | Uint8Array
-  | Int8Array
-  | Uint16Array
-  | Int16Array
-  | Int32Array
-  | Uint32Array
-  | BigInt64Array
-  | BigUint64Array;
-
-type TypedArrayCtor = {
-  new (buffer: ArrayBufferLike, byteOffset: number, length: number): TensorTypedArray;
-  BYTES_PER_ELEMENT: number;
-};
-
-const TENSOR_TYPED_ARRAY_CTORS: Partial<Record<TensorDataType, TypedArrayCtor>> = {
-  float: Float32Array as unknown as TypedArrayCtor,
-  double: Float64Array as unknown as TypedArrayCtor,
-  uint8: Uint8Array as unknown as TypedArrayCtor,
-  bool: Uint8Array as unknown as TypedArrayCtor,
-  int8: Int8Array as unknown as TypedArrayCtor,
-  uint16: Uint16Array as unknown as TypedArrayCtor,
-  float16: Uint16Array as unknown as TypedArrayCtor,
-  int16: Int16Array as unknown as TypedArrayCtor,
-  int32: Int32Array as unknown as TypedArrayCtor,
-  uint32: Uint32Array as unknown as TypedArrayCtor,
-  int64: BigInt64Array as unknown as TypedArrayCtor,
-  uint64: BigUint64Array as unknown as TypedArrayCtor,
-};
-
-function decodeTensorValues(tensor: TensorItem): TensorTypedArray {
-  const ctor = TENSOR_TYPED_ARRAY_CTORS[tensor.dataType];
-  if (!ctor) {
-    throw new Error(
-      `Item.tensorValues: dataType '${tensor.dataType}' has no TypedArray mapping; read tensor.data directly.`,
-    );
-  }
-  const bpe = ctor.BYTES_PER_ELEMENT;
-  const { buffer, byteOffset, byteLength } = tensor.data;
-  if (byteLength % bpe !== 0) {
-    throw new Error(
-      `Item.tensorValues: tensor.data.byteLength (${byteLength}) is not a multiple of ${bpe} for dataType '${tensor.dataType}'.`,
-    );
-  }
-  const length = byteLength / bpe;
-  if (byteOffset % bpe === 0) {
-    return new ctor(buffer, byteOffset, length);
-  }
-  // Misaligned — copy into a fresh buffer.
-  const copy = tensor.data.slice();
-  return new ctor(copy.buffer, copy.byteOffset, length);
-}

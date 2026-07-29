@@ -27,12 +27,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -91,22 +91,22 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20.x'
 
       - name: Setup Python (for node-gyp)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
       - name: Setup .NET SDK for NuGet authentication
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -177,12 +177,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             8.0.x
@@ -199,17 +199,6 @@ jobs:
             /p:IsPacking=true `
             /p:TreatWarningsAsErrors=false `
             --configuration Release
-          
-          # Build WinML SDK package (Windows only)
-          if ($IsWindows) {
-            dotnet pack sdk/cs/src/Microsoft.AI.Foundry.Local.csproj `
-              -o local-packages `
-              /p:Version=0.9.0-dev-20260324 `
-              /p:UseWinML=true `
-              /p:IsPacking=true `
-              /p:TreatWarningsAsErrors=false `
-              --configuration Release
-          }
           
           Write-Host "Local packages:"
           Get-ChildItem local-packages/*.nupkg | ForEach-Object { Write-Host "  $($_.Name)" }
@@ -245,7 +234,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           clean: true
 

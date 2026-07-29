@@ -10,8 +10,5 @@
     "@langchain/core": "latest",
     "@langchain/openai": "latest",
     "foundry-local-sdk": "latest"
-  },
-  "optionalDependencies": {
-    "foundry-local-sdk-winml": "latest"
   }
 }

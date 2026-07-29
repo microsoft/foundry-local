@@ -108,11 +108,27 @@ const char* ItemTypeToString(flItemType t) {
       return "toolCall";
     case FOUNDRY_LOCAL_ITEM_TOOL_RESULT:
       return "toolResult";
+    case FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT:
+      return "speechSegment";
+    case FOUNDRY_LOCAL_ITEM_SPEECH_RESULT:
+      return "speechResult";
     case FOUNDRY_LOCAL_ITEM_QUEUE:
       return "queue";
     case FOUNDRY_LOCAL_ITEM_UNKNOWN:
     default:
       return "unknown";
+  }
+}
+
+const char* SpeechSegmentKindToString(flSpeechSegmentKind k) {
+  switch (k) {
+    case FOUNDRY_LOCAL_SPEECH_SEGMENT_PARTIAL:
+      return "partial";
+    case FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL:
+      return "final";
+    case FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE:
+    default:
+      return "none";
   }
 }
 
@@ -487,6 +503,66 @@ Napi::Object ToolResultToJs(Napi::Env env, const foundry_local::Item& item) {
   return out;
 }
 
+Napi::Object SpeechSegmentToJs(Napi::Env env, const foundry_local::Item& item) {
+  auto content = item.GetSpeechSegment();
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("type", Napi::String::New(env, "speechSegment"));
+  out.Set("kind", Napi::String::New(env, SpeechSegmentKindToString(content.kind)));
+  out.Set("text", Napi::String::New(env, std::string(content.text)));
+  if (content.start_time_ms.has_value()) {
+    out.Set("startTimeMs", Napi::Number::New(env, static_cast<double>(*content.start_time_ms)));
+  }
+  if (content.end_time_ms.has_value()) {
+    out.Set("endTimeMs", Napi::Number::New(env, static_cast<double>(*content.end_time_ms)));
+  }
+  out.Set("utteranceStart", Napi::Boolean::New(env, content.utterance_start));
+  if (content.language.has_value()) {
+    out.Set("language", Napi::String::New(env, std::string(*content.language)));
+  }
+
+  Napi::Array words = Napi::Array::New(env, content.words.size());
+  for (size_t i = 0; i < content.words.size(); ++i) {
+    const auto& w = content.words[i];
+    Napi::Object wobj = Napi::Object::New(env);
+    wobj.Set("text", Napi::String::New(env, std::string(w.text)));
+    if (w.start_time_ms.has_value()) {
+      wobj.Set("startTimeMs", Napi::Number::New(env, static_cast<double>(*w.start_time_ms)));
+    }
+    if (w.end_time_ms.has_value()) {
+      wobj.Set("endTimeMs", Napi::Number::New(env, static_cast<double>(*w.end_time_ms)));
+    }
+    if (w.confidence.has_value()) {
+      wobj.Set("confidence", Napi::Number::New(env, static_cast<double>(*w.confidence)));
+    }
+    if (w.speaker_id.has_value()) {
+      wobj.Set("speakerId", Napi::String::New(env, std::string(*w.speaker_id)));
+    }
+    words.Set(static_cast<uint32_t>(i), wobj);
+  }
+  out.Set("words", words);
+  return out;
+}
+
+Napi::Object SpeechResultToJs(Napi::Env env, const foundry_local::Item& item) {
+  auto content = item.GetSpeechResult();
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("type", Napi::String::New(env, "speechResult"));
+  out.Set("text", Napi::String::New(env, std::string(content.text)));
+  if (content.language.has_value()) {
+    out.Set("language", Napi::String::New(env, std::string(*content.language)));
+  }
+  if (content.duration_ms.has_value()) {
+    out.Set("durationMs", Napi::Number::New(env, static_cast<double>(*content.duration_ms)));
+  }
+
+  Napi::Array segments = Napi::Array::New(env, content.segments.size());
+  for (size_t i = 0; i < content.segments.size(); ++i) {
+    segments.Set(static_cast<uint32_t>(i), SpeechSegmentToJs(env, content.segments[i]));
+  }
+  out.Set("segments", segments);
+  return out;
+}
+
 [[noreturn]] void ThrowShape(Napi::Env env, const std::string& msg);
 
 // ── JS object → Item ────────────────────────────────────────────────────────
@@ -761,6 +837,10 @@ Napi::Value ItemToJs(Napi::Env env, const foundry_local::Item& item) {
       return ToolCallToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_TOOL_RESULT:
       return ToolResultToJs(env, item);
+    case FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT:
+      return SpeechSegmentToJs(env, item);
+    case FOUNDRY_LOCAL_ITEM_SPEECH_RESULT:
+      return SpeechResultToJs(env, item);
     default: {
       Napi::Object out = Napi::Object::New(env);
       out.Set("type", Napi::String::New(env, ItemTypeToString(t)));

@@ -31,21 +31,21 @@
     "install": "node script/install-native.cjs",
     "build:ts": "tsc -p tsconfig.build.json",
     "build": "npm run copy-native:dev && npm run build:native && npm run build:ts",
-    "test": "vitest run",
+    "test": "vitest run --fileParallelism=false --pool=forks --reporter=dot",
     "test:watch": "vitest",
     "lint": "biome check src test script",
     "format": "biome format --write src test script"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.0",
     "node-addon-api": "^8.2.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/node": "^20.0.0",
-    "@vitest/coverage-v8": "^2.1.8",
+    "@vitest/coverage-v8": "^4.1.8",
     "node-gyp": "^12.1.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.9"
   }
 }

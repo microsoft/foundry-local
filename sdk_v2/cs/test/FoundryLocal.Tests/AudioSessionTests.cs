@@ -12,8 +12,6 @@ using System.Threading.Tasks;
 
 using TUnit.Core.Exceptions;
 
-#pragma warning disable CA2000 // Items are transferred to Request via AddItem
-
 [SkipUnlessIntegration]
 internal sealed class AudioSessionTests
 {
@@ -49,8 +47,9 @@ internal sealed class AudioSessionTests
 
             if (!await model.IsCachedAsync())
             {
-                await model.DownloadAsync().ConfigureAwait(false);
-                // return;
+                throw new InvalidOperationException(
+                    "AudioSessionTests requires 'whisper-tiny' to be pre-cached. " +
+                    "Test setup is cached-only and will not download models.");
             }
 
             await model.LoadAsync().ConfigureAwait(false);
@@ -89,21 +88,24 @@ internal sealed class AudioSessionTests
         await Assert.That(response).IsNotNull();
 
         string? text = null;
+        int segmentCount = 0;
 
         for (int i = 0; i < response.ItemCount; i++)
         {
             using var item = response.GetItem(i);
 
-            if (item is TextItem txt)
+            if (item is SpeechResultItem result)
             {
-                text = txt.Text;
+                text = result.Text;
+                segmentCount = result.Segments.Count;
                 break;
             }
         }
 
         await Assert.That(text).IsNotNull().And.IsNotEmpty();
         await Assert.That(text!).IsEqualTo(ExpectedTranscription);
-        Console.WriteLine($"Response: {text}");
+        await Assert.That(segmentCount).IsGreaterThan(0);
+        Console.WriteLine($"Response: {text} ({segmentCount} segments)");
     }
 
     [Test]
@@ -127,20 +129,23 @@ internal sealed class AudioSessionTests
         request.AddItem(new AudioItem(audioFilePath));
 
         var sb = new StringBuilder();
+        int callbackCount = 0;
 
         await foreach (var item in session.ProcessStreamingRequestAsync(request).ConfigureAwait(false))
         {
             using (item)
             {
-                if (item is TextItem txt)
+                if (item is SpeechSegmentItem seg)
                 {
-                    sb.Append(txt.Text);
+                    sb.Append(seg.Text);
+                    callbackCount++;
                 }
             }
         }
 
         var fullResponse = sb.ToString();
-        Console.WriteLine($"Streaming response: {fullResponse}");
+        Console.WriteLine($"Streaming response ({callbackCount} callbacks): {fullResponse}");
+        await Assert.That(callbackCount).IsGreaterThan(0);
         await Assert.That(fullResponse).IsEqualTo(ExpectedTranscription);
     }
 
@@ -173,9 +178,9 @@ internal sealed class AudioSessionTests
         {
             using (item)
             {
-                if (item is TextItem txt)
+                if (item is SpeechSegmentItem seg)
                 {
-                    sb.Append(txt.Text);
+                    sb.Append(seg.Text);
                     streamedCount++;
                 }
             }
@@ -193,9 +198,9 @@ internal sealed class AudioSessionTests
         for (int i = 0; i < final.ItemCount; i++)
         {
             var item = final.GetItem(i);
-            if (item is TextItem txt)
+            if (item is SpeechResultItem result)
             {
-                aggregated = txt.Text;
+                aggregated = result.Text;
                 break;
             }
         }

@@ -15,6 +15,33 @@ using namespace fl;
 // Reasoning fields round-trip
 // ========================================================================
 
+TEST(ModelInfoRoundTrip, DetectedRegionSurvivesRoundTrip) {
+  ModelInfo original;
+  original.model_id = "test-model:1";
+  original.name = "test-model";
+  original.detected_region = "westus2";
+
+  nlohmann::json j = ModelInfoToJson(original);
+  EXPECT_EQ(j["detectedRegion"], "westus2");
+
+  ModelInfo restored = ModelInfoFromJson(j);
+  EXPECT_EQ(restored.detected_region, "westus2");
+}
+
+TEST(ModelInfoRoundTrip, MissingDetectedRegionOmittedFromJsonAndParsesEmpty) {
+  ModelInfo original;
+  original.model_id = "test-model:1";
+  original.name = "test-model";
+  // detected_region left empty (e.g. BYO model or pre-region cache file).
+
+  nlohmann::json j = ModelInfoToJson(original);
+  EXPECT_FALSE(j.contains("detectedRegion"));
+
+  // An old cache document without the field must still parse with an empty region.
+  ModelInfo restored = ModelInfoFromJson(j);
+  EXPECT_TRUE(restored.detected_region.empty());
+}
+
 TEST(ModelInfoRoundTrip, ReasoningFieldsSurviveRoundTrip) {
   ModelInfo original;
   original.model_id = "test-model:1";
@@ -83,7 +110,7 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = "MIT";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = "chat-completion";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "0.5.0";
-  original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "AzureFoundry";
+  original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
 
   // Reasoning fields
@@ -129,7 +156,7 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR), "MIT");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), "chat-completion");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.5.0");
-  EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "AzureFoundry");
+  EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "FoundryLocal");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR), "ONNX");
 
   // Reasoning fields

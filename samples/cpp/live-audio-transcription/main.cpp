@@ -129,7 +129,7 @@ int main(int argc, char* argv[]) {
         // English-only:
         const char* modelAlias = "nemotron-speech-streaming-en-0.6b";
         // Multi-lingual (supports 30+ languages including auto-detect):
-        // const char* modelAlias = "nvidia-nemotron-3.5-asr-streaming-multilingual-0.6b";
+        // const char* modelAlias = "nemotron-3.5-asr-streaming-0.6b";
         auto* model = catalog.GetModel(modelAlias);
         if (!model) {
             throw std::runtime_error(std::string("Model \"") + modelAlias + "\" not found in catalog");

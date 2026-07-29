@@ -1,12 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Find/acquire ONNX Runtime.
 #
-# ORT is always sourced from Microsoft.ML.OnnxRuntime.Foundry (or
-# Microsoft.ML.OnnxRuntime on Android) via FetchContent — nuget.org for releases,
-# the ORT-Nightly ADO feed for -dev- versions. The FOUNDRY_LOCAL_USE_WINML flag
-# does NOT change the ORT package source; it only:
-#   - selects a WinML-compatible ORT version (see version branch below), and
-#   - opts in to the WinML EP catalog (handled by FindWinMLEpCatalog.cmake).
+# Sources ORT from Microsoft.ML.OnnxRuntime.Foundry (or Microsoft.ML.OnnxRuntime
+# on Android) via FetchContent — nuget.org for releases, the ORT-Nightly ADO
+# feed for -dev- versions. The version comes from sdk_v2/deps_versions.json and
+# is shared by all platforms.
 #
 # Creates an IMPORTED target: OnnxRuntime::OnnxRuntime
 
@@ -26,7 +24,11 @@ if(ANDROID)
         message(FATAL_ERROR "Unsupported Android ABI for OnnxRuntime: ${ANDROID_ABI}")
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(_ORT_PLATFORM "linux-x64")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(_ORT_PLATFORM "linux-arm64")
+    else()
+        set(_ORT_PLATFORM "linux-x64")
+    endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         set(_ORT_PLATFORM "osx-arm64")
@@ -40,25 +42,6 @@ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "x64" OR CMAKE_GENERATOR_PLATFORM STREQ
     set(_ORT_PLATFORM "win-x64")
 else()
     message(FATAL_ERROR "Unsupported platform for OnnxRuntime: ${CMAKE_GENERATOR_PLATFORM} on ${CMAKE_SYSTEM_NAME}")
-endif()
-
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    # WinML is only available on Windows
-    set(FOUNDRY_LOCAL_USE_WINML OFF)
-endif()
-
-if(FOUNDRY_LOCAL_USE_WINML)
-    # FOUNDRY_LOCAL_USE_WINML opts in to the WinML EP catalog (see FindWinMLEpCatalog.cmake) but
-    # does NOT change where ORT comes from. We always link against our own ORT
-    # (Microsoft.ML.OnnxRuntime.Foundry) because it enables CUDA and WebGPU EPs.
-    #
-    # Which onnxruntime.dll the process actually binds to at runtime is determined by the
-    # binding-side preload contract (see sdk_v2/cpp/docs/OrtRuntimeLoading.md), not by build
-    # layout. Co-location of our onnxruntime.dll next to foundry_local.dll keeps in-tree
-    # tests and examples zero-config, but is not a correctness guarantee for arbitrary
-    # deployments — bindings preload the intended onnxruntime.dll by absolute path before
-    # loading foundry_local.
-    message(STATUS "FOUNDRY_LOCAL_USE_WINML=ON: WinML EP catalog enabled; ORT still sourced from Microsoft.ML.OnnxRuntime.Foundry")
 endif()
 
 if(ORT_HOME)
@@ -80,14 +63,10 @@ else()
     # Standard path: FetchContent from nuget.org (releases) or ORT-Nightly ADO feed (dev builds)
     # -----------------------------------------------------------------------
     if(NOT ORT_VERSION)
-        # Single source of truth: sdk_v2/deps_versions[_winml].json. The Python
-        # SDK build backend reads the same files so wheel deps and native ABI
+        # Single source of truth: sdk_v2/deps_versions.json. The Python SDK
+        # build backend reads the same file so wheel deps and native ABI
         # always agree. Override at the cmake command line with -DORT_VERSION=...
-        if(FOUNDRY_LOCAL_USE_WINML)
-            set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions_winml.json")
-        else()
-            set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
-        endif()
+        set(_DEPS_FILE "${CMAKE_CURRENT_LIST_DIR}/../../deps_versions.json")
         if(NOT EXISTS "${_DEPS_FILE}")
             message(FATAL_ERROR "Required versions file not found: ${_DEPS_FILE}")
         endif()
@@ -157,41 +136,47 @@ else()
         set(_ORT_LIB_DIR "${ortlib_SOURCE_DIR}/runtimes/android/native/jni/${ANDROID_ABI}")
         message(STATUS "Extracted ORT Android AAR: ${_ORT_AAR_PATH}")
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # On Linux the Foundry meta-package doesn't contain libonnxruntime.so directly —
-        # it's in the Microsoft.ML.OnnxRuntime.Gpu.Linux dependency package.
-        set(_ORT_GPU_LINUX_PACKAGE "Microsoft.ML.OnnxRuntime.Gpu.Linux")
+        if(_ORT_PLATFORM STREQUAL "linux-x64")
+            # On Linux x64 the Foundry meta-package doesn't contain libonnxruntime.so directly —
+            # it's in the Microsoft.ML.OnnxRuntime.Gpu.Linux dependency package.
+            set(_ORT_GPU_LINUX_PACKAGE "Microsoft.ML.OnnxRuntime.Gpu.Linux")
 
-        # ORT_GPU_LINUX_FETCH_URL can be set externally (e.g. for CI where nuget.org is blocked).
-        set(ORT_GPU_LINUX_FETCH_URL "" CACHE STRING "Override URL or local path for the ORT GPU Linux NuGet package")
+            # ORT_GPU_LINUX_FETCH_URL can be set externally (e.g. for CI where nuget.org is blocked).
+            set(ORT_GPU_LINUX_FETCH_URL "" CACHE STRING "Override URL or local path for the ORT GPU Linux NuGet package")
 
-        if(NOT ORT_GPU_LINUX_FETCH_URL)
-            if(ORT_VERSION MATCHES "-dev-")
-                set(ORT_GPU_LINUX_FETCH_URL "https://pkgs.dev.azure.com/${ORT_FEED_ORG}/${ORT_FEED_PROJECT}/_apis/packaging/feeds/${ORT_FEED_ID}/nuget/packages/${_ORT_GPU_LINUX_PACKAGE}/versions/${ORT_VERSION}/content?api-version=6.0-preview.1")
-                message(STATUS "Downloading ${_ORT_GPU_LINUX_PACKAGE} ${ORT_VERSION} from ORT-Nightly feed")
+            if(NOT ORT_GPU_LINUX_FETCH_URL)
+                if(ORT_VERSION MATCHES "-dev-")
+                    set(ORT_GPU_LINUX_FETCH_URL "https://pkgs.dev.azure.com/${ORT_FEED_ORG}/${ORT_FEED_PROJECT}/_apis/packaging/feeds/${ORT_FEED_ID}/nuget/packages/${_ORT_GPU_LINUX_PACKAGE}/versions/${ORT_VERSION}/content?api-version=6.0-preview.1")
+                    message(STATUS "Downloading ${_ORT_GPU_LINUX_PACKAGE} ${ORT_VERSION} from ORT-Nightly feed")
+                else()
+                    string(TOLOWER "${_ORT_GPU_LINUX_PACKAGE}" _ORT_GPU_LINUX_LOWER)
+                    set(ORT_GPU_LINUX_FETCH_URL "https://api.nuget.org/v3-flatcontainer/${_ORT_GPU_LINUX_LOWER}/${ORT_VERSION}/${_ORT_GPU_LINUX_LOWER}.${ORT_VERSION}.nupkg")
+                    message(STATUS "Downloading ${_ORT_GPU_LINUX_PACKAGE} ${ORT_VERSION} from nuget.org")
+                endif()
             else()
-                string(TOLOWER "${_ORT_GPU_LINUX_PACKAGE}" _ORT_GPU_LINUX_LOWER)
-                set(ORT_GPU_LINUX_FETCH_URL "https://api.nuget.org/v3-flatcontainer/${_ORT_GPU_LINUX_LOWER}/${ORT_VERSION}/${_ORT_GPU_LINUX_LOWER}.${ORT_VERSION}.nupkg")
-                message(STATUS "Downloading ${_ORT_GPU_LINUX_PACKAGE} ${ORT_VERSION} from nuget.org")
+                message(STATUS "Using pre-configured ORT_GPU_LINUX_FETCH_URL: ${ORT_GPU_LINUX_FETCH_URL}")
             endif()
+
+            # Normalize backslashes and handle .nupkg extension
+            string(REPLACE "\\" "/" ORT_GPU_LINUX_FETCH_URL "${ORT_GPU_LINUX_FETCH_URL}")
+            if(ORT_GPU_LINUX_FETCH_URL MATCHES "\\.nupkg$" AND NOT ORT_GPU_LINUX_FETCH_URL MATCHES "^https?://")
+                set(_ORT_GPU_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/ort_gpu_linux-download/ort_gpu_linux.zip")
+                get_filename_component(_ORT_GPU_ZIP_DIR "${_ORT_GPU_ZIP_PATH}" DIRECTORY)
+                file(MAKE_DIRECTORY "${_ORT_GPU_ZIP_DIR}")
+                file(COPY_FILE "${ORT_GPU_LINUX_FETCH_URL}" "${_ORT_GPU_ZIP_PATH}")
+                set(ORT_GPU_LINUX_FETCH_URL "${_ORT_GPU_ZIP_PATH}")
+            endif()
+
+            FetchContent_Declare(ort_gpu_linux URL ${ORT_GPU_LINUX_FETCH_URL} DOWNLOAD_EXTRACT_TIMESTAMP TRUE DOWNLOAD_NAME ort_gpu_linux.zip)
+            FetchContent_MakeAvailable(ort_gpu_linux)
+
+            set(_ORT_LIB_DIR "${ort_gpu_linux_SOURCE_DIR}/runtimes/${_ORT_PLATFORM}/native")
+            message(STATUS "OnnxRuntime GPU Linux package: ${ort_gpu_linux_SOURCE_DIR}")
         else()
-            message(STATUS "Using pre-configured ORT_GPU_LINUX_FETCH_URL: ${ORT_GPU_LINUX_FETCH_URL}")
+            # linux-arm64: libonnxruntime.so is included directly in the Microsoft.ML.OnnxRuntime.Foundry
+            # package under runtimes/linux-arm64/native — no separate GPU package needed.
+            message(STATUS "OnnxRuntime Linux ARM64: using Foundry package runtimes/${_ORT_PLATFORM}/native")
         endif()
-
-        # Normalize backslashes and handle .nupkg extension
-        string(REPLACE "\\" "/" ORT_GPU_LINUX_FETCH_URL "${ORT_GPU_LINUX_FETCH_URL}")
-        if(ORT_GPU_LINUX_FETCH_URL MATCHES "\\.nupkg$" AND NOT ORT_GPU_LINUX_FETCH_URL MATCHES "^https?://")
-            set(_ORT_GPU_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/ort_gpu_linux-download/ort_gpu_linux.zip")
-            get_filename_component(_ORT_GPU_ZIP_DIR "${_ORT_GPU_ZIP_PATH}" DIRECTORY)
-            file(MAKE_DIRECTORY "${_ORT_GPU_ZIP_DIR}")
-            file(COPY_FILE "${ORT_GPU_LINUX_FETCH_URL}" "${_ORT_GPU_ZIP_PATH}")
-            set(ORT_GPU_LINUX_FETCH_URL "${_ORT_GPU_ZIP_PATH}")
-        endif()
-
-        FetchContent_Declare(ort_gpu_linux URL ${ORT_GPU_LINUX_FETCH_URL} DOWNLOAD_EXTRACT_TIMESTAMP TRUE DOWNLOAD_NAME ort_gpu_linux.zip)
-        FetchContent_MakeAvailable(ort_gpu_linux)
-
-        set(_ORT_LIB_DIR "${ort_gpu_linux_SOURCE_DIR}/runtimes/${_ORT_PLATFORM}/native")
-        message(STATUS "OnnxRuntime GPU Linux package: ${ort_gpu_linux_SOURCE_DIR}")
     endif()
 endif()
 
@@ -245,8 +230,7 @@ else()
     set_target_properties(OnnxRuntime::OnnxRuntime PROPERTIES
         IMPORTED_IMPLIB "${_ORT_LIB_DIR}/onnxruntime.lib"
     )
-    # On Windows the runtime DLL usually sits next to the import lib; WinML SDK is the
-    # exception (DLL lives under runtimes-framework/), so honour _ORT_DLL_DIR if set.
+    # On Windows, the runtime DLL sits next to the import lib.
     if(NOT _ORT_DLL_DIR)
         set(_ORT_DLL_DIR "${_ORT_LIB_DIR}")
     endif()

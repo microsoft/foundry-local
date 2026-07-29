@@ -44,6 +44,20 @@ class ModelVariant(IModel):
         self._id = model_info.id
         self._alias = model_info.alias
 
+    def _refresh_info(self, model_info: ModelInfo) -> None:
+        """Update the cached ``ModelInfo`` snapshot in place.
+
+        Called by ``Catalog._update_models`` when refreshing the catalog so
+        wrapper identity is preserved across refreshes while still surfacing
+        fresh metadata (notably ``cached``) on held references.
+
+        ``id`` and ``alias`` are immutable for a given variant; callers must
+        only invoke this with a ``model_info`` whose id matches ``self.id``.
+        Pointer reassignment is atomic under the GIL, so concurrent readers
+        observe either the old or new snapshot, never a torn intermediate.
+        """
+        self._model_info = model_info
+
     @property
     def id(self) -> str:
         """Unique model variant ID (e.g. ``name:version``)."""

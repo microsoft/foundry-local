@@ -570,6 +570,7 @@ stages:
   dependsOn:
   - v1_gate
   - build_core
+  - build_core_winml
   jobs:
   - job: rust_sdk
     displayName: 'Build'
@@ -587,6 +588,9 @@ stages:
       - input: pipelineArtifact
         artifactName: 'deps-versions-standard'
         targetPath: '$(Pipeline.Workspace)/deps-versions-standard'
+      - input: pipelineArtifact
+        artifactName: 'deps-versions-winml'
+        targetPath: '$(Pipeline.Workspace)/deps-versions-winml'
       outputs:
       - output: pipelineArtifact
         artifactName: 'rust-sdk'
@@ -604,6 +608,7 @@ stages:
         isWinML: false
         flcNugetDir: '$(Pipeline.Workspace)/flc-nuget'
         depsVersionsDir: '$(Pipeline.Workspace)/deps-versions-standard'
+        depsVersionsWinmlDir: '$(Pipeline.Workspace)/deps-versions-winml'
 
 # Rust SDK has one package with different install options for standard vs WinML, 
 # so we only publish once under the standard stage and skip the WinML stage. Leaving 

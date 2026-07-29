@@ -3,9 +3,6 @@
 // `FoundryLocalError` from the native addon. `create()` and `createAsync()` are factory wrappers around the
 // constructor — the native layer is the source of truth for instance identity.
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { type Catalog, wrapNativeCatalog } from "./catalog.js";
 import { FOUNDRY_LOCAL_CONFIG_KEYS, type FoundryLocalConfig } from "./configuration.js";
 import {
@@ -13,36 +10,41 @@ import {
   configureNativeLoader,
   getAddon,
   getPreloadedLibraryPath,
-  getResolvedLibraryDir,
 } from "./detail/native.js";
 import type { EpDownloadResult, EpInfo } from "./types.js";
 
-/**
- * On Windows WinML builds, the native side needs the Windows App Runtime bootstrapped (the build co-locates
- * `Microsoft.WindowsAppRuntime.Bootstrap.dll` next to `foundry_local.dll`). Detect that layout at runtime and
- * inject `additionalSettings.Bootstrap = "true"` unless the caller already set it. Returns a shallow-copied
- * config so the caller's `additionalSettings` is never mutated. No-op on non-Windows.
- *
- * Mirrors the `IS_WINML`-gated block in C# `FoundryLocalManager` (sdk_v2/cs/src/FoundryLocalManager.cs), but
- * driven by a filesystem probe instead of a compile-time flag.
- */
+// A native Manager holds process-global native resources. Dispose the live
+// Manager on process exit so native teardown happens at a deterministic point
+// rather than being left entirely to environment finalizers. `beforeExit`
+// covers a natural event-loop drain; `exit` covers callers who invoke
+// `process.exit()` themselves. Both are idempotent. The native layer permits
+// only one live Manager at a time, so a single reference is enough.
+let liveManager: FoundryLocalManager | undefined;
+let exitHandlersInstalled = false;
 
-export function applyBootstrapAutoDetect(config: FoundryLocalConfig, libraryDir: string): FoundryLocalConfig {
-  if (process.platform !== "win32") return config;
-  const existing = config.additionalSettings;
-  // Defer to native validation when additionalSettings is present but not a plain object — spreading a string,
-  // array, or other non-record would silently produce a "valid" object and mask the TypeError the native layer
-  // would otherwise throw.
-  if (existing !== undefined && (existing === null || typeof existing !== "object" || Array.isArray(existing))) {
-    return config;
+function disposeLiveManager(): void {
+  const manager = liveManager;
+  if (manager === undefined) {
+    return;
   }
-  if (existing?.Bootstrap !== undefined) return config;
-  const bootstrap = resolve(libraryDir, "Microsoft.WindowsAppRuntime.Bootstrap.dll");
-  if (!existsSync(bootstrap)) return config;
-  return {
-    ...config,
-    additionalSettings: { ...(existing ?? {}), Bootstrap: "true" },
-  };
+  try {
+    manager.dispose();
+  } catch {
+    // Best-effort: a dispose failure must not block process exit.
+  }
+}
+
+function installExitHandlersOnce(): void {
+  if (exitHandlersInstalled) {
+    return;
+  }
+  exitHandlersInstalled = true;
+  process.on("beforeExit", () => {
+    disposeLiveManager();
+  });
+  process.on("exit", () => {
+    disposeLiveManager();
+  });
 }
 
 export class FoundryLocalManager {
@@ -89,8 +91,9 @@ export class FoundryLocalManager {
         }
       }
     }
-    const merged = applyBootstrapAutoDetect(config, getResolvedLibraryDir(config.libraryPath));
-    this.#native = new (getAddon().Manager)(merged);
+    this.#native = new (getAddon().Manager)(config);
+    liveManager = this;
+    installExitHandlersOnce();
   }
 
   /**
@@ -212,6 +215,9 @@ export class FoundryLocalManager {
    * (and any method on a `Catalog` or `Model` obtained through this manager) throws a `FoundryLocalError`.
    */
   dispose(): void {
+    if (liveManager === this) {
+      liveManager = undefined;
+    }
     this.#native.dispose();
     this.#catalog = undefined;
     this.#urls = [];

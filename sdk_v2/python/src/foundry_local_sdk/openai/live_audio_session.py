@@ -35,8 +35,11 @@ from __future__ import annotations
 
 import queue
 import threading
+import warnings
 from enum import IntEnum
 from typing import TYPE_CHECKING, Iterator
+
+from typing_extensions import deprecated
 
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.openai.live_audio_types import (
@@ -68,8 +71,17 @@ class _State(IntEnum):
     DISPOSED = 3
 
 
+@deprecated(
+    "The OpenAI direct client is deprecated and will be removed at the end of 2026; use AudioSession. "
+    "OpenAI types remain supported for the web-server path."
+)
 class LiveAudioTranscriptionSession:
     """Session for real-time audio streaming ASR (Automatic Speech Recognition).
+
+    .. deprecated::
+        The OpenAI direct client is deprecated and will be removed at the end of 2026; use
+        :class:`foundry_local_sdk.session.AudioSession` for streaming
+        transcription. OpenAI types remain supported for the web-server path.
 
     Audio data from a microphone (or other source) is pushed in as PCM
     chunks via :meth:`append`, and transcription results are returned as a
@@ -107,6 +119,12 @@ class LiveAudioTranscriptionSession:
     """
 
     def __init__(self, model_id: str, model: "IModel") -> None:
+        warnings.warn(
+            "The OpenAI direct client is deprecated and will be removed at the end of 2026; use "
+            "AudioSession. OpenAI types remain supported for the web-server path.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model_id = model_id
         # Hold the IModel reference so the underlying native model pointer
         # cannot be released out from under us while this session is alive.
@@ -201,16 +219,17 @@ class LiveAudioTranscriptionSession:
                         if response is not None:
                             response_queue.put(response)
 
-                    from foundry_local_sdk.items import TextItem
+                    from foundry_local_sdk.items import SpeechResultItem
 
-                    final_text_parts: list[str] = []
+                    final_text: str | None = None
                     with stream.final_response as final:
                         for it in final:
-                            if isinstance(it, TextItem) and it.text:
-                                final_text_parts.append(it.text)
+                            if isinstance(it, SpeechResultItem) and it.text:
+                                # The result's text is the canonical concatenated transcript.
+                                final_text = it.text
+                                break
 
-                if final_text_parts:
-                    final_text = "".join(final_text_parts)
+                if final_text:
                     response_queue.put(
                         LiveAudioTranscriptionResponse(
                             content=[TranscriptionContentPart(text=final_text, transcript=final_text)],
@@ -370,9 +389,12 @@ class LiveAudioTranscriptionSession:
 
     def _translate(self, item: "Item") -> "LiveAudioTranscriptionResponse | None":
         """Translate a streaming Item into a LiveAudioTranscriptionResponse, or None to drop it."""
-        from foundry_local_sdk.items import TextItem
+        from foundry_local_sdk.items import SpeechSegmentItem
 
-        if isinstance(item, TextItem) and item.text:
+        # is_final stays False here: SpeechSegmentKind.FINAL on intermediate segments
+        # marks the end of an utterance, not the end of the stream. The trailing
+        # is_final=True event comes from the final-Response drain.
+        if isinstance(item, SpeechSegmentItem) and item.text:
             return LiveAudioTranscriptionResponse(
                 content=[TranscriptionContentPart(text=item.text, transcript=item.text)],
                 is_final=False,

@@ -6,7 +6,7 @@
 
 #include "utils/string_utils.h"
 
-using fl::test::to_lower;
+using fl::test::ToLower;
 
 // Find the first output item with the given "type" value, or nullptr if not found.
 static const json* FindOutputByType(const json& output, const std::string& type) {
@@ -394,7 +394,7 @@ TEST_F(WebServiceIntegrationTest, ResponsesCreateStreaming) {
   EXPECT_TRUE(got_completed) << "Stream should contain response.completed event";
   EXPECT_GT(event_count, 0) << "Should have received at least one SSE event";
   EXPECT_FALSE(assembled_text.empty()) << "Assembled streaming text should not be empty";
-  std::string lower_text = to_lower(assembled_text);
+  std::string lower_text = ToLower(assembled_text);
   EXPECT_NE(lower_text.find("hello"), std::string::npos)
       << "Expected 'hello' (case-insensitive) in streaming output. Got: " << assembled_text;
 

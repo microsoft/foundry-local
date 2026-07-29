@@ -53,7 +53,7 @@
 	}
 
 	function formatModelCommand(modelId: string): string {
-		return `foundry model run ${modelId}`;
+		return `foundry run ${modelId}`;
 	}
 
 	// Device suffix pattern for cleaning model names

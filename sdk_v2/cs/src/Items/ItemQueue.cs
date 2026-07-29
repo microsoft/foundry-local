@@ -1,12 +1,11 @@
-// --------------------------------------------------------------------------------------------------------------------
+﻿// --------------------------------------------------------------------------------------------------------------------
 // <copyright company="Microsoft">
 //   Copyright (c) Microsoft. All rights reserved.
 // </copyright>
 // --------------------------------------------------------------------------------------------------------------------
 
-using Microsoft.AI.Foundry.Local.Detail.Native;
-
 namespace Microsoft.AI.Foundry.Local;
+using Microsoft.AI.Foundry.Local.Detail.Native;
 
 /// <summary>
 /// A queue of items used for streaming. Items can be pushed and popped.
@@ -34,12 +33,16 @@ public sealed class ItemQueue : Item
         Api.CheckStatus(Api.Item.GetQueue(Ptr, out _queuePtr));
     }
 
-    /// <summary>Push an item into the queue. Transfers ownership of the item.</summary>
+    /// <summary>Push an item into the queue. Transfers ownership of the item on success.</summary>
     public void Push(Item item)
     {
         Detail.Throw.IfNull(item);
-        var nativePtr = item.ReleaseOwnership();
-        Api.CheckStatus(Api.Item.QueuePush(_queuePtr, nativePtr));
+
+        // Hand the native handle to the queue first; only relinquish C#-side ownership once the push
+        // has succeeded. If QueuePush throws, the caller still owns the item and can dispose it (e.g.
+        // via a `using`), so a failed push never leaks the handle.
+        Api.CheckStatus(Api.Item.QueuePush(_queuePtr, item.Ptr));
+        item.ReleaseOwnership();
     }
 
     /// <summary>Try to pop an item from the queue. Returns null if queue is empty.</summary>

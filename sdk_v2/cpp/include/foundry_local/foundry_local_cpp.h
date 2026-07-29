@@ -266,7 +266,7 @@ class Configuration {
   Configuration& SetExternalServiceUrl(const std::string& url);
 
   /// Optional. Azure region for the model registry download endpoint.
-  /// Defaults to "eastus" when not set.
+  /// Defaults to "centralus" when not set.
   Configuration& SetCatalogRegion(const std::string& region);
 
   const flConfiguration* native_handle() const noexcept { return handle_.get(); }
@@ -458,6 +458,40 @@ struct ToolResultContent {
   std::string_view result;
 };
 
+/// One word in a SPEECH_SEGMENT. Optional fields use std::optional / empty string_view.
+struct SpeechWord {
+  std::string_view text;
+  std::optional<int64_t> start_time_ms;
+  std::optional<int64_t> end_time_ms;
+  std::optional<float> confidence;
+  std::optional<std::string_view> speaker_id;
+};
+
+/// Content returned from a SPEECH_SEGMENT item (output-only).
+///
+/// See SpeechOutputTypes.md for the streaming model. PARTIAL `text` is the
+/// cumulative current hypothesis for the segment, not a delta. As an entry of
+/// a SpeechResultContent, `kind` is FINAL (or NONE for a single non-segmented
+/// transcript).
+struct SpeechSegmentContent {
+  flSpeechSegmentKind kind;
+  std::string_view text;
+  std::optional<int64_t> start_time_ms;
+  std::optional<int64_t> end_time_ms;
+  bool utterance_start;
+  std::vector<SpeechWord> words;
+  std::optional<std::string_view> language;
+};
+
+/// Content returned from a SPEECH_RESULT item (output-only).
+/// `segments` exposes non-owning views over segment items owned by the result.
+struct SpeechResultContent {
+  std::string_view text;
+  std::optional<std::string_view> language;
+  std::optional<int64_t> duration_ms;
+  std::vector<Item> segments;
+};
+
 // ===========================================================================
 // Item
 // ===========================================================================
@@ -485,6 +519,8 @@ class Item {
   MessageContent GetMessage() const;
   ToolCallContent GetToolCall() const;
   ToolResultContent GetToolResult() const;
+  SpeechSegmentContent GetSpeechSegment() const;
+  SpeechResultContent GetSpeechResult() const;
 
   const flItem* native_handle() const noexcept { return handle_.get(); }
   flItem* native_handle_mutable() { return handle_.get_mutable(); }
@@ -729,6 +765,18 @@ class ICatalog {
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;
   virtual std::unique_ptr<IModel> GetLatestVersion(const IModel& model) const = 0;
+
+  /// Get all versions of a model alias. `model_alias` must be non-empty.
+  /// `variant_name` optionally narrows the result to a single variant; empty
+  /// returns every variant. `max_versions` selects the latest X versions per
+  /// variant name (defaults to 50, matching the web service contract); pass 0
+  /// or a negative value for no per-variant cap. Each call performs a fresh
+  /// query and the returned model handles remain valid until the next
+  /// GetModelVersions call for the same alias or until the catalog is destroyed.
+  /// Queries for different aliases do not invalidate each other's results.
+  virtual ModelList GetModelVersions(const std::string& model_alias,
+                                     const std::string& variant_name = {},
+                                     int max_versions = 50) = 0;
 };
 
 // ===========================================================================
@@ -751,6 +799,9 @@ class Catalog final : public ICatalog {
   std::unique_ptr<IModel> GetModel(const std::string& alias) const override;
   std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const override;
   std::unique_ptr<IModel> GetLatestVersion(const IModel& model) const override;
+  ModelList GetModelVersions(const std::string& model_alias,
+                             const std::string& variant_name = {},
+                             int max_versions = 50) override;
 
  private:
   detail::Base<flCatalog> handle_;
@@ -973,6 +1024,10 @@ class ChatSession : public Session {
   void UndoTurns(size_t count);
 };
 
+/// Session for automatic-speech-recognition (transcription) models.
+///
+/// Each request produces a SpeechResultItem with the full transcript and per-segment detail;
+/// the streaming callback (when registered) receives a SpeechSegmentItem per decoded token.
 class AudioSession : public Session {
  public:
   explicit AudioSession(IModel& model);

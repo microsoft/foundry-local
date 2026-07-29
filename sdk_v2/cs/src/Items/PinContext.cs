@@ -1,10 +1,13 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
+﻿// --------------------------------------------------------------------------------------------------------------------
+// <copyright company="Microsoft">
+//   Copyright (c) Microsoft. All rights reserved.
+// </copyright>
+// --------------------------------------------------------------------------------------------------------------------
+
+namespace Microsoft.AI.Foundry.Local;
 
 using System.Buffers;
 using System.Runtime.InteropServices;
-
-namespace Microsoft.AI.Foundry.Local;
 
 /// <summary>
 /// Manages pinning of Memory/ReadOnlyMemory buffers for native interop.
@@ -45,14 +48,46 @@ internal sealed class PinContext : IDisposable
         => Pin((ReadOnlyMemory<byte>)data);
 
     /// <summary>
+    /// Pin <paramref name="data"/> and immediately transfer ownership of the pin to a GCHandle
+    /// that the native deleter releases via <see cref="ReleaseFromNative"/>. Returns the IntPtr
+    /// to pass as <c>deleter_user_data</c>, along with the stable pointer/length of the pinned data.
+    /// </summary>
+    /// <remarks>
+    /// No <see cref="PinContext"/> escapes to the caller: it is created and rooted in the GCHandle
+    /// entirely within this call, so the pin lives until the native item is destroyed. If rooting
+    /// fails, the pin is released here so the buffer is never left pinned.
+    /// </remarks>
+    public static IntPtr PinForNativeDeleter(Memory<byte> data, out IntPtr pointer, out int length)
+    {
+        // IDisposableAnalyzers cannot model ownership that is handed to unmanaged code: the pin is
+        // rooted in a GCHandle and released by a native deleter callback, neither of which the
+        // analyzer can see. This is the single ownership-transfer boundary for all owned items, so
+        // the suppression lives here once rather than being scattered across the item factories.
+#pragma warning disable IDISP001 // Dispose created — ownership is transferred to the native deleter.
+        var ctx = Pin(data);
+#pragma warning restore IDISP001
+        pointer = ctx.Pointer;
+        length = ctx.Length;
+
+        try
+        {
+            return AllocForNativeDeleter(ctx);
+        }
+        catch
+        {
+            ctx.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Allocate a GCHandle so the native deleter can find this PinContext.
     /// Returns the IntPtr to pass as deleter_user_data.
-    /// After this call, the PinContext is kept alive by the GCHandle — the caller
-    /// should NOT store or dispose it.
+    /// After this call, the PinContext is kept alive by the GCHandle.
     /// </summary>
-    public IntPtr AllocForNativeDeleter()
+    private static IntPtr AllocForNativeDeleter(PinContext ctx)
     {
-        var gcHandle = GCHandle.Alloc(this, GCHandleType.Normal);
+        var gcHandle = GCHandle.Alloc(ctx, GCHandleType.Normal);
         return GCHandle.ToIntPtr(gcHandle);
     }
 

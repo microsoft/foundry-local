@@ -7,6 +7,7 @@
 namespace Microsoft.AI.Foundry.Local;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -102,52 +103,113 @@ internal sealed class Catalog : ICatalog, IDisposable
 
     private async Task<List<IModel>> GetCachedModelsImplAsync(CancellationToken? ct = null)
     {
+        await UpdateModels(ct).ConfigureAwait(false);
+
         var cachedModelIds = await Utils.GetCachedModelIdsAsync(_coreInterop, ct).ConfigureAwait(false);
-
-        List<IModel> cachedModels = [];
-        foreach (var modelId in cachedModelIds)
-        {
-            if (_modelIdToModelVariant.TryGetValue(modelId, out ModelVariant? modelVariant))
-            {
-                cachedModels.Add(modelVariant);
-            }
-        }
-
-        return cachedModels;
+        return await ResolveModelIdsAsync(cachedModelIds, ct).ConfigureAwait(false);
     }
 
     private async Task<List<IModel>> GetLoadedModelsImplAsync(CancellationToken? ct = null)
     {
-        var loadedModelIds = await _modelLoadManager.ListLoadedModelsAsync(ct).ConfigureAwait(false);
-        List<IModel> loadedModels = [];
+        await UpdateModels(ct).ConfigureAwait(false);
 
-        foreach (var modelId in loadedModelIds)
+        var loadedModelIds = await _modelLoadManager.ListLoadedModelsAsync(ct).ConfigureAwait(false);
+        return await ResolveModelIdsAsync(loadedModelIds, ct).ConfigureAwait(false);
+    }
+
+    // Resolve a list of model ids against the in-memory catalog, self-healing once
+    // if any id is unknown (e.g. a manually-added BYOM model the SDK has not yet seen).
+    // Preserves the input order of modelIds (minus unknowns).
+    private async Task<List<IModel>> ResolveModelIdsAsync(string[] modelIds, CancellationToken? ct)
+    {
+        bool needsRefresh = false;
+        using (var disposable = await _lock.LockAsync().ConfigureAwait(false))
         {
-            if (_modelIdToModelVariant.TryGetValue(modelId, out ModelVariant? modelVariant))
+            foreach (var modelId in modelIds)
             {
-                loadedModels.Add(modelVariant);
+                if (!_modelIdToModelVariant.ContainsKey(modelId))
+                {
+                    needsRefresh = true;
+                    break;
+                }
             }
         }
 
-        return loadedModels;
+        if (needsRefresh)
+        {
+            await UpdateModels(ct, force: true).ConfigureAwait(false);
+        }
+
+        List<IModel> resolved = new(modelIds.Length);
+        using (var disposable = await _lock.LockAsync().ConfigureAwait(false))
+        {
+            foreach (var modelId in modelIds)
+            {
+                if (_modelIdToModelVariant.TryGetValue(modelId, out ModelVariant? variant))
+                {
+                    resolved.Add(variant);
+                }
+            }
+        }
+
+        return resolved;
     }
 
     private async Task<Model?> GetModelImplAsync(string modelAlias, CancellationToken? ct = null)
     {
+        if (string.IsNullOrWhiteSpace(modelAlias))
+        {
+            return null;
+        }
+
         await UpdateModels(ct).ConfigureAwait(false);
 
-        using var disposable = await _lock.LockAsync().ConfigureAwait(false);
-        _modelAliasToModel.TryGetValue(modelAlias, out Model? model);
+        Model? model;
+        using (var disposable = await _lock.LockAsync().ConfigureAwait(false))
+        {
+            _modelAliasToModel.TryGetValue(modelAlias, out model);
+        }
+        if (model is not null)
+        {
+            return model;
+        }
 
+        // Self-heal: the alias may belong to a BYOM model added to the cache
+        // directory after our last catalog refresh.
+        await UpdateModels(ct, force: true).ConfigureAwait(false);
+        using (var disposable = await _lock.LockAsync().ConfigureAwait(false))
+        {
+            _modelAliasToModel.TryGetValue(modelAlias, out model);
+        }
         return model;
     }
 
     private async Task<ModelVariant?> GetModelVariantImplAsync(string modelId, CancellationToken? ct = null)
     {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            return null;
+        }
+
         await UpdateModels(ct).ConfigureAwait(false);
 
-        using var disposable = await _lock.LockAsync().ConfigureAwait(false);
-        _modelIdToModelVariant.TryGetValue(modelId, out ModelVariant? modelVariant);
+        ModelVariant? modelVariant;
+        using (var disposable = await _lock.LockAsync().ConfigureAwait(false))
+        {
+            _modelIdToModelVariant.TryGetValue(modelId, out modelVariant);
+        }
+        if (modelVariant is not null)
+        {
+            return modelVariant;
+        }
+
+        // Self-heal: the id may belong to a BYOM model added to the cache
+        // directory after our last catalog refresh.
+        await UpdateModels(ct, force: true).ConfigureAwait(false);
+        using (var disposable = await _lock.LockAsync().ConfigureAwait(false))
+        {
+            _modelIdToModelVariant.TryGetValue(modelId, out modelVariant);
+        }
         return modelVariant;
     }
 
@@ -190,10 +252,13 @@ internal sealed class Catalog : ICatalog, IDisposable
         return latest.Id == modelOrModelVariant.Id ? modelOrModelVariant : latest;
     }
 
-    private async Task UpdateModels(CancellationToken? ct)
+    private async Task UpdateModels(CancellationToken? ct, bool force = false)
     {
         // TODO: make this configurable
-        if (DateTime.Now - _lastFetch < TimeSpan.FromHours(6))
+        // Skip if the cache is still fresh, unless the caller forced a refresh
+        // (e.g. self-heal after a cache miss caused by a manually-added BYOM
+        // model dropped into the cache directory).
+        if (!force && DateTime.Now - _lastFetch < TimeSpan.FromHours(6))
         {
             return;
         }
@@ -215,26 +280,64 @@ internal sealed class Catalog : ICatalog, IDisposable
 
         using var disposable = await _lock.LockAsync().ConfigureAwait(false);
 
-        // TODO: Do we need to clear this out, or can we just add new models?
-        _modelAliasToModel.Clear();
-        _modelIdToModelVariant.Clear();
+        // Incremental refresh: preserve wrapper identity for ids/aliases that
+        // survive the refresh so externally-held IModel references keep
+        // working with up-to-date metadata and (for Model) keep any explicit
+        // SelectVariant() choice. New ids get fresh wrappers; removed ids get
+        // evicted.
 
-        foreach (var modelInfo in models)
+        var freshIds = new HashSet<string>(StringComparer.Ordinal);
+        var freshAliasGroups = new Dictionary<string, List<ModelInfo>>(StringComparer.Ordinal);
+        foreach (var info in models)
         {
-            var variant = new ModelVariant(modelInfo, _modelLoadManager, _coreInterop, _logger);
-
-            var existingModel = _modelAliasToModel.TryGetValue(modelInfo.Alias, out Model? value);
-            if (!existingModel)
+            freshIds.Add(info.Id);
+            if (!freshAliasGroups.TryGetValue(info.Alias, out var group))
             {
-                value = new Model(variant, _logger);
-                _modelAliasToModel[modelInfo.Alias] = value;
+                group = [];
+                freshAliasGroups[info.Alias] = group;
+            }
+            group.Add(info);
+        }
+
+        foreach (var staleId in _modelIdToModelVariant.Keys.Where(id => !freshIds.Contains(id)).ToList())
+        {
+            _modelIdToModelVariant.Remove(staleId);
+        }
+        foreach (var staleAlias in _modelAliasToModel.Keys.Where(a => !freshAliasGroups.ContainsKey(a)).ToList())
+        {
+            _modelAliasToModel.Remove(staleAlias);
+        }
+
+        foreach (var info in models)
+        {
+            if (_modelIdToModelVariant.TryGetValue(info.Id, out var existing))
+            {
+                existing.RefreshInfo(info);
             }
             else
             {
-                value!.AddVariant(variant);
+                _modelIdToModelVariant[info.Id] = new ModelVariant(info, _modelLoadManager, _coreInterop, _logger);
             }
+        }
 
-            _modelIdToModelVariant[variant.Id] = variant;
+        foreach (var kvp in freshAliasGroups)
+        {
+            var alias = kvp.Key;
+            var aliasInfos = kvp.Value;
+            var aliasVariants = aliasInfos.ConvertAll(i => _modelIdToModelVariant[i.Id]);
+            if (_modelAliasToModel.TryGetValue(alias, out var existingModel))
+            {
+                existingModel.RefreshVariants(aliasVariants);
+            }
+            else
+            {
+                var m = new Model(aliasVariants[0], _logger);
+                for (var i = 1; i < aliasVariants.Count; i++)
+                {
+                    m.AddVariant(aliasVariants[i]);
+                }
+                _modelAliasToModel[alias] = m;
+            }
         }
 
         _lastFetch = DateTime.Now;

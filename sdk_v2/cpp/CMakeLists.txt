@@ -42,15 +42,12 @@ endif()
 # --------------------------------------------------------------------------
 option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
-option(FOUNDRY_LOCAL_BUILD_TOOLS "Build internal build-time tools (catalog_snapshot, ...)" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
-option(FOUNDRY_LOCAL_USE_WINML "Use WinML/WindowsAppSDK.ML for OnnxRuntime instead of standalone ORT" OFF)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
 
 # Android: interactive examples and host tools don't run on device
 if(ANDROID)
     set(FOUNDRY_LOCAL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(FOUNDRY_LOCAL_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 endif()
 
 # --------------------------------------------------------------------------
@@ -78,14 +75,17 @@ if(FOUNDRY_LOCAL_BUILD_TESTS)
     enable_testing()
 endif()
 
-# ORT and ORT GenAI — acquired via FetchContent from nuget.org (or WinML SDK when FOUNDRY_LOCAL_USE_WINML=ON)
+# ORT and ORT GenAI — acquired via FetchContent from nuget.org.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
 find_package(OnnxRuntime REQUIRED)
 
-# WinML EP Catalog — Windows-only, for EP discovery and download.
-# Not REQUIRED: builds without it fall back to CPU-only EP detection.
-find_package(WinMLEpCatalog)
+# WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
+# WinML 2.x runtime is reg-free, delay-loaded, and degrades gracefully when the
+# DLL is absent, so it is always included on Windows; other platforms skip it.
+if(WIN32)
+    find_package(WinMLEpCatalog)
+endif()
 
 # --------------------------------------------------------------------------
 # Library target
@@ -101,13 +101,27 @@ set(FOUNDRY_LOCAL_PLATFORM_SOURCES)
 if(WIN32)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_windows.cc
-        src/ep_detection/winml_ep_bootstrapper.cc
         src/platform/windows/path.cc
+        src/platform/windows/file_io.cc
+        src/platform/windows/cross_process_file_lock.cc
     )
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_posix.cc
         src/platform/posix/path.cc
+        src/platform/posix/file_io.cc
+        src/platform/posix/cross_process_file_lock.cc
+    )
+endif()
+
+# WinML EP bootstrapper is only built when the WinML EP catalog package is
+# available — the source unconditionally references its headers/types, which
+# exist only on Windows. manager.cc gates the call site on
+# FOUNDRY_LOCAL_HAS_EP_CATALOG so DiscoverProviders is only invoked when this
+# translation unit is linked in.
+if(WinMLEpCatalog_FOUND)
+    list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+        src/ep_detection/winml_ep_bootstrapper.cc
     )
 endif()
 
@@ -115,29 +129,19 @@ if(ANDROID)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES src/platform/android/ssl_cert_checker.cc)
 endif()
 
-# Auto-detect whether the live Azure catalog client source is present in the tree.
-# When absent, the build links a stub that throws if a non-"static" catalog URL is configured.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/catalog/azure_catalog_client.cc")
-    set(FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT ON)
-    message(STATUS "Live Azure catalog client: enabled.")
-else()
-    set(FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT OFF)
-    message(STATUS "Live Azure catalog client: not present — using embedded snapshot only.")
-endif()
-
 set(FOUNDRY_LOCAL_SOURCES
     src/c_api.cc
     src/items/item.cc
     src/items/image_item.cc
     src/items/message_item.cc
+    src/items/speech_segment_item.cc
     src/catalog/base_model_catalog.cc
     src/catalog/azure_model_catalog.cc
+    src/catalog/azure_catalog_client.cc
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc
     src/catalog/catalog_client.cc
-    src/catalog/catalog_snapshot_data.cc
     src/catalog/local_model_scanner.cc
-    src/catalog/static_catalog_client.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
     src/inferencing/generative/audio/onnx_audio_generator.cc
@@ -149,12 +153,16 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/configuration.cc
+    src/download/blob_download_state.cc
     src/download/blob_downloader.cc
+    src/platform/cross_process_file_lock.cc
     src/download/download_manager.cc
+    src/download/file_writer.cc
     src/download/inference_model_writer.cc
     src/download/model_registry_client.cc
     src/ep_detection/cuda_ep_bootstrapper.cc
     src/ep_detection/ep_detector.cc
+    src/ep_detection/ep_utils.cc
     src/ep_detection/runtime_version_info.cc
     src/ep_detection/webgpu_ep_bootstrapper.cc
     src/exception.cc
@@ -176,7 +184,6 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/predictive/inference_session.cc
     src/inferencing/predictive/tensor.cc
     src/manager.cc
-    src/winml_bootstrap.cc
     src/contracts/chat_completions.cc
     src/contracts/chat_completions_converter.cc
     src/contracts/audio_transcriptions.cc
@@ -194,19 +201,12 @@ set(FOUNDRY_LOCAL_SOURCES
     src/util/file_lock.cc
     src/http/http_download.cc
     src/util/path_safety.cc
+    src/util/region_fallback.cc
     src/util/sha256.cc
     src/util/zip_extract.cc
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
-
-# Append either the live Azure catalog client or a stub that throws.
-# The two define the same MakeLiveCatalogClient symbol; exactly one is linked.
-if(FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT)
-    list(APPEND FOUNDRY_LOCAL_SOURCES src/catalog/azure_catalog_client.cc)
-else()
-    list(APPEND FOUNDRY_LOCAL_SOURCES src/catalog/live_catalog_client_stub.cc)
-endif()
 
 # Organize headers into filters matching the directory structure in Visual Studio
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source" FILES ${FOUNDRY_LOCAL_SOURCES})
@@ -251,6 +251,11 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
 
     if(WIN32)
         target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
+        # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
+        # WinHTTP is not available in UWP, so only define this on desktop Windows.
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
+        endif()
     endif()
 
     if(ANDROID)
@@ -262,28 +267,11 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
         target_compile_definitions(${TARGET} ${LINK_SCOPE} FOUNDRY_LOCAL_HAS_WEB_SERVICE=1)
     endif()
 
-    if(FOUNDRY_LOCAL_USE_WINML)
-        target_compile_definitions(${TARGET} PUBLIC FOUNDRY_LOCAL_USE_WINML=1)
-    else()
-        target_compile_definitions(${TARGET} PUBLIC FOUNDRY_LOCAL_USE_WINML=0)
-    endif()
-
     if(WinMLEpCatalog_FOUND)
         target_link_libraries(${TARGET} ${LINK_SCOPE} WinMLEpCatalog::WinMLEpCatalog)
         target_compile_definitions(${TARGET} ${LINK_SCOPE} FOUNDRY_LOCAL_HAS_EP_CATALOG=1)
     else()
         target_compile_definitions(${TARGET} ${LINK_SCOPE} FOUNDRY_LOCAL_HAS_EP_CATALOG=0)
-    endif()
-
-    # WinAppSDK Bootstrap (MddBootstrapInitialize2). Only linked in WinML builds, since
-    # WinML by definition depends on the WindowsAppSDK runtime; non-WinML builds skip it
-    # and the bootstrap call site in Manager::Create is compiled out via the same macro.
-    if(FOUNDRY_LOCAL_USE_WINML)
-        if(NOT TARGET WinAppSdkBootstrap::WinAppSdkBootstrap)
-            message(FATAL_ERROR "FOUNDRY_LOCAL_USE_WINML=ON but the WinAppSDK Bootstrap import "
-                                "library was not found. See FindWinMLEpCatalog.cmake.")
-        endif()
-        target_link_libraries(${TARGET} ${LINK_SCOPE} WinAppSdkBootstrap::WinAppSdkBootstrap)
     endif()
 endfunction()
 
@@ -314,9 +302,6 @@ foundry_local_configure_target(foundry_local_objects PUBLIC)
 # points compile without __declspec(dllimport/dllexport). The DLL gets its
 # exports from the .def file instead.
 target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
-if(FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT)
-    target_compile_definitions(foundry_local_objects PRIVATE FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT=1)
-endif()
 
 # --------------------------------------------------------------------------
 # Shared library — for releases and public API consumers.
@@ -419,36 +404,25 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
-
-        # Co-locate the WinAppSDK bootstrap DLL with foundry_local.dll. Required at runtime
-        # because it's an import-library dependency of the WinML build, not a delay-loaded one.
-        if(FOUNDRY_LOCAL_USE_WINML AND WINAPPSDK_BOOTSTRAP_DLL AND EXISTS "${WINAPPSDK_BOOTSTRAP_DLL}")
-            add_custom_command(TARGET foundry_local POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${WINAPPSDK_BOOTSTRAP_DLL}"
-                    $<TARGET_FILE_DIR:foundry_local>
-            )
-        endif()
     elseif(APPLE)
         # macOS: copy dylibs so consumers that only link libfoundry_local.dylib (e.g. cache_only_tests) find the correct
         # ORT version instead of any system-installed ORT, which would cause an Ort::InitApi() version mismatch.
         #
-        # The ORT nupkg's libonnxruntime.dylib has LC_ID_DYLIB @rpath/libonnxruntime.<version>.dylib, so we copy it to
-        # the versioned filename that dependents (e.g. libonnxruntime-genai.dylib) look up via @rpath.
+        # The ORT nupkg ships the library as libonnxruntime.dylib with install_name @rpath/libonnxruntime.<major>.dylib
+        # (the major version is the soname; e.g. libonnxruntime.1.dylib). foundry_local records that soname as its ORT
+        # dependency, while GenAI dlopen()s the unversioned libonnxruntime.dylib at runtime — so we keep the shipped file
+        # under its own name and add a soname symlink beside it. Mirrors the Linux libonnxruntime.so / .so.1 layout below.
+        string(REGEX MATCH "^[0-9]+" ORT_VERSION_MAJOR "${ORT_VERSION}")
         add_custom_command(TARGET foundry_local POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai.dylib"
                 $<TARGET_FILE_DIR:foundry_local>
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ORT_LIB_DIR}/libonnxruntime.dylib"
-                "$<TARGET_FILE_DIR:foundry_local>/libonnxruntime.${ORT_VERSION}.dylib"
-        )
-
-        # Conventional unversioned symlink so -lonnxruntime resolves at link time.
-        add_custom_command(TARGET foundry_local POST_BUILD
+                $<TARGET_FILE_DIR:foundry_local>
             COMMAND ${CMAKE_COMMAND} -E create_symlink
-                libonnxruntime.${ORT_VERSION}.dylib
-                $<TARGET_FILE_DIR:foundry_local>/libonnxruntime.dylib
+                libonnxruntime.dylib
+                $<TARGET_FILE_DIR:foundry_local>/libonnxruntime.${ORT_VERSION_MAJOR}.dylib
         )
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         # Linux and Android both use .so files
@@ -483,6 +457,11 @@ target_include_directories(foundry_local_cpp
 target_link_libraries(foundry_local_cpp INTERFACE foundry_local Microsoft.GSL::GSL)
 
 # --------------------------------------------------------------------------
+# Split debug symbols (Linux / macOS, RelWithDebInfo only)
+# --------------------------------------------------------------------------
+include(cmake/SplitDebugSymbols.cmake)
+
+# --------------------------------------------------------------------------
 # Tests
 # --------------------------------------------------------------------------
 if(FOUNDRY_LOCAL_BUILD_TESTS)
@@ -513,12 +492,4 @@ if(FOUNDRY_LOCAL_BUILD_EXAMPLES)
         target_link_options(realtime_audio_example PRIVATE -Wl,--disable-new-dtags)
         target_link_options(embeddings_example PRIVATE -Wl,--disable-new-dtags)
     endif()
-endif()
-
-# --------------------------------------------------------------------------
-# Tools (build-time helpers — not part of the shipped SDK)
-# --------------------------------------------------------------------------
-if(FOUNDRY_LOCAL_BUILD_TOOLS AND FOUNDRY_LOCAL_HAVE_LIVE_CATALOG_CLIENT)
-    add_subdirectory(tools/catalog_snapshot)
-    set_target_properties(catalog_snapshot PROPERTIES FOLDER "Tools")
 endif()

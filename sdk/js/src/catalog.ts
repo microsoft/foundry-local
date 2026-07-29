@@ -38,14 +38,33 @@ export class Catalog {
         this.lastFetch = 0;
     }
 
-    private async updateModels(): Promise<void> {
+    private async updateModels(force: boolean = false): Promise<void> {
         // TODO: make this configurable
-        if ((Date.now() - this.lastFetch) < 6 * 60 * 60 * 1000) { // 6 hours
+        // Skip if the cache is still fresh, unless the caller forced a refresh
+        // (e.g. self-heal after a cache miss caused by a manually-added BYOM
+        // model dropped into the cache directory).
+        if (!force && (Date.now() - this.lastFetch) < 6 * 60 * 60 * 1000) { // 6 hours
             return;
         }
         if (this.updatePromise) {
+            // If a non-forced refresh is in flight and the caller asked for a
+            // forced refresh (e.g. BYOM self-heal), the in-flight result may
+            // pre-date the change that prompted the force. Chain a fresh
+            // refresh after the current one so the force is not silently
+            // dropped — the inner TTL re-check short-circuits if the chained
+            // refresh started after our deadline.
+            if (force) {
+                const chained = this.updatePromise
+                    .catch(() => undefined)
+                    .then(() => this.runRefreshExclusive());
+                return chained;
+            }
             return this.updatePromise;
         }
+        return this.runRefreshExclusive();
+    }
+
+    private runRefreshExclusive(): Promise<void> {
         this.updatePromise = this.fetchAndPopulateModels()
             .finally(() => { this.updatePromise = undefined; });
         return this.updatePromise;
@@ -60,25 +79,65 @@ export class Catalog {
             throw new Error(`Failed to parse model list JSON: ${error}`);
         }
 
-        this.modelAliasToModel.clear();
-        this.modelIdToModelVariant.clear();
-        this._models = [];
+        // Incremental refresh: preserve wrapper identity for ids/aliases that
+        // survive the refresh so externally-held IModel references keep
+        // working with up-to-date metadata and (for Model) keep any explicit
+        // selectVariant() choice. New ids get fresh wrappers; removed ids get
+        // evicted.
 
+        const freshIds = new Set<string>();
+        const freshAliasGroups = new Map<string, ModelInfo[]>();
         for (const info of modelsInfo) {
-            const variant = new ModelVariant(info, this.coreInterop, this.modelLoadManager);
-            let model = this.modelAliasToModel.get(info.alias);
-
-            if (!model) {
-                model = new Model(variant);
-                this.modelAliasToModel.set(info.alias, model);
-                this._models.push(model);
+            freshIds.add(info.id);
+            const group = freshAliasGroups.get(info.alias);
+            if (group) {
+                group.push(info);
             } else {
-                model.addVariant(variant);
+                freshAliasGroups.set(info.alias, [info]);
             }
-
-            this.modelIdToModelVariant.set(variant.id, variant);
         }
 
+        for (const staleId of [...this.modelIdToModelVariant.keys()]) {
+            if (!freshIds.has(staleId)) {
+                this.modelIdToModelVariant.delete(staleId);
+            }
+        }
+        for (const staleAlias of [...this.modelAliasToModel.keys()]) {
+            if (!freshAliasGroups.has(staleAlias)) {
+                this.modelAliasToModel.delete(staleAlias);
+            }
+        }
+
+        for (const info of modelsInfo) {
+            const existing = this.modelIdToModelVariant.get(info.id);
+            if (existing) {
+                existing._refreshInfo(info);
+            } else {
+                this.modelIdToModelVariant.set(
+                    info.id,
+                    new ModelVariant(info, this.coreInterop, this.modelLoadManager)
+                );
+            }
+        }
+
+        const refreshedAliasOrder: Model[] = [];
+        for (const [alias, infos] of freshAliasGroups) {
+            const variants = infos.map(i => this.modelIdToModelVariant.get(i.id)!);
+            const existingModel = this.modelAliasToModel.get(alias);
+            if (existingModel) {
+                existingModel._refreshVariants(variants);
+                refreshedAliasOrder.push(existingModel);
+            } else {
+                const m = new Model(variants[0]);
+                for (let i = 1; i < variants.length; i++) {
+                    m.addVariant(variants[i]);
+                }
+                this.modelAliasToModel.set(alias, m);
+                refreshedAliasOrder.push(m);
+            }
+        }
+
+        this._models = refreshedAliasOrder;
         this.lastFetch = Date.now();
     }
 
@@ -104,7 +163,13 @@ export class Catalog {
             throw new Error('Model alias must be a non-empty string.');
         }
         await this.updateModels();
-        const model = this.modelAliasToModel.get(alias);
+        let model = this.modelAliasToModel.get(alias);
+        if (!model) {
+            // Self-heal: the alias may belong to a BYOM model added to the
+            // cache directory after our last catalog refresh.
+            await this.updateModels(true);
+            model = this.modelAliasToModel.get(alias);
+        }
         if (!model) {
             const availableAliases = Array.from(this.modelAliasToModel.keys()).join(', ');
             throw new Error(`Model with alias '${alias}' not found. Available models: ${availableAliases || '(none)'}`);
@@ -126,7 +191,13 @@ export class Catalog {
             throw new Error('Model ID must be a non-empty string.');
         }
         await this.updateModels();
-        const variant = this.modelIdToModelVariant.get(modelId);
+        let variant = this.modelIdToModelVariant.get(modelId);
+        if (!variant) {
+            // Self-heal: the id may belong to a BYOM model added to the cache
+            // directory after our last catalog refresh.
+            await this.updateModels(true);
+            variant = this.modelIdToModelVariant.get(modelId);
+        }
         if (!variant) {
             const availableIds = Array.from(this.modelIdToModelVariant.keys()).join(', ');
             throw new Error(`Model variant with ID '${modelId}' not found. Available variants: ${availableIds || '(none)'}`);
@@ -148,15 +219,7 @@ export class Catalog {
         } catch (error) {
             throw new Error(`Failed to parse cached model list JSON: ${error}`);
         }
-        const cachedModels: Set<IModel> = new Set();
-        
-        for (const modelId of cachedModelIds) {
-            const variant = this.modelIdToModelVariant.get(modelId);
-            if (variant) {
-                cachedModels.add(variant);
-            }
-        }
-        return Array.from(cachedModels);
+        return this.resolveModelIds(cachedModelIds);
     }
 
     /**
@@ -173,15 +236,29 @@ export class Catalog {
         } catch (error) {
             throw new Error(`Failed to list loaded models: ${error}`);
         }
-        const loadedModels: IModel[] = [];
-        
-        for (const modelId of loadedModelIds) {
+        return this.resolveModelIds(loadedModelIds);
+    }
+
+    /**
+     * Resolve a list of model ids against the in-memory catalog, self-healing once
+     * if any id is unknown (e.g. a manually-added BYOM model the SDK has not yet seen).
+     * Preserves the input order of `modelIds` (minus unknowns), deduplicating variants.
+     */
+    private async resolveModelIds(modelIds: string[]): Promise<IModel[]> {
+        if (modelIds.some(id => !this.modelIdToModelVariant.has(id))) {
+            await this.updateModels(true);
+        }
+
+        const resolved: IModel[] = [];
+        const seen = new Set<IModel>();
+        for (const modelId of modelIds) {
             const variant = this.modelIdToModelVariant.get(modelId);
-            if (variant) {
-                loadedModels.push(variant);
+            if (variant && !seen.has(variant)) {
+                resolved.push(variant);
+                seen.add(variant);
             }
         }
-        return loadedModels;
+        return resolved;
     }
 
     /**

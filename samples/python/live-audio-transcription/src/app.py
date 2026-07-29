@@ -41,7 +41,7 @@ manager.download_and_register_eps()
 # English-only:
 model_alias = "nemotron-speech-streaming-en-0.6b"
 # Multi-lingual (supports 30+ languages including auto-detect):
-# model_alias = "nvidia-nemotron-3.5-asr-streaming-multilingual-0.6b"
+# model_alias = "nemotron-3.5-asr-streaming-0.6b"
 model = manager.catalog.get_model(model_alias)
 if model is None:
     raise RuntimeError(f'Model "{model_alias}" not found in catalog')

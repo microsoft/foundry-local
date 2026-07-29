@@ -1,5 +1,0 @@
-{
-  "_comment": "WinML variant of sdk_v2/deps_versions.json. Selected by FOUNDRY_LOCAL_USE_WINML=ON (cmake) and FL_PYTHON_PACKAGE_NAME=foundry-local-sdk-winml (python build backend).",
-  "onnxruntime":       { "version": "1.23.2.3" },
-  "onnxruntime-genai": { "version": "0.13.2" }
-}

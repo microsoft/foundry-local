@@ -12,7 +12,7 @@ public class Model : IModel
 {
     private readonly ILogger _logger;
 
-    private readonly List<IModel> _variants;
+    private List<IModel> _variants;
     public IReadOnlyList<IModel> Variants => _variants;
     internal IModel SelectedVariant { get; set; } = default!;
 
@@ -50,13 +50,44 @@ public class Model : IModel
                                             _logger);
         }
 
-        _variants.Add(variant);
+        // Build a fresh list and swap by reference so concurrent readers of
+        // Variants never observe a torn collection mid-mutation.
+        _variants = [.. _variants, variant];
 
         // prefer the highest priority locally cached variant
         if (variant.Info.Cached && !SelectedVariant.Info.Cached)
         {
             SelectedVariant = variant;
         }
+    }
+
+    /// <summary>
+    /// Replace the variant list in place while preserving wrapper identity.
+    /// Called by <see cref="Catalog.UpdateModels"/> during incremental
+    /// refresh so a user's held <see cref="Model"/> reference keeps pointing
+    /// at the same object across refreshes. Because
+    /// <see cref="Catalog.UpdateModels"/> reuses the same
+    /// <see cref="ModelVariant"/> wrappers for ids that survive a refresh,
+    /// any explicit <see cref="SelectVariant"/> choice that survives the
+    /// refresh is preserved without any extra work here.
+    ///
+    /// We swap the backing list by reference rather than mutating it so
+    /// readers iterating <see cref="Variants"/> on another thread cannot
+    /// observe a torn collection.
+    /// </summary>
+    // TODO: tighten the held-reference contract for the case where the
+    // previously selected variant is removed by a refresh; today
+    // SelectedVariant keeps pointing at the dropped wrapper and callers must
+    // explicitly re-select.
+    internal void RefreshVariants(IList<ModelVariant> variants)
+    {
+        if (variants == null || variants.Count == 0)
+        {
+            throw new FoundryLocalException(
+                $"Cannot refresh model {Alias} with an empty variant list", _logger);
+        }
+
+        _variants = [.. variants];
     }
 
     /// <summary>

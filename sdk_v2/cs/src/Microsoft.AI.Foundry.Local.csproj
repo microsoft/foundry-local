@@ -29,13 +29,6 @@
       <IncludeSymbols>true</IncludeSymbols>
       <SymbolPackageFormat>snupkg</SymbolPackageFormat>
       <GenerateDocumentationFile Condition="'$(Configuration)' == 'Release'">true</GenerateDocumentationFile>
-
-      <!-- 
-      Set to 'true' to enable EP download on Windows
-      Command line value overrides the default value here.
-       -->
-      <UseWinML>false</UseWinML>
-      <RuntimeIdentifiers Condition="'$(UseWinML)' == 'true'">win-x64;win-arm64</RuntimeIdentifiers>
     </PropertyGroup>
 
     <!-- 
@@ -68,7 +61,6 @@
         <Message Importance="Normal" Text="IsWindows: $(IsWindows)" />
         <Message Importance="Normal" Text="IsOSX: $(IsOSX)" />
         <Message Importance="Normal" Text="IsLinux: $(IsLinux)" />
-        <Message Importance="Normal" Text="UseWinML: $(UseWinML)" />
     </Target>
 
     <!-- This target runs after package resolution for diagnostics. -->
@@ -81,22 +73,6 @@
         <None Include="$(MSBuildThisFileDirectory)../README.md" Pack="true" PackagePath="" />
         <None Include="$(MSBuildThisFileDirectory)../LICENSE.txt" Pack="true" PackagePath="" />
     </ItemGroup>
-
-    <!-- override some values if we're doing a WinML build -->
-    <PropertyGroup Condition="'$(UseWinML)' == 'true'">
-      <AssemblyTitle>Microsoft AI Foundry Local for WinML</AssemblyTitle>
-      <Description>Microsoft Foundry Local SDK for WinML</Description>
-      <PackageId>Microsoft.AI.Foundry.Local.WinML</PackageId>
-      <AssemblyName>Microsoft.AI.Foundry.Local.WinML</AssemblyName>
-      <DefineConstants>$(DefineConstants);IS_WINML</DefineConstants>
-      <TargetFrameworks>net9.0-windows10.0.26100.0</TargetFrameworks> <!-- override -->
-      <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
-      <!-- TODO: Should we define this here to make it explicit? What minimnum is actually supported? -->
-      <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-      
-      <!-- we don't pass any types across the WinRT ABI -->
-      <NoWarn>$(NoWarn);CsWinRT1028</NoWarn>
-    </PropertyGroup>
     
 
 
@@ -107,6 +83,18 @@
       <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
     </PropertyGroup>
 
+
+    <!--
+      CA2000 (Dispose objects before losing scope) is downgraded project-wide via NoWarn below.
+      The Item ownership model hands a native handle off to a container (Request/ItemQueue); after the
+      transfer the C# wrapper's Dispose() is a deliberate no-op (the native deleter releases the
+      resource — see docs/item-data-ownership.md). CA2000 cannot see ownership transfer, so it fires a
+      false positive on every hand-off. We rely on IDisposableAnalyzers (referenced below), which DOES
+      model ownership transfer, as the authority for disposal correctness instead.
+    -->
+    <PropertyGroup>
+      <NoWarn>$(NoWarn);CA2000</NoWarn>
+    </PropertyGroup>
 
     <ItemGroup>
       <PackageReference Include="Betalgo.Ranul.OpenAI" Version="9.1.0" />
@@ -130,11 +118,8 @@
          Option 2 (local build): set FoundryLocalNativeBinDir to point at a C++ build output, e.g.:
            dotnet build /p:FoundryLocalNativeBinDir=..\..\cpp\build\Windows\RelWithDebInfo\bin\RelWithDebInfo
          Option 3 (default): auto-detect the C++ build output from the repo-relative location. -->
-    <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == '' AND '$(UseWinML)' != 'true'">
+    <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == ''">
       <PackageReference Include="Microsoft.AI.Foundry.Local.Runtime" Version="$(FoundryLocalRuntimeVersion)" />
-    </ItemGroup>
-    <ItemGroup Condition="'$(FoundryLocalRuntimeVersion)' != '' AND '$(FoundryLocalNativeBinDir)' == '' AND '$(UseWinML)' == 'true'">
-      <PackageReference Include="Microsoft.AI.Foundry.Local.Runtime.WinML" Version="$(FoundryLocalRuntimeVersion)" />
     </ItemGroup>
 
     <!-- Auto-detect C++ RelWithDebInfo build output when neither NuGet package nor explicit path is set.

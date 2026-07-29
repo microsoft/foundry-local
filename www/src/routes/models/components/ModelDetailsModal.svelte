@@ -97,7 +97,7 @@
 	}
 
 	function formatModelCommand(modelId: string): string {
-		return `foundry model run ${modelId}`;
+		return `foundry run ${modelId}`;
 	}
 
 	function renderMarkdown(text: string): string {
@@ -517,7 +517,7 @@
 							<div class="mb-2 font-mono text-sm font-medium">{genericModelName}</div>
 							<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 								<code class="text-muted-foreground text-xs break-all sm:flex-1">
-									foundry model run {genericModelName}
+									foundry run {genericModelName}
 								</code>
 								<Button
 									variant="outline"
