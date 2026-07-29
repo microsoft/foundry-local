@@ -705,6 +705,19 @@ typedef struct flApi {
   /// Check if Shutdown has been called.
   bool FL_API_T(Manager_IsShutdownRequested, _In_ const flManager* manager);
 
+  /// Get a registered catalog by name. Returns FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT
+  /// if no catalog with that name is registered. The returned flCatalog is owned by
+  /// the Manager and remains valid for its lifetime.
+  FL_API_STATUS(Manager_GetCatalogByName, _In_ const flManager* manager, _In_ const char* name,
+                _Outptr_ flCatalog** out_catalog);
+
+  /// Enumerate the names of all registered catalogs, in registration order. The first
+  /// name is the default catalog returned by Manager_GetCatalog. The returned array and
+  /// its strings are owned by the Manager and remain valid until the next call to
+  /// Manager_ListCatalogNames on the same manager or until the Manager is released.
+  FL_API_STATUS(Manager_ListCatalogNames, _In_ const flManager* manager,
+                _Outptr_result_buffer_(*out_count) const char* const** out_names, _Out_ size_t* out_count);
+
   // End V1
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;
