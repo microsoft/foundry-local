@@ -12,7 +12,6 @@ include = ["src/**", "build.rs", "Cargo.toml", "README.md", "LICENSE.txt", "deps
 
 [features]
 default = []
-winml = []
 nightly = []
 
 [dependencies]

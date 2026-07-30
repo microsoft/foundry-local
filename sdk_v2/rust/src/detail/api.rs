@@ -361,7 +361,11 @@ fn preload_dependencies(native_dir: Option<&Path>) -> Vec<Library> {
 
     #[allow(unused_mut)]
     let mut deps: Vec<&str> = vec![ORT_FILE, GENAI_FILE];
-    #[cfg(all(windows, feature = "winml"))]
+    // The single unified runtime package bundles the reg-free WinML 2.x runtime next
+    // to foundry_local on Windows. Pre-load it by absolute path (best-effort; only if
+    // present) so foundry_local's delay-loaded WinML EP resolves regardless of the
+    // process DLL search path — mirroring the ORT/GenAI pre-load above.
+    #[cfg(windows)]
     deps.push("Microsoft.Windows.AI.MachineLearning.dll");
 
     // Help GenAI's dlopen build find the exact ORT we are pre-loading.

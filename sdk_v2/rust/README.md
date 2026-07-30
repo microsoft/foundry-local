@@ -55,19 +55,20 @@ tokio-stream = "0.1"       # for StreamExt on streaming responses
 
 | Feature   | Description |
 |-----------|-------------|
-| `winml`   | Use the WinML backend (Windows only). Selects different ONNX Runtime and GenAI packages for NPU/GPU acceleration. |
 | `nightly` | Resolve the latest nightly build of the Core package from the ORT-Nightly feed. |
 
 Enable features in `Cargo.toml`:
 
 ```toml
 [dependencies]
-foundry-local-sdk = { version = "2", features = ["winml"] }
+foundry-local-sdk = { version = "2", features = ["nightly"] }
 ```
 
-> **Note:** The `winml` feature is only relevant on Windows. On macOS and Linux, the standard build is used regardless. No code changes are needed — your application code stays the same.
-
-With `winml` enabled on Windows, the `winml` feature selects the WinML Runtime package (`Microsoft.AI.Foundry.Local.Runtime.WinML`) when downloading via `FOUNDRY_LOCAL_RUNTIME_VERSION`, and the WinML execution-provider DLLs are pre-loaded alongside `foundry_local`. See [Native binary](#native-binary) for how the engine is obtained.
+> **Windows hardware acceleration (WinML):** No feature flag or separate package is required.
+> The single `Microsoft.AI.Foundry.Local.Runtime` package bundles the reg-free WinML 2.x runtime
+> on Windows automatically, and the SDK pre-loads it alongside `foundry_local`. WinML execution
+> providers (NPU/GPU) are then discovered and downloaded at runtime — see
+> [Explicit EP Management](#explicit-ep-management). On macOS and Linux this is a no-op.
 
 ### Explicit EP Management
 
@@ -552,7 +553,7 @@ runtime. The `build.rs` build script can obtain it in two ways, controlled by en
 | Variable | Purpose |
 |----------|---------|
 | `FOUNDRY_LOCAL_NATIVE_BIN_DIR` | Copy native binaries from a local C++ build output directory (the dev path). Mirrors the C# `FoundryLocalNativeBinDir`. |
-| `FOUNDRY_LOCAL_RUNTIME_VERSION` | Download the Runtime NuGet package (`Microsoft.AI.Foundry.Local.Runtime`, or `.Runtime.WinML` with the `winml` feature) plus ONNX Runtime / GenAI for the target RID. |
+| `FOUNDRY_LOCAL_RUNTIME_VERSION` | Download the Runtime NuGet package (`Microsoft.AI.Foundry.Local.Runtime`) plus ONNX Runtime / GenAI for the target RID. On Windows this package bundles the reg-free WinML 2.x runtime. |
 
 If neither is set at build time, the library is resolved at **runtime** from (in order):
 

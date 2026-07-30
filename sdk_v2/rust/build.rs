@@ -8,7 +8,7 @@
 //!   1. `FOUNDRY_LOCAL_NATIVE_BIN_DIR` — copy native files from a local C++ build
 //!      (the dev path, mirroring the C# `FoundryLocalNativeBinDir`).
 //!   2. `FOUNDRY_LOCAL_RUNTIME_VERSION` — download the Runtime NuGet package
-//!      (`Microsoft.AI.Foundry.Local.Runtime[.WinML]`) plus ORT/GenAI for the RID.
+//!      (`Microsoft.AI.Foundry.Local.Runtime`) plus ORT/GenAI for the RID.
 //!   3. Otherwise no-op: the library is resolved at runtime from
 //!      `FOUNDRY_LOCAL_LIB_DIR`, next to the executable, or the system path.
 
@@ -136,15 +136,14 @@ struct NuGetPackage {
 fn get_packages(deps: &DepsVersions, runtime_version: &str) -> Vec<NuGetPackage> {
     let ext = native_lib_extension();
     let prefix = if target_os() == "windows" { "" } else { "lib" };
-    let runtime_name = if env::var("CARGO_FEATURE_WINML").is_ok() {
-        "Microsoft.AI.Foundry.Local.Runtime.WinML"
-    } else {
-        "Microsoft.AI.Foundry.Local.Runtime"
-    };
 
+    // Single unified runtime package. On Windows it bundles the reg-free WinML 2.x
+    // runtime (Microsoft.Windows.AI.MachineLearning.dll) next to foundry_local; there
+    // is no separate .Runtime.WinML flavor. Kept consistent with the C#/JS/Python
+    // bindings, which were unified onto this one package.
     vec![
         NuGetPackage {
-            name: runtime_name.to_string(),
+            name: "Microsoft.AI.Foundry.Local.Runtime".to_string(),
             version: runtime_version.to_string(),
             expected_file: format!("{prefix}foundry_local.{ext}"),
         },
@@ -315,7 +314,6 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NATIVE_BIN_DIR");
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_RUNTIME_VERSION");
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_WINML");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
