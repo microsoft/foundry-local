@@ -45,9 +45,7 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
 AzureModelCatalog::~AzureModelCatalog() = default;
 
 std::vector<Model> AzureModelCatalog::FetchModels() const {
-  // In cache-only mode, read only from the disk cache file — no network calls, no local model scanning.
-  // The cache file already includes local models from the last full catalog refresh by the long-running service
-  // process.
+  // In cache-only mode, read only from the disk cache file — no network calls or model scanning.
   // TODO: For our CLI usage the catalog file would be current as we use an ephemeral port for the web service and
   // therefore have to run FL first to acquire the external URL value, and that run would have updated the cached
   // catalog info.
@@ -63,6 +61,11 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
 
     if (cached) {
       for (const auto& info : *cached) {
+        const auto* provider = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+        if (provider && *provider == "Local") {
+          // Ignore legacy synthesized BYOM entries. Local models now require explicit local-catalog registration.
+          continue;
+        }
         models.push_back(model_factory_(ModelInfo(info), /*local_path=*/""));
       }
     }

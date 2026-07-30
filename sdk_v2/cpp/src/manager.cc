@@ -12,6 +12,7 @@
 
 #include "catalog.h"
 #include "catalog/azure_model_catalog.h"
+#include "catalog/local_model_catalog.h"
 #include "download/download_manager.h"
 #include "ep_detection/cuda_ep_bootstrapper.h"
 #include "ep_detection/ep_detector.h"
@@ -327,7 +328,7 @@ Manager::Manager(const Configuration& config)
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
-  catalog_ = std::make_unique<AzureModelCatalog>(
+  public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls,
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {
@@ -337,6 +338,15 @@ Manager::Manager(const Configuration& config)
       config_.external_service_url.has_value(),
       config_.catalog_region.value_or("auto"),
       disable_region_fallback);
+  local_catalog_ = std::make_unique<LocalModelCatalog>(
+      *config_.app_data_dir,
+      [this](ModelInfo info, std::string local_path, std::function<void(const std::string&)> unregister_callback,
+             std::function<void()> prepare_callback) {
+        return CreateLocalModel(std::move(info), std::move(local_path), std::move(unregister_callback),
+                                std::move(prepare_callback));
+      },
+      *logger_);
+  local_catalog_->ListModels();
 }
 
 Manager::~Manager() {
@@ -361,7 +371,8 @@ Manager::~Manager() {
   session_manager_.reset();
   model_load_manager_.reset();
   download_manager_.reset();
-  catalog_.reset();
+  local_catalog_.reset();
+  public_catalog_.reset();
   telemetry_.reset();
   ep_detector_.reset();
 
@@ -441,7 +452,30 @@ void Manager::Destroy() {
 }
 
 ICatalog& Manager::GetCatalog() {
-  return *catalog_;
+  return *public_catalog_;
+}
+
+ICatalog& Manager::GetCatalog(CatalogType type) {
+  switch (type) {
+    case CatalogType::kPublic:
+      return *public_catalog_;
+    case CatalogType::kLocal:
+      return *local_catalog_;
+    case CatalogType::kPrivate:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "no private catalog has been configured");
+    default:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
+  }
+}
+
+ICatalog& Manager::GetCatalog(const std::string& catalog_name) {
+  if (catalog_name == "local") {
+    return *local_catalog_;
+  }
+  if (catalog_name == "public" || catalog_name == public_catalog_->GetName()) {
+    return *public_catalog_;
+  }
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "catalog not found: " + catalog_name);
 }
 
 void Manager::StartWebService() {
@@ -457,7 +491,8 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *logger_, *config_.model_cache_dir,
+                                              *model_load_manager_,
                                               *session_manager_, *telemetry_,
                                               [this]() { Shutdown(); });
 
@@ -543,6 +578,14 @@ Model Manager::CreateModel(ModelInfo info, std::string local_path) {
                               *model_load_manager_);
 }
 
+Model Manager::CreateLocalModel(ModelInfo info, std::string local_path,
+            std::function<void(const std::string&)> unregister_callback,
+            std::function<void()> prepare_callback) {
+  return Model::FromLocalRegistration(std::move(info), std::move(local_path), *download_manager_,
+              *model_load_manager_, std::move(unregister_callback),
+              std::move(prepare_callback));
+}
+
 DownloadManager& Manager::GetDownloadManager() {
   return *download_manager_;
 }
@@ -579,7 +622,7 @@ EpDownloadResult Manager::DownloadAndRegisterEps(
   // EP registration changes which device/EP filters the catalog uses.
   // Invalidate so the next catalog query re-fetches with updated filters.
   if (result.success && !result.registered_eps.empty()) {
-    catalog_->InvalidateCache();
+    public_catalog_->InvalidateCache();
   }
 
   return result;

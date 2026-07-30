@@ -4,12 +4,30 @@
 // Round-trip tests for ModelInfo JSON serialization/deserialization.
 //
 #include "model_info.h"
+#include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 using namespace fl;
+
+TEST(ModelInfoPropertyBag, FileRoundTripPreservesKnownAndUnknownProperties) {
+  ModelInfo info;
+  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "my-model");
+  SetModelInfoStringProperty(info, "future_property", "future-value");
+  SetModelInfoIntProperty(info, FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT, 7);
+
+  auto file = fl::test::TempPath::CreateTempFile("model_info");
+  SerializeModelInfoToFile(info, file.path());
+  auto restored = DeserializeModelInfoFromFile(file.path());
+
+  EXPECT_EQ(restored.GetPropertyWithDefault(FOUNDRY_LOCAL_REG_ALIAS, std::string{}), "my-model");
+  EXPECT_EQ(restored.GetPropertyWithDefault("future_property", std::string{}), "future-value");
+  EXPECT_EQ(restored.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT, int64_t{-1}), 7);
+  EXPECT_EQ(restored.alias, "my-model");
+  EXPECT_EQ(restored.version, 7);
+}
 
 // ========================================================================
 // Reasoning fields round-trip

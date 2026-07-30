@@ -51,6 +51,14 @@ class Model {
                              DownloadManager& download_manager,
                              ModelLoadManager& model_load_manager);
 
+  /// Create an in-place externally registered model. Assets are never deleted by this Model.
+  static Model FromLocalRegistration(ModelInfo info,
+                                     std::string local_path,
+                                     DownloadManager& download_manager,
+                                     ModelLoadManager& model_load_manager,
+                                     std::function<void(const std::string&)> unregister_callback,
+                                     std::function<void()> prepare_callback);
+
   // --- Container construction ---
 
   /// Create a container Model wrapping the given variant as its first (and selected) variant.
@@ -101,6 +109,7 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
+  bool IsActive() const { return selected_variant_ ? selected_variant_->IsActive() : active_.load(); }
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.
@@ -130,6 +139,11 @@ class Model {
   void Unload();
   void RemoveFromCache();
 
+  /// Mark this model and its variants inactive while retaining pointer validity.
+  void Deactivate();
+  void BeginUnregister();
+  void CancelUnregister();
+
   /// Select a specific variant within this container. Throws if the variant is
   /// not part of this model, or if this is a leaf.
   ///
@@ -147,8 +161,13 @@ class Model {
   /// one-shot operations, so callers reading the path concurrently with download
   /// or removal of the same Model are out of contract.
   const std::string& LocalPath() const { return local_path_; }
+  const std::string& RuntimeId() const {
+    return selected_variant_ ? selected_variant_->RuntimeId() : runtime_model_id_;
+  }
 
  private:
+  void EnsureLocalMetadata() const;
+
   // Leaf data (default/empty for containers).
   // cached_ is atomic — flipped concurrently by the download path.
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
@@ -159,7 +178,13 @@ class Model {
   // mutation alongside reads on the same Model* is not a supported pattern.
   ModelInfo info_;
   std::atomic<bool> cached_{false};
+  std::atomic<bool> active_{true};
   std::string local_path_;
+  std::string runtime_model_id_;
+  bool external_registration_ = false;
+  std::function<void(const std::string&)> unregister_callback_;
+  std::function<void()> prepare_callback_;
+  mutable std::atomic<bool> metadata_prepared_{false};
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
   // reassigned; guaranteed non-null because FromModelInfo takes them by reference.
@@ -174,6 +199,8 @@ class Model {
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
   mutable std::mutex state_mutex_;
+  mutable std::mutex lifecycle_mutex_;
+  bool unregistering_ = false;
 };
 
 }  // namespace fl

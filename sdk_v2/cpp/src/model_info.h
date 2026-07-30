@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <string_view>
@@ -86,5 +87,15 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j);
 
 /// Serialize a ModelInfo to JSON.
 nlohmann::json ModelInfoToJson(const ModelInfo& info);
+
+/// Set a property while keeping the typed ModelInfo fields synchronized with well-known keys.
+void SetModelInfoStringProperty(ModelInfo& info, std::string key, std::string value);
+void SetModelInfoIntProperty(ModelInfo& info, std::string key, int64_t value);
+
+/// Serialize the complete registration property bag. Unknown properties are preserved.
+nlohmann::json ModelInfoToPropertyBagJson(const ModelInfo& info);
+ModelInfo ModelInfoFromPropertyBagJson(const nlohmann::json& json);
+void SerializeModelInfoToFile(const ModelInfo& info, const std::filesystem::path& file_path);
+ModelInfo DeserializeModelInfoFromFile(const std::filesystem::path& file_path);
 
 }  // namespace fl

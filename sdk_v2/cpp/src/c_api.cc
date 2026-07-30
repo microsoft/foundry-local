@@ -71,7 +71,8 @@ struct flCatalog {
 // --- Manager ---
 struct flManager {
   fl::Manager& impl;
-  std::unique_ptr<flCatalog> catalog;  // stores the flCatalog wrapper around impl.GetCatalog()
+  std::unique_ptr<flCatalog> public_catalog;
+  std::unique_ptr<flCatalog> local_catalog;
   mutable std::vector<const char*> urls_cache;
 };
 
@@ -327,8 +328,9 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
   }
 
   auto& mgr = fl::Manager::Create(*cfg);
-  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}});
-  wrapper->catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog()});
+  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, nullptr, {}});
+  wrapper->public_catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog(fl::CatalogType::kPublic)});
+  wrapper->local_catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog(fl::CatalogType::kLocal)});
   *out_manager = wrapper.release();
   return nullptr;
   API_IMPL_END
@@ -349,7 +351,43 @@ FL_API_STATUS_IMPL(Manager_GetCatalogImpl, const flManager* manager, flCatalog**
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  *out_catalog = manager->catalog.get();
+  *out_catalog = manager->public_catalog.get();
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCatalogType catalog_type,
+                   flCatalog** out_catalog) {
+  API_IMPL_BEGIN
+  if (!manager || !out_catalog) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  switch (catalog_type) {
+    case FOUNDRY_LOCAL_CATALOG_PUBLIC:
+      *out_catalog = manager->public_catalog.get();
+      return nullptr;
+    case FOUNDRY_LOCAL_CATALOG_LOCAL:
+      *out_catalog = manager->local_catalog.get();
+      return nullptr;
+    case FOUNDRY_LOCAL_CATALOG_PRIVATE:
+      return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "no private catalog has been configured");
+    default:
+      return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
+  }
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Manager_GetCatalogByNameImpl, const flManager* manager, const char* catalog_name,
+                   flCatalog** out_catalog) {
+  API_IMPL_BEGIN
+  if (!manager || !catalog_name || !out_catalog) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  auto& catalog = manager->impl.GetCatalog(catalog_name);
+  *out_catalog = catalog.GetType() == fl::CatalogType::kLocal ? manager->local_catalog.get()
+                                                              : manager->public_catalog.get();
   return nullptr;
   API_IMPL_END
 }
@@ -715,6 +753,57 @@ FL_API_STATUS_IMPL(Catalog_GetModelVersionsImpl, const flCatalog* catalog,
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Catalog_RegisterModelImpl, flCatalog* catalog, const flModelInfo* model_info,
+                   flModel** out_model) {
+  API_IMPL_BEGIN
+  if (!catalog || !model_info || !out_model) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  *out_model = AsHandle<flModel>(catalog->impl.RegisterModel(*AsImpl(model_info)));
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Catalog_UnregisterModelImpl, flCatalog* catalog, const char* alias_or_model_id) {
+  API_IMPL_BEGIN
+  if (!catalog || !alias_or_model_id) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  catalog->impl.UnregisterModel(alias_or_model_id);
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Catalog_GetLocalModelsImpl, const flCatalog* catalog, flModelList** out_models) {
+  API_IMPL_BEGIN
+  if (!catalog || !out_models) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  auto models = catalog->impl.GetLocalModels();
+  auto list = std::make_unique<flModelList>();
+  list->items.reserve(models.size());
+  for (auto* model : models) {
+    list->items.push_back(AsHandle<flModel>(model));
+  }
+  *out_models = list.release();
+  return nullptr;
+  API_IMPL_END
+}
+
+static const flCatalogApi g_catalog_api_v1 = {
+  Catalog_GetNameImpl,
+  Catalog_GetModelsImpl,
+  Catalog_GetModelImpl,
+  Catalog_GetModelVariantImpl,
+  Catalog_GetLatestVersionImpl,
+  Catalog_GetCachedModelsImpl,
+  Catalog_GetLoadedModelsImpl,
+  Catalog_GetModelVersionsImpl,
+};
+
 static const flCatalogApi g_catalog_api = {
     Catalog_GetNameImpl,
     Catalog_GetModelsImpl,
@@ -724,6 +813,9 @@ static const flCatalogApi g_catalog_api = {
     Catalog_GetCachedModelsImpl,
     Catalog_GetLoadedModelsImpl,
     Catalog_GetModelVersionsImpl,
+    Catalog_RegisterModelImpl,
+    Catalog_UnregisterModelImpl,
+    Catalog_GetLocalModelsImpl,
 };
 
 // ========================================================================
@@ -838,15 +930,6 @@ FL_API_STATUS_IMPL(Model_RemoveFromCacheImpl, flModel* model) {
   }
 
   auto* impl = AsImpl(model);
-  if (!impl->IsCached()) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is not cached locally");
-  }
-
-  if (impl->IsLoaded()) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                      "cannot remove a loaded model from cache; unload it first");
-  }
-
   impl->RemoveFromCache();
   return nullptr;
   API_IMPL_END
@@ -970,6 +1053,86 @@ static int64_t FL_API_CALL Info_GetIntPropertyImpl(const flModelInfo* info,
   return AsImpl(info)->GetPropertyWithDefault(key, default_value);
 }
 
+FL_API_STATUS_IMPL(ModelInfo_CreateImpl, flModelInfo** out_info) {
+  API_IMPL_BEGIN
+  if (!out_info) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_info must not be null");
+  }
+  *out_info = AsHandle<flModelInfo>(new fl::ModelInfo());
+  return nullptr;
+  API_IMPL_END
+}
+
+static void FL_API_CALL ModelInfo_ReleaseImpl(flModelInfo* info) FL_NO_EXCEPTION {
+  delete AsImpl(info);
+}
+
+FL_API_STATUS_IMPL(Info_SetStringPropertyImpl, flModelInfo* info, const char* key, const char* value) {
+  API_IMPL_BEGIN
+  if (!info || !key || !value) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  fl::SetModelInfoStringProperty(*AsImpl(info), key, value);
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Info_SetIntPropertyImpl, flModelInfo* info, const char* key, int64_t value) {
+  API_IMPL_BEGIN
+  if (!info || !key) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  fl::SetModelInfoIntProperty(*AsImpl(info), key, value);
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Info_SerializeToFileImpl, const flModelInfo* info, const char* file_path) {
+  API_IMPL_BEGIN
+  if (!info || !file_path) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  fl::SerializeModelInfoToFile(*AsImpl(info), file_path);
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Info_DeserializeFromFileImpl, const char* file_path, flModelInfo** out_info) {
+  API_IMPL_BEGIN
+  if (!file_path || !out_info) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  *out_info = AsHandle<flModelInfo>(new fl::ModelInfo(fl::DeserializeModelInfoFromFile(file_path)));
+  return nullptr;
+  API_IMPL_END
+}
+
+static const flModelApi g_model_api_v1 = {
+  Model_GetInfoImpl,
+  Model_GetInputOutputInfoImpl,
+  Model_IsCachedImpl,
+  Model_GetPathImpl,
+  Model_DownloadImpl,
+  Model_IsLoadedImpl,
+  Model_LoadImpl,
+  Model_UnloadImpl,
+  Model_RemoveFromCacheImpl,
+  Model_GetVariantsImpl,
+  Model_SelectVariantImpl,
+  Info_GetIdImpl,
+  Info_GetNameImpl,
+  Info_GetVersionImpl,
+  Info_GetAliasImpl,
+  Info_GetUriImpl,
+  Info_GetDeviceTypeImpl,
+  Info_GetExecutionProviderImpl,
+  Info_GetTaskImpl,
+  Info_GetPromptTemplatesImpl,
+  Info_GetModelSettingsImpl,
+  Info_GetStringPropertyImpl,
+  Info_GetIntPropertyImpl,
+};
+
 static const flModelApi g_model_api = {
     Model_GetInfoImpl,
     Model_GetInputOutputInfoImpl,
@@ -994,6 +1157,12 @@ static const flModelApi g_model_api = {
     Info_GetModelSettingsImpl,
     Info_GetStringPropertyImpl,
     Info_GetIntPropertyImpl,
+    ModelInfo_CreateImpl,
+    ModelInfo_ReleaseImpl,
+    Info_SetStringPropertyImpl,
+    Info_SetIntPropertyImpl,
+    Info_SerializeToFileImpl,
+    Info_DeserializeFromFileImpl,
 };
 
 // ========================================================================
@@ -1827,6 +1996,10 @@ static const flCatalogApi* FL_API_CALL GetCatalogApiImpl() FL_NO_EXCEPTION {
   return &g_catalog_api;
 }
 
+static const flCatalogApi* FL_API_CALL GetCatalogApiV1Impl() FL_NO_EXCEPTION {
+  return &g_catalog_api_v1;
+}
+
 static const flConfigurationApi* FL_API_CALL GetConfigurationApiImpl() FL_NO_EXCEPTION {
   return &g_configuration_api;
 }
@@ -1841,6 +2014,10 @@ static const flInferenceApi* FL_API_CALL GetInferenceApiImpl() FL_NO_EXCEPTION {
 
 static const flModelApi* FL_API_CALL GetModelApiImpl() FL_NO_EXCEPTION {
   return &g_model_api;
+}
+
+static const flModelApi* FL_API_CALL GetModelApiV1Impl() FL_NO_EXCEPTION {
+  return &g_model_api_v1;
 }
 
 // ========================================================================
@@ -1863,11 +2040,11 @@ static const flApi g_api_v1 = {
     Manager_WebServiceStopImpl,
 
     /* Sub-API accessors */
-    GetCatalogApiImpl,
+    GetCatalogApiV1Impl,
     GetConfigurationApiImpl,
     GetItemApiImpl,
     GetInferenceApiImpl,
-    GetModelApiImpl,
+    GetModelApiV1Impl,
 
     /* KeyValuePairs */
     CreateKeyValuePairsImpl,
@@ -1888,6 +2065,40 @@ static const flApi g_api_v1 = {
     Manager_IsEpDownloadInProgressImpl,
     Manager_ShutdownImpl,
     Manager_IsShutdownRequestedImpl,
+  };
+
+  static const flApi g_api_v2 = {
+    Status_CreateImpl,
+    Status_ReleaseImpl,
+    Status_GetErrorCodeImpl,
+    Status_GetErrorMessageImpl,
+    Manager_CreateImpl,
+    Manager_ReleaseImpl,
+    Manager_GetCatalogImpl,
+    Manager_WebServiceStartImpl,
+    Manager_WebServiceUrlsImpl,
+    Manager_WebServiceStopImpl,
+    GetCatalogApiImpl,
+    GetConfigurationApiImpl,
+    GetItemApiImpl,
+    GetInferenceApiImpl,
+    GetModelApiImpl,
+    CreateKeyValuePairsImpl,
+    AddKeyValuePairImpl,
+    GetKeyValueImpl,
+    GetKeyValuePairsImpl,
+    RemoveKeyValuePairImpl,
+    KeyValuePairs_ReleaseImpl,
+    ModelList_ReleaseImpl,
+    ModelList_SizeImpl,
+    ModelList_GetAtImpl,
+    Manager_GetDiscoverableEpsImpl,
+    Manager_DownloadAndRegisterEpsImpl,
+    Manager_IsEpDownloadInProgressImpl,
+    Manager_ShutdownImpl,
+    Manager_IsShutdownRequestedImpl,
+    Manager_GetCatalogByTypeImpl,
+    Manager_GetCatalogByNameImpl,
 };
 
 // ========================================================================
@@ -1897,8 +2108,11 @@ static const flApi g_api_v1 = {
 extern "C" {
 
 FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EXCEPTION {
-  if (version == 0 || version <= FOUNDRY_LOCAL_API_VERSION) {
+  if (version == 1) {
     return &g_api_v1;
+  }
+  if (version == 0 || version == 2) {
+    return &g_api_v2;
   }
 
   return nullptr;

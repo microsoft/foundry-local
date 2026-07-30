@@ -48,7 +48,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     }
 
     auto& lm = mgr.GetModelLoadManager();
-    auto* loaded = lm.GetLoadedModel(model.Id());
+    auto* loaded = lm.GetLoadedModel(model.RuntimeId());
     if (!loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
     }
