@@ -21,6 +21,8 @@ Foundry Local is an **end-to-end local AI solution** for building applications t
 
 User data never leaves the device, responses start immediately with zero network latency, and your app works offline. No per-token costs, no API keys, no backend infrastructure to maintain, and no Azure subscription required.
 
+Foundry Local may collect usage data and send it to Microsoft to help improve our products and services. See the [privacy statement](sdk_v2/cpp/docs/Privacy.md) for more details.
+
 ### Key Features
 
 - **Lightweight runtime** — The runtime handles model acquisition, hardware acceleration, model management, and inference (via [ONNX Runtime](https://onnxruntime.ai/)). 

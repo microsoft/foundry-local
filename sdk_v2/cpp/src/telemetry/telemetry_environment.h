@@ -1,0 +1,33 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+#pragma once
+
+#include <string>
+#include <string_view>
+
+namespace fl {
+
+/// Static helpers for telemetry runtime gating. Ported from neutron-server's
+/// TelemetryEnvironment.cs so the CI suppression behavior matches across stacks.
+class TelemetryEnvironment {
+ public:
+  /// Returns true if any well-known CI environment variable is set to a truthy
+  /// value. The set matches neutron-server's TelemetryEnvironment.cs.
+  static bool IsCiEnvironment();
+
+  /// Returns true when Foundry Local's own test harness is running.
+  /// This is an internal test signal, not a user-facing telemetry opt-out.
+  static bool IsRunningUnitTests();
+
+  /// Returns true when CI or the internal unit-test harness requires full suppression.
+  static bool ShouldSuppressTelemetry();
+
+  /// Truthy-value semantics: a non-empty, non-whitespace string whose trimmed
+  /// value is not "0", "false", "no", or "off" (case-insensitive).
+  static bool IsTruthyValue(std::string_view value);
+
+  /// Read an env var (cross-platform). Returns empty string if unset.
+  static std::string GetEnv(const char* name);
+};
+
+}  // namespace fl

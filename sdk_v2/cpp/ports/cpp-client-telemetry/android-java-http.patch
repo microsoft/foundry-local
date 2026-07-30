@@ -1,0 +1,39 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0f984a2..57f8eb0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -381,7 +381,7 @@
+ set(MATSDK_NEEDS_CURL OFF)
+ if(PAL_IMPLEMENTATION STREQUAL "CPP11"
+    AND NOT BUILD_IOS
+-   AND (NOT CMAKE_SYSTEM_NAME STREQUAL "Android" OR MATSDK_USE_VCPKG_DEPS)
++   AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android"
+    AND NOT BUILD_APPLE_HTTP)
+   set(MATSDK_NEEDS_CURL ON)
+   add_definitions(-DHAVE_MAT_CURL_HTTP_CLIENT)
+diff --git a/cmake/MSTelemetryConfig.cmake.in b/cmake/MSTelemetryConfig.cmake.in
+index e54cac2..84820bf 100644
+--- a/cmake/MSTelemetryConfig.cmake.in
++++ b/cmake/MSTelemetryConfig.cmake.in
+@@ -14,7 +14,7 @@
+ find_dependency(nlohmann_json CONFIG)
+ 
+ # Curl is re-found only when the SDK was built with the curl HTTP client
+-# (Linux, Android via vcpkg, and macOS built without Apple HTTP).
++# (Linux and macOS built without Apple HTTP).
+ # Windows (WinInet), iOS, and macOS-with-Apple-HTTP do not link curl.
+ # We bake the build-time decision into a boolean rather than re-deriving it,
+ # because the macOS BUILD_APPLE_HTTP choice can't be inferred from
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+index 6d1b32d..95566d5 100644
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -197,7 +197,7 @@
+       list(APPEND SRCS
+         pal/posix/NetworkInformationImpl_Android.cpp
+       )
+-      if(MATSDK_USE_VCPKG_DEPS)
++      if(MATSDK_NEEDS_CURL)
+         list(APPEND SRCS
+           http/HttpClient_Curl.cpp
+           http/HttpClient_Curl.hpp

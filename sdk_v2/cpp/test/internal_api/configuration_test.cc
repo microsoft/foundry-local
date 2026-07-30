@@ -27,6 +27,7 @@ TEST(ConfigurationTest, DefaultValues) {
   EXPECT_FALSE(config.app_data_dir.has_value());
   EXPECT_FALSE(config.model_cache_dir.has_value());
   EXPECT_FALSE(config.logs_dir.has_value());
+  EXPECT_FALSE(config.disable_nonessential_telemetry);
 }
 
 TEST(ConfigurationTest, ValidateRejectsEmptyCatalogUrl) {

@@ -3,6 +3,8 @@
 // `FoundryLocalError` from the native addon. `create()` and `createAsync()` are factory wrappers around the
 // constructor — the native layer is the source of truth for instance identity.
 
+import { readFileSync } from "node:fs";
+
 import { type Catalog, wrapNativeCatalog } from "./catalog.js";
 import { FOUNDRY_LOCAL_CONFIG_KEYS, type FoundryLocalConfig } from "./configuration.js";
 import {
@@ -12,6 +14,18 @@ import {
   getPreloadedLibraryPath,
 } from "./detail/native.js";
 import type { EpDownloadResult, EpInfo } from "./types.js";
+
+function readSdkVersion(): string {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+  };
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("package.json version is missing.");
+  }
+  return packageJson.version;
+}
+
+const SDK_VERSION = readSdkVersion();
 
 // A native Manager holds process-global native resources. Dispose the live
 // Manager on process exit so native teardown happens at a deterministic point
@@ -91,7 +105,20 @@ export class FoundryLocalManager {
         }
       }
     }
-    this.#native = new (getAddon().Manager)(config);
+    const rawAdditionalSettings: unknown = config.additionalSettings;
+    if (
+      rawAdditionalSettings !== undefined &&
+      (typeof rawAdditionalSettings !== "object" ||
+        rawAdditionalSettings === null ||
+        Array.isArray(rawAdditionalSettings))
+    ) {
+      throw new TypeError("additionalSettings must be an object");
+    }
+    const additionalSettings = {
+      UserAgent: `foundry-local-js/${SDK_VERSION}`,
+      ...config.additionalSettings,
+    };
+    this.#native = new (getAddon().Manager)({ ...config, additionalSettings });
     liveManager = this;
     installExitHandlersOnce();
   }

@@ -22,6 +22,9 @@ export interface FoundryLocalConfig {
   /** External service URL (when the web service runs in a separate process). */
   serviceEndpoint?: string;
 
+  /** Disable non-essential telemetry. Foundry Local may still send a minimal ProcessInfo event. Defaults to false. */
+  disableNonessentialTelemetry?: boolean;
+
   /**
    * Directory containing the native Foundry Local library (`foundry_local.dll` on Windows, `libfoundry_local.so`
    * on Linux, `libfoundry_local.dylib` on macOS). When set, the SDK pre-loads the library from this directory
@@ -48,6 +51,7 @@ export const FOUNDRY_LOCAL_CONFIG_KEYS: ReadonlySet<keyof FoundryLocalConfig> = 
   "logLevel",
   "webServiceUrls",
   "serviceEndpoint",
+  "disableNonessentialTelemetry",
   "libraryPath",
   "additionalSettings",
 ]);

@@ -75,3 +75,11 @@ class TestBuildNative:
         )
         with _native_config(c) as ptr:
             assert ptr is not None
+
+    def test_disable_nonessential_telemetry_accepted(self):
+        c = Configuration(
+            app_name="BuildNativeTest",
+            disable_nonessential_telemetry=True,
+        )
+        with _native_config(c) as ptr:
+            assert ptr is not None

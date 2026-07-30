@@ -4,7 +4,6 @@
 
 #include "logger.h"
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <list>
@@ -12,7 +11,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
+#include <vector>
 
 namespace fl {
 
@@ -40,8 +39,8 @@ class ISessionManager {
 /// - CheckIn(key, session) inserts the session into the cache under the given key.
 ///   May evict the least-recently-used entry if at capacity.
 ///
-/// Cached sessions are NOT registered — they are idle. Only sessions actively
-/// processing requests should be registered via SessionRegistration.
+/// Cached sessions are NOT registered — they are idle. Only sessions actively processing requests should be registered
+/// via SessionRegistration.
 class SessionManager : public ISessionManager {
  public:
   static constexpr size_t kDefaultCacheCapacity = 5;
@@ -67,18 +66,17 @@ class SessionManager : public ISessionManager {
   /// Block until all sessions have deregistered, with timeout.
   void WaitForDrain(std::chrono::milliseconds timeout = std::chrono::seconds(10));
 
-  /// Number of currently tracked sessions (active + cached).
+  /// Number of currently active sessions.
   size_t ActiveCount() const;
 
   // --- Session cache (Responses API) ---
 
   /// Remove a session from the cache by key and return it.
-  /// Returns nullptr on cache miss. The session is still tracked (registered).
+  /// Returns nullptr on cache miss.
   std::unique_ptr<ChatSession> CheckOut(const std::string& key);
 
   /// Insert a session into the cache under the given key.
   /// May evict the least-recently-used entry if at capacity.
-  /// The session remains tracked (registered) while cached.
   void CheckIn(const std::string& key, std::unique_ptr<ChatSession> session);
 
   /// Remove and destroy a cached session by key. Returns true if an entry was removed.
@@ -96,21 +94,22 @@ class SessionManager : public ISessionManager {
     std::unique_ptr<ChatSession> session;
     std::list<std::string>::iterator lru_iter;
   };
+  using CacheMap = std::unordered_map<std::string, CacheEntry>;
 
-  /// Clear all cache entries. Acquires mutex_ to move entries out, then destroys
-  /// them outside the lock (destroyed sessions call Deregister, which acquires mutex_).
+  std::unique_ptr<ChatSession> RemoveCachedLocked(CacheMap::iterator it);
+  std::vector<std::unique_ptr<ChatSession>> MoveCacheToDestroyLocked();
   void ClearCache();
 
   ILogger& logger_;
   size_t cache_capacity_;
-  std::atomic<bool> shutting_down_{false};
+  bool shutting_down_ = false;
   mutable std::mutex mutex_;
   std::condition_variable drain_cv_;
-  std::unordered_set<Session*> sessions_;
+  std::unordered_map<Session*, size_t> sessions_;
 
   // LRU cache: front of lru_order_ = most recently used
   std::list<std::string> lru_order_;
-  std::unordered_map<std::string, CacheEntry> cache_;
+  CacheMap cache_;
 };
 
 }  // namespace fl

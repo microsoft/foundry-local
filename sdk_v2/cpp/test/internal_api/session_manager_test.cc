@@ -10,7 +10,7 @@
 #include "exception.h"
 #include "logger.h"
 #include "model.h"
-#include "internal_api/null_telemetry.h"
+#include "telemetry/telemetry_logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 
@@ -59,7 +59,7 @@ class SessionManagerTest : public ::testing::Test {
 
   /// Create an unregistered ChatSession (for cache tests that only test cache mechanics).
   std::unique_ptr<ChatSession> MakeSession() {
-    return std::make_unique<ChatSession>(GetCatalogModel(), GetModel(), GetLogger(), null_telemetry_);
+    return std::make_unique<ChatSession>(GetCatalogModel(), GetModel(), GetLogger(), telemetry_);
   }
 
   /// Tracked session: a session + its registration guard.
@@ -84,7 +84,7 @@ class SessionManagerTest : public ::testing::Test {
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
       ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
-  fl::test::NullTelemetry null_telemetry_;
+  TelemetryLogger telemetry_{"foundry-local-test", fl::test::NullLog()};
 };
 
 // ===========================================================================

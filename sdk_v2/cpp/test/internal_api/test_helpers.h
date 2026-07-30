@@ -7,6 +7,7 @@
 #include "ep_detection/ep_detector.h"
 #include "inferencing/model_load_manager.h"
 #include "logger.h"
+#include "telemetry/telemetry_logger.h"
 
 #include "utils/temp_path.h"
 
@@ -41,6 +42,11 @@ inline ILogger& NullLog() {
   return instance;
 }
 
+inline ITelemetry& TestTelemetrySink() {
+  static TelemetryLogger instance("foundry-local-test", NullLog());
+  return instance;
+}
+
 /// One-stop bag of cheap fakes for tests that need to construct a leaf `Model` via
 /// `FromModelInfo` but don't exercise Download/Load. Public fields by design — no invariants
 /// to protect, and the field names match the matching `FromModelInfo` parameter names so the
@@ -48,7 +54,9 @@ inline ILogger& NullLog() {
 struct FakeServiceBindings {
   CpuOnlyEpDetector ep_detector;
   NullLogger logger;
-  DownloadManager download_manager{/*cache_directory=*/"", /*catalog_region=*/"", /*max_concurrency=*/1, logger};
+  TelemetryLogger telemetry{"foundry-local-test", logger};
+  DownloadManager download_manager{/*cache_directory=*/"", /*catalog_region=*/"", /*max_concurrency=*/1, logger,
+                                   telemetry};
   ModelLoadManager model_load_manager{ep_detector, logger};
 };
 

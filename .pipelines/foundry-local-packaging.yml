@@ -53,6 +53,9 @@ parameters:
 
 variables:
 - group: FoundryLocal-ESRP-Signing
+# Keep all CI jobs telemetry-free through the shared ORT/1DS runtime opt-out.
+- name: ORT_TELEMETRY_DISABLED
+  value: '1'
 # C++ SDK (sdk_v2/cpp) native dependency versions. Must match cmake defaults
 # in sdk_v2/deps_versions.json.
 - name: cppOrtVersion

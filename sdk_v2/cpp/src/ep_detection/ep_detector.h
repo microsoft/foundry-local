@@ -23,6 +23,7 @@ struct OrtEnv;
 namespace fl {
 
 class ILogger;
+class ITelemetry;
 
 /// Interface for detecting available hardware devices and execution providers.
 class IEpDetector {
@@ -33,17 +34,16 @@ class IEpDetector {
   /// Example: { "CPU" → ["CPUExecutionProvider"], "GPU" → ["CudaExecutionProvider"] }
   virtual std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const = 0;
 
-  /// Returns metadata for all discoverable EPs (those with bootstrappers).
+  /// Returns a recent snapshot of all discoverable EPs (those with bootstrappers).
+  /// The returned reference is valid until this method is next called on the same thread.
   /// Default: empty — no discoverable EPs beyond what's already registered.
   virtual const std::vector<EpInfo>& GetDiscoverableEps() const {
     static const std::vector<EpInfo> empty;
     return empty;
   }
 
-  /// C ABI view of the discoverable EPs. Pointers, struct addresses, and name
-  /// strings are stable for the detector's lifetime. is_registered values
-  /// reflect a recent snapshot — concurrent DownloadAndRegisterEps may have
-  /// updated them since the call returned.
+  /// C ABI view of a recent discoverable EPs snapshot. Pointers are valid until
+  /// this method is next called on the same thread.
   /// Default: empty span.
   virtual std::span<const flEpInfo> GetDiscoverableEpsCApi() const {
     return {};
@@ -71,9 +71,12 @@ class EpDetector : public IEpDetector {
   /// @param ort_env  The ORT environment singleton.
   /// @param bootstrappers  EP bootstrappers for download/registration.
   /// @param logger  Logger instance.
+  /// @param telemetry  Telemetry sink. DownloadAndRegisterEps emits one EPDownloadAndRegister event per provider via
+  ///                   EpDownloadTracker, plus one aggregate EPDownloadAttempt event for the whole call.
   EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
              std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
-             ILogger& logger);
+             ILogger& logger,
+             ITelemetry& telemetry);
   ~EpDetector() override = default;
 
   // Non-copyable, non-movable (owns bootstrappers and mutex state)
@@ -92,14 +95,13 @@ class EpDetector : public IEpDetector {
   OrtEnv& ort_env_;
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers_;
   ILogger& logger_;
+  ITelemetry& telemetry_;
   std::mutex download_mutex_;
   std::atomic<bool> download_in_progress_{false};
   mutable std::mutex cache_mutex_;
-  // Populated once in the constructor; size and element addresses (including name strings)
-  // are stable for the detector's lifetime. Only is_registered fields are mutated, under
-  // cache_mutex_. cached_eps_c_ mirrors cached_eps_ for the C ABI.
+  // Populated once in the constructor; mutated only under cache_mutex_ and copied
+  // into per-thread snapshots for callers.
   std::vector<EpInfo> cached_eps_;
-  std::vector<flEpInfo> cached_eps_c_;
 };
 
 }  // namespace fl

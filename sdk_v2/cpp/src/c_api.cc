@@ -21,6 +21,7 @@
 #include "items/tool_result_item.h"
 #include "manager.h"
 #include "ep_detection/ep_bootstrapper.h"
+#include "inferencing/session/session_registration.h"
 
 #include <functional>
 #include <map>
@@ -72,6 +73,7 @@ struct flCatalog {
 struct flManager {
   fl::Manager& impl;
   std::unique_ptr<flCatalog> catalog;  // stores the flCatalog wrapper around impl.GetCatalog()
+  mutable std::vector<std::string> urls_storage;
   mutable std::vector<const char*> urls_cache;
 };
 
@@ -327,7 +329,7 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
   }
 
   auto& mgr = fl::Manager::Create(*cfg);
-  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}});
+  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}, {}});
   wrapper->catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog()});
   *out_manager = wrapper.release();
   return nullptr;
@@ -372,10 +374,10 @@ FL_API_STATUS_IMPL(Manager_WebServiceUrlsImpl, const flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  const auto& urls = manager->impl.GetWebServiceUrls();
+  manager->urls_storage = manager->impl.GetWebServiceUrls();
   manager->urls_cache.clear();
-  manager->urls_cache.reserve(urls.size());
-  for (const auto& u : urls) {
+  manager->urls_cache.reserve(manager->urls_storage.size());
+  for (const auto& u : manager->urls_storage) {
     manager->urls_cache.push_back(u.c_str());
   }
 
@@ -1766,6 +1768,7 @@ FL_API_STATUS_IMPL(Session_ProcessRequestImpl, flSession* session, const flReque
   }
 
   // ProcessRequest handles session option overlay and streaming callback wiring.
+  fl::SessionRegistration reg(fl::Manager::Instance().GetSessionManager(), *AsImpl(session));
   AsImpl(session)->ProcessRequest(*AsImpl(request), *target);
 
   if (owned) {

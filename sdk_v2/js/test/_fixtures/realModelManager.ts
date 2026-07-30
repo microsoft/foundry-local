@@ -46,6 +46,8 @@ export interface RealModelManagerOptions {
    * "qwen2.5-0.5b" — alias of the smallest chat model we ship.
    */
   readonly namePreference?: string;
+  /** Skip in CI when catalog data cannot identify a matching cached model. */
+  readonly skipUnavailableInCi?: boolean;
 }
 
 export interface RealModelManagerFixture {
@@ -107,9 +109,11 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
     });
     if (matching.length === 0) {
       manager.dispose();
-      throw new Error(
-        `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`,
-      );
+      const message = `No catalog model matches task='${task}' deviceType='CPU' (and preference '${namePref}' missing)`;
+      if (isCi && opts.skipUnavailableInCi === true) {
+        throw new SkipFixture(`[CI] ${message}`);
+      }
+      throw new Error(message);
     }
     matching.sort(
       (a, b) =>

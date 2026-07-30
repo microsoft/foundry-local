@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct OrtApi;
@@ -81,15 +82,17 @@ class Manager {
 
   /// Get the bound service URLs. The returned reference is valid as long as
   /// the web service is running. Throws if web service is not running.
-  const std::vector<std::string>& GetWebServiceUrls() const;
+  std::vector<std::string> GetWebServiceUrls() const;
 
   /// Stop the embedded web service.
   void StopWebService();
 
-  /// Begin graceful shutdown. Sets the shutdown flag and signals subsystems to drain.
-  /// Idempotent and non-blocking — safe to call from any thread including web service handlers.
+  /// Begin graceful shutdown. Idempotent and safe to call from any thread.
   /// Destroy() calls this internally, so direct SDK users don't need to call it explicitly.
   void Shutdown();
+
+  /// Request shutdown from a web-service handler without running teardown on the handler thread.
+  void RequestShutdownAsync();
 
   /// Check if Shutdown() has been called (from any source — web endpoint, signal, user code).
   bool IsShutdownRequested() const;
@@ -120,10 +123,14 @@ class Manager {
   //                                released manually in ~Manager() after all
   //                                consumers (sessions, ep_detector_) are gone.
   //   logger_                  — everything logs through this, destroyed last
+  //   telemetry_               — used by ep_detector_ and throughout; must
+  //                              outlive ep_detector_ because EpDetector holds
+  //                              an ITelemetry& for emitting EP events
   //   ep_detector_             — detects HW acceleration; holds OrtEnv& (must
-  //                              outlive ort_env_ release in ~Manager())
-  //   telemetry_               — used throughout
-  //   catalog_                 — owns all Model instances. used by download_manager, model_load_manager, and web service
+  //                              outlive ort_env_ release in ~Manager()) and
+  //                              an ITelemetry&
+  //   catalog_                 — owns all Model instances. used by download_manager, model_load_manager,
+  //                              and web service
   //   download_manager_        — uses ModelInfo owned by catalog
   //   model_load_manager_      — holds loaded model state referencing catalog models
   //   session_manager_         — tracks all active sessions. destroyed after web service, before models
@@ -135,15 +142,18 @@ class Manager {
   OrtEnv* ort_env_ = nullptr;
   std::vector<std::string> registered_ep_libraries_;
   std::unique_ptr<ILogger> logger_;
-  std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ITelemetry> telemetry_;
+  std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ICatalog> catalog_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> web_service_running_{false};
+  mutable std::mutex web_service_mutex_;
   std::vector<std::string> bound_urls_;
+  std::mutex shutdown_worker_mutex_;
+  std::thread shutdown_worker_;
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   std::unique_ptr<WebService> web_service_;

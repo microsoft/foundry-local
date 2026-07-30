@@ -269,6 +269,10 @@ class Configuration {
   /// Defaults to "centralus" when not set.
   Configuration& SetCatalogRegion(const std::string& region);
 
+  /// Optional. Disable non-essential telemetry. Foundry Local may still send a minimal ProcessInfo event.
+  /// Defaults to false (telemetry enabled).
+  Configuration& SetDisableNonessentialTelemetry(bool disable);
+
   const flConfiguration* native_handle() const noexcept { return handle_.get(); }
 
  private:

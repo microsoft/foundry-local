@@ -6,7 +6,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -15,6 +17,7 @@
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
 #include "inferencing/session/types.h"
+#include "telemetry/invocation_context.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
@@ -34,7 +37,7 @@ class Session {
  public:
   virtual ~Session();
 
-  Session(Session&&) = default;
+  Session(Session&& other) noexcept;
   Session& operator=(Session&&) = delete;
 
   Session(const Session&) = delete;
@@ -51,6 +54,9 @@ class Session {
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
+
+  /// Signal all active requests in this session to stop.
+  void Cancel();
 
   /// Add a tool definition to this session.
   /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
@@ -100,6 +106,16 @@ class Session {
     callback_user_data_ = user_data;
   }
 
+  /// Telemetry context for the next ProcessRequest. HTTP handlers set this to an
+  /// indirect child of the route's context so the kSessionProcessRequest action
+  /// and the per-inference Model event are marked indirect and share the route's
+  /// correlation id. When unset (direct SDK use), ProcessRequest mints its own
+  /// direct context per call.
+  void SetRequestContext(InvocationContext context) {
+    std::lock_guard<std::mutex> lock(request_context_mutex_);
+    request_context_ = std::move(context);
+  }
+
  protected:
   Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
           bool allow_concurrent_requests = false);
@@ -131,6 +147,17 @@ class Session {
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
 
+  /// Execution provider the loaded model runs on (e.g. "CPU", "CUDA"). Surfaced
+  /// on the per-inference Model telemetry event. Empty when not known.
+  virtual std::string ExecutionProvider() const { return {}; }
+
+  /// Derived sessions can emit modality-specific inference telemetry after the generic Model event.
+  virtual void RecordAdditionalModelUsage(const Request& /*request*/, const Response& /*response*/,
+                                          const InvocationContext& /*context*/, int64_t /*total_time_ms*/,
+                                          bool /*streaming*/) {}
+
+  ITelemetry& Telemetry() { return telemetry_; }
+
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
   std::unique_ptr<CallbackHandler> CreateCallbackHandler(const Request& request) {
@@ -151,8 +178,13 @@ class Session {
   KeyValuePairs session_options_;
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
+  mutable std::mutex request_context_mutex_;
+  std::optional<InvocationContext> request_context_;
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
+  mutable std::mutex active_requests_mutex_;
+  bool session_canceled_ = false;
+  std::unordered_set<const Request*> active_requests_;
 };
 
 }  // namespace fl

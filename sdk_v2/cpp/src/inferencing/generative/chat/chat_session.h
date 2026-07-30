@@ -101,6 +101,8 @@ class ChatSession : public Session {
   void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                   Response& response);
 
+  std::string ExecutionProvider() const override;
+
   /// Commit input messages and assistant reply to history after a successful turn.
   void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
                   int pre_turn_token_count, int post_turn_token_count);

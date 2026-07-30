@@ -112,7 +112,9 @@ TEST_F(ManagerWebServiceTest, StopWebServiceIsIdempotentAfterSuccessfulStart) {
     GTEST_SKIP() << "StartWebService unavailable in this build: " << what;
   }
 
-  EXPECT_FALSE(manager.GetWebServiceEndpoints().empty());
+  const auto endpoints = manager.GetWebServiceEndpoints();
+  ASSERT_EQ(endpoints.size(), 1u);
+  EXPECT_EQ(endpoints[0].find("http://127.0.0.1:"), 0u);
 
   EXPECT_NO_THROW(manager.StopWebService());
   EXPECT_TRUE(manager.GetWebServiceEndpoints().empty());

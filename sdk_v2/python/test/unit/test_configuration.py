@@ -36,6 +36,7 @@ class TestConfigurationDictionary:
         d = c.as_dictionary()
         assert d["AppName"] == "App"
         assert d["LogLevel"] == str(LogLevel.INFORMATION)
+        assert d["UserAgent"].startswith("foundry-local-python/")
         assert "AppDataDir" not in d
 
     def test_all_directory_settings_round_trip(self):
@@ -59,6 +60,11 @@ class TestConfigurationDictionary:
         assert d["Key1"] == "v1"
         assert d["Key2"] == "v2"
         assert "" not in d
+
+    def test_user_agent_can_be_overridden(self):
+        c = Configuration(app_name="App", additional_settings={"UserAgent": "custom-client/1"})
+        d = c.as_dictionary()
+        assert d["UserAgent"] == "custom-client/1"
 
     def test_additional_settings_none_value_becomes_empty(self):
         c = Configuration(app_name="App", additional_settings={"K": None})
@@ -89,10 +95,13 @@ class TestConfigurationExtendedFields:
     def test_new_fields_default_to_none(self):
         c = Configuration(app_name="App")
         assert c.catalog_region is None
+        assert c.disable_nonessential_telemetry is False
 
     def test_new_fields_round_trip(self):
         c = Configuration(
             app_name="App",
             catalog_region="westus2",
+            disable_nonessential_telemetry=True,
         )
         assert c.catalog_region == "westus2"
+        assert c.disable_nonessential_telemetry is True
