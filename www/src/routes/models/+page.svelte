@@ -19,24 +19,13 @@
 	const KNOWN_DEVICES = ['cpu', 'gpu', 'npu'];
 	const MODEL_QUERY_PARAM = 'model';
 	const CLI_RUN_COMMAND = 'foundry run qwen2.5-0.5b';
-	const CLI_RELEASE_URL =
-		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
-	const CLI_INSTALL_LINKS = [
-		{
-			id: 'windows-cli',
-			label: 'Windows',
-			href: CLI_RELEASE_URL
-		},
-		{
-			id: 'macos-cli',
-			label: 'macOS',
-			href: CLI_RELEASE_URL
-		},
-		{
-			id: 'linux-cli',
-			label: 'Linux',
-			href: CLI_RELEASE_URL
-		}
+	// CLI download links resolve to the latest cli-preview-* release at build time (issue #924),
+	// falling back to the releases page when discovery fails. Data comes from the root layout load.
+	$: cliLinks = $page.data.cliLinks;
+	$: CLI_INSTALL_LINKS = [
+		{ id: 'windows-cli', label: 'Windows', href: cliLinks.releasePage },
+		{ id: 'macos-cli', label: 'macOS', href: cliLinks.releasePage },
+		{ id: 'linux-cli', label: 'Linux', href: cliLinks.releasePage }
 	];
 
 	// Debounce timer for search

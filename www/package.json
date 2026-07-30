@@ -22,7 +22,8 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"format": "prettier --write .",
-		"lint": "prettier --check ."
+		"lint": "prettier --check .",
+		"test": "vitest run"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-vercel": "^6.3.3",
@@ -48,7 +49,8 @@
 		"tailwindcss": "^4.2.2",
 		"tailwindcss-animate": "^1.0.7",
 		"typescript": "^5.9.3",
-		"vite": "^8.0.16"
+		"vite": "^8.0.16",
+		"vitest": "^4.1.10"
 	},
 	"dependencies": {
 		"@vercel/analytics": "^2.0.1"
