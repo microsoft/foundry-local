@@ -38,7 +38,7 @@
         {
           "name": "cpp-client-telemetry",
           "default-features": false,
-          "features": ["minimal-sqlite", "curl-openssl"],
+          "features": ["minimal-sqlite"],
           "platform": "!uwp"
         }
       ]

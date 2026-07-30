@@ -4,6 +4,8 @@ vcpkg_from_github(
     REF 5152cb4067c3c0f46ffd79672702ffcffcade9c8
     SHA512 d46e929f1724333f41574829da2521d0c76cb07273b00baf978f459b38416a8cb7eeba9b0898364540b9a6ad1f2319f70c5e89f92e15c6f80ef59921e7ee0325
     HEAD_REF main
+    PATCHES
+        android-java-http.patch
 )
 
 set(MATSDK_BUILD_APPLE_HTTP OFF)
@@ -43,6 +45,11 @@ vcpkg_cmake_configure(
 
 vcpkg_cmake_install()
 vcpkg_cmake_config_fixup(PACKAGE_NAME MSTelemetry CONFIG_PATH lib/cmake/MSTelemetry)
+
+if(VCPKG_TARGET_IS_ANDROID)
+    file(INSTALL "${SOURCE_PATH}/lib/http/HttpClient_Android.hpp"
+         DESTINATION "${CURRENT_PACKAGES_DIR}/include/mat/http")
+endif()
 
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")

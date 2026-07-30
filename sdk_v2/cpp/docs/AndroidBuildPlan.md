@@ -190,9 +190,16 @@ When `--android_run_emulator --test` is specified, `build.py`:
 
 ## SSL/Certificate Handling
 
+### Transport split
+
+- **Azure Core/Storage** uses native libcurl with OpenSSL and needs a PEM CA bundle through `SSL_CERT_FILE`.
+- **1DS telemetry** uses `HttpClient_Android` through JNI and Java `HttpURLConnection`, which uses Android's Java trust
+  store directly. It does not use `SSL_CERT_FILE`.
+
 ### Problem
 
-Statically-linked OpenSSL (built by vcpkg) **ignores the `SSL_CERT_DIR` environment variable** at
+For the native Azure Core/Storage transport, statically-linked OpenSSL (built by vcpkg) **ignores the
+`SSL_CERT_DIR` environment variable** at
 runtime. The `--openssldir` path is baked at build time to a non-existent location on Android.
 `SSL_CERT_FILE` with a single concatenated PEM bundle *is* honored.
 
@@ -214,15 +221,17 @@ all root CAs that the device trusts (including DigiCert Global Root G2 needed fo
 
 ### Production (with Java Bindings — Future)
 
-The Java/Android host app will export system certificates (including user-installed CAs and
-enterprise roots) to a PEM file and set `SSL_CERT_FILE` before loading the native library. This is
-the same pattern FL Core used.
+The Java/Android host app will export system certificates (including user-installed CAs and enterprise roots) to a
+PEM file and set `SSL_CERT_FILE` before loading the native library for Azure Core/Storage. It must also initialize the
+1DS Java `HttpClient` before creating a Foundry Local manager, but that telemetry transport uses the Java trust store
+rather than the exported PEM file.
 
 ### Key Insight
 
-`SSL_CERT_DIR` does **not** work with statically-linked OpenSSL on Android. Always use `SSL_CERT_FILE`
-with a concatenated PEM bundle. The error message when this fails is misleading: "self-signed
-certificate in certificate chain" — it actually means OpenSSL cannot find **any** CA store.
+`SSL_CERT_DIR` does **not** work with statically-linked OpenSSL on Android. Native libcurl/OpenSSL consumers must use
+`SSL_CERT_FILE` with a concatenated PEM bundle. The error message when this fails is misleading: "self-signed
+certificate in certificate chain" — it actually means OpenSSL cannot find **any** CA store. This does not apply to the
+1DS Java HTTP transport.
 
 ---
 
