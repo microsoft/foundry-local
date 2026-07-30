@@ -7,7 +7,7 @@
 parameters:
 - name: rid
   type: string
-  values: ['win-x64', 'linux-x64', 'osx-arm64']
+  values: ['win-x64', 'linux-x64', 'linux-arm64', 'osx-arm64']
   displayName: 'ADO RID for the platform being tested (no cross-arch testing)'
 - name: prebuildArtifactDir
   type: string
@@ -34,7 +34,7 @@ steps:
       Get-ChildItem -Recurse $dst | ForEach-Object { Write-Host "  $($_.FullName)" }
     displayName: 'Drop prebuild into sdk_v2/js/prebuilds'
 
-- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
       set -euo pipefail
       src="${{ parameters.prebuildArtifactDir }}/prebuilds"
@@ -71,7 +71,7 @@ steps:
     env:
       FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
 
-- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'osx-arm64')) }}:
+- ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"

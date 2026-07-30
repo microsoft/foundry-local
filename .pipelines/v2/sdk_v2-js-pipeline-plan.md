@@ -17,8 +17,6 @@ C++, C#, and Python stages.
 
 Out of scope (deferred):
 
-- **Linux ARM64.** Cross-cutting ARM64 work item will add this for C++,
-  C#, Python, and JS together.
 - **npm publishing.** Pipeline produces the `.tgz` as an artifact only.
 
 ## Supported platforms
@@ -28,6 +26,7 @@ Out of scope (deferred):
 | Windows x64     | `cpp_build_win_x64`        | ✅        | ✅       |                                |
 | Windows ARM64   | `cpp_build_win_arm64`      | ✅        | ❌       | Cross-compiled on x64 host     |
 | Linux x64       | `cpp_build_linux_x64`      | ✅        | ✅       |                                |
+| Linux ARM64     | `cpp_build_linux_arm64`    | ✅        | ✅       | Native on `onnxruntime-linux-ARM64-CPU-2019`; CPU-only ORT package |
 | macOS ARM64     | `cpp_build_osx_arm64`      | ✅        | ✅       | Native on AcesShared Sequoia   |
 
 ## Stage graph
@@ -38,9 +37,10 @@ compute_version
    ├── cpp_build_win_x64 ──── js_build_win_x64 ──── js_test_win_x64 ─┐
    ├── cpp_build_win_arm64 ── js_build_win_arm64 (build-only) ───────┤
    ├── cpp_build_linux_x64 ── js_build_linux_x64 ── js_test_linux_x64┤
+   ├── cpp_build_linux_arm64 ─ js_build_linux_arm64 ─ js_test_linux_arm64┤
    └── cpp_build_osx_arm64 ── js_build_osx_arm64 ── js_test_osx_arm64┘
-                                                                     │
-                                                  (all 4 builds) ──> js_pack ──> js-sdk
+                                                                    │
+                                                  (all 5 builds) ──> js_pack ──> js-sdk
 ```
 
 Every `js_build_<rid>` stage also depends on `cpp_build_win_x64` because
@@ -49,17 +49,20 @@ only by that stage and consumed by every JS build.
 
 ## Artifacts
 
-| Stage                  | Artifact name              | Contents                                                                                       |
-|------------------------|----------------------------|------------------------------------------------------------------------------------------------|
-| `js_build_win_x64`     | `js-prebuild-win-x64`      | `prebuilds/win32-x64/{foundry_local_node.node, foundry_local_preload.node, foundry_local.dll}` |
-| `js_build_win_arm64`   | `js-prebuild-win-arm64`    | `prebuilds/win32-arm64/{…, foundry_local.dll}`                                                  |
-| `js_build_linux_x64`   | `js-prebuild-linux-x64`    | `prebuilds/linux-x64/{…, libfoundry_local.so}`                                                  |
-| `js_build_osx_arm64`   | `js-prebuild-osx-arm64`    | `prebuilds/darwin-arm64/{…, libfoundry_local.dylib}`                                            |
-| `js_pack`              | `js-sdk`                   | `foundry-local-sdk-<version>.tgz`                                                              |
+| Stage                     | Artifact name               | Contents                                                                                       |
+|---------------------------|-----------------------------|------------------------------------------------------------------------------------------------|
+| `js_build_win_x64`        | `js-prebuild-win-x64`       | `prebuilds/win32-x64/{foundry_local_node.node, foundry_local_preload.node, foundry_local.dll}` |
+| `js_build_win_arm64`      | `js-prebuild-win-arm64`     | `prebuilds/win32-arm64/{…, foundry_local.dll}`                                                  |
+| `js_build_linux_x64`      | `js-prebuild-linux-x64`     | `prebuilds/linux-x64/{…, libfoundry_local.so}`                                                  |
+| `js_build_linux_arm64`    | `js-prebuild-linux-arm64`   | `prebuilds/linux-arm64/{…, libfoundry_local.so}`                                                |
+| `js_build_osx_arm64`      | `js-prebuild-osx-arm64`     | `prebuilds/darwin-arm64/{…, libfoundry_local.dylib}`                                            |
+| `js_pack`                 | `js-sdk`                    | `foundry-local-sdk-<version>.tgz`                                                              |
 
 Naming convention: artifact names use ADO RIDs (`win-x64`, `osx-arm64`);
 in-tarball directories use Node's `${process.platform}-${process.arch}`
 (`win32-x64`, `darwin-arm64`) so the runtime addon loader finds them.
+Note: `linux-arm64` uses the same key for both ADO RID and the npm tarball
+directory (Node's `process.platform` is `"linux"`, `process.arch` is `"arm64"`).
 
 ## Build-time native dependencies
 
@@ -91,7 +94,8 @@ three env-var overrides:
 - `FOUNDRY_LOCAL_PREBUILD_DIR` — forces the `copy_addon_to_prebuilds`
   destination. Required on win-arm64 because `print-prebuild-dir.mjs`
   otherwise uses the host Node's `process.arch` (x64) and lands the
-  cross-compiled addon in `prebuilds/win32-x64/`.
+  cross-compiled addon in `prebuilds/win32-x64/`. Also set on linux-arm64
+  for consistency (though native builds already resolve the right arch).
 
 All three overrides are real DX wins for external consumers building
 the addon themselves against a downloaded native artifact.
@@ -104,6 +108,14 @@ gsl headers from `cpp-native-include` provide everything the linker
 needs. `FOUNDRY_LOCAL_PREBUILD_DIR` points the addon-copy step at
 `prebuilds/win32-arm64/`. No test stage — matches the C# / Python
 matrix.
+
+## Linux ARM64: native build + test
+
+Build and test on the `onnxruntime-linux-ARM64-CPU-2019` pool
+(`hostArchitecture: arm64`). Same `node-gyp rebuild` path as Linux x64.
+`install-native.cjs` selects the CPU-only ORT NuGet package
+(`Microsoft.ML.OnnxRuntime.Foundry`) for `linux-arm64` — matching the
+C++ native pipeline which also uses CPU-only ORT for ARM64.
 
 ## Test stage details
 
@@ -119,7 +131,7 @@ matrix.
 
 ## Pack stage
 
-Runs on a Windows agent (`onnxruntime-Win-CPU-2022`) after all four
+Runs on a Windows agent (`onnxruntime-Win-CPU-2022`) after all five
 builds. Downloads each `js-prebuild-<rid>` artifact, merges them into
 `sdk_v2/js/prebuilds/`, stamps the version via
 `npm version <v> --no-git-tag-version --allow-same-version`, builds
@@ -137,13 +149,14 @@ require routing back to a macOS agent to sign Darwin binaries; signing
 per-platform avoids that. The `.tgz` itself is **not signed** — npm has
 no equivalent to NuGet package signing.
 
-| Stage                  | Files signed                                                                  | ESRP keyCode  | Tool                  |
-|------------------------|-------------------------------------------------------------------------------|---------------|-----------------------|
-| `js_build_win_x64`     | `foundry_local_node.node`, `foundry_local_preload.node`, `foundry_local.dll`  | `CP-230012`   | SigntoolSign          |
-| `js_build_win_arm64`   | same three Windows files                                                      | `CP-230012`   | SigntoolSign          |
-| `js_build_osx_arm64`   | both `.node` files + `libfoundry_local.dylib`                                  | `CP-401337`   | `MacAppDeveloperSign` (placeholder — confirm against ESRP policy on first run) |
-| `js_build_linux_x64`   | none                                                                          | n/a           | Linux `.so` has no standard signing |
-| `js_pack`              | none                                                                          | n/a           | `.tgz` not signed by npm convention |
+| Stage                     | Files signed                                                                  | ESRP keyCode  | Tool                  |
+|---------------------------|-------------------------------------------------------------------------------|---------------|-----------------------|
+| `js_build_win_x64`        | `foundry_local_node.node`, `foundry_local_preload.node`, `foundry_local.dll`  | `CP-230012`   | SigntoolSign          |
+| `js_build_win_arm64`      | same three Windows files                                                      | `CP-230012`   | SigntoolSign          |
+| `js_build_osx_arm64`      | both `.node` files + `libfoundry_local.dylib`                                  | `CP-401337`   | `MacAppDeveloperSign` (placeholder — confirm against ESRP policy on first run) |
+| `js_build_linux_x64`      | none                                                                          | n/a           | Linux `.so` has no standard signing |
+| `js_build_linux_arm64`    | none                                                                          | n/a           | Linux `.so` has no standard signing |
+| `js_pack`                 | none                                                                          | n/a           | `.tgz` not signed by npm convention |
 
 Windows signing block is a near-copy of the SDK DLL signing step in
 [`steps-build-cs.yml`](templates/steps-build-cs.yml) — same
@@ -173,6 +186,19 @@ shape.
   `FOUNDRY_LOCAL_PREBUILD_DIR` (added for win-arm64 cross-compile).
 - `.gitignore` — negation rule preserving `sdk_v2/js/package-lock.json`
   past the repo-wide lockfile ignore.
+- `stages-js.yml` — added `js_build_linux_arm64` and `js_test_linux_arm64`
+  stages; updated `js_pack` dependsOn and artifact inputs to include
+  `js-prebuild-linux-arm64`.
+- `steps-build-js.yml` — added `linux-arm64` to `rid` values; added
+  `Set prebuild directory (linux-arm64)` bash step; expanded Linux/macOS
+  build and staging bash conditions to cover the new RID.
+- `steps-test-js.yml` — added `linux-arm64` to `rid` values; expanded
+  all Linux/macOS bash conditions to cover the new RID.
+- `steps-pack-js.yml` — added `linux-arm64` to the assembly sources
+  array; updated header comment.
+- `sdk_v2/js/script/install-native.cjs` — strengthened the missing-RID
+  case from a silent `console.warn + return` to a thrown Error with a
+  clear message directing users to `FOUNDRY_LOCAL_SKIP_INSTALL=1`.
 
 **Unchanged (intentional):**
 - `sdk_v2/js/script/copy-native.mjs` and `pack-prebuilds.mjs` — local-dev
@@ -191,10 +217,11 @@ shape.
   stamped via `npm version` in `js_pack`.
 - **Signing:** Authenticode for Windows, ESRP MacAppDeveloperSign for
   macOS, none for Linux, none for the `.tgz`.
-- **Single combined tarball:** `js_pack` assembles all four prebuilds
+- **Single combined tarball:** `js_pack` assembles all five prebuilds
   into one `foundry-local-sdk-<version>.tgz`.
 - **JS scoped out of WinML.**
-- **Linux ARM64 deferred** to the cross-cutting ARM64 work item.
+- **Linux ARM64 ORT package:** `Microsoft.ML.OnnxRuntime.Foundry` (CPU-only),
+  matching the C++ native ARM64 pipeline.
 
 ## Open items
 

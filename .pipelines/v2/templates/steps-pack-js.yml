@@ -6,9 +6,10 @@
 #   * js-prebuild-win-x64        -> prebuilds/win32-x64/
 #   * js-prebuild-win-arm64      -> prebuilds/win32-arm64/
 #   * js-prebuild-linux-x64      -> prebuilds/linux-x64/
+#   * js-prebuild-linux-arm64    -> prebuilds/linux-arm64/
 #   * js-prebuild-osx-arm64      -> prebuilds/darwin-arm64/
 #
-# Merges all four prebuilds into sdk_v2/js/prebuilds/, stamps the version,
+# Merges all five prebuilds into sdk_v2/js/prebuilds/, stamps the version,
 # builds TypeScript, and runs `npm pack` to produce a single multi-platform
 # .tgz that ships every supported addon binary.
 #
@@ -36,6 +37,7 @@ steps:
         @{ rid = 'win-x64'; plat = 'win32-x64' },
         @{ rid = 'win-arm64'; plat = 'win32-arm64' },
         @{ rid = 'linux-x64'; plat = 'linux-x64' },
+        @{ rid = 'linux-arm64'; plat = 'linux-arm64' },
         @{ rid = 'osx-arm64'; plat = 'darwin-arm64' }
       )
 

@@ -249,7 +249,7 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR "license"                          ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR "license_description"  ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_TASK_STR "task"                                ///< e.g. "chat-completion", "text-generation"
-#define FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR "model_provider"            ///< e.g. "AzureCatalog"
+#define FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR "model_provider"            ///< e.g. "FoundryLocal"
 #define FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR "min_fl_version"            ///< minimum Foundry Local version required
 #define FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR "parent_uri"                    ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR "tool_call_start"          ///< optional tool call start marker token

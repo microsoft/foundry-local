@@ -291,9 +291,12 @@ Manager::Manager(const Configuration& config)
     bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_dir.string(), register_ep));
   }
 
-  // WebGPU EP — always available (no hardware detection needed).
+  // WebGPU EP — only on platforms that ship a WebGPU EP payload (Windows
+  // x64/ARM64, macOS ARM64). Not injected on Linux or Android.
+#if defined(_WIN32) || defined(__APPLE__)
   const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
   bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
+#endif
 
   ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
 

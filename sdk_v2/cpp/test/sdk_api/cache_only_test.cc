@@ -100,7 +100,7 @@ class CacheOnlyTest : public ::testing::Test {
         {"version", version},
         {"alias", alias},
         {"uri", "azureml://registries/azureml/models/" + name + "/versions/" + std::to_string(version)},
-        {"providerType", "AzureFoundry"},
+        {"providerType", "FoundryLocal"},
         {"modelType", "ONNX"},
         {"task", task},
         {"publisher", publisher},
