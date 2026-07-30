@@ -55,7 +55,7 @@ using ::Microsoft::Applications::Events::TransmitProfile_BestEffort;
 using ::Microsoft::Applications::Events::status_t;
 
 constexpr uint64_t kCriticalData = MICROSOFT_KEYWORD_CRITICAL_DATA;
-constexpr int kMaxTeardownUploadTimeSec = 1;
+constexpr int kMaxTeardownUploadTimeSec = 0;
 
 std::string DecodeBase64(std::string_view encoded) {
   auto DecodeChar = [](char c) -> int {

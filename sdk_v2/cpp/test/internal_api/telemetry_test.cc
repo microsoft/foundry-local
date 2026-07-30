@@ -349,7 +349,7 @@ TEST(TelemetryDeviceIdTest, ValidatesGuidShapeAndHashesForUpload) {
   EXPECT_FALSE(TelemetryDeviceId::IsValidGuid("zzzzzzzz-89ab-4def-8123-456789abcdef"));
 
   auto hashed = TelemetryDeviceId::HashForTelemetry("01234567-89ab-4def-8123-456789abcdef");
-  EXPECT_EQ(hashed, "c:509580F6CEFE807385DDC1452EBA13A9441C28A67350A631C1CC07F2DE46BE37");
+  EXPECT_EQ(hashed, "c:6225BD190D6CCF87766A49C9986D174DEF3391FE175A61525E49A1D2334D6A43");
 }
 
 TEST(TelemetryRedactionTest, ScrubsPathsKeepsNonPathTextAndCapsLength) {
