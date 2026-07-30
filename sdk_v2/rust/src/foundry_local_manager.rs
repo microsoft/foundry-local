@@ -7,6 +7,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use tokio::sync::Mutex as AsyncMutex;
+
 use crate::catalog::Catalog;
 use crate::configuration::{FoundryLocalConfig, Logger};
 use crate::detail::api::Api;
@@ -40,6 +42,9 @@ pub struct FoundryLocalManager {
     native: Arc<NativeManager>,
     catalog: Catalog,
     urls: Mutex<Vec<String>>,
+    /// Serialises web-service start/stop so concurrent callers cannot race on
+    /// the native lifecycle state (which the C++ core mutates without a lock).
+    web_service_lock: AsyncMutex<()>,
     /// Application logger (stub — not yet wired into the native core).
     _logger: Option<Box<dyn Logger>>,
 }
@@ -143,6 +148,7 @@ impl FoundryLocalManager {
             native,
             catalog,
             urls: Mutex::new(Vec::new()),
+            web_service_lock: AsyncMutex::new(()),
             _logger: logger,
         });
 
@@ -186,6 +192,7 @@ impl FoundryLocalManager {
     /// The listening URLs are stored internally and can be retrieved via
     /// [`Self::urls`] after this method returns.
     pub async fn start_web_service(&self) -> Result<()> {
+        let _guard = self.web_service_lock.lock().await;
         let native = Arc::clone(&self.native);
         let urls = spawn_blocking(move || {
             native.web_service_start()?;
@@ -200,6 +207,7 @@ impl FoundryLocalManager {
 
     /// Stop the local web service.
     pub async fn stop_web_service(&self) -> Result<()> {
+        let _guard = self.web_service_lock.lock().await;
         let native = Arc::clone(&self.native);
         spawn_blocking(move || native.web_service_stop()).await?;
         self.urls
@@ -264,15 +272,13 @@ impl FoundryLocalManager {
     ) -> Result<EpDownloadResult> {
         let native = Arc::clone(&self.native);
 
-        // Snapshot requested EP names (default: all discoverable).
+        // Snapshot requested EP names (default: all discoverable). A discovery
+        // failure must propagate rather than collapse into an empty set, which
+        // would silently invoke the "download all" path and report success for
+        // zero requested providers.
         let requested: Vec<String> = match &names {
             Some(n) if !n.is_empty() => n.clone(),
-            _ => native
-                .discover_eps()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|e| e.name)
-                .collect(),
+            _ => native.discover_eps()?.into_iter().map(|e| e.name).collect(),
         };
 
         let (message, after) = spawn_blocking(move || {
@@ -282,9 +288,10 @@ impl FoundryLocalManager {
             let progress: Option<EpProgressCallback> =
                 progress_callback.map(|cb| cb as EpProgressCallback);
             let message =
-                native.download_and_register_eps(name_refs.as_deref(), progress, cancel_flag);
-            // Re-query registration state to synthesise the per-EP result.
-            let after = native.discover_eps().unwrap_or_default();
+                native.download_and_register_eps(name_refs.as_deref(), progress, cancel_flag)?;
+            // Re-query registration state to synthesise the per-EP result; an
+            // observation failure here must surface, not be masked as empty.
+            let after = native.discover_eps()?;
             Ok::<(Option<String>, Vec<EpInfo>), FoundryLocalError>((message, after))
         })
         .await?;

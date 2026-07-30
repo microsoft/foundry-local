@@ -105,6 +105,20 @@ pub fn get_test_manager() -> &'static FoundryLocalManager {
     })
 }
 
+/// Serialises the web-service integration tests.
+///
+/// The local web service is a single process-wide native resource and
+/// [`FoundryLocalManager::start_web_service`] is not idempotent, yet Rust runs
+/// `#[tokio::test]`s concurrently. Each web-service test holds this async lock
+/// for its whole body so their start/stop lifecycles never overlap.
+pub async fn web_service_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    static WEB_SERVICE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    WEB_SERVICE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 // ── Tool definitions ─────────────────────────────────────────────────────────
 
 /// Returns a tool definition for a simple "multiply" function.

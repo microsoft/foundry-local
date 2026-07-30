@@ -391,7 +391,9 @@ fn preload_dependencies(native_dir: Option<&Path>) -> Vec<Library> {
 /// 4. The directory of the current executable.
 /// 5. Bare library name resolved via the system search path.
 fn resolve_library_path(library_path: Option<&str>) -> Result<(PathBuf, Option<PathBuf>)> {
-    // 1. Explicit override: a file path or a directory.
+    // 1. Explicit override: a file path or a directory. An explicit override is
+    //    authoritative — if it cannot resolve the library, fail rather than
+    //    silently loading an unrelated one from the environment or system path.
     if let Some(p) = library_path {
         let path = Path::new(p);
         if path.is_file() {
@@ -402,6 +404,12 @@ fn resolve_library_path(library_path: Option<&str>) -> Result<(PathBuf, Option<P
         if candidate.is_file() {
             return Ok((candidate, Some(path.to_path_buf())));
         }
+        return Err(FoundryLocalError::LibraryLoad {
+            reason: format!(
+                "configured library_path {p:?} does not resolve the foundry_local library \
+                 (expected an existing file, or a directory containing {LIB_FILE})"
+            ),
+        });
     }
 
     let mut dirs: Vec<PathBuf> = Vec::new();

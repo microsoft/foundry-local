@@ -82,6 +82,7 @@ async fn should_process_request_and_return_response() {
         "response should contain at least one item"
     );
 
+    drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
 }
 
@@ -107,6 +108,7 @@ async fn should_stream_items() {
         "Expected streamed text to contain '42', got: {collected}"
     );
 
+    drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
 }
 
@@ -128,6 +130,7 @@ async fn should_track_turn_count() {
         session.turn_count()
     );
 
+    drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
 }
 
@@ -144,6 +147,7 @@ async fn should_embed_text() {
     let norm: f32 = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
     assert!(norm > 0.0, "embedding should be a non-zero vector");
 
+    drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
 }
 
@@ -166,5 +170,6 @@ async fn should_embed_batch() {
         assert_eq!(vector.len(), 1024, "unexpected embedding dimension");
     }
 
+    drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
 }

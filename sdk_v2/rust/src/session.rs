@@ -78,6 +78,7 @@ impl Session {
         let native = Arc::new(NativeRequest::new(Arc::clone(&inner.api))?);
         let native_task = Arc::clone(&native);
         let handle = tokio::task::spawn_blocking(move || {
+            let _guard = inner.lock_ops();
             populate_native_request(&inner.api, &native_task, &request)?;
             let response = inner.process_request(&native_task)?;
             Ok::<Response, FoundryLocalError>(Response::from_native(&response))

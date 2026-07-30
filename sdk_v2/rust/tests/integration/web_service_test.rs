@@ -5,6 +5,7 @@ use serde_json::json;
 /// verify we get a valid response, then stop the service.
 #[tokio::test]
 async fn should_complete_chat_via_rest_api() {
+    let _ws = common::web_service_guard().await;
     let manager = common::get_test_manager();
     let catalog = manager.catalog();
     let model = catalog
@@ -67,6 +68,7 @@ async fn should_complete_chat_via_rest_api() {
 /// collect SSE chunks, verify we get a valid streamed response.
 #[tokio::test]
 async fn should_stream_chat_via_rest_api() {
+    let _ws = common::web_service_guard().await;
     let manager = common::get_test_manager();
     let catalog = manager.catalog();
     let model = catalog
@@ -105,13 +107,25 @@ async fn should_stream_chat_via_rest_api() {
         response.status()
     );
 
+    // SSE chunks from `response.chunk()` do not align with line or UTF-8
+    // boundaries, so buffer raw bytes and parse only complete `\n`-terminated
+    // lines, keeping any trailing partial line for the next chunk.
     let mut full_text = String::new();
-    while let Some(chunk) = response.chunk().await.expect("chunk read failed") {
-        let text = String::from_utf8_lossy(&chunk);
-        for line in text.lines() {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut done = false;
+    while !done {
+        let Some(chunk) = response.chunk().await.expect("chunk read failed") else {
+            break;
+        };
+        buf.extend_from_slice(&chunk);
+        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim();
-            if let Some(data) = line.strip_prefix("data: ") {
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
                 if data == "[DONE]" {
+                    done = true;
                     break;
                 }
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
@@ -143,6 +157,7 @@ async fn should_stream_chat_via_rest_api() {
 /// urls() should return the listening addresses after start_web_service.
 #[tokio::test]
 async fn should_expose_urls_after_start() {
+    let _ws = common::web_service_guard().await;
     let manager = common::get_test_manager();
 
     manager

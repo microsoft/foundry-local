@@ -459,6 +459,12 @@ fn run_worker(
     let run = (|| -> Result<()> {
         let session = NativeSession::create(&model)?;
 
+        // Serialise this session's install→process→uninstall critical section.
+        // The session is owned per-worker (un-shared), so the guard is
+        // uncontended, but taking it keeps the "every native session op runs
+        // under op_lock" invariant uniform across all streaming paths.
+        let guard = session.lock_ops();
+
         let mut ctx = Box::new(LiveCtx {
             api: Arc::clone(&api),
             tx: output_tx.clone(),
@@ -484,6 +490,7 @@ fn run_worker(
         // on the error path too — so the native session never retains a dangling
         // `user_data` pointer into the freed context.
         let _ = session.set_streaming_callback(None, std::ptr::null_mut());
+        drop(guard);
         let response = response?;
 
         // Aggregate the terminal transcript from the final response items. The

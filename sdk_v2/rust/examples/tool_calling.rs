@@ -111,6 +111,7 @@ async fn main() -> Result<()> {
 
     if tool_results.is_empty() {
         println!("(model did not request any tool calls)");
+        drop(session);
         model.unload().await?;
         return Ok(());
     }
@@ -140,6 +141,9 @@ async fn main() -> Result<()> {
     println!();
 
     // ── 6. Clean up──────────────────────────────────────────────────────
+    // Drop the session first: the core refuses to unload a model that still
+    // has a live session.
+    drop(session);
     println!("\nUnloading model…");
     model.unload().await?;
     println!("Done.");

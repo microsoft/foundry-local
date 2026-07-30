@@ -93,6 +93,9 @@ async fn main() -> Result<()> {
     println!();
 
     // ── 7. Unload the model──────────────────────────────────────────────
+    // Drop the session first: the core refuses to unload a model that still
+    // has a live session.
+    drop(session);
     println!("\nUnloading model…");
     model.unload().await?;
     println!("Done.");

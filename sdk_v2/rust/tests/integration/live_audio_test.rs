@@ -51,11 +51,12 @@ async fn live_streaming_e2e_with_synthetic_pcm_returns_valid_response() {
     assert_eq!(session.settings.sample_rate, 16000);
     assert_eq!(session.settings.channels, 1);
 
-    if let Err(e) = session.start(None).await {
-        eprintln!("Skipping E2E test: could not start session: {e}");
-        model.unload().await.ok();
-        return;
-    }
+    // The model is confirmed available, cached, and loaded above, so a failure
+    // to start live transcription is a real regression — fail rather than skip.
+    session
+        .start(None)
+        .await
+        .expect("live transcription session should start");
 
     // Start collecting results in background (must start before pushing audio)
     let mut stream = session.get_stream().await.expect("get_stream failed");

@@ -55,8 +55,60 @@ fn load_deps_versions(manifest_dir: &Path) -> DepsVersions {
     }
 }
 
+/// Fail the build if the crate-local `deps_versions.json` has drifted from the
+/// canonical `sdk_v2/deps_versions.json`.
+///
+/// The crate copy is what ships in the published crate (Cargo cannot `include`
+/// files outside the package root), while the canonical file is the single
+/// source of truth in the source tree. When both are present — i.e. an in-repo
+/// build — their version pins must match. When the canonical parent is absent
+/// (a build from the published crate), there is nothing to check.
+fn assert_deps_versions_in_sync(manifest_dir: &Path) {
+    let crate_copy = manifest_dir.join("deps_versions.json");
+    let canonical = manifest_dir.join("..").join("deps_versions.json");
+    println!("cargo:rerun-if-changed={}", canonical.display());
+
+    let (Ok(local), Ok(parent)) = (
+        fs::read_to_string(&crate_copy),
+        fs::read_to_string(&canonical),
+    ) else {
+        return; // published crate: canonical parent absent — nothing to check.
+    };
+
+    // Compare version pins only, ignoring the free-form "_comment" field so the
+    // two files may carry their own descriptive comments.
+    let pins = |s: &str| -> serde_json::Value {
+        let stripped = s.strip_prefix('\u{FEFF}').unwrap_or(s);
+        let mut v: serde_json::Value =
+            serde_json::from_str(stripped).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("_comment");
+        }
+        v
+    };
+
+    assert!(
+        pins(&local) == pins(&parent),
+        "deps_versions.json drift: {} differs from canonical {}. \
+         Re-copy the canonical file into the crate before publishing.",
+        crate_copy.display(),
+        canonical.display()
+    );
+}
+
+/// Cargo's *target* OS (e.g. "windows", "linux", "macos"), not the build host.
+/// Set by Cargo for build scripts, so it is correct under cross-compilation.
+fn target_os() -> String {
+    env::var("CARGO_CFG_TARGET_OS").unwrap_or_default()
+}
+
+/// Cargo's *target* architecture (e.g. "x86_64", "aarch64"), not the build host.
+fn target_arch() -> String {
+    env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default()
+}
+
 fn get_rid() -> Option<&'static str> {
-    match (env::consts::OS, env::consts::ARCH) {
+    match (target_os().as_str(), target_arch().as_str()) {
         ("windows", "x86_64") => Some("win-x64"),
         ("windows", "aarch64") => Some("win-arm64"),
         ("linux", "x86_64") => Some("linux-x64"),
@@ -68,7 +120,7 @@ fn get_rid() -> Option<&'static str> {
 }
 
 fn native_lib_extension() -> &'static str {
-    match env::consts::OS {
+    match target_os().as_str() {
         "windows" => "dll",
         "macos" => "dylib",
         _ => "so",
@@ -83,11 +135,7 @@ struct NuGetPackage {
 
 fn get_packages(deps: &DepsVersions, runtime_version: &str) -> Vec<NuGetPackage> {
     let ext = native_lib_extension();
-    let prefix = if env::consts::OS == "windows" {
-        ""
-    } else {
-        "lib"
-    };
+    let prefix = if target_os() == "windows" { "" } else { "lib" };
     let runtime_name = if env::var("CARGO_FEATURE_WINML").is_ok() {
         "Microsoft.AI.Foundry.Local.Runtime.WinML"
     } else {
@@ -256,8 +304,11 @@ fn copy_from_local_dir(src: &Path, out_dir: &Path) -> bool {
 fn emit_native_dir(out_dir: &Path) {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-env=FOUNDRY_NATIVE_DIR={}", out_dir.display());
-    #[cfg(windows)]
-    println!("cargo:rustc-link-lib=kernel32");
+    // Link kernel32 when *targeting* Windows (not merely when built on Windows),
+    // so cross-compiled builds get the right platform libraries.
+    if target_os() == "windows" {
+        println!("cargo:rustc-link-lib=kernel32");
+    }
 }
 
 fn main() {
@@ -268,6 +319,10 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+
+    // Guard: the crate-local deps_versions.json (what ships in the published
+    // crate) must not drift from the canonical sdk_v2/deps_versions.json.
+    assert_deps_versions_in_sync(&manifest_dir);
 
     // 1. Local C++ build output (dev path).
     if let Ok(local) = env::var("FOUNDRY_LOCAL_NATIVE_BIN_DIR") {
@@ -286,8 +341,8 @@ fn main() {
             None => {
                 println!(
                     "cargo:warning=Unsupported platform {} {}; skipping native download.",
-                    env::consts::OS,
-                    env::consts::ARCH
+                    target_os(),
+                    target_arch()
                 );
                 return;
             }

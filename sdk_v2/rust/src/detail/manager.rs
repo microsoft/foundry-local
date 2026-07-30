@@ -130,20 +130,33 @@ impl NativeManager {
         Ok(out)
     }
 
-    /// Run an EP download/registration. Returns `None` on full success or
-    /// `Some(message)` describing a partial failure (a non-null native status).
+    /// Run an EP download/registration. Returns `Ok(None)` on full success or
+    /// `Ok(Some(message))` describing a partial failure (a non-null native
+    /// status). Returns `Err` if a requested EP name is not a valid C string.
     pub(crate) fn download_and_register_eps(
         &self,
         names: Option<&[&str]>,
         progress: Option<EpProgressCallback>,
         cancel_flag: Option<Arc<AtomicBool>>,
-    ) -> Option<String> {
-        // Build the optional C array of name pointers (kept alive across the call).
-        let name_cstrings: Option<Vec<std::ffi::CString>> = names.map(|ns| {
-            ns.iter()
-                .filter_map(|n| std::ffi::CString::new(*n).ok())
-                .collect()
-        });
+    ) -> Result<Option<String>> {
+        // Build the optional C array of name pointers (kept alive across the
+        // call). Convert fallibly: an interior NUL is a caller error. Silently
+        // dropping such names could shrink a targeted request to an empty list,
+        // which the ABI then treats as "download all discoverable EPs".
+        let name_cstrings: Option<Vec<std::ffi::CString>> = match names {
+            Some(ns) => Some(
+                ns.iter()
+                    .map(|n| {
+                        std::ffi::CString::new(*n).map_err(|_| FoundryLocalError::Validation {
+                            reason: format!(
+                                "execution provider name contains an interior NUL byte: {n:?}"
+                            ),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            None => None,
+        };
         let name_ptrs: Option<Vec<*const c_char>> = name_cstrings
             .as_ref()
             .map(|cs| cs.iter().map(|c| c.as_ptr()).collect());
@@ -167,7 +180,7 @@ impl NativeManager {
                 self.ptr, names_ptr, names_len, callback, user_data,
             )
         };
-        self.api.status_message(status)
+        Ok(self.api.status_message(status))
     }
 
     /// Begin graceful shutdown of the native manager (`Manager_Shutdown`).

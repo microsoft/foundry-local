@@ -289,6 +289,15 @@ impl Drop for NativeItemQueue {
 pub(crate) struct NativeSession {
     pub(crate) api: Arc<Api>,
     ptr: *mut flSession,
+    /// Serialises native operations on this session. The public
+    /// [`Session`](crate::Session) / [`ChatSession`](crate::ChatSession) API
+    /// wraps a session in an `Arc` and hands out clones, so several tasks may
+    /// touch the same native session concurrently. The native layer is not
+    /// internally synchronised for concurrent use, so every operation that
+    /// mutates or drives the session takes this lock first — except the raw
+    /// [`process_request`](Self::process_request), which the streaming paths
+    /// invoke while already holding the lock across install→process→uninstall.
+    op_lock: std::sync::Mutex<()>,
     /// Keeps the native manager (which owns the model this session was created
     /// from) alive for the session's lifetime; never dereferenced here.
     _manager: Arc<NativeManager>,
@@ -309,8 +318,19 @@ impl NativeSession {
         Ok(Self {
             api,
             ptr,
+            op_lock: std::sync::Mutex::new(()),
             _manager: model.manager(),
         })
+    }
+
+    /// Acquire the per-session operation lock, serialising native calls that
+    /// touch this session. Poison-resilient: a panic while another caller holds
+    /// the guard does not wedge the session, because the guard protects a `()`
+    /// and the native state it orders is unaffected by Rust-side unwinding.
+    pub(crate) fn lock_ops(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.op_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(crate) fn set_streaming_callback(
@@ -326,6 +346,7 @@ impl NativeSession {
 
     /// Apply session-scoped options from a native key/value collection.
     pub(crate) fn set_options(&self, options: *const flKeyValuePairs) -> Result<()> {
+        let _guard = self.lock_ops();
         let status = unsafe { (self.api.inference_api().Session_SetOptions)(self.ptr, options) };
         self.api.check(status)
     }
@@ -337,16 +358,16 @@ impl NativeSession {
         description: Option<&str>,
         json_schema: &str,
     ) -> Result<()> {
+        let _guard = self.lock_ops();
         let name_c = super::api::to_cstring(name)?;
-        let desc_c = match description {
-            Some(d) => Some(super::api::to_cstring(d)?),
-            None => None,
-        };
+        // The C ABI rejects a null description (INVALID_ARGUMENT), so send an
+        // empty C string when the caller did not supply one.
+        let desc_c = super::api::to_cstring(description.unwrap_or(""))?;
         let schema_c = super::api::to_cstring(json_schema)?;
         let def = flToolDefinition {
             version: FOUNDRY_LOCAL_API_VERSION,
             name: name_c.as_ptr(),
-            description: desc_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+            description: desc_c.as_ptr(),
             json_schema: schema_c.as_ptr(),
         };
         let status =
@@ -356,6 +377,7 @@ impl NativeSession {
 
     /// Remove a previously-registered tool by name. Returns whether one was removed.
     pub(crate) fn remove_tool_definition(&self, name: &str) -> Result<bool> {
+        let _guard = self.lock_ops();
         let name_c = super::api::to_cstring(name)?;
         let mut removed = false;
         let status = unsafe {
@@ -371,11 +393,13 @@ impl NativeSession {
 
     /// The number of completed turns.
     pub(crate) fn turn_count(&self) -> usize {
+        let _guard = self.lock_ops();
         unsafe { (self.api.inference_api().Session_GetTurnCount)(self.ptr) }
     }
 
     /// Rewind the last `count` turns, dropping their messages and replies.
     pub(crate) fn undo_turns(&self, count: usize) -> Result<()> {
+        let _guard = self.lock_ops();
         let status = unsafe { (self.api.inference_api().Session_UndoTurns)(self.ptr, count) };
         self.api.check(status)
     }
@@ -397,6 +421,7 @@ impl NativeSession {
     /// The request JSON is sent as a single `OPENAI_JSON` TEXT item; the response
     /// payload is the text of the first response item. Blocking.
     pub(crate) fn run_openai_json(&self, request_json: &str) -> Result<String> {
+        let _guard = self.lock_ops();
         let request = NativeRequest::new(Arc::clone(&self.api))?;
         let item = make_openai_json_item(&self.api, request_json)?;
         request.add_item(item, true)?;
@@ -491,6 +516,11 @@ pub(crate) fn run_openai_json_streaming(
         });
         let ctx_ptr = &*ctx as *const StreamCtx as *mut std::ffi::c_void;
 
+        // Serialise the whole install→process→uninstall critical section: the
+        // session may be shared via the public API, and the native streaming
+        // callback slot is per-session state the native layer does not lock.
+        let guard = session.lock_ops();
+
         if let Err(e) = session.set_streaming_callback(Some(stream_trampoline), ctx_ptr) {
             let _ = tx.send(Err(e));
             return;
@@ -507,8 +537,9 @@ pub(crate) fn run_openai_json_streaming(
             let _ = tx.send(Err(e));
         }
 
-        // Uninstall the callback before the context/session are dropped.
+        // Uninstall the callback, then release the op-lock before dropping ctx.
         let _ = session.set_streaming_callback(None, ptr::null_mut());
+        drop(guard);
         drop(ctx);
         drop(session);
     });
@@ -581,6 +612,11 @@ pub(crate) fn run_item_streaming(
         });
         let ctx_ptr = &*ctx as *const ItemStreamCtx as *mut std::ffi::c_void;
 
+        // Serialise the whole install→process→uninstall critical section: the
+        // session may be shared via the public API, and the native streaming
+        // callback slot is per-session state the native layer does not lock.
+        let guard = session.lock_ops();
+
         if let Err(e) = session.set_streaming_callback(Some(item_stream_trampoline), ctx_ptr) {
             let _ = tx.send(Err(e));
             return;
@@ -608,8 +644,9 @@ pub(crate) fn run_item_streaming(
             let _ = tx.send(Err(e));
         }
 
-        // Uninstall the callback before the context/session are dropped.
+        // Uninstall the callback, then release the op-lock before dropping ctx.
         let _ = session.set_streaming_callback(None, ptr::null_mut());
+        drop(guard);
         drop(ctx);
         drop(session);
     });

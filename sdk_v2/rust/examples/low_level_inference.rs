@@ -78,6 +78,9 @@ async fn main() -> Result<()> {
     println!("\nCompleted {} turn(s).", session.turn_count());
 
     // ── 6. Unload the model ──────────────────────────────────────────────
+    // Drop the session first: the core refuses to unload a model that still
+    // has a live session.
+    drop(session);
     model.unload().await?;
     println!("Done.");
 
