@@ -398,8 +398,8 @@ Manager::Manager(const Configuration& config)
 
   telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, config_.disable_nonessential_telemetry);
 
-  const bool is_ci_environment = TelemetryEnvironment::IsCiEnvironment();
-  if (!is_ci_environment) {
+  const bool suppress_telemetry = TelemetryEnvironment::ShouldSuppressTelemetry();
+  if (!suppress_telemetry) {
     try {
       telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
                                                     !config_.disable_nonessential_telemetry));
@@ -411,7 +411,7 @@ Manager::Manager(const Configuration& config)
   ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_,
                                               *telemetry_);
 
-  if (!config_.disable_nonessential_telemetry && !is_ci_environment) {
+  if (!config_.disable_nonessential_telemetry && !suppress_telemetry) {
     try {
       telemetry_->RecordHardwareInfo(BuildHardwareInfo(ep_detector_->GetAvailableDevicesToEPs()));
     } catch (...) {

@@ -13,8 +13,14 @@ class TelemetryEnvironment {
  public:
   /// Returns true if any well-known CI environment variable is set to a truthy
   /// value. The set matches neutron-server's TelemetryEnvironment.cs.
-  /// In CI, OneDsTelemetry skips Initialize entirely — no 1DS events emitted.
   static bool IsCiEnvironment();
+
+  /// Returns true when Foundry Local's own test harness is running.
+  /// This is an internal test signal, not a user-facing telemetry opt-out.
+  static bool IsRunningUnitTests();
+
+  /// Returns true when CI or the internal unit-test harness requires full suppression.
+  static bool ShouldSuppressTelemetry();
 
   /// Truthy-value semantics: a non-empty, non-whitespace string whose trimmed
   /// value is not "0", "false", "no", or "off" (case-insensitive).

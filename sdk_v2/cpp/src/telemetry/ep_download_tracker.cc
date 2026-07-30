@@ -103,7 +103,11 @@ void EpDownloadTracker::RecordEvent(ActionStatus incomplete_stage_status) {
   info.register_ready_state = ReadyStateToString(register_ready_state_);
   info.register_status = register_status_;
   info.register_duration_ms = register_duration_ms_;
-  telemetry_.RecordEpDownloadAndRegister(info);
+  try {
+    telemetry_.RecordEpDownloadAndRegister(info);
+  } catch (...) {
+    // Telemetry is best-effort and must not change EP download or registration behavior.
+  }
 }
 
 const char* EpDownloadTracker::ReadyStateToString(EpReadyState state) {

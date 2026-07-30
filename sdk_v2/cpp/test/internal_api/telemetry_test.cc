@@ -147,6 +147,22 @@ TEST(TelemetryEnvironmentTest, TruthyValueParsing) {
 TEST(TelemetryEnvironmentTest, DetectsCiEnvironmentFlag) {
   ScopedEnvVar ci("CI", "true");
   EXPECT_TRUE(TelemetryEnvironment::IsCiEnvironment());
+  EXPECT_TRUE(TelemetryEnvironment::ShouldSuppressTelemetry());
+}
+
+TEST(TelemetryEnvironmentTest, RunningUnitTestsSuppressesTelemetry) {
+  ScopedEnvVar running_unit_tests("ORT_RUNNING_UNIT_TESTS", "1");
+  EXPECT_TRUE(TelemetryEnvironment::IsRunningUnitTests());
+  EXPECT_TRUE(TelemetryEnvironment::ShouldSuppressTelemetry());
+
+  ScopedEnvVar not_running_unit_tests("ORT_RUNNING_UNIT_TESTS", "0");
+  EXPECT_FALSE(TelemetryEnvironment::IsRunningUnitTests());
+}
+
+TEST(TelemetryEnvironmentTest, TestBinaryUsesUnitTestTelemetryGate) {
+  EXPECT_EQ(TelemetryEnvironment::GetEnv("ORT_RUNNING_UNIT_TESTS"), "1");
+  EXPECT_TRUE(TelemetryEnvironment::IsRunningUnitTests());
+  EXPECT_TRUE(TelemetryEnvironment::ShouldSuppressTelemetry());
 }
 
 TEST(TelemetryContextTest, SuppressesUnneededCommonContext) {
@@ -333,7 +349,7 @@ TEST(TelemetryDeviceIdTest, ValidatesGuidShapeAndHashesForUpload) {
   EXPECT_FALSE(TelemetryDeviceId::IsValidGuid("zzzzzzzz-89ab-4def-8123-456789abcdef"));
 
   auto hashed = TelemetryDeviceId::HashForTelemetry("01234567-89ab-4def-8123-456789abcdef");
-  EXPECT_EQ(hashed, "c:6225BD190D6CCF87766A49C9986D174DEF3391FE175A61525E49A1D2334D6A43");
+  EXPECT_EQ(hashed, "c:509580F6CEFE807385DDC1452EBA13A9441C28A67350A631C1CC07F2DE46BE37");
 }
 
 TEST(TelemetryRedactionTest, ScrubsPathsKeepsNonPathTextAndCapsLength) {

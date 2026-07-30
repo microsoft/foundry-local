@@ -60,6 +60,7 @@ class OneDsTelemetry : public ITelemetry {
   struct Impl;
 
   std::shared_lock<std::shared_mutex> LockForLogging(bool require_upload = true) const;
+  void TeardownImpl() noexcept;
 
   TelemetryLogger local_log_;
   TelemetryMetadata metadata_;       // Cached at construction.

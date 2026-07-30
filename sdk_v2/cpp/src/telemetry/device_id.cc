@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -33,6 +34,8 @@ namespace {
 
 constexpr size_t kMaxDeviceIdFileSize = 256;
 constexpr const char* kDeviceIdFileName = "deviceid";
+// The raw UUID is shared with ORT/OGA locally, but each product derives a different upload identifier.
+constexpr std::string_view kDeviceIdHashSalt = "foundry-local:";
 #ifdef _WIN32
 constexpr const char* kRegistryPath = "SOFTWARE\\Microsoft\\DeveloperTools\\.onnxruntime";
 constexpr const char* kRegistryValueName = "deviceid";
@@ -361,7 +364,10 @@ std::string TelemetryDeviceId::HashForTelemetry(std::string_view raw_device_id) 
   if (raw_device_id.empty()) {
     return {};
   }
-  return "c:" + Sha256String(raw_device_id);
+
+  std::string salted_id{kDeviceIdHashSalt};
+  salted_id.append(raw_device_id);
+  return "c:" + Sha256String(salted_id);
 }
 
 bool TelemetryDeviceId::IsValidGuid(std::string_view value) {
