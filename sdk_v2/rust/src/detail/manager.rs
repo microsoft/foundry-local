@@ -67,6 +67,15 @@ impl NativeManager {
         })
     }
 
+    /// Clone the shared handle to the loaded native API.
+    ///
+    /// Used when rebuilding an outer manager wrapper around an already-live
+    /// native manager, so the existing loaded library is reused rather than
+    /// loaded again.
+    pub(crate) fn api(&self) -> Arc<Api> {
+        Arc::clone(&self.api)
+    }
+
     /// The manager-owned catalog handle.
     pub(crate) fn catalog_ptr(&self) -> Result<*mut flCatalog> {
         let mut catalog: *mut flCatalog = std::ptr::null_mut();

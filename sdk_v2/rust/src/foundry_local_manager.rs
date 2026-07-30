@@ -17,21 +17,42 @@ use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
 use crate::types::{EpDownloadResult, EpInfo};
 
-/// Process-wide weak handle to the live manager.
+/// Process-wide bookkeeping for the manager singleton.
 ///
-/// Holds a [`Weak`] so the global never keeps the manager alive past its last
-/// strong reference: when the final [`Arc`] returned by
-/// [`FoundryLocalManager::create`] is dropped, the native manager is torn down
-/// deterministically via [`Drop`] — while the ORT runtime is still alive and
-/// before the library's C++ static destructors run.
+/// The native core permits only one live `flManager` and requires it to remain
+/// valid until every `Model`/`Session` derived from it is destroyed. Those
+/// derived handles keep the inner [`NativeManager`] alive via [`Arc`], but *not*
+/// the outer [`FoundryLocalManager`]. Tracking only the outer would let its
+/// [`Weak`] expire while the native manager is still alive through a derived
+/// handle, so the next [`create`](FoundryLocalManager::create) would call
+/// `Manager_Create` again and be rejected.
+///
+/// We therefore track both lifetimes:
+/// * `outer` — the live wrapper, so concurrent callers share the *same* handle
+///   (and thus a single web-service lock); and
+/// * `native` — the inner manager, alive via the outer *or* any derived handle,
+///   so a caller can reuse the existing native manager (rebuilding a fresh
+///   wrapper) instead of attempting a second, rejected `Manager_Create`.
+#[derive(Default)]
+struct SharedInstance {
+    outer: Weak<FoundryLocalManager>,
+    native: Weak<NativeManager>,
+}
+
+/// Process-wide slot holding the shared-instance bookkeeping.
+///
+/// Both handles are [`Weak`], so the global never keeps the manager alive past
+/// its last strong reference: teardown still runs deterministically via [`Drop`]
+/// when the final strong reference (outer or derived) is released — while the
+/// ORT runtime is alive and before the library's C++ static destructors run.
 ///
 /// Wrapped in a [`OnceLock`] (rather than a `const` `Mutex::new`) to keep the
 /// crate compatible with its minimum supported Rust version.
-static INSTANCE: OnceLock<Mutex<Weak<FoundryLocalManager>>> = OnceLock::new();
+static INSTANCE: OnceLock<Mutex<SharedInstance>> = OnceLock::new();
 
-/// The lazily-initialised slot holding the shared-instance weak handle.
-fn instance_slot() -> &'static Mutex<Weak<FoundryLocalManager>> {
-    INSTANCE.get_or_init(|| Mutex::new(Weak::new()))
+/// The lazily-initialised slot holding the shared-instance bookkeeping.
+fn instance_slot() -> &'static Mutex<SharedInstance> {
+    INSTANCE.get_or_init(|| Mutex::new(SharedInstance::default()))
 }
 
 /// Primary entry point for interacting with Foundry Local.
@@ -105,13 +126,15 @@ impl<'a> EpDownloadBuilder<'a> {
 impl FoundryLocalManager {
     /// Initialise the SDK and return a shared handle to the manager.
     ///
-    /// While at least one returned [`Arc`] is alive, every call returns the
-    /// **same** instance (a process-wide singleton) and the `config` passed to
-    /// later calls is ignored. The native manager is torn down once every handle
-    /// derived from it is gone — this `Arc`, plus any [`Model`](crate::Model),
-    /// client, or session it produced, each of which keeps the native manager
-    /// alive so handles can safely outlive this `Arc`. A subsequent call then
-    /// builds a fresh instance from the new `config`.
+    /// While at least one handle is alive — this `Arc`, or any
+    /// [`Model`](crate::Model), client, or session derived from it, each of
+    /// which keeps the native manager alive — every call returns a handle to the
+    /// **same** native manager and the `config` passed to later calls is ignored.
+    /// If the `Arc` returned here is dropped while a derived handle is still
+    /// alive, a subsequent call rebuilds a lightweight wrapper around the
+    /// still-live native manager rather than creating a second one (the core
+    /// permits only one). Once every handle is gone, the next call performs a
+    /// fresh initialisation from the new `config`.
     ///
     /// Teardown runs via [`Drop`] when the final handle is released — not via a
     /// process-exit hook — so the native manager (and its EP unregistration)
@@ -119,19 +142,39 @@ impl FoundryLocalManager {
     /// the C++ SDK's local-`Manager` semantics and avoids the WebGPU
     /// `ReleaseEpFactory` teardown throw (ORT #29206).
     pub fn create(config: FoundryLocalConfig) -> Result<Arc<Self>> {
-        // Hold the lock across initialisation so only one thread builds the
-        // instance; concurrent callers then observe and share it. A poisoned
-        // lock is recoverable: the guarded `Weak` is valid regardless of panics.
+        // Hold the lock across the whole decision so the reuse check, any native
+        // creation, and the slot update are atomic; concurrent callers then
+        // observe and share the result. A poisoned lock is recoverable: the
+        // guarded weak handles are valid regardless of panics.
         let mut slot = instance_slot()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        // Reuse the live instance if one already exists.
-        if let Some(existing) = slot.upgrade() {
+        // 1. A live outer wrapper already exists: share it.
+        if let Some(existing) = slot.outer.upgrade() {
             return Ok(existing);
         }
 
-        let mut config = config;
+        // 2. The outer wrapper is gone, but the native manager is still alive via
+        //    a derived Model/client/session. Rebuild a wrapper around it rather
+        //    than calling `Manager_Create` again (the core permits only one live
+        //    manager and would reject a second creation).
+        if let Some(native) = slot.native.upgrade() {
+            let manager = Self::wrap_existing(native, config)?;
+            slot.outer = Arc::downgrade(&manager);
+            return Ok(manager);
+        }
+
+        // 3. Nothing is alive: perform a full initialisation.
+        let manager = Self::initialise(config)?;
+        slot.native = Arc::downgrade(&manager.native);
+        slot.outer = Arc::downgrade(&manager);
+        Ok(manager)
+    }
+
+    /// Perform a full initialisation: load the library, create the native
+    /// manager, and build the catalog view and outer wrapper.
+    fn initialise(mut config: FoundryLocalConfig) -> Result<Arc<Self>> {
         let api = Arc::new(Api::load(config.library_path_ref())?);
         let logger = config.take_logger();
         let native_config = config.build_native(&api)?;
@@ -144,18 +187,43 @@ impl FoundryLocalManager {
         let catalog_ptr = native.catalog_ptr()?;
         let catalog = Catalog::new(Arc::clone(&api), catalog_ptr, Arc::clone(&native))?;
 
-        let manager = Arc::new(FoundryLocalManager {
+        Ok(Arc::new(FoundryLocalManager {
             native,
             catalog,
             urls: Mutex::new(Vec::new()),
             web_service_lock: AsyncMutex::new(()),
             _logger: logger,
-        });
+        }))
+    }
 
-        // Record a weak reference so future calls share this instance without
-        // keeping it alive past the caller's last strong handle.
-        *slot = Arc::downgrade(&manager);
-        Ok(manager)
+    /// Build a fresh outer wrapper around an already-live native manager.
+    ///
+    /// Reuses the existing native manager (and its loaded library), so no second
+    /// `Manager_Create` is attempted; only the outer-side state (catalog view,
+    /// URL cache, web-service lock, logger) is rebuilt. The rest of `config` is
+    /// ignored, matching the process-wide singleton contract.
+    fn wrap_existing(
+        native: Arc<NativeManager>,
+        mut config: FoundryLocalConfig,
+    ) -> Result<Arc<Self>> {
+        let logger = config.take_logger();
+        let catalog_ptr = native.catalog_ptr()?;
+        let catalog = Catalog::new(native.api(), catalog_ptr, Arc::clone(&native))?;
+
+        // The live native manager may already be running a web service (a prior
+        // outer wrapper started it, then was dropped while a derived handle kept
+        // the native alive). Seed the URL cache from native so `urls()` reflects
+        // the running service instead of misreporting it as stopped. This is a
+        // non-throwing native getter that returns empty when nothing is running.
+        let urls = native.web_service_urls().unwrap_or_default();
+
+        Ok(Arc::new(FoundryLocalManager {
+            native,
+            catalog,
+            urls: Mutex::new(urls),
+            web_service_lock: AsyncMutex::new(()),
+            _logger: logger,
+        }))
     }
 
     /// Access the model catalog.
