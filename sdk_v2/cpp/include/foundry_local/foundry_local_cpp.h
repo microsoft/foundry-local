@@ -839,7 +839,8 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get the default (public) catalog for querying models. Creates on first call, caches internally.
+  /// Get the default catalog for querying models. This is the first registered catalog, or the
+  /// built-in "public" catalog when none was added. Creates on first call, caches internally.
   ICatalog& GetCatalog() const;
 
   /// Get a registered catalog by name. Throws if no catalog with that name is registered.

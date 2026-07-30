@@ -149,6 +149,9 @@ Driven by the interface decisions:
   ctor for the rare case where a user holds a raw `flCatalog*` from the C API and
   wants a wrapper directly. There is no `friend` relationship between `Manager` and
   `Catalog` — the public ctor is consistent with every other top-level wrapper.
+  `Manager::GetCatalog(name)` returns a specific named catalog and `Manager::ListCatalogNames()`
+  enumerates the registered names; the no-argument overload returns the first-registered
+  (default) catalog.
 - `Catalog::GetModel(alias)` and `Catalog::GetModelVariant(id)` return
   `std::unique_ptr<IModel>`. Null = not found.
 - `Catalog::GetLatestVersion(const IModel&)` returns `std::unique_ptr<IModel>`.

@@ -629,6 +629,8 @@ typedef struct flApi {
   FL_API_STATUS(Manager_Create, _In_ const flConfiguration* config, _Outptr_ flManager** out_manager);
   FL_TYPE_RELEASE(Manager);
 
+  /// Get the default catalog: the first registered catalog, or the built-in "public"
+  /// catalog when none was added. For a specific catalog, use Manager_GetCatalogByName.
   FL_API_STATUS(Manager_GetCatalog, _In_ const flManager* manager, _Outptr_ flCatalog** out_catalog);
   FL_API_STATUS(Manager_WebServiceStart, _In_ flManager* manager);
   // Get the bound service urls. Returns success with *out_num_urls == 0 when the web service is not running;
