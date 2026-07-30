@@ -579,7 +579,7 @@ void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStr
                                         int& completion_tokens) const {
   const bool is_streaming = (streaming_callback != nullptr);
 
-  while (!generator.IsDone() && !original_request.canceled) {
+  while (!generator.IsDone() && !generator.IsSessionTerminated() && !original_request.canceled) {
     generator.GenerateNextToken();
     auto next_tokens = generator.GetNextTokens();
     if (next_tokens.empty()) {
@@ -667,8 +667,10 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
     RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *tokenizer_stream, text,
                           streaming_callback, response_id, original_request, completion_tokens);
   }
-  RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
-                        original_request, completion_tokens);
+  if (!original_request.canceled) {
+    RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
+                          original_request, completion_tokens);
+  }
 
   response.finish_reason = original_request.canceled ? FOUNDRY_LOCAL_FINISH_NONE : FOUNDRY_LOCAL_FINISH_STOP;
   // Nemotron file-transcription path feeds audio tensors directly and does not expose prompt token accounting.
