@@ -56,9 +56,6 @@ if (!fs.existsSync(depsPath)) {
 }
 const deps = JSON.parse(fs.readFileSync(depsPath, 'utf8'));
 
-const isLinuxX64 = os.platform() === 'linux' && os.arch() === 'x64';
-const ortPackageName = isLinuxX64 ? 'Microsoft.ML.OnnxRuntime.Gpu.Linux' : 'Microsoft.ML.OnnxRuntime.Foundry';
-
 const ortVersion = deps.onnxruntime.version;
 const genaiVersion = deps['onnxruntime-genai'].version;
 
@@ -79,7 +76,7 @@ function expectedGenai() {
 }
 
 const ARTIFACTS = [
-    { name: ortPackageName, version: ortVersion, expected: expectedOrt() },
+    { name: 'Microsoft.ML.OnnxRuntime', version: ortVersion, expected: expectedOrt() },
     { name: 'Microsoft.ML.OnnxRuntimeGenAI.Foundry', version: genaiVersion, expected: expectedGenai() },
 ];
 

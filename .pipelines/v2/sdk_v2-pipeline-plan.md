@@ -31,7 +31,7 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 |-----------------|-----------------------------------|-------|------|-----------------------------------------|
 | Windows x64     | `onnxruntime-Win-CPU-2022`        | ✅    | ✅   | Also stages public headers              |
 | Windows ARM64   | `onnxruntime-Win-CPU-2022`        | ✅    | ❌   | Cross-compiled from x64 host            |
-| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Pulls extra `OnnxRuntime.Gpu.Linux` pkg |
+| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Native CPU-only build                   |
 | Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | Native CPU-only build                   |
 | macOS ARM64     | `AcesShared` (Sequoia)            | ✅    | ✅   | Native                                  |
 
@@ -247,16 +247,16 @@ purposes:
 
 1. **Version pinning** — the `KEY=PATH` pairs are passed via
    `--cmake_extra_defines` (`ORT_FETCH_URL`, `GENAI_FETCH_URL`,
-   `WINML_EP_CATALOG_FETCH_URL`, `ORT_GPU_LINUX_FETCH_URL`) so the cmake
-   defaults in `FindOnnxRuntime.cmake` / `FindOnnxRuntimeGenAI.cmake` are
-   never silently substituted.
+   `WINML_EP_CATALOG_FETCH_URL`) so the cmake defaults in
+   `FindOnnxRuntime.cmake` / `FindOnnxRuntimeGenAI.cmake` are never
+   silently substituted.
 2. **Stage isolation** — the build step no longer needs network access to
    the package feed once prefetch has completed.
 
 Versions are pipeline-level variables, currently:
 
-* `ortVersion`        `1.26.0`   (`Microsoft.ML.OnnxRuntime.Foundry`)
-* `genaiVersion`      `0.14.1`   (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
+* `ortVersion`        `1.28.0`   (`Microsoft.ML.OnnxRuntime`)
+* `genaiVersion`      `0.15.0`   (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
 * `winmlVersion`      `2.1.70`    (`Microsoft.Windows.AI.MachineLearning`, WinML 2.x reg-free)
 
 These must be kept in sync with the cmake defaults and with

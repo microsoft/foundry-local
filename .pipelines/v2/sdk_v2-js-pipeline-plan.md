@@ -114,7 +114,7 @@ matrix.
 Build and test on the `onnxruntime-linux-ARM64-CPU-2019` pool
 (`hostArchitecture: arm64`). Same `node-gyp rebuild` path as Linux x64.
 `install-native.cjs` selects the CPU-only ORT NuGet package
-(`Microsoft.ML.OnnxRuntime.Foundry`) for `linux-arm64` — matching the
+(`Microsoft.ML.OnnxRuntime`) for `linux-arm64` — matching the
 C++ native pipeline which also uses CPU-only ORT for ARM64.
 
 ## Test stage details
@@ -220,7 +220,7 @@ shape.
 - **Single combined tarball:** `js_pack` assembles all five prebuilds
   into one `foundry-local-sdk-<version>.tgz`.
 - **JS scoped out of WinML.**
-- **Linux ARM64 ORT package:** `Microsoft.ML.OnnxRuntime.Foundry` (CPU-only),
+- **Linux ARM64 ORT package:** `Microsoft.ML.OnnxRuntime` (CPU-only),
   matching the C++ native ARM64 pipeline.
 
 ## Open items
