@@ -320,7 +320,10 @@ void Model::Load(ExecutionProvider ep) {
   // Enrich ModelInfo with metadata from the loaded GenAI model (genai_config.json + fallback map).
   // This makes tool/reasoning tags available via ModelInfo regardless of whether they came from
   // catalog metadata, so downstream code doesn't need to know about multiple metadata sources.
-  if (result.model && result.status == ModelLoadManager::LoadStatus::kSuccess) {
+  // Runs on both kSuccess (fresh load) and kModelAlreadyLoaded (model already in memory from
+  // another code path) to ensure this Model's info_ is always enriched.
+  if (result.model && (result.status == ModelLoadManager::LoadStatus::kSuccess ||
+                       result.status == ModelLoadManager::LoadStatus::kModelAlreadyLoaded)) {
     const auto& tag_info = result.model->GetTagInfo();
 
     auto enrich = [&](const std::string& val, const char* prop_key) {

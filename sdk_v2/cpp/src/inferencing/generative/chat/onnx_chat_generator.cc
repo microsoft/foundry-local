@@ -85,7 +85,7 @@ std::string OnnxChatGenerator::Decode() {
   int32_t token_id = next_tokens[0];
 
   // Fast path: use tag token IDs for efficient special-token detection.
-  // When tag IDs are configured (>= 0), we detect tool-call and reasoning tokens
+  // When any tag ID is resolved (has_value), we detect tool-call and reasoning tokens
   // with a simple integer comparison, avoiding the expensive double-decode + string search.
   const auto& tag_info = model_.GetTagInfo();
   bool has_tag_ids = (tag_info.bot_id.has_value() || tag_info.eot_id.has_value() ||
