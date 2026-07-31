@@ -17,6 +17,7 @@
 #include "ep_detection/ep_detector.h"
 #include "ep_detection/ep_types.h"
 #include "ep_detection/runtime_version_info.h"
+#include "util/debug_diagnostics.h"
 #include "ep_detection/webgpu_ep_bootstrapper.h"
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
@@ -217,6 +218,7 @@ Manager::Manager(const Configuration& config)
   }
 
   LogRuntimeVersions(*logger_);
+  LogHardwareFingerprint(*logger_);
 
   EpRegistrationCallback register_ep = [this, &log = *logger_](
                                            const std::string& registration_name,

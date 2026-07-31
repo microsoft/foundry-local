@@ -56,7 +56,7 @@ variables:
 # C++ SDK (sdk_v2/cpp) native dependency versions. Must match cmake defaults
 # in sdk_v2/deps_versions.json.
 - name: cppOrtVersion
-  value: '1.28.0'
+  value: '1.26.0'
 - name: cppGenaiVersion
   value: '0.15.0'
 - name: cppWinmlVersion
