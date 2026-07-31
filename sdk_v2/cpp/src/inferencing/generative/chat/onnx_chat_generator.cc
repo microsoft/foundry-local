@@ -304,8 +304,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   //    Default output budget mirrors C# OnnxChatGenerator: 3072 for vision requests
   //    (image tokens push the prompt much higher), 2048 for text.
   int default_max_output = vision_branch ? 3072 : 2048;
-  ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, use_full_context,
-                     default_max_output);
+  ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
+                     use_full_context, default_max_output);
 
   // 5. Compute guidance for constrained decoding.
   // Priority: user-specified guidance (from response_format) > auto-generated LARK grammar.
