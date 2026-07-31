@@ -3,6 +3,7 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "exception.h"
 #include "inferencing/execution_provider.h"
+#include "util/debug_diagnostics.h"
 #include "util/key_value_pairs.h"
 #include "utils.h"
 
@@ -88,6 +89,11 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                        "failed to create multimodal processor for model ", model_id_, ": ", e.what());
     }
   }
+
+  // Diagnostics: fingerprint the loaded weights so identical-vs-divergent model
+  // bits can be compared across environments (CI vs. local) independently of
+  // the runtime/hardware.
+  LogModelWeightsFingerprint(logger, model_path_);
 }
 
 // Destructor: unique_ptr members are destroyed in reverse declaration order.
