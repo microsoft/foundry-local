@@ -135,6 +135,7 @@ class OnnxChatGenerator : public ChatGenerator {
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
   std::atomic<bool> cancelled_{false};
+  int debug_token_step_ = 0;  // per-token diagnostic trace counter (see debug_diagnostics.h)
 };
 
 }  // namespace fl

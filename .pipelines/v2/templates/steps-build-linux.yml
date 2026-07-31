@@ -71,6 +71,10 @@ steps:
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
       FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)/test-data-shared
+      # Diagnostics for the ORT 1.28 ChatMultiTurnSession divergence: emit the
+      # HW/weights fingerprints and passive per-token trace. ctest runs with
+      # --output-on-failure, so the trace is printed for the failing test.
+      FOUNDRY_LOCAL_DEBUG_TOKENS: '1'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="

@@ -6,12 +6,14 @@
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "inferencing/generative/toolcalling/grammar.h"
+#include "util/debug_diagnostics.h"
 #include "utils.h"
 
 #include <nlohmann/json.hpp>
 #include <ort_genai.h>
 
 #include <algorithm>
+#include <cstddef>
 
 namespace fl {
 
@@ -94,6 +96,37 @@ std::string OnnxChatGenerator::Decode() {
   const char* special_text = stream_with_special_->Decode(token_id);
 
   std::string token_str = token_text ? std::string(token_text) : "";
+
+  // Diagnostic per-token trace. The token id/text portion is passive
+  // (FOUNDRY_LOCAL_DEBUG_TOKENS=1). The top-2 logit margin is INTRUSIVE and only
+  // read under FOUNDRY_LOCAL_DEBUG_LOGITS=1, because GetLogits() mid-decode can
+  // perturb generation on some ORT builds (observed on onnxruntime 1.28's CPU
+  // decode path). A near-zero margin flags a greedy argmax prone to flipping
+  // under different FP rounding across hardware.
+  if (DebugTokenTraceEnabled() || DebugLogitTraceEnabled()) {
+    TokenTop2 top2;
+    if (DebugLogitTraceEnabled()) {
+      try {
+        auto logits = generator_->GetLogits();
+        if (logits && logits->Type() == OgaElementType_float32) {
+          const auto shape = logits->Shape();
+          std::size_t total = 1;
+          for (int64_t d : shape) {
+            total *= (d > 0 ? static_cast<std::size_t>(d) : 1);
+          }
+          const std::size_t vocab = shape.empty() ? total : static_cast<std::size_t>(shape.back());
+          if (vocab > 0 && total >= vocab) {
+            const auto* data = static_cast<const float*>(logits->Data());
+            // Logits for the final position live at the tail of the buffer.
+            top2 = ComputeTop2FromLogits(data + (total - vocab), vocab);
+          }
+        }
+      } catch (...) {
+        // GetLogits may be unsupported for some models/EPs — trace token only.
+      }
+    }
+    DebugTraceToken(debug_token_step_++, token_id, token_str, top2);
+  }
 
   if (special_text != nullptr && token_text != nullptr && std::string(special_text) != token_str) {
     std::string special_str(special_text);
