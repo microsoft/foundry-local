@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <memory>
+#include <utility>
 
 namespace fl {
 
@@ -29,6 +30,18 @@ Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& te
 }
 
 Session::~Session() = default;
+
+Session::Session(Session&& other) noexcept
+    : catalog_model_(other.catalog_model_),
+      logger_(other.logger_),
+      telemetry_(other.telemetry_),
+      tool_definitions_(std::move(other.tool_definitions_)),
+      session_options_(std::move(other.session_options_)),
+      callback_fn_(std::move(other.callback_fn_)),
+      callback_user_data_(other.callback_user_data_),
+      allow_concurrent_requests_(other.allow_concurrent_requests_),
+      cancel_requested_(other.cancel_requested_.load(std::memory_order_relaxed)) {
+}
 
 std::unique_ptr<Session> Session::Create(const fl::Model& model) {
   auto& mgr = Manager::Instance();
@@ -112,6 +125,10 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     tracker.RecordException(ex);
     throw;
   }
+}
+
+void Session::Cancel() {
+  cancel_requested_.store(true, std::memory_order_relaxed);
 }
 
 }  // namespace fl

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -34,7 +35,7 @@ class Session {
  public:
   virtual ~Session();
 
-  Session(Session&&) = default;
+  Session(Session&& other) noexcept;
   Session& operator=(Session&&) = delete;
 
   Session(const Session&) = delete;
@@ -51,6 +52,9 @@ class Session {
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
+
+  /// Signal the active request, if any, to stop as soon as possible.
+  virtual void Cancel();
 
   /// Add a tool definition to this session.
   /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
@@ -108,6 +112,10 @@ class Session {
 
   ILogger& Logger() { return logger_; }
 
+  bool IsCancellationRequested() const {
+    return cancel_requested_.load(std::memory_order_relaxed);
+  }
+
   virtual void SetSessionOptionsImpl(const KeyValuePairs& /*options*/) {}
 
   /// Merge session-level options with per-request options.
@@ -152,6 +160,7 @@ class Session {
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
   const bool allow_concurrent_requests_;
+  std::atomic<bool> cancel_requested_{false};
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 };
 

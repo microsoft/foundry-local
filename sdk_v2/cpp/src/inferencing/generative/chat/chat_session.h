@@ -10,6 +10,7 @@
 #include "logger.h"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,8 @@ class ChatSession : public Session {
   /// @param count  Number of turns to undo. Must be <= TurnCount().
   void UndoTurns(size_t count) override;
 
+  void Cancel() override;
+
  private:
   // populate session_options_
   void SetSessionOptionsImpl(const KeyValuePairs& options) override;
@@ -101,6 +104,9 @@ class ChatSession : public Session {
   void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                   Response& response);
 
+  void SetActiveGenerator(OnnxChatGenerator* generator);
+  void ClearActiveGenerator(OnnxChatGenerator* generator);
+
   /// Commit input messages and assistant reply to history after a successful turn.
   void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
                   int pre_turn_token_count, int post_turn_token_count);
@@ -120,6 +126,8 @@ class ChatSession : public Session {
   // Cached generator for continuous decoding (non-JSON path only).
   // Null until first non-JSON ProcessRequestImpl call.
   std::unique_ptr<OnnxChatGenerator> cached_generator_;
+  std::mutex active_generator_mutex_;
+  OnnxChatGenerator* active_generator_ = nullptr;
 
   // Tool context used when creating the cached generator.
   // Reused for subsequent turns to maintain tool definition consistency.

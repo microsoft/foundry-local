@@ -77,6 +77,27 @@ SessionType ChatSession::Type() const {
   return SessionType::kChat;
 }
 
+void ChatSession::Cancel() {
+  Session::Cancel();
+
+  std::lock_guard<std::mutex> lock(active_generator_mutex_);
+  if (active_generator_ != nullptr) {
+    active_generator_->Cancel();
+  }
+}
+
+void ChatSession::SetActiveGenerator(OnnxChatGenerator* generator) {
+  std::lock_guard<std::mutex> lock(active_generator_mutex_);
+  active_generator_ = generator;
+}
+
+void ChatSession::ClearActiveGenerator(OnnxChatGenerator* generator) {
+  std::lock_guard<std::mutex> lock(active_generator_mutex_);
+  if (active_generator_ == generator) {
+    active_generator_ = nullptr;
+  }
+}
+
 void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
@@ -574,22 +595,32 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     }
   };
 
-  while (!cached_generator_->IsDone() && !request.canceled) {
-    cached_generator_->GenerateNextToken();
-    std::string token = cached_generator_->Decode();
-    ++output_tokens;
+  OnnxChatGenerator* active_generator = cached_generator_.get();
+  SetActiveGenerator(active_generator);
+  try {
+    while (!cached_generator_->IsDone() && !request.canceled && !IsCancellationRequested()) {
+      cached_generator_->GenerateNextToken();
+      std::string token = cached_generator_->Decode();
+      ++output_tokens;
 
-    if (!token.empty()) {
-      text += token;
-      emit_segments(splitter.Push(token));
-    }
+      if (!token.empty()) {
+        text += token;
+        emit_segments(splitter.Push(token));
+      }
 
-    // Enforce max_output_tokens — with use_full_context the OGA max_length
-    // is the entire context window, so we must cap output ourselves.
-    if (max_output > 0 && output_tokens >= max_output) {
-      break;
+      // Enforce max_output_tokens — with use_full_context the OGA max_length
+      // is the entire context window, so we must cap output ourselves.
+      if (max_output > 0 && output_tokens >= max_output) {
+        break;
+      }
     }
+  } catch (...) {
+    ClearActiveGenerator(active_generator);
+    throw;
   }
+  ClearActiveGenerator(active_generator);
+
+  const bool canceled = request.canceled || IsCancellationRequested();
 
   // End-of-stream: drain the reasoning splitter first so any final DEFAULT bytes feed into the tool accumulator,
   // then drain the tool accumulator.
@@ -598,17 +629,17 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   int total_tokens = cached_generator_->TokenCount();
 
-  if (request.canceled) {
+  if (canceled) {
     // Rewind the generator to undo this turn's input. The generator remains valid
     // for the next attempt — the caller can re-send the same input.
     cached_generator_->RewindTo(pre_turn_token_count);
   }
 
-  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,
+  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, canceled,
                          response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
 
   // Commit input messages + assistant reply to history only on success (not cancelled)
-  if (!request.canceled) {
+  if (!canceled) {
     // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
     // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
     // return true on the next turn. Invalidate after any grammar-guided generation so the next turn rebuilds.
@@ -794,15 +825,24 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Generate token-by-token
   std::string text;
-  while (!generator->IsDone() && !original_request.canceled) {
-    generator->GenerateNextToken();
-    std::string token = generator->Decode();
+  SetActiveGenerator(generator.get());
+  try {
+    while (!generator->IsDone() && !original_request.canceled && !IsCancellationRequested()) {
+      generator->GenerateNextToken();
+      std::string token = generator->Decode();
 
-    if (!token.empty()) {
-      text += token;
-      process_segments(splitter.Push(token));
+      if (!token.empty()) {
+        text += token;
+        process_segments(splitter.Push(token));
+      }
     }
+  } catch (...) {
+    ClearActiveGenerator(generator.get());
+    throw;
   }
+  ClearActiveGenerator(generator.get());
+
+  const bool canceled = original_request.canceled || IsCancellationRequested();
 
   // Drain any buffered partial-marker bytes at end-of-stream. Reasoning splitter first so any final DEFAULT bytes
   // feed into the tool accumulator; then drain the tool accumulator.
@@ -818,7 +858,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // Process the generated output into response items (MessageItem, ToolCallItem, etc.)
   // This also updates finish_reason, and usage on the response. Streamed-parsed tool calls are reused so call_ids
   // stay stable across stream deltas and the final ChatCompletionResponse.
-  ProcessGeneratedOutput(std::move(text), tool_ctx, options, original_request.canceled,
+  ProcessGeneratedOutput(std::move(text), tool_ctx, options, canceled,
                          response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
 
   // Emit final streaming chunk with finish_reason

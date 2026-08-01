@@ -194,6 +194,7 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id) {
 
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
   loaded_models_.erase(it);
+  logger_.Log(LogLevel::Information, fmt::format("unloaded model: {}", id_str));
   return true;
 }
 

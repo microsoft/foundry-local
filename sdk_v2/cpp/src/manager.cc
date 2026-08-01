@@ -355,36 +355,49 @@ Manager::~Manager() {
   // we unregister EPs and release the env. C++ would destroy these in reverse
   // declaration order after this function returns, but the env release below
   // requires they be gone *now*.
-#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_.reset();
-#endif
-  session_manager_.reset();
-  model_load_manager_.reset();
-  download_manager_.reset();
-  catalog_.reset();
-  telemetry_.reset();
-  ep_detector_.reset();
-
-  // Unregister EPs we registered, then drop our OrtEnv refcount. Best-effort:
-  // log failures but don't throw from a destructor.
-  if (ort_api_ != nullptr && ort_env_ != nullptr) {
-    for (const auto& name : registered_ep_libraries_) {
-      OrtStatus* status = ort_api_->UnregisterExecutionProviderLibrary(ort_env_, name.c_str());
-      if (status != nullptr) {
-        const char* msg = ort_api_->GetErrorMessage(status);
-        logger_->Log(LogLevel::Warning,
-                     std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
-                         name + "': " + (msg ? msg : "unknown"));
-        ort_api_->ReleaseStatus(status);
-      }
-    }
-
-    ort_api_->ReleaseEnv(ort_env_);
-    ort_env_ = nullptr;
+  if (s_oga_logger.load(std::memory_order_acquire) != nullptr) {
+    logger_->Log(LogLevel::Information, "Manager teardown: clearing OGA log callback (before ORT/EP teardown)");
+    SetOgaLogCallback(nullptr);
+    logger_->Log(LogLevel::Information, "Manager teardown: cleared OGA log callback");
   }
 
-  if (s_oga_logger.load(std::memory_order_acquire) != nullptr) {
-    SetOgaLogCallback(nullptr);
+#ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting web_service_");
+  web_service_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset web_service_");
+#endif
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting session_manager_");
+  session_manager_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset session_manager_");
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting model_load_manager_");
+  model_load_manager_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset model_load_manager_");
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting download_manager_");
+  download_manager_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset download_manager_");
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting catalog_");
+  catalog_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset catalog_");
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting telemetry_");
+  telemetry_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset telemetry_");
+  logger_->Log(LogLevel::Information, "Manager teardown: resetting ep_detector_");
+  ep_detector_.reset();
+  logger_->Log(LogLevel::Information, "Manager teardown: reset ep_detector_");
+
+  // Keep ORT global EP/env state alive for process lifetime. ORT GenAI currently
+  // has process-exit teardown races after in-process model/service disposal.
+  // The loaded models and sessions are already gone above; avoiding global
+  // EP/env teardown prevents a late AV in embedded hosts.
+  if (ort_api_ != nullptr && ort_env_ != nullptr) {
+    for (const auto& name : registered_ep_libraries_) {
+      logger_->Log(LogLevel::Information,
+                   std::string("Manager teardown: leaving EP library registered '") + name + "'");
+    }
+
+    logger_->Log(LogLevel::Information,
+                 "Manager teardown: leaving OrtEnv alive to avoid ORT GenAI teardown AV after EP unregister");
+    ort_env_ = nullptr;
   }
 
   logger_->Log(LogLevel::Information, "Manager is being disposed.");
@@ -512,10 +525,6 @@ void Manager::Shutdown() {
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
 
-  if (web_service_running_) {
-    StopWebService();
-  }
-
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
   //   2. Cancel + drain HTTP-tracked sessions (web service path).
@@ -524,8 +533,18 @@ void Manager::Shutdown() {
   //      caller can't block process shutdown indefinitely.
   model_load_manager_->RejectNewLoads();
   session_manager_->CancelAll();
+  if (web_service_running_) {
+    StopWebService();
+  }
   session_manager_->WaitForDrain();
+  if (s_oga_logger.load(std::memory_order_acquire) != nullptr) {
+    logger_->Log(LogLevel::Information, "Shutdown: clearing OGA log callback before model unload");
+    SetOgaLogCallback(nullptr);
+    logger_->Log(LogLevel::Information, "Shutdown: cleared OGA log callback before model unload");
+  }
+  logger_->Log(LogLevel::Information, "Shutdown: unloading all models");
   model_load_manager_->UnloadAll();
+  logger_->Log(LogLevel::Information, "Shutdown: unloaded all models");
 }
 
 bool Manager::IsShutdownRequested() const {

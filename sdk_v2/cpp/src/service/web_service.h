@@ -21,7 +21,7 @@ class ResponseStore;
 
 /// Tracks streaming threads so they can be joined on shutdown.
 /// Handlers call Track() instead of std::thread::detach().
-/// Threads call Remove() when done to clean up immediately.
+/// Threads call Remove() when done; ownership stays with the tracker so Stop() can join.
 class StreamingThreadTracker {
  public:
   /// Take ownership of a streaming thread.
@@ -30,20 +30,13 @@ class StreamingThreadTracker {
     threads_.push_back(std::move(t));
   }
 
-  /// Called from within a thread to untrack itself after work is done.
-  /// Detaches the thread (can't join itself) and removes the entry.
+  /// Called from within a thread after work is done. Do not detach/erase here:
+  /// JoinAll() owns reaping so Remove() cannot race it and hide a joinable thread.
   void Remove(std::thread::id id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = threads_.begin(); it != threads_.end(); ++it) {
-      if (it->get_id() == id) {
-        it->detach();
-        threads_.erase(it);
-        return;
-      }
-    }
+    (void)id;
   }
 
-  /// Join all remaining threads. Called by WebService::Stop().
+  /// Join all tracked threads. Called by WebService::Stop().
   /// Moves entries out before joining to avoid deadlock with Remove().
   void JoinAll() {
     std::vector<std::thread> local;

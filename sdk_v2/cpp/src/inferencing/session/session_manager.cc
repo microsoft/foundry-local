@@ -4,9 +4,11 @@
 
 #include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/session/session.h"
 
 #include <cassert>
 #include <fmt/format.h>
+#include <vector>
 
 namespace fl {
 
@@ -22,11 +24,11 @@ SessionManager::~SessionManager() {
 }
 
 void SessionManager::Register(Session& session) {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (shutting_down_.load()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot create session during shutdown");
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   sessions_.insert(&session);
 }
 
@@ -53,11 +55,20 @@ void SessionManager::CancelAll() {
   // Clear cache — frees idle cached sessions so they don't block drain.
   ClearCache();
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  logger_.Log(LogLevel::Information,
-              fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
+  std::vector<Session*> sessions;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sessions.assign(sessions_.begin(), sessions_.end());
+  }
 
-  // Future (Phase 3): iterate sessions_ and call Cancel() on each
+  logger_.Log(LogLevel::Information,
+              fmt::format("SessionManager: cancelling all sessions ({} active)", sessions.size()));
+
+  for (auto* session : sessions) {
+    if (session != nullptr) {
+      session->Cancel();
+    }
+  }
 }
 
 void SessionManager::WaitForDrain(std::chrono::milliseconds timeout) {
