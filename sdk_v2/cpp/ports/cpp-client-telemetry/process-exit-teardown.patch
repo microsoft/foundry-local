@@ -1,0 +1,58 @@
+diff --git a/lib/api/LogManagerFactory.hpp b/lib/api/LogManagerFactory.hpp
+index 5e26267d..096cd2db 100644
+--- a/lib/api/LogManagerFactory.hpp
++++ b/lib/api/LogManagerFactory.hpp
+@@ -67,7 +67,7 @@ namespace MAT_NS_BEGIN {
+ 
+         //  C++11 Magic Statics (N2660)
+         static LogManagerFactory& instance() {
+-            static LogManagerFactory impl;
++            static LogManagerFactory& impl = *new LogManagerFactory();
+             return impl;
+         }
+ 
+diff --git a/lib/offline/OfflineStorageHandler.cpp b/lib/offline/OfflineStorageHandler.cpp
+index 52ce1551..b361271b 100644
+--- a/lib/offline/OfflineStorageHandler.cpp
++++ b/lib/offline/OfflineStorageHandler.cpp
+@@ -164,8 +164,17 @@ namespace MAT_NS_BEGIN {
+     void OfflineStorageHandler::Flush()
+     {
+         if (!m_logManager.StartActivity()) {
++            LOCKGUARD(m_flushLock);
++            m_flushHandle.Cancel();
++            m_flushComplete.post();
++            m_flushPending = false;
+             return;
+         }
++        struct ActivityGuard final {
++            ILogManager& logManager;
++            ~ActivityGuard() { logManager.EndActivity(); }
++        } activityGuard{m_logManager};
++
+         // Flush could be executed from context of worker thread, as well as from TPM and
+         // after HTTP callback. Make sure it is atomic / thread-safe.
+         LOCKGUARD(m_flushLock);
+@@ -221,7 +230,6 @@ namespace MAT_NS_BEGIN {
+         // Flush is done, notify the waiters
+         m_flushComplete.post();
+         m_flushPending = false;
+-        m_logManager.EndActivity();
+     }
+ 
+     bool OfflineStorageHandler::StoreRecord(StorageRecord const& record)
+diff --git a/lib/pal/PAL.cpp b/lib/pal/PAL.cpp
+index 3e667653..d5f389c8 100644
+--- a/lib/pal/PAL.cpp
++++ b/lib/pal/PAL.cpp
+@@ -59,9 +59,9 @@ namespace PAL_NS_BEGIN {
+ namespace PAL_NS_BEGIN {
+ 
+     PlatformAbstractionLayer& GetPAL() noexcept
+     {
+-        static PlatformAbstractionLayer pal;
++        static PlatformAbstractionLayer& pal = *new PlatformAbstractionLayer();
+         return pal;
+     }
+ 
+ 	 MATSDK_LOG_INST_COMPONENT_CLASS(PlatformAbstractionLayer, "MATSDK.PAL", "MSTel client - platform abstraction layer")

@@ -6,6 +6,7 @@ vcpkg_from_github(
     HEAD_REF main
     PATCHES
         android-java-http.patch
+        process-exit-teardown.patch
 )
 
 set(MATSDK_BUILD_APPLE_HTTP OFF)
