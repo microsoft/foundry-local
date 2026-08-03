@@ -38,10 +38,6 @@ parameters:
   type: boolean
   default: false
   displayName: 'ESRP-sign macOS .node + .dylib artifacts before staging'
-- name: usePwsh
-  type: boolean
-  default: true
-  displayName: 'Use PowerShell Core (pwsh) for Windows PowerShell tasks'
 
 steps:
 
@@ -69,7 +65,7 @@ steps:
     displayName: 'Resolve Visual Studio Build Tools for node-gyp (win-arm64)'
     inputs:
       targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
+      pwsh: true
       script: |
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
         if (-not (Test-Path $vswhere)) {

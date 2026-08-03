@@ -99,7 +99,6 @@ stages:
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
         includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
-        usePwsh: false
         signWindows: true
 
 - stage: js_build_linux_x64
@@ -265,14 +264,11 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
-      parameters:
-        scriptType: ps
     - template: steps-test-js.yml
       parameters:
         rid: 'win-arm64'
         prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-win-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-        usePwsh: false
 
 - stage: js_test_linux_x64
   displayName: 'JS SDK: Test Linux x64'
