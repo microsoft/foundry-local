@@ -53,7 +53,6 @@ stages:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
           winmlVersion: ${{ parameters.winmlVersion }}
-          runTests: true
           stageHeaders: true
 
   # ====================================================================
@@ -88,7 +87,6 @@ stages:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
           winmlVersion: ${{ parameters.winmlVersion }}
-          runTests: true
           stageHeaders: false
           pythonArchitecture: arm64
 
@@ -123,7 +121,6 @@ stages:
           buildConfig: ${{ parameters.buildConfig }}
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
-          runTests: true
 
   # ====================================================================
   # Linux ARM64 — build + test (native, CPU-only)
@@ -157,7 +154,6 @@ stages:
           buildConfig: ${{ parameters.buildConfig }}
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
-          runTests: true
 
   # ====================================================================
   # macOS ARM64 — build + test (native)
@@ -191,7 +187,6 @@ stages:
           buildConfig: ${{ parameters.buildConfig }}
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
-          runTests: true
 
   # ====================================================================
   # Pack — C++ SDK tgz bundles (base platforms)

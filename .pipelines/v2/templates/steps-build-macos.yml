@@ -9,9 +9,6 @@ parameters:
   type: string
 - name: genaiVersion
   type: string
-- name: runTests
-  type: boolean
-  default: false
 
 steps:
 
@@ -50,10 +47,9 @@ steps:
     echo "cmakeFetchDefines = $defines"
   displayName: 'Append version define'
 
-- ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/fetch-test-data-from-blob.yml@self
-    parameters:
-      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+- template: ../../templates/fetch-test-data-from-blob.yml@self
+  parameters:
+    destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
 - bash: |
     set -euo pipefail
@@ -65,15 +61,14 @@ steps:
   env:
     VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
 
-- ${{ if eq(parameters.runTests, true) }}:
-  - bash: |
-      set -euo pipefail
-      python3 build.py --test --config ${{ parameters.buildConfig }}
-    displayName: 'Run tests'
-    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-    env:
-      VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
-      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)/test-data-shared
+- bash: |
+    set -euo pipefail
+    python3 build.py --test --config ${{ parameters.buildConfig }}
+  displayName: 'Run tests'
+  workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+  env:
+    VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
+    FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)/test-data-shared
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="
