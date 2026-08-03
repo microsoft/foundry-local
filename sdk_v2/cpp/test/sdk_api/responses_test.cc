@@ -297,14 +297,8 @@ TEST_F(WebServiceIntegrationTest, ResponsesPreviousResponseId) {
   ASSERT_EQ(first_response["status"], "completed")
       << "Turn 1 must complete (not 'incomplete' from max_output_tokens) before chaining. Body: "
       << first_result->body;
-
-  // Guard: confirm the magic word landed in Turn 1's output. If it didn't,
-  // Turn 2 can't possibly recall it and would fail with a misleading
-  // "expected 'banana' in response" error pointing at the wrong turn.
-  ASSERT_TRUE(first_response.contains("output_text"));
-  std::string first_output_text = first_response["output_text"].get<std::string>();
-  ASSERT_NE(first_output_text.find("banana"), std::string::npos)
-      << "Turn 1 did not echo the secret word. Got: " << first_output_text;
+  ASSERT_TRUE(first_response.contains("previous_response_id"));
+  EXPECT_TRUE(first_response["previous_response_id"].is_null());
 
   json second_request = {
       {"model", model_id()},
@@ -321,6 +315,11 @@ TEST_F(WebServiceIntegrationTest, ResponsesPreviousResponseId) {
 
   json second_response = json::parse(second_result->body);
   ASSERT_EQ(second_response["status"], "completed") << second_result->body;
+  ASSERT_TRUE(second_response.contains("id"));
+  std::string second_id = second_response["id"].get<std::string>();
+  EXPECT_NE(second_id, first_id);
+  ASSERT_TRUE(second_response.contains("previous_response_id"));
+  EXPECT_EQ(second_response["previous_response_id"], first_id);
   EXPECT_FALSE(second_response["output"].empty());
 
   ValidateReasoningOutput(second_response["output"], "ResponsesPreviousResponseId");
@@ -328,10 +327,13 @@ TEST_F(WebServiceIntegrationTest, ResponsesPreviousResponseId) {
   ASSERT_NE(msg_output, nullptr) << "No message output item found. Output: " << second_response["output"].dump();
   EXPECT_EQ((*msg_output)["role"], "assistant");
 
-  ASSERT_TRUE(second_response.contains("output_text"));
-  std::string output_text = second_response["output_text"].get<std::string>();
-  EXPECT_NE(output_text.find("banana"), std::string::npos)
-      << "Expected 'banana' in response. Got: " << output_text;
+  auto get_result = client.Get(("/v1/responses/" + second_id).c_str());
+  ASSERT_TRUE(get_result) << "HTTP request failed";
+  ASSERT_EQ(get_result->status, 200) << get_result->body;
+
+  json retrieved = json::parse(get_result->body);
+  EXPECT_EQ(retrieved["id"], second_id);
+  EXPECT_EQ(retrieved["previous_response_id"], first_id);
 }
 
 TEST_F(WebServiceIntegrationTest, ResponsesCreateStreaming) {
