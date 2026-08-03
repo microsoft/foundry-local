@@ -325,7 +325,9 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   auto effective_kvp = MergedOptions(request.options);
   SearchOptions options = SearchOptions::FromParameters(effective_kvp);
 
-  gen_params->SetSearchOption("temperature", options.temperature.value_or(0.0f));
+  if (options.temperature.has_value()) {
+    gen_params->SetSearchOption("temperature", *options.temperature);
+  }
 
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
   auto tokenizer_stream = OgaTokenizerStream::Create(Model().GetOgaTokenizer());
@@ -649,7 +651,9 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   auto tokenizer = OgaTokenizer::Create(oga_model);
   auto tokenizer_stream = OgaTokenizerStream::Create(*tokenizer);
   auto generator_params = OgaGeneratorParams::Create(oga_model);
-  generator_params->SetSearchOption("temperature", temperature.value_or(0.0f));
+  if (temperature.has_value()) {
+    generator_params->SetSearchOption("temperature", *temperature);
+  }
   auto generator = OgaGenerator::Create(oga_model, *generator_params);
   TryNemotronLanguageId(*generator, language);
 
