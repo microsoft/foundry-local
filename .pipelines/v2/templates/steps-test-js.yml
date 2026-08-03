@@ -15,10 +15,6 @@ parameters:
 - name: testDataSharedDir
   type: string
   displayName: 'Path to the model cache directory used by tests'
-- name: usePwsh
-  type: boolean
-  default: true
-  displayName: 'Use PowerShell Core (pwsh) for Windows PowerShell tasks'
 
 steps:
 
@@ -32,7 +28,7 @@ steps:
     displayName: 'Drop prebuild into sdk_v2/js/prebuilds'
     inputs:
       targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
+      pwsh: true
       script: |
         $src = "${{ parameters.prebuildArtifactDir }}/prebuilds"
         $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
@@ -60,7 +56,7 @@ steps:
     condition: and(succeeded(), eq('${{ parameters.rid }}', 'win-arm64'))
     inputs:
       targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
+      pwsh: true
       script: |
         $ErrorActionPreference = 'Stop'
         $url = 'https://aka.ms/vs/17/release/vc_redist.arm64.exe'
@@ -105,7 +101,7 @@ steps:
     displayName: 'Build TypeScript'
     inputs:
       targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
+      pwsh: true
       script: |
         Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
         npm run build:ts
@@ -115,7 +111,7 @@ steps:
     displayName: 'Run vitest'
     inputs:
       targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
+      pwsh: true
       script: |
         Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
         Write-Host "FOUNDRY_TEST_DATA_DIR=$env:FOUNDRY_TEST_DATA_DIR"
