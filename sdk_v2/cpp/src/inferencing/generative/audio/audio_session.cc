@@ -62,6 +62,8 @@ std::unique_ptr<SpeechResultItem> BuildSpeechResult(
 // (~10s on Whisper, ~5s on Nemotron streaming) produces under 256 tokens, so most short-form
 // transcriptions avoid any reallocation. Longer transcriptions still grow geometrically.
 constexpr size_t kInitialTokenCapacity = 256;
+constexpr size_t kMaxWavDataBytes = 64ull * 1024ull * 1024ull;
+constexpr size_t kMaxWavSamples = kMaxWavDataBytes / sizeof(float);
 
 // Concatenate the per-token strings into a single buffer with one allocation.
 std::string JoinTokens(const std::vector<std::string>& token_texts) {
@@ -775,6 +777,11 @@ std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& aud
       if (channels <= 0 || sample_rate <= 0 || bits_per_sample <= 0) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Missing WAV fmt chunk before data.");
       }
+      if (chunk_size > kMaxWavDataBytes) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 fmt::format("WAV data chunk exceeds the maximum supported size ({} bytes).",
+                             kMaxWavDataBytes));
+      }
 
       data.resize(chunk_size);
       if (chunk_size > 0) {
@@ -820,6 +827,11 @@ std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& aud
   }
 
   const size_t frame_count = data.size() / (bytes_per_sample * static_cast<size_t>(channels));
+  if (frame_count > kMaxWavSamples) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             fmt::format("WAV sample count exceeds the maximum supported size ({} samples).", kMaxWavSamples));
+  }
+
   std::vector<float> samples;
   samples.reserve(frame_count);
 

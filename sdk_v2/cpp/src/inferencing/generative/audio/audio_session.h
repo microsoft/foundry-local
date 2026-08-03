@@ -18,6 +18,7 @@ struct OgaTokenizerStream;
 
 namespace fl {
 
+class AudioSessionTestAccessor;
 class GenAIModelInstance;
 struct AudioTranscriptionRequest;
 struct AudioItem;
@@ -46,7 +47,9 @@ class AudioSession : public Session {
   SessionType Type() const override;
 
  private:
-  void SetSessionOptionsImpl(const KeyValuePairs& options) override;
+   friend class AudioSessionTestAccessor;
+
+   void SetSessionOptionsImpl(const KeyValuePairs& options) override;
   void ProcessRequestImpl(const Request& request, Response& response) override;
 
   /// Process a request whose first item is a TEXT item tagged OPENAI_JSON containing an

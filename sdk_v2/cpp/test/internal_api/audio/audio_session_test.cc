@@ -4,9 +4,7 @@
 // Validation tests exercise input checking without needing an audio model —
 // they throw before the generator is created, so any GenAIModelInstance works.
 
-#define private public
 #include "inferencing/generative/audio/audio_session.h"
-#undef private
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
@@ -15,7 +13,6 @@
 #include "items/bytes_item.h"
 #include "items/item_queue.h"
 #include "items/speech_result_item.h"
-#include "items/text_item.h"
 #include "items/text_item.h"
 #include "logger.h"
 #include "model.h"
@@ -39,6 +36,15 @@
 #include <nlohmann/json.hpp>
 
 using namespace fl;
+
+namespace fl {
+class AudioSessionTestAccessor {
+ public:
+  static std::vector<float> LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
+    return AudioSession::LoadPcmWavAsFloatSamples(audio_file_path);
+  }
+};
+}  // namespace fl
 
 namespace {
 
@@ -139,6 +145,31 @@ void WriteWavFloat32(const std::filesystem::path& path, int sample_rate_hz, int 
   if (!samples.empty()) {
     out.write(reinterpret_cast<const char*>(samples.data()),
               static_cast<std::streamsize>(samples.size() * sizeof(float)));
+  }
+}
+
+void WriteWavWithDataChunkSize(const std::filesystem::path& path, uint32_t data_size) {
+  const uint32_t riff_size = 4 + (8 + 16) + (8 + data_size);
+  std::ofstream out(path, std::ios::binary);
+  ASSERT_TRUE(out.is_open()) << "Failed to create temp WAV: " << path.string();
+
+  WriteBytes(out, "RIFF", 4);
+  WriteLe<uint32_t>(out, riff_size);
+  WriteBytes(out, "WAVE", 4);
+  WriteBytes(out, "fmt ", 4);
+  WriteLe<uint32_t>(out, 16);
+  WriteLe<uint16_t>(out, 1);      // PCM
+  WriteLe<uint16_t>(out, 1);      // mono
+  WriteLe<uint32_t>(out, 16000);  // sample rate
+  WriteLe<uint32_t>(out, 32000);  // byte rate (16-bit mono at 16kHz)
+  WriteLe<uint16_t>(out, 2);      // block align
+  WriteLe<uint16_t>(out, 16);     // bits per sample
+  WriteBytes(out, "data", 4);
+  WriteLe<uint32_t>(out, data_size);
+
+  if (data_size > 0) {
+    out.seekp(static_cast<std::streamoff>(data_size) - 1, std::ios::cur);
+    out.put('\0');
   }
 }
 
@@ -764,11 +795,35 @@ TEST_F(AudioSessionTest, LoadPcmWavAsFloatSamples_DecodesFloat32Path) {
   const std::vector<float> input = {-0.75f, -0.25f, 0.0f, 0.25f, 0.75f};
   WriteWavFloat32(temp.path(), /*sample_rate_hz=*/16000, /*channels=*/1, input);
 
-  auto samples = AudioSession::LoadPcmWavAsFloatSamples(temp.path().string());
+  auto samples = fl::AudioSessionTestAccessor::LoadPcmWavAsFloatSamples(temp.path().string());
   ASSERT_EQ(samples.size(), input.size());
   for (size_t i = 0; i < input.size(); ++i) {
     EXPECT_NEAR(samples[i], input[i], 1e-6f);
   }
+}
+
+TEST_F(AudioSessionTest, NemotronOpenAIJsonRejectsOversizedWavDataChunkBeforeAllocation) {
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ScopedModelTypeOverride force_nemotron(GetModel(), "nemotron_speech");
+
+  auto temp = fl::test::TempPath::CreateTempFile("audio_oversized_data_");
+  constexpr uint32_t kOversizedDataBytes = (64u * 1024u * 1024u) + 1u;
+  WriteWavWithDataChunkSize(temp.path(), kOversizedDataBytes);
+
+  auto request = BuildOpenAiJsonAudioRequest(temp.path());
+  Response response;
+
+  EXPECT_THROW(
+      {
+        try {
+          session.ProcessRequest(request, response);
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+          EXPECT_NE(std::string(e.what()).find("maximum supported size"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
 }
 
 // ===========================================================================
@@ -894,5 +949,49 @@ TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionMul
   ASSERT_TRUE(resp_json.contains("text"));
   std::string text = resp_json["text"].get<std::string>();
   EXPECT_FALSE(text.empty()) << "Nemotron transcript should not be empty";
+  ExpectTranscriptionContent(text);
+}
+
+TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionAcceptsFloat32Wav) {
+  if (!model_) {
+    GTEST_SKIP() << "Nemotron model not loaded";
+  }
+
+  auto pcm_path = fl::test::GetTestDataPath("Recording.pcm");
+  ASSERT_TRUE(fs::exists(pcm_path)) << "Recording.pcm not found: " << pcm_path;
+
+  std::ifstream pcm_in(pcm_path, std::ios::binary);
+  ASSERT_TRUE(pcm_in.is_open()) << "Failed to open Recording.pcm";
+  std::vector<char> pcm_bytes((std::istreambuf_iterator<char>(pcm_in)), std::istreambuf_iterator<char>());
+  ASSERT_GT(pcm_bytes.size(), 0u);
+  ASSERT_EQ(pcm_bytes.size() % sizeof(int16_t), 0u) << "PCM file byte count must align to int16";
+
+  std::vector<float> float_samples(pcm_bytes.size() / sizeof(int16_t));
+  for (size_t i = 0; i < float_samples.size(); ++i) {
+    int16_t sample = 0;
+    std::memcpy(&sample, pcm_bytes.data() + (i * sizeof(int16_t)), sizeof(sample));
+    float_samples[i] = static_cast<float>(sample) / 32768.0f;
+  }
+
+  auto wav_temp = fl::test::TempPath::CreateTempFile("nemotron_float32_");
+  WriteWavFloat32(wav_temp.path(), /*sample_rate_hz=*/16000, /*channels=*/1, float_samples);
+
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto request = BuildOpenAiJsonAudioRequest(wav_temp.path());
+  request.options["language"] = "en";
+
+  Response response;
+  ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  ASSERT_FALSE(response.items.empty()) << "No response items from Nemotron transcription";
+
+  const Item* first_item = response.items.front().get();
+  ASSERT_EQ(first_item->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  const auto& text_item = static_cast<const TextItem&>(*first_item);
+  ASSERT_EQ(text_item.text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+
+  auto resp_json = nlohmann::json::parse(text_item.text);
+  ASSERT_TRUE(resp_json.contains("text"));
+  std::string text = resp_json["text"].get<std::string>();
+  EXPECT_FALSE(text.empty()) << "Nemotron float32 WAV transcript should not be empty";
   ExpectTranscriptionContent(text);
 }
