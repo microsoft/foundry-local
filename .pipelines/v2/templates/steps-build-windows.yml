@@ -12,6 +12,7 @@
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version
 #   stageHeaders   – Whether to stage public headers as a separate artifact
 #   pythonArchitecture – Python architecture installed by UsePythonVersion
+#   usePwsh        – Whether PowerShell tasks should use PowerShell Core
 
 parameters:
 - name: arch
@@ -32,6 +33,9 @@ parameters:
   type: string
   default: 'x64'
   values: ['x64', 'arm64']
+- name: usePwsh
+  type: boolean
+  default: true
 
 steps:
 
@@ -58,13 +62,14 @@ steps:
     winmlVersion: ${{ parameters.winmlVersion }}
     includeWinml: true
     shell: pwsh
+    usePwsh: ${{ parameters.usePwsh }}
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - task: PowerShell@2
     displayName: 'Resolve Visual Studio Build Tools and CMake for ARM64'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ parameters.usePwsh }}
       script: |
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
         if (-not (Test-Path $vswhere)) {
@@ -116,7 +121,7 @@ steps:
   displayName: 'Append version define'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
@@ -127,6 +132,7 @@ steps:
 - template: ../../templates/fetch-test-data-from-blob.yml@self
   parameters:
     destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+    scriptType: ps
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-
@@ -193,7 +199,7 @@ steps:
   displayName: 'Stage native artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $binDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/bin/${{ parameters.buildConfig }}'
       $linkDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/${{ parameters.buildConfig }}'

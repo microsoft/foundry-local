@@ -80,6 +80,7 @@ stages:
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
         rid: 'win-arm64'
         pythonArchitecture: 'arm64'
+        usePwsh: false
         outputDir: '$(Build.ArtifactStagingDirectory)/python-sdk'
 
 - stage: python_build_linux_x64
@@ -229,11 +230,14 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-test-data-from-blob.yml@self
+      parameters:
+        scriptType: ps
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         pythonArchitecture: 'arm64'
+        usePwsh: false
 
 - stage: python_test_linux_x64
   displayName: 'Python SDK: Test Linux x64'

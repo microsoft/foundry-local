@@ -5,13 +5,17 @@ parameters:
 - name: destinationPath
   type: string
   default: '$(Build.SourcesDirectory)/test-data-shared'
+- name: scriptType
+  type: string
+  default: pscore
+  values: ['pscore', 'ps']
 
 steps:
 - task: AzureCLI@2
   displayName: 'Fetch test data from blob'
   inputs:
     azureSubscription: 'ortcibuild_readonly_mi2-ONNX Runtime-AIFoundryLocal'
-    scriptType: pscore
+    scriptType: ${{ parameters.scriptType }}
     scriptLocation: inlineScript
     inlineScript: |
       $ErrorActionPreference = 'Stop'

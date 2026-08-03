@@ -89,6 +89,7 @@ stages:
           winmlVersion: ${{ parameters.winmlVersion }}
           stageHeaders: false
           pythonArchitecture: arm64
+          usePwsh: false
 
   # ====================================================================
   # Linux x64 — build + test
