@@ -1,0 +1,106 @@
+name: Bug Report
+description: report a reproducible issue in Foundry Local
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting your report, please review existing issues to avoid duplicates.
+  - type: textarea
+    id: issue-description
+    attributes:
+      label: Describe the issue
+      placeholder: Include what happened, what you expected to happen, and any additional context.
+    validations:
+      required: true
+  - type: textarea
+    id: reproducibility
+    attributes:
+      label: To reproduce
+      placeholder: Steps to reproduce the issue. Include sample code, model, prompts, and logs when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: urgency
+    attributes:
+      label: Urgency
+      placeholder: If this blocks important scenarios, causes regressions, or affects release timelines, explain here.
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: |
+        # System information
+        Please provide as much detail as possible so the team can investigate quickly.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform and architecture
+      options:
+        - Windows X64
+        - Windows ARM64
+        - Linux X64
+        - Linux ARM64
+        - macOS Apple Silicon
+        - Android ARM64
+        - Android x86_64 (emulator)
+        - Other / Unknown
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS Version
+      placeholder: e.g., Windows 11 24H2, Ubuntu 24.04
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation type
+      options:
+        - Released package/binary
+    validations:
+      required: true
+  - type: input
+    id: foundry-version
+    attributes:
+      label: Foundry Local version
+      placeholder: e.g., CLI/SDK version
+    validations:
+      required: true
+  - type: dropdown
+    id: api-surface
+    attributes:
+      label: API or surface area
+      options:
+        - CLI
+        - Python SDK
+        - JavaScript SDK
+        - C# SDK
+        - Rust SDK
+        - C++ SDK
+        - REST API
+        - Other / Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: acceleration-backend
+    attributes:
+      label: Hardware acceleration/backend
+      options:
+        - CPU
+        - WebGPU/CUDA
+        - WinML EPs
+        - Other / Unknown
+      multiple: true
+    validations:
+      required: true
+  - type: input
+    id: backend-version
+    attributes:
+      label: Backend/runtime version
+      placeholder: e.g., CUDA 12.4, DirectML 1.x, driver versions
+    validations:
+      required: false

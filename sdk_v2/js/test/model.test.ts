@@ -58,7 +58,7 @@ describeIfBuilt("Model (cache-only)", () => {
 
   it("info preserves v1 compatibility fields with sane defaults", () => {
     const info = model.info;
-    expect(info.providerType).toBe("AzureFoundry");
+    expect(info.providerType).toBe("FoundryLocal");
     expect(typeof info.cached).toBe("boolean");
     expect(info.runtime).toBeDefined();
     expect(info.runtime?.deviceType).toBe(info.deviceType);

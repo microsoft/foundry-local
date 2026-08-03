@@ -297,7 +297,7 @@ internal static class Utils
         // Mirrors MOCK_CATALOG_DATA ordering and fields (Python tests)
         var common = new
         {
-            ProviderType = "AzureFoundry",
+            ProviderType = "FoundryLocal",
             Version = 1,
             ModelType = "ONNX",
             PromptTemplate = (PromptTemplate?)null,
