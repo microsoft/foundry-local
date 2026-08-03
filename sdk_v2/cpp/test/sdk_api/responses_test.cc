@@ -423,14 +423,9 @@ TEST_F(WebServiceIntegrationTest, ResponsesStreamingThenChainNonStreaming) {
   ASSERT_TRUE(first_result) << "HTTP request failed";
   ASSERT_EQ(first_result->status, 200) << first_result->body;
 
-  // Parse streaming response to find the response ID from response.completed event.
-  // Capture the inner status so we can fail loudly here (rather than in Turn 2's content check)
-  // if Turn 1 ran out of token budget. We do NOT assert Turn 1 content — with the small test model,
-  // a polite acknowledgement ("Got it!") that doesn't echo the password is normal and harmless,
-  // because the password is in the input which is committed to the session history regardless.
-  // The real chain validation is on Turn 2.
-  std::string first_id;
-  std::string first_status;
+  // Capture the complete response from response.completed so the streaming turn can be validated
+  // using the same response contract as a non-streaming turn.
+  json first_response;
   std::istringstream stream(first_result->body);
   std::string line;
   while (std::getline(stream, line)) {
@@ -448,15 +443,27 @@ TEST_F(WebServiceIntegrationTest, ResponsesStreamingThenChainNonStreaming) {
       std::string event_type = event.value("type", "");
 
       if (event_type == "response.completed" && event.contains("response")) {
-        first_id = event["response"]["id"].get<std::string>();
-        first_status = event["response"].value("status", "");
+        first_response = event["response"];
       }
     }
   }
 
+  ASSERT_FALSE(first_response.is_null()) << "Should have received response.completed with response data";
+  ASSERT_TRUE(first_response.contains("id"));
+  std::string first_id = first_response["id"].get<std::string>();
   ASSERT_FALSE(first_id.empty()) << "Should have received response.completed with an ID";
-  ASSERT_EQ(first_status, "completed")
+  ASSERT_EQ(first_response["status"], "completed")
       << "Turn 1 streaming response did not complete cleanly (likely 'incomplete' from max_output_tokens).";
+  ASSERT_TRUE(first_response.contains("previous_response_id"));
+  EXPECT_TRUE(first_response["previous_response_id"].is_null());
+  EXPECT_FALSE(first_response["output"].empty());
+
+  ValidateReasoningOutput(first_response["output"], "ResponsesStreamingThenChainNonStreaming turn 1");
+  auto* first_message = FindOutputByType(first_response["output"], "message");
+  ASSERT_NE(first_message, nullptr) << "No message output item found. Output: " << first_response["output"].dump();
+  EXPECT_EQ((*first_message)["role"], "assistant");
+  ASSERT_TRUE(first_message->contains("content"));
+  EXPECT_FALSE((*first_message)["content"].empty()) << "Expected non-empty assistant content";
 
   // Turn 2: non-streaming, chaining from the streaming response
   json second_request = {
@@ -474,10 +481,29 @@ TEST_F(WebServiceIntegrationTest, ResponsesStreamingThenChainNonStreaming) {
 
   json second_response = json::parse(second_result->body);
   ASSERT_EQ(second_response["status"], "completed") << second_result->body;
+  ASSERT_TRUE(second_response.contains("id"));
+  std::string second_id = second_response["id"].get<std::string>();
+  EXPECT_NE(second_id, first_id);
+  ASSERT_TRUE(second_response.contains("previous_response_id"));
+  EXPECT_EQ(second_response["previous_response_id"], first_id);
+  EXPECT_FALSE(second_response["output"].empty());
 
-  std::string output_text = second_response["output_text"].get<std::string>();
-  EXPECT_NE(output_text.find("mango"), std::string::npos)
-      << "Expected 'mango' in chained response. Got: " << output_text;
+  ValidateReasoningOutput(second_response["output"], "ResponsesStreamingThenChainNonStreaming turn 2");
+  auto* second_message = FindOutputByType(second_response["output"], "message");
+  ASSERT_NE(second_message, nullptr) << "No message output item found. Output: " << second_response["output"].dump();
+  EXPECT_EQ((*second_message)["role"], "assistant");
+  ASSERT_TRUE(second_message->contains("content"));
+  EXPECT_FALSE((*second_message)["content"].empty()) << "Expected non-empty assistant content";
+  ASSERT_TRUE(second_response.contains("output_text"));
+  EXPECT_FALSE(second_response["output_text"].get<std::string>().empty()) << "Expected non-empty output_text";
+
+  auto get_result = client.Get(("/v1/responses/" + second_id).c_str());
+  ASSERT_TRUE(get_result) << "HTTP request failed";
+  ASSERT_EQ(get_result->status, 200) << get_result->body;
+
+  json retrieved = json::parse(get_result->body);
+  EXPECT_EQ(retrieved["id"], second_id);
+  EXPECT_EQ(retrieved["previous_response_id"], first_id);
 }
 
 TEST_F(WebServiceIntegrationTest, ResponsesNonStreamingThenChainStreaming) {
