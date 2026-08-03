@@ -76,7 +76,7 @@ steps:
         $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
-        # All four packages are public on nuget.org. Foundry Local Core's
+        # These packages are public on nuget.org. Foundry Local Core's
         # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
         # (see .pipelines/templates/build-core-steps.yml), so we follow the
         # same source of truth here.
@@ -124,7 +124,7 @@ steps:
       cacheDir="$(Build.BinariesDirectory)/nuget_packages"
       mkdir -p "$cacheDir"
 
-      # All four packages are public on nuget.org. Foundry Local Core's
+      # These packages are public on nuget.org. Foundry Local Core's
       # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
       # (see .pipelines/templates/build-core-steps.yml), so we follow the
       # same source of truth here.
