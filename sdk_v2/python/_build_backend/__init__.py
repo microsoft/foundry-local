@@ -49,13 +49,9 @@ _DEPS_JSON = _PYPROJECT.parent.parent / "deps_versions.json"
 # captures the package name + ``==`` and we substitute in the version read from
 # deps_versions.json.
 #
-# The suffix group is optional (``?``) so the patterns also match the plain
-# ``onnxruntime==`` and ``onnxruntime-genai==`` package names used for Linux
-# ARM64 (CPU-only). The trailing ``==`` anchor keeps the ORT pattern from
-# matching ``onnxruntime-genai==`` (its optional suffix collapses to empty, then
-# ``==`` must follow immediately, which ``-genai==`` fails).
-_ORT_PIN_PATTERN = re.compile(r'("onnxruntime(?:-core|-gpu)?==)[^\s";]+')
-_GENAI_PIN_PATTERN = re.compile(r'("onnxruntime-genai(?:-core|-cuda)?==)[^\s";]+')
+# Rewrite only the two package names declared in pyproject.toml.
+_ORT_PIN_PATTERN = re.compile(r'("onnxruntime==)[^\s";]+')
+_GENAI_PIN_PATTERN = re.compile(r'("onnxruntime-genai-core==)[^\s";]+')
 
 
 def _read_versions() -> tuple[str, str]:

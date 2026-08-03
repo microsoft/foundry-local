@@ -85,15 +85,8 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 
    Bumping ORT/GenAI is a one-file edit.
 9. **ORT/GenAI come from public PyPI.** No private feed plumbing required
-   for the wheel install path:
-   - `onnxruntime-core` (Windows/macOS)
-   - `onnxruntime-genai-core` (Windows/macOS)
-   - `onnxruntime-gpu` / `onnxruntime-genai-cuda` (Linux x64)
-   - `onnxruntime` / `onnxruntime-genai` (Linux ARM64, CPU-only)
-
-   Import-name mapping is platform-dependent: Linux uses `onnxruntime` /
-   `onnxruntime_genai`; Windows/macOS use `onnxruntime_core` /
-   `onnxruntime_genai_core`.
+   for the wheel install path. Every platform uses `onnxruntime` and
+   `onnxruntime-genai-core` (`onnxruntime` and `onnxruntime_genai_core` imports).
 10. **C++ staging step is the policy authority for native payload contents.**
     `steps-build-{windows,linux,macos}.yml` stage the **full runtime closure**
     of `foundry_local` into the `cpp-native-<rid>` artifact, with explicit
@@ -117,13 +110,9 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 
     Each step fails loudly if its primary library is missing.
 11. **Python runtime ORT discovery.** `lib_loader.py::prepare_native_dependencies()`
-    bridges between the in-wheel `foundry_local` and the pip-installed ORT
-    packages:
-    - **Windows:** `os.add_dll_directory(...)` for each ORT package directory.
-    - **Linux/macOS:** create symlinks
-      `_native/<rid>/{onnxruntime,onnxruntime-genai}.{so,dylib}` pointing at
-      the package-installed `lib*` files (workaround for
-      [onnxruntime#27263](https://github.com/microsoft/onnxruntime/issues/27263)).
+    preloads ORT and GenAI by absolute path. Windows also registers their DLL
+    directories; macOS creates the unversioned ORT symlink required by GenAI
+    ([onnxruntime#27263](https://github.com/microsoft/onnxruntime/issues/27263)).
 
     Wired into `_native/api.py` between `find_library()` and the cffi
     extension import. Idempotent and silent on failure.

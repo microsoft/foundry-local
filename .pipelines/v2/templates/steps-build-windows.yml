@@ -207,7 +207,7 @@ steps:
 # The WinML DLL is delay-loaded (see /DELAYLOAD in CMakeLists.txt) so it is
 # NOT needed at foundry_local.dll load time, but the cmake post-build copy
 # stages it next to foundry_local.dll for runtime EP discovery. ORT/GenAI
-# come from the onnxruntime-core / onnxruntime-genai-core pip deps.
+# come from the onnxruntime / onnxruntime-genai-core pip deps.
 - task: PowerShell@2
   displayName: 'Stage native artifacts'
   inputs:

@@ -228,7 +228,7 @@ async function installPackage(artifact, tempDir, binDir) {
 }
 
 // libfoundry_local records a versioned SONAME/install_name dependency on ORT
-// (libonnxruntime.so.1 / libonnxruntime.1.dylib), but the Foundry ORT nupkg extracts
+// (libonnxruntime.so.1 / libonnxruntime.1.dylib), but the vanilla ORT nupkg extracts
 // the unversioned libonnxruntime.{so,dylib}. Rename the extracted file to the versioned
 // soname so foundry_local resolves it via rpath. Windows uses onnxruntime.dll, which has
 // no soname.
