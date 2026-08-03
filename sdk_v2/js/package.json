@@ -37,7 +37,7 @@
     "format": "biome format --write src test script"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.0",
     "node-addon-api": "^8.2.2"
   },
   "devDependencies": {

@@ -108,6 +108,9 @@ stages:
         - output: pipelineArtifact
           artifactName: 'cpp-native-linux-x64'
           targetPath: '$(Build.ArtifactStagingDirectory)/native'
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-symbols-linux-x64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/symbols'
       steps:
       - template: steps-build-linux.yml
         parameters:
@@ -139,6 +142,9 @@ stages:
         - output: pipelineArtifact
           artifactName: 'cpp-native-osx-arm64'
           targetPath: '$(Build.ArtifactStagingDirectory)/native'
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-symbols-osx-arm64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/symbols'
       steps:
       - template: steps-build-macos.yml
         parameters:
@@ -177,8 +183,14 @@ stages:
           artifactName: 'cpp-native-linux-x64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         - input: pipelineArtifact
+          artifactName: 'cpp-native-symbols-linux-x64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-symbols-linux-x64'
+        - input: pipelineArtifact
           artifactName: 'cpp-native-osx-arm64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-symbols-osx-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-symbols-osx-arm64'
         outputs:
         - output: pipelineArtifact
           artifactName: 'cpp-sdk-v2'

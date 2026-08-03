@@ -26,7 +26,7 @@
     "test": "mocha --import=tsx test/**/*.test.ts"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16"
+    "adm-zip": "^0.6.0"
   },
   "devDependencies": {
     "@types/chai": "^5.2.3",
