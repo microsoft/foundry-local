@@ -62,37 +62,44 @@ steps:
 
 - ${{ if eq(parameters.rid, 'win-arm64') }}:
   - task: PowerShell@2
-  displayName: 'Resolve Visual Studio Build Tools for node-gyp (win-arm64)'
-  inputs:
-    targetType: inline
-      pwsh: true
-    script: |
-      $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-      if (-not (Test-Path $vswhere)) {
-        throw "vswhere.exe not found at $vswhere"
-      }
+    displayName: 'Ensure Visual Studio Build Tools for node-gyp (win-arm64)'
+    inputs:
+      targetType: inline
+      pwsh: false
+      script: |
+          $installRoot = 'C:\BuildTools'
+          $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
 
-      $installRoot = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Workload.VCTools `
-            Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
-            Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            Microsoft.VisualStudio.Component.Windows11SDK.22621 `
-        -property installationPath
+          if (-not (Test-Path $vcvars)) {
+              Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+              $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+              Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
 
-      if (-not $installRoot) {
-        throw 'No Visual Studio installation with required ARM64 C++ components was found on the agent image.'
-      }
+              $arguments = @(
+                  '--quiet',
+                  '--wait',
+                  '--norestart',
+                  '--nocache',
+                  '--installPath', $installRoot,
+                  '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                  '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+                  '--includeRecommended'
+              )
 
-      $installRoot = $installRoot.Trim()
-      Write-Host "Using Visual Studio install: $installRoot"
-      $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              }
+          }
 
-      if (-not (Test-Path $vcvars)) {
-        throw "vcvarsall.bat was not found at $vcvars."
-      }
+          if (-not (Test-Path $vcvars)) {
+              throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+          }
 
-      Write-Host "vcvarsall.bat: $vcvars"
-      Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
+          Write-Host "vcvarsall.bat: $vcvars"
+          Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
 
 # Map ADO RID -> Node-style platform-arch key used inside the npm tarball
 # (prebuilds/<plat>-<arch>/) so downstream consumers find the addon under

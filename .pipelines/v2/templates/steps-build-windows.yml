@@ -13,6 +13,7 @@
 #   runTests       – Whether to run tests
 #   stageHeaders   – Whether to stage public headers as a separate artifact
 #   pythonArchitecture – Python architecture installed by UsePythonVersion
+#   usePwsh        – Whether PowerShell tasks should use PowerShell Core
 
 parameters:
 - name: arch
@@ -36,6 +37,9 @@ parameters:
   type: string
   default: 'x64'
   values: ['x64', 'arm64']
+- name: usePwsh
+  type: boolean
+  default: true
 
 steps:
 
@@ -62,47 +66,54 @@ steps:
     winmlVersion: ${{ parameters.winmlVersion }}
     includeWinml: true
     shell: pwsh
+    usePwsh: ${{ parameters.usePwsh }}
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - task: PowerShell@2
-    displayName: 'Resolve Visual Studio Build Tools and CMake for ARM64'
+    displayName: 'Ensure Visual Studio Build Tools and CMake for ARM64'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: ${{ parameters.usePwsh }}
       script: |
-        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-        if (-not (Test-Path $vswhere)) {
-          throw "vswhere.exe not found at $vswhere"
-        }
-
-        $installRoot = & $vswhere -latest -products * `
-          -requires Microsoft.VisualStudio.Workload.VCTools `
-                    Microsoft.VisualStudio.Component.VC.Tools.ARM64 `
-                    Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-                    Microsoft.VisualStudio.Component.VC.CMake.Project `
-                    Microsoft.VisualStudio.Component.Windows11SDK.22621 `
-          -property installationPath
-
-        if (-not $installRoot) {
-          throw 'No Visual Studio installation with required ARM64 C++ components was found on the agent image.'
-        }
-
-        $installRoot = $installRoot.Trim()
-        Write-Host "Using Visual Studio install: $installRoot"
-
+        $installRoot = 'C:\BuildTools'
         $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
         $cmakeDir = Join-Path $installRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
         $cmakePath = Join-Path $cmakeDir 'cmake.exe'
         $ctestPath = Join-Path $cmakeDir 'ctest.exe'
 
+        if (-not (Test-Path $vcvars) -or -not (Test-Path $cmakePath) -or -not (Test-Path $ctestPath)) {
+          Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+          $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+          $arguments = @(
+            '--quiet',
+            '--wait',
+            '--norestart',
+            '--nocache',
+            '--installPath', $installRoot,
+            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.CMake.Project',
+            '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+            '--includeRecommended'
+          )
+
+          $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+          }
+        }
+
         if (-not (Test-Path $vcvars)) {
-          throw "vcvarsall.bat was not found at $vcvars."
+          throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
         }
         if (-not (Test-Path $cmakePath)) {
-          throw "cmake.exe was not found at $cmakePath."
+          throw "cmake.exe was not found at $cmakePath after Build Tools install."
         }
         if (-not (Test-Path $ctestPath)) {
-          throw "ctest.exe was not found at $ctestPath."
+          throw "ctest.exe was not found at $ctestPath after Build Tools install."
         }
 
         Write-Host "##vso[task.prependpath]$cmakeDir"
@@ -120,7 +131,7 @@ steps:
   displayName: 'Append version define'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
@@ -132,6 +143,8 @@ steps:
   - template: ../../templates/fetch-test-data-from-blob.yml@self
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+      scriptType: ps
+      installAzCli: true
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-
@@ -199,7 +212,7 @@ steps:
   displayName: 'Stage native artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $binDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/bin/${{ parameters.buildConfig }}'
       $linkDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/${{ parameters.buildConfig }}'
