@@ -7,6 +7,7 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "internal_api/test_model_locator.h"
 #include "logger.h"
 
 #include <gtest/gtest.h>

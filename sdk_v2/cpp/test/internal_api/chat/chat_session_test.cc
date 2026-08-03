@@ -16,6 +16,7 @@
 #include "internal_api/null_telemetry.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "internal_api/test_model_locator.h"
 #include "utils/string_utils.h"
 
 #include <gtest/gtest.h>

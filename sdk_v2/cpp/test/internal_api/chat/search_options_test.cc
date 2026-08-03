@@ -12,6 +12,7 @@
 #include "logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "internal_api/test_model_locator.h"
 
 #include <ort_genai.h>
 #include <gtest/gtest.h>
