@@ -59,11 +59,6 @@ bool IsGenAIVerboseLoggingEnabled() {
   return IsTruthyConfigValue(*env);
 }
 
-bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& option_name) {
-  const auto it = config.additional_options.find(option_name);
-  return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
-}
-
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
   // If someone explicitly enables ORTGENAI_ORT_VERBOSE_LOGGING, treat this as
   // a debug scenario and default ORT logging to verbose as well.
@@ -290,16 +285,11 @@ Manager::Manager(const Configuration& config)
     }
   }
 
-  // Read whether cross-region fallback should be disabled (default: enabled).
-  // Accepts case-insensitive true/1/yes.
-  const bool disable_region_fallback = IsAdditionalOptionEnabled(config_, "DisableRegionFallback");
-
   download_manager_ = std::make_unique<DownloadManager>(
       *config_.model_cache_dir,
       config_.catalog_region.value_or("auto"),
       download_concurrency,
-      *logger_,
-      disable_region_fallback);
+      *logger_);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
@@ -311,8 +301,7 @@ Manager::Manager(const Configuration& config)
       },
       *ep_detector_, *logger_,
       config_.external_service_url.has_value(),
-      config_.catalog_region.value_or("auto"),
-      disable_region_fallback);
+      config_.catalog_region.value_or("auto"));
 }
 
 Manager::~Manager() {

@@ -11,6 +11,8 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <iterator>
+#include <algorithm>
 #include <regex>
 #include <sstream>
 
@@ -57,6 +59,42 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
   return t == static_cast<time_t>(-1) ? 0 : static_cast<int64_t>(t);
 }
 
+std::optional<int> ParseIntString(const std::optional<std::string>& value) {
+  if (!value || value->empty()) {
+    return std::nullopt;
+  }
+
+  try {
+    return std::stoi(*value);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::string JoinStrings(const std::vector<std::string>& values) {
+  if (values.empty()) {
+    return {};
+  }
+
+  std::ostringstream joined;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      joined << ',';
+    }
+
+    joined << values[i];
+  }
+
+  return joined.str();
+}
+
+bool ContainsStringIgnoreCase(const std::vector<std::string>& values, const std::string& target) {
+  const auto lowered_target = ToLower(target);
+  return std::any_of(values.begin(), values.end(), [&](const std::string& value) {
+    return ToLower(value) == lowered_target;
+  });
+}
+
 DeviceType ParseDeviceType(const std::string& device) {
   const auto lower = ToLower(device);
   if (lower == "cpu") {
@@ -87,14 +125,7 @@ void to_json(nlohmann::json& j, const CatalogFilter& f) {
   };
 }
 
-void to_json(nlohmann::json& j, const CatalogResource& r) {
-  j = nlohmann::json{
-      {"resourceId", r.resource_id},
-      {"entityContainerType", r.entity_container_type},
-  };
-}
-
-void to_json(nlohmann::json& j, const IndexEntitiesRequest& r) {
+void to_json(nlohmann::json& j, const AzureCatalogRequest& r) {
   j = nlohmann::json{
       {"filters", r.filters},
       {"pageSize", r.page_size},
@@ -109,22 +140,38 @@ void to_json(nlohmann::json& j, const IndexEntitiesRequest& r) {
   }
 }
 
-void to_json(nlohmann::json& j, const AzureCatalogRequest& r) {
-  j = nlohmann::json{
-      {"resourceIds", r.resource_ids},
-      {"indexEntitiesRequest", r.index_entities_request},
-  };
-}
-
 // ========================================================================
 // Response deserialization (from_json)
 // ========================================================================
 
+void from_json(const nlohmann::json& j, TextLimits& t) {
+  opt_int64(j, "inputContextWindow", t.input_context_window);
+  opt_int64(j, "maxOutputTokens", t.max_output_tokens);
+}
+
+void from_json(const nlohmann::json& j, ModelLimits& m) {
+  if (j.contains("textLimits") && j["textLimits"].is_object()) {
+    m.text_limits = j["textLimits"].get<TextLimits>();
+  }
+
+  if (j.contains("supportedInputModalities") && j["supportedInputModalities"].is_array()) {
+    m.supported_input_modalities = j["supportedInputModalities"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("supportedOutputModalities") && j["supportedOutputModalities"].is_array()) {
+    m.supported_output_modalities = j["supportedOutputModalities"].get<std::vector<std::string>>();
+  }
+}
+
 void from_json(const nlohmann::json& j, VariantMetadata& v) {
   opt_str(j, "modelType", v.model_type);
+  if (j.contains("quantization") && j["quantization"].is_array()) {
+    v.quantization = j["quantization"].get<std::vector<std::string>>();
+  }
   opt_str(j, "device", v.device);
   opt_str(j, "executionProvider", v.execution_provider);
   opt_int64(j, "fileSizeBytes", v.file_size_bytes);
+  opt_int64(j, "vRamFootprintBytes", v.vram_footprint_bytes);
 }
 
 void from_json(const nlohmann::json& j, VariantParent& v) {
@@ -195,6 +242,36 @@ void from_json(const nlohmann::json& j, CatalogAnnotations& a) {
 void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
   opt_str(j, "assetId", m.asset_id);
   opt_str(j, "entityId", m.entity_id);
+  opt_str(j, "name", m.name);
+  opt_str(j, "displayName", m.display_name);
+  opt_str(j, "version", m.version);
+  opt_str(j, "publisher", m.publisher);
+  opt_str(j, "license", m.license);
+  opt_str(j, "licenseDescription", m.license_description);
+  opt_str(j, "alias", m.alias);
+  opt_str(j, "minFLVersion", m.min_fl_version);
+  opt_str(j, "createdTime", m.created_time);
+  opt_str(j, "author", m.author);
+
+  if (j.contains("inferenceTasks") && j["inferenceTasks"].is_array()) {
+    m.inference_tasks = j["inferenceTasks"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("modelCapabilities") && j["modelCapabilities"].is_array()) {
+    m.model_capabilities = j["modelCapabilities"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("deploymentOptions") && j["deploymentOptions"].is_array()) {
+    m.deployment_options = j["deploymentOptions"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("modelLimits") && j["modelLimits"].is_object()) {
+    m.model_limits = j["modelLimits"].get<ModelLimits>();
+  }
+
+  if (j.contains("variantInformation") && j["variantInformation"].is_object()) {
+    m.variant_information = j["variantInformation"].get<VariantInfo>();
+  }
 
   if (j.contains("annotations") && j["annotations"].is_object()) {
     m.annotations = j["annotations"].get<CatalogAnnotations>();
@@ -210,7 +287,9 @@ void from_json(const nlohmann::json& j, IndexEntitiesResponse& r) {
   opt_int(j, "nextSkip", r.next_skip);
   opt_str(j, "continuationToken", r.continuation_token);
 
-  if (j.contains("value") && j["value"].is_array()) {
+  if (j.contains("summaries") && j["summaries"].is_array()) {
+    r.models = j["summaries"].get<std::vector<CatalogLocalModel>>();
+  } else if (j.contains("value") && j["value"].is_array()) {
     r.models = j["value"].get<std::vector<CatalogLocalModel>>();
   }
 }
@@ -218,6 +297,21 @@ void from_json(const nlohmann::json& j, IndexEntitiesResponse& r) {
 void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
   if (j.contains("indexEntitiesResponse") && j["indexEntitiesResponse"].is_object()) {
     r.index_entities_response = j["indexEntitiesResponse"].get<IndexEntitiesResponse>();
+    r.total_count = r.index_entities_response->total_count;
+    r.models = r.index_entities_response->models;
+    r.next_skip = r.index_entities_response->next_skip;
+    r.continuation_token = r.index_entities_response->continuation_token;
+    return;
+  }
+
+  opt_int(j, "totalCount", r.total_count);
+  opt_int(j, "nextSkip", r.next_skip);
+  opt_str(j, "continuationToken", r.continuation_token);
+
+  if (j.contains("summaries") && j["summaries"].is_array()) {
+    r.models = j["summaries"].get<std::vector<CatalogLocalModel>>();
+  } else if (j.contains("value") && j["value"].is_array()) {
+    r.models = j["value"].get<std::vector<CatalogLocalModel>>();
   }
 }
 
@@ -234,36 +328,41 @@ void from_json(const nlohmann::json& j, CatalogPromptTemplate& t) {
 // ========================================================================
 
 std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
-  // Required fields — skip entry if missing.
   if (!cm.asset_id || cm.asset_id->empty()) {
     return std::nullopt;
   }
 
-  if (!cm.properties || !cm.properties->name || cm.properties->name->empty()) {
+  const std::string model_name = cm.name.value_or(
+      (cm.properties && cm.properties->name) ? *cm.properties->name : std::string{});
+  if (model_name.empty()) {
     return std::nullopt;
   }
 
-  if (!cm.entity_id || cm.entity_id->empty()) {
+  const VariantInfo* variant_info = nullptr;
+  if (cm.variant_information) {
+    variant_info = &*cm.variant_information;
+  } else if (cm.properties && cm.properties->variant_info) {
+    variant_info = &*cm.properties->variant_info;
+  }
+
+  if (!variant_info) {
     return std::nullopt;
   }
 
-  if (!cm.properties->variant_info) {
-    return std::nullopt;
-  }
-
-  const auto& props = *cm.properties;
-  int version = static_cast<int>(props.version.value_or(0));
+  const auto version = ParseIntString(cm.version).value_or(
+      cm.properties ? static_cast<int>(cm.properties->version.value_or(0)) : 0);
 
   // Extract parent model URI (used for alias and stored as a property).
   std::string parent_uri;
-  if (props.variant_info && !props.variant_info->parents.empty() &&
-      props.variant_info->parents[0].asset_id) {
-    parent_uri = *props.variant_info->parents[0].asset_id;
+  if (!variant_info->parents.empty() && variant_info->parents[0].asset_id) {
+    parent_uri = *variant_info->parents[0].asset_id;
   }
 
-  // Determine alias — prefer tags.alias, then short name from parent, then model name.
+  // Determine alias — prefer the V2 field, then legacy tag, then short name from parent, then model name.
   std::string alias;
-  if (cm.annotations && cm.annotations->tags && cm.annotations->tags->alias) {
+  if (cm.alias && !cm.alias->empty()) {
+    alias = *cm.alias;
+  } else if (cm.annotations && cm.annotations->tags && cm.annotations->tags->alias) {
     alias = *cm.annotations->tags->alias;
   } else {
     if (!parent_uri.empty()) {
@@ -271,20 +370,20 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     }
 
     if (alias.empty()) {
-      alias = *props.name;
+      alias = model_name;
     }
   }
 
   ModelInfo info;
-  info.model_id = *props.name + ":" + std::to_string(version);
-  info.name = *props.name;
+  info.model_id = model_name + ":" + std::to_string(version);
+  info.name = model_name;
   info.version = version;
   info.alias = alias;
   info.uri = *cm.asset_id;
 
   // Device type, execution provider, and model type from variant metadata
-  if (props.variant_info && props.variant_info->variant_metadata) {
-    const auto& vm = *props.variant_info->variant_metadata;
+  if (variant_info->variant_metadata) {
+    const auto& vm = *variant_info->variant_metadata;
     if (vm.device) {
       info.device_type = ParseDeviceType(*vm.device);
     }
@@ -296,6 +395,14 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     // ModelType — defaults to "ONNX" (matches C# ToAzureFoundryLocalModel)
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] =
         vm.model_type.value_or("ONNX");
+
+    if (!vm.quantization.empty()) {
+      info.model_settings.Add("quantization", JoinStrings(vm.quantization));
+    }
+
+    if (vm.vram_footprint_bytes) {
+      info.model_settings.Add("vramFootprintBytes", std::to_string(*vm.vram_footprint_bytes));
+    }
   } else {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
   }
@@ -380,6 +487,51 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     }
   }
 
+  if (!cm.inference_tasks.empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = cm.inference_tasks.front();
+    info.task = cm.inference_tasks.front();
+  }
+
+  if (cm.license && !cm.license->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = *cm.license;
+  }
+
+  if (cm.license_description && !cm.license_description->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR] = *cm.license_description;
+  }
+
+  if (!cm.model_capabilities.empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR] = JoinStrings(cm.model_capabilities);
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] =
+        ContainsStringIgnoreCase(cm.model_capabilities, "tool-calling") ? 1 : 0;
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
+        ContainsStringIgnoreCase(cm.model_capabilities, "reasoning") ? 1 : 0;
+  }
+
+  if (cm.model_limits) {
+    if (!cm.model_limits->supported_input_modalities.empty()) {
+      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR] =
+          JoinStrings(cm.model_limits->supported_input_modalities);
+    }
+
+    if (!cm.model_limits->supported_output_modalities.empty()) {
+      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR] =
+          JoinStrings(cm.model_limits->supported_output_modalities);
+    }
+
+    if (cm.model_limits->text_limits) {
+      if (cm.model_limits->text_limits->input_context_window) {
+        info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT] =
+            *cm.model_limits->text_limits->input_context_window;
+      }
+
+      if (cm.model_limits->text_limits->max_output_tokens) {
+        info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT] =
+            *cm.model_limits->text_limits->max_output_tokens;
+      }
+    }
+  }
+
   if (cm.annotations && cm.annotations->system_catalog_data) {
     const auto& scd = *cm.annotations->system_catalog_data;
     if (scd.publisher) {
@@ -395,6 +547,14 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     }
   }
 
+  if (cm.publisher && !cm.publisher->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = *cm.publisher;
+  }
+
+  if (cm.display_name && !cm.display_name->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR] = *cm.display_name;
+  }
+
   // Fallback: tags.maxOutputTokens (string form) if systemCatalogData didn't supply one.
   if (info.int_properties.find(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT) == info.int_properties.end() &&
       cm.annotations && cm.annotations->tags && cm.annotations->tags->max_output_tokens) {
@@ -406,14 +566,15 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     }
   }
 
-  if (props.min_fl_version) {
-    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *props.min_fl_version;
+  if (cm.min_fl_version && !cm.min_fl_version->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.min_fl_version;
+  } else if (cm.properties && cm.properties->min_fl_version) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.properties->min_fl_version;
   }
 
   // File size in MB
-  if (props.variant_info && props.variant_info->variant_metadata &&
-      props.variant_info->variant_metadata->file_size_bytes) {
-    int64_t bytes = *props.variant_info->variant_metadata->file_size_bytes;
+  if (variant_info->variant_metadata && variant_info->variant_metadata->file_size_bytes) {
+    int64_t bytes = *variant_info->variant_metadata->file_size_bytes;
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = bytes / (1024 * 1024);
   }
 
@@ -425,8 +586,11 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
   }
 
   // CreatedAtUnix — Properties.CreationContext.CreatedTime → Unix timestamp
-  if (props.creation_context && props.creation_context->created_time) {
-    int64_t unix_ts = ParseIso8601ToUnix(*props.creation_context->created_time);
+  if (cm.created_time && !cm.created_time->empty()) {
+    int64_t unix_ts = ParseIso8601ToUnix(*cm.created_time);
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT] = unix_ts;
+  } else if (cm.properties && cm.properties->creation_context && cm.properties->creation_context->created_time) {
+    int64_t unix_ts = ParseIso8601ToUnix(*cm.properties->creation_context->created_time);
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT] = unix_ts;
   }
 

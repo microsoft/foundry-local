@@ -21,11 +21,9 @@ namespace fl {
 
 namespace {
 
-constexpr const char* kEntitiesPath = "/entities/crossRegion";
 constexpr int kPageSize = 50;
 
-// Region detection probe.
-constexpr const char* kRegionProbeUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+constexpr const char* kAssetGalleryModelsUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
 constexpr const char* kRegionProbeBody = R"({"filters":[],"pageSize":1})";
 constexpr const char* kServedByClusterHeader = "azureml-served-by-cluster";
 constexpr const char* kDefaultRegion = "centralus";
@@ -45,12 +43,12 @@ std::string TrimSingleQuotes(const std::string& s) {
 }
 
 /// Build the values for the foundryLocal tag filter from the override string.
-/// Empty override → {""} (public models). Otherwise split on ',', drop entries
-/// that are empty after whitespace-trimming, then strip surrounding quotes so a
-/// caller can request an explicit empty value via "''".
+/// Empty override → {} so the caller can apply the default deployment option.
+/// Otherwise split on ',', drop entries that are empty after whitespace-trimming,
+/// then strip surrounding quotes.
 std::vector<std::string> CreateModelFilter(const std::string& filter_override) {
   if (filter_override.empty()) {
-    return {std::string{}};
+    return {};
   }
 
   std::vector<std::string> values;
@@ -94,35 +92,14 @@ std::string ExtractRegionFromClusterHeader(const std::string& header_value) {
   return {};
 }
 
-/// Split a catalog URL of the form `https://{host}/api/{region}/{suffix}` into
-/// its prefix ("https://{host}/api/") and suffix ("/{suffix}"). Returns false if
-/// the URL doesn't match that shape, in which case it must be used verbatim.
-bool TryParseRegionalCatalogUrl(const std::string& url, std::string* prefix, std::string* suffix) {
-  static const std::string kApiMarker = "/api/";
-  const auto api_pos = url.find(kApiMarker);
-  if (api_pos == std::string::npos) {
-    return false;
-  }
-
-  const auto region_start = api_pos + kApiMarker.size();
-  const auto region_end = url.find('/', region_start);
-  if (region_end == std::string::npos || region_end == region_start) {
-    return false;
-  }
-
-  *prefix = url.substr(0, region_start);
-  *suffix = url.substr(region_end);
-  return true;
-}
-
-bool UsesRegionalRouting(bool regional_template, const std::string& region) {
-  return regional_template && !region.empty();
+bool IsAssetGalleryUrl(const std::string& url) {
+  return url.find("/asset-gallery/") != std::string::npos;
 }
 
 /// Detect the Azure region by POSTing a probe to the catalog gallery and reading
 /// the `azureml-served-by-cluster` response header. Returns "centralus" on failure.
 std::string DetectRegion(const AzureCatalogClient::HttpPostResponseFn& http_post_response, ILogger& logger) {
-  http::HttpResponse response = http_post_response(kRegionProbeUrl, kRegionProbeBody);
+  http::HttpResponse response = http_post_response(kAssetGalleryModelsUrl, kRegionProbeBody);
 
   std::string region = kDefaultRegion;
   if (response.status >= 200 && response.status < 300) {
@@ -143,31 +120,22 @@ std::string DetectRegion(const AzureCatalogClient::HttpPostResponseFn& http_post
   return region;
 }
 
-std::string BuildRegionalUrl(const std::string& url_prefix, const std::string& url_suffix, const std::string& region) {
-  return url_prefix + region + url_suffix + kEntitiesPath;
-}
-
-std::string BuildRequestUrl(const std::string& base_url,
-                            bool regional,
-                            const std::string& region,
-                            const std::string& url_prefix,
-                            const std::string& url_suffix) {
-  if (regional) {
-    return BuildRegionalUrl(url_prefix, url_suffix, region);
+std::string BuildRequestUrl(const std::string& base_url) {
+  if (base_url.empty()) {
+    return kAssetGalleryModelsUrl;
   }
 
-  return base_url + kEntitiesPath;
+  return base_url;
 }
 
 std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
                              const std::optional<int>& skip,
                              const std::optional<std::string>& continuation_token) {
   AzureCatalogRequest request;
-  request.resource_ids.push_back({"azureml", "Registry"});
-  request.index_entities_request.filters = filters;
-  request.index_entities_request.page_size = kPageSize;
-  request.index_entities_request.skip = skip;
-  request.index_entities_request.continuation_token = continuation_token;
+  request.filters = filters;
+  request.page_size = kPageSize;
+  request.skip = skip;
+  request.continuation_token = continuation_token;
 
   const nlohmann::json body = request;
   return body.dump();
@@ -197,40 +165,55 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
     bool latest_only = true,
     const std::string& model_alias = "",
     const std::string& model_name = "") {
-  std::vector<std::vector<CatalogFilter>> filter_sets;
 
+  // Full parameter-driven filter sets (keep for easy rollback once catalog models are updated):
+  std::vector<std::vector<CatalogFilter>> filter_sets;
   for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
     std::vector<CatalogFilter> filters;
-    filters.push_back(MakeFilter("type", {"models"}));
-    filters.push_back(MakeFilter("kind", {"Versioned"}));
-    if (latest_only) {
-      filters.push_back(MakeFilter("labels", {"latest"}));
+  
+    std::vector<std::string> deployment_options = model_filter;
+    if (deployment_options.empty()) {
+      deployment_options.push_back("Foundry Local on Devices");
     }
-    filters.push_back(MakeFilter("annotations/tags/foundryLocal", model_filter));
+  
+    filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
     if (!model_alias.empty()) {
-      filters.push_back(MakeFilter("annotations/tags/alias", {model_alias}));
+      filters.push_back(MakeFilter("Alias", {model_alias}));
     }
     if (!model_name.empty()) {
-      filters.push_back(MakeFilter("properties/name", {model_name}));
+      filters.push_back(MakeFilter("Name", {model_name}));
     }
-    filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}));
-    filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps));
+    filters.push_back(MakeFilter("VariantInformation/VariantMetadata/Device", {ToLower(device)}));
+    filters.push_back(MakeFilter("VariantInformation/VariantMetadata/ExecutionProvider", eps));
+  
+    if (!latest_only) {
+      // Placeholder to keep the parameter part of the behavior contract.
+      // Asset-gallery query currently does not require an extra field to fetch all versions.
+    }
+  
     filter_sets.push_back(std::move(filters));
   }
-
   return filter_sets;
 }
 
 
 std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& model_filter,
                                                const std::vector<std::string>& model_ids) {
-  // Looking up specific IDs: no labels=latest (we want exact versions) and no
-  // device/EP filters (the IDs already pin the variant).
   std::vector<CatalogFilter> filters;
-  filters.push_back(MakeFilter("type", {"models"}));
-  filters.push_back(MakeFilter("kind", {"Versioned"}));
-  filters.push_back(MakeFilter("annotations/tags/foundryLocal", model_filter));
-  filters.push_back(MakeFilter("properties/id", model_ids));
+  std::vector<std::string> deployment_options = model_filter;
+  if (deployment_options.empty()) {
+    deployment_options.push_back("Foundry Local on Devices");
+  }
+
+  std::vector<std::string> names;
+  names.reserve(model_ids.size());
+  for (const auto& model_id : model_ids) {
+    const auto colon = model_id.rfind(':');
+    names.push_back(colon == std::string::npos ? model_id : model_id.substr(0, colon));
+  }
+
+  filters.push_back(MakeFilter("DeploymentOptions", deployment_options));
+  filters.push_back(MakeFilter("Name", names));
   return filters;
 }
 
@@ -241,14 +224,12 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
                                        const IEpDetector& ep_detector,
                                        ILogger& logger,
                                        HttpPostResponseFn http_post,
-                                       std::string catalog_region,
-                                       bool region_fallback_enabled)
+                                       std::string catalog_region)
     : base_url_(base_url),
       model_filter_(CreateModelFilter(filter_override)),
       ep_detector_(ep_detector),
       logger_(logger),
-      http_post_response_(std::move(http_post)),
-      region_fallback_(logger, region_fallback_enabled) {
+      http_post_response_(std::move(http_post)) {
   if (!http_post_response_) {
     http_post_response_ = [](const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
@@ -262,91 +243,46 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
     base_url_.pop_back();
   }
 
-  regional_template_ = TryParseRegionalCatalogUrl(base_url_, &url_prefix_, &url_suffix_);
-
-  // An explicit region is a hard override. Empty/"auto" means detect the region,
-  // but only for Azure URLs that can be rewritten per region.
+  // An explicit region is a hard override. Empty/"auto" means detect the region
+  // when using the asset-gallery catalog service.
   const auto normalized_catalog_region = ToLower(catalog_region);
   if (!normalized_catalog_region.empty() && normalized_catalog_region != "auto") {
     region_ = normalized_catalog_region;
-  } else if (regional_template_) {
+  } else if (base_url_.empty() || IsAssetGalleryUrl(base_url_)) {
     region_ = DetectRegion(http_post_response_, logger_);
   }
 }
 
 std::optional<AzureCatalogClient::FetchedFilterSet> AzureCatalogClient::FetchFilterSet(
     const std::vector<CatalogFilter>& filters) {
-  const bool regional = UsesRegionalRouting(regional_template_, region_);
-
   FetchedFilterSet result;
   result.region = region_;
 
   std::optional<int> skip;
   std::optional<std::string> continuation_token;
-  std::optional<std::string> pinned_region;  // region that served page 1 (regional mode)
+  const std::string request_url = BuildRequestUrl(base_url_);
 
   while (true) {
     const std::string body = BuildRequestBody(filters, skip, continuation_token);
 
-    http::HttpResponse response;
-    if (regional && !pinned_region) {
-      // Page 1: run through region fallback starting from the sticky region (last known-good) or the active region.
-      // Exhaustion means every candidate had a retryable region-health failure, so fail just this filter set.
-      const std::string start = region_fallback_.StickyRegion().value_or(region_);
-      try {
-        auto fallback_result = region_fallback_.Execute(start, [&](const std::string& r) {
-          return http_post_response_(BuildRegionalUrl(url_prefix_, url_suffix_, r), body);
-        });
-        response = std::move(fallback_result.response);
-        pinned_region = fallback_result.region;
-        result.region = fallback_result.region;
-        region_ = fallback_result.region;  // active region biases later filter sets
-      } catch (const std::exception& ex) {
-        logger_.Log(LogLevel::Warning,
-                    std::string("catalog: filter set failed across all regions: ") + ex.what());
-        return std::nullopt;
-      }
-    } else if (regional) {
-      // Subsequent pages are pinned to the region that served page 1 — a filter set
-      // never mixes regions (continuation tokens are region-specific).
-      response = http_post_response_(BuildRegionalUrl(url_prefix_, url_suffix_, *pinned_region), body);
-    } else {
-      // Non-regional / custom URL: single verbatim attempt, no fallback.
-      response = http_post_response_(BuildRequestUrl(base_url_, regional, region_, url_prefix_, url_suffix_), body);
-    }
+    http::HttpResponse response = http_post_response_(request_url, body);
 
     if (response.status == 0 || response.status < 200 || response.status >= 300) {
-      if (regional && IsRegionRetryableStatus(response.status)) {
-        // Region-health failure (including mid-pagination on the pinned region): fail this filter set only. Because
-        // models are committed atomically below, a later page failure cannot leak a partial filter-set result.
-        logger_.Log(LogLevel::Warning,
-                    "catalog: filter set failed (" + http::DescribeFailure(response) + "); skipping this filter set.");
-        return std::nullopt;
-      }
-
-      const std::string url = regional && pinned_region
-                                  ? BuildRegionalUrl(url_prefix_, url_suffix_, *pinned_region)
-                                  : BuildRequestUrl(base_url_, regional, region_, url_prefix_, url_suffix_);
       FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
-               "catalog request to " + url + " failed: " + http::DescribeFailure(response));
+               "catalog request to " + request_url + " failed: " + http::DescribeFailure(response));
     }
 
     const auto parsed = nlohmann::json::parse(response.body).get<AzureCatalogResponse>();
-    if (!parsed.index_entities_response) {
+    if (parsed.models.empty()) {
       break;
     }
 
-    const auto& page = *parsed.index_entities_response;
-    if (page.models.empty()) {
-      break;
-    }
-
-    result.models.insert(result.models.end(), page.models.begin(), page.models.end());
+    result.models.insert(result.models.end(), parsed.models.begin(), parsed.models.end());
 
     // Advance pagination. A non-positive nextSkip and an empty token mean "done".
-    skip = (page.next_skip && *page.next_skip > 0) ? page.next_skip : std::nullopt;
-    continuation_token = (page.continuation_token && !page.continuation_token->empty())
-                             ? page.continuation_token
+    skip = (parsed.next_skip && *parsed.next_skip > 0) ? parsed.next_skip : std::nullopt;
+    continuation_token = (parsed.continuation_token && !parsed.continuation_token->empty())
+                             ? parsed.continuation_token
                              : std::nullopt;
 
     if (!skip && !continuation_token) {
@@ -435,11 +371,10 @@ std::unique_ptr<ICatalogClient> MakeCatalogClient(
     const IEpDetector& ep_detector,
     ILogger& logger,
     const std::string& /*cache_directory*/,
-    const std::string& catalog_region,
-    bool disable_region_fallback) {
+    const std::string& catalog_region) {
   return std::make_unique<AzureCatalogClient>(base_url, filter_override, ep_detector, logger,
                                               AzureCatalogClient::HttpPostResponseFn{},
-                                              catalog_region, !disable_region_fallback);
+                                              catalog_region);
 }
 
 }  // namespace fl
