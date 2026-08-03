@@ -172,13 +172,11 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
     std::vector<CatalogFilter> filters;
   
     std::vector<std::string> deployment_options = model_filter;
-    // NOTE: The v2 catalog models do not yet have the "foundryLocalDevices" deployment option, 
-    // so we don't add it here. Once the catalog models are updated, we can re-enable this default.
-    // if (deployment_options.empty()) {
-    //   deployment_options.push_back("foundryLocalDevices");
-    // }
+    if (deployment_options.empty()) {
+      deployment_options.push_back("Foundry Local on Devices");
+    }
   
-    // filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
+    filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
     if (!model_alias.empty()) {
       filters.push_back(MakeFilter("Alias", {model_alias}));
     }
@@ -204,7 +202,7 @@ std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& m
   std::vector<CatalogFilter> filters;
   std::vector<std::string> deployment_options = model_filter;
   if (deployment_options.empty()) {
-    deployment_options.push_back("foundryLocalDevices");
+    deployment_options.push_back("Foundry Local on Devices");
   }
 
   std::vector<std::string> names;
