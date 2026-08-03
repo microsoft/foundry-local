@@ -30,6 +30,7 @@ TEST(WinMLProviderAllowlistTest, RejectsUnapprovedProviders) {
   constexpr std::string_view unapproved_providers[] = {
       "",
       "WebGPUExecutionProvider",
+      "CUDAExecutionProvider",
       "CPUExecutionProvider",
       "DmlExecutionProvider",
       "FutureExecutionProvider",
