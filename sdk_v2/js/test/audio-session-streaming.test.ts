@@ -49,6 +49,8 @@ const EXPECTED_PHRASES: ReadonlyArray<string> = [
 const CHUNK_BYTES = 3200;
 
 function extractText(item: Item): string {
+  if (item.type === "speechResult") return item.text;
+  if (item.type === "speechSegment") return item.text;
   if (item.type === "text") return item.text;
   if (item.type === "message") {
     if (typeof item.content === "string") return item.content;
