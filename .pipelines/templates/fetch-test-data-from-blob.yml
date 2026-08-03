@@ -1,5 +1,5 @@
 # Download test model data from blob storage into a local directory.
-# Uses azcopy with AZCLI auth so the agent identity can read from storage.
+# Relies on pre-baked az + azcopy on the agent image and uses AZCLI auth.
 
 parameters:
 - name: destinationPath
@@ -26,18 +26,9 @@ steps:
       }
       az version | Out-Null
 
-      if (-not (Get-Command azcopy -ErrorAction SilentlyContinue)) {
-        if ($IsMacOS) {
-          Write-Host 'azcopy not found on macOS agent. Installing via Homebrew...'
-          if (-not (Get-Command brew -ErrorAction SilentlyContinue)) {
-            throw 'Homebrew is required to install azcopy on macOS agents, but brew was not found.'
-          }
-
-          brew update --quiet
-          brew install --quiet azcopy
-        } else {
-          throw 'azcopy is not installed on this agent.'
-        }
+      $azcopyCommand = Get-Command azcopy -ErrorAction SilentlyContinue
+      if (-not $azcopyCommand) {
+        throw 'azcopy was not found on PATH. This pipeline expects azcopy to be preinstalled on the agent image.'
       }
 
       azcopy --version

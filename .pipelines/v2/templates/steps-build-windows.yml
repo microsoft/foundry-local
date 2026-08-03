@@ -10,6 +10,7 @@
 #   ortVersion     – Microsoft.ML.OnnxRuntime.Foundry version
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version
+#   runTests       – Whether to run tests
 #   stageHeaders   – Whether to stage public headers as a separate artifact
 #   pythonArchitecture – Python architecture installed by UsePythonVersion
 
@@ -25,6 +26,9 @@ parameters:
   type: string
 - name: winmlVersion
   type: string
+- name: runTests
+  type: boolean
+  default: false
 - name: stageHeaders
   type: boolean
   default: false
@@ -124,9 +128,10 @@ steps:
       Write-Host "cmakeFetchDefines = $defines"
 
 # Tests need shared model files.
-- template: ../../templates/fetch-test-data-from-blob.yml@self
-  parameters:
-    destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+- ${{ if eq(parameters.runTests, true) }}:
+  - template: ../../templates/fetch-test-data-from-blob.yml@self
+    parameters:
+      destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-
@@ -159,26 +164,27 @@ steps:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
-- ${{ if eq(parameters.arch, 'x64') }}:
-  - script: python build.py --test --config ${{ parameters.buildConfig }}
-    displayName: 'Run tests'
-    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-    env:
-      VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
-      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+- ${{ if eq(parameters.runTests, true) }}:
+  - ${{ if eq(parameters.arch, 'x64') }}:
+    - script: python build.py --test --config ${{ parameters.buildConfig }}
+      displayName: 'Run tests'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
-- ${{ if eq(parameters.arch, 'arm64') }}:
-  - script: >-
-      python build.py
-      --test
-      --config ${{ parameters.buildConfig }}
-      --cmake_path "$(cmakePath)"
-      --ctest_path "$(ctestPath)"
-    displayName: 'Run tests'
-    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-    env:
-      VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
-      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+  - ${{ if eq(parameters.arch, 'arm64') }}:
+    - script: >-
+        python build.py
+        --test
+        --config ${{ parameters.buildConfig }}
+        --cmake_path "$(cmakePath)"
+        --ctest_path "$(ctestPath)"
+      displayName: 'Run tests'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
 # Stage the redistributable native artifacts. vcpkg statically links
 # ORT/GenAI/azure-*/spdlog/fmt/libcurl/libssl/zlib/brotli* into foundry_local.dll

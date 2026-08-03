@@ -64,7 +64,7 @@ steps:
   displayName: 'Set package version from pyVersion.txt'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $versionFile = "$(Pipeline.Workspace)/version-info/pyVersion.txt"
         if (-not (Test-Path $versionFile)) { throw "Missing $versionFile" }
@@ -76,7 +76,7 @@ steps:
   displayName: 'Stamp version into pyproject.toml'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $pyproject = "$(Build.SourcesDirectory)/sdk_v2/python/pyproject.toml"
         $content = Get-Content $pyproject -Raw
@@ -97,7 +97,7 @@ steps:
   displayName: 'List downloaded native artifact'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Write-Host "Contents of ${{ parameters.nativeArtifactDir }}:"
         Get-ChildItem "${{ parameters.nativeArtifactDir }}" -Recurse -File |
@@ -107,7 +107,7 @@ steps:
   displayName: 'Stage native lib into _native/${{ parameters.rid }}/'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $dest = "$(Build.SourcesDirectory)/sdk_v2/python/src/foundry_local_sdk/_native/${{ parameters.rid }}"
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
@@ -146,7 +146,7 @@ steps:
   displayName: 'Clean stale build artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $py = "$(Build.SourcesDirectory)/sdk_v2/python"
         # Remove stale, untagged cffi extension from prior dev compiles.
@@ -172,7 +172,7 @@ steps:
   displayName: 'Install build tooling'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
         python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
@@ -216,7 +216,7 @@ steps:
   displayName: 'Build wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -248,7 +248,7 @@ steps:
   displayName: 'List produced wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl' |
             ForEach-Object { Write-Host ("{0,12}  {1}" -f $_.Length, $_.Name) }
@@ -258,7 +258,7 @@ steps:
   displayName: 'Assert wheel platform tag and bundled native lib'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $ErrorActionPreference = 'Stop'
         switch ('${{ parameters.rid }}') {
