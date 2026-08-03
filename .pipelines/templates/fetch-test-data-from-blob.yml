@@ -21,6 +21,11 @@ steps:
       $container = 'models'
       $prefix = 'foundrylocal/models'
 
+      if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        throw 'Azure CLI (az) was not found on PATH. This pipeline expects az to be preinstalled on the agent image.'
+      }
+      az version | Out-Null
+
       if (-not (Get-Command azcopy -ErrorAction SilentlyContinue)) {
         if ($IsMacOS) {
           Write-Host 'azcopy not found on macOS agent. Installing via Homebrew...'
