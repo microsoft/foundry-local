@@ -10,8 +10,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -20,6 +22,32 @@ namespace fl {
 namespace {
 
 constexpr const char* kOverrideEnv = "FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY";
+constexpr const char* kScopedEnvironmentVariableTestEnv = "FOUNDRY_LOCAL_SCOPED_ENVIRONMENT_VARIABLE_TEST";
+
+std::optional<std::string> GetEnvValue(const char* name) {
+#ifdef _WIN32
+  char* value = nullptr;
+  size_t length = 0;
+  const auto error = _dupenv_s(&value, &length, name);
+  const std::unique_ptr<char, decltype(&std::free)> buffer(value, &std::free);
+  if (error != 0) {
+    throw std::system_error(error, std::generic_category(), "_dupenv_s failed");
+  }
+
+  if (buffer == nullptr) {
+    return std::nullopt;
+  }
+
+  return std::string(buffer.get());
+#else
+  const auto* value = std::getenv(name);
+  if (value == nullptr) {
+    return std::nullopt;
+  }
+
+  return std::string(value);
+#endif
+}
 
 void SetEnvValue(const char* name, const std::optional<std::string>& value) {
 #ifdef _WIN32
@@ -36,11 +64,8 @@ void SetEnvValue(const char* name, const std::optional<std::string>& value) {
 class ScopedEnvironmentVariable {
  public:
   ScopedEnvironmentVariable(const char* name, std::string value)
-      : name_(name) {
-    if (const auto* previous = std::getenv(name); previous != nullptr) {
-      previous_ = previous;
-    }
-
+      : name_(name),
+        previous_(GetEnvValue(name)) {
     SetEnvValue(name_, value);
   }
 
@@ -65,6 +90,29 @@ TEST(WebGpuEpBootstrapperTest, PlatformSupportMatchesPublishedBundles) {
 #else
   EXPECT_FALSE(WebGpuEpBootstrapper::IsSupportedPlatform());
 #endif
+}
+
+TEST(WebGpuEpBootstrapperTest, ScopedEnvironmentVariableRestoresExistingValue) {
+  ScopedEnvironmentVariable restore_original(kScopedEnvironmentVariableTestEnv, "before");
+
+  {
+    ScopedEnvironmentVariable environment(kScopedEnvironmentVariableTestEnv, "during");
+    EXPECT_EQ(GetEnvValue(kScopedEnvironmentVariableTestEnv), "during");
+  }
+
+  EXPECT_EQ(GetEnvValue(kScopedEnvironmentVariableTestEnv), "before");
+}
+
+TEST(WebGpuEpBootstrapperTest, ScopedEnvironmentVariableRestoresUnsetValue) {
+  ScopedEnvironmentVariable restore_original(kScopedEnvironmentVariableTestEnv, "before");
+  SetEnvValue(kScopedEnvironmentVariableTestEnv, std::nullopt);
+
+  {
+    ScopedEnvironmentVariable environment(kScopedEnvironmentVariableTestEnv, "during");
+    EXPECT_EQ(GetEnvValue(kScopedEnvironmentVariableTestEnv), "during");
+  }
+
+  EXPECT_EQ(GetEnvValue(kScopedEnvironmentVariableTestEnv), std::nullopt);
 }
 
 TEST(WebGpuEpBootstrapperTest, OverrideRegistersUsingExistingProviderConvention) {

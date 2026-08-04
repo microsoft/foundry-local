@@ -182,9 +182,14 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
     auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
 
 #ifdef _WIN32
-    // The provider delay-loads sibling DirectX compiler binaries after registration.
+    // The provider delay-loads sibling DirectX compiler binaries after registration; keep PATH
+    // primed as a fallback in addition to the explicit preload below.
     PrependDirToProcessPath(txn->bin_dir());
 #endif
+
+    if (!LoadEpBundleDependencies(txn->bin_dir(), *manifest, "WebGPU EP", logger)) {
+      return false;
+    }
 
     if (!register_ep_(kRegistrationName, provider_path)) {
       logger.Log(LogLevel::Warning, "WebGPU EP: ORT registration failed");

@@ -2,10 +2,13 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "ep_detection/ep_bundle_manifest.h"
+
 #include <filesystem>
 #include <initializer_list>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace fl {
 
@@ -46,5 +49,40 @@ bool VerifyEpBinaries(
 ///
 /// @param dir Directory to prepend to `PATH`.
 void PrependDirToProcessPath(const std::filesystem::path& dir);
+
+/// Select the manifest-declared DLLs under @p bin_dir that should be preloaded before the EP provider
+/// library is registered, excluding the provider library itself and the core ORT runtime libraries
+/// (`onnxruntime.dll`, `onnxruntime-genai.dll`), matched case-insensitively.
+///
+/// This selection logic is platform-independent (pure path/string manipulation) so it can be unit
+/// tested on any platform, even though the actual preloading only happens on Windows.
+///
+/// @param bin_dir   Directory containing the extracted bundle files.
+/// @param manifest  Bundle manifest describing the extracted artifacts.
+/// @return Absolute paths of the DLLs that should be preloaded, in manifest order.
+std::vector<std::filesystem::path> SelectEpBundleDependenciesToPreload(
+    const std::filesystem::path& bin_dir,
+    const EpBundleManifest& manifest);
+
+/// Preload the non-provider, non-core-runtime DLLs declared by @p manifest from @p bin_dir.
+///
+/// EP provider libraries (CUDA, WebGPU) can implicitly or delay-load sibling dependency DLLs, and
+/// `RegisterExecutionProviderLibrary` loads the provider DLL eagerly. Preloading those dependencies by
+/// absolute path with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32` ensures they
+/// resolve correctly regardless of the process `PATH`, before the provider DLL is registered.
+///
+/// This is a no-op that returns true on non-Windows platforms.
+///
+/// @param bin_dir  Directory containing the extracted bundle files.
+/// @param manifest Bundle manifest describing the extracted artifacts.
+/// @param ep_name  EP name used in warning log messages (e.g. "CUDA EP").
+/// @param logger   Logger for diagnostic output.
+/// @return true if every selected dependency loaded successfully (or none needed loading); false
+///         otherwise.
+bool LoadEpBundleDependencies(
+    const std::filesystem::path& bin_dir,
+    const EpBundleManifest& manifest,
+    std::string_view ep_name,
+    ILogger& logger);
 
 }  // namespace fl

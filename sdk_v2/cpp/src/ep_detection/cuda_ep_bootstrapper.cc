@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "ep_detection/cuda_ep_bootstrapper.h"
 
+#include "ep_detection/ep_utils.h"
 #include "ep_detection/nvml_gpu_detector.h"
 #include "logger.h"
 #include "utils.h"
@@ -12,10 +13,7 @@
 #include <optional>
 #include <string>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#elif defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
 #endif
 
@@ -96,39 +94,6 @@ std::optional<fl::EpBundleManifest> BuildCudaManifest() {
   return std::nullopt;
 #endif
 }
-
-#ifdef _WIN32
-bool IsCoreRuntimeLibrary(const std::filesystem::path& filename) {
-  return _wcsicmp(filename.c_str(), L"onnxruntime.dll") == 0 ||
-         _wcsicmp(filename.c_str(), L"onnxruntime-genai.dll") == 0;
-}
-
-bool LoadBundleDependencies(const std::filesystem::path& bin_dir,
-                            const fl::EpBundleManifest& manifest,
-                            fl::ILogger& logger) {
-  for (const auto& artifact : manifest.artifacts) {
-    for (const auto& file : artifact.extracted_files) {
-      const auto path = bin_dir / file.relative_path;
-      if (_wcsicmp(path.extension().c_str(), L".dll") != 0 ||
-          _wcsicmp(path.filename().c_str(),
-                   std::filesystem::path(manifest.provider_relative_path).filename().c_str()) == 0 ||
-          IsCoreRuntimeLibrary(path.filename())) {
-        continue;
-      }
-
-      if (!LoadLibraryExW(path.c_str(), nullptr,
-                          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)) {
-        logger.Log(fl::LogLevel::Warning,
-                   fmt::format("CUDA EP: failed to load dependency '{}' ({})",
-                               path.string(), GetLastError()));
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-#endif
 
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
 bool LoadGenAiCudaLibrary(const std::filesystem::path& path, void*& handle, fl::ILogger& logger) {
@@ -247,7 +212,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
     auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
 
 #ifdef _WIN32
-    if (!LoadBundleDependencies(txn->bin_dir(), *manifest, logger)) {
+    if (!LoadEpBundleDependencies(txn->bin_dir(), *manifest, "CUDA EP", logger)) {
       return false;
     }
 #elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
