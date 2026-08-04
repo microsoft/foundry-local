@@ -1,8 +1,8 @@
 // Discriminated-union Item shape used on both sides of the JS<->native
 // boundary. The native layer accepts plain JS objects of this shape on
 // `Request.addItem` and returns objects of this shape from `Session.send`
-// (in `response.output`). Binary output data uses an external Uint8Array view
-// when the runtime supports it, retaining native ownership through the JS GC.
+// (in `response.output`). No native handle is kept on the JS side — each
+// `Item` is a fully-copied plain object owned by the JS GC.
 //
 // Mirrors the C++ wrapper's `Item` hierarchy (TextItem, MessageItem,
 // BytesItem, TensorItem, ImageItem, AudioItem, ToolCallItem, ToolResultItem)
@@ -53,7 +53,6 @@ export interface MessageItem {
 
 export interface BytesItem {
   readonly type: "bytes";
-  /** Raw bytes. Output values may be writable zero-copy views over native memory. */
   readonly data: Uint8Array;
 }
 
@@ -61,7 +60,7 @@ export interface TensorItem {
   readonly type: "tensor";
   readonly dataType: TensorDataType;
   readonly shape: ReadonlyArray<number>;
-  /** Raw element bytes. Output values may be writable zero-copy views over native memory. */
+  /** Raw element bytes (size = product(shape) * elemSize(dataType)). */
   readonly data: Uint8Array;
 }
 

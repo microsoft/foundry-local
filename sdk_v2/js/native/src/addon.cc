@@ -91,7 +91,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
   // Shared TSFN for pinned-buffer deleters — see comment on
   // AddonData::buffer_release_tsfn. The JS callback is a no-op; the real
-  // work runs in the per-call data callback passed to NonBlockingCall().
+  // work runs in the per-call data callback passed to BlockingCall().
   Napi::Function noop_release = Napi::Function::New(env, [](const Napi::CallbackInfo&) {});
   data->buffer_release_tsfn = Napi::ThreadSafeFunction::New(
       env, noop_release, "foundry_local_node.buffer_release", /*maxQueueSize*/ 0,

@@ -9,7 +9,6 @@
 
 #include <cstring>
 #include <functional>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -176,39 +175,6 @@ Napi::Value BufferCopy(Napi::Env env, const void* data, size_t size) {
   return Napi::Buffer<uint8_t>::Copy(env, static_cast<const uint8_t*>(data), size);
 }
 
-void FinalizeExternalBuffer(napi_env /*env*/, void* /*data*/, void* hint) {
-  delete static_cast<std::shared_ptr<void>*>(hint);
-}
-
-Napi::Value BufferViewOrCopy(Napi::Env env, const void* data, size_t size,
-                             const std::shared_ptr<void>& owner) {
-  if (data == nullptr || size == 0 || owner == nullptr) {
-    return BufferCopy(env, data, size);
-  }
-
-  auto* owner_token = new std::shared_ptr<void>(owner);
-  napi_value array_buffer = nullptr;
-  napi_status status = napi_create_external_arraybuffer(
-      env, const_cast<void*>(data), size, FinalizeExternalBuffer, owner_token, &array_buffer);
-  if (status == napi_no_external_buffers_allowed) {
-    delete owner_token;
-    return BufferCopy(env, data, size);
-  }
-
-  if (status != napi_ok) {
-    delete owner_token;
-    throw Napi::Error::New(env, "Failed to create external byte buffer");
-  }
-
-  napi_value byte_view = nullptr;
-  status = napi_create_typedarray(env, napi_uint8_array, size, array_buffer, 0, &byte_view);
-  if (status != napi_ok) {
-    throw Napi::Error::New(env, "Failed to create external byte view");
-  }
-
-  return Napi::Value(env, byte_view);
-}
-
 // Byte size per tensor element. 0 for non-portable / opaque types.
 size_t TensorElemSize(flTensorDataType t) {
   switch (t) {
@@ -337,8 +303,7 @@ std::optional<Napi::Value> OptBytesValue(const Napi::Object& obj, const char* ke
 // Request-owned items destruct on the JS thread (ObjectWrap finalizer), so
 // a direct call would work — but once ItemQueue lands the deleter may fire
 // on a native consumer thread, so we always bounce through the shared
-// per-addon TSFN. NonBlockingCall is required because an external ArrayBuffer
-// finalizer may invoke the Item deleter while already on the JS thread.
+// per-addon TSFN. Single path; no thread-of-call branching.
 struct PinnedBuffer {
   napi_env env;
   napi_ref ref;
@@ -376,7 +341,7 @@ std::function<void(const T*)> MakePinnedDeleter(Napi::Env env, Napi::Value sourc
   }
 
   return [pin, tsfn](const T*) mutable {
-    tsfn.NonBlockingCall(pin, ReleasePinnedOnJs);
+    tsfn.BlockingCall(pin, ReleasePinnedOnJs);
     tsfn.Release();
   };
 }
@@ -399,8 +364,7 @@ Napi::Object TextToJs(Napi::Env env, const foundry_local::Item& item) {
   return out;
 }
 
-Napi::Object MessageToJs(Napi::Env env, const foundry_local::Item& item,
-                         const std::shared_ptr<void>& owner) {
+Napi::Object MessageToJs(Napi::Env env, const foundry_local::Item& item) {
   auto content = item.GetMessage();
   Napi::Object out = Napi::Object::New(env);
   out.Set("type", Napi::String::New(env, "message"));
@@ -410,7 +374,7 @@ Napi::Object MessageToJs(Napi::Env env, const foundry_local::Item& item,
   }
   Napi::Array parts = Napi::Array::New(env, content.parts.size());
   for (size_t i = 0; i < content.parts.size(); ++i) {
-    parts.Set(static_cast<uint32_t>(i), ItemToJs(env, content.parts[i], owner));
+    parts.Set(static_cast<uint32_t>(i), ItemToJs(env, content.parts[i]));
   }
   out.Set("parts", parts);
   if (content.IsSimpleText()) {
@@ -419,18 +383,16 @@ Napi::Object MessageToJs(Napi::Env env, const foundry_local::Item& item,
   return out;
 }
 
-Napi::Object BytesToJs(Napi::Env env, const foundry_local::Item& item,
-                       const std::shared_ptr<void>& owner) {
+Napi::Object BytesToJs(Napi::Env env, const foundry_local::Item& item) {
   auto content = item.GetBytes();
   Napi::Object out = Napi::Object::New(env);
   out.Set("type", Napi::String::New(env, "bytes"));
   out.Set("itemType", Napi::String::New(env, ItemTypeToString(content.item_type)));
-  out.Set("data", BufferViewOrCopy(env, content.data, content.data_size, owner));
+  out.Set("data", BufferCopy(env, content.data, content.data_size));
   return out;
 }
 
-Napi::Object TensorToJs(Napi::Env env, const foundry_local::Item& item,
-                        const std::shared_ptr<void>& owner) {
+Napi::Object TensorToJs(Napi::Env env, const foundry_local::Item& item) {
   auto content = item.GetTensor();
   Napi::Object out = Napi::Object::New(env);
   out.Set("type", Napi::String::New(env, "tensor"));
@@ -475,7 +437,7 @@ Napi::Object TensorToJs(Napi::Env env, const foundry_local::Item& item,
     elem_count *= static_cast<size_t>(d);
   }
   size_t byte_count = elem_size * elem_count;
-  out.Set("data", BufferViewOrCopy(env, content.data, byte_count, owner));
+  out.Set("data", BufferCopy(env, content.data, byte_count));
   Napi::Array shape = Napi::Array::New(env, content.shape.size());
   for (size_t i = 0; i < content.shape.size(); ++i) {
     shape.Set(static_cast<uint32_t>(i), Napi::Number::New(env, static_cast<double>(content.shape[i])));
@@ -484,8 +446,7 @@ Napi::Object TensorToJs(Napi::Env env, const foundry_local::Item& item,
   return out;
 }
 
-Napi::Object ImageToJs(Napi::Env env, const foundry_local::Item& item,
-                       const std::shared_ptr<void>& owner) {
+Napi::Object ImageToJs(Napi::Env env, const foundry_local::Item& item) {
   auto content = item.GetImage();
   Napi::Object out = Napi::Object::New(env);
   out.Set("type", Napi::String::New(env, "image"));
@@ -496,13 +457,12 @@ Napi::Object ImageToJs(Napi::Env env, const foundry_local::Item& item,
     out.Set("format", Napi::String::New(env, std::string(*content.format)));
   }
   if (content.data != nullptr && content.data_size > 0) {
-    out.Set("data", BufferViewOrCopy(env, content.data, content.data_size, owner));
+    out.Set("data", BufferCopy(env, content.data, content.data_size));
   }
   return out;
 }
 
-Napi::Object AudioToJs(Napi::Env env, const foundry_local::Item& item,
-                       const std::shared_ptr<void>& owner) {
+Napi::Object AudioToJs(Napi::Env env, const foundry_local::Item& item) {
   auto content = item.GetAudio();
   Napi::Object out = Napi::Object::New(env);
   out.Set("type", Napi::String::New(env, "audio"));
@@ -513,7 +473,7 @@ Napi::Object AudioToJs(Napi::Env env, const foundry_local::Item& item,
     out.Set("format", Napi::String::New(env, std::string(*content.format)));
   }
   if (content.data != nullptr && content.data_size > 0) {
-    out.Set("data", BufferViewOrCopy(env, content.data, content.data_size, owner));
+    out.Set("data", BufferCopy(env, content.data, content.data_size));
   }
   if (content.sample_rate > 0) {
     out.Set("sampleRate", Napi::Number::New(env, content.sample_rate));
@@ -858,22 +818,21 @@ foundry_local::Item JsToAudioItem(Napi::Env env, const Napi::Object& obj) {
 
 }  // namespace
 
-Napi::Value ItemToJs(Napi::Env env, const foundry_local::Item& item,
-                     std::shared_ptr<void> owner) {
+Napi::Value ItemToJs(Napi::Env env, const foundry_local::Item& item) {
   flItemType t = item.GetType();
   switch (t) {
     case FOUNDRY_LOCAL_ITEM_TEXT:
       return TextToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_MESSAGE:
-      return MessageToJs(env, item, owner);
+      return MessageToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_BYTES:
-      return BytesToJs(env, item, owner);
+      return BytesToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_TENSOR:
-      return TensorToJs(env, item, owner);
+      return TensorToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_IMAGE:
-      return ImageToJs(env, item, owner);
+      return ImageToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_AUDIO:
-      return AudioToJs(env, item, owner);
+      return AudioToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_TOOL_CALL:
       return ToolCallToJs(env, item);
     case FOUNDRY_LOCAL_ITEM_TOOL_RESULT:

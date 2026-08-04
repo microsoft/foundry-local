@@ -65,8 +65,7 @@ Napi::Value NativeItemQueue::TryPop(const Napi::CallbackInfo& info) {
           .ThrowAsJavaScriptException();
       return env.Undefined();
     }
-    auto owner = std::make_shared<foundry_local::Item>(std::move(*popped));
-    return ItemToJs(env, *owner, owner);
+    return ItemToJs(env, *popped);
   });
 }
 

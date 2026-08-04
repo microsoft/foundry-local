@@ -117,42 +117,6 @@ describeIfBuilt("ItemQueue", () => {
     q.dispose();
   });
 
-  it("popped binary output is a zero-copy view that outlives the queue", () => {
-    const source = new Uint8Array([1, 2, 3, 4]);
-    const q = new ItemQueue();
-    q.push(Item.bytes(source));
-
-    const popped = q.tryPop();
-    expect(popped?.type).toBe("bytes");
-    q.dispose();
-
-    if (popped?.type === "bytes") {
-      popped.data[1] = 0xaa;
-      expect(source[1]).toBe(0xaa);
-      expect(Array.from(popped.data)).toEqual([1, 0xaa, 3, 4]);
-    }
-  });
-
-  it("nested binary output retains its owning message", () => {
-    const source = new Uint8Array([5, 6, 7]);
-    const q = new ItemQueue();
-    q.push(Item.userMessage([Item.imageFromData("png", source)]));
-
-    const popped = q.tryPop();
-    expect(popped?.type).toBe("message");
-    q.dispose();
-
-    if (popped?.type === "message" && popped.parts?.[0]?.type === "image") {
-      const data = popped.parts[0].data;
-      expect(data).toBeDefined();
-      if (data !== undefined) {
-        expect(Array.from(data)).toEqual([5, 6, 7]);
-        data[2] = 0xbb;
-        expect(data[2]).toBe(0xbb);
-      }
-    }
-  });
-
   it("addItem on a disposed queue throws TypeError matching /disposed/", () => {
     const q = new ItemQueue();
     q.dispose();
