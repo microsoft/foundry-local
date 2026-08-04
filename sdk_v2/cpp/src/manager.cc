@@ -244,9 +244,10 @@ Manager::Manager(const Configuration& config)
   // Discover bootstrappers from available EP sources
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
 
-  // Detected once and reused below for the Foundry CUDA bootstrapper. HasNvidiaGpu()
-  // shells out to nvidia-smi, so caching the result here avoids a second subprocess spawn.
-  const bool has_nvidia_gpu = CudaEpBootstrapper::HasNvidiaGpu();
+  // Detected once and reused below for the WinML catalog skip-list and CUDA bootstrapper.
+  // Avoid probing NVML on platforms where Foundry Local does not publish a CUDA bundle.
+  const bool has_nvidia_gpu =
+      CudaEpBootstrapper::IsSupportedPlatform() && CudaEpBootstrapper::HasNvidiaGpu();
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
   // WinML EPs — enumerate from the OS EP catalog (Windows 10 19H1+ reg-free runtime).
@@ -259,20 +260,18 @@ Manager::Manager(const Configuration& config)
   }
 #endif
 
-  const auto cache_dir = std::filesystem::path(*config_.model_cache_dir).parent_path();
-
-  // CUDA EP — only if an NVIDIA GPU is detected
+  // CUDA EP — only if an NVIDIA GPU is detected. Rooted under app_data_dir (not the model cache
+  // parent) so the install survives a user pointing model_cache_dir somewhere ephemeral.
   if (has_nvidia_gpu) {
-    const auto cuda_ep_dir = cache_dir / "cuda-ep";
-    bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_dir.string(), register_ep));
+    const auto cuda_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "cuda-ep";
+    bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_root.string(), register_ep));
   }
 
-  // WebGPU EP — only on platforms that ship a WebGPU EP payload (Windows
-  // x64/ARM64, macOS ARM64). Not injected on Linux or Android.
-#if defined(_WIN32) || defined(__APPLE__)
-  const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
-  bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
-#endif
+  // WebGPU EP — only on exact architectures for which a bundle is published.
+  if (WebGpuEpBootstrapper::IsSupportedPlatform()) {
+    const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
+    bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
+  }
 
   ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
 
@@ -340,6 +339,10 @@ Manager::~Manager() {
   catalog_.reset();
   telemetry_.reset();
   ep_detector_.reset();
+
+  // GenAI owns process-global ORT state and the CUDA add-on handle. Tear it down after every
+  // GenAI model/session is gone, but before unregistering provider libraries from our OrtEnv.
+  OgaShutdown();
 
   // Unregister EPs we registered, then drop our OrtEnv refcount. Best-effort:
   // log failures but don't throw from a destructor.

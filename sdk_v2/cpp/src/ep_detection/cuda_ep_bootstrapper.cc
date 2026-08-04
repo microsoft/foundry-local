@@ -2,53 +2,168 @@
 // Licensed under the MIT License.
 #include "ep_detection/cuda_ep_bootstrapper.h"
 
-#include "ep_detection/ep_utils.h"
+#include "ep_detection/nvml_gpu_detector.h"
 #include "logger.h"
-#include "util/file_lock.h"
 #include "utils.h"
-#include "http/http_download.h"
-#include "util/zip_extract.h"
 
 #include <fmt/format.h>
 
-#include <algorithm>
-#include <cctype>
-#include <cstdlib>
-#include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#elif defined(__linux__) && !defined(__ANDROID__)
+#include <dlfcn.h>
+#endif
 
 namespace {
 
-constexpr const char* kPackageFileName = "cuda-ep.zip";
 constexpr const char* kLockFileName = "cuda-ep.lock";
-constexpr const char* kUserAgent = "FoundryLocal";
 constexpr int kMaxInstallAttempts = 5;
-
-// CUDA EP package is built against the ONNX Runtime version we link against.
-constexpr const char* kDownloadUrl =
-    "https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/cuda-ep-20260501-062935.zip";
-
-struct ExpectedBinary {
-  const char* filename;
-  const char* sha256;
-};
-
-constexpr ExpectedBinary kExpectedBinaries[] = {
-    {"onnxruntime_providers_cuda.dll", "DD540FCFECFBC68B4675C9ADF09C2858CF6B054563859D79598AA2524406A76F"},
-    {"onnxruntime-genai-cuda.dll", "BC953F8E2AAFC6219B2D723B65AB8F1A9426A6B7724D6A01ED756FAE8C3DE6AE"},
-};
-
-constexpr const char* kRegistrationName = "Foundry.CUDA";
-constexpr const char* kCudaProviderDll = "onnxruntime_providers_cuda.dll";
+constexpr const char* kRegistrationName = "CUDAExecutionProvider";
 constexpr const char* kCudaProviderOverrideEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+constexpr const char* kGenAiCudaLibrary = "libonnxruntime-genai-cuda.so";
+#endif
+
+#if defined(_WIN32) && defined(_M_ARM64)
+constexpr const char* kCudaBundleId = "cuda-ep-win-arm64-unconfigured";
+#elif defined(_WIN32) && defined(_M_X64)
+constexpr const char* kCudaBundleId = "cuda-ep-win-x64-unconfigured";
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+constexpr const char* kCudaBundleId = "cuda-ep-linux-x64-ort-1.28.0-genai-0.15.1-20260804-074520";
+constexpr const char* kCudaDownloadUrl =
+    "https://foundrypackages-ffhrdhbxb7gpdreh.b02.azurefd.net/cuda-ep-linux-x64-20260804-074520.zip";
+constexpr const char* kCudaArchiveSha256 =
+    "97FF54C93A8E4D6622905AD19BCC9D6B5AA03E54B6B38682FC51117086DCF1F6";
+constexpr uint64_t kCudaArchiveMaxBytes = 512ULL * 1024 * 1024;
+#endif
+
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))
+fl::EpBundleArtifact DisabledArchiveArtifact(std::string id) {
+  return fl::EpBundleArtifact{.id = std::move(id),
+                              .url = "",
+                              .is_archive = true,
+                              .archive_sha256 = "",
+                              .extracted_files = {},
+                              .archive_max_bytes = 0,
+                              .raw_relative_path = "",
+                              .raw_sha256 = "",
+                              .raw_max_bytes = 0};
+}
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+fl::EpBundleArtifact LinuxCudaArchiveArtifact() {
+  return fl::EpBundleArtifact{
+      .id = "cuda-ep",
+      .url = kCudaDownloadUrl,
+      .is_archive = true,
+      .archive_sha256 = kCudaArchiveSha256,
+      .extracted_files =
+          {
+              {.relative_path = "libonnxruntime-genai-cuda.so",
+               .sha256 = "86AED826BC9221ABA24A1B9C856A403FD8AEC082B06E6924F616E08A49C6C2F0"},
+              {.relative_path = "libonnxruntime_providers_cuda.so",
+               .sha256 = "9418788F29E45F70904DBA8FA21BE7317C92A45D505B1E50322F3B71A94E52F7"},
+              {.relative_path = "version.json",
+               .sha256 = "65133BC2003C363B4D2C6CB85BC913AFD5291B1D6E2869C3656D940DBF72A505"},
+          },
+      .archive_max_bytes = kCudaArchiveMaxBytes,
+      .raw_relative_path = "",
+      .raw_sha256 = "",
+      .raw_max_bytes = 0,
+  };
+}
+#endif
+
+std::optional<fl::EpBundleManifest> BuildCudaManifest() {
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))
+  fl::EpBundleManifest manifest;
+  manifest.bundle_id = kCudaBundleId;
+  manifest.provider_relative_path = "onnxruntime_providers_cuda.dll";
+  manifest.artifacts = {DisabledArchiveArtifact("cuda-toolkit"), DisabledArchiveArtifact("cudnn"),
+                        DisabledArchiveArtifact("cuda-ep")};
+  return manifest;
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+  fl::EpBundleManifest manifest;
+  manifest.bundle_id = kCudaBundleId;
+  manifest.provider_relative_path = "libonnxruntime_providers_cuda.so";
+  manifest.artifacts = {LinuxCudaArchiveArtifact()};
+  return manifest;
+#else
+  return std::nullopt;
+#endif
+}
+
+#ifdef _WIN32
+bool IsCoreRuntimeLibrary(const std::filesystem::path& filename) {
+  return _wcsicmp(filename.c_str(), L"onnxruntime.dll") == 0 ||
+         _wcsicmp(filename.c_str(), L"onnxruntime-genai.dll") == 0;
+}
+
+bool LoadBundleDependencies(const std::filesystem::path& bin_dir,
+                            const fl::EpBundleManifest& manifest,
+                            fl::ILogger& logger) {
+  for (const auto& artifact : manifest.artifacts) {
+    for (const auto& file : artifact.extracted_files) {
+      const auto path = bin_dir / file.relative_path;
+      if (_wcsicmp(path.extension().c_str(), L".dll") != 0 ||
+          _wcsicmp(path.filename().c_str(),
+                   std::filesystem::path(manifest.provider_relative_path).filename().c_str()) == 0 ||
+          IsCoreRuntimeLibrary(path.filename())) {
+        continue;
+      }
+
+      if (!LoadLibraryExW(path.c_str(), nullptr,
+                          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+        logger.Log(fl::LogLevel::Warning,
+                   fmt::format("CUDA EP: failed to load dependency '{}' ({})",
+                               path.string(), GetLastError()));
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+#endif
+
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+bool LoadGenAiCudaLibrary(const std::filesystem::path& path, void*& handle, fl::ILogger& logger) {
+  if (handle) {
+    return true;
+  }
+
+  dlerror();
+  handle = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL | RTLD_NODELETE);
+  if (!handle) {
+    const char* error = dlerror();
+    logger.Log(fl::LogLevel::Warning,
+               fmt::format("CUDA EP: failed to load '{}' ({})", path.string(), error ? error : "unknown error"));
+    return false;
+  }
+
+  return true;
+}
+#endif
 
 }  // anonymous namespace
 
 namespace fl {
 
-CudaEpBootstrapper::CudaEpBootstrapper(std::string ep_dir, EpRegistrationCallback register_ep)
-    : ep_dir_(std::move(ep_dir)), register_ep_(std::move(register_ep)) {}
+CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep)
+    : register_ep_(std::move(register_ep)),
+      installer_(std::filesystem::path(root_dir), kLockFileName, "CUDA EP") {}
+
+CudaEpBootstrapper::~CudaEpBootstrapper() {
+#if defined(__linux__) && !defined(__ANDROID__)
+  if (genai_cuda_handle_) {
+    dlclose(genai_cuda_handle_);
+  }
+#endif
+}
 
 const std::string& CudaEpBootstrapper::Name() const {
   return name_;
@@ -75,14 +190,10 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
 
   attempts_++;
 
-  auto ep_dir = std::filesystem::path(ep_dir_);
-  auto lock_path = ep_dir.parent_path() / kLockFileName;
-  auto zip_path = ep_dir.parent_path() / kPackageFileName;
-
   try {
     auto override_path = Utils::GetEnv(kCudaProviderOverrideEnv);
     if (override_path.has_value() && !override_path->empty()) {
-      std::filesystem::path provider_path(*override_path);
+      std::filesystem::path provider_path = std::filesystem::absolute(*override_path);
 
       if (!std::filesystem::exists(provider_path)) {
         logger.Log(LogLevel::Warning,
@@ -95,9 +206,11 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
         progress_cb(name_, 90.0f);
       }
 
-      // Prepend the override directory to PATH so sibling dependency DLLs are discoverable,
-      // matching the normal install path. The provider DLL delay-loads CUDA/cuDNN dependencies.
-      PrependDirToProcessPath(provider_path.parent_path());
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+      if (!LoadGenAiCudaLibrary(provider_path.parent_path() / kGenAiCudaLibrary, genai_cuda_handle_, logger)) {
+        return false;
+      }
+#endif
 
       if (!register_ep_(kRegistrationName, provider_path)) {
         logger.Log(LogLevel::Warning,
@@ -118,97 +231,48 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
       return true;
     }
 
-    // Cross-process lock to prevent concurrent installs
-    FileLock lock(lock_path);
-
-    // Check if package already exists and is valid
-    if (fl::VerifyEpBinaries(ep_dir,
-            {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
-             {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
-            "CUDA EP", logger)) {
-      logger.Log(LogLevel::Information, "CUDA EP: package already valid, skipping download");
-    } else {
-      // Clean up any partial install
-      if (std::filesystem::exists(ep_dir)) {
-        std::filesystem::remove_all(ep_dir);
-      }
-
-      std::filesystem::create_directories(ep_dir);
-
-      // Download
-      logger.Log(LogLevel::Information, "CUDA EP: downloading from CDN...");
-
-      // Bridge callback-based cancellation to the atomic flag HttpDownloadFile expects
-      std::atomic<bool> cancel_flag{false};
-
-      auto download_progress = [&](float pct) {
-        if (progress_cb) {
-          // 0-80% for download phase
-          if (!progress_cb(name_, pct * 0.8f)) {
-            cancel_flag.store(true);
-          }
-        }
-      };
-
-      if (!HttpDownloadFile(kDownloadUrl, zip_path, kUserAgent,
-                            &cancel_flag, download_progress, logger)) {
-        logger.Log(LogLevel::Warning, "CUDA EP: download failed (see prior log for details)");
-        return false;
-      }
-
-      // Extract
-      logger.Log(LogLevel::Information, "CUDA EP: extracting...");
-
-      if (!ExtractZip(zip_path, ep_dir, logger)) {
-        logger.Log(LogLevel::Warning, "CUDA EP: extraction failed");
-        return false;
-      }
-
-      // Clean up zip
-      std::filesystem::remove(zip_path);
-
-      // Verify
-      if (!fl::VerifyEpBinaries(ep_dir,
-               {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
-                {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
-               "CUDA EP", logger)) {
-        logger.Log(LogLevel::Warning, "CUDA EP: verification failed after download");
-        return false;
-      }
+    auto manifest = BuildCudaManifest();
+    if (!manifest.has_value()) {
+      logger.Log(LogLevel::Warning, "CUDA EP: no bundle available for this platform");
+      return false;
     }
 
-    if (progress_cb) {
-      progress_cb(name_, 90.0f);
+    // CUDA force requests another registration attempt, but retains the existing package reuse behavior.
+    auto txn = installer_.EnsureInstalled(*manifest, progress_cb, logger,
+                                          EpBundleInstallPolicy::ReuseVerified);
+    if (!txn) {
+      return false;
     }
 
-    // Register with ORT
+    auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
+
 #ifdef _WIN32
-    // Permanently prepend the EP directory to PATH. The zip bundles all
-    // required CUDA/cuDNN DLLs, so no system CUDA install is needed.
-    // PATH must stay modified for the process lifetime because:
-    //   - onnxruntime_providers_cuda.dll delay-loads some dependencies
-    //   - onnxruntime-genai-cuda.dll is loaded later at model-load time
-    //   - ORT creates CUDA sessions after registration
-    PrependDirToProcessPath(ep_dir);
+    if (!LoadBundleDependencies(txn->bin_dir(), *manifest, logger)) {
+      return false;
+    }
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+    if (!LoadGenAiCudaLibrary(txn->bin_dir() / kGenAiCudaLibrary, genai_cuda_handle_, logger)) {
+      return false;
+    }
 #endif
 
-    auto cuda_dll_path = ep_dir / kCudaProviderDll;
-
-    if (!register_ep_(kRegistrationName, cuda_dll_path)) {
+    if (!register_ep_(kRegistrationName, provider_path)) {
       logger.Log(LogLevel::Warning, "CUDA EP: ORT registration failed");
       return false;
     }
 
     registered_ = true;
 
+    if (!txn->CommitActive(logger)) {
+      logger.Log(LogLevel::Warning, "CUDA EP: failed to publish active bundle marker");
+    }
+
     if (progress_cb) {
       progress_cb(name_, 100.0f);
     }
 
-    // Bootstrapper-side log — captures the install dir, which the central
-    // register_ep callback (logs library + version) doesn't have.
     logger.Log(LogLevel::Information,
-               fmt::format("CUDA EP: ready (install_path={})", ep_dir.string()));
+               fmt::format("CUDA EP: ready (install_path={})", txn->bin_dir().string()));
     return true;
   } catch (const std::exception& e) {
     logger.Log(LogLevel::Warning, fmt::format("CUDA EP: error: {}", e.what()));
@@ -217,39 +281,16 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
 }
 
 bool CudaEpBootstrapper::HasNvidiaGpu() {
-#ifdef _WIN32
-  FILE* pipe = _popen("nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>nul", "r");
+  return NvmlGpuDetector::HasNvidiaGpu();
+}
+
+bool CudaEpBootstrapper::IsSupportedPlatform() {
+#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
+    (defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__))
+  return true;
 #else
-  FILE* pipe = popen("nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null", "r");
+  return false;
 #endif
-
-  if (!pipe) {
-    return false;
-  }
-
-  char buffer[128];
-  std::string result;
-  while (fgets(buffer, sizeof(buffer), pipe)) {
-    result += buffer;
-  }
-
-#ifdef _WIN32
-  int exit_code = _pclose(pipe);
-#else
-  int exit_code = pclose(pipe);
-#endif
-
-  if (exit_code != 0 || result.empty()) {
-    return false;
-  }
-
-  // Need compute capability >= 5.0 for CUDA 12
-  try {
-    float compute_cap = std::stof(result);
-    return compute_cap >= 5.0f;
-  } catch (...) {
-    return false;
-  }
 }
 
 }  // namespace fl

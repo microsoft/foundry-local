@@ -23,9 +23,11 @@ add_executable(foundry_local_tests
     internal_api/chat_completions_converter_test.cc
     internal_api/configuration_test.cc
     internal_api/cross_process_file_lock_test.cc
+    internal_api/cuda_ep_bootstrapper_test.cc
     internal_api/download_test.cc
     internal_api/embeddings/contracts_embeddings_test.cc
     internal_api/embeddings/fp16_test.cc
+    internal_api/ep_bundle_installer_test.cc
     internal_api/ep_detector_test.cc
     internal_api/exception_test.cc
     internal_api/execution_provider_test.cc
@@ -42,6 +44,7 @@ add_executable(foundry_local_tests
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
+    internal_api/nvml_gpu_detector_test.cc
     internal_api/platform_path_test.cc
     internal_api/response_converter_test.cc
     internal_api/response_store_test.cc
@@ -59,6 +62,7 @@ add_executable(foundry_local_tests
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
     internal_api/web_service_test.cc
+    internal_api/webgpu_ep_bootstrapper_test.cc
     internal_api/winml_provider_allowlist_test.cc
     internal_api/zip_extract_test.cc
 )

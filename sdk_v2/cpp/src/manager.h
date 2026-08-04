@@ -118,7 +118,7 @@ class Manager {
   //   ort_api_, ort_env_,
   //     registered_ep_libraries_ — ORT environment & EP registrations;
   //                                released manually in ~Manager() after all
-  //                                consumers (sessions, ep_detector_) are gone.
+  //                                consumers and GenAI globals are gone.
   //   logger_                  — everything logs through this, destroyed last
   //   ep_detector_             — detects HW acceleration; holds OrtEnv& (must
   //                              outlive ort_env_ release in ~Manager())

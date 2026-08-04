@@ -170,6 +170,23 @@ TEST(CApiTest, ManagerCreateAndRelease) {
   api->Manager_Release(mgr);
 }
 
+TEST(CApiTest, ManagerCanBeRecreatedAfterRelease) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+
+  for (int i = 0; i < 2; ++i) {
+    flConfiguration* config = CreateTestConfig(api);
+    ASSERT_NE(config, nullptr);
+
+    flManager* mgr = nullptr;
+    ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+    ASSERT_NE(mgr, nullptr);
+
+    api->GetConfigurationApi()->Configuration_Release(config);
+    api->Manager_Release(mgr);
+  }
+}
+
 TEST(CApiTest, ManagerReleaseNullIsNoOp) {
   const flApi* api = GetApi();
   ASSERT_NE(api, nullptr);

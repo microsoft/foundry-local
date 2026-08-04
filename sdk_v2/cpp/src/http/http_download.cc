@@ -22,12 +22,22 @@
 
 namespace fl {
 
+namespace {
+
+std::string RedactUrlForLog(const std::string& url) {
+  const auto query = url.find('?');
+  return query == std::string::npos ? url : url.substr(0, query) + "?<redacted>";
+}
+
+}  // namespace
+
 bool HttpDownloadFile(const std::string& url,
                       const std::filesystem::path& destination,
                       const std::string& user_agent,
                       std::atomic<bool>* cancel_flag,
                       std::function<void(float percent)> progress_cb,
-                      ILogger& logger) {
+                      ILogger& logger,
+                      int64_t max_bytes) {
   using namespace Azure::Core;
   using namespace Azure::Core::Http;
 
@@ -50,26 +60,27 @@ bool HttpDownloadFile(const std::string& url,
       Azure::DateTime(std::chrono::system_clock::now() + std::chrono::minutes(30)));
 
   std::unique_ptr<RawResponse> response;
+  const auto log_url = RedactUrlForLog(url);
 
   try {
     response = transport.Send(request, context);
   } catch (const std::exception& ex) {
-    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", url, ": ", ex.what()));
+    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", log_url, ": ", ex.what()));
     return false;
   } catch (...) {
-    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", url, ": unknown exception"));
+    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", log_url, ": unknown exception"));
     return false;
   }
 
   auto status = static_cast<int>(response->GetStatusCode());
   if (status < 200 || status >= 300) {
-    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", url, ": HTTP status ", status));
+    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", log_url, ": HTTP status ", status));
     return false;
   }
 
   auto body_stream = response->ExtractBodyStream();
   if (!body_stream) {
-    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", url, ": no body stream in response"));
+    logger.Log(LogLevel::Warning, MakeString("HTTP download failed for ", log_url, ": no body stream in response"));
     return false;
   }
 
@@ -84,15 +95,22 @@ bool HttpDownloadFile(const std::string& url,
       content_length = std::stoll(cl_header->second);
     } catch (const std::exception& ex) {
       logger.Log(LogLevel::Warning,
-                 MakeString("HTTP download: invalid Content-Length header for ", url,
+                 MakeString("HTTP download: invalid Content-Length header for ", log_url,
                             " (\"", cl_header->second, "\"): ", ex.what()));
       return false;
     }
 
     if (content_length < 0) {
       logger.Log(LogLevel::Warning,
-                 MakeString("HTTP download: negative Content-Length for ", url,
+                 MakeString("HTTP download: negative Content-Length for ", log_url,
                             " (\"", cl_header->second, "\")"));
+      return false;
+    }
+
+    if (max_bytes >= 0 && content_length > max_bytes) {
+      logger.Log(LogLevel::Warning,
+                 MakeString("HTTP download: Content-Length ", content_length, " for ", log_url,
+                            " exceeds the ", max_bytes, "-byte cap; refusing before reading any body"));
       return false;
     }
   }
@@ -108,41 +126,70 @@ bool HttpDownloadFile(const std::string& url,
   uint8_t buffer[kBufferSize];
   int64_t bytes_downloaded = 0;
   int chunks_since_progress = 0;
+  auto remove_destination = [&]() {
+    std::error_code ec;
+    std::filesystem::remove(destination, ec);
+  };
 
-  while (true) {
-    if (cancel_flag && cancel_flag->load()) {
-      out.close();
-      std::filesystem::remove(destination);
-      return false;
+  try {
+    while (true) {
+      if (cancel_flag && cancel_flag->load()) {
+        out.close();
+        remove_destination();
+        return false;
+      }
+
+      size_t bytes_read = body_stream->Read(buffer, kBufferSize, context);
+      if (bytes_read == 0) {
+        break;
+      }
+
+      out.write(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(bytes_read));
+      if (!out) {
+        logger.Log(LogLevel::Warning,
+                   MakeString("HTTP download: failed writing ", destination.string()));
+        out.close();
+        remove_destination();
+        return false;
+      }
+      bytes_downloaded += static_cast<int64_t>(bytes_read);
+
+      if (max_bytes >= 0 && bytes_downloaded > max_bytes) {
+        logger.Log(LogLevel::Warning,
+                   MakeString("HTTP download: body for ", log_url, " exceeded the ", max_bytes, "-byte cap"));
+        out.close();
+        remove_destination();
+        return false;
+      }
+
+      chunks_since_progress++;
+      if (progress_cb && content_length > 0 && chunks_since_progress >= 32) {
+        float percent = static_cast<float>(bytes_downloaded * 100.0 / content_length);
+        progress_cb(percent);
+        chunks_since_progress = 0;
+      }
     }
-
-    size_t bytes_read = body_stream->Read(buffer, kBufferSize, context);
-    if (bytes_read == 0) {
-      break;
-    }
-
-    out.write(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(bytes_read));
-    bytes_downloaded += static_cast<int64_t>(bytes_read);
-
-    // Report progress every 32 chunks (~2MB), matching C# behavior
-    chunks_since_progress++;
-    if (progress_cb && content_length > 0 && chunks_since_progress >= 32) {
-      float percent = static_cast<float>(bytes_downloaded * 100.0 / content_length);
-      progress_cb(percent);
-      chunks_since_progress = 0;
-    }
+  } catch (const std::exception& ex) {
+    logger.Log(LogLevel::Warning, MakeString("HTTP download failed while reading ", log_url, ": ", ex.what()));
+    out.close();
+    remove_destination();
+    return false;
   }
 
   out.close();
+  if (!out) {
+    logger.Log(LogLevel::Warning, MakeString("HTTP download: failed finalizing ", destination.string()));
+    remove_destination();
+    return false;
+  }
 
   // detect truncated transfer. If the server promised a content length and
   // we received fewer bytes, surface the error rather than reporting success.
   if (content_length > 0 && bytes_downloaded < content_length) {
     logger.Log(LogLevel::Warning,
-               MakeString("HTTP download truncated for ", url, ": got ",
+               MakeString("HTTP download truncated for ", log_url, ": got ",
                           bytes_downloaded, " of ", content_length, " bytes"));
-    std::error_code ec;
-    std::filesystem::remove(destination, ec);
+    remove_destination();
     return false;
   }
 

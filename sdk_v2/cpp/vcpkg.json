@@ -6,6 +6,10 @@
   "dependencies": [
     "azure-storage-blobs-cpp",
     {
+      "name": "libarchive",
+      "default-features": false
+    },
+    {
       "name": "azure-core-cpp",
       "default-features": false,
       "features": ["winhttp"],
@@ -18,6 +22,7 @@
       "platform": "!windows | uwp"
     },
     "ms-gsl",
+    "zlib",
     "nlohmann-json",
     "spdlog"
   ],
