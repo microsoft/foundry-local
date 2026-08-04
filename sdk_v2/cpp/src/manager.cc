@@ -22,7 +22,8 @@
 #include "inferencing/session/session_manager.h"
 #include "spdlog_logger.h"
 #include "telemetry/telemetry_action_tracker.h"
-#include "telemetry/telemetry_logger.h"
+#include "telemetry/one_ds_telemetry.h"
+#include "telemetry/telemetry_metadata.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -302,7 +303,15 @@ Manager::Manager(const Configuration& config)
       disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
-  telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
+  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, config_.disable_nonessential_telemetry);
+  try {
+    telemetry_->RecordProcessInfo(
+        BuildProcessInfo(BuildTelemetryMetadata(config_.app_name), !config_.disable_nonessential_telemetry));
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
+  }
   catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls,
       download_manager_->GetCacheDirectory(),

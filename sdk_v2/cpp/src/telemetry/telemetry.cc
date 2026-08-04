@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "telemetry/telemetry.h"
 
+#include "exception.h"
+
 namespace fl {
 
 std::string_view ActionToString(Action action) {
@@ -22,10 +24,6 @@ std::string_view ActionToString(Action action) {
       return "ModelLoad";
     case Action::kModelUnload:
       return "ModelUnload";
-    case Action::kModelDownload:
-      return "ModelDownload";
-    case Action::kModelDelete:
-      return "ModelDelete";
     case Action::kModelList:
       return "ModelList";
     case Action::kOpenAIChatCompletions:
@@ -48,8 +46,14 @@ std::string_view ActionToString(Action action) {
       return "OpenAIResponsesDelete";
     case Action::kOpenAIResponsesGetInputItems:
       return "OpenAIResponsesGetInputItems";
-    case Action::kCoreAudioTranscribe:
-      return "CoreAudioTranscribe";
+    case Action::kEpDownloadAttempt:
+      return "EPDownloadAttempt";
+    case Action::kEpDownloadAndRegister:
+      return "EPDownloadAndRegister";
+    case Action::kModelFileDownload:
+      return "ModelFileDownload";
+    case Action::kModelInference:
+      return "ModelInference";
     default:
       return "Unknown";
   }
@@ -65,8 +69,35 @@ std::string_view ActionStatusToString(ActionStatus status) {
       return "Invalid";
     case ActionStatus::kSkipped:
       return "Skipped";
+    case ActionStatus::kClientError:
+      return "ClientError";
+    case ActionStatus::kCanceled:
+      return "Canceled";
+    case ActionStatus::kDependencyFailure:
+      return "DependencyFailure";
+    case ActionStatus::kTimeout:
+      return "Timeout";
     default:
       return "Unknown";
+  }
+}
+
+ActionStatus ActionStatusFromException(const std::exception& exception) {
+  const auto* foundry_exception = dynamic_cast<const Exception*>(&exception);
+  if (foundry_exception == nullptr) {
+    return ActionStatus::kFailure;
+  }
+
+  switch (foundry_exception->code()) {
+    case FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT:
+    case FOUNDRY_LOCAL_ERROR_INVALID_USAGE:
+      return ActionStatus::kClientError;
+    case FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED:
+      return ActionStatus::kCanceled;
+    case FOUNDRY_LOCAL_ERROR_NETWORK:
+      return ActionStatus::kDependencyFailure;
+    default:
+      return ActionStatus::kFailure;
   }
 }
 

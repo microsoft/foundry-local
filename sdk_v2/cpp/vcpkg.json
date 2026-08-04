@@ -32,6 +32,17 @@
         "oatpp"
       ]
     },
+    "telemetry": {
+      "description": "Build with 1DS (cpp-client-telemetry) telemetry uploads",
+      "dependencies": [
+        {
+          "name": "cpp-client-telemetry",
+          "default-features": false,
+          "features": ["minimal-sqlite", "curl-openssl"],
+          "platform": "!uwp"
+        }
+      ]
+    },
     "tests": {
       "description": "Build unit tests",
       "dependencies": [

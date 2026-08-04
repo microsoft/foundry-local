@@ -243,6 +243,10 @@ public class FoundryLocalManager : IDisposable
             // Merge AdditionalSettings with user-supplied entries.
             // Done as a local dict so we don't mutate the user-supplied AdditionalSettings.
             var additionalSettings = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (_config.DisableNonessentialTelemetry)
+            {
+                additionalSettings["DisableNonessentialTelemetry"] = "true";
+            }
             if (_config.AdditionalSettings != null)
             {
                 foreach (var kvp in _config.AdditionalSettings)

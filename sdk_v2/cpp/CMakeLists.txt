@@ -13,6 +13,12 @@ endif()
 if(NOT DEFINED FOUNDRY_LOCAL_BUILD_SERVICE OR FOUNDRY_LOCAL_BUILD_SERVICE)
     list(APPEND VCPKG_MANIFEST_FEATURES "service")
 endif()
+# Telemetry must be selected before project() so vcpkg resolves the feature. Foundry Local Core always builds with
+# telemetry; platforms that cannot link the 1DS transport are unsupported for this target.
+if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uwp")
+    message(FATAL_ERROR "Foundry Local Core always builds with telemetry; UWP/WindowsStore is not supported.")
+endif()
+list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
 project(foundry_local VERSION 0.1.0 LANGUAGES CXX C)
 
@@ -44,6 +50,30 @@ option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
+
+# Optional 1DS ingestion token override. Override only via environment so it does
+# not appear in CMake cache files.
+if(DEFINED CACHE{FOUNDRY_LOCAL_TELEMETRY_TOKEN}
+   AND NOT "$CACHE{FOUNDRY_LOCAL_TELEMETRY_TOKEN}" STREQUAL "")
+    message(FATAL_ERROR
+        "Do not pass FOUNDRY_LOCAL_TELEMETRY_TOKEN via -D or CMake cache. "
+        "Use the FOUNDRY_LOCAL_TELEMETRY_TOKEN environment variable for temporary test-tenant overrides.")
+endif()
+unset(FOUNDRY_LOCAL_TELEMETRY_TOKEN CACHE)
+
+set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
+if(DEFINED ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN})
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
+endif()
+if(FOUNDRY_LOCAL_TELEMETRY_TOKEN MATCHES "^\\$\\(")
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
+endif()
+if(FOUNDRY_LOCAL_TELEMETRY_TOKEN)
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN_DEFINE
+        "#define FOUNDRY_LOCAL_TELEMETRY_TOKEN \"${FOUNDRY_LOCAL_TELEMETRY_TOKEN}\"")
+else()
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN_DEFINE "")
+endif()
 
 # Android: interactive examples and host tools don't run on device
 if(ANDROID)
@@ -86,6 +116,13 @@ find_package(OnnxRuntime REQUIRED)
 if(WIN32)
     find_package(WinMLEpCatalog)
 endif()
+
+# 1DS C++ client telemetry — provided by the cpp-client-telemetry vcpkg port.
+find_package(MSTelemetry CONFIG REQUIRED)
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+endif()
+message(STATUS "1DS telemetry: enabled (cpp-client-telemetry found)")
 
 # --------------------------------------------------------------------------
 # Library target
@@ -196,7 +233,11 @@ set(FOUNDRY_LOCAL_SOURCES
     src/service/web_service.cc
     src/telemetry/telemetry.cc
     src/telemetry/telemetry_action_tracker.cc
+    src/telemetry/device_id.cc
+    src/telemetry/invocation_context.cc
+    src/telemetry/telemetry_environment.cc
     src/telemetry/telemetry_logger.cc
+    src/telemetry/telemetry_metadata.cc
     src/utils.cc
     src/util/file_lock.cc
     src/http/http_download.cc
@@ -207,6 +248,12 @@ set(FOUNDRY_LOCAL_SOURCES
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
+
+# 1DS bridge — always compiled for Foundry Local Core.
+list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
+if(ANDROID)
+    list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/android_telemetry_bridge.cc)
+endif()
 
 # Organize headers into filters matching the directory structure in Visual Studio
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source" FILES ${FOUNDRY_LOCAL_SOURCES})
@@ -250,12 +297,18 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     endif()
 
     if(WIN32)
-        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt version)
         # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
         # WinHTTP is not available in UWP, so only define this on desktop Windows.
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
         endif()
+    else()
+        target_link_libraries(${TARGET} ${LINK_SCOPE} OpenSSL::Crypto)
+    endif()
+
+    if(APPLE)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} "-framework CoreFoundation")
     endif()
 
     if(ANDROID)
@@ -273,6 +326,9 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     else()
         target_compile_definitions(${TARGET} ${LINK_SCOPE} FOUNDRY_LOCAL_HAS_EP_CATALOG=0)
     endif()
+
+    target_link_libraries(${TARGET} ${LINK_SCOPE} MSTelemetry::mat)
+
 endfunction()
 
 # --------------------------------------------------------------------------
@@ -288,6 +344,13 @@ set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
+    @ONLY
+)
+
+# Generate the 1DS tenant-token header.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/telemetry/one_ds_tenant_token.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/one_ds_tenant_token.h"
     @ONLY
 )
 
