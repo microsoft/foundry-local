@@ -149,3 +149,57 @@ TEST(CatalogLiveTest, DISABLED_DownloadRealModel) {
                  << e.what();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Named multi-catalog tests.
+//
+// These construct their own Manager with custom catalog configurations, so they
+// live in this binary (cache_only_tests) rather than sdk_integration_tests: the
+// latter's SharedTestEnv holds the process-wide Manager singleton for its whole
+// run, which would make "Manager already created" throw here. Named catalog
+// resolution and enumeration are metadata-only (no network fetch), so a temp
+// cache dir keeps them hermetic and offline.
+// ---------------------------------------------------------------------------
+
+TEST(NamedCatalogTest, ListCatalogNamesDefaultsToPublic) {
+  TempDirGuard cache("named_default");
+  foundry_local::Configuration config("test_default_catalog");
+  config.SetModelCacheDir(cache.path.string());
+  foundry_local::Manager manager(std::move(config));
+
+  auto names = manager.ListCatalogNames();
+  ASSERT_EQ(names.size(), 1u);
+  EXPECT_EQ(names[0], "public");
+}
+
+TEST(NamedCatalogTest, NamedCatalogsResolveByName) {
+  TempDirGuard cache("named_resolve");
+  foundry_local::Configuration config("test_named_catalogs");
+  config.SetModelCacheDir(cache.path.string())
+      .AddCatalog("first", "https://example.com/first")
+      .AddCatalog("second", "https://example.com/second");
+  foundry_local::Manager manager(std::move(config));
+
+  auto names = manager.ListCatalogNames();
+  ASSERT_EQ(names.size(), 2u);
+  EXPECT_EQ(names[0], "first");
+  EXPECT_EQ(names[1], "second");
+
+  // Named lookup resolves each catalog; the no-arg GetCatalog() returns the first (default).
+  auto& first = manager.GetCatalog("first");
+  auto& second = manager.GetCatalog("second");
+  EXPECT_NE(&first, &second);
+  EXPECT_EQ(&manager.GetCatalog(), &first);
+
+  // Repeated lookups return the same cached wrapper.
+  EXPECT_EQ(&manager.GetCatalog("first"), &first);
+}
+
+TEST(NamedCatalogTest, GetCatalogUnknownNameThrows) {
+  TempDirGuard cache("named_unknown");
+  foundry_local::Configuration config("test_unknown_catalog");
+  config.SetModelCacheDir(cache.path.string());
+  foundry_local::Manager manager(std::move(config));
+
+  EXPECT_THROW(manager.GetCatalog("does-not-exist"), foundry_local::Error);
+}

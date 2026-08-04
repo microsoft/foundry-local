@@ -351,7 +351,9 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
   }
 
   auto& mgr = fl::Manager::Create(*cfg);
-  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}});
+  // Initialize every field explicitly: gcc's -Wextra flags -Wmissing-field-initializers
+  // (promoted to an error by -Werror) if any aggregate member is left out.
+  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}, {}, {}, {}});
   wrapper->catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog()});
   *out_manager = wrapper.release();
   return nullptr;

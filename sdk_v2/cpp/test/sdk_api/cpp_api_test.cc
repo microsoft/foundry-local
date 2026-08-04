@@ -343,41 +343,6 @@ TEST(CppApiTest, ConfigurationAddCatalogChaining) {
   // Should not throw — just verify chaining compiles and runs.
 }
 
-TEST(CppApiTest, ManagerListCatalogNamesDefaultsToPublic) {
-  foundry_local::Manager manager(foundry_local::Configuration("test_default_catalog"));
-
-  auto names = manager.ListCatalogNames();
-  ASSERT_EQ(names.size(), 1u);
-  EXPECT_EQ(names[0], "public");
-}
-
-TEST(CppApiTest, ManagerNamedCatalogsResolveByName) {
-  foundry_local::Configuration config("test_named_catalogs");
-  config.AddCatalog("first", "https://example.com/first")
-      .AddCatalog("second", "https://example.com/second");
-  foundry_local::Manager manager(std::move(config));
-
-  auto names = manager.ListCatalogNames();
-  ASSERT_EQ(names.size(), 2u);
-  EXPECT_EQ(names[0], "first");
-  EXPECT_EQ(names[1], "second");
-
-  // Named lookup resolves each catalog; the no-arg GetCatalog() returns the first (default).
-  auto& first = manager.GetCatalog("first");
-  auto& second = manager.GetCatalog("second");
-  EXPECT_NE(&first, &second);
-  EXPECT_EQ(&manager.GetCatalog(), &first);
-
-  // Repeated lookups return the same cached wrapper.
-  EXPECT_EQ(&manager.GetCatalog("first"), &first);
-}
-
-TEST(CppApiTest, ManagerGetCatalogUnknownNameThrows) {
-  foundry_local::Manager manager(foundry_local::Configuration("test_unknown_catalog"));
-
-  EXPECT_THROW(manager.GetCatalog("does-not-exist"), foundry_local::Error);
-}
-
 TEST(CppApiTest, ErrorFromCode) {
   foundry_local::Error err("test error", FOUNDRY_LOCAL_ERROR_INTERNAL);
   EXPECT_EQ(err.Code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
