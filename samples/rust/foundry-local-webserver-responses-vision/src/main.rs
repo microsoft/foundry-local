@@ -24,8 +24,9 @@ const DEFAULT_MODEL_ALIAS: &str = "qwen3.5-0.8b";
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 8192;
 
 fn print_usage() {
-    eprintln!("Usage: cargo run -p foundry-local-webserver-responses-vision -- <model_alias_or_id> [image_path]");
+    eprintln!("Usage: cargo run -p foundry-local-webserver-responses-vision -- [<model_alias_or_id>] [image_path]");
     eprintln!("         cargo run -p foundry-local-webserver-responses-vision -- --list-models");
+    eprintln!("  Default model: {DEFAULT_MODEL_ALIAS}");
     eprintln!("  Example: ... -- {DEFAULT_MODEL_ALIAS}");
     eprintln!("  Example: ... -- Qwen2.5-VL-7B-Instruct-generic-cpu");
 }
@@ -33,12 +34,12 @@ fn print_usage() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() {
+    if matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
         print_usage();
-        std::process::exit(1);
+        return Ok(());
     }
 
-    let list_models = matches!(args[0].as_str(), "--list-models" | "-l");
+    let list_models = matches!(args.first().map(String::as_str), Some("--list-models" | "-l"));
 
     // <init>
     println!("Initializing Foundry Local SDK...");
@@ -174,7 +175,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let model_identifier = args[0].clone();
+    let model_identifier = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string());
     let default_image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test_image.jpg");
     let image_path = if args.len() > 1 {
         PathBuf::from(&args[1])

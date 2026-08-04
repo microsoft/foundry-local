@@ -8,7 +8,7 @@ from foundry_local_sdk import (
     FoundryLocalManager,
     Request,
     RequestOptions,
-    TextItem,
+    SpeechSegmentItem,
 )
 # </imports>
 
@@ -56,7 +56,7 @@ with AudioSession(model) as session:
     with Request() as req:
         req.add_item(AudioItem.from_uri(audio_file))
         for item in session.process_streaming_request(req):
-            if isinstance(item, TextItem):
+            if isinstance(item, SpeechSegmentItem):
                 print(item.text, end="", flush=True)
     print()
 # </transcription>

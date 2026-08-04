@@ -43,7 +43,7 @@ python src/app.py --synth
    and a caller-owned `ItemQueue` to feed live PCM chunks into
 4. Captures microphone audio via `pyaudio` (or generates synthetic audio as fallback) and
    pushes each chunk as a `BytesItem` into the queue
-5. Reads transcription `TextItem`s in a background thread via `session.process_streaming_request(request)`
+5. Reads transcription `SpeechSegmentItem`s in a background thread via `session.process_streaming_request(request)`
 6. Calls `audio_queue.mark_finished()` to signal end-of-input; the session drains and the reader exits
 
 ## API
@@ -51,7 +51,7 @@ python src/app.py --synth
 ```python
 from foundry_local_sdk import (
     AudioItem, AudioSession, BytesItem, ItemQueue,
-    Request, RequestOptions, TextItem,
+    Request, RequestOptions, SpeechSegmentItem,
 )
 
 with AudioSession(model) as session:
@@ -65,7 +65,7 @@ with AudioSession(model) as session:
 
         # On a background thread: consume transcription items as they arrive.
         for item in session.process_streaming_request(request):
-            if isinstance(item, TextItem):
+            if isinstance(item, SpeechSegmentItem):
                 print(item.text, end="", flush=True)
 
         # On the producer thread: push PCM chunks, then signal end-of-input.

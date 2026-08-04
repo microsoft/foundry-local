@@ -12,6 +12,7 @@ from foundry_local_sdk import (
     MessageItem,
     Request,
     RequestOptions,
+    SpeechResultItem,
 )
 # </imports>
 
@@ -55,8 +56,11 @@ def main():
         with Request() as req:
             req.add_item(AudioItem.from_uri(audio_path))
             response = audio_session.process_request(req)
-            # Audio transcription responses contain a single TextItem.
-            transcript = response.get_item(0).text.strip()
+            # Audio transcription responses contain a single SpeechResultItem.
+            result = response.get_item(0)
+            if not isinstance(result, SpeechResultItem):
+                raise RuntimeError(f"Expected SpeechResultItem, got {type(result).__name__}")
+            transcript = result.text.strip()
 
     print(f"\nTranscription:\n{transcript}")
 

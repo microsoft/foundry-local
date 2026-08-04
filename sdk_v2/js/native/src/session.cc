@@ -38,19 +38,17 @@ const char* FinishReasonToString(flFinishReason r) {
   }
 }
 
-// Snapshot a Response into a plain JS object so the JS surface has no native
-// backing — safe to consume after the worker job completes.
-Napi::Value ResponseToJs(Napi::Env env, foundry_local::Response& resp) {
+Napi::Value ResponseToJs(Napi::Env env, const std::shared_ptr<foundry_local::Response>& resp) {
   Napi::Object out = Napi::Object::New(env);
-  const auto& items = resp.GetItems();
+  const auto& items = resp->GetItems();
   Napi::Array arr = Napi::Array::New(env, items.size());
   for (size_t i = 0; i < items.size(); ++i) {
-    arr.Set(static_cast<uint32_t>(i), ItemToJs(env, items[i]));
+    arr.Set(static_cast<uint32_t>(i), ItemToJs(env, items[i], resp));
   }
   out.Set("output", arr);
-  out.Set("finishReason", Napi::String::New(env, FinishReasonToString(resp.GetFinishReason())));
+  out.Set("finishReason", Napi::String::New(env, FinishReasonToString(resp->GetFinishReason())));
 
-  flUsage usage = resp.GetUsage();
+  flUsage usage = resp->GetUsage();
   Napi::Object u = Napi::Object::New(env);
   u.Set("promptTokens", Napi::Number::New(env, static_cast<double>(usage.prompt_tokens)));
   u.Set("completionTokens", Napi::Number::New(env, static_cast<double>(usage.completion_tokens)));
@@ -116,7 +114,7 @@ Napi::Value ProcessRequestOn(Napi::Env env, SessT* sess, const Napi::Value& requ
         (void)pins;  // keepalive captured by reference count
         return std::make_shared<foundry_local::Response>(sess->ProcessRequest(*req));
       },
-      [](Napi::Env env, Result& resp) -> Napi::Value { return ResponseToJs(env, *resp); });
+      [](Napi::Env env, Result& resp) -> Napi::Value { return ResponseToJs(env, resp); });
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -168,7 +166,7 @@ void FinalizeStream(Napi::Env env, void* /*data*/, StreamCtx* ctx) {
       ctx->deferred.Reject(Napi::Error::New(env, ctx->err_msg).Value());
     }
   } else if (ctx->response != nullptr) {
-    ctx->deferred.Resolve(ResponseToJs(env, *ctx->response));
+    ctx->deferred.Resolve(ResponseToJs(env, ctx->response));
   } else {
     // Should not happen: successful path always captures a Response. Guard
     // anyway so we never leave the deferred pending.
@@ -202,8 +200,8 @@ class StreamWorker : public Napi::AsyncWorker {
           napi_status status = tsfn.BlockingCall(
               item, [](Napi::Env env, Napi::Function jsCb, foundry_local::Item* it) {
                 Napi::HandleScope scope(env);
-                Napi::Value js_item = ItemToJs(env, *it);
-                delete it;
+                auto owner = std::shared_ptr<foundry_local::Item>(it);
+                Napi::Value js_item = ItemToJs(env, *owner, owner);
                 jsCb.Call({js_item});
               });
           if (status != napi_ok) {

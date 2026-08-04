@@ -78,9 +78,9 @@ await foreach (var item in session.ProcessStreamingRequestAsync(request))
 {
     using (item)
     {
-        if (item is TextItem txt)
+        if (item is SpeechSegmentItem segment)
         {
-            Console.Write(txt.Text);
+            Console.Write(segment.Text);
             Console.Out.Flush();
         }
     }

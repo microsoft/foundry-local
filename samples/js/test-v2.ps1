@@ -10,11 +10,9 @@
          native addon links against the C++ SDK.
       2. Builds sdk_v2/js (TS + native addon + prebuilds copy).
       3. Runs `npm pack` to produce a tarball.
-      4. For each sample under samples/js/, runs
-         `npm install --omit=optional <tarball>`, which installs the v2 tarball
-         AS `foundry-local-sdk` (the package name inside the tarball wins,
-         overriding the "latest" specifier) and skips the WinML optional dep
-         (which has no v2 equivalent yet).
+        4. For each sample under samples/js/, runs `npm install <tarball>`, which
+           installs the v2 tarball AS `foundry-local-sdk` (the package name inside
+           the tarball wins, overriding the "latest" specifier).
       5. Optionally runs each sample with `npm start` under a per-sample
          timeout and reports pass/fail.
 
@@ -28,14 +26,14 @@
     Skip the C++ and sdk_v2/js build + pack steps. Use when iterating on the
     script itself or when you've already produced a fresh tarball.
 
-.PARAMETER NoWinML
-    Skip --use_winml on the C++ build. By default WinML is enabled on Windows
-    and disabled elsewhere; pass -NoWinML to force it off on Windows.
-
 .PARAMETER Run
     After installing, actually run each sample (npm start) under a timeout.
     Default behaviour is install-only — you usually want to run a single
     sample interactively with `npm start` after install.
+
+.PARAMETER VisionModel
+    Model alias or variant ID passed to web-server-responses-vision-example when running it.
+    Default: qwen3-vl-2b-instruct-generic-cpu:2.
 
 .PARAMETER TimeoutSec
     Per-sample timeout when -Run is supplied. Default: 120s.
@@ -57,7 +55,7 @@ param(
     [string] $Sample,
     [switch] $SkipBuild,
     [switch] $Run,
-    [switch] $NoWinML,
+    [string] $VisionModel = 'qwen3-vl-2b-instruct-generic-cpu:2',
     [int]    $TimeoutSec = 120
 )
 
@@ -67,6 +65,7 @@ $repoRoot    = Resolve-Path (Join-Path $samplesRoot '..\..')
 $sdkDir      = Join-Path $repoRoot 'sdk_v2\js'
 $cppDir      = Join-Path $repoRoot 'sdk_v2\cpp'
 $buildPy     = Join-Path $cppDir 'build.py'
+$npmRegistry = 'https://packagefeedproxy.microsoft.io/npm'
 
 if (-not (Test-Path $sdkDir)) {
     throw "Cannot find sdk_v2/js at $sdkDir"
@@ -88,15 +87,12 @@ else {
     throw 'Unsupported platform.'
 }
 
-$WinML = ($platform -eq 'Windows') -and -not $NoWinML
-$variantLabel = if ($WinML) { 'WinML' } else { 'base' }
-Write-Host "Platform: $platform / variant=$variantLabel" -ForegroundColor DarkGray
+Write-Host "Platform: $platform" -ForegroundColor DarkGray
 
 # ---------- 1. build C++ (the JS native addon links against the C++ SDK) ----------
 if (-not $SkipBuild) {
-    Write-Host "==> Building sdk_v2/cpp ($variantLabel, RelWithDebInfo)" -ForegroundColor Cyan
+    Write-Host "==> Building sdk_v2/cpp (RelWithDebInfo)" -ForegroundColor Cyan
     $buildArgs = @('--config', 'RelWithDebInfo', '--skip_tests')
-    if ($WinML) { $buildArgs += '--use_winml' }
     & python $buildPy @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "C++ build failed (exit $LASTEXITCODE)" }
 }
@@ -106,7 +102,7 @@ if (-not $SkipBuild) {
     Write-Host "==> Building sdk_v2/js" -ForegroundColor Cyan
     Push-Location $sdkDir
     try {
-        npm install
+        npm install --registry=$npmRegistry
         if ($LASTEXITCODE -ne 0) { throw "npm install in sdk_v2/js failed" }
         npm run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build in sdk_v2/js failed" }
@@ -114,6 +110,10 @@ if (-not $SkipBuild) {
         # Clean stale tarballs so we always pick up the freshest one.
         Get-ChildItem -Path $sdkDir -Filter 'foundry-local-sdk-*.tgz' |
             Remove-Item -Force -ErrorAction SilentlyContinue
+
+        Write-Host "==> Staging sdk_v2/js package contents" -ForegroundColor Cyan
+        npm run pack:prebuild
+        if ($LASTEXITCODE -ne 0) { throw "npm run pack:prebuild in sdk_v2/js failed" }
 
         Write-Host "==> Packing sdk_v2/js" -ForegroundColor Cyan
         npm pack
@@ -134,10 +134,8 @@ $tarballPath = $tarball.FullName
 Write-Host "Using tarball: $tarballPath" -ForegroundColor DarkGray
 
 # ---------- 3. discover samples ----------
-# verify-winml is excluded: it requires WinML 2.0, which sdk_v2 does not support yet.
 $candidateDirs = Get-ChildItem -Path $samplesRoot -Directory |
     Where-Object {
-        $_.Name -ne 'verify-winml' -and
         (Test-Path (Join-Path $_.FullName 'package.json'))
     }
 
@@ -175,16 +173,21 @@ foreach ($sampleDir in $samples) {
     $runOk     = $null
     $note      = ''
     try {
-        # Remove old install so the tarball is the canonical source.
-        Remove-Item -Recurse -Force node_modules, package-lock.json -ErrorAction SilentlyContinue
+        # Remove the old install so the tarball is the canonical source. Do not
+        # suppress file-lock errors: a partial cleanup makes npm fail later with
+        # a misleading EBUSY rename error.
+        try {
+            Remove-Item -Recurse -Force node_modules, package-lock.json -ErrorAction Stop
+        }
+        catch {
+            throw "Could not clean $($sampleDir.FullName)\node_modules. Close the process holding files in that directory (on Windows, use handle.exe to identify it), then retry. $($_.Exception.Message)"
+        }
 
         # `npm install <tgz>` registers the tarball under its internal package
         # name (`foundry-local-sdk`), which satisfies the "latest" specifier
-        # in the sample's package.json. --omit=optional skips the WinML pkg.
-        # --registry forces public npmjs.org, overriding any sample-local
-        # .npmrc pointing at the ORT-Nightly Azure feed (which doesn't proxy
-        # transitive deps like node-addon-api).
-        npm install --omit=optional --registry=https://registry.npmjs.org/ $tarballPath 2>&1 | Write-Host
+        # in the sample's package.json. --registry overrides any sample-local
+        # .npmrc and routes package traffic through the required internal proxy.
+        npm install --registry=$npmRegistry $tarballPath 2>&1 | Write-Host
         $installOk = ($LASTEXITCODE -eq 0)
         if (-not $installOk) { $note = "npm install exit $LASTEXITCODE" }
 
@@ -212,6 +215,9 @@ foreach ($sampleDir in $samples) {
             $startParts = $startCmd -split '\s+', 2
             $exe        = $startParts[0]    # typically 'node'; may be 'npx' for TS samples
             $exeArgs    = if ($startParts.Count -gt 1) { $startParts[1] } else { '' }
+            if ($name -eq 'web-server-responses-vision-example') {
+                $exeArgs += " $VisionModel"
+            }
 
             # Start-Process requires a real Win32 executable; PATHEXT-based
             # shims like `npx` need to be resolved to `npx.cmd`. Prefer a

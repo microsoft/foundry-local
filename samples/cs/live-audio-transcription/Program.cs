@@ -79,7 +79,7 @@ bool useSynth = args.Contains("--synth");
 
     // Start the streaming request. We keep the StreamingResponse around so we can
     // await FinalResponse after streaming drains — it carries the aggregated
-    // transcription as TextItem(s).
+    // transcription as a SpeechResultItem.
     var streaming = session.ProcessStreamingRequestAsync(request);
 
     // Background reader: stream transcription items as they arrive.
@@ -91,10 +91,10 @@ bool useSynth = args.Contains("--synth");
             {
                 using (item)
                 {
-                    if (item is TextItem txt && !string.IsNullOrEmpty(txt.Text))
+                    if (item is SpeechSegmentItem segment && !string.IsNullOrEmpty(segment.Text))
                     {
                         Console.ForegroundColor = ConsoleColor.Cyan;
-                        Console.Write(txt.Text);
+                        Console.Write(segment.Text);
                         Console.ResetColor();
                         Console.Out.Flush();
                     }
@@ -193,10 +193,10 @@ bool useSynth = args.Contains("--synth");
     await readTask;
     Console.WriteLine();
 
-    // FinalResponse carries the aggregated transcription as a single TextItem.
+    // FinalResponse carries the aggregated transcription as a single SpeechResultItem.
     using var finalResponse = await streaming.FinalResponse;
     using var finalItem = finalResponse.GetItem(0);
-    var transcript = (finalItem as TextItem)?.Text ?? string.Empty;
+    var transcript = (finalItem as SpeechResultItem)?.Text ?? string.Empty;
 
     Console.WriteLine();
     Console.WriteLine("===========================================================");

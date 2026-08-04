@@ -54,7 +54,7 @@ try {
     const req = new Request();
     req.addItem(Item.audioFromUri(audioFile));
     for await (const item of session.processStreamingRequest(req)) {
-        if (item.type === 'text') {
+        if (item.type === 'speechSegment') {
             process.stdout.write(item.text);
         }
     }

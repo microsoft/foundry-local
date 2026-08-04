@@ -1,5 +1,5 @@
-// Public `Response` shape returned by `Session.send`. A plain JS object —
-// no native backing, safe to retain past the session's lifetime.
+// Public `Response` shape returned by `Session.processRequest`. The object is
+// plain JS; zero-copy binary views transparently retain their native storage.
 import type { Item } from "./items.js";
 
 /** Reason inference stopped. */

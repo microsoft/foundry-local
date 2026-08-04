@@ -93,9 +93,14 @@ if (listModels) {
 }
 
 // <model_setup>
-let model = await manager.catalog.getModel(modelIdentifier);
+let model = null;
+try {
+    model = await manager.catalog.getModel(modelIdentifier);
+} catch {}
 if (!model) {
-    model = await manager.catalog.getModelVariant(modelIdentifier);
+    try {
+        model = await manager.catalog.getModelVariant(modelIdentifier);
+    } catch {}
 }
 if (!model) {
     const allModels = await manager.catalog.listModels();

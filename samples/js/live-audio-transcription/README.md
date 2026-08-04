@@ -38,7 +38,7 @@ node app.js --synth
    `ItemQueue` to feed live PCM chunks into
 4. Captures microphone audio via `naudiodon2` (or generates synthetic audio as fallback) and
    pushes each chunk as `Item.bytes(...)` into the queue
-5. Reads transcription `TextItem`s in a background async iterator via
+5. Reads transcription `SpeechSegmentItem`s in a background async iterator via
    `for await (const item of session.processStreamingRequest(request))`
 6. Calls `audioQueue.markFinished()` to signal end-of-input; the session drains and the loop exits
 
@@ -59,7 +59,7 @@ request.addItem(audioQueue);
 // Background reader: consume transcription items as they arrive.
 const readPromise = (async () => {
     for await (const item of session.processStreamingRequest(request)) {
-        if (item.type === 'text') {
+        if (item.type === 'speechSegment') {
             process.stdout.write(item.text);
         }
     }

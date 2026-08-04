@@ -76,20 +76,20 @@ using (var audioRequest = new Request())
     {
         using (item)
         {
-            if (item is TextItem chunk)
+            if (item is SpeechSegmentItem segment)
             {
-                Console.Write(chunk.Text);
+                Console.Write(segment.Text);
             }
         }
     }
     Console.WriteLine();
 
     using var finalResponse = await stream.FinalResponse;
-    // Audio transcription final response contains a single TextItem.
+    // Audio transcription final response contains a single SpeechResultItem.
     using var finalItem = finalResponse.GetItem(0);
-    if (finalItem is TextItem text)
+    if (finalItem is SpeechResultItem result)
     {
-        transcription = text.Text;
+        transcription = result.Text;
     }
 }
 

@@ -89,7 +89,7 @@ async function main() {
         const request = new Request();
         request.addItem(Item.audioFromUri(audioFilePath));
         for await (const item of audioSession.processStreamingRequest(request)) {
-            if (item.type === 'text' && item.text) {
+            if (item.type === 'speechSegment' && item.text) {
                 transcription += item.text;
             }
         }

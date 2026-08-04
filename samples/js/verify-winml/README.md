@@ -11,16 +11,16 @@ WinML EP-backed model variants and finishes with one native streaming chat check
 
 ## Setup
 
-`package.json` installs the repo-local `foundry-local-sdk` package and then
-runs its WinML installer script, so the sample always uses the current
-branch's WinML artifact pins:
+`package.json` installs the unified `foundry-local-sdk` package, which includes
+WinML support on Windows. To validate a local v2 build, use the sample runner
+from the parent directory; it installs the locally packed SDK tarball:
 
 ```bash
-npm install
+pwsh ../test-v2.ps1 -Sample verify-winml -Run
 ```
 
 ## Run
 
 ```bash
-node app.js
+npm start
 ```

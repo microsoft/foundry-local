@@ -50,7 +50,7 @@ try {
     const request = new Request();
     request.addItem(Item.audioFromUri(audioPath));
     for await (const item of speechSession.processStreamingRequest(request)) {
-        if (item.type === 'text' && item.text) {
+        if (item.type === 'speechSegment' && item.text) {
             transcription += item.text;
         }
     }

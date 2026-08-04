@@ -360,7 +360,8 @@ ipcMain.handle('transcribe-audio', async (event, audioFilePath, base64Data) => {
       const request = new Request();
       request.addItem(Item.audioFromUri(tempFilePath));
       const response = await session.processRequest(request);
-      text = response.output[0]?.text ?? '';
+      const result = response.output[0];
+      text = result?.type === 'speechResult' ? result.text : '';
     } finally {
       session.dispose();
     }

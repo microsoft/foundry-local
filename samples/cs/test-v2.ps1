@@ -3,19 +3,18 @@
     Validate samples/cs against a locally built sdk_v2/cpp + sdk_v2/cs.
 
 .DESCRIPTION
-    The samples reference `Microsoft.AI.Foundry.Local` /
-    `Microsoft.AI.Foundry.Local.WinML` (PackageReference, version `*-*` via
-    Directory.Packages.props) which in turn depend on the
-    `Microsoft.AI.Foundry.Local.Runtime[.WinML]` nupkg that carries the
-    foundry_local native binary.
+    The samples reference `Microsoft.AI.Foundry.Local` (PackageReference,
+    version `*-*` via Directory.Packages.props), which in turn depends on the
+    `Microsoft.AI.Foundry.Local.Runtime` nupkg that carries the foundry_local
+    native binary and bundles WinML acceleration on Windows.
 
     This script wires the samples to a local C++ build:
 
       1. Builds sdk_v2/cpp via build.py (RelWithDebInfo).
-      2. Packs Microsoft.AI.Foundry.Local.Runtime[.WinML] from those native
-         artifacts using sdk_v2/cpp/nuget/pack.py.
-      3. Packs Microsoft.AI.Foundry.Local[.WinML] from sdk_v2/cs/src/
-         pinned to the locally-packed Runtime version.
+        2. Packs Microsoft.AI.Foundry.Local.Runtime from those native artifacts
+            using sdk_v2/cpp/nuget/pack.py.
+        3. Packs Microsoft.AI.Foundry.Local from sdk_v2/cs/src/ pinned to the
+            locally-packed Runtime version.
       4. Writes a temporary NuGet.config that exposes a local feed alongside
          nuget.org and the AIFoundryLocal_PublicPackages Azure feed (for the
          Microsoft.ML.OnnxRuntime.Foundry / OnnxRuntimeGenAI.Foundry
@@ -42,15 +41,13 @@
     Skip building the C++ SDK AND repacking the Runtime + SDK nupkgs. Reuses
     whatever this script packed previously. Implies -SkipBuild.
 
-.PARAMETER WinML
-    Pack and target the WinML variant
-    (Microsoft.AI.Foundry.Local.Runtime.WinML +
-    Microsoft.AI.Foundry.Local.WinML). Defaults to true on Windows (matches
-    what the samples conditionally reference there) and false elsewhere.
-
 .PARAMETER Run
     After building, actually run each sample (dotnet run) under a timeout.
     Default behaviour is build-only.
+
+.PARAMETER VisionModel
+    Model alias or variant ID passed to foundry-local-web-server-responses-vision when running it.
+    Default: qwen3-vl-2b-instruct-generic-cpu:2.
 
 .PARAMETER TimeoutSec
     Per-sample timeout when -Run is supplied. Default: 120s.
@@ -72,8 +69,8 @@ param(
     [string] $Sample,
     [switch] $SkipBuild,
     [switch] $SkipPack,
-    [Nullable[bool]] $WinML,
     [switch] $Run,
+    [string] $VisionModel = 'qwen3-vl-2b-instruct-generic-cpu:2',
     [int]    $TimeoutSec = 120
 )
 
@@ -85,7 +82,6 @@ $csSdkProj   = Join-Path $repoRoot 'sdk_v2\cs\src\Microsoft.AI.Foundry.Local.csp
 $packPy      = Join-Path $cppDir 'nuget\pack.py'
 $buildPy     = Join-Path $cppDir 'build.py'
 $depsJson    = Join-Path $repoRoot 'sdk_v2\deps_versions.json'
-$depsJsonWinml = Join-Path $repoRoot 'sdk_v2\deps_versions_winml.json'
 
 if (-not (Test-Path $csSdkProj)) { throw "Cannot find $csSdkProj" }
 if (-not (Test-Path $buildPy))   { throw "Cannot find $buildPy" }
@@ -115,13 +111,9 @@ else {
     throw 'Unsupported platform.'
 }
 
-if ($null -eq $WinML) { $WinML = ($platform -eq 'Windows') }
-
 if ($SkipPack) { $SkipBuild = $true }
 
-$variantLabel  = if ($WinML) { 'WinML' } else { 'base' }
-$winmlSuffix   = if ($WinML) { '.WinML' } else { '' }
-Write-Host "Platform: $platform / $rid / variant=$variantLabel" -ForegroundColor DarkGray
+Write-Host "Platform: $platform / $rid" -ForegroundColor DarkGray
 
 $cppBuildDir = Join-Path $cppDir "build\$nativeBinSubdir"
 $feedDir     = Join-Path $cppDir 'build\samples-cs-feed'
@@ -133,11 +125,11 @@ New-Item -ItemType Directory -Force -Path $feedDir, $configsDir | Out-Null
 # even when older 0.x / 2.x packages exist in local-packages/. We reuse a
 # stable version across -SkipPack runs by reading whatever's currently in
 # the feed dir.
-$existingRuntime = Get-ChildItem $feedDir -Filter 'Microsoft.AI.Foundry.Local.Runtime*.nupkg' -ErrorAction SilentlyContinue |
+$existingRuntime = Get-ChildItem $feedDir -Filter 'Microsoft.AI.Foundry.Local.Runtime.*.nupkg' -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notlike '*.snupkg' } |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($SkipPack -and $existingRuntime) {
-    if ($existingRuntime.Name -match '\.Runtime(?:\.WinML)?\.(?<v>[\d\.\-a-zA-Z]+)\.nupkg$') {
+    if ($existingRuntime.Name -match '\.Runtime\.(?<v>[\d\.\-a-zA-Z]+)\.nupkg$') {
         $localVersion = $Matches.v
     } else {
         throw "Cannot parse version from $($existingRuntime.Name)"
@@ -147,17 +139,15 @@ if ($SkipPack -and $existingRuntime) {
 }
 Write-Host "Local package version: $localVersion" -ForegroundColor DarkGray
 
-# Resolve ORT / GenAI versions for the chosen variant.
-$depsFile = if ($WinML) { $depsJsonWinml } else { $depsJson }
-$deps = Get-Content $depsFile -Raw | ConvertFrom-Json
+# Resolve ORT / GenAI versions for the runtime package.
+$deps = Get-Content $depsJson -Raw | ConvertFrom-Json
 $ortVersion   = $deps.onnxruntime.version
 $genaiVersion = $deps.'onnxruntime-genai'.version
 
 # ---------- 1. build C++ ----------
 if (-not $SkipBuild) {
-    Write-Host "==> Building sdk_v2/cpp ($variantLabel, RelWithDebInfo)" -ForegroundColor Cyan
+    Write-Host "==> Building sdk_v2/cpp (RelWithDebInfo)" -ForegroundColor Cyan
     $buildArgs = @('--config', 'RelWithDebInfo', '--skip_tests')
-    if ($WinML) { $buildArgs += '--use_winml' }
     & python $buildPy @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "C++ build failed (exit $LASTEXITCODE)" }
 }
@@ -170,19 +160,17 @@ if (-not (Test-Path (Join-Path $cppBuildDir 'foundry_local.dll')) -and
 
 # ---------- 2. pack Runtime nupkg ----------
 if (-not $SkipPack) {
-    Write-Host "==> Packing Microsoft.AI.Foundry.Local.Runtime$winmlSuffix" -ForegroundColor Cyan
+    Write-Host "==> Packing Microsoft.AI.Foundry.Local.Runtime" -ForegroundColor Cyan
 
     # Clean out any prior 99.0.0-localdev.* packages so floating resolution
     # picks today's stamp. Leave other packages in feedDir untouched.
     Get-ChildItem $feedDir -Filter 'Microsoft.AI.Foundry.Local*99.0.0-localdev.*.nupkg' -ErrorAction SilentlyContinue |
         Remove-Item -Force
 
-    $packageId = if ($WinML) { 'Microsoft.AI.Foundry.Local.Runtime.WinML' } else { 'Microsoft.AI.Foundry.Local.Runtime' }
-
     $packArgs = @(
         $packPy,
         '--version',       $localVersion,
-        '--package_id',    $packageId,
+        '--package_id',    'Microsoft.AI.Foundry.Local.Runtime',
         '--ort_version',   $ortVersion,
         '--genai_version', $genaiVersion,
         "--$packArg",      $cppBuildDir,
@@ -193,7 +181,7 @@ if (-not $SkipPack) {
     if ($LASTEXITCODE -ne 0) { throw "Runtime nupkg pack failed (exit $LASTEXITCODE)" }
 
     # ---------- 3. pack SDK nupkg ----------
-    Write-Host "==> Packing Microsoft.AI.Foundry.Local$winmlSuffix" -ForegroundColor Cyan
+    Write-Host "==> Packing Microsoft.AI.Foundry.Local" -ForegroundColor Cyan
 
     # Temporary NuGet.config the SDK's own restore uses so it can resolve
     # the Runtime package we just packed plus the ORT.Foundry transitive deps.
@@ -210,8 +198,6 @@ if (-not $SkipPack) {
 </configuration>
 "@ | Set-Content -Path $sdkConfig -Encoding UTF8
 
-    $useWinml = if ($WinML) { 'true' } else { 'false' }
-
     # Restore + build + pack. FoundryLocalNativeBinDir is explicitly cleared
     # so the SDK csproj takes the FoundryLocalRuntimeVersion path (pulls the
     # native binary from the Runtime nupkg) — the only mode that works for
@@ -219,7 +205,6 @@ if (-not $SkipPack) {
     & dotnet restore $csSdkProj `
         --configfile $sdkConfig `
         --force `
-        /p:UseWinML=$useWinml `
         /p:FoundryLocalRuntimeVersion=$localVersion `
         /p:FoundryLocalNativeBinDir=
     if ($LASTEXITCODE -ne 0) { throw "SDK restore failed" }
@@ -230,7 +215,6 @@ if (-not $SkipPack) {
         --output $feedDir `
         /p:IsPacking=true `
         /p:PackageVersion=$localVersion `
-        /p:UseWinML=$useWinml `
         /p:FoundryLocalRuntimeVersion=$localVersion `
         /p:FoundryLocalNativeBinDir=
     if ($LASTEXITCODE -ne 0) { throw "SDK pack failed" }
@@ -265,11 +249,9 @@ Write-Host "Feed dir:       $feedDir" -ForegroundColor DarkGray
 Write-Host "Sample config:  $sampleConfig" -ForegroundColor DarkGray
 
 # ---------- 5. discover samples ----------
-# verify-winml is excluded: it requires WinML 2.0, which sdk_v2 does not support yet.
 $candidateDirs = Get-ChildItem -Path $samplesRoot -Directory |
     Where-Object {
         $_.Name -ne 'Shared' -and
-        $_.Name -ne 'verify-winml' -and
         (Get-ChildItem $_.FullName -Filter '*.csproj' -File -ErrorAction SilentlyContinue)
     }
 
@@ -280,7 +262,7 @@ if ($Sample) {
     }
 }
 
-# Only operate on samples that reference Microsoft.AI.Foundry.Local[.WinML].
+# Only operate on samples that reference Microsoft.AI.Foundry.Local.
 $samples = foreach ($d in $candidateDirs) {
     $csproj = Get-ChildItem $d.FullName -Filter '*.csproj' -File | Select-Object -First 1
     if (-not $csproj) { continue }
@@ -332,8 +314,15 @@ foreach ($s in $samples) {
             $errFile = Join-Path $s.Dir.FullName 'sample-run.err.log'
             Remove-Item $errFile -Force -ErrorAction SilentlyContinue
 
+            $runArguments = @(
+                'run', '--project', $s.Csproj, '--no-build', '--no-restore', '--configuration', 'Debug'
+            )
+            if ($name -eq 'foundry-local-web-server-responses-vision') {
+                $runArguments += @('--', $VisionModel)
+            }
+
             $proc = Start-Process -FilePath 'dotnet' `
-                -ArgumentList @('run', '--project', $s.Csproj, '--no-build', '--no-restore', '--configuration', 'Debug') `
+                -ArgumentList $runArguments `
                 -WorkingDirectory $s.Dir.FullName `
                 -NoNewWindow -PassThru `
                 -RedirectStandardError $errFile

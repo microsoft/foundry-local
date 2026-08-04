@@ -143,7 +143,8 @@ var (imageB64, mediaType) = EncodeImage(imagePath);
 
 // The Foundry Local Responses API accepts an array of message items with input_text /
 // input_image content parts. The input_image part uses Foundry-specific `image_data` and
-// `media_type` fields (in place of OpenAI's `image_url`).
+// `media_type` fields.
+// OpenAI's `image_url` is also supported.
 var visionInput = new JsonArray
 {
     new JsonObject
@@ -156,8 +157,10 @@ var visionInput = new JsonArray
             new JsonObject
             {
                 ["type"] = "input_image",
+                ["detail"] = "low",
                 ["image_data"] = imageB64,
                 ["media_type"] = mediaType,
+                // Alternatively: ["image_url"] = $"data:{mediaType};base64,{imageB64}",
             },
         },
     },
@@ -211,6 +214,7 @@ Console.WriteLine();
 
 await mgr.StopWebServiceAsync();
 await model.UnloadAsync();
+mgr.Dispose();
 return 0;
 
 static (string Base64, string MediaType) EncodeImage(string path)

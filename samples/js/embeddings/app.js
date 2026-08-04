@@ -3,6 +3,22 @@
 import { EmbeddingsSession, FoundryLocalManager, Item, Request } from 'foundry-local-sdk';
 // </imports>
 
+function tensorToFloats(tensor) {
+    if (tensor.dataType !== 'float') {
+        throw new TypeError(`Expected a float tensor, received ${tensor.dataType}`);
+    }
+
+    if (tensor.data.byteOffset % Float32Array.BYTES_PER_ELEMENT !== 0) {
+        throw new RangeError('Tensor data is not aligned for a Float32Array view');
+    }
+
+    return new Float32Array(
+        tensor.data.buffer,
+        tensor.data.byteOffset,
+        tensor.data.byteLength / Float32Array.BYTES_PER_ELEMENT
+    );
+}
+
 // Initialize the Foundry Local SDK
 console.log('Initializing Foundry Local SDK...');
 
@@ -42,7 +58,7 @@ try {
 
     const tensor = resp.output.find(it => it.type === 'tensor');
     console.log(`Shape: ${tensor.shape.join('x')}`);
-    const floats = Item.tensorValues(tensor);
+    const floats = tensorToFloats(tensor);
     console.log(`First 5 values: [${Array.from(floats.slice(0, 5)).map(v => v.toFixed(6)).join(', ')}]`);
     // </single_embedding>
 

@@ -82,11 +82,11 @@ try {
     // terminal Response (with the aggregated transcript) after draining.
     const stream = session.processStreamingRequest(request);
 
-    // Background reader: print TextItems (in cyan) as they stream in.
+    // Background reader: print SpeechSegmentItems (in cyan) as they stream in.
     const readPromise = (async () => {
         try {
             for await (const item of stream) {
-                if (item.type === 'text' && item.text) {
+                if (item.type === 'speechSegment' && item.text) {
                     process.stdout.write(`\x1b[96m${item.text}\x1b[0m`);
                 }
             }
@@ -113,10 +113,10 @@ try {
     audioQueue.dispose();
     process.stdout.write('\n');
 
-    // Terminal Response carries the aggregated transcription as a single TextItem.
+    // Terminal Response carries the aggregated transcription as a single SpeechResultItem.
     const finalResponse = await stream.response;
     const finalItem = finalResponse.output[0];
-    const finalText = finalItem?.type === 'text' ? finalItem.text : '';
+    const finalText = finalItem?.type === 'speechResult' ? finalItem.text : '';
     console.log();
     console.log('════════════════════════════════════════════════════════════');
     console.log('  FINAL TRANSCRIPTION');

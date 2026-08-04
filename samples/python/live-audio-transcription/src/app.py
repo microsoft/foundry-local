@@ -12,6 +12,7 @@ import struct
 import sys
 import threading
 import time
+from contextlib import ExitStack
 
 from foundry_local_sdk import (
     AudioItem,
@@ -22,7 +23,7 @@ from foundry_local_sdk import (
     ItemQueue,
     Request,
     RequestOptions,
-    TextItem,
+    SpeechSegmentItem,
 )
 
 use_synth = "--synth" in sys.argv
@@ -54,7 +55,8 @@ print(f"Loading model {model.id}...", end="")
 model.load()
 print("done.")
 
-session = AudioSession(model)
+resources = ExitStack()
+session = resources.enter_context(AudioSession(model))
 session.set_options(RequestOptions(additional_options={"language": "en"}))
 # Multi-lingual examples:
 #   additional_options={"language": "de"}      # German
@@ -64,19 +66,19 @@ session.set_streaming(True)
 
 # ItemQueue stays caller-owned (transfer_ownership=False) so we can push chunks
 # while the streaming request runs. Request is built once and reused.
-audio_queue = ItemQueue()
-request = Request()
+audio_queue = resources.enter_context(ItemQueue())
+request = resources.enter_context(Request())
 request.add_item(AudioItem.create_format_descriptor("pcm", 16000, 1))
 request.add_item(audio_queue, transfer_ownership=False)
 
-result_stream = session.process_streaming_request(request)
+result_stream = resources.enter_context(session.process_streaming_request(request))
 print("✓ Session started")
 
 # --- Background thread reads transcription results (mirrors JS readPromise) ---
 
 def read_results():
     for item in result_stream:
-        if isinstance(item, TextItem) and item.text:
+        if isinstance(item, SpeechSegmentItem) and item.text:
             print(item.text, end="", flush=True)
 
 
@@ -180,10 +182,8 @@ def shutdown():
     audio_queue.mark_finished()
     read_thread.join(timeout=5)
 
-    # Drop native refs so model.unload() can succeed (session refcount must hit zero).
-    global result_stream, request, audio_queue, session
-    result_stream = request = audio_queue = session = None
-
+    # Release stream, request, queue, and session before unloading the model.
+    resources.close()
     model.unload()
     print("✓ Done")
     sys.exit(0)

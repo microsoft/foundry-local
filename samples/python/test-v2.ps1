@@ -3,18 +3,14 @@
     Validate samples/python against a locally built sdk_v2/cpp + sdk_v2/python wheel.
 
 .DESCRIPTION
-    The Python samples reference `foundry-local-sdk` (or
-    `foundry-local-sdk-winml` on Windows) in their requirements.txt, both of
-    which resolve to PyPI by default. This script:
+    The Python samples reference `foundry-local-sdk` in their requirements.txt,
+    which resolves to PyPI by default. This script:
 
       1. Builds sdk_v2/cpp via build.py (RelWithDebInfo).
       2. Stages the native library into
          sdk_v2/python/src/foundry_local_sdk/_native/<rid>/ (where the wheel
          build expects it).
-      3. Builds the wheel via `python -m build --wheel`, setting
-         FL_PYTHON_PACKAGE_NAME=foundry-local-sdk-winml when WinML is the
-         target so the produced wheel is named to match the platform-specific
-         requirement in the samples.
+    3. Builds the unified wheel via `python -m build --wheel`.
       4. Creates a shared venv at sdk_v2/python/build/samples-venv/ and force-
          installs the freshly-built wheel into it.
       5. For each sample under samples/python/, runs
@@ -34,11 +30,6 @@
 .PARAMETER SkipWheel
     Skip rebuilding the wheel but still build C++. Use when iterating on C++
     only.
-
-.PARAMETER WinML
-    Build and target the WinML wheel (`foundry-local-sdk-winml`). Defaults to
-    false. WinML 1.x ORT doesn't support vision models due to missing ops.
-    Switch the default back to $true on Windows once WinML 2.x is available.
 
 .PARAMETER PythonExe
     Python interpreter to use for building the wheel and creating the venv.
@@ -69,7 +60,6 @@ param(
     [string] $Sample,
     [switch] $SkipBuild,
     [switch] $SkipWheel,
-    [Nullable[bool]] $WinML,
     [string] $PythonExe = 'python',
     [switch] $Run,
     [int]    $TimeoutSec = 120
@@ -126,22 +116,19 @@ else {
     throw 'Unsupported platform.'
 }
 
-if ($null -eq $WinML) { $WinML = $false }
 if ($SkipBuild) { $SkipWheel = $true }
 
-$pkgName = if ($WinML) { 'foundry-local-sdk-winml' } else { 'foundry-local-sdk' }
+$pkgName = 'foundry-local-sdk'
 $pkgNameSafe = $pkgName.Replace('-', '_')   # used in wheel filename matching
-$variantLabel = if ($WinML) { 'WinML' } else { 'base' }
-Write-Host "Platform: $platform / $rid / variant=$variantLabel / pkg=$pkgName" -ForegroundColor DarkGray
+Write-Host "Platform: $platform / $rid / pkg=$pkgName" -ForegroundColor DarkGray
 
 $cppBinDir = Join-Path $cppDir "build\$nativeBinSubdir"
 $cppLibDir = if ($nativeLibSubdir) { Join-Path $cppDir "build\$nativeLibSubdir" } else { $null }
 
 # ---------- 1. build C++ ----------
 if (-not $SkipBuild) {
-    Write-Host "==> Building sdk_v2/cpp ($variantLabel, RelWithDebInfo)" -ForegroundColor Cyan
+    Write-Host "==> Building sdk_v2/cpp (RelWithDebInfo)" -ForegroundColor Cyan
     $buildArgs = @('--config', 'RelWithDebInfo', '--skip_tests')
-    if ($WinML) { $buildArgs += '--use_winml' }
     & $PythonExe $buildPy @buildArgs
     if ($LASTEXITCODE -ne 0) { throw "C++ build failed (exit $LASTEXITCODE)" }
 }
@@ -237,14 +224,8 @@ if (-not $SkipWheel) {
             throw "Python at '$PythonExe' is $bits-bit; this build requires a 64-bit Python."
         }
 
-        $env:FL_PYTHON_PACKAGE_NAME = $pkgName
-        try {
-            & $PythonExe -m build --wheel
-            if ($LASTEXITCODE -ne 0) { throw "wheel build failed" }
-        }
-        finally {
-            Remove-Item env:FL_PYTHON_PACKAGE_NAME -ErrorAction SilentlyContinue
-        }
+        & $PythonExe -m build --wheel
+        if ($LASTEXITCODE -ne 0) { throw "wheel build failed" }
     }
     finally {
         Pop-Location
@@ -284,21 +265,10 @@ if ($LASTEXITCODE -ne 0) { throw "Wheel install failed" }
 if ($LASTEXITCODE -ne 0) { throw "Wheel deps install failed" }
 
 # ---------- 5. discover samples ----------
-# verify-winml is excluded: it requires WinML 2.0, which sdk_v2 does not support yet.
 $candidateDirs = Get-ChildItem -Path $samplesRoot -Directory |
     Where-Object {
-        $_.Name -ne 'verify-winml' -and
         (Test-Path (Join-Path $_.FullName 'requirements.txt'))
     }
-
-# Per-variant skip list. Key is the sample directory name; value is the reason.
-$skipSamples = @{}
-if ($WinML) {
-    # WinML 1.x ORT doesn't support vision models due to missing ops.
-    # Re-enable once we move to WinML 2.x.
-    $skipSamples['web-server-responses-vision'] =
-        "WinML 1.x ORT doesn't support vision models due to missing ops"
-}
 
 if ($Sample) {
     $candidateDirs = $candidateDirs | Where-Object { $_.Name -eq $Sample }
@@ -313,19 +283,6 @@ $results = New-Object System.Collections.Generic.List[object]
 foreach ($sampleDir in $candidateDirs) {
     $name = $sampleDir.Name
 
-    if ($skipSamples.ContainsKey($name)) {
-        $skipReason = $skipSamples[$name]
-        Write-Host ""
-        Write-Host "==> [$name] SKIP — $skipReason" -ForegroundColor Yellow
-        $results.Add([pscustomobject]@{
-            Sample  = $name
-            Install = 'SKIP'
-            Run     = 'SKIP'
-            Note    = $skipReason
-        })
-        continue
-    }
-
     Write-Host ""
     Write-Host "==> [$name] install requirements" -ForegroundColor Cyan
     Push-Location $sampleDir.FullName
@@ -333,7 +290,7 @@ foreach ($sampleDir in $candidateDirs) {
     $runOk     = $null
     $note      = ''
     try {
-        # Filter out the foundry-local-sdk[-winml] lines so pip never reaches
+        # Filter out the foundry-local-sdk line so pip never reaches
         # for PyPI to satisfy that name (the local wheel is already installed).
         # Filtering by line keeps environment markers / comments intact.
         $reqFile = Join-Path $sampleDir.FullName 'requirements.txt'

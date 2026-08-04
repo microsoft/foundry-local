@@ -8,9 +8,8 @@
 // classes for items:
 //   * inputs (Request.addItem) — caller passes `{ type: 'message', ... }`
 //   * outputs (Response output items) — addon returns the same shape
-// This keeps the API ergonomic and avoids per-item native handle lifetime
-// management on the JS heap. The cost is one full copy per item across the
-// JS<->C++ boundary; acceptable for chat workloads.
+// This keeps the API ergonomic. Binary outputs can retain an owning native
+// object through an external ArrayBuffer, avoiding a data copy.
 //
 // Supported subtypes (both directions): text, message (with optional typed
 // parts), bytes, tensor, image (uri or in-memory data), audio (uri,
@@ -26,12 +25,15 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <memory>
+
 namespace foundry_local_node {
 
-/// Convert a C++ Item (non-owning view, typically obtained from a Response)
-/// to a JS plain object. The returned object is fully owned by the JS GC and
-/// has no native backing — safe to retain past the source Item's lifetime.
-Napi::Value ItemToJs(Napi::Env env, const foundry_local::Item& item);
+/// Convert a C++ Item to a JS plain object. When owner is provided, binary data
+/// directly views native memory and retains owner until the JS view is collected.
+/// Without an owner, binary data is copied so borrowed Items remain safe.
+Napi::Value ItemToJs(Napi::Env env, const foundry_local::Item& item,
+                     std::shared_ptr<void> owner = nullptr);
 
 /// Convert a JS plain object describing an input item into an owning
 /// `foundry_local::Item`. Throws `Napi::TypeError` for an invalid shape.

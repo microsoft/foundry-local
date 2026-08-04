@@ -38,7 +38,7 @@ dotnet run -- --synth
    and an `ItemQueue` to feed live PCM chunks into
 4. Captures microphone audio via `NAudio.WaveInEvent` (or generates synthetic audio as fallback)
    and pushes each chunk as a `BytesItem` into the queue (through a bounded channel for backpressure)
-5. Reads transcription `TextItem`s via `await foreach (var item in session.ProcessStreamingRequestAsync(request))`
+5. Reads transcription `SpeechSegmentItem`s via `await foreach (var item in session.ProcessStreamingRequestAsync(request))`
 6. Calls `audioQueue.MarkFinished()` to signal end-of-input; the session drains and the loop exits
 
 ## API
@@ -61,9 +61,9 @@ request.AddItem(audioQueue, takeOwnership: false);
 // On a background task: consume transcription items as they arrive.
 await foreach (var item in session.ProcessStreamingRequestAsync(request))
 {
-    if (item is TextItem text)
+    if (item is SpeechSegmentItem segment)
     {
-        Console.Write(text.Text);
+        Console.Write(segment.Text);
     }
 }
 

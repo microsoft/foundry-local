@@ -320,6 +320,23 @@ ResponseCreateParams MakeImageRequest(const std::string& image_url, const std::s
   return params;
 }
 
+ResponseCreateParams MakeImageDataRequest(const std::string& image_data,
+                                          const std::optional<std::string>& media_type = std::nullopt) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputImageContent image_part;
+  image_part.detail = "auto";
+  image_part.image_data = image_data;
+  image_part.media_type = media_type;
+  msg.content.push_back(image_part);
+
+  params.input = std::vector<InputItem>{msg};
+  return params;
+}
+
 }  // namespace
 
 TEST(ResponseConverterTest, ToSessionRequest_InputImage_DataUrl_DecodesToImageItem) {
@@ -345,6 +362,47 @@ TEST(ResponseConverterTest, ToSessionRequest_InputImage_DataUrl_DecodesToImageIt
   EXPECT_EQ(img->format, "image/png");
   EXPECT_EQ(img->data_size, kSamplePngDecodedSize);
   EXPECT_NE(img->data, nullptr);
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageData_DecodesWithMediaType) {
+  auto params = MakeImageDataRequest(kSamplePngBase64, "image/jpeg");
+
+  auto request = ToSessionRequest(params);
+
+  auto* msg = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(msg, nullptr);
+  ASSERT_EQ(msg->content.size(), 2u);
+  const auto* img = static_cast<const ImageItem*>(msg->content[0].view);
+  EXPECT_EQ(img->format, "image/jpeg");
+  EXPECT_EQ(img->data_size, kSamplePngDecodedSize);
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageData_DefaultsToPng) {
+  auto params = MakeImageDataRequest(kSamplePngBase64);
+
+  auto request = ToSessionRequest(params);
+
+  auto* msg = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(msg, nullptr);
+  const auto* img = static_cast<const ImageItem*>(msg->content[0].view);
+  EXPECT_EQ(img->format, "image/png");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageUrlTakesPrecedenceOverImageData) {
+  std::string data_url = std::string("data:image/png;base64,") + kSamplePngBase64;
+  auto params = MakeImageRequest(data_url);
+  auto& items = std::get<std::vector<InputItem>>(params.input);
+  auto& msg = std::get<InputMessage>(items[0]);
+  auto& image = std::get<InputImageContent>(msg.content[1]);
+  image.image_data = "not-valid-base64";
+  image.media_type = "image/jpeg";
+
+  auto request = ToSessionRequest(params);
+
+  auto* converted_msg = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(converted_msg, nullptr);
+  const auto* img = static_cast<const ImageItem*>(converted_msg->content[1].view);
+  EXPECT_EQ(img->format, "image/png");
 }
 
 TEST(ResponseConverterTest, ToSessionRequest_InputImage_DataUrl_MissingBase64Marker_Throws) {

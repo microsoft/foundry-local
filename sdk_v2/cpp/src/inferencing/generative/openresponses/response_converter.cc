@@ -259,31 +259,36 @@ std::unique_ptr<ImageItem> MakeImageItemFromLocalFile(const std::string& url,
 }
 
 std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& c) {
-  if (c.file_id.has_value() && !c.file_id->empty()) {
+  if (c.image_url.has_value() && !c.image_url->empty()) {
+    const std::string& url = *c.image_url;
+
+    if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
+      return MakeImageItemFromDataUrl(url);
+    }
+
+    // file:// URI or absolute local path.
+    if (url.compare(0, kFileScheme.size(), kFileScheme) == 0 ||
+        (url.size() >= 2 && (url[0] == '/' || url[0] == '\\' ||
+                             (url.size() >= 3 && url[1] == ':' && (url[2] == '/' || url[2] == '\\'))))) {
+      return MakeImageItemFromLocalFile(url, c.media_type);
+    }
+
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-             "image input via file_id is not supported on Foundry Local");
+             "image_url must be a data: URL or a local file path; remote http(s) URLs are not supported");
   }
 
-  if (!c.image_url.has_value() || c.image_url->empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "input_image content requires a non-empty image_url or file_id");
+  if (c.image_data.has_value() && !c.image_data->empty()) {
+    const std::string media_type =
+        c.media_type.has_value() && !c.media_type->empty() ? *c.media_type : "image/png";
+    return MakeImageItemFromDataUrl("data:" + media_type + ";base64," + *c.image_data);
   }
 
-  const std::string& url = *c.image_url;
-
-  if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
-    return MakeImageItemFromDataUrl(url);
+  if (c.file_id.has_value() && !c.file_id->empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "image input via file_id is not supported on Foundry Local");
   }
 
-  // file:// URI or absolute local path.
-  if (url.compare(0, kFileScheme.size(), kFileScheme) == 0 ||
-      (url.size() >= 2 && (url[0] == '/' || url[0] == '\\' ||
-                           (url.size() >= 3 && url[1] == ':' && (url[2] == '/' || url[2] == '\\'))))) {
-    return MakeImageItemFromLocalFile(url, c.media_type);
-  }
-
-  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-           "image_url must be a data: URL or a local file path; remote http(s) URLs are not supported");
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+           "input_image content requires a non-empty image_url, image_data, or file_id");
 }
 
 }  // namespace

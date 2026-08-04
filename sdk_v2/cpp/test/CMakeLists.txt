@@ -62,6 +62,17 @@ add_executable(foundry_local_tests
     internal_api/zip_extract_test.cc
 )
 
+# Both test executables share the runtime output directory. Stage their common data through one target so parallel
+# builds do not run concurrent copy_directory commands against the same destination.
+add_custom_target(stage_testdata
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/testdata
+            $<TARGET_FILE_DIR:foundry_local_tests>/testdata
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../testdata
+            $<TARGET_FILE_DIR:foundry_local_tests>/testdata
+)
+
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
 
 target_link_libraries(foundry_local_tests
@@ -80,23 +91,13 @@ endif()
 
 # Ensure ORT/GenAI DLLs are copied to the bin directory before test discovery.
 # The shared library target has POST_BUILD commands that copy the runtime DLLs.
-add_dependencies(foundry_local_tests foundry_local)
+add_dependencies(foundry_local_tests foundry_local stage_testdata)
 
 # Internal headers (src/) needed by configuration_test.cc
 target_include_directories(foundry_local_tests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../src
         ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-add_custom_command(TARGET foundry_local_tests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/testdata
-            $<TARGET_FILE_DIR:foundry_local_tests>/testdata
-    # Copy shared cross-SDK test data (audio, images, etc.).
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../testdata
-            $<TARGET_FILE_DIR:foundry_local_tests>/testdata
 )
 
 # Make the build output testdata path available to test code at compile time.
@@ -168,19 +169,11 @@ target_link_libraries(sdk_integration_tests
         httplib::httplib
 )
 
+add_dependencies(sdk_integration_tests stage_testdata)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sdk_integration_tests PRIVATE -Wl,--disable-new-dtags)
 endif()
-
-add_custom_command(TARGET sdk_integration_tests POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/testdata
-            $<TARGET_FILE_DIR:sdk_integration_tests>/testdata
-    # Copy shared cross-SDK test data (audio, images, etc.).
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../testdata
-            $<TARGET_FILE_DIR:sdk_integration_tests>/testdata
-)
 
 if(ANDROID)
     target_compile_definitions(sdk_integration_tests PRIVATE FOUNDRY_LOCAL_TEST_DATA_DIR="testdata")
