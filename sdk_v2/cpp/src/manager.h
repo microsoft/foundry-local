@@ -45,10 +45,18 @@ class Manager {
   /// Destroy the singleton and release all resources.
   static void Destroy();
 
-  /// Get the shared catalog interface for querying models.
+  /// Get the default catalog interface for querying models.
   /// The catalog is owned by the manager and shared across all consumers
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
+
+  /// Get a registered catalog by name. Throws FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT
+  /// if no catalog with that name is registered.
+  ICatalog& GetCatalog(const std::string& name);
+
+  /// Enumerate the names of all registered catalogs, in registration order.
+  /// The first name is the default catalog returned by the no-arg GetCatalog().
+  std::vector<std::string> ListCatalogNames() const;
 
   /// Get the configuration used to create this manager.
   const Configuration& GetConfiguration() const;
@@ -123,7 +131,8 @@ class Manager {
   //   ep_detector_             — detects HW acceleration; holds OrtEnv& (must
   //                              outlive ort_env_ release in ~Manager())
   //   telemetry_               — used throughout
-  //   catalog_                 — owns all Model instances. used by download_manager, model_load_manager, and web service
+  //   catalogs_                — one ICatalog per registered source; owns all Model instances. Used by
+  //                              download_manager, model_load_manager, and web service
   //   download_manager_        — uses ModelInfo owned by catalog
   //   model_load_manager_      — holds loaded model state referencing catalog models
   //   session_manager_         — tracks all active sessions. destroyed after web service, before models
@@ -137,7 +146,14 @@ class Manager {
   std::unique_ptr<ILogger> logger_;
   std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ITelemetry> telemetry_;
-  std::unique_ptr<ICatalog> catalog_;
+  // Registered catalogs in registration order. The first entry is the default
+  // (public) catalog returned by the no-arg GetCatalog(); named entries are
+  // reached via GetCatalog(name). No aggregation across catalogs.
+  struct NamedCatalog {
+    std::string name;
+    std::unique_ptr<ICatalog> catalog;
+  };
+  std::vector<NamedCatalog> catalogs_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;

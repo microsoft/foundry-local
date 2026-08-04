@@ -629,6 +629,8 @@ typedef struct flApi {
   FL_API_STATUS(Manager_Create, _In_ const flConfiguration* config, _Outptr_ flManager** out_manager);
   FL_TYPE_RELEASE(Manager);
 
+  /// Get the default catalog: the first registered catalog, or the built-in "public"
+  /// catalog when none was added. For a specific catalog, use Manager_GetCatalogByName.
   FL_API_STATUS(Manager_GetCatalog, _In_ const flManager* manager, _Outptr_ flCatalog** out_catalog);
   FL_API_STATUS(Manager_WebServiceStart, _In_ flManager* manager);
   // Get the bound service urls. Returns success with *out_num_urls == 0 when the web service is not running;
@@ -704,6 +706,19 @@ typedef struct flApi {
 
   /// Check if Shutdown has been called.
   bool FL_API_T(Manager_IsShutdownRequested, _In_ const flManager* manager);
+
+  /// Get a registered catalog by name. Returns FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT
+  /// if no catalog with that name is registered. The returned flCatalog is owned by
+  /// the Manager and remains valid for its lifetime.
+  FL_API_STATUS(Manager_GetCatalogByName, _In_ const flManager* manager, _In_ const char* name,
+                _Outptr_ flCatalog** out_catalog);
+
+  /// Enumerate the names of all registered catalogs, in registration order. The first
+  /// name is the default catalog returned by Manager_GetCatalog. The returned array and
+  /// its strings are owned by the Manager and remain valid until the next call to
+  /// Manager_ListCatalogNames on the same manager or until the Manager is released.
+  FL_API_STATUS(Manager_ListCatalogNames, _In_ const flManager* manager,
+                _Outptr_result_buffer_(*out_count) const char* const** out_names, _Out_ size_t* out_count);
 
   // End V1
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
@@ -908,6 +923,8 @@ struct flConfigurationApi {
   FL_API_STATUS(SetModelCacheDir, _In_ flConfiguration* config, _In_ const char* dir);
   /// Optional. Add a catalog URL. Defaults to the Azure Foundry Local Catalog if none added.
   /// Multiple catalogs can be added. Catalogs priority is determined by the order they were added.
+  /// The catalog is registered under an auto-derived name (its URL); to give it an explicit
+  /// name for scoped operations, use AddCatalog instead.
   /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
   FL_API_STATUS(AddCatalogUrl, _In_ flConfiguration* config, _In_ const char* url,
                 _In_opt_ const char* filter_override);
@@ -928,6 +945,14 @@ struct flConfigurationApi {
   /// Optional. Set additional/undocumented options as key/value pairs.
   /// These are passed through to the core implementation. The configuration copies the data.
   FL_API_STATUS(SetAdditionalOptions, _In_ flConfiguration* config, _In_ const flKeyValuePairs* options);
+
+  /// Optional. Add a named catalog. Defaults to the Azure Foundry Local Catalog if none added.
+  /// Multiple catalogs can be added; each must have a unique name. The first added catalog is the default.
+  /// Each catalog is addressed independently by name for scoped list/download operations.
+  /// The name "public" is reserved for the built-in default catalog.
+  /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
+  FL_API_STATUS(AddCatalog, _In_ flConfiguration* config, _In_ const char* name, _In_ const char* url,
+                _In_opt_ const char* filter_override);
 
   // End V1
 };

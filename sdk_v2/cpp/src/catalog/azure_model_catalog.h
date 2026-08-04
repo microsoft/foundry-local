@@ -41,6 +41,12 @@ class AzureModelCatalog : public BaseModelCatalog {
   static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
   static constexpr const char* kDefaultCatalogFilter = "''";
 
+  // Metadata snapshot file name for this catalog. Separately addressable catalogs share the
+  // model-blob cache directory but must not share their metadata snapshot, so each non-default
+  // catalog gets a file derived from its URL/filter identity. The default ("public") catalog
+  // keeps the canonical "foundry.modelinfo.json" for compatibility with the hosting service.
+  std::string CacheFileName() const;
+
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
   ModelFactory model_factory_;

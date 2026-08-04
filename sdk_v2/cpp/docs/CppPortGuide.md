@@ -40,7 +40,7 @@ FoundryLocalCore (singleton, DI container)
 
 ```
 Manager (singleton, explicit Create/Destroy lifecycle)
-├── ICatalog (BaseModelCatalog → AzureModelCatalog, LocalModelScanner)
+├── ICatalog (BaseModelCatalog → AzureModelCatalog, LocalModelScanner); N named, addressed individually
 ├── ModelLoadManager (mutex-guarded map<id, unique_ptr<GenAIModelInstance>>)
 ├── Session/ChatSession/AudioSession (stateful, owns conversation history)
 ├── IEpDetector (EpDetector — real detection + CUDA bootstrapping)
@@ -184,7 +184,7 @@ Both are move-only / non-copyable. C# uses `IDisposable`; C++ uses RAII via `uni
 |----|-----|-------|
 | `IModelCatalog<T>` generic interface | `ICatalog` non-generic interface | C++ drops the generic; all catalogs produce `Model` |
 | `BaseModelCatalog<T>` | `BaseModelCatalog` | Same role: lazy population, indexed lookup |
-| `AggregateModelCatalog<T>` | *(not ported)* | C++ uses a single catalog with multiple sources internally |
+| `AggregateModelCatalog<T>` | *(not ported)* | C++ holds N separately addressable catalogs instead of merging them |
 | `CachedInfo` struct | `ModelIndex` (atomic `shared_ptr`) | C++ uses lock-free index swap for concurrent reads |
 | `AsyncLock` | `std::mutex` + `std::lock_guard` | Different concurrency primitives |
 
@@ -192,6 +192,21 @@ C++ catalog uses **three indices** (by id, by alias, by name) stored in an
 `atomic<shared_ptr<ModelIndex>>` that is rebuilt and swapped atomically on refresh. This
 gives lock-free reads during catalog queries. The C# version uses `AsyncLock` around
 reads/writes.
+
+**Separately addressable catalogs.** Rather than merging every source into one aggregate,
+the Manager holds N catalogs, each registered under a unique name and each backed by its own
+`AzureModelCatalog`. Results are never unioned or de-duplicated across catalogs — you address
+one catalog at a time:
+
+- Configure sources with `Configuration::AddCatalog(name, url, filter?)`. `AddCatalogUrl(url)`
+  remains supported and registers the catalog under an auto-derived name (its URL).
+- `Manager::GetCatalog(name)` returns the named catalog; `Manager::ListCatalogNames()`
+  enumerates registered names in add-order.
+- The no-argument `Manager::GetCatalog()` returns the first-registered catalog (the default).
+  When no source is added, the built-in Azure Foundry catalog is registered under the reserved
+  name `"public"`, which then serves as the default.
+- The C ABI exposes this via `Manager_GetCatalogByName` and `Manager_ListCatalogNames`; an
+  unknown name yields `FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT`.
 
 The C++ `Model` class has two modes:
 - **Leaf:** Single model variant with its own `ModelInfo`

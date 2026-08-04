@@ -73,6 +73,12 @@ struct flManager {
   fl::Manager& impl;
   std::unique_ptr<flCatalog> catalog;  // stores the flCatalog wrapper around impl.GetCatalog()
   mutable std::vector<const char*> urls_cache;
+  // flCatalog wrappers for named catalogs, created on demand by Manager_GetCatalogByName
+  // and owned for the lifetime of the manager so returned pointers stay valid.
+  mutable std::map<std::string, std::unique_ptr<flCatalog>> catalog_by_name;
+  // Backing storage for Manager_ListCatalogNames: owns the strings and the pointer array.
+  mutable std::vector<std::string> catalog_names_storage;
+  mutable std::vector<const char*> catalog_names_cache;
 };
 
 // ========================================================================
@@ -241,9 +247,26 @@ FL_API_STATUS_IMPL(AddCatalogUrlImpl, flConfiguration* config, const char* url,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  AsImpl(config)->catalog_urls.emplace_back(
-      url,
-      filter_override ? std::optional<std::string>{filter_override} : std::nullopt);
+  // No explicit name provided: derive the catalog name from its URL.
+  AsImpl(config)->catalog_urls.push_back(fl::CatalogSource{
+      /*name=*/url,
+      /*url=*/url,
+      filter_override ? std::optional<std::string>{filter_override} : std::nullopt});
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(AddCatalogImpl, flConfiguration* config, const char* name, const char* url,
+                   const char* filter_override) {
+  API_IMPL_BEGIN
+  if (!config || !name || !url) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  AsImpl(config)->catalog_urls.push_back(fl::CatalogSource{
+      /*name=*/name,
+      /*url=*/url,
+      filter_override ? std::optional<std::string>{filter_override} : std::nullopt});
   return nullptr;
   API_IMPL_END
 }
@@ -309,6 +332,7 @@ static const flConfigurationApi g_configuration_api = {
     AddWebServiceEndpointImpl,
     SetExternalServiceUrlImpl,
     SetAdditionalOptionsImpl,
+    AddCatalogImpl,
 };
 
 // ========================================================================
@@ -327,7 +351,9 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
   }
 
   auto& mgr = fl::Manager::Create(*cfg);
-  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}});
+  // Initialize every field explicitly: gcc's -Wextra flags -Wmissing-field-initializers
+  // (promoted to an error by -Werror) if any aggregate member is left out.
+  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, {}, {}, {}, {}});
   wrapper->catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog()});
   *out_manager = wrapper.release();
   return nullptr;
@@ -560,6 +586,45 @@ static bool FL_API_CALL Manager_IsShutdownRequestedImpl(const flManager* manager
   }
 
   return manager->impl.IsShutdownRequested();
+}
+
+FL_API_STATUS_IMPL(Manager_GetCatalogByNameImpl, const flManager* manager, const char* name,
+                   flCatalog** out_catalog) {
+  API_IMPL_BEGIN
+  if (!manager || !name || !out_catalog) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  auto it = manager->catalog_by_name.find(name);
+  if (it == manager->catalog_by_name.end()) {
+    // Throws FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT (caught by API_IMPL_END) if unknown.
+    fl::ICatalog& cat = manager->impl.GetCatalog(name);
+    it = manager->catalog_by_name.emplace(name, std::make_unique<flCatalog>(flCatalog{cat})).first;
+  }
+
+  *out_catalog = it->second.get();
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Manager_ListCatalogNamesImpl, const flManager* manager,
+                   const char* const** out_names, size_t* out_count) {
+  API_IMPL_BEGIN
+  if (!manager || !out_names || !out_count) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  manager->catalog_names_storage = manager->impl.ListCatalogNames();
+  manager->catalog_names_cache.clear();
+  manager->catalog_names_cache.reserve(manager->catalog_names_storage.size());
+  for (const auto& n : manager->catalog_names_storage) {
+    manager->catalog_names_cache.push_back(n.c_str());
+  }
+
+  *out_names = manager->catalog_names_cache.data();
+  *out_count = manager->catalog_names_cache.size();
+  return nullptr;
+  API_IMPL_END
 }
 
 // ========================================================================
@@ -1888,6 +1953,8 @@ static const flApi g_api_v1 = {
     Manager_IsEpDownloadInProgressImpl,
     Manager_ShutdownImpl,
     Manager_IsShutdownRequestedImpl,
+    Manager_GetCatalogByNameImpl,
+    Manager_ListCatalogNamesImpl,
 };
 
 // ========================================================================

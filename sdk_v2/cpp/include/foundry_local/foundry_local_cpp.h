@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <functional>
 #include <gsl/span>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -249,8 +250,17 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// The catalog is registered under an auto-derived name (its URL); use AddCatalog to
+  /// assign an explicit name for scoped list/download operations.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
+
+  /// Optional. Add a named catalog to connect to.
+  /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// Each catalog must have a unique name; the name is used to address the catalog for
+  /// scoped operations. The name "public" is reserved for the built-in default catalog.
+  Configuration& AddCatalog(const std::string& name, const std::string& url,
+                            const std::optional<std::string>& filter_override = std::nullopt);
 
   /// Optional. Add an endpoint for the web service to bind to.
   /// Defaults to "http://127.0.0.1:0" (ephemeral port) if none are added.
@@ -829,8 +839,17 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get the catalog for querying models. Creates on first call, caches internally.
+  /// Get the default catalog for querying models. This is the first registered catalog, or the
+  /// built-in "public" catalog when none was added. Creates on first call, caches internally.
   ICatalog& GetCatalog() const;
+
+  /// Get a registered catalog by name. Throws if no catalog with that name is registered.
+  /// The returned catalog is cached, so repeated calls with the same name yield the same object.
+  ICatalog& GetCatalog(const std::string& name) const;
+
+  /// Enumerate the names of all registered catalogs, in registration order. The first name
+  /// corresponds to the default catalog returned by the no-argument GetCatalog().
+  std::vector<std::string> ListCatalogNames() const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -865,8 +884,13 @@ class Manager {
  private:
   detail::Base<flManager> handle_;
   Configuration config_;
-  mutable std::unique_ptr<Catalog> catalog_;
-  mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
+  // Cache of named catalog wrappers, guarded by named_catalogs_mutex_ for concurrent access.
+  // The no-argument GetCatalog() resolves the default catalog through this same cache, so both
+  // access paths return one canonical wrapper per catalog.
+  mutable std::map<std::string, std::unique_ptr<Catalog>> named_catalogs_;
+  mutable std::unique_ptr<std::mutex> named_catalogs_mutex_{std::make_unique<std::mutex>()};
+  mutable std::string default_catalog_name_;
+  mutable std::unique_ptr<std::once_flag> default_catalog_once_{std::make_unique<std::once_flag>()};
 };
 
 // ===========================================================================

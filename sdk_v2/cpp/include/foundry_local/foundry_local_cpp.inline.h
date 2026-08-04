@@ -160,6 +160,14 @@ inline Configuration& Configuration::AddCatalogUrl(
   return *this;
 }
 
+inline Configuration& Configuration::AddCatalog(
+    const std::string& name, const std::string& url, const std::optional<std::string>& filter_override) {
+  Check(detail::config_api()->AddCatalog(
+      handle_.get_mutable(), name.c_str(), url.c_str(),
+      filter_override ? filter_override->c_str() : nullptr));
+  return *this;
+}
+
 inline Configuration& Configuration::AddWebServiceEndpoint(const std::string& url) {
   Check(detail::config_api()->AddWebServiceEndpoint(handle_.get_mutable(), url.c_str()));
   return *this;
@@ -195,12 +203,40 @@ inline Manager::Manager(Configuration&& config)
       config_(std::move(config)) {}
 
 inline ICatalog& Manager::GetCatalog() const {
-  std::call_once(*catalog_once_, [this]() {
-    flCatalog* cat = nullptr;
-    Check(detail::api()->Manager_GetCatalog(handle_.get(), &cat));
-    catalog_ = std::unique_ptr<Catalog>(new Catalog(*cat));
+  // Resolve the default catalog's name once (the first registered catalog), then
+  // route through the named cache so the no-argument and by-name paths share one wrapper.
+  std::call_once(*default_catalog_once_, [this]() {
+    std::vector<std::string> names = ListCatalogNames();
+    if (!names.empty()) {
+      default_catalog_name_ = names.front();
+    }
   });
-  return *catalog_;
+  return GetCatalog(default_catalog_name_);
+}
+
+inline ICatalog& Manager::GetCatalog(const std::string& name) const {
+  std::lock_guard<std::mutex> lock(*named_catalogs_mutex_);
+  auto it = named_catalogs_.find(name);
+  if (it == named_catalogs_.end()) {
+    flCatalog* cat = nullptr;
+    Check(detail::api()->Manager_GetCatalogByName(handle_.get(), name.c_str(), &cat));
+    it = named_catalogs_.emplace(name, std::unique_ptr<Catalog>(new Catalog(*cat))).first;
+  }
+  return *it->second;
+}
+
+inline std::vector<std::string> Manager::ListCatalogNames() const {
+  std::lock_guard<std::mutex> lock(*named_catalogs_mutex_);
+  const char* const* names = nullptr;
+  size_t count = 0;
+  Check(detail::api()->Manager_ListCatalogNames(handle_.get(), &names, &count));
+
+  std::vector<std::string> result;
+  result.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    result.emplace_back(names[i]);
+  }
+  return result;
 }
 
 inline void Manager::StartWebService() {

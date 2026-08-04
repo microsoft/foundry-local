@@ -335,6 +335,14 @@ TEST(CppApiTest, ConfigurationChaining) {
   // Should not throw — just verify chaining compiles and runs
 }
 
+TEST(CppApiTest, ConfigurationAddCatalogChaining) {
+  // AddCatalog participates in the fluent chaining surface.
+  foundry_local::Configuration config("test_add_catalog");
+  config.AddCatalog("first", "https://example.com/first")
+      .AddCatalog("second", "https://example.com/second");
+  // Should not throw — just verify chaining compiles and runs.
+}
+
 TEST(CppApiTest, ErrorFromCode) {
   foundry_local::Error err("test error", FOUNDRY_LOCAL_ERROR_INTERNAL);
   EXPECT_EQ(err.Code(), FOUNDRY_LOCAL_ERROR_INTERNAL);

@@ -26,12 +26,18 @@ std::optional<std::vector<ModelInfo>> ParseCatalogSnapshot(
     ILogger& logger);
 
 /// Best-effort disk cache for catalog model information.
-/// Caches the model list to `foundry.modelinfo.json` in the specified directory.
-/// All operations are no-throw — cache failures are logged and silently ignored.
+/// Caches the model list to `foundry.modelinfo.json` (or a per-catalog variant) in the
+/// specified directory. All operations are no-throw — cache failures are logged and silently ignored.
 class CatalogCache {
  public:
-  /// Construct with the directory where the cache file will be stored.
-  explicit CatalogCache(std::string cache_directory, ILogger& logger);
+  /// Default metadata snapshot file name, used for the built-in default ("public") catalog.
+  static constexpr const char* kDefaultCacheFileName = "foundry.modelinfo.json";
+
+  /// Construct with the directory where the cache file will be stored. Separately addressable
+  /// catalogs share one model-blob cache directory but must not share their metadata snapshot,
+  /// so callers pass a per-catalog `cache_file_name` to keep the snapshots isolated.
+  explicit CatalogCache(std::string cache_directory, ILogger& logger,
+                        std::string cache_file_name = kDefaultCacheFileName);
 
   /// Load cached models from disk into memory. Silently handles missing/corrupt files.
   void Load();
@@ -46,11 +52,11 @@ class CatalogCache {
   std::string CacheFilePath() const;
 
   std::string cache_directory_;
+  std::string cache_file_name_;
   std::optional<std::vector<ModelInfo>> cached_models_;
   ILogger& logger_;
 
   static constexpr auto kFreshnessThreshold = std::chrono::hours(4);
-  static constexpr const char* kCacheFileName = "foundry.modelinfo.json";
   static constexpr int kCacheVersion = 1;
 };
 

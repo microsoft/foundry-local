@@ -247,6 +247,188 @@ TEST(CApiTest, GetCatalogNameNullCatalogFails) {
   api->Status_Release(status);
 }
 
+// ========================================================================
+// Named catalogs (list + lookup by name)
+// ========================================================================
+
+TEST(CApiTest, ListCatalogNamesDefaultsToPublic) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  const char* const* names = nullptr;
+  size_t count = 0;
+  ASSERT_FL_OK(api, api->Manager_ListCatalogNames(mgr, &names, &count));
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(names[0], "public");
+
+  api->GetConfigurationApi()->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, ListCatalogNamesReturnsRegisteredNamesInOrder) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+  const flConfigurationApi* config_api = api->GetConfigurationApi();
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+  ASSERT_TRUE(IsOk(config_api->AddCatalog(config, "first", "https://example.com/first", nullptr)));
+  ASSERT_TRUE(IsOk(config_api->AddCatalog(config, "second", "https://example.com/second", nullptr)));
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  const char* const* names = nullptr;
+  size_t count = 0;
+  ASSERT_FL_OK(api, api->Manager_ListCatalogNames(mgr, &names, &count));
+  ASSERT_EQ(count, 2u);
+  EXPECT_STREQ(names[0], "first");
+  EXPECT_STREQ(names[1], "second");
+
+  config_api->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, GetCatalogByNameResolvesRegisteredCatalog) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+  const flConfigurationApi* config_api = api->GetConfigurationApi();
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+  ASSERT_TRUE(IsOk(config_api->AddCatalog(config, "first", "https://example.com/first", nullptr)));
+  ASSERT_TRUE(IsOk(config_api->AddCatalog(config, "second", "https://example.com/second", nullptr)));
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  flCatalog* first = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogByName(mgr, "first", &first));
+  EXPECT_NE(first, nullptr);
+
+  flCatalog* second = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogByName(mgr, "second", &second));
+  EXPECT_NE(second, nullptr);
+  EXPECT_NE(first, second);
+
+  // The no-arg GetCatalog returns the first registered catalog (the default).
+  flCatalog* def = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalog(mgr, &def));
+  EXPECT_NE(def, nullptr);
+
+  // Repeated lookups return the same cached handle.
+  flCatalog* first_again = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogByName(mgr, "first", &first_again));
+  EXPECT_EQ(first, first_again);
+
+  config_api->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, GetCatalogByNameUnknownFails) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  flCatalog* cat = nullptr;
+  flStatus* status = api->Manager_GetCatalogByName(mgr, "does-not-exist", &cat);
+  ASSERT_NE(status, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  api->Status_Release(status);
+
+  api->GetConfigurationApi()->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, GetCatalogByNameNullArgumentsFail) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  flCatalog* cat = nullptr;
+  flStatus* s1 = api->Manager_GetCatalogByName(mgr, nullptr, &cat);
+  ASSERT_NE(s1, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(s1), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  api->Status_Release(s1);
+
+  flStatus* s2 = api->Manager_GetCatalogByName(mgr, "first", nullptr);
+  ASSERT_NE(s2, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(s2), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  api->Status_Release(s2);
+
+  api->GetConfigurationApi()->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, ListCatalogNamesNullArgumentsFail) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  const char* const* names = nullptr;
+  size_t count = 0;
+  flStatus* s1 = api->Manager_ListCatalogNames(mgr, nullptr, &count);
+  ASSERT_NE(s1, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(s1), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  api->Status_Release(s1);
+
+  flStatus* s2 = api->Manager_ListCatalogNames(mgr, &names, nullptr);
+  ASSERT_NE(s2, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(s2), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  api->Status_Release(s2);
+
+  api->GetConfigurationApi()->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, AddCatalogUrlAutoDerivesNameFromUrl) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+  const flConfigurationApi* config_api = api->GetConfigurationApi();
+
+  flConfiguration* config = CreateTestConfig(api);
+  ASSERT_NE(config, nullptr);
+  // AddCatalogUrl registers the catalog under an auto-derived name (its URL).
+  ASSERT_TRUE(IsOk(config_api->AddCatalogUrl(config, "https://example.com/only", nullptr)));
+
+  flManager* mgr = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &mgr));
+
+  const char* const* names = nullptr;
+  size_t count = 0;
+  ASSERT_FL_OK(api, api->Manager_ListCatalogNames(mgr, &names, &count));
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(names[0], "https://example.com/only");
+
+  flCatalog* cat = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogByName(mgr, "https://example.com/only", &cat));
+  EXPECT_NE(cat, nullptr);
+
+  config_api->Configuration_Release(config);
+  api->Manager_Release(mgr);
+}
+
 TEST(CApiTest, GetCatalogNameNullOutputFails) {
   const flApi* api = GetApi();
   ASSERT_NE(api, nullptr);
