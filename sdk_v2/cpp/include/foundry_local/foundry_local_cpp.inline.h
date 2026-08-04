@@ -223,6 +223,7 @@ inline ICatalog& Manager::GetCatalog(const std::string& name) const {
 }
 
 inline std::vector<std::string> Manager::ListCatalogNames() const {
+  std::lock_guard<std::mutex> lock(*named_catalogs_mutex_);
   const char* const* names = nullptr;
   size_t count = 0;
   Check(detail::api()->Manager_ListCatalogNames(handle_.get(), &names, &count));
