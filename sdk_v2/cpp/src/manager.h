@@ -131,7 +131,8 @@ class Manager {
   //   ep_detector_             — detects HW acceleration; holds OrtEnv& (must
   //                              outlive ort_env_ release in ~Manager())
   //   telemetry_               — used throughout
-  //   catalogs_                — one ICatalog per registered source; own all Model instances. used by download_manager, model_load_manager, and web service
+  //   catalogs_                — one ICatalog per registered source; owns all Model instances. Used by
+  //                              download_manager, model_load_manager, and web service
   //   download_manager_        — uses ModelInfo owned by catalog
   //   model_load_manager_      — holds loaded model state referencing catalog models
   //   session_manager_         — tracks all active sessions. destroyed after web service, before models
