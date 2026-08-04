@@ -5,6 +5,7 @@
 #include "utils.h"
 
 #include <functional>
+#include <set>
 
 namespace fl {
 
@@ -42,12 +43,21 @@ void Configuration::Validate() {
   }
 
   // Validate catalog URLs are non-empty strings if present
+  std::set<std::string> seen_names;
   for (const auto& source : catalog_urls) {
     if (source.url.empty()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
     }
     if (source.name.empty()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog name must not be empty");
+    }
+    if (source.name == kDefaultCatalogName) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Configuration: catalog name '" + source.name + "' is reserved for the built-in default catalog");
+    }
+    if (!seen_names.insert(source.name).second) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "Configuration: duplicate catalog name '" + source.name + "'");
     }
   }
 

@@ -66,15 +66,16 @@ std::optional<std::vector<ModelInfo>> ParseCatalogSnapshot(
   }
 }
 
-CatalogCache::CatalogCache(std::string cache_directory, ILogger& logger)
+CatalogCache::CatalogCache(std::string cache_directory, ILogger& logger, std::string cache_file_name)
     : cache_directory_(std::move(cache_directory)),
+      cache_file_name_(std::move(cache_file_name)),
       logger_(logger) {
   static_assert(kSnapshotVersion == CatalogCache::kCacheVersion,
                 "snapshot parser version must match cache writer version");
 }
 
 std::string CatalogCache::CacheFilePath() const {
-  return (fs::path(cache_directory_) / kCacheFileName).string();
+  return (fs::path(cache_directory_) / cache_file_name_).string();
 }
 
 void CatalogCache::Load() {

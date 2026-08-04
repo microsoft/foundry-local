@@ -928,13 +928,6 @@ struct flConfigurationApi {
   /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
   FL_API_STATUS(AddCatalogUrl, _In_ flConfiguration* config, _In_ const char* url,
                 _In_opt_ const char* filter_override);
-  /// Optional. Add a named catalog. Defaults to the Azure Foundry Local Catalog if none added.
-  /// Multiple catalogs can be added; each must have a unique name. The first added catalog is the default.
-  /// Each catalog is addressed independently by name for scoped list/download operations.
-  /// The name "public" is reserved for the built-in default catalog.
-  /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
-  FL_API_STATUS(AddCatalog, _In_ flConfiguration* config, _In_ const char* name, _In_ const char* url,
-                _In_opt_ const char* filter_override);
   /// Optional. Azure region for the model registry download endpoint
   /// (https://{region}.api.azureml.ms/modelregistry/...). Resolves a model's
   /// asset_id to a downloadable blob storage URL. Defaults to "centralus" when not set.
@@ -952,6 +945,14 @@ struct flConfigurationApi {
   /// Optional. Set additional/undocumented options as key/value pairs.
   /// These are passed through to the core implementation. The configuration copies the data.
   FL_API_STATUS(SetAdditionalOptions, _In_ flConfiguration* config, _In_ const flKeyValuePairs* options);
+
+  /// Optional. Add a named catalog. Defaults to the Azure Foundry Local Catalog if none added.
+  /// Multiple catalogs can be added; each must have a unique name. The first added catalog is the default.
+  /// Each catalog is addressed independently by name for scoped list/download operations.
+  /// The name "public" is reserved for the built-in default catalog.
+  /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
+  FL_API_STATUS(AddCatalog, _In_ flConfiguration* config, _In_ const char* name, _In_ const char* url,
+                _In_opt_ const char* filter_override);
 
   // End V1
 };

@@ -884,11 +884,13 @@ class Manager {
  private:
   detail::Base<flManager> handle_;
   Configuration config_;
-  mutable std::unique_ptr<Catalog> catalog_;
-  mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
   // Cache of named catalog wrappers, guarded by named_catalogs_mutex_ for concurrent access.
+  // The no-argument GetCatalog() resolves the default catalog through this same cache, so both
+  // access paths return one canonical wrapper per catalog.
   mutable std::map<std::string, std::unique_ptr<Catalog>> named_catalogs_;
   mutable std::unique_ptr<std::mutex> named_catalogs_mutex_{std::make_unique<std::mutex>()};
+  mutable std::string default_catalog_name_;
+  mutable std::unique_ptr<std::once_flag> default_catalog_once_{std::make_unique<std::once_flag>()};
 };
 
 // ===========================================================================

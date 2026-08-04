@@ -203,12 +203,15 @@ inline Manager::Manager(Configuration&& config)
       config_(std::move(config)) {}
 
 inline ICatalog& Manager::GetCatalog() const {
-  std::call_once(*catalog_once_, [this]() {
-    flCatalog* cat = nullptr;
-    Check(detail::api()->Manager_GetCatalog(handle_.get(), &cat));
-    catalog_ = std::unique_ptr<Catalog>(new Catalog(*cat));
+  // Resolve the default catalog's name once (the first registered catalog), then
+  // route through the named cache so the no-argument and by-name paths share one wrapper.
+  std::call_once(*default_catalog_once_, [this]() {
+    std::vector<std::string> names = ListCatalogNames();
+    if (!names.empty()) {
+      default_catalog_name_ = names.front();
+    }
   });
-  return *catalog_;
+  return GetCatalog(default_catalog_name_);
 }
 
 inline ICatalog& Manager::GetCatalog(const std::string& name) const {

@@ -43,6 +43,21 @@ TEST(ConfigurationTest, ValidateRejectsEmptyCatalogName) {
   EXPECT_THROW(config.Validate(), fl::Exception);
 }
 
+TEST(ConfigurationTest, ValidateRejectsReservedCatalogName) {
+  Configuration config;
+  config.app_name = "test_app";
+  config.catalog_urls.push_back(CatalogSource{"public", "https://example.com/catalog", std::string("")});
+  EXPECT_THROW(config.Validate(), fl::Exception);
+}
+
+TEST(ConfigurationTest, ValidateRejectsDuplicateCatalogNames) {
+  Configuration config;
+  config.app_name = "test_app";
+  config.catalog_urls.push_back(CatalogSource{"custom", "https://example.com/first", std::string("")});
+  config.catalog_urls.push_back(CatalogSource{"custom", "https://example.com/second", std::string("")});
+  EXPECT_THROW(config.Validate(), fl::Exception);
+}
+
 TEST(ConfigurationTest, ValidateRejectsEmptyEndpoint) {
   Configuration config;
   config.app_name = "test_app";
@@ -53,7 +68,7 @@ TEST(ConfigurationTest, ValidateRejectsEmptyEndpoint) {
 TEST(ConfigurationTest, ValidateAcceptsCatalogUrlsAndEndpoints) {
   Configuration config;
   config.app_name = "test_app";
-  config.catalog_urls.push_back(CatalogSource{"public", "https://example.com/catalog", std::string("")});
+  config.catalog_urls.push_back(CatalogSource{"custom", "https://example.com/catalog", std::string("")});
   config.web_service_endpoints.emplace_back("http://127.0.0.1:0");
   EXPECT_NO_THROW(config.Validate());
 }

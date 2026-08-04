@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 namespace fl {
@@ -44,6 +45,26 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
 
 AzureModelCatalog::~AzureModelCatalog() = default;
 
+std::string AzureModelCatalog::CacheFileName() const {
+  // The default/public catalog keeps the canonical file name so it stays compatible with the
+  // snapshot written by the long-running hosting service.
+  const auto& url = catalog_urls_.front().first;
+  const auto& filter = catalog_urls_.front().second;
+  const bool is_default = (url == kDefaultCatalogUrl) &&
+                          (!filter.has_value() || *filter == kDefaultCatalogFilter);
+  if (is_default) {
+    return CatalogCache::kDefaultCacheFileName;
+  }
+
+  // Derive a stable, filesystem-safe identity from the catalog URL + filter so each
+  // separately addressable catalog persists its metadata snapshot independently.
+  std::string identity = url;
+  identity.push_back('\n');
+  identity += filter.value_or("");
+  const size_t hash = std::hash<std::string>{}(identity);
+  return fmt::format("foundry.modelinfo.{:016x}.json", hash);
+}
+
 std::vector<Model> AzureModelCatalog::FetchModels() const {
   // In cache-only mode, read only from the disk cache file — no network calls, no local model scanning.
   // The cache file already includes local models from the last full catalog refresh by the long-running service
@@ -55,7 +76,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   // we could update 'cache_only_' mode to enable refreshing the cache info if it is old. The cache file has a
   // savedAtUnix timestamp property that can be used.
   if (cache_only_) {
-    CatalogCache cache(cache_dir_, logger_);
+    CatalogCache cache(cache_dir_, logger_, CacheFileName());
     cache.Load();
     auto cached = cache.GetCachedModels();
 
@@ -128,7 +149,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   // its own errors and freshness checks. If nothing was fetched, leave the existing
   // cache untouched.
   if (!fetched_infos.empty()) {
-    CatalogCache cache(cache_dir_, logger_);
+    CatalogCache cache(cache_dir_, logger_, CacheFileName());
     cache.Save(fetched_infos);
   }
 

@@ -328,11 +328,11 @@ static const flConfigurationApi g_configuration_api = {
     SetLogsDirImpl,
     SetModelCacheDirImpl,
     AddCatalogUrlImpl,
-    AddCatalogImpl,
     SetCatalogRegionImpl,
     AddWebServiceEndpointImpl,
     SetExternalServiceUrlImpl,
     SetAdditionalOptionsImpl,
+    AddCatalogImpl,
 };
 
 // ========================================================================
