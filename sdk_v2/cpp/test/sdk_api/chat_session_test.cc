@@ -130,54 +130,18 @@ TEST_F(ModelFixture, SessionSetOptionsAcceptsRequestOptions) {
       << "Expected non-empty output with session-level RequestOptions applied.";
 }
 
-// Multi-turn E2E test: exercises generator caching and delayed history commit
-// across multiple ProcessRequest calls on the same session.
-//
-// NOTE ON SOFT ARITHMETIC CHECKS
-// ------------------------------
-// This test's job is to validate SESSION MECHANICS (cached-generator reuse,
-// delayed history commit, and undo/replay), not the model's arithmetic quality.
-// The exact answer digit a small (0.5B) greedy model emits is not stable across
-// CPU microarchitectures: onnxruntime 1.28 routes FP32 GroupQueryAttention
-// single-token decode through a new flash / online-softmax GEMV kernel whose
-// softmax reductions (MlasReduceMaximumF32Kernel / MlasComputeSumExpF32Kernel)
-// dispatch to AVX-512F variants on AVX-512 hosts (e.g. AMD EPYC 9V74) and to
-// AVX2 variants elsewhere. Those bind different floating-point accumulation
-// orders, so a few-ULP delta can flip the greedy argmax between near-tie digit
-// tokens (observed in CI: turn 2 '5'->'3', turn 4 '6'->'2'). This is
-// mathematically-equivalent FP reordering, not an SDK bug, so we do NOT hard-fail
-// on the exact digit here. The mechanics are still asserted strictly below: the
-// finish reason, token counts, turn count, and — most importantly — the
-// turn-3-equals-turn-2 rewind-determinism check (same host, same code path, so
-// bit-stable). The exact-digit expectations are emitted as non-fatal warnings.
-//
-// Other (non-invasive) options considered, in rough order of preference:
-//   1. Assert numerical correctness at the ORT/kernel level instead of here (best
-//      fit): pin the decode path in an ORT-level determinism test and keep SDK
-//      tests focused on mechanics. Preferred long-term home for this check.
-//   2. Widen the logit margin so greedy is not a near-tie — e.g. prompt for a
-//      spelled-out or multi-token answer, or a question whose correct token
-//      dominates — keeping a hard content assertion that is ISA-robust.
-//   3. Force the legacy attention path for deterministic runs by setting
-//      ORT_GQA_DISABLE_FLASH_ATTENTION=1 in the test/CI environment (keeps the
-//      fast flash path in production; only affects the test process).
-//   4. Accept a small set of plausible answers (tolerance) rather than one exact
-//      digit.
-// We take the least-invasive route (1-line soft checks) here; options 1-3 remain
-// open if stricter arithmetic validation is wanted.
+// Exercises cached-generator reuse, delayed history commit, and undo/replay. Exact arithmetic outputs are
+// soft-checked because greedy decoding can vary across CPU architectures; session mechanics remain strict.
 TEST_F(ModelFixture, ChatMultiTurnSession) {
   using namespace foundry_local;
 
-  // Soft, non-fatal content check: logs a warning but does not fail the test when
-  // the model emits an unexpected digit due to the cross-ISA FP nondeterminism
-  // described above. Mechanics assertions below remain strict (EXPECT_*).
+  // Keep content checks non-fatal while asserting session mechanics strictly below.
   auto expect_contains_soft = [](const std::string& haystack, const std::string& needle,
                                  const std::string& context) {
     if (haystack.find(needle) == std::string::npos) {
       GTEST_LOG_(WARNING) << context << ": expected '" << needle
                           << "' but model emitted '" << haystack
-                          << "'. Treated as non-fatal (cross-ISA greedy-decode FP nondeterminism; "
-                          << "see note above ChatMultiTurnSession).";
+                          << "'. Treated as non-fatal due to cross-ISA greedy-decode differences.";
     }
   };
 

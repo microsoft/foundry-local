@@ -200,16 +200,14 @@ TEST_F(SearchOptionsTest, ChunkedPrefillSkippedForUnlistedEp) {
 
 TEST_F(SearchOptionsTest, ChunkedPrefillResolvesSupportedProvidersFromConfig) {
   SearchOptions opts;
-  auto config = GetConfig();
-  if (!config.model->decoder.has_value()) {
-    config.model->decoder.emplace();
-  }
-  if (!config.model->decoder->session_options.has_value()) {
-    config.model->decoder->session_options.emplace();
-  }
+  GenAIConfig config;
+  auto& model = config.model.emplace();
+  auto& decoder = model.decoder.emplace();
+  auto& session_options = decoder.session_options.emplace();
+  config.search.emplace().max_length = 32768;
 
   for (const char* provider : {"cpu", "cuda", "NvTensorRtRtx", "WebGPU"}) {
-    config.model->decoder->session_options->provider_options = {{{provider, "{}"}}};
+    session_options.provider_options = {{{provider, "{}"}}};
     auto params = MakeParams();
     ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kDefault);
     EXPECT_EQ(params->GetSearchNumber("chunk_size"), 2048) << "Provider: " << provider;
