@@ -388,6 +388,19 @@ TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageData_DefaultsToPng)
   EXPECT_EQ(img->format, "image/png");
 }
 
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_InvalidImageData_NamesSourceField) {
+  auto params = MakeImageDataRequest("not-valid-base64");
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected invalid image_data to throw";
+  } catch (const std::exception& e) {
+    const std::string message = e.what();
+    EXPECT_NE(message.find("image_data"), std::string::npos);
+    EXPECT_EQ(message.find("image_url"), std::string::npos);
+  }
+}
+
 TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageUrlTakesPrecedenceOverImageData) {
   std::string data_url = std::string("data:image/png;base64,") + kSamplePngBase64;
   auto params = MakeImageRequest(data_url);

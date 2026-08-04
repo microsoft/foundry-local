@@ -285,6 +285,11 @@ endfunction()
 set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
     CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
 
+set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
+if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
+    set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "unknown")
+endif()
+
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"

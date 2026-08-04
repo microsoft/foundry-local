@@ -20,6 +20,7 @@ def main():
 
     # Download and register all execution providers.
     current_ep = ""
+
     def ep_progress(ep_name: str, percent: float):
         nonlocal current_ep
         if ep_name != current_ep:

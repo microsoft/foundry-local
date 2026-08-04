@@ -41,8 +41,14 @@ class TestPlatformSubdir:
     # ------------------------------------------------------------------
     # Windows
     # ------------------------------------------------------------------
-    def test_win32_returns_win_x64(self):
-        with patch.object(_ll.sys, "platform", "win32"):
+    def test_win32_arm64_returns_win_arm64(self):
+        with patch.object(_ll.sys, "platform", "win32"), \
+             patch.object(_ll.platform, "machine", return_value="arm64"):
+            assert _ll._platform_subdir() == "win-arm64"
+
+    def test_win32_x86_64_returns_win_x64(self):
+        with patch.object(_ll.sys, "platform", "win32"), \
+             patch.object(_ll.platform, "machine", return_value="x86_64"):
             assert _ll._platform_subdir() == "win-x64"
 
     # ------------------------------------------------------------------
