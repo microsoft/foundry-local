@@ -384,11 +384,11 @@ describe("buildNugetInstallArgs", () => {
 
   it("a custom feed list (not the public defaults) fully replaces -Source values", () => {
     const args = buildNugetInstallArgs(
-      { feeds: ["https://lotus.example/nuget/v3/index.json"], configFile: undefined },
+      { feeds: ["https://private.example/nuget/v3/index.json"], configFile: undefined },
       { id: "A", version: "1.0.0", outputDir: "pkgs" },
     );
     expect(args.filter((a: string) => a === "-Source")).toHaveLength(1);
-    expect(args).toContain("https://lotus.example/nuget/v3/index.json");
+    expect(args).toContain("https://private.example/nuget/v3/index.json");
     expect(args).not.toContain("https://api.nuget.org/v3/index.json");
   });
 

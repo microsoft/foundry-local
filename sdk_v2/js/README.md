@@ -215,13 +215,13 @@ export FOUNDRY_LOCAL_NUGET_CONFIG=/etc/secrets/NuGet.config
 npm install
 ```
 
-**Example — nuget mode against a private Azure Artifacts feed (Lotus), authenticated via
+**Example — nuget mode against a private Azure Artifacts feed, authenticated via
 a NuGet/Visual Studio credential provider (PowerShell):**
 
 ```pwsh
 $env:FOUNDRY_LOCAL_NUGET_MODE = "nuget"
 $env:FOUNDRY_LOCAL_NUGET_COMMAND = "C:\tools\nuget\nuget.exe"
-$env:FOUNDRY_LOCAL_NUGET_FEEDS = "https://aiinfra.pkgs.visualstudio.com/_packaging/Lotus/nuget/v3/index.json"
+$env:FOUNDRY_LOCAL_NUGET_FEEDS = "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json"
 npm install
 ```
 
