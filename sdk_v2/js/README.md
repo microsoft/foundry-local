@@ -156,6 +156,80 @@ The **C++ wrapper header** (`foundry_local_cpp.h`) stays C++17-consumable becaus
 C++ consumers need to include it from any toolchain. The addon happily includes a C++17
 header from a C++20 TU.
 
+### 3.4 Native runtime install (ORT / ORT-GenAI via NuGet)
+
+`npm install` runs [`script/install-native.cjs`](script/install-native.cjs) as an install
+lifecycle step, which downloads the ONNX Runtime and ORT-GenAI native binaries from NuGet and stages
+them into `prebuilds/<platform>-<arch>/`. Three modes are supported:
+
+- **`http` (default)** — talks to the NuGet v3 HTTP protocol directly (service index ->
+  `PackageBaseAddress` -> `.nupkg`) with Node's built-in `https` module. No external tools
+  required. Feeds are queried anonymously; use `dotnet` or `nuget` mode for feeds that
+  require authentication.
+- **`dotnet`** — shells out to `dotnet restore` against a throwaway project. Use this for a
+  private feed whose auth is wired through the .NET credential-provider ecosystem (e.g. the
+  Azure Artifacts Credential Provider) or a `NuGet.config`. Cross-platform, needs only the
+  .NET SDK.
+- **`nuget`** — shells out to `nuget.exe install` (or a `nuget` on PATH) once per artifact.
+  Useful when your feed's auth is supplied by a NuGet/Visual Studio credential provider
+  (`CredentialProvider.Microsoft`, etc.) that `dotnet restore` can't host — for example a
+  netfx-only provider plugin. `dotnet` remains the cross-platform option when both work.
+
+Set `FOUNDRY_LOCAL_SKIP_INSTALL=1` to skip the step entirely (e.g. when building from source
+and copying binaries via `copy-native:dev` instead).
+
+| Variable                          | Applies to          | Purpose                                                                                             |
+|------------------------------------|--------------------|-------------------------------------------------------------------------------------------------------|
+| `FOUNDRY_LOCAL_NUGET_MODE`         | all                | `http` (default), `dotnet`, or `nuget`. Any other value is rejected.                                  |
+| `FOUNDRY_LOCAL_NUGET_FEEDS`        | all                | `;`-separated NuGet v3 service index URLs. Replaces the public defaults entirely. `http` mode requires HTTPS; `dotnet`/`nuget` do not. |
+| `FOUNDRY_LOCAL_NUGET_CONFIG`       | `dotnet`, `nuget`  | Path to a `NuGet.config`. When set, the config owns package sources (`--configfile`/`-ConfigFile`, no `--source`/`-Source`). Rejected in `http` mode. |
+| `FOUNDRY_LOCAL_DOTNET_COMMAND`     | `dotnet` only       | Command or path to the `dotnet` executable. Defaults to `dotnet`. Rejected in `http`/`nuget` mode. |
+| `FOUNDRY_LOCAL_NUGET_COMMAND`      | `nuget` only        | Command or path to the `nuget` executable. Defaults to `nuget.exe` on Windows, `nuget` elsewhere. Rejected in `http`/`dotnet` mode. |
+
+Authentication is delegated to the NuGet tooling in `dotnet`/`nuget` mode (a `NuGet.config`
+or a credential provider), so no credentials pass through this script. Query strings and
+fragments (which can carry SAS tokens) are stripped from every logged or thrown URL, and
+`nuget`/`dotnet` mode never print their full command line — only stdout/stderr on failure,
+with URLs redacted.
+
+**Example — custom anonymous feed, HTTP mode (PowerShell):**
+
+```pwsh
+$env:FOUNDRY_LOCAL_NUGET_FEEDS = "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json"
+npm install
+```
+
+**Example — dotnet mode with a NuGet.config (either shell):**
+
+```pwsh
+$env:FOUNDRY_LOCAL_NUGET_MODE = "dotnet"
+$env:FOUNDRY_LOCAL_NUGET_FEEDS = "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json"
+$env:FOUNDRY_LOCAL_NUGET_CONFIG = "C:\secrets\NuGet.config"
+npm install
+```
+
+```bash
+export FOUNDRY_LOCAL_NUGET_MODE=dotnet
+export FOUNDRY_LOCAL_NUGET_FEEDS="https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json"
+export FOUNDRY_LOCAL_NUGET_CONFIG=/etc/secrets/NuGet.config
+npm install
+```
+
+**Example — nuget mode against a private Azure Artifacts feed (Lotus), authenticated via
+a NuGet/Visual Studio credential provider (PowerShell):**
+
+```pwsh
+$env:FOUNDRY_LOCAL_NUGET_MODE = "nuget"
+$env:FOUNDRY_LOCAL_NUGET_COMMAND = "C:\tools\nuget\nuget.exe"
+$env:FOUNDRY_LOCAL_NUGET_FEEDS = "https://aiinfra.pkgs.visualstudio.com/_packaging/Lotus/nuget/v3/index.json"
+npm install
+```
+
+This mode is useful precisely when the feed's anonymous access is disabled and auth is
+supplied out-of-band by a NuGet/Visual Studio credential provider (`CredentialProvider.Microsoft`)
+that `dotnet restore` cannot host — `nuget.exe` on Windows can invoke netfx credential provider
+plugins. `dotnet` remains the cross-platform option when your feed's credential provider supports it.
+
 ---
 
 ## 4. Using the C++ SDK directly (without the JS layer)
