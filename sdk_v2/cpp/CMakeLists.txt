@@ -169,6 +169,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
     src/inferencing/generative/genai_model_instance.cc
+    src/inferencing/generative/tokenizer.cc
     src/logger.cc
     src/spdlog_logger.cc
     src/model_info.cc

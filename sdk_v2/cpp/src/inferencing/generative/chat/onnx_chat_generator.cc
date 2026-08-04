@@ -144,8 +144,8 @@ int OnnxChatGenerator::AppendMessages(const std::vector<MessageItem>& new_messag
 
   // Build prompt from only the new messages. ApplyChatTemplate with add_generation_prompt=true
   // produces the correct continuation tokens (e.g. <|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n)
-  std::string prompt = BuildChatPrompt(new_messages, model.GetOgaTokenizer(), tools_json);
-  auto sequences = EncodePrompt(prompt, model.GetOgaTokenizer());
+  std::string prompt = BuildChatPrompt(new_messages, model, tools_json);
+  auto sequences = EncodePrompt(prompt, model);
   int new_token_count = static_cast<int>(sequences->SequenceCount(0));
 
   try {
@@ -271,13 +271,9 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   if (vision_branch) {
     std::string messages_json = TransformMessagesForVision(messages);
     const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-    OgaString rendered = model.GetOgaTokenizer().ApplyChatTemplate(/*template_str=*/nullptr,
-                                                                   messages_json.c_str(),
-                                                                   tools_ptr,
-                                                                   /*add_generation_prompt=*/true);
-    prompt = std::string(static_cast<const char*>(rendered));
+    prompt = model.Tokenizer().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
   } else {
-    prompt = BuildChatPrompt(messages, model.GetOgaTokenizer(), tool_ctx.tools_json);
+    prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
   }
 
   // 2. Token budgeting.
@@ -288,7 +284,7 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   int input_token_count = 0;
 
   if (!vision_branch) {
-    sequences = EncodePrompt(prompt, model.GetOgaTokenizer());
+    sequences = EncodePrompt(prompt, model);
     input_token_count = static_cast<int>(sequences->SequenceCount(0));
   } else {
     // Approximate budget for ApplySearchOptions: encode the prompt once with
@@ -297,7 +293,7 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
     // image-token expansion, but this is the best estimate we have for
     // max_length budgeting and matches upstream's pattern of reading
     // TokenCount() after SetInputs for the authoritative count.
-    auto approx = EncodePrompt(prompt, model.GetOgaTokenizer());
+    auto approx = EncodePrompt(prompt, model);
     input_token_count = static_cast<int>(approx->SequenceCount(0));
   }
 
@@ -396,7 +392,7 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   //    - Normal stream: standard decoding (special tokens filtered)
   //    - Special stream: includes special tokens (for tool call detection)
 
-  auto stream = OgaTokenizerStream::Create(model.GetOgaTokenizer());
+  auto stream = OgaTokenizerStream::Create(model.Tokenizer().Oga());
   auto stream_with_special = OgaTokenizerStream::Create(model.GetOgaTokenizerWithSpecial());
 
   // `std::make_unique` constructs inside the library helper, which does not have
