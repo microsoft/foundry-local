@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const require = createRequire(import.meta.url);
 
-// biome-ignore lint/suspicious/noExplicitAny: .cjs module has no type declarations (established interop boundary, see test/preload-addon.test.ts).
+// biome-ignore lint/suspicious/noExplicitAny: .cjs module has no type declarations (see test/preload-addon.test.ts).
 const installNative = require(join(here, "..", "script", "install-native.cjs")) as any;
 
 const {
@@ -86,6 +86,11 @@ describe("readConfig", () => {
 
   it("rejects a feeds list that is set but empty after trimming", () => {
     process.env.FOUNDRY_LOCAL_NUGET_FEEDS = " ; ;";
+    expect(() => readConfig(process.env)).toThrow(/contains no feed URLs/);
+  });
+
+  it("rejects an explicitly empty feeds value instead of restoring defaults", () => {
+    process.env.FOUNDRY_LOCAL_NUGET_FEEDS = "";
     expect(() => readConfig(process.env)).toThrow(/contains no feed URLs/);
   });
 
@@ -387,7 +392,7 @@ describe("buildNugetInstallArgs", () => {
     expect(args).not.toContain("https://api.nuget.org/v3/index.json");
   });
 
-  it("does not redact URLs in the args themselves (spawnSync needs the real feed) but redaction still strips them if logged", () => {
+  it("keeps real feed URLs in spawn args but still redacts them when logged", () => {
     const feedWithSecret = "https://feed.example/index.json?pat=SECRET123";
     const args = buildNugetInstallArgs(
       { feeds: [feedWithSecret], configFile: undefined },

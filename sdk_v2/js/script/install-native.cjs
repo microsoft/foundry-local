@@ -48,13 +48,14 @@ function readConfig(env) {
   }
 
   const feedsRaw = env.FOUNDRY_LOCAL_NUGET_FEEDS;
-  const feeds = feedsRaw
-    ? feedsRaw
-        .split(";")
-        .map((f) => f.trim())
-        .filter(Boolean)
-    : DEFAULT_FEEDS.slice();
-  if (feedsRaw && feeds.length === 0) {
+  const feeds =
+    feedsRaw === undefined
+      ? DEFAULT_FEEDS.slice()
+      : feedsRaw
+          .split(";")
+          .map((f) => f.trim())
+          .filter(Boolean);
+  if (feedsRaw !== undefined && feeds.length === 0) {
     throw new Error("FOUNDRY_LOCAL_NUGET_FEEDS is set but contains no feed URLs.");
   }
   for (const feed of feeds) {
@@ -316,10 +317,10 @@ async function installPackageHttp(artifact, tempDir, binDir, config, platform, c
       }
     }
   }
+  const feedHosts = feeds.map((f) => new URL(f).host).join(", ");
+  const reason = safeErrorMessage(lastError);
   throw new Error(
-    `Failed to download ${artifact.name} ${artifact.version} from any configured feed (${feeds.map((f) => new URL(f).host).join(", ")}): ${safeErrorMessage(
-      lastError,
-    )}`,
+    `Failed to download ${artifact.name} ${artifact.version} from any configured feed (${feedHosts}): ${reason}`,
   );
 }
 
@@ -414,8 +415,9 @@ function runDotnetMode(config, artifacts, binDir, platform) {
 
     if (result.error) {
       if (result.error.code === "ENOENT") {
+        const cmd = config.dotnetCommand;
         throw new Error(
-          `dotnet command not found: '${config.dotnetCommand}'. Install the .NET SDK or set FOUNDRY_LOCAL_DOTNET_COMMAND.`,
+          `dotnet command not found: '${cmd}'. Install the .NET SDK or set FOUNDRY_LOCAL_DOTNET_COMMAND.`,
         );
       }
       throw result.error;
@@ -503,16 +505,18 @@ function runNugetMode(config, artifacts, binDir, platform) {
 
       if (result.error) {
         if (result.error.code === "ENOENT") {
+          const cmd = config.nugetCommand;
           throw new Error(
-            `nuget command not found: '${config.nugetCommand}'. Install the NuGet CLI or set FOUNDRY_LOCAL_NUGET_COMMAND.`,
+            `nuget command not found: '${cmd}'. Install the NuGet CLI or set FOUNDRY_LOCAL_NUGET_COMMAND.`,
           );
         }
         throw result.error;
       }
       if (result.status !== 0) {
         const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+        const detail = redactUrlsInText(output);
         throw new Error(
-          `nuget install failed for ${artifact.name} ${artifact.version} (exit ${result.status}).\n${redactUrlsInText(output)}`.trim(),
+          `nuget install failed for ${artifact.name} ${artifact.version} (exit ${result.status}).\n${detail}`.trim(),
         );
       }
 

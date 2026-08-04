@@ -201,16 +201,16 @@ npm install
 
 **Example — dotnet mode with a NuGet.config (either shell):**
 
+The `NuGet.config` owns the package sources (and any credentials), so no feed variable is set here.
+
 ```pwsh
 $env:FOUNDRY_LOCAL_NUGET_MODE = "dotnet"
-$env:FOUNDRY_LOCAL_NUGET_FEEDS = "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json"
 $env:FOUNDRY_LOCAL_NUGET_CONFIG = "C:\secrets\NuGet.config"
 npm install
 ```
 
 ```bash
 export FOUNDRY_LOCAL_NUGET_MODE=dotnet
-export FOUNDRY_LOCAL_NUGET_FEEDS="https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json"
 export FOUNDRY_LOCAL_NUGET_CONFIG=/etc/secrets/NuGet.config
 npm install
 ```
