@@ -146,13 +146,13 @@ const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
 
     // Get tag IDs from the tokenizer (reads from config, with fallback vocab lookup).
     // These throw if the model doesn't define the token, so we catch and leave as nullopt.
-    auto try_get_id = [](auto& getter) -> std::optional<int32_t> {
+    auto try_get_id = [](auto&& getter) -> std::optional<int32_t> {
       try { return getter(); } catch (...) { return std::nullopt; }
     };
-    tag_info_.bot_id = try_get_id([&] { return tokenizer_->GetBotTokenId(); });
-    tag_info_.eot_id = try_get_id([&] { return tokenizer_->GetEotTokenId(); });
-    tag_info_.bor_id = try_get_id([&] { return tokenizer_->GetBorTokenId(); });
-    tag_info_.eor_id = try_get_id([&] { return tokenizer_->GetEorTokenId(); });
+    tag_info_.bot_id = try_get_id([&] { return tokenizer_->Oga().GetBotTokenId(); });
+    tag_info_.eot_id = try_get_id([&] { return tokenizer_->Oga().GetEotTokenId(); });
+    tag_info_.bor_id = try_get_id([&] { return tokenizer_->Oga().GetBorTokenId(); });
+    tag_info_.eor_id = try_get_id([&] { return tokenizer_->Oga().GetEorTokenId(); });
 
     // Decode each valid ID once through the special tokenizer to get the string.
     // Uses tokenizer_with_special_ so that special token text (e.g., "<tool_call>") is produced.
