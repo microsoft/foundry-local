@@ -148,7 +148,7 @@ fn get_packages(deps: &DepsVersions, runtime_version: &str) -> Vec<NuGetPackage>
             expected_file: format!("{prefix}foundry_local.{ext}"),
         },
         NuGetPackage {
-            name: "Microsoft.ML.OnnxRuntime.Foundry".to_string(),
+            name: "Microsoft.ML.OnnxRuntime".to_string(),
             version: deps.ort.clone(),
             expected_file: format!("{prefix}onnxruntime.{ext}"),
         },

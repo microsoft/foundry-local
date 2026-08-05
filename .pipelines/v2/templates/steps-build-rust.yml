@@ -138,7 +138,7 @@ steps:
         New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
         $pkgs = @(
-          @{ id = 'Microsoft.ML.OnnxRuntime.Foundry';      version = $ortVersion   },
+          @{ id = 'Microsoft.ML.OnnxRuntime';              version = $ortVersion   },
           @{ id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = $genaiVersion }
         )
         foreach ($p in $pkgs) {
