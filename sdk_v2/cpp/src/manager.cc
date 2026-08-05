@@ -87,12 +87,8 @@ LogLevel MapOrtLogLevel(OrtLoggingLevel severity) {
   }
 }
 
-void ORT_API_CALL OrtLogCallback(void* /*logger_param*/,
-                                 OrtLoggingLevel severity,
-                                 const char* category,
-                                 const char* logid,
-                                 const char* code_location,
-                                 const char* message) {
+void ORT_API_CALL OrtLogCallback(void* /*logger_param*/, OrtLoggingLevel severity, const char* category,
+                                 const char* logid, const char* code_location, const char* message) {
   auto* logger = s_ort_logger.load(std::memory_order_acquire);
   if (logger == nullptr) {
     return;
@@ -160,14 +156,18 @@ void SetOgaLogCallback(ILogger* logger) {
     return;
   }
 
+  if (logger == nullptr) {
+    OgaDestroyResult(result);
+    s_oga_logger.store(nullptr, std::memory_order_release);
+    return;
+  }
+
   const char* err = OgaResultGetError(result);
   std::string err_msg = err ? err : "unknown";
   OgaDestroyResult(result);
 
-  if (logger != nullptr) {
-    logger->Log(LogLevel::Warning, "Failed to set GenAI log callback: " + err_msg);
-    s_oga_logger.store(nullptr, std::memory_order_release);
-  }
+  logger->Log(LogLevel::Warning, "Failed to set GenAI log callback: " + err_msg);
+  s_oga_logger.store(nullptr, std::memory_order_release);
 }
 
 }  // namespace
@@ -175,8 +175,7 @@ void SetOgaLogCallback(ILogger* logger) {
 std::mutex Manager::s_mutex_;
 std::unique_ptr<Manager> Manager::s_instance_;
 
-Manager::Manager(const Configuration& config)
-    : config_(config) {
+Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
@@ -217,16 +216,14 @@ Manager::Manager(const Configuration& config)
 
   LogRuntimeVersions(*logger_);
 
-  EpRegistrationCallback register_ep = [this, &log = *logger_](
-                                           const std::string& registration_name,
-                                           const std::filesystem::path& library_path) -> bool {
-    OrtStatus* status = ort_api_->RegisterExecutionProviderLibrary(
-        ort_env_, registration_name.c_str(), library_path.c_str());
+  EpRegistrationCallback register_ep = [this, &log = *logger_](const std::string& registration_name,
+                                                               const std::filesystem::path& library_path) -> bool {
+    OrtStatus* status =
+        ort_api_->RegisterExecutionProviderLibrary(ort_env_, registration_name.c_str(), library_path.c_str());
     if (status != nullptr) {
       const char* msg = ort_api_->GetErrorMessage(status);
-      log.Log(LogLevel::Warning,
-              std::string("EP registration: RegisterExecutionProviderLibrary failed for '") +
-                  registration_name + "': " + (msg ? msg : "unknown"));
+      log.Log(LogLevel::Warning, std::string("EP registration: RegisterExecutionProviderLibrary failed for '") +
+                                     registration_name + "': " + (msg ? msg : "unknown"));
       ort_api_->ReleaseStatus(status);
       return false;
     }
@@ -234,10 +231,9 @@ Manager::Manager(const Configuration& config)
     registered_ep_libraries_.push_back(registration_name);
 
     auto version = GetEpVersion(*ort_api_, *ort_env_, registration_name);
-    log.Log(LogLevel::Information,
-            std::string("EP registration: '") + registration_name +
-                "' registered successfully (library=" + library_path.string() +
-                ", version=" + version + ")");
+    log.Log(LogLevel::Information, std::string("EP registration: '") + registration_name +
+                                       "' registered successfully (library=" + library_path.string() +
+                                       ", version=" + version + ")");
     return true;
   };
 
@@ -246,8 +242,7 @@ Manager::Manager(const Configuration& config)
 
   // Detected once and reused below for the WinML catalog skip-list and CUDA bootstrapper.
   // Avoid probing NVML on platforms where Foundry Local does not publish a CUDA bundle.
-  const bool has_nvidia_gpu =
-      CudaEpBootstrapper::IsSupportedPlatform() && CudaEpBootstrapper::HasNvidiaGpu();
+  const bool has_nvidia_gpu = CudaEpBootstrapper::IsSupportedPlatform() && CudaEpBootstrapper::HasNvidiaGpu();
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
   // WinML EPs — enumerate from the OS EP catalog (Windows 10 19H1+ reg-free runtime).
@@ -293,43 +288,41 @@ Manager::Manager(const Configuration& config)
   // Accepts case-insensitive true/1/yes.
   const bool disable_region_fallback = IsAdditionalOptionEnabled(config_, "DisableRegionFallback");
 
-  download_manager_ = std::make_unique<DownloadManager>(
-      *config_.model_cache_dir,
-      config_.catalog_region.value_or("auto"),
-      download_concurrency,
-      *logger_,
-      disable_region_fallback);
+  download_manager_ =
+      std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
+                                        download_concurrency, *logger_, disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
   catalog_ = std::make_unique<AzureModelCatalog>(
-      config_.catalog_urls,
-      download_manager_->GetCacheDirectory(),
-      [this](ModelInfo info, std::string local_path) {
-        return CreateModel(std::move(info), std::move(local_path));
-      },
-      *ep_detector_, *logger_,
-      config_.external_service_url.has_value(),
-      config_.catalog_region.value_or("auto"),
+      config_.catalog_urls, download_manager_->GetCacheDirectory(),
+      [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
       disable_region_fallback);
 }
 
 Manager::~Manager() {
-  // Signal subsystems to drain before tearing down infrastructure
+  const auto safe_log = [this](LogLevel level, std::string_view message) noexcept {
+    try {
+      if (logger_ != nullptr) {
+        logger_->Log(level, message);
+      }
+    } catch (...) {
+    }
+  };
+
   try {
     Shutdown();
   } catch (const std::exception& e) {
-    logger_->Log(LogLevel::Error,
-                 std::string("Exception while shutting down Manager subsystems during destruction: ") + e.what());
+    try {
+      safe_log(LogLevel::Error,
+               std::string("Exception while shutting down Manager subsystems during destruction: ") + e.what());
+    } catch (...) {
+    }
   } catch (...) {
-    // Suppress exceptions during destruction
-    logger_->Log(LogLevel::Error, "Unknown exception while shutting down Manager subsystems during destruction.");
+    safe_log(LogLevel::Error, "Unknown exception while shutting down Manager subsystems during destruction.");
   }
 
-  // Tear down members that hold OrtEnv references / live ORT sessions before
-  // we unregister EPs and release the env. C++ would destroy these in reverse
-  // declaration order after this function returns, but the env release below
-  // requires they be gone *now*.
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_.reset();
 #endif
@@ -338,35 +331,36 @@ Manager::~Manager() {
   download_manager_.reset();
   catalog_.reset();
   telemetry_.reset();
-  ep_detector_.reset();
 
-  // GenAI owns process-global ORT state and the CUDA add-on handle. Tear it down after every
-  // GenAI model/session is gone, but before unregistering provider libraries from our OrtEnv.
   OgaShutdown();
 
-  // Unregister EPs we registered, then drop our OrtEnv refcount. Best-effort:
-  // log failures but don't throw from a destructor.
   if (ort_api_ != nullptr && ort_env_ != nullptr) {
-    for (const auto& name : registered_ep_libraries_) {
+    for (auto it = registered_ep_libraries_.rbegin(); it != registered_ep_libraries_.rend(); ++it) {
+      const auto& name = *it;
       OrtStatus* status = ort_api_->UnregisterExecutionProviderLibrary(ort_env_, name.c_str());
       if (status != nullptr) {
         const char* msg = ort_api_->GetErrorMessage(status);
-        logger_->Log(LogLevel::Warning,
-                     std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
-                         name + "': " + (msg ? msg : "unknown"));
+        try {
+          safe_log(LogLevel::Warning, std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
+                                          name + "': " + (msg ? msg : "unknown"));
+        } catch (...) {
+        }
         ort_api_->ReleaseStatus(status);
       }
     }
 
+    ep_detector_.reset();
     ort_api_->ReleaseEnv(ort_env_);
     ort_env_ = nullptr;
+  } else {
+    ep_detector_.reset();
   }
 
   if (s_oga_logger.load(std::memory_order_acquire) != nullptr) {
     SetOgaLogCallback(nullptr);
   }
 
-  logger_->Log(LogLevel::Information, "Manager is being disposed.");
+  safe_log(LogLevel::Information, "Manager is being disposed.");
 
   // ORT may still emit late teardown logs from internal static cleanup after Manager destruction
   // due to GenAI keeping the OrtEnv alive until the process exits.
@@ -419,9 +413,7 @@ void Manager::Destroy() {
   s_instance_.reset();
 }
 
-ICatalog& Manager::GetCatalog() {
-  return *catalog_;
-}
+ICatalog& Manager::GetCatalog() { return *catalog_; }
 
 void Manager::StartWebService() {
   if (web_service_running_) {
@@ -437,8 +429,7 @@ void Manager::StartWebService() {
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
-                                              *session_manager_, *telemetry_,
-                                              [this]() { Shutdown(); });
+                                              *session_manager_, *telemetry_, [this]() { Shutdown(); });
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
@@ -507,52 +498,30 @@ void Manager::Shutdown() {
   model_load_manager_->UnloadAll();
 }
 
-bool Manager::IsShutdownRequested() const {
-  return shutdown_requested_.load();
-}
+bool Manager::IsShutdownRequested() const { return shutdown_requested_.load(); }
 
-const Configuration& Manager::GetConfiguration() const {
-  return config_;
-}
+const Configuration& Manager::GetConfiguration() const { return config_; }
 
 Model Manager::CreateModel(ModelInfo info, std::string local_path) {
-  return Model::FromModelInfo(std::move(info),
-                              std::move(local_path),
-                              *download_manager_,
-                              *model_load_manager_);
+  return Model::FromModelInfo(std::move(info), std::move(local_path), *download_manager_, *model_load_manager_);
 }
 
-DownloadManager& Manager::GetDownloadManager() {
-  return *download_manager_;
-}
+DownloadManager& Manager::GetDownloadManager() { return *download_manager_; }
 
-ModelLoadManager& Manager::GetModelLoadManager() {
-  return *model_load_manager_;
-}
+ModelLoadManager& Manager::GetModelLoadManager() { return *model_load_manager_; }
 
-SessionManager& Manager::GetSessionManager() {
-  return *session_manager_;
-}
+SessionManager& Manager::GetSessionManager() { return *session_manager_; }
 
-ILogger& Manager::GetLogger() {
-  return *logger_;
-}
+ILogger& Manager::GetLogger() { return *logger_; }
 
-ITelemetry& Manager::GetTelemetry() {
-  return *telemetry_;
-}
+ITelemetry& Manager::GetTelemetry() { return *telemetry_; }
 
-const IEpDetector& Manager::GetEpDetector() const {
-  return *ep_detector_;
-}
+const IEpDetector& Manager::GetEpDetector() const { return *ep_detector_; }
 
-IEpDetector& Manager::GetEpDetector() {
-  return *ep_detector_;
-}
+IEpDetector& Manager::GetEpDetector() { return *ep_detector_; }
 
-EpDownloadResult Manager::DownloadAndRegisterEps(
-    const std::vector<std::string>* names,
-    const IEpBootstrapper::ProgressCallback& progress_cb) {
+EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>* names,
+                                                 const IEpBootstrapper::ProgressCallback& progress_cb) {
   auto result = ep_detector_->DownloadAndRegisterEps(names, progress_cb);
 
   // EP registration changes which device/EP filters the catalog uses.

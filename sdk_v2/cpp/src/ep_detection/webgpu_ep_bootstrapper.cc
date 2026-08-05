@@ -43,7 +43,6 @@ constexpr const char* kProviderSha256 = "8FAC874A60F32F0127C74CB7DEF915807FCC8A6
 
 constexpr const char* kRegistrationName = "Foundry.WebGPU";
 constexpr const char* kWebGpuProviderOverrideEnv = "FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY";
-constexpr const char* kVersionSha256 = "4CB81DA21A42BC8A1DE985A2C6C7DFEE3F634576B0C8C7FA0990FB027F1BB082";
 constexpr uint64_t kArchiveMaxBytes = 64ULL * 1024 * 1024;
 
 std::optional<fl::EpBundleManifest> BuildWebGpuManifest() {
@@ -61,8 +60,8 @@ std::optional<fl::EpBundleManifest> BuildWebGpuManifest() {
               {.relative_path = "dxcompiler.dll", .sha256 = kDxCompilerSha256},
               {.relative_path = "dxil.dll", .sha256 = kDxilSha256},
               {.relative_path = "onnxruntime_providers_webgpu.dll", .sha256 = kProviderSha256},
-              {.relative_path = "version.json", .sha256 = kVersionSha256},
           },
+      .ignored_archive_paths = {"version.json"},
       .archive_max_bytes = kArchiveMaxBytes,
       .raw_relative_path = "",
       .raw_sha256 = "",
@@ -81,8 +80,8 @@ std::optional<fl::EpBundleManifest> BuildWebGpuManifest() {
       .extracted_files =
           {
               {.relative_path = "libonnxruntime_providers_webgpu.dylib", .sha256 = kProviderSha256},
-              {.relative_path = "version.json", .sha256 = kVersionSha256},
           },
+      .ignored_archive_paths = {"version.json"},
       .archive_max_bytes = kArchiveMaxBytes,
       .raw_relative_path = "",
       .raw_sha256 = "",
@@ -99,20 +98,13 @@ std::optional<fl::EpBundleManifest> BuildWebGpuManifest() {
 namespace fl {
 
 WebGpuEpBootstrapper::WebGpuEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep)
-    : register_ep_(std::move(register_ep)),
-      installer_(std::filesystem::path(root_dir), kLockFileName, "WebGPU EP") {}
+    : register_ep_(std::move(register_ep)), installer_(std::filesystem::path(root_dir), kLockFileName, "WebGPU EP") {}
 
-const std::string& WebGpuEpBootstrapper::Name() const {
-  return name_;
-}
+const std::string& WebGpuEpBootstrapper::Name() const { return name_; }
 
-bool WebGpuEpBootstrapper::IsRegistered() const {
-  return registered_;
-}
+bool WebGpuEpBootstrapper::IsRegistered() const { return registered_; }
 
-bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
-                                               const ProgressCallback& progress_cb,
-                                               ILogger& logger) {
+bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) {
   if (registered_ && !force) {
     if (progress_cb) {
       progress_cb(name_, 100.0f);
@@ -133,24 +125,20 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
       std::filesystem::path provider_path = std::filesystem::absolute(*override_path);
 
       if (!std::filesystem::exists(provider_path)) {
-        logger.Log(LogLevel::Warning,
-                   fmt::format("WebGPU EP: {} set but file does not exist ({})",
-                               kWebGpuProviderOverrideEnv, provider_path.string()));
+        logger.Log(LogLevel::Warning, fmt::format("WebGPU EP: {} set but file does not exist ({})",
+                                                  kWebGpuProviderOverrideEnv, provider_path.string()));
         return false;
       }
 
-      if (progress_cb) {
-        progress_cb(name_, 90.0f);
+      if (progress_cb && !progress_cb(name_, 90.0f)) {
+        return false;
       }
 
-      // Prepend the override directory to PATH so sibling dependency DLLs are discoverable,
-      // matching the normal install path. The WebGPU EP may delay-load dependencies.
       PrependDirToProcessPath(provider_path.parent_path());
 
       if (!register_ep_(kRegistrationName, provider_path)) {
-        logger.Log(LogLevel::Warning,
-                   fmt::format("WebGPU EP: ORT registration failed for override {}={}",
-                               kWebGpuProviderOverrideEnv, provider_path.string()));
+        logger.Log(LogLevel::Warning, fmt::format("WebGPU EP: ORT registration failed for override {}={}",
+                                                  kWebGpuProviderOverrideEnv, provider_path.string()));
         return false;
       }
 
@@ -160,9 +148,8 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
         progress_cb(name_, 100.0f);
       }
 
-      logger.Log(LogLevel::Information,
-                 fmt::format("WebGPU EP: ready (override_env={} install_path={})",
-                             kWebGpuProviderOverrideEnv, provider_path.string()));
+      logger.Log(LogLevel::Information, fmt::format("WebGPU EP: ready (override_env={} install_path={})",
+                                                    kWebGpuProviderOverrideEnv, provider_path.string()));
       return true;
     }
 
@@ -172,22 +159,24 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
       return false;
     }
 
-    const auto install_policy =
-        force ? EpBundleInstallPolicy::ForceDownload : EpBundleInstallPolicy::ReuseVerified;
+    const auto install_policy = force ? EpBundleInstallPolicy::ForceDownload : EpBundleInstallPolicy::ReuseVerified;
     auto txn = installer_.EnsureInstalled(*manifest, progress_cb, logger, install_policy);
     if (!txn) {
       return false;
     }
 
-    auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
+    if (!txn->CommitActive(logger)) {
+      logger.Log(LogLevel::Warning, "WebGPU EP: failed to publish active bundle marker");
+      return false;
+    }
 
+    const auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
 #ifdef _WIN32
-    // The provider delay-loads sibling DirectX compiler binaries after registration; keep PATH
-    // primed as a fallback in addition to the explicit preload below.
+    // The provider can delay-load sibling DirectX compiler binaries after registration.
     PrependDirToProcessPath(txn->bin_dir());
 #endif
 
-    if (!LoadEpBundleDependencies(txn->bin_dir(), *manifest, "WebGPU EP", logger)) {
+    if (!dependency_owner_.Load(txn->bin_dir(), *manifest, "WebGPU EP", logger)) {
       return false;
     }
 
@@ -198,16 +187,11 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
 
     registered_ = true;
 
-    if (!txn->CommitActive(logger)) {
-      logger.Log(LogLevel::Warning, "WebGPU EP: failed to publish active bundle marker");
-    }
-
     if (progress_cb) {
       progress_cb(name_, 100.0f);
     }
 
-    logger.Log(LogLevel::Information,
-               fmt::format("WebGPU EP: ready (install_path={})", txn->bin_dir().string()));
+    logger.Log(LogLevel::Information, fmt::format("WebGPU EP: ready (install_path={})", txn->bin_dir().string()));
     return true;
   } catch (const std::exception& e) {
     logger.Log(LogLevel::Warning, fmt::format("WebGPU EP: error: {}", e.what()));
@@ -216,8 +200,7 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force,
 }
 
 bool WebGpuEpBootstrapper::IsSupportedPlatform() {
-#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
-    (defined(__APPLE__) && defined(__aarch64__))
+#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
   return true;
 #else
   return false;

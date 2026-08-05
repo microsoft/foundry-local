@@ -37,8 +37,8 @@ EpBundleManifest MakeCudaLikeManifest() {
                   {.relative_path = "cudart64_12.dll", .sha256 = "b"},
                   {.relative_path = "ONNXRUNTIME.DLL", .sha256 = "c"},
                   {.relative_path = "onnxruntime-genai.dll", .sha256 = "d"},
-                  {.relative_path = "version.json", .sha256 = "e"},
               },
+          .ignored_archive_paths = {"version.json"},
           .archive_max_bytes = 0,
           .raw_relative_path = "",
           .raw_sha256 = "",
@@ -53,6 +53,7 @@ EpBundleManifest MakeCudaLikeManifest() {
               {
                   {.relative_path = "cublas64_12.DLL", .sha256 = "f"},
               },
+          .ignored_archive_paths = {},
           .archive_max_bytes = 0,
           .raw_relative_path = "",
           .raw_sha256 = "",
@@ -70,8 +71,8 @@ TEST(EpUtilsTest, SelectEpBundleDependenciesToPreloadExcludesProviderAndCoreRunt
 
   const auto dependencies = SelectEpBundleDependenciesToPreload(bin_dir, manifest);
 
-  // Only the two non-provider, non-core-runtime DLLs should remain, in manifest order, with
-  // version.json (not a DLL) and the provider/core runtime DLLs (matched case-insensitively) excluded.
+  // Only the two non-provider, non-core-runtime DLLs should remain, in manifest order. Ignored metadata is
+  // not considered, and provider/core runtime DLLs are excluded case-insensitively.
   ASSERT_EQ(dependencies.size(), 2u);
   EXPECT_EQ(dependencies[0], std::filesystem::absolute(bin_dir / "cudart64_12.dll"));
   EXPECT_EQ(dependencies[1], std::filesystem::absolute(bin_dir / "cublas64_12.DLL"));
@@ -93,8 +94,8 @@ TEST(EpUtilsTest, SelectEpBundleDependenciesToPreloadReturnsEmptyWhenOnlyProvide
               {
                   {.relative_path = "onnxruntime_providers_webgpu.dll", .sha256 = "a"},
                   {.relative_path = "onnxruntime.dll", .sha256 = "b"},
-                  {.relative_path = "version.json", .sha256 = "c"},
               },
+          .ignored_archive_paths = {"version.json"},
           .archive_max_bytes = 0,
           .raw_relative_path = "",
           .raw_sha256 = "",
@@ -113,14 +114,14 @@ TEST(EpUtilsTest, SelectEpBundleDependenciesToPreloadHandlesManifestWithNoArtifa
   EXPECT_TRUE(SelectEpBundleDependenciesToPreload("bin", manifest).empty());
 }
 
-TEST(EpUtilsTest, LoadEpBundleDependenciesIsNoOpTrueOnNonWindows) {
+TEST(EpUtilsTest, DependencyOwnerLoadIsNoOpOnNonWindows) {
 #ifndef _WIN32
   NullLogger logger;
   const auto manifest = MakeCudaLikeManifest();
+  EpBundleDependencyOwner owner;
 
-  // LoadEpBundleDependencies is documented as a no-op that always returns true on non-Windows
-  // platforms; neither the directory nor the dependency files need to exist here.
-  EXPECT_TRUE(LoadEpBundleDependencies("nonexistent/bin/dir", manifest, "Test EP", logger));
+  EXPECT_TRUE(owner.Load("nonexistent/bin/dir", manifest, "Test EP", logger));
+  EXPECT_TRUE(owner.Load("another/nonexistent/bin/dir", manifest, "Test EP", logger));
 #else
   GTEST_SKIP() << "Preloading behavior is exercised on Windows only.";
 #endif

@@ -65,11 +65,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(Microsoft.GSL CONFIG REQUIRED)
-# Used by util/zip_extract.cc for in-process, bounded EP archive extraction (no shelling out
-# to tar/unzip). Already a transitive dependency of azure-core-cpp; declared directly since we
-# now link against it explicitly.
 find_package(LibArchive REQUIRED)
-find_package(ZLIB REQUIRED)
 
 if(FOUNDRY_LOCAL_BUILD_SERVICE)
     find_package(oatpp CONFIG REQUIRED)
@@ -77,6 +73,7 @@ endif()
 
 if(FOUNDRY_LOCAL_BUILD_TESTS)
     find_package(GTest CONFIG REQUIRED)
+    find_package(ZLIB REQUIRED)
     enable_testing()
 endif()
 
@@ -166,6 +163,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/download/inference_model_writer.cc
     src/download/model_registry_client.cc
     src/ep_detection/cuda_ep_bootstrapper.cc
+    src/ep_detection/cuda_ep_manifest.cc
     src/ep_detection/ep_bundle_installer.cc
     src/ep_detection/ep_detector.cc
     src/ep_detection/ep_utils.cc
@@ -247,7 +245,6 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
             Azure::azure-storage-blobs
             spdlog::spdlog
             LibArchive::LibArchive
-            ZLIB::ZLIB
             ${CMAKE_DL_LIBS}
     )
 

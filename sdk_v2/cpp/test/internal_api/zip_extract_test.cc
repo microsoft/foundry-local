@@ -19,62 +19,36 @@
 
 namespace fl {
 
-TEST(IsSafeArchiveEntryTest, AcceptsSimpleFilename) {
-  EXPECT_TRUE(IsSafeArchiveEntry("file.bin"));
-}
+TEST(IsSafeArchiveEntryTest, AcceptsSimpleFilename) { EXPECT_TRUE(IsSafeArchiveEntry("file.bin")); }
 
-TEST(IsSafeArchiveEntryTest, AcceptsNestedRelativePath) {
-  EXPECT_TRUE(IsSafeArchiveEntry("dir/sub/file.bin"));
-}
+TEST(IsSafeArchiveEntryTest, AcceptsNestedRelativePath) { EXPECT_TRUE(IsSafeArchiveEntry("dir/sub/file.bin")); }
 
-TEST(IsSafeArchiveEntryTest, AcceptsBackslashRelativePath) {
-  EXPECT_TRUE(IsSafeArchiveEntry("dir\\sub\\file.bin"));
-}
+TEST(IsSafeArchiveEntryTest, AcceptsBackslashRelativePath) { EXPECT_TRUE(IsSafeArchiveEntry("dir\\sub\\file.bin")); }
 
-TEST(IsSafeArchiveEntryTest, AcceptsEmpty) {
-  EXPECT_TRUE(IsSafeArchiveEntry(""));
-}
+TEST(IsSafeArchiveEntryTest, AcceptsEmpty) { EXPECT_TRUE(IsSafeArchiveEntry("")); }
 
 TEST(IsSafeArchiveEntryTest, AcceptsDotComponent) {
   // A single "." component is benign and commonly emitted by tar.
   EXPECT_TRUE(IsSafeArchiveEntry("./file.bin"));
 }
 
-TEST(IsSafeArchiveEntryTest, RejectsLeadingParent) {
-  EXPECT_FALSE(IsSafeArchiveEntry("../escape.txt"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsLeadingParent) { EXPECT_FALSE(IsSafeArchiveEntry("../escape.txt")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsLeadingParentBackslash) {
-  EXPECT_FALSE(IsSafeArchiveEntry("..\\escape.txt"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsLeadingParentBackslash) { EXPECT_FALSE(IsSafeArchiveEntry("..\\escape.txt")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsMidPathParent) {
-  EXPECT_FALSE(IsSafeArchiveEntry("dir/../escape.txt"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsMidPathParent) { EXPECT_FALSE(IsSafeArchiveEntry("dir/../escape.txt")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsTrailingParent) {
-  EXPECT_FALSE(IsSafeArchiveEntry("dir/.."));
-}
+TEST(IsSafeArchiveEntryTest, RejectsTrailingParent) { EXPECT_FALSE(IsSafeArchiveEntry("dir/..")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsDeepParentChain) {
-  EXPECT_FALSE(IsSafeArchiveEntry("a/b/../../../etc/passwd"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsDeepParentChain) { EXPECT_FALSE(IsSafeArchiveEntry("a/b/../../../etc/passwd")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsAbsolutePosixPath) {
-  EXPECT_FALSE(IsSafeArchiveEntry("/etc/passwd"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsAbsolutePosixPath) { EXPECT_FALSE(IsSafeArchiveEntry("/etc/passwd")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsLeadingBackslash) {
-  EXPECT_FALSE(IsSafeArchiveEntry("\\Windows\\System32"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsLeadingBackslash) { EXPECT_FALSE(IsSafeArchiveEntry("\\Windows\\System32")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsWindowsDriveLetter) {
-  EXPECT_FALSE(IsSafeArchiveEntry("C:\\Windows\\System32"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsWindowsDriveLetter) { EXPECT_FALSE(IsSafeArchiveEntry("C:\\Windows\\System32")); }
 
-TEST(IsSafeArchiveEntryTest, RejectsLowerCaseDriveLetter) {
-  EXPECT_FALSE(IsSafeArchiveEntry("c:/Windows"));
-}
+TEST(IsSafeArchiveEntryTest, RejectsLowerCaseDriveLetter) { EXPECT_FALSE(IsSafeArchiveEntry("c:/Windows")); }
 
 TEST(IsSafeArchiveEntryTest, RejectsAnyColon) {
   // Defensive: archive entries should never legitimately contain ':'.
@@ -104,9 +78,7 @@ std::vector<uint8_t> ReadFileBytes(const std::filesystem::path& path) {
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-std::vector<uint8_t> AsBytes(const std::string& text) {
-  return std::vector<uint8_t>(text.begin(), text.end());
-}
+std::vector<uint8_t> AsBytes(const std::string& text) { return std::vector<uint8_t>(text.begin(), text.end()); }
 
 }  // namespace
 
@@ -149,6 +121,92 @@ TEST(ExtractZipTest, ExtractsNestedDirectoriesAndMultipleEntries) {
   ASSERT_TRUE(ExtractZip(zip_path, dest.path(), logger));
   EXPECT_EQ(ReadFileBytes(dest.path() / "sub" / "a.txt"), AsBytes("a"));
   EXPECT_EQ(ReadFileBytes(dest.path() / "b.txt"), AsBytes("b"));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsDestinationRootSymlink) {
+  ZipBuilder builder;
+  builder.AddEntry("hello.txt", AsBytes("hello"));
+  const auto zip_path = builder.WriteToTempFile();
+  auto root = test::TempPath::CreateTempDir("fl_zip_extract_root_");
+  auto outside = test::TempPath::CreateTempDir("fl_zip_extract_outside_");
+  const auto destination = root.path() / "destination";
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(outside.path(), destination, ec);
+  if (ec) {
+    std::filesystem::remove(zip_path);
+    GTEST_SKIP() << "Directory symlinks are unavailable: " << ec.message();
+  }
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, destination, logger));
+  EXPECT_TRUE(std::filesystem::is_empty(outside.path()));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsDestinationUnderSymlinkedDirectoryComponent) {
+  ZipBuilder builder;
+  builder.AddEntry("hello.txt", AsBytes("hello"));
+  const auto zip_path = builder.WriteToTempFile();
+  auto root = test::TempPath::CreateTempDir("fl_zip_extract_root_");
+  auto outside = test::TempPath::CreateTempDir("fl_zip_extract_outside_");
+  std::filesystem::create_directory(outside.path() / "destination");
+  const auto component = root.path() / "component";
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(outside.path(), component, ec);
+  if (ec) {
+    std::filesystem::remove(zip_path);
+    GTEST_SKIP() << "Directory symlinks are unavailable: " << ec.message();
+  }
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, component / "destination", logger));
+  EXPECT_TRUE(std::filesystem::is_empty(outside.path() / "destination"));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsRegularFileDestination) {
+  ZipBuilder builder;
+  builder.AddEntry("hello.txt", AsBytes("hello"));
+  const auto zip_path = builder.WriteToTempFile();
+  auto destination = test::TempPath::CreateTempFile("fl_zip_extract_dest_");
+  std::ofstream(destination.path()) << "not a directory";
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, destination.path(), logger));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsNonEmptyDestination) {
+  ZipBuilder builder;
+  builder.AddEntry("hello.txt", AsBytes("hello"));
+  const auto zip_path = builder.WriteToTempFile();
+  auto destination = test::TempPath::CreateTempDir("fl_zip_extract_dest_");
+  std::ofstream(destination.path() / "existing.txt") << "existing";
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, destination.path(), logger));
+  EXPECT_EQ(ReadFileBytes(destination.path() / "existing.txt"), AsBytes("existing"));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsPreExistingOutputLeafSymlink) {
+  ZipBuilder builder;
+  builder.AddEntry("hello.txt", AsBytes("replacement"));
+  const auto zip_path = builder.WriteToTempFile();
+  auto destination = test::TempPath::CreateTempDir("fl_zip_extract_dest_");
+  auto outside = test::TempPath::CreateTempFile("fl_zip_extract_outside_");
+  std::ofstream(outside.path(), std::ios::binary | std::ios::trunc) << "original";
+  std::error_code ec;
+  std::filesystem::create_symlink(outside.path(), destination.path() / "hello.txt", ec);
+  if (ec) {
+    std::filesystem::remove(zip_path);
+    GTEST_SKIP() << "File symlinks are unavailable: " << ec.message();
+  }
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, destination.path(), logger));
+  EXPECT_EQ(ReadFileBytes(outside.path()), AsBytes("original"));
   std::filesystem::remove(zip_path);
 }
 
@@ -254,8 +312,7 @@ TEST(ExtractZipTest, FailsOnTruncatedArchive) {
   auto path = test::MakeUniqueTempPath("fl_zip_extract_truncated_");
   {
     std::ofstream out(path, std::ios::binary);
-    out.write(reinterpret_cast<const char*>(full_bytes.data()),
-              static_cast<std::streamsize>(full_bytes.size() / 2));
+    out.write(reinterpret_cast<const char*>(full_bytes.data()), static_cast<std::streamsize>(full_bytes.size() / 2));
   }
   auto dest = test::TempPath::CreateTempDir("fl_zip_extract_dest_");
   NullLogger logger;

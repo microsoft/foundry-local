@@ -5,6 +5,7 @@
 #include "ep_detection/ep_bootstrapper.h"
 #include "ep_detection/ep_bundle_installer.h"
 #include "ep_detection/ep_types.h"
+#include "ep_detection/ep_utils.h"
 
 #include <string>
 
@@ -28,9 +29,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
 
   const std::string& Name() const override;
   bool IsRegistered() const override;
-  bool DownloadAndRegister(bool force,
-                           const ProgressCallback& progress_cb,
-                           ILogger& logger) override;
+  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
 
   /// Check for an NVIDIA GPU with compute capability >= 5.0 using NVML.
   static bool HasNvidiaGpu();
@@ -44,6 +43,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   int attempts_ = 0;
   EpRegistrationCallback register_ep_;
   EpBundleInstaller installer_;
+  EpBundleDependencyOwner dependency_owner_;
 #if defined(__linux__) && !defined(__ANDROID__)
   void* genai_cuda_handle_ = nullptr;
 #endif

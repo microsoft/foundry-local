@@ -3,12 +3,9 @@
 #include "ep_detection/ep_utils.h"
 
 #include "logger.h"
-#include "util/sha256.h"
 #include "util/string_utils.h"
 
 #include <fmt/format.h>
-
-#include <string>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -30,64 +27,6 @@ bool IsCoreRuntimeLibrary(const std::filesystem::path& filename) {
 
 }  // namespace
 
-bool VerifyEpArchive(
-    const std::filesystem::path& archive_path,
-    std::string_view expected_hash,
-    std::string_view ep_name,
-    ILogger& logger) {
-  if (!std::filesystem::exists(archive_path)) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: archive missing: {}", ep_name, archive_path.string()));
-    return false;
-  }
-
-  if (expected_hash.empty()) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: archive hash missing for {}", ep_name, archive_path.string()));
-    return false;
-  }
-
-  auto hash = Sha256File(archive_path);
-  if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: archive hash mismatch for {}: got {}, expected {}",
-                           ep_name,
-                           archive_path.filename().string(),
-                           hash,
-                           expected_hash));
-    return false;
-  }
-
-  return true;
-}
-
-bool VerifyEpBinaries(
-    const std::filesystem::path& dir,
-    std::initializer_list<std::pair<std::string_view, std::string_view>> expected,
-    std::string_view ep_name,
-    ILogger& logger) {
-
-  for (const auto& [filename, expected_hash] : expected) {
-    auto file_path = dir / filename;
-
-    if (!std::filesystem::exists(file_path)) {
-      return false;
-    }
-
-    auto hash = Sha256File(file_path);
-
-    // Case-insensitive hex comparison
-    if (CompareCaseInsensitive(hash, std::string(expected_hash)) != 0) {
-      logger.Log(LogLevel::Warning,
-                 fmt::format("{}: hash mismatch for {}: got {}, expected {}",
-                             ep_name, filename, hash, expected_hash));
-      return false;
-    }
-  }
-
-  return true;
-}
-
 void PrependDirToProcessPath([[maybe_unused]] const std::filesystem::path& dir) {
 #ifdef _WIN32
   DWORD len = GetEnvironmentVariableW(L"PATH", nullptr, 0);
@@ -103,9 +42,8 @@ void PrependDirToProcessPath([[maybe_unused]] const std::filesystem::path& dir) 
 #endif
 }
 
-std::vector<std::filesystem::path> SelectEpBundleDependenciesToPreload(
-    const std::filesystem::path& bin_dir,
-    const EpBundleManifest& manifest) {
+std::vector<std::filesystem::path> SelectEpBundleDependenciesToPreload(const std::filesystem::path& bin_dir,
+                                                                       const EpBundleManifest& manifest) {
   std::vector<std::filesystem::path> dependencies;
   const auto provider_filename = std::filesystem::path(manifest.provider_relative_path).filename().string();
 
@@ -126,24 +64,43 @@ std::vector<std::filesystem::path> SelectEpBundleDependenciesToPreload(
   return dependencies;
 }
 
-bool LoadEpBundleDependencies(
-    [[maybe_unused]] const std::filesystem::path& bin_dir,
-    [[maybe_unused]] const EpBundleManifest& manifest,
-    [[maybe_unused]] std::string_view ep_name,
-    [[maybe_unused]] ILogger& logger) {
+EpBundleDependencyOwner::~EpBundleDependencyOwner() {
 #ifdef _WIN32
-  for (const auto& path : SelectEpBundleDependenciesToPreload(bin_dir, manifest)) {
-    if (!LoadLibraryExW(path.c_str(), nullptr,
-                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)) {
-      logger.Log(LogLevel::Warning,
-                 fmt::format("{}: failed to load dependency '{}' ({})",
-                             ep_name, path.string(), GetLastError()));
-      return false;
-    }
+  for (auto it = handles_.rbegin(); it != handles_.rend(); ++it) {
+    FreeLibrary(static_cast<HMODULE>(*it));
   }
 #endif
-  // Preloading is a Windows-specific concern (LoadLibraryExW search-path flags); other platforms rely
-  // on RPATH/PATH-style resolution and don't need this step.
+}
+
+bool EpBundleDependencyOwner::Load([[maybe_unused]] const std::filesystem::path& bin_dir,
+                                   [[maybe_unused]] const EpBundleManifest& manifest,
+                                   [[maybe_unused]] std::string_view ep_name, [[maybe_unused]] ILogger& logger) {
+#ifdef _WIN32
+  const auto dependencies = SelectEpBundleDependenciesToPreload(bin_dir, manifest);
+  handles_.reserve(handles_.size() + dependencies.size());
+
+  std::vector<void*> loaded;
+  loaded.reserve(dependencies.size());
+
+  for (const auto& path : dependencies) {
+    auto* handle =
+        LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (handle == nullptr) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("{}: failed to load dependency '{}' ({})", ep_name, path.string(), GetLastError()));
+
+      for (auto it = loaded.rbegin(); it != loaded.rend(); ++it) {
+        FreeLibrary(static_cast<HMODULE>(*it));
+      }
+
+      return false;
+    }
+
+    loaded.push_back(handle);
+  }
+
+  handles_.insert(handles_.end(), loaded.begin(), loaded.end());
+#endif
 
   return true;
 }

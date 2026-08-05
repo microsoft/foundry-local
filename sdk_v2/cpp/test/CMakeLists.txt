@@ -75,6 +75,7 @@ target_link_libraries(foundry_local_tests
         foundry_local_static
         GTest::gtest_main
         httplib::httplib
+        ZLIB::ZLIB
 )
 
 # On Linux, GenAI does dlopen("libonnxruntime.so") internally. Modern GCC emits

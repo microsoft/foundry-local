@@ -71,7 +71,6 @@ class ZipBuilder {
   void AddDirectory(const std::string& name) {
     Entry entry;
     entry.name = name;
-    entry.is_directory = true;
     entries_.push_back(std::move(entry));
   }
 
@@ -161,7 +160,6 @@ class ZipBuilder {
     uint16_t compression_method = 0;
     uint32_t external_attrs = 0;
     uint8_t host_os = 0;
-    bool is_directory = false;
   };
 
   std::vector<Entry> entries_;

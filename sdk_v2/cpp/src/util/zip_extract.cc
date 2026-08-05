@@ -26,8 +26,7 @@ bool IsSafeArchiveEntry(std::string_view entry) {
     return true;
   }
 
-  if (entry.front() == '/' || entry.front() == '\\' ||
-      entry.find(':') != std::string_view::npos) {
+  if (entry.front() == '/' || entry.front() == '\\' || entry.find(':') != std::string_view::npos) {
     return false;
   }
 
@@ -58,12 +57,9 @@ struct ArchiveDeleter {
 
 using ArchivePtr = std::unique_ptr<archive, ArchiveDeleter>;
 
-enum class EntryKind { Regular,
-                       Directory };
+enum class EntryKind { Regular, Directory };
 
-uint16_t ReadU16(const uint8_t* data) {
-  return static_cast<uint16_t>(data[0] | (data[1] << 8));
-}
+uint16_t ReadU16(const uint8_t* data) { return static_cast<uint16_t>(data[0] | (data[1] << 8)); }
 
 uint32_t ReadU32(const uint8_t* data) {
   return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
@@ -117,8 +113,8 @@ bool ValidateZipStructure(const std::filesystem::path& zip_path, ILogger& logger
   const uint64_t absolute_eocd_offset = file_size - tail_size + eocd_offset;
 
   if (disk != 0 || central_disk != 0 || entries_on_disk != total_entries || total_entries == 0xffff ||
-      central_size == 0xffffffff || central_offset == 0xffffffff ||
-      central_offset > absolute_eocd_offset || central_size != absolute_eocd_offset - central_offset) {
+      central_size == 0xffffffff || central_offset == 0xffffffff || central_offset > absolute_eocd_offset ||
+      central_size != absolute_eocd_offset - central_offset) {
     logger.Log(LogLevel::Warning, "ExtractZip: invalid central-directory bounds");
     return false;
   }
@@ -168,13 +164,62 @@ ArchivePtr OpenArchive(const std::filesystem::path& zip_path, ILogger& logger) {
   const auto open_result = archive_read_open_filename(reader.get(), zip_path.c_str(), 64 * 1024);
 #endif
   if (open_result != ARCHIVE_OK) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("ExtractZip: failed to open '{}': {}", zip_path.string(),
-                           archive_error_string(reader.get())));
+    logger.Log(LogLevel::Warning, fmt::format("ExtractZip: failed to open '{}': {}", zip_path.string(),
+                                              archive_error_string(reader.get())));
     return nullptr;
   }
 
   return reader;
+}
+
+bool EnsureActualDirectory(const std::filesystem::path& path) {
+  if (path.empty()) {
+    return true;
+  }
+
+  const auto parent = path.parent_path();
+  if (parent != path && !EnsureActualDirectory(parent)) {
+    return false;
+  }
+
+  std::error_code ec;
+  auto status = std::filesystem::symlink_status(path, ec);
+  if (ec && status.type() != std::filesystem::file_type::not_found) {
+    return false;
+  }
+
+  if (std::filesystem::is_directory(status)) {
+    return true;
+  }
+
+  if (status.type() != std::filesystem::file_type::not_found) {
+    return false;
+  }
+
+  ec.clear();
+  std::filesystem::create_directory(path, ec);
+  if (ec) {
+    return false;
+  }
+
+  status = std::filesystem::symlink_status(path, ec);
+  return !ec && std::filesystem::is_directory(status);
+}
+
+bool PrepareDestination(const std::filesystem::path& destination, ILogger& logger) {
+  if (!EnsureActualDirectory(destination)) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("ExtractZip: destination is not a safe directory: '{}'", destination.string()));
+    return false;
+  }
+
+  std::error_code ec;
+  if (!std::filesystem::is_empty(destination, ec) || ec) {
+    logger.Log(LogLevel::Warning, fmt::format("ExtractZip: destination is not empty: '{}'", destination.string()));
+    return false;
+  }
+
+  return true;
 }
 
 bool ValidateArchive(const std::filesystem::path& zip_path, const ZipExtractLimits& limits, ILogger& logger) {
@@ -271,7 +316,6 @@ bool ExtractArchive(const std::filesystem::path& zip_path, const std::filesystem
     return false;
   }
 
-  std::filesystem::create_directories(destination);
   uint64_t total_written = 0;
   archive_entry* entry = nullptr;
   char buffer[64 * 1024];
@@ -288,11 +332,27 @@ bool ExtractArchive(const std::filesystem::path& zip_path, const std::filesystem
     const auto output_path = destination / name;
 
     if (archive_entry_filetype(entry) == AE_IFDIR) {
-      std::filesystem::create_directories(output_path);
+      if (!EnsureActualDirectory(output_path)) {
+        logger.Log(LogLevel::Warning, fmt::format("ExtractZip: unsafe directory path '{}'", output_path.string()));
+        return false;
+      }
+
       continue;
     }
 
-    std::filesystem::create_directories(output_path.parent_path());
+    if (!EnsureActualDirectory(output_path.parent_path())) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("ExtractZip: unsafe directory path '{}'", output_path.parent_path().string()));
+      return false;
+    }
+
+    std::error_code ec;
+    const auto output_status = std::filesystem::symlink_status(output_path, ec);
+    if (output_status.type() != std::filesystem::file_type::not_found) {
+      logger.Log(LogLevel::Warning, fmt::format("ExtractZip: refusing pre-existing output '{}'", output_path.string()));
+      return false;
+    }
+
     std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
     if (!output) {
       logger.Log(LogLevel::Warning, fmt::format("ExtractZip: failed to create '{}'", output_path.string()));
@@ -313,8 +373,7 @@ bool ExtractArchive(const std::filesystem::path& zip_path, const std::filesystem
 
       entry_written += static_cast<uint64_t>(count);
       total_written += static_cast<uint64_t>(count);
-      if (entry_written > limits.max_entry_uncompressed_bytes ||
-          total_written > limits.max_total_uncompressed_bytes) {
+      if (entry_written > limits.max_entry_uncompressed_bytes || total_written > limits.max_total_uncompressed_bytes) {
         logger.Log(LogLevel::Warning, fmt::format("ExtractZip: extracted size limit exceeded by '{}'", name));
         return false;
       }
@@ -332,7 +391,6 @@ bool ExtractArchive(const std::filesystem::path& zip_path, const std::filesystem
       return false;
     }
 
-    std::error_code ec;
     std::filesystem::permissions(output_path,
                                  std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
                                      std::filesystem::perms::group_read | std::filesystem::perms::others_read,
@@ -350,9 +408,7 @@ bool ExtractArchive(const std::filesystem::path& zip_path, const std::filesystem
 
 }  // namespace
 
-bool ExtractZip(const std::filesystem::path& zip_path,
-                const std::filesystem::path& destination,
-                ILogger& logger,
+bool ExtractZip(const std::filesystem::path& zip_path, const std::filesystem::path& destination, ILogger& logger,
                 const ZipExtractLimits& limits) {
   std::error_code ec;
   if (!std::filesystem::is_regular_file(zip_path, ec)) {
@@ -361,7 +417,7 @@ bool ExtractZip(const std::filesystem::path& zip_path,
   }
 
   return ValidateZipStructure(zip_path, logger) && ValidateArchive(zip_path, limits, logger) &&
-         ExtractArchive(zip_path, destination, limits, logger);
+         PrepareDestination(destination, logger) && ExtractArchive(zip_path, destination, limits, logger);
 }
 
 }  // namespace fl

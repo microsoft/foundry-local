@@ -20,6 +20,7 @@ struct EpBundleArtifact {
 
   std::string archive_sha256;
   std::vector<EpBundleFile> extracted_files;
+  std::vector<std::string> ignored_archive_paths;
   uint64_t archive_max_bytes = 0;
 
   std::string raw_relative_path;

@@ -17,8 +17,10 @@
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
+#include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 
 namespace fl {
 
@@ -31,12 +33,30 @@ std::string RedactUrlForLog(const std::string& url) {
 
 }  // namespace
 
-bool HttpDownloadFile(const std::string& url,
-                      const std::filesystem::path& destination,
-                      const std::string& user_agent,
-                      std::atomic<bool>* cancel_flag,
-                      std::function<void(float percent)> progress_cb,
-                      ILogger& logger,
+std::optional<int64_t> ParseContentLengthHeader(std::string_view value) {
+  constexpr auto is_http_whitespace = [](char ch) { return ch == ' ' || ch == '\t'; };
+  while (!value.empty() && is_http_whitespace(value.front())) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() && is_http_whitespace(value.back())) {
+    value.remove_suffix(1);
+  }
+
+  if (value.empty()) {
+    return std::nullopt;
+  }
+
+  int64_t parsed = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc{} || end != value.data() + value.size() || parsed < 0) {
+    return std::nullopt;
+  }
+
+  return parsed;
+}
+
+bool HttpDownloadFile(const std::string& url, const std::filesystem::path& destination, const std::string& user_agent,
+                      std::atomic<bool>* cancel_flag, std::function<void(float percent)> progress_cb, ILogger& logger,
                       int64_t max_bytes) {
   using namespace Azure::Core;
   using namespace Azure::Core::Http;
@@ -56,8 +76,8 @@ bool HttpDownloadFile(const std::string& url,
   request.SetHeader("User-Agent", user_agent);
 
   // Long timeout for large downloads (30 minutes)
-  Context context = Context{}.WithDeadline(
-      Azure::DateTime(std::chrono::system_clock::now() + std::chrono::minutes(30)));
+  Context context =
+      Context{}.WithDeadline(Azure::DateTime(std::chrono::system_clock::now() + std::chrono::minutes(30)));
 
   std::unique_ptr<RawResponse> response;
   const auto log_url = RedactUrlForLog(url);
@@ -91,34 +111,26 @@ bool HttpDownloadFile(const std::string& url,
   int64_t content_length = -1;
   auto cl_header = response->GetHeaders().find("content-length");
   if (cl_header != response->GetHeaders().end()) {
-    try {
-      content_length = std::stoll(cl_header->second);
-    } catch (const std::exception& ex) {
-      logger.Log(LogLevel::Warning,
-                 MakeString("HTTP download: invalid Content-Length header for ", log_url,
-                            " (\"", cl_header->second, "\"): ", ex.what()));
+    const auto parsed_content_length = ParseContentLengthHeader(cl_header->second);
+    if (!parsed_content_length.has_value()) {
+      logger.Log(LogLevel::Warning, MakeString("HTTP download: invalid Content-Length header for ", log_url, " (\"",
+                                               cl_header->second, "\")"));
       return false;
     }
 
-    if (content_length < 0) {
-      logger.Log(LogLevel::Warning,
-                 MakeString("HTTP download: negative Content-Length for ", log_url,
-                            " (\"", cl_header->second, "\")"));
-      return false;
-    }
+    content_length = *parsed_content_length;
 
     if (max_bytes >= 0 && content_length > max_bytes) {
       logger.Log(LogLevel::Warning,
-                 MakeString("HTTP download: Content-Length ", content_length, " for ", log_url,
-                            " exceeds the ", max_bytes, "-byte cap; refusing before reading any body"));
+                 MakeString("HTTP download: Content-Length ", content_length, " for ", log_url, " exceeds the ",
+                            max_bytes, "-byte cap; refusing before reading any body"));
       return false;
     }
   }
 
   std::ofstream out(destination, std::ios::binary);
   if (!out) {
-    logger.Log(LogLevel::Warning,
-               MakeString("HTTP download: failed to open output file ", destination.string()));
+    logger.Log(LogLevel::Warning, MakeString("HTTP download: failed to open output file ", destination.string()));
     return false;
   }
 
@@ -146,8 +158,7 @@ bool HttpDownloadFile(const std::string& url,
 
       out.write(reinterpret_cast<char*>(buffer), static_cast<std::streamsize>(bytes_read));
       if (!out) {
-        logger.Log(LogLevel::Warning,
-                   MakeString("HTTP download: failed writing ", destination.string()));
+        logger.Log(LogLevel::Warning, MakeString("HTTP download: failed writing ", destination.string()));
         out.close();
         remove_destination();
         return false;
@@ -186,9 +197,8 @@ bool HttpDownloadFile(const std::string& url,
   // detect truncated transfer. If the server promised a content length and
   // we received fewer bytes, surface the error rather than reporting success.
   if (content_length > 0 && bytes_downloaded < content_length) {
-    logger.Log(LogLevel::Warning,
-               MakeString("HTTP download truncated for ", log_url, ": got ",
-                          bytes_downloaded, " of ", content_length, " bytes"));
+    logger.Log(LogLevel::Warning, MakeString("HTTP download truncated for ", log_url, ": got ", bytes_downloaded,
+                                             " of ", content_length, " bytes"));
     remove_destination();
     return false;
   }

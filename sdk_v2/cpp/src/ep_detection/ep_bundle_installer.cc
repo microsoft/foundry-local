@@ -11,6 +11,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <fstream>
@@ -39,10 +40,27 @@ namespace {
 constexpr int kArchiveHashRetries = 1;
 constexpr int kRawHashRetries = 0;
 
+class ScopedDirectoryCleanup {
+ public:
+  explicit ScopedDirectoryCleanup(std::filesystem::path path) : path_(std::move(path)) {}
+
+  ~ScopedDirectoryCleanup() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+
+  ScopedDirectoryCleanup(const ScopedDirectoryCleanup&) = delete;
+  ScopedDirectoryCleanup& operator=(const ScopedDirectoryCleanup&) = delete;
+
+  void Release() { path_.clear(); }
+
+ private:
+  std::filesystem::path path_;
+};
+
 std::string GenerateUniqueId() {
   static thread_local std::mt19937_64 rng(
-      std::random_device{}() ^
-      static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+      std::random_device{}() ^ static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
   return fmt::format("{:016x}", rng());
 }
 
@@ -62,8 +80,8 @@ std::optional<std::string> ReadActiveMarker(const std::filesystem::path& active_
 
 bool AtomicReplaceFile(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
 #ifdef _WIN32
-  if (::MoveFileExW(from.wstring().c_str(), to.wstring().c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+  if (::MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ==
+      0) {
     ec.assign(static_cast<int>(::GetLastError()), std::system_category());
     return false;
   }
@@ -121,9 +139,8 @@ bool IsSafeId(std::string_view value) {
     return false;
   }
 
-  return std::all_of(value.begin(), value.end(), [](unsigned char ch) {
-    return std::isalnum(ch) != 0 || ch == '-' || ch == '_' || ch == '.';
-  });
+  return std::all_of(value.begin(), value.end(),
+                     [](unsigned char ch) { return std::isalnum(ch) != 0 || ch == '-' || ch == '_' || ch == '.'; });
 }
 
 bool IsSafeRelativePath(std::string_view value) {
@@ -158,8 +175,7 @@ bool IsHttpsUrl(std::string_view value) {
 
 bool ValidateManifest(const EpBundleManifest& manifest, std::string_view ep_display_name, ILogger& logger) {
   if (!manifest.IsSupported()) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: bundle is disabled or incomplete", ep_display_name));
+    logger.Log(LogLevel::Warning, fmt::format("{}: bundle is disabled or incomplete", ep_display_name));
     return false;
   }
 
@@ -178,16 +194,23 @@ bool ValidateManifest(const EpBundleManifest& manifest, std::string_view ep_disp
     }
 
     if (artifact.is_archive) {
-      if (!IsSha256(artifact.archive_sha256) || artifact.archive_max_bytes == 0 ||
-          artifact.extracted_files.empty()) {
+      if (!IsSha256(artifact.archive_sha256) || artifact.archive_max_bytes == 0 || artifact.extracted_files.empty()) {
         logger.Log(LogLevel::Warning, fmt::format("{}: archive artifact metadata is incomplete", ep_display_name));
         return false;
       }
 
+      std::unordered_set<std::string> artifact_paths;
       for (const auto& file : artifact.extracted_files) {
         if (!IsSafeRelativePath(file.relative_path) || !IsSha256(file.sha256) ||
-            !file_paths.insert(file.relative_path).second) {
+            !artifact_paths.insert(file.relative_path).second || !file_paths.insert(file.relative_path).second) {
           logger.Log(LogLevel::Warning, fmt::format("{}: archive file metadata is invalid", ep_display_name));
+          return false;
+        }
+      }
+
+      for (const auto& ignored_path : artifact.ignored_archive_paths) {
+        if (!IsSafeRelativePath(ignored_path) || !artifact_paths.insert(ignored_path).second) {
+          logger.Log(LogLevel::Warning, fmt::format("{}: ignored archive path metadata is invalid", ep_display_name));
           return false;
         }
       }
@@ -202,6 +225,56 @@ bool ValidateManifest(const EpBundleManifest& manifest, std::string_view ep_disp
 
   if (file_paths.count(manifest.provider_relative_path) == 0) {
     logger.Log(LogLevel::Warning, fmt::format("{}: provider is not present in the bundle manifest", ep_display_name));
+    return false;
+  }
+
+  return true;
+}
+
+bool EnsureManagedDirectory(const std::filesystem::path& path, std::string_view ep_display_name, ILogger& logger) {
+  std::error_code ec;
+  auto status = std::filesystem::symlink_status(path, ec);
+  if (ec && status.type() != std::filesystem::file_type::not_found) {
+    logger.Log(LogLevel::Warning, fmt::format("{}: failed to inspect managed directory '{}': {}", ep_display_name,
+                                              path.string(), ec.message()));
+    return false;
+  }
+
+  if (status.type() == std::filesystem::file_type::not_found) {
+    ec.clear();
+    std::filesystem::create_directory(path, ec);
+    if (ec) {
+      logger.Log(LogLevel::Warning, fmt::format("{}: failed to create managed directory '{}': {}", ep_display_name,
+                                                path.string(), ec.message()));
+      return false;
+    }
+
+    status = std::filesystem::symlink_status(path, ec);
+  }
+
+  if (ec || !std::filesystem::is_directory(status)) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: refusing unsafe managed directory '{}'", ep_display_name, path.string()));
+    return false;
+  }
+
+  return true;
+}
+
+bool ValidateManagedDirectories(const std::filesystem::path& bundles_dir, const std::filesystem::path& staging_root,
+                                std::string_view ep_display_name, ILogger& logger) {
+  std::error_code ec;
+  const auto bundles_status = std::filesystem::symlink_status(bundles_dir, ec);
+  if (ec || !std::filesystem::is_directory(bundles_status)) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: refusing unsafe managed directory '{}'", ep_display_name, bundles_dir.string()));
+    return false;
+  }
+
+  const auto staging_status = std::filesystem::symlink_status(staging_root, ec);
+  if (ec || !std::filesystem::is_directory(staging_status)) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: refusing unsafe managed directory '{}'", ep_display_name, staging_root.string()));
     return false;
   }
 
@@ -241,9 +314,8 @@ bool VerifyRegularFile(const std::filesystem::path& path, std::string_view expec
 
 bool VerifyArtifactFiles(const std::filesystem::path& bin_dir, const EpBundleArtifact& artifact) {
   if (artifact.is_archive) {
-    return std::all_of(artifact.extracted_files.begin(), artifact.extracted_files.end(), [&](const auto& file) {
-      return VerifyRegularFile(bin_dir / file.relative_path, file.sha256);
-    });
+    return std::all_of(artifact.extracted_files.begin(), artifact.extracted_files.end(),
+                       [&](const auto& file) { return VerifyRegularFile(bin_dir / file.relative_path, file.sha256); });
   }
 
   return VerifyRegularFile(bin_dir / artifact.raw_relative_path, artifact.raw_sha256);
@@ -265,8 +337,7 @@ bool CopyArtifactFiles(const std::filesystem::path& source_bin, const std::files
     const auto source = source_bin / relative_path;
     const auto destination = staging_bin / relative_path;
     std::filesystem::create_directories(destination.parent_path(), ec);
-    if (ec || !std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing,
-                                          ec)) {
+    if (ec || !std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, ec)) {
       return false;
     }
   }
@@ -288,53 +359,63 @@ bool VerifyBundleDir(const std::filesystem::path& bin_dir, const EpBundleManifes
     }
 
     if (!VerifyArtifactFiles(bin_dir, artifact)) {
-      logger.Log(LogLevel::Warning, fmt::format("{}: bundle '{}' has invalid files for artifact '{}'",
-                                                ep_display_name, manifest.bundle_id, artifact.id));
+      logger.Log(LogLevel::Warning, fmt::format("{}: bundle '{}' has invalid files for artifact '{}'", ep_display_name,
+                                                manifest.bundle_id, artifact.id));
       return false;
     }
   }
 
   std::unordered_set<std::string> actual;
   if (!CollectRegularFiles(bin_dir, actual)) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: bundle '{}' contains an unsupported filesystem entry", ep_display_name,
-                           manifest.bundle_id));
+    logger.Log(LogLevel::Warning, fmt::format("{}: bundle '{}' contains an unsupported filesystem entry",
+                                              ep_display_name, manifest.bundle_id));
     return false;
   }
 
-  if (actual.size() != expected.size()) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: bundle '{}' contains unexpected files ({} present, {} expected)", ep_display_name,
-                           manifest.bundle_id, actual.size(), expected.size()));
+  if (actual != expected) {
+    logger.Log(LogLevel::Warning, fmt::format("{}: bundle '{}' contains unexpected files ({} present, {} expected)",
+                                              ep_display_name, manifest.bundle_id, actual.size(), expected.size()));
     return false;
   }
 
   return true;
 }
 
-void CleanupStaleGenerations(const std::filesystem::path& bundles_dir, const std::filesystem::path& staging_root,
+bool CleanupStaleGenerations(const std::filesystem::path& bundles_dir, const std::filesystem::path& staging_root,
                              const std::unordered_set<std::string>& keep_ids, std::string_view ep_display_name,
                              ILogger& logger) {
-  std::error_code ec;
+  if (!ValidateManagedDirectories(bundles_dir, staging_root, ep_display_name, logger)) {
+    return false;
+  }
 
-  if (std::filesystem::exists(staging_root, ec)) {
-    for (const auto& entry : std::filesystem::directory_iterator(staging_root, ec)) {
-      std::filesystem::remove_all(entry.path(), ec);
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(staging_root, ec)) {
+    std::filesystem::remove_all(entry.path(), ec);
+    if (ec) {
+      logger.Log(LogLevel::Warning, fmt::format("{}: failed to clean staging entry '{}': {}", ep_display_name,
+                                                entry.path().string(), ec.message()));
+      return false;
     }
   }
 
-  if (!std::filesystem::exists(bundles_dir, ec)) {
-    return;
+  if (ec) {
+    return false;
   }
 
   for (const auto& entry : std::filesystem::directory_iterator(bundles_dir, ec)) {
     if (keep_ids.count(entry.path().filename().string()) == 0) {
-      logger.Log(LogLevel::Debug,
-                 fmt::format("{}: removing orphaned bundle generation '{}'", ep_display_name,
-                             entry.path().filename().string()));
+      logger.Log(LogLevel::Debug, fmt::format("{}: removing orphaned bundle generation '{}'", ep_display_name,
+                                              entry.path().filename().string()));
       std::filesystem::remove_all(entry.path(), ec);
+      if (ec) {
+        logger.Log(LogLevel::Warning, fmt::format("{}: failed to remove orphaned bundle generation '{}': {}",
+                                                  ep_display_name, entry.path().string(), ec.message()));
+        return false;
+      }
     }
   }
+
+  return !ec;
 }
 
 void HardenFilePermissions(const std::filesystem::path& path) {
@@ -343,6 +424,11 @@ void HardenFilePermissions(const std::filesystem::path& path) {
                                std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
                                    std::filesystem::perms::group_read | std::filesystem::perms::others_read,
                                std::filesystem::perm_options::replace, ec);
+}
+
+bool ReportProgress(const IEpBootstrapper::ProgressCallback& progress_cb, std::string_view ep_display_name,
+                    float percent) {
+  return !progress_cb || progress_cb(std::string(ep_display_name), percent);
 }
 
 bool DownloadWithHashRetry(const EpArtifactDownloadFn& download_fn, const std::string& url,
@@ -361,9 +447,14 @@ bool DownloadWithHashRetry(const EpArtifactDownloadFn& download_fn, const std::s
       }
     };
 
-    if (!download_fn(url, destination, max_bytes, &cancel_flag, local_progress, logger)) {
-      logger.Log(LogLevel::Warning,
-                 fmt::format("{}: download failed for artifact '{}'", ep_display_name, artifact_id));
+    const bool downloaded = download_fn(url, destination, max_bytes, &cancel_flag, local_progress, logger);
+    if (cancel_flag.load()) {
+      std::filesystem::remove(destination, ec);
+      return false;
+    }
+
+    if (!downloaded) {
+      logger.Log(LogLevel::Warning, fmt::format("{}: download failed for artifact '{}'", ep_display_name, artifact_id));
       return false;
     }
 
@@ -373,8 +464,8 @@ bool DownloadWithHashRetry(const EpArtifactDownloadFn& download_fn, const std::s
     }
 
     logger.Log(LogLevel::Warning,
-               fmt::format("{}: hash mismatch for artifact '{}' (attempt {}/{}): got {}, expected {}",
-                           ep_display_name, artifact_id, attempt + 1, max_retries + 1, hash, expected_sha256));
+               fmt::format("{}: hash mismatch for artifact '{}' (attempt {}/{}): got {}, expected {}", ep_display_name,
+                           artifact_id, attempt + 1, max_retries + 1, hash, expected_sha256));
   }
 
   return false;
@@ -384,7 +475,11 @@ bool InstallArchiveArtifact(const EpArtifactDownloadFn& download_fn, const EpBun
                             const std::filesystem::path& staging_dir, const std::filesystem::path& staging_bin,
                             float base_pct, float span_pct, std::string_view ep_display_name,
                             const IEpBootstrapper::ProgressCallback& progress_cb, ILogger& logger) {
-  auto archive_path = staging_dir / (artifact.id + ".archive");
+  const auto artifact_staging_dir = staging_dir / "artifacts" / artifact.id;
+  ScopedDirectoryCleanup artifact_cleanup(artifact_staging_dir);
+  const auto extraction_dir = artifact_staging_dir / "extracted";
+  const auto archive_path = artifact_staging_dir / "download.archive";
+  std::filesystem::create_directories(extraction_dir);
 
   if (!DownloadWithHashRetry(download_fn, artifact.url, archive_path, artifact.archive_max_bytes,
                              artifact.archive_sha256, kArchiveHashRetries, artifact.id, ep_display_name, base_pct,
@@ -392,7 +487,7 @@ bool InstallArchiveArtifact(const EpArtifactDownloadFn& download_fn, const EpBun
     return false;
   }
 
-  if (!ExtractZip(archive_path, staging_bin, logger)) {
+  if (!ExtractZip(archive_path, extraction_dir, logger)) {
     logger.Log(LogLevel::Warning, fmt::format("{}: extraction failed for artifact '{}'", ep_display_name, artifact.id));
     return false;
   }
@@ -400,12 +495,24 @@ bool InstallArchiveArtifact(const EpArtifactDownloadFn& download_fn, const EpBun
   std::error_code ec;
   std::filesystem::remove(archive_path, ec);
 
+  std::unordered_set<std::string> expected_paths;
   for (const auto& file : artifact.extracted_files) {
-    auto file_path = staging_bin / file.relative_path;
+    expected_paths.insert(file.relative_path);
+  }
+  expected_paths.insert(artifact.ignored_archive_paths.begin(), artifact.ignored_archive_paths.end());
+
+  std::unordered_set<std::string> actual_paths;
+  if (!CollectRegularFiles(extraction_dir, actual_paths) || actual_paths != expected_paths) {
+    logger.Log(LogLevel::Warning, fmt::format("{}: artifact '{}' archive entries do not match its manifest",
+                                              ep_display_name, artifact.id));
+    return false;
+  }
+
+  for (const auto& file : artifact.extracted_files) {
+    const auto file_path = extraction_dir / file.relative_path;
     if (!std::filesystem::is_regular_file(file_path, ec)) {
-      logger.Log(LogLevel::Warning,
-                 fmt::format("{}: artifact '{}' is missing expected extracted file '{}'", ep_display_name,
-                             artifact.id, file.relative_path));
+      logger.Log(LogLevel::Warning, fmt::format("{}: artifact '{}' is missing expected extracted file '{}'",
+                                                ep_display_name, artifact.id, file.relative_path));
       return false;
     }
 
@@ -417,10 +524,26 @@ bool InstallArchiveArtifact(const EpArtifactDownloadFn& download_fn, const EpBun
       return false;
     }
 
-    HardenFilePermissions(file_path);
+    const auto destination = staging_bin / file.relative_path;
+    std::filesystem::create_directories(destination.parent_path(), ec);
+    if (ec ||
+        !std::filesystem::copy_file(file_path, destination, std::filesystem::copy_options::overwrite_existing, ec)) {
+      logger.Log(LogLevel::Warning, fmt::format("{}: failed to stage extracted file '{}' from artifact '{}'",
+                                                ep_display_name, file.relative_path, artifact.id));
+      return false;
+    }
+
+    HardenFilePermissions(destination);
   }
 
-  return true;
+  std::filesystem::remove_all(artifact_staging_dir, ec);
+  if (ec) {
+    return false;
+  }
+
+  artifact_cleanup.Release();
+  std::filesystem::remove(artifact_staging_dir.parent_path(), ec);
+  return !ec;
 }
 
 bool InstallRawArtifact(const EpArtifactDownloadFn& download_fn, const EpBundleArtifact& artifact,
@@ -467,17 +590,24 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
     std::filesystem::create_directories(root_dir_);
     auto lock = std::make_unique<FileLock>(root_dir_ / lock_file_name_);
 
-    auto bundles_dir = root_dir_ / "bundles";
-    auto staging_root = root_dir_ / "staging";
-    auto active_generation = ReadActiveMarker(root_dir_ / "active");
+    const auto bundles_dir = root_dir_ / "bundles";
+    const auto staging_root = root_dir_ / "staging";
+    if (!EnsureManagedDirectory(bundles_dir, ep_display_name_, logger) ||
+        !EnsureManagedDirectory(staging_root, ep_display_name_, logger)) {
+      return nullptr;
+    }
 
+    auto active_generation = ReadActiveMarker(root_dir_ / "active");
     std::unordered_set<std::string> keep_ids;
     if (active_generation.has_value() && IsSafeId(*active_generation)) {
       keep_ids.insert(*active_generation);
     } else {
       active_generation.reset();
     }
-    CleanupStaleGenerations(bundles_dir, staging_root, keep_ids, ep_display_name_, logger);
+
+    if (!CleanupStaleGenerations(bundles_dir, staging_root, keep_ids, ep_display_name_, logger)) {
+      return nullptr;
+    }
 
     std::filesystem::path active_bin;
     if (active_generation.has_value()) {
@@ -488,20 +618,20 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
         VerifyBundleDir(active_bin, manifest, ep_display_name_, logger)) {
       logger.Log(LogLevel::Information,
                  fmt::format("{}: reusing verified bundle '{}'", ep_display_name_, manifest.bundle_id));
-      if (progress_cb) {
-        progress_cb(ep_display_name_, 90.0f);
+      if (!ReportProgress(progress_cb, ep_display_name_, 90.0f)) {
+        return nullptr;
       }
-      return std::unique_ptr<EpInstallTransaction>(
-          new EpInstallTransaction(std::move(lock), root_dir_, ep_display_name_, manifest, *active_generation,
-                                   active_bin));
+
+      return std::unique_ptr<EpInstallTransaction>(new EpInstallTransaction(
+          std::move(lock), root_dir_, ep_display_name_, manifest, *active_generation, active_bin));
     }
 
     auto staging_dir = staging_root / GenerateUniqueId();
+    ScopedDirectoryCleanup staging_cleanup(staging_dir);
     auto staging_bin = staging_dir / "bin";
     std::filesystem::create_directories(staging_bin);
 
-    logger.Log(LogLevel::Information,
-               fmt::format("{}: installing bundle '{}'", ep_display_name_, manifest.bundle_id));
+    logger.Log(LogLevel::Information, fmt::format("{}: installing bundle '{}'", ep_display_name_, manifest.bundle_id));
 
     const size_t artifact_count = manifest.artifacts.size();
     for (size_t i = 0; i < artifact_count; ++i) {
@@ -510,48 +640,47 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
       const float span_pct = 80.0f / static_cast<float>(artifact_count);
 
       bool ok = false;
-      if (policy == EpBundleInstallPolicy::ReuseVerified && !active_bin.empty() &&
-          VerifyArtifactFiles(active_bin, artifact)) {
+      const bool reuse_artifact = policy == EpBundleInstallPolicy::ReuseVerified && !active_bin.empty() &&
+                                  VerifyArtifactFiles(active_bin, artifact);
+      if (reuse_artifact) {
         ok = CopyArtifactFiles(active_bin, staging_bin, artifact);
       } else {
-        ok = artifact.is_archive
-                 ? InstallArchiveArtifact(download_fn_, artifact, staging_dir, staging_bin, base_pct, span_pct,
-                                          ep_display_name_, progress_cb, logger)
-                 : InstallRawArtifact(download_fn_, artifact, staging_bin, base_pct, span_pct, ep_display_name_,
-                                      progress_cb, logger);
+        ok = artifact.is_archive ? InstallArchiveArtifact(download_fn_, artifact, staging_dir, staging_bin, base_pct,
+                                                          span_pct, ep_display_name_, progress_cb, logger)
+                                 : InstallRawArtifact(download_fn_, artifact, staging_bin, base_pct, span_pct,
+                                                      ep_display_name_, progress_cb, logger);
       }
 
       if (!ok) {
-        std::error_code ec;
-        std::filesystem::remove_all(staging_dir, ec);
+        return nullptr;
+      }
+
+      if (reuse_artifact && !ReportProgress(progress_cb, ep_display_name_, base_pct + span_pct)) {
         return nullptr;
       }
     }
 
     if (!VerifyBundleDir(staging_bin, manifest, ep_display_name_, logger)) {
-      logger.Log(LogLevel::Warning,
-                 fmt::format("{}: staged bundle '{}' failed verification before publish", ep_display_name_,
-                             manifest.bundle_id));
-      std::error_code ec;
-      std::filesystem::remove_all(staging_dir, ec);
+      logger.Log(LogLevel::Warning, fmt::format("{}: staged bundle '{}' failed verification before publish",
+                                                ep_display_name_, manifest.bundle_id));
       return nullptr;
     }
 
-    std::filesystem::create_directories(bundles_dir);
     const auto generation_id = manifest.bundle_id + "-" + GenerateUniqueId();
-    auto final_bundle_dir = bundles_dir / generation_id;
+    const auto final_bundle_dir = bundles_dir / generation_id;
     std::filesystem::rename(staging_dir, final_bundle_dir);
+    ScopedDirectoryCleanup final_cleanup(final_bundle_dir);
 
-    logger.Log(LogLevel::Information,
-               fmt::format("{}: installed bundle '{}'", ep_display_name_, manifest.bundle_id));
+    logger.Log(LogLevel::Information, fmt::format("{}: installed bundle '{}'", ep_display_name_, manifest.bundle_id));
 
-    if (progress_cb) {
-      progress_cb(ep_display_name_, 90.0f);
+    if (!ReportProgress(progress_cb, ep_display_name_, 90.0f)) {
+      return nullptr;
     }
 
-    return std::unique_ptr<EpInstallTransaction>(
-        new EpInstallTransaction(std::move(lock), root_dir_, ep_display_name_, manifest, generation_id,
-                                 final_bundle_dir / "bin"));
+    auto transaction = std::unique_ptr<EpInstallTransaction>(new EpInstallTransaction(
+        std::move(lock), root_dir_, ep_display_name_, manifest, generation_id, final_bundle_dir / "bin"));
+    final_cleanup.Release();
+    return transaction;
   } catch (const std::exception& e) {
     logger.Log(LogLevel::Warning, fmt::format("{}: install error: {}", ep_display_name_, e.what()));
     return nullptr;
@@ -576,6 +705,12 @@ bool EpInstallTransaction::CommitActive(ILogger& logger) {
   }
 
   try {
+    const auto bundles_dir = root_dir_ / "bundles";
+    const auto staging_root = root_dir_ / "staging";
+    if (!ValidateManagedDirectories(bundles_dir, staging_root, ep_display_name_, logger)) {
+      return false;
+    }
+
     if (!VerifyBundleDir(bin_dir_, manifest_, ep_display_name_, logger)) {
       logger.Log(LogLevel::Warning,
                  fmt::format("{}: bundle '{}' failed re-verification before activation; active marker unchanged",
@@ -588,8 +723,7 @@ bool EpInstallTransaction::CommitActive(ILogger& logger) {
     }
 
     committed_ = true;
-    CleanupStaleGenerations(root_dir_ / "bundles", root_dir_ / "staging", {generation_id_}, ep_display_name_,
-                            logger);
+    CleanupStaleGenerations(bundles_dir, staging_root, {generation_id_}, ep_display_name_, logger);
     return true;
   } catch (const std::exception& e) {
     logger.Log(LogLevel::Warning, fmt::format("{}: failed to commit active bundle: {}", ep_display_name_, e.what()));

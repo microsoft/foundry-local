@@ -4,11 +4,11 @@
 
 #include <filesystem>
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 #define WIN32_LEAN_AND_MEAN
 #include <shlobj.h>
 #include <windows.h>
-#else
+#elif !defined(_WIN32)
 #include <dlfcn.h>
 #endif
 
@@ -25,7 +25,7 @@ using NvmlDeviceGetCountFn = int (*)(unsigned int*);
 using NvmlDeviceGetHandleByIndexFn = int (*)(unsigned int, NvmlDevice*);
 using NvmlDeviceGetCudaComputeCapabilityFn = int (*)(NvmlDevice, int*, int*);
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 
 using LibraryHandle = HMODULE;
 constexpr LibraryHandle kNullLibrary = nullptr;
@@ -58,9 +58,7 @@ LibraryHandle LoadNvmlLibrary() {
 #endif
 }
 
-void* GetSymbol(LibraryHandle lib, const char* name) {
-  return reinterpret_cast<void*>(GetProcAddress(lib, name));
-}
+void* GetSymbol(LibraryHandle lib, const char* name) { return reinterpret_cast<void*>(GetProcAddress(lib, name)); }
 
 void UnloadLibrary(LibraryHandle lib) {
   if (lib) {
@@ -68,18 +66,25 @@ void UnloadLibrary(LibraryHandle lib) {
   }
 }
 
+#elif defined(_WIN32)
+
+using LibraryHandle = void*;
+constexpr LibraryHandle kNullLibrary = nullptr;
+
+LibraryHandle LoadNvmlLibrary() { return nullptr; }
+
+void* GetSymbol(LibraryHandle /*lib*/, const char* /*name*/) { return nullptr; }
+
+void UnloadLibrary(LibraryHandle /*lib*/) {}
+
 #else
 
 using LibraryHandle = void*;
 constexpr LibraryHandle kNullLibrary = nullptr;
 
-LibraryHandle LoadNvmlLibrary() {
-  return dlopen("libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL);
-}
+LibraryHandle LoadNvmlLibrary() { return dlopen("libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL); }
 
-void* GetSymbol(LibraryHandle lib, const char* name) {
-  return dlsym(lib, name);
-}
+void* GetSymbol(LibraryHandle lib, const char* name) { return dlsym(lib, name); }
 
 void UnloadLibrary(LibraryHandle lib) {
   if (lib) {
@@ -100,10 +105,9 @@ class NvmlLibrary {
     init_ = reinterpret_cast<NvmlInitFn>(GetSymbol(lib_, "nvmlInit_v2"));
     shutdown_ = reinterpret_cast<NvmlShutdownFn>(GetSymbol(lib_, "nvmlShutdown"));
     get_count_ = reinterpret_cast<NvmlDeviceGetCountFn>(GetSymbol(lib_, "nvmlDeviceGetCount_v2"));
-    get_handle_ =
-        reinterpret_cast<NvmlDeviceGetHandleByIndexFn>(GetSymbol(lib_, "nvmlDeviceGetHandleByIndex_v2"));
-    get_compute_cap_ = reinterpret_cast<NvmlDeviceGetCudaComputeCapabilityFn>(
-        GetSymbol(lib_, "nvmlDeviceGetCudaComputeCapability"));
+    get_handle_ = reinterpret_cast<NvmlDeviceGetHandleByIndexFn>(GetSymbol(lib_, "nvmlDeviceGetHandleByIndex_v2"));
+    get_compute_cap_ =
+        reinterpret_cast<NvmlDeviceGetCudaComputeCapabilityFn>(GetSymbol(lib_, "nvmlDeviceGetCudaComputeCapability"));
 
     if (!init_ || !shutdown_ || !get_count_ || !get_handle_ || !get_compute_cap_) {
       UnloadLibrary(lib_);
@@ -165,8 +169,7 @@ class NvmlLibrary {
 
 }  // namespace
 
-bool HasQualifyingComputeCapability(const std::vector<std::pair<int, int>>& capabilities,
-                                    int min_major,
+bool HasQualifyingComputeCapability(const std::vector<std::pair<int, int>>& capabilities, int min_major,
                                     int min_minor) {
   for (const auto& [major, minor] : capabilities) {
     if (major > min_major || (major == min_major && minor >= min_minor)) {
