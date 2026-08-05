@@ -16,6 +16,8 @@ class ILogger;
 
 std::optional<int64_t> ParseContentLengthHeader(std::string_view value);
 
+bool ContentLengthMatchesBody(int64_t content_length, int64_t bytes_downloaded);
+
 /// Download a file from an HTTP(S) URL to a local path.
 /// Supports progress reporting, cancellation, and an optional size cap.
 /// @param url  The URL to download from.

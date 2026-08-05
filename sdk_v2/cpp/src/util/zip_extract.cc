@@ -70,6 +70,7 @@ bool ValidateZipStructure(const std::filesystem::path& zip_path, ILogger& logger
   constexpr uint32_t eocd_signature = 0x06054b50;
   constexpr uint32_t central_directory_signature = 0x02014b50;
   constexpr uint64_t eocd_size = 22;
+  constexpr uint64_t central_header_size = 46;
   constexpr uint64_t max_comment_size = 65535;
 
   std::error_code ec;
@@ -119,15 +120,44 @@ bool ValidateZipStructure(const std::filesystem::path& zip_path, ILogger& logger
     return false;
   }
 
-  if (total_entries > 0) {
-    uint8_t signature[4];
-    input.clear();
-    input.seekg(static_cast<std::streamoff>(central_offset));
-    input.read(reinterpret_cast<char*>(signature), sizeof(signature));
-    if (!input || ReadU32(signature) != central_directory_signature) {
+  input.clear();
+  input.seekg(static_cast<std::streamoff>(central_offset));
+  uint64_t central_bytes_read = 0;
+  for (uint16_t i = 0; i < total_entries; ++i) {
+    uint8_t header[central_header_size];
+    input.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (!input || ReadU32(header) != central_directory_signature) {
       logger.Log(LogLevel::Warning, "ExtractZip: invalid central-directory signature");
       return false;
     }
+
+    const auto compression_method = ReadU16(header + 10);
+    if (compression_method != 0 && compression_method != 8) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("ExtractZip: unsupported compression method {}", compression_method));
+      return false;
+    }
+
+    const uint64_t variable_size =
+        static_cast<uint64_t>(ReadU16(header + 28)) + ReadU16(header + 30) + ReadU16(header + 32);
+    const uint64_t record_size = central_header_size + variable_size;
+    if (record_size > central_size - central_bytes_read) {
+      logger.Log(LogLevel::Warning, "ExtractZip: invalid central-directory entry bounds");
+      return false;
+    }
+
+    input.seekg(static_cast<std::streamoff>(variable_size), std::ios::cur);
+    if (!input) {
+      logger.Log(LogLevel::Warning, "ExtractZip: invalid central-directory entry");
+      return false;
+    }
+
+    central_bytes_read += record_size;
+  }
+
+  if (central_bytes_read != central_size) {
+    logger.Log(LogLevel::Warning, "ExtractZip: central-directory entry count does not match its size");
+    return false;
   }
 
   return true;
@@ -143,11 +173,35 @@ std::string NormalizeEntryName(std::string_view name) {
 }
 
 std::string ComparisonKey(std::string value) {
-#ifdef _WIN32
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-#endif
   return value;
+}
+
+bool IsPortableArchivePath(std::string_view value) {
+  for (const auto& component_path : std::filesystem::path(value)) {
+    const auto component = component_path.generic_string();
+    if (component.empty() || component.back() == ' ' || component.back() == '.') {
+      return false;
+    }
+
+    if (std::any_of(component.begin(), component.end(), [](unsigned char ch) {
+          return ch < 32 || ch == '<' || ch == '>' || ch == '"' || ch == '|' || ch == '?' || ch == '*';
+        })) {
+      return false;
+    }
+
+    auto device_name = component.substr(0, component.find('.'));
+    std::transform(device_name.begin(), device_name.end(), device_name.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    if (device_name == "CON" || device_name == "PRN" || device_name == "AUX" || device_name == "NUL" ||
+        (device_name.size() == 4 && (device_name.starts_with("COM") || device_name.starts_with("LPT")) &&
+         device_name[3] >= '1' && device_name[3] <= '9')) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 ArchivePtr OpenArchive(const std::filesystem::path& zip_path, ILogger& logger) {
@@ -248,7 +302,8 @@ bool ValidateArchive(const std::filesystem::path& zip_path, const ZipExtractLimi
     }
 
     const auto normalized = NormalizeEntryName(name);
-    if (normalized.empty() || normalized == "." || !IsSafeArchiveEntry(normalized)) {
+    if (normalized.empty() || normalized == "." || !IsSafeArchiveEntry(normalized) ||
+        !IsPortableArchivePath(normalized)) {
       logger.Log(LogLevel::Warning, fmt::format("ExtractZip: invalid archive entry '{}'", name));
       return false;
     }

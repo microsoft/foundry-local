@@ -55,12 +55,17 @@ class ZipBuilder {
   /// @param unix_mode  Packed into external_attrs high word when host_os == 3 (Unix); 0 to omit.
   void AddEntry(const std::string& name, const std::vector<uint8_t>& data, bool compress = false,
                 uint32_t unix_mode = 0) {
+    AddEntryWithCompressionMethod(name, data, compress ? 8 : 0, unix_mode);
+  }
+
+  void AddEntryWithCompressionMethod(const std::string& name, const std::vector<uint8_t>& data,
+                                     uint16_t compression_method, uint32_t unix_mode = 0) {
     Entry entry;
     entry.name = name;
     entry.crc = crc32(0, data.data(), static_cast<uInt>(data.size()));
     entry.uncompressed_size = static_cast<uint32_t>(data.size());
-    entry.compression_method = compress ? 8 : 0;
-    entry.data = compress ? zip_builder_detail::RawDeflate(data) : data;
+    entry.compression_method = compression_method;
+    entry.data = compression_method == 8 ? zip_builder_detail::RawDeflate(data) : data;
     entry.compressed_size = static_cast<uint32_t>(entry.data.size());
     entry.host_os = unix_mode != 0 ? 3 : 0;
     entry.external_attrs = unix_mode != 0 ? (unix_mode << 16) : 0;

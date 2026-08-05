@@ -55,6 +55,10 @@ std::optional<int64_t> ParseContentLengthHeader(std::string_view value) {
   return parsed;
 }
 
+bool ContentLengthMatchesBody(int64_t content_length, int64_t bytes_downloaded) {
+  return content_length < 0 || content_length == bytes_downloaded;
+}
+
 bool HttpDownloadFile(const std::string& url, const std::filesystem::path& destination, const std::string& user_agent,
                       std::atomic<bool>* cancel_flag, std::function<void(float percent)> progress_cb, ILogger& logger,
                       int64_t max_bytes) {
@@ -194,11 +198,9 @@ bool HttpDownloadFile(const std::string& url, const std::filesystem::path& desti
     return false;
   }
 
-  // detect truncated transfer. If the server promised a content length and
-  // we received fewer bytes, surface the error rather than reporting success.
-  if (content_length > 0 && bytes_downloaded < content_length) {
-    logger.Log(LogLevel::Warning, MakeString("HTTP download truncated for ", log_url, ": got ", bytes_downloaded,
-                                             " of ", content_length, " bytes"));
+  if (!ContentLengthMatchesBody(content_length, bytes_downloaded)) {
+    logger.Log(LogLevel::Warning, MakeString("HTTP download length mismatch for ", log_url, ": got ",
+                                             bytes_downloaded, " bytes, expected ", content_length));
     remove_destination();
     return false;
   }

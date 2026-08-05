@@ -258,6 +258,47 @@ TEST(ExtractZipTest, RejectsDuplicateEntries) {
   std::filesystem::remove(zip_path);
 }
 
+TEST(ExtractZipTest, RejectsUnsupportedCompressionBeforeWritingAnyEntries) {
+  ZipBuilder builder;
+  builder.AddEntry("good.txt", AsBytes("good"));
+  builder.AddEntryWithCompressionMethod("unsupported.txt", AsBytes("unsupported"), 12);
+  auto zip_path = builder.WriteToTempFile();
+  auto dest = test::TempPath::CreateTempDir("fl_zip_extract_dest_");
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, dest.path(), logger));
+  EXPECT_TRUE(std::filesystem::is_empty(dest.path()));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsCaseInsensitivePathAliasesBeforeWriting) {
+  ZipBuilder builder;
+  builder.AddEntry("FILE.txt", AsBytes("first"));
+  builder.AddEntry("file.txt", AsBytes("second"));
+  auto zip_path = builder.WriteToTempFile();
+  auto dest = test::TempPath::CreateTempDir("fl_zip_extract_dest_");
+  NullLogger logger;
+
+  EXPECT_FALSE(ExtractZip(zip_path, dest.path(), logger));
+  EXPECT_TRUE(std::filesystem::is_empty(dest.path()));
+  std::filesystem::remove(zip_path);
+}
+
+TEST(ExtractZipTest, RejectsWin32TrimmedAndReservedPathComponentsBeforeWriting) {
+  for (const auto* unsafe_name : {"file.", "file ", "CON", "nul.txt", "dir/COM1.bin", "dir/LPT9"}) {
+    ZipBuilder builder;
+    builder.AddEntry("good.txt", AsBytes("good"));
+    builder.AddEntry(unsafe_name, AsBytes("unsafe"));
+    auto zip_path = builder.WriteToTempFile();
+    auto dest = test::TempPath::CreateTempDir("fl_zip_extract_dest_");
+    NullLogger logger;
+
+    EXPECT_FALSE(ExtractZip(zip_path, dest.path(), logger)) << unsafe_name;
+    EXPECT_TRUE(std::filesystem::is_empty(dest.path())) << unsafe_name;
+    std::filesystem::remove(zip_path);
+  }
+}
+
 TEST(ExtractZipTest, RejectsEntryCountOverLimit) {
   ZipBuilder builder;
   builder.AddEntry("a.txt", AsBytes("a"));

@@ -122,11 +122,13 @@ class Manager {
   //   ep_detector_             — owns EP bootstrappers and dependency handles;
   //                              reset after provider unregistration and before OrtEnv release
   //   telemetry_               — used throughout
-  //   catalog_                 — owns all Model instances. used by download_manager, model_load_manager, and web
-  //   service download_manager_        — uses ModelInfo owned by catalog model_load_manager_      — holds loaded model
-  //   state referencing catalog models session_manager_         — tracks all active sessions. destroyed after web
-  //   service, before models shutdown_requested_      — atomic flag checked by subsystems and the host process web
-  //   service members      — use catalog, model_load_manager, session_manager, telemetry, logger
+  //   catalog_                 — owns all Model instances; used by download_manager_, model_load_manager_,
+  //                              and the web service
+  //   download_manager_        — uses ModelInfo owned by catalog_
+  //   model_load_manager_      — holds loaded model state referencing catalog models
+  //   session_manager_         — tracks active sessions; destroyed after the web service and before models
+  //   shutdown_requested_      — atomic flag checked by subsystems and the host process
+  //   web service members      — use catalog_, model_load_manager_, session_manager_, telemetry_, and logger_
   //
   Configuration config_;
   const OrtApi* ort_api_ = nullptr;

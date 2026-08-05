@@ -71,6 +71,15 @@ TEST(ContentLengthHeaderTest, RejectsEmptyMalformedOverflowAndNegativeValues) {
   EXPECT_EQ(ParseContentLengthHeader("9223372036854775808"), std::nullopt);
 }
 
+TEST(ContentLengthHeaderTest, RequiresExactBodyLengthWhenHeaderIsPresent) {
+  EXPECT_TRUE(ContentLengthMatchesBody(-1, 123));
+  EXPECT_TRUE(ContentLengthMatchesBody(0, 0));
+  EXPECT_TRUE(ContentLengthMatchesBody(123, 123));
+  EXPECT_FALSE(ContentLengthMatchesBody(0, 1));
+  EXPECT_FALSE(ContentLengthMatchesBody(123, 122));
+  EXPECT_FALSE(ContentLengthMatchesBody(123, 124));
+}
+
 // Downloads the real WebGPU EP zip and validates the success path end-to-end: returns
 // true, writes a non-empty file, and reports a terminal 100% progress callback.
 TEST(DISABLED_HttpDownload, DownloadsWebGpuZip) {
