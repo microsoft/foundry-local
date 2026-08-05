@@ -4,8 +4,7 @@
 # linux-arm64 (pool: onnxruntime-linux-ARM64-CPU-2019) via the `arch`
 # parameter. Each pool has the toolchain pre-installed; we still bootstrap
 # vcpkg and pre-download NuGet packages from the aiinfra feed for version
-# pinning. x64 also pre-downloads Microsoft.ML.OnnxRuntime.Gpu.Linux for
-# CUDA support; arm64 is CPU-only and skips that package.
+# pinning.
 
 parameters:
 - name: arch
@@ -36,7 +35,6 @@ steps:
     genaiVersion: ${{ parameters.genaiVersion }}
     winmlVersion: ''
     includeWinml: false
-    includeOrtGpuLinux: ${{ eq(parameters.arch, 'x64') }}
     shell: bash
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()

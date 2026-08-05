@@ -112,6 +112,7 @@ void from_json(const nlohmann::json& j, InputTextContent& c) {
 void from_json(const nlohmann::json& j, InputImageContent& c) {
   c.detail = j.value("detail", "auto");
   opt_str(j, "image_url", c.image_url);
+  opt_str(j, "image_data", c.image_data);
   opt_str(j, "file_id", c.file_id);
   opt_str(j, "media_type", c.media_type);
 }

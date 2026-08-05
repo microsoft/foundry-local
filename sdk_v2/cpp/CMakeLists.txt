@@ -206,6 +206,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
     src/inferencing/generative/genai_model_instance.cc
+    src/inferencing/generative/tokenizer.cc
     src/logger.cc
     src/spdlog_logger.cc
     src/model_info.cc
@@ -340,6 +341,11 @@ endfunction()
 # local developer builds.
 set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
     CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
+
+set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
+if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
+    set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "unknown")
+endif()
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"

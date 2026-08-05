@@ -168,12 +168,10 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
 
 std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input) {
   auto& oga_model = model_.GetOgaModel();
-  auto& tokenizer = model_.GetOgaTokenizer();
 
-  // 1. Tokenize and append EOS.
-  auto sequences = OgaSequences::Create();
+  // 1. Tokenize and append EOS. Encode is serialized on the model's shared tokenizer.
   const auto& eos_ids = model_.GetEosTokenIds();
-  tokenizer.Encode(input.c_str(), *sequences);
+  auto sequences = model_.Tokenizer().Encode(input.c_str());
   if (!eos_ids.empty()) {
     sequences->Append(eos_ids[0], 0);
   }

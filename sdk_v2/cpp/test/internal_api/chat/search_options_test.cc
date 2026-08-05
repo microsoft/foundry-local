@@ -75,7 +75,7 @@ TEST_F(SearchOptionsTest, DefaultOptionsApplySuccessfully) {
   SearchOptions opts;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 10, GetConfig(), *params);
+  int max_length = ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_GT(max_length, 10);
   // Default output tokens = 2048, so max_length should be 10 + 2048 = 2058
   EXPECT_EQ(max_length, 2058);
@@ -86,7 +86,7 @@ TEST_F(SearchOptionsTest, MaxOutputTokensRespected) {
   opts.max_output_tokens = 100;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 50, GetConfig(), *params);
+  int max_length = ApplySearchOptions(opts, 50, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_EQ(max_length, 150);  // 50 input + 100 output
 }
 
@@ -96,7 +96,8 @@ TEST_F(SearchOptionsTest, TokenBudgetExceededThrows) {
   opts.max_output_tokens = 32000;
   auto params = MakeParams();
 
-  EXPECT_THROW(ApplySearchOptions(opts, 1000, GetConfig(), *params), fl::Exception);
+  EXPECT_THROW(ApplySearchOptions(opts, 1000, GetConfig(), *params, ExecutionProvider::kDefault),
+               fl::Exception);
 }
 
 TEST_F(SearchOptionsTest, TemperatureZeroDisablesSampling) {
@@ -105,7 +106,7 @@ TEST_F(SearchOptionsTest, TemperatureZeroDisablesSampling) {
   auto params = MakeParams();
 
   // Should not throw — temperature 0 → do_sample=false
-  EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params));
+  EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
 }
 
 TEST_F(SearchOptionsTest, TemperaturePositiveEnablesSampling) {
@@ -113,7 +114,7 @@ TEST_F(SearchOptionsTest, TemperaturePositiveEnablesSampling) {
   opts.temperature = 0.7f;
   auto params = MakeParams();
 
-  EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params));
+  EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
 }
 
 TEST_F(SearchOptionsTest, AllOptionsSetSimultaneously) {
@@ -128,7 +129,7 @@ TEST_F(SearchOptionsTest, AllOptionsSetSimultaneously) {
   opts.do_sample = true;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 20, GetConfig(), *params);
+  int max_length = ApplySearchOptions(opts, 20, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_EQ(max_length, 276);  // 20 + 256
 }
 
@@ -137,7 +138,8 @@ TEST_F(SearchOptionsTest, ZeroMaxOutputTokensThrows) {
   opts.max_output_tokens = 0;
   auto params = MakeParams();
 
-  EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params), fl::Exception);
+  EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault),
+               fl::Exception);
 }
 
 TEST_F(SearchOptionsTest, NegativeMaxOutputTokensThrows) {
@@ -145,7 +147,8 @@ TEST_F(SearchOptionsTest, NegativeMaxOutputTokensThrows) {
   opts.max_output_tokens = -5;
   auto params = MakeParams();
 
-  EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params), fl::Exception);
+  EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault),
+               fl::Exception);
 }
 
 TEST_F(SearchOptionsTest, ExplicitDoSampleOverridesTemperature) {
@@ -154,7 +157,7 @@ TEST_F(SearchOptionsTest, ExplicitDoSampleOverridesTemperature) {
   opts.do_sample = true;    // But explicit override takes priority
   auto params = MakeParams();
 
-  EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params));
+  EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
 }
 
 TEST_F(SearchOptionsTest, LargeInputFitsExactly) {
@@ -163,7 +166,7 @@ TEST_F(SearchOptionsTest, LargeInputFitsExactly) {
   opts.max_output_tokens = 768;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 32000, GetConfig(), *params);
+  int max_length = ApplySearchOptions(opts, 32000, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_EQ(max_length, 32768);  // Exactly at limit
 }
 
@@ -172,5 +175,59 @@ TEST_F(SearchOptionsTest, LargeInputExceedsByOneThrows) {
   opts.max_output_tokens = 769;
   auto params = MakeParams();
 
-  EXPECT_THROW(ApplySearchOptions(opts, 32000, GetConfig(), *params), fl::Exception);
+  EXPECT_THROW(ApplySearchOptions(opts, 32000, GetConfig(), *params, ExecutionProvider::kDefault),
+               fl::Exception);
+}
+
+TEST_F(SearchOptionsTest, ChunkedPrefillDefaultsTo2048ForSupportedExecutionProviders) {
+  SearchOptions opts;
+
+  for (ExecutionProvider ep : {ExecutionProvider::kCPU, ExecutionProvider::kCUDA,
+                               ExecutionProvider::kTensorRT_RTX, ExecutionProvider::kWebGPU}) {
+    auto params = MakeParams();
+    ApplySearchOptions(opts, 10, GetConfig(), *params, ep);
+    EXPECT_EQ(params->GetSearchNumber("chunk_size"), 2048) << "EP: " << static_cast<int>(ep);
+  }
+}
+
+TEST_F(SearchOptionsTest, ChunkedPrefillSkippedForUnlistedEp) {
+  SearchOptions opts;
+  auto params = MakeParams();
+
+  ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kOpenVINO);
+  EXPECT_EQ(params->GetSearchNumber("chunk_size"), 0);
+}
+
+TEST_F(SearchOptionsTest, ChunkedPrefillResolvesSupportedProvidersFromConfig) {
+  SearchOptions opts;
+  GenAIConfig config;
+  auto& model = config.model.emplace();
+  auto& decoder = model.decoder.emplace();
+  auto& session_options = decoder.session_options.emplace();
+  config.search.emplace().max_length = 32768;
+
+  for (const char* provider : {"cpu", "cuda", "NvTensorRtRtx", "WebGPU"}) {
+    session_options.provider_options = {{{provider, "{}"}}};
+    auto params = MakeParams();
+    ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kDefault);
+    EXPECT_EQ(params->GetSearchNumber("chunk_size"), 2048) << "Provider: " << provider;
+  }
+}
+
+TEST_F(SearchOptionsTest, ChunkedPrefillPreservesModelSetting) {
+  SearchOptions opts;
+  auto params = MakeParams();
+  params->SetSearchOption("chunk_size", 1024);
+
+  ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kCPU);
+  EXPECT_EQ(params->GetSearchNumber("chunk_size"), 1024);
+}
+
+TEST_F(SearchOptionsTest, ChunkedPrefillTreatsZeroAsUnset) {
+  SearchOptions opts;
+  auto params = MakeParams();
+  params->SetSearchOption("chunk_size", 0);
+
+  ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kCPU);
+  EXPECT_EQ(params->GetSearchNumber("chunk_size"), 2048);
 }
