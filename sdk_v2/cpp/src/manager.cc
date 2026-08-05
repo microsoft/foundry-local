@@ -303,10 +303,13 @@ Manager::Manager(const Configuration& config)
       disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
-  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, config_.disable_nonessential_telemetry);
+  const bool disable_nonessential_telemetry =
+      config_.disable_nonessential_telemetry ||
+      IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
+  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
     telemetry_->RecordProcessInfo(
-        BuildProcessInfo(BuildTelemetryMetadata(config_.app_name), !config_.disable_nonessential_telemetry));
+        BuildProcessInfo(BuildTelemetryMetadata(config_.app_name), !disable_nonessential_telemetry));
   } catch (const std::exception& ex) {
     logger_->Log(LogLevel::Warning, fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
   } catch (...) {

@@ -10,8 +10,15 @@ namespace fl::TelemetryInternal {
 // Percentage of non-process telemetry events retained. Keep at 100% until we intentionally reduce volume.
 // 1DS popSample is metadata only; ShouldSampleTelemetryEvent performs the actual client-side sampling.
 inline constexpr double kTelemetrySampleRatePercent = 100.0;
+inline constexpr double kCoreAudioTranscribeSampleRatePercent = 2.0;
 
 static_assert(kTelemetrySampleRatePercent >= 0.0 && kTelemetrySampleRatePercent <= 100.0);
+static_assert(kCoreAudioTranscribeSampleRatePercent >= 0.0 && kCoreAudioTranscribeSampleRatePercent <= 100.0);
+
+inline double SampleRateForAction(std::string_view action_name) {
+  return action_name == "OpenAIAudioTranscribe" ? kCoreAudioTranscribeSampleRatePercent
+                                                 : kTelemetrySampleRatePercent;
+}
 
 inline uint64_t HashSamplingKey(std::string_view app_session_guid, std::string_view event_key) {
   uint64_t hash = 14695981039346656037ULL;

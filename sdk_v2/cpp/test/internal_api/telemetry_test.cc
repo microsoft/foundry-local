@@ -356,6 +356,11 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
   EXPECT_TRUE(TelemetryInternal::ShouldSampleTelemetryEvent("app-session", "corr-1", 100.0));
 }
 
+TEST(TelemetrySamplingTest, SamplesCoreAudioTranscribeAtTwoPercent) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 2.0);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
+}
+
 TEST(ActionTrackerTest, DestructorRecordsFailureByDefaultWithoutModelId) {
   CapturingTelemetry telemetry;
   SetDefaultUserAgent("foundry-local-test/2.0");

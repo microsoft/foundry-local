@@ -114,9 +114,10 @@ EventProperties MakeEvent(const char* name) {
   return ev;
 }
 
-bool ShouldSampleEvent(std::string_view app_session_guid, std::string_view correlation_id) {
+bool ShouldSampleEvent(std::string_view app_session_guid, std::string_view correlation_id,
+                       double sample_rate_percent = TelemetryInternal::kTelemetrySampleRatePercent) {
   return TelemetryInternal::ShouldSampleTelemetryEvent(
-      app_session_guid, correlation_id.empty() ? app_session_guid : correlation_id);
+      app_session_guid, correlation_id.empty() ? app_session_guid : correlation_id, sample_rate_percent);
 }
 
 void SafeLog(MatILogger* mat_logger, EventProperties& ev) {
@@ -286,7 +287,8 @@ void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const Invo
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id)) {
+  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id,
+                         TelemetryInternal::SampleRateForAction(ActionToString(action)))) {
     return;
   }
   auto ev = MakeEvent("Action");
