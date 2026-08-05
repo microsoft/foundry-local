@@ -3,6 +3,7 @@
 #include "ep_detection/runtime_version_info.h"
 
 #include "logger.h"
+#include "version.h"
 
 #include <onnxruntime_c_api.h>
 
@@ -41,7 +42,8 @@ void LogRuntimeVersions(ILogger& logger) {
   const OrtApiBase* api_base = OrtGetApiBase();
   const char* ort_version = api_base ? api_base->GetVersionString() : nullptr;
   logger.Log(LogLevel::Information,
-             std::string("Runtime versions: onnxruntime=") + (ort_version ? ort_version : "unknown"));
+             std::string("Runtime versions: onnxruntime=") + (ort_version ? ort_version : "unknown") +
+                 ", onnxruntime-genai=" + FOUNDRY_LOCAL_ORT_GENAI_VERSION);
 }
 
 }  // namespace fl

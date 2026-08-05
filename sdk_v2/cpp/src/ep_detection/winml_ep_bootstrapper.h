@@ -46,7 +46,11 @@ class WinMLEpBootstrapper : public IEpBootstrapper {
                            const ProgressCallback& progress_cb,
                            ILogger& logger) override;
 
-  /// Discovers all WinML EPs available on this system.
+  /// Discovers WinML EPs available on this system.
+  /// EPs discoverable are trusted EPs that have valid Foundry Local models available
+  /// for download in the model catalog. The WinML EPs returned from this function also
+  /// filter out any EP that may conflict with other non-WinML EPs that Foundry Local
+  /// supports (e.g., WebGpuExecutionProvider).
   /// Returns empty on unsupported OS version or missing WinML DLL.
   /// @param register_ep  Callback called after EnsureReady to register the EP with ORT.
   /// @param logger  Logger for diagnostic output.

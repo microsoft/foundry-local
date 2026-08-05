@@ -417,7 +417,7 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = bytes / (1024 * 1024);
   }
 
-  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "AzureFoundry";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
 
   // Parent model URI
   if (!parent_uri.empty()) {

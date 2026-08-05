@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 
 using Microsoft.AI.Foundry.Local.Detail;
@@ -25,6 +26,29 @@ internal static class Utils
     /// </summary>
     internal static string TestDataPath(string filename) =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "testdata", filename));
+
+    internal static async Task AssertTranscriptSemanticallyMatches(
+        string transcript,
+        IReadOnlyCollection<string> requiredTranscriptPhrases)
+    {
+        var normalized = NormalizeTranscript(transcript);
+        foreach (var phrase in requiredTranscriptPhrases)
+        {
+            await Assert.That(normalized).Contains(phrase);
+        }
+    }
+
+    internal static string NormalizeTranscript(string value)
+    {
+        var normalized = new StringBuilder(value.Length);
+        foreach (var c in value.ToLowerInvariant())
+        {
+            // Remove punctuation/special chars and normalize whitespace for stable ASR checks.
+            normalized.Append(char.IsLetterOrDigit(c) || char.IsWhiteSpace(c) ? c : ' ');
+        }
+
+        return string.Join(" ", normalized.ToString().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+    }
 
     internal struct TestCatalogInfo
     {
@@ -273,7 +297,7 @@ internal static class Utils
         // Mirrors MOCK_CATALOG_DATA ordering and fields (Python tests)
         var common = new
         {
-            ProviderType = "AzureFoundry",
+            ProviderType = "FoundryLocal",
             Version = 1,
             ModelType = "ONNX",
             PromptTemplate = (PromptTemplate?)null,

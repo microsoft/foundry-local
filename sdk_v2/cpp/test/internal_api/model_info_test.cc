@@ -110,7 +110,7 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = "MIT";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = "chat-completion";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "0.5.0";
-  original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "AzureFoundry";
+  original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
 
   // Reasoning fields
@@ -156,7 +156,7 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR), "MIT");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), "chat-completion");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.5.0");
-  EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "AzureFoundry");
+  EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "FoundryLocal");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR), "ONNX");
 
   // Reasoning fields
