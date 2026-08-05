@@ -109,6 +109,8 @@ export const TWO_VARIANT_MODELS = [
     task: "chat-completion",
     publisher: "Contoso",
     displayName: "Multi Variant Model",
+    // Cache-only JSON derives info.deviceType from runtime.deviceType, not the id suffix.
+    runtime: { deviceType: "GPU" },
   },
   {
     id: "multi-variant-model-generic-cpu:1",
@@ -121,6 +123,8 @@ export const TWO_VARIANT_MODELS = [
     task: "chat-completion",
     publisher: "Contoso",
     displayName: "Multi Variant Model",
+    // Cache-only JSON derives info.deviceType from runtime.deviceType, not the id suffix.
+    runtime: { deviceType: "CPU" },
   },
 ] as const;
 
