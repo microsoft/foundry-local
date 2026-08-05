@@ -62,8 +62,8 @@ steps:
 
       $rustup = Get-Command rustup -ErrorAction SilentlyContinue
       if ($rustup) {
-        Write-Host "rustup already present; ensuring stable toolchain + components."
-        rustup toolchain install stable --profile minimal --component clippy rustfmt
+        Write-Host "rustup already present; ensuring stable toolchain."
+        rustup toolchain install stable --profile minimal
         rustup default stable
         $cargoBin = Split-Path $rustup.Source
       } else {
@@ -71,11 +71,11 @@ steps:
         if ($IsWindows) {
           $init = Join-Path $env:TEMP 'rustup-init.exe'
           Invoke-WebRequest -Uri 'https://win.rustup.rs/x86_64' -OutFile $init -UseBasicParsing
-          & $init -y --default-toolchain stable --profile minimal --component clippy rustfmt
+          & $init -y --default-toolchain stable --profile minimal
           Remove-Item $init -Force -ErrorAction SilentlyContinue
           $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
         } else {
-          bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --component clippy rustfmt"
+          bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal"
           $cargoBin = Join-Path $env:HOME '.cargo/bin'
         }
       }
@@ -84,6 +84,8 @@ steps:
       Write-Host "##vso[task.prependpath]$cargoBin"
       # …and make cargo/rustup usable within *this* task too.
       $env:PATH = "$cargoBin$([IO.Path]::PathSeparator)$env:PATH"
+
+      rustup component add clippy rustfmt --toolchain stable
 
       $cross = '${{ parameters.crossTarget }}'
       if ($cross -ne '') {
