@@ -106,12 +106,34 @@ void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
   mat_logger->SetContext("CpuArch", m.cpu_arch);
 }
 
-EventProperties MakeEvent(const char* name) {
+EventProperties MakeEvent(
+    const char* name, double sample_rate_percent = TelemetryInternal::kTelemetrySampleRatePercent) {
   EventProperties ev(name);
   ev.SetPriority(EventPriority::EventPriority_Normal);
   ev.SetPolicyBitFlags(kCriticalData);
-  ev.SetPopsample(TelemetryInternal::kTelemetrySampleRatePercent);
+  ev.SetPopsample(sample_rate_percent);
   return ev;
+}
+
+void CleanupLogManager(MatILogManager* log_manager, ILogConfiguration& config) noexcept {
+  if (log_manager == nullptr) {
+    return;
+  }
+
+  try {
+    log_manager->Flush();
+  } catch (...) {
+  }
+
+  try {
+    log_manager->FlushAndTeardown();
+  } catch (...) {
+  }
+
+  try {
+    LogManagerProvider::Release(config);
+  } catch (...) {
+  }
 }
 
 bool ShouldSampleEvent(std::string_view app_session_guid, std::string_view correlation_id,
@@ -206,19 +228,15 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                   "[Telemetry] LogManagerProvider::CreateLogManager failed; 1DS upload disabled");
       return;
     }
+    log_manager_initialized = true;
     impl_->logger = impl_->log_manager->GetLogger(token);
     if (impl_->logger == nullptr) {
-      try {
-        impl_->log_manager->FlushAndTeardown();
-        LogManagerProvider::Release(impl_->config);
-      } catch (...) {
-      }
+      CleanupLogManager(impl_->log_manager, impl_->config);
       impl_.reset();
       logger_.Log(LogLevel::Warning,
                   "[Telemetry] ILogManager::GetLogger returned null; 1DS upload disabled");
       return;
     }
-    log_manager_initialized = true;
     if (!disable_nonessential_telemetry && impl_->logger->GetSemanticContext() != nullptr) {
       auto* semantic_context = impl_->logger->GetSemanticContext();
       const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
@@ -234,13 +252,8 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
     initialized_.store(true, std::memory_order_release);
   } catch (const std::exception& ex) {
     if (log_manager_initialized) {
-      try {
-        if (impl_ && impl_->log_manager != nullptr) {
-          impl_->log_manager->Flush();
-          impl_->log_manager->FlushAndTeardown();
-          LogManagerProvider::Release(impl_->config);
-        }
-      } catch (...) {
+      if (impl_ != nullptr) {
+        CleanupLogManager(impl_->log_manager, impl_->config);
       }
       impl_.reset();
     }
@@ -249,13 +262,8 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                             "1DS upload disabled", ex.what()));
   } catch (...) {
     if (log_manager_initialized) {
-      try {
-        if (impl_ && impl_->log_manager != nullptr) {
-          impl_->log_manager->Flush();
-          impl_->log_manager->FlushAndTeardown();
-          LogManagerProvider::Release(impl_->config);
-        }
-      } catch (...) {
+      if (impl_ != nullptr) {
+        CleanupLogManager(impl_->log_manager, impl_->config);
       }
       impl_.reset();
     }
@@ -270,13 +278,7 @@ OneDsTelemetry::~OneDsTelemetry() {
     return;
   }
   initialized_.store(false, std::memory_order_release);
-  try {
-    impl_->log_manager->Flush();
-    impl_->log_manager->FlushAndTeardown();
-    LogManagerProvider::Release(impl_->config);
-  } catch (...) {
-    // Best-effort: never throw from a destructor.
-  }
+  CleanupLogManager(impl_->log_manager, impl_->config);
   impl_.reset();
 }
 
@@ -291,7 +293,8 @@ void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const Invo
                          TelemetryInternal::SampleRateForAction(ActionToString(action)))) {
     return;
   }
-  auto ev = MakeEvent("Action");
+  const auto sample_rate_percent = TelemetryInternal::SampleRateForAction(ActionToString(action));
+  auto ev = MakeEvent("Action", sample_rate_percent);
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("Status", std::string(ActionStatusToString(status)));
   ev.SetProperty("UserAgent", context.user_agent);

@@ -243,10 +243,10 @@ class Configuration:
 
         # Additional key/value settings
         additional_settings: dict[str, str] = {}
-        if self.disable_nonessential_telemetry:
-            additional_settings["DisableNonessentialTelemetry"] = "true"
         if self.additional_settings:
             additional_settings.update(self.additional_settings)
+        if self.disable_nonessential_telemetry:
+            additional_settings["DisableNonessentialTelemetry"] = "true"
 
         if additional_settings:
             kvp_out = ffi.new("flKeyValuePairs**")
