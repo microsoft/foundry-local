@@ -84,37 +84,33 @@ std::string OnnxChatGenerator::Decode() {
 
   int32_t token_id = next_tokens[0];
 
-  // Fast path: use tag token IDs for efficient special-token detection.
-  // When any tag ID is resolved (has_value), we detect tool-call and reasoning tokens
-  // with a simple integer comparison, avoiding the expensive double-decode + string search.
+  // Fast path: if this token matches a known tag ID, return the pre-decoded string.
+  // Both streams are kept in sync so we can always fall through to the slow path for
+  // tokens that don't match any known tag.
   const auto& tag_info = model_.GetTagInfo();
-  bool has_tag_ids = (tag_info.bot_id.has_value() || tag_info.eot_id.has_value() ||
-                      tag_info.bor_id.has_value() || tag_info.eor_id.has_value());
 
-  if (has_tag_ids) {
-    if (tag_info.bot_id.has_value() && token_id == *tag_info.bot_id) {
-      stream_->Decode(token_id);  // keep normal stream in sync
-      return tag_info.bot_str;
-    }
-    if (tag_info.eot_id.has_value() && token_id == *tag_info.eot_id) {
-      stream_->Decode(token_id);
-      return tag_info.eot_str;
-    }
-    if (tag_info.bor_id.has_value() && token_id == *tag_info.bor_id) {
-      stream_->Decode(token_id);
-      return tag_info.bor_str;
-    }
-    if (tag_info.eor_id.has_value() && token_id == *tag_info.eor_id) {
-      stream_->Decode(token_id);
-      return tag_info.eor_str;
-    }
-
-    // Not a tag token — decode normally (no special stream needed)
-    const char* token_text = stream_->Decode(token_id);
-    return token_text ? std::string(token_text) : "";
+  if (tag_info.bot_id.has_value() && token_id == *tag_info.bot_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.bot_str;
+  }
+  if (tag_info.eot_id.has_value() && token_id == *tag_info.eot_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.eot_str;
+  }
+  if (tag_info.bor_id.has_value() && token_id == *tag_info.bor_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.bor_str;
+  }
+  if (tag_info.eor_id.has_value() && token_id == *tag_info.eor_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.eor_str;
   }
 
-  // Slow path: no tag IDs configured — fall back to double-decode + string matching.
+  // Standard path: double-decode to detect special tokens not covered by tag IDs.
   const char* token_text = stream_->Decode(token_id);
 
   // Also decode through the special-token stream to detect tool call and think tokens.
