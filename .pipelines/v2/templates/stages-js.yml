@@ -13,8 +13,7 @@
 #   * cpp_build_win_x64        (the cpp-native-include artifact, which is
 #                               stage-headers-only on the win-x64 build)
 #
-# Tests run on the same platform as the build, except win-arm64 (no
-# Windows-ARM64 pool; build-only, matching the C# + Python matrices).
+# Tests run on the same platform as the build.
 
 stages:
 
@@ -69,8 +68,9 @@ stages:
   jobs:
   - job: build
     pool:
-      name: onnxruntime-Win-CPU-2022
+      name: onnxruntime-native-arm64-16core
       os: windows
+      hostArchitecture: arm64
     variables:
     - group: FoundryLocal-ESRP-Signing
     templateContext:
@@ -97,7 +97,6 @@ stages:
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
         includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
-        targetArch: 'arm64'
         signWindows: true
 
 - stage: js_build_linux_x64
@@ -214,9 +213,9 @@ stages:
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
         signMac: true
 
-# =====================================================================
-# Test stages — same-platform only. win-arm64 is build-only.
-# =====================================================================
+# ================================================================
+# Test stages - same platform only.
+# ================================================================
 
 - stage: js_test_win_x64
   displayName: 'JS SDK: Test Windows x64'
@@ -241,6 +240,35 @@ stages:
         rid: 'win-x64'
         prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-win-x64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: js_test_win_arm64
+  displayName: 'JS SDK: Test Windows ARM64'
+  dependsOn:
+  - js_build_win_arm64
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-native-arm64-16core
+      os: windows
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'js-prebuild-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/js-prebuild-win-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+      parameters:
+        scriptType: ps
+        installAzCli: true
+    - template: steps-test-js.yml
+      parameters:
+        rid: 'win-arm64'
+        prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-win-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        usePwsh: false
 
 - stage: js_test_linux_x64
   displayName: 'JS SDK: Test Linux x64'

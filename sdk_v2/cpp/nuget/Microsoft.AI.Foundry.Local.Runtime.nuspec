@@ -18,7 +18,7 @@
 
     <dependencies>
       <group>
-        <dependency id="Microsoft.ML.OnnxRuntime.Foundry" version="$ort_version$" />
+        <dependency id="Microsoft.ML.OnnxRuntime" version="$ort_version$" />
         <dependency id="Microsoft.ML.OnnxRuntimeGenAI.Foundry" version="$genai_version$" />
       </group>
     </dependencies>

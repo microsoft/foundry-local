@@ -176,13 +176,27 @@ on the v2 layer:
   and the addon for every (platform × arch), drops each
   `(.node addon + foundry_local.{dll,so,dylib})` pair into
   `prebuilds/<platform>-<arch>/`, then `npm pack`s a single tarball
-  containing all variants. At install time, `npm install` just unpacks the
-  tarball — there is no postinstall download step, no separate artifact
-  host, and no network access beyond the normal npm fetch. At runtime, the
-  loader picks the matching `prebuilds/<process.platform>-<process.arch>/`
-  subdirectory. If a consumer is on an unsupported platform, the addon
-  load fails with a clear error; there is no automatic source-build
-  fallback in the published package.
+  containing all variants. `npm install` unpacks the tarball — the addon
+  and `foundry_local.{dll,so,dylib}` themselves require no postinstall
+  download. At runtime, the loader picks the matching
+  `prebuilds/<process.platform>-<process.arch>/` subdirectory. If a
+  consumer is on an unsupported platform, the addon load fails with a
+  clear error; there is no automatic source-build fallback in the
+  published package.
+- **ORT / ORT-GenAI *are* fetched during the install lifecycle.** Unlike
+  `foundry_local` itself, the ONNX Runtime and ORT-GenAI native binaries
+  are not bundled in the tarball — `script/install-native.cjs` runs as
+  the package's `install` script and downloads them from NuGet into the
+  same `prebuilds/<platform>-<arch>/` directory. It supports an `http`
+  mode (default, raw NuGet v3 protocol), a `dotnet` mode (`dotnet
+  restore` against a throwaway project, for feeds that need .NET
+  credential-provider auth), and a `nuget` mode (`nuget.exe install` per
+  artifact, for feeds whose auth is supplied by a NuGet/Visual Studio
+  credential provider that `dotnet restore` can't host). Feeds and the
+  `NuGet.config` path are configurable via
+  `FOUNDRY_LOCAL_NUGET_*` env vars; see
+  [README.md § 3.4](../README.md#34-native-runtime-install-ort--ort-genai-via-nuget).
+  Set `FOUNDRY_LOCAL_SKIP_INSTALL=1` to opt out entirely.
 - **Dev / source builds load the native from the canonical C++ build
   dir.** Per
   [cpp-build.instructions.md](../../../.github/instructions/cpp-build.instructions.md),

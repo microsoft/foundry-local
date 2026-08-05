@@ -27,6 +27,8 @@ struct InputTextContent {
 struct InputImageContent {
   std::string detail;
   std::optional<std::string> image_url;
+  // Foundry Local v1 extension: raw base64 image payload. image_url takes precedence when both are supplied.
+  std::optional<std::string> image_data;
   std::optional<std::string> file_id;
   // Optional MIME type ("image/png", "image/jpeg", ...). Required by the
   // OpenAI spec when `image_url` is anything other than a `data:` URL,

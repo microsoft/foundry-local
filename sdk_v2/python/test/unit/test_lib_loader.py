@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Unit tests for lib_loader platform RID detection — pure Python, no native deps.
+"""Unit tests for lib_loader discovery helpers — pure Python, no native deps.
 
 lib_loader.py is loaded via spec_from_file_location so we can import it
 without triggering foundry_local_sdk._native.__init__, which requires the
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -41,8 +41,14 @@ class TestPlatformSubdir:
     # ------------------------------------------------------------------
     # Windows
     # ------------------------------------------------------------------
-    def test_win32_returns_win_x64(self):
-        with patch.object(_ll.sys, "platform", "win32"):
+    def test_win32_arm64_returns_win_arm64(self):
+        with patch.object(_ll.sys, "platform", "win32"), \
+             patch.object(_ll.platform, "machine", return_value="arm64"):
+            assert _ll._platform_subdir() == "win-arm64"
+
+    def test_win32_x86_64_returns_win_x64(self):
+        with patch.object(_ll.sys, "platform", "win32"), \
+             patch.object(_ll.platform, "machine", return_value="x86_64"):
             assert _ll._platform_subdir() == "win-x64"
 
     # ------------------------------------------------------------------
@@ -105,6 +111,113 @@ class TestLibName:
     def test_linux_returns_so(self):
         with patch.object(_ll.sys, "platform", "linux"):
             assert _ll._lib_name() == "libfoundry_local.so"
+
+
+class TestOrtPackageDiscovery:
+    def _install_fake_package(self, root: pathlib.Path, import_name: str) -> SimpleNamespace:
+        package_dir = root / import_name
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        return SimpleNamespace(origin=str(package_dir / "__init__.py"))
+
+    def test_find_file_in_package_supports_vanilla_windows_capi_layout(self, tmp_path, monkeypatch):
+        pkg_spec = self._install_fake_package(tmp_path, "onnxruntime")
+        dll_path = tmp_path / "onnxruntime" / "capi" / "onnxruntime.dll"
+        dll_path.parent.mkdir()
+        dll_path.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(
+            _ll.importlib.util,
+            "find_spec",
+            lambda name: pkg_spec if name == "onnxruntime" else None,
+        )
+
+        assert _ll._find_file_in_package("onnxruntime", "onnxruntime.dll") == dll_path
+
+    def test_find_file_in_package_supports_versioned_macos_ort_dylib(self, tmp_path, monkeypatch):
+        pkg_spec = self._install_fake_package(tmp_path, "onnxruntime")
+        dylib_path = tmp_path / "onnxruntime" / "capi" / "libonnxruntime.1.28.0.dylib"
+        dylib_path.parent.mkdir()
+        dylib_path.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(
+            _ll.importlib.util,
+            "find_spec",
+            lambda name: pkg_spec if name == "onnxruntime" else None,
+        )
+
+        assert _ll._find_file_in_package("onnxruntime", "libonnxruntime.dylib") == dylib_path
+
+    def test_resolve_ort_package_path_uses_vanilla_onnxruntime(self):
+        vanilla = pathlib.Path("/fake/onnxruntime/capi/libonnxruntime.so")
+        calls: list[tuple[str, str]] = []
+
+        def fake_find(package_name: str, filename: str) -> pathlib.Path | None:
+            calls.append((package_name, filename))
+            if package_name == "onnxruntime":
+                return vanilla
+            return None
+
+        with patch.object(_ll, "_find_file_in_package", side_effect=fake_find):
+            resolved = _ll._resolve_ort_package_path("libonnxruntime.so")
+
+        assert resolved == vanilla
+        assert calls == [("onnxruntime", "libonnxruntime.so")]
+
+    @pytest.mark.parametrize(
+        ("rid", "filename"),
+        [
+            ("win-x64", "onnxruntime-genai.dll"),
+            ("win-arm64", "onnxruntime-genai.dll"),
+            ("linux-x64", "libonnxruntime-genai.so"),
+            ("linux-arm64", "libonnxruntime-genai.so"),
+            ("osx-arm64", "libonnxruntime-genai.dylib"),
+        ],
+    )
+    def test_find_genai_core_binary_supports_all_rid_layouts(self, tmp_path, monkeypatch, rid, filename):
+        pkg_spec = self._install_fake_package(tmp_path, "onnxruntime_genai_core")
+        binary_path = tmp_path / "onnxruntime_genai_core" / "runtimes" / rid / "native" / filename
+        binary_path.parent.mkdir(parents=True)
+        binary_path.touch()
+
+        monkeypatch.setattr(
+            _ll.importlib.util,
+            "find_spec",
+            lambda name: pkg_spec if name == "onnxruntime_genai_core" else None,
+        )
+
+        assert _ll._resolve_genai_package_path(filename) == binary_path
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "onnxruntime-genai.dll",
+            "libonnxruntime-genai.so",
+            "libonnxruntime-genai.dylib",
+        ],
+    )
+    def test_find_genai_core_binary_supports_published_bin_layout(self, tmp_path, monkeypatch, filename):
+        pkg_spec = self._install_fake_package(tmp_path, "onnxruntime_genai_core")
+        binary_path = tmp_path / "onnxruntime_genai_core" / "bin" / filename
+        binary_path.parent.mkdir()
+        binary_path.touch()
+
+        monkeypatch.setattr(
+            _ll.importlib.util,
+            "find_spec",
+            lambda name: pkg_spec if name == "onnxruntime_genai_core" else None,
+        )
+
+        assert _ll._resolve_genai_package_path(filename) == binary_path
+
+    def test_resolve_genai_package_path_only_uses_core_package(self):
+        core = pathlib.Path("/fake/onnxruntime_genai_core/bin/libonnxruntime-genai.so")
+
+        with patch.object(_ll, "_find_file_in_package", return_value=core) as find:
+            resolved = _ll._resolve_genai_package_path("libonnxruntime-genai.so")
+
+        assert resolved == core
+        find.assert_called_once_with("onnxruntime-genai-core", "libonnxruntime-genai.so")
 
 
 class TestFindLibraryWheelBundled:

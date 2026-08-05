@@ -176,7 +176,7 @@ std::unique_ptr<OnnxAudioGenerator> OnnxAudioGenerator::Create(const std::string
   int prompt_token_count = static_cast<int>(generator->GetSequenceCount(0));
 
   // 7. Create tokenizer stream for decoding (no special-token stream needed for audio)
-  auto stream = OgaTokenizerStream::Create(model.GetOgaTokenizer());
+  auto stream = OgaTokenizerStream::Create(model.Tokenizer().Oga());
 
   // `std::make_unique` cannot access the private constructor, so use `new` directly.
   return std::unique_ptr<OnnxAudioGenerator>(new OnnxAudioGenerator(std::move(audios),

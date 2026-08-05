@@ -4,6 +4,7 @@
 
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
+#include "inferencing/generative/tokenizer.h"
 #include "logger.h"
 
 #include <atomic>
@@ -58,8 +59,11 @@ class GenAIModelInstance {
 
   /// Access the underlying OGA objects (for future chat generation work).
   OgaModel& GetOgaModel();
-  OgaTokenizer& GetOgaTokenizer();
   OgaTokenizer& GetOgaTokenizerWithSpecial();  // For tool calling, we need a tokenizer that does not skip special tokens.
+
+  /// The model's tokenizer, shared across all concurrent sessions of this model. Encode operations are
+  /// synchronized internally; callers use it without needing to know it is shared. See fl::Tokenizer.
+  fl::Tokenizer& Tokenizer();
 
   /// Cached EOS token IDs for the tokenizer. Avoids re-fetching from OGA on every Decode() call.
   const std::vector<int32_t>& GetEosTokenIds();
@@ -91,7 +95,7 @@ class GenAIModelInstance {
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
-  std::unique_ptr<OgaTokenizer> tokenizer_;
+  std::unique_ptr<fl::Tokenizer> tokenizer_;
   std::unique_ptr<OgaTokenizer> tokenizer_with_special_;
   std::unique_ptr<OgaMultiModalProcessor> processor_;  // nullptr if not multimodal
   std::vector<int32_t> eos_token_ids_;                 // cached; populated on first GetEosTokenIds() call

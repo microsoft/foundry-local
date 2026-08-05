@@ -23,9 +23,12 @@ enum class ExecutionProvider {
 struct EPUtils {
   /// Convert a value from the catalog, genai config, or EP override param to an ExecutionProvider
   /// See NormalizeProviderName https://github.com/microsoft/onnxruntime-genai/blob/main/src/config.cpp
-  /// See AppendExecutionProviderV1 https://github.com/microsoft/onnxruntime-genai/blob/main/src/models/session_options.cpp
+  /// See AppendExecutionProviderV1
+  /// https://github.com/microsoft/onnxruntime-genai/blob/main/src/models/session_options.cpp
   static ExecutionProvider StringtoEP(std::string_view ep) {
-    if (ep == "CPUExecutionProvider") {
+    if (ep == "cpu" ||
+        ep == "CPU" ||
+        ep == "CPUExecutionProvider") {
       return ExecutionProvider::kCPU;
     } else if (ep == "cuda" ||
                ep == "CUDA" ||
@@ -53,8 +56,6 @@ struct EPUtils {
                ep == "QNN" ||
                ep == "QNNExecutionProvider") {
       return ExecutionProvider::kQNN;
-      // } else if (genai_ep == "cpu") {
-      //   if CPU there's no provider set in the config and this shouldn't be called
     } else {
       return ExecutionProvider::kUnknown;
     }

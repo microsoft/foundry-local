@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
 #include "util/key_value_pairs.h"
 
@@ -57,6 +58,11 @@ struct SearchOptions {
 /// @param input_token_count  Number of tokens in the encoded prompt
 /// @param config             Model's GenAI config (for search.max_length)
 /// @param gen_params         ORT GenAI generator params to configure
+/// @param ep                 Resolved execution provider. Used to enable chunked prefill by default
+///                           on providers that benefit from it (CUDA, NvTensorRtRtx, WebGPU, CPU).
+///                           When kDefault, the effective provider is taken from
+///                           config.DefaultProvider() (empty ⇒ CPU).
+///                           ORT GenAI determines whether the model consumes this option.
 /// @param use_full_context   When true, set max_length to the model's full context window
 ///                           instead of input+output. Used for continuous decoding (cached generators).
 /// @param default_max_output_tokens  Default applied when the request does not specify
@@ -65,6 +71,7 @@ int ApplySearchOptions(const SearchOptions& options,
                        int input_token_count,
                        const GenAIConfig& config,
                        OgaGeneratorParams& gen_params,
+                       ExecutionProvider ep,
                        bool use_full_context = false,
                        int default_max_output_tokens = 2048);
 
