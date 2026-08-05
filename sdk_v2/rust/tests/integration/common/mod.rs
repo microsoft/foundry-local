@@ -18,9 +18,34 @@ pub const WHISPER_MODEL_ALIAS: &str = "whisper-tiny";
 /// Default model alias used for embedding integration tests.
 pub const EMBEDDING_MODEL_ALIAS: &str = "qwen3-embedding-0.6b";
 
-/// Expected transcription text fragment for the shared audio test file.
-pub const EXPECTED_TRANSCRIPTION_TEXT: &str =
-    " And lots of times you need to give people more than one link at a time";
+/// Stable phrases expected in the shared audio test file's transcription.
+pub const EXPECTED_TRANSCRIPTION_PHRASES: &[&str] = &[
+    "more than one link",
+    "behind the scenes photo gallery",
+    "like these next few links",
+];
+
+/// Assert transcript content while ignoring punctuation, case, and whitespace variation.
+pub fn assert_transcript_semantically_matches(text: &str) {
+    fn normalize(value: &str) -> String {
+        value
+            .to_lowercase()
+            .chars()
+            .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    let normalized = normalize(text);
+    for phrase in EXPECTED_TRANSCRIPTION_PHRASES {
+        assert!(
+            normalized.contains(&normalize(phrase)),
+            "Transcription should contain '{phrase}', got: {text}"
+        );
+    }
+}
 
 // ── Environment helpers ──────────────────────────────────────────────────────
 

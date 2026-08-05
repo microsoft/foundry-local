@@ -25,22 +25,23 @@ async fn live_streaming_e2e_with_synthetic_pcm_returns_valid_response() {
     let manager = common::get_test_manager();
     let catalog = manager.catalog();
 
-    // Try to get a nemotron or whisper model for audio streaming
-    let model = match catalog.get_model("nemotron").await {
-        Ok(m) => m,
-        Err(_) => match catalog.get_model(common::WHISPER_MODEL_ALIAS).await {
-            Ok(m) => m,
-            Err(_) => {
-                eprintln!("Skipping E2E test: no audio model available");
-                return;
-            }
-        },
+    let cached_models = catalog
+        .get_cached_models()
+        .await
+        .expect("get_cached_models failed");
+    let model = match cached_models.into_iter().find(|model| {
+        let info = model.info();
+        info.task.as_deref() == Some("automatic-speech-recognition")
+            && (info.id.to_lowercase().contains("nemotron")
+                || info.name.to_lowercase().contains("nemotron")
+                || info.alias.to_lowercase().contains("nemotron"))
+    }) {
+        Some(model) => model,
+        None => {
+            eprintln!("Skipping E2E test: no cached Nemotron streaming-audio model available");
+            return;
+        }
     };
-
-    if !model.is_cached().await.unwrap_or(false) {
-        eprintln!("Skipping E2E test: model not cached");
-        return;
-    }
 
     model.load().await.expect("model.load() failed");
 

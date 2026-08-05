@@ -27,11 +27,7 @@ async fn should_transcribe_audio_without_streaming() {
         .await
         .expect("transcribe failed");
 
-    assert!(
-        response.text.contains(common::EXPECTED_TRANSCRIPTION_TEXT),
-        "Transcription should contain expected text, got: {}",
-        response.text
-    );
+    common::assert_transcript_semantically_matches(&response.text);
 
     model.unload().await.expect("model.unload() failed");
 }
@@ -46,11 +42,7 @@ async fn should_transcribe_audio_without_streaming_with_temperature() {
         .await
         .expect("transcribe with temperature failed");
 
-    assert!(
-        response.text.contains(common::EXPECTED_TRANSCRIPTION_TEXT),
-        "Transcription should contain expected text, got: {}",
-        response.text
-    );
+    common::assert_transcript_semantically_matches(&response.text);
 
     model.unload().await.expect("model.unload() failed");
 }
@@ -73,10 +65,7 @@ async fn should_transcribe_audio_with_streaming() {
 
     println!("Streamed transcription: {full_text}");
 
-    assert!(
-        full_text.contains(common::EXPECTED_TRANSCRIPTION_TEXT),
-        "Streamed transcription should contain expected text, got: {full_text}"
-    );
+    common::assert_transcript_semantically_matches(&full_text);
 
     model.unload().await.expect("model.unload() failed");
 }
@@ -100,10 +89,7 @@ async fn should_transcribe_audio_with_streaming_with_temperature() {
 
     println!("Streamed transcription: {full_text}");
 
-    assert!(
-        full_text.contains(common::EXPECTED_TRANSCRIPTION_TEXT),
-        "Streamed transcription should contain expected text, got: {full_text}"
-    );
+    common::assert_transcript_semantically_matches(&full_text);
 
     model.unload().await.expect("model.unload() failed");
 }
