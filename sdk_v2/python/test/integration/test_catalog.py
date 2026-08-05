@@ -74,3 +74,46 @@ class TestCatalogShape:
 
         with pytest.raises(FoundryLocalException):
             manager.catalog.get_latest_version("not-an-imodel")  # type: ignore[arg-type]
+
+
+class TestSelectVariantMetadata:
+    """The native model is the source of truth. After select_variant, all reported
+    metadata (info, id, alias, ...) must reflect the selected variant even if info
+    was read before selecting."""
+
+    def _find_multi_variant_model(self, manager):
+        for m in manager.catalog.list_models():
+            if len(m.variants) > 1:
+                return m
+        return None
+
+    def test_select_variant_refreshes_metadata(self, manager):
+        model = self._find_multi_variant_model(manager)
+        if model is None:
+            pytest.skip("No multi-variant model in the catalog.")
+
+        variants = model.variants
+        default_variant = variants[0]
+        other_variant = next(v for v in variants if v.id != default_variant.id)
+
+        # Read info BEFORE selecting — this is what used to prime a stale cache.
+        info_before = model.info
+        assert info_before.id == default_variant.id
+
+        model.select_variant(other_variant)
+
+        # Every read must reflect the selected variant.
+        assert model.id == other_variant.id
+        assert model.alias == other_variant.alias
+
+        info_after = model.info
+        assert info_after.id == other_variant.id
+        assert info_after.name == other_variant.info.name
+        assert info_after.version == other_variant.info.version
+
+        # The earlier snapshot is an independent point-in-time value.
+        assert info_before.id == default_variant.id
+
+        # Selecting back refreshes again.
+        model.select_variant(default_variant)
+        assert model.info.id == default_variant.id
