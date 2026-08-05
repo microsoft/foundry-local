@@ -52,6 +52,46 @@ first. Steps 2–3 are best-effort: if the files aren't present (e.g., a strippe
 deployment that ships ORT via a separate package), the binding logs and
 continues; step 4 will then surface a clearer load error.
 
+## GenAI's Own ORT Resolution (`ORT_LIB_PATH`)
+
+The preload contract above only governs `foundry_local`'s **load-time**
+`DT_NEEDED`. On Linux and macOS, `onnxruntime-genai` does its *own* `dlopen` of
+ORT at `InitApi()` time (lazy — fired by the first model load), independent of
+that `DT_NEEDED`. Its precedence (`src/models/onnxruntime_api.h`) is:
+
+```
+1. $ORT_LIB_PATH            → dlopen(<abs path>)   ← the only step that pins an exact file
+2. libonnxruntime.so        → plain dlopen (Linux)
+3. libonnxruntime.so.1      → plain dlopen (Linux)
+4. libonnxruntime.dylib     → plain dlopen (macOS)
+```
+
+Steps 2–4 use a **plain `dlopen`, not `RTLD_NOLOAD`**, so a leafname that does
+not match the resident soname triggers a fresh filesystem search that can load a
+*second* ORT image with a separate `OrtEnv`. When that happens, the execution
+providers `foundry_local` registered on its `OrtEnv` are invisible to GenAI's
+inference (see `Manager::Create()` — it assumes `CreateEnv` returns the same
+singleton GenAI uses).
+
+**Contract:** every binding sets `ORT_LIB_PATH` to the *absolute path of the ORT
+file it preloaded*, on POSIX, before loading `foundry_local`. This makes GenAI
+`dlopen` that exact file (which resolves to the already-resident instance),
+sidestepping the versioned/unversioned soname mismatch entirely. Rules:
+
+- **POSIX-only.** On Windows GenAI links ORT directly and ignores the variable.
+- **Point at the exact file, not a directory.**
+- **Never clobber a caller-provided `ORT_LIB_PATH`** — a host may be pinning its
+  own ORT. Note the variable is process-global and inherited by child processes.
+
+> onnxruntime-genai
+> [#2372](https://github.com/microsoft/onnxruntime-genai/pull/2372) adds an
+> `RTLD_NOLOAD` probe (both versioned and unversioned names) *before* the plain
+> `dlopen` fallback, so GenAI reuses a resident ORT even when `ORT_LIB_PATH` is
+> unset. It complements this contract — it's the safety net for third-party
+> hosts that load `foundry_local` without setting `ORT_LIB_PATH`. `ORT_LIB_PATH`
+> stays the deterministic path for our own bindings and works against current
+> GenAI without a version bump.
+
 ## Why Not a Native-Side Loader?
 
 Earlier iterations tried two native-side designs:
@@ -87,9 +127,10 @@ process's default search locations.
 
 | Binding | File | Function |
 |---------|------|----------|
-| C# | `sdk_v2/cs/src/Detail/DllLoader.cs` | `PreloadOrtIfPresent(directory)` is called from each branch of `ResolveDll` (BaseDirectory, NuGet `runtimes/<rid>/native/`) right before `NativeLibrary.TryLoad(libfoundry_local)`. Idempotent across branches via static handle fields. |
-| Python | `sdk_v2/python/src/foundry_local_sdk/_native/lib_loader.py` | `prepare_native_dependencies()` performs explicit `ctypes.CDLL` preload of ORT then GenAI. Handles are stored in a module-level list in `api.py` to prevent garbage collection. |
-| JS / Rust | (TBD when those v2 SDKs come online) | Must implement the same preload sequence. |
+| C# | `sdk_v2/cs/src/Detail/DllLoader.cs` | `PreloadOrtIfPresent(directory)` is called from each `ResolveDll` branch (redirect file, BaseDirectory, NuGet `runtimes/<rid>/native/`) right before `NativeLibrary.TryLoad(libfoundry_local)`. Idempotent across branches via static handle fields. **`ORT_LIB_PATH`: not yet set** — see [OrtLibPathPlan.md](OrtLibPathPlan.md). |
+| Python | `sdk_v2/python/src/foundry_local_sdk/_native/lib_loader.py` | `prepare_native_dependencies()` performs explicit `ctypes.CDLL` (`RTLD_GLOBAL`) preload of ORT then GenAI from the sibling `onnxruntime` / `onnxruntime-genai-core` PyPI packages. Handles kept alive in `api.py`. **macOS today uses a `libonnxruntime.dylib` symlink** into the GenAI package dir to satisfy GenAI's leafname `dlopen`; to be replaced by `ORT_LIB_PATH` — see [OrtLibPathPlan.md](OrtLibPathPlan.md). |
+| JS | `sdk_v2/js/src/detail/native.ts` | `preloadOrtIfPresent()` preloads ORT then GenAI via the standalone `foundry_local_preload.node` addon (`dlopen`/`LoadLibraryExW`; Node 23+ rejects `process.dlopen` for non-addon libs). Ships the versioned soname and **sets `ORT_LIB_PATH`** to it (`applyOrtLibPath`) — the reference implementation of the GenAI-resolution contract. |
+| Rust | (TBD when the v2 SDK comes online) | Must implement the same preload sequence + `ORT_LIB_PATH`. |
 
 ## History
 
@@ -102,5 +143,9 @@ process's default search locations.
   never implemented. Removed when the binding-preload contract was adopted as
   the cross-platform answer.
 - **Current:** binding-owned preload on all platforms. Native lib has no
-  ORT-loading machinery. C# and Python bindings preload before every
+  ORT-loading machinery. C#, Python, and JS bindings preload before every
   `foundry_local` load attempt.
+- **GenAI resolution (`ORT_LIB_PATH`):** JS pins GenAI's independent ORT
+  `dlopen` via `ORT_LIB_PATH`. C# (leafname luck) and Python (macOS symlink) are
+  being converged onto the same env-var contract — see
+  [OrtLibPathPlan.md](OrtLibPathPlan.md). Complements onnxruntime-genai #2372.
