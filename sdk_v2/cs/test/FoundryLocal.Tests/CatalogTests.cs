@@ -77,16 +77,17 @@ internal sealed class CatalogTests
 
         if (modelWithVariants == null)
         {
-            // No multi-variant model in the catalog — nothing to exercise.
+            Skip.Test("No multi-variant model in the catalog.");
             return;
         }
 
         var variants = modelWithVariants.Variants.ToList();
-        var defaultVariant = variants[0];
-        var otherVariant = variants.First(v => v.Id != defaultVariant.Id);
 
+        // Derive the original variant from the currently-selected Info rather than
+        // assuming variants[0]: native selection prefers the first cached variant.
         var infoBefore = modelWithVariants.Info;
-        await Assert.That(infoBefore.Id).IsEqualTo(defaultVariant.Id);
+        var defaultVariant = variants.First(v => v.Id == infoBefore.Id);
+        var otherVariant = variants.First(v => v.Id != infoBefore.Id);
 
         modelWithVariants.SelectVariant(otherVariant);
 

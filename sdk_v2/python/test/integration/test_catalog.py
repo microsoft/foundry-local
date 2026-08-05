@@ -93,12 +93,13 @@ class TestSelectVariantMetadata:
             pytest.skip("No multi-variant model in the catalog.")
 
         variants = model.variants
-        default_variant = variants[0]
-        other_variant = next(v for v in variants if v.id != default_variant.id)
 
         # Read info BEFORE selecting — this is what used to prime a stale cache.
+        # Derive the original variant from the currently-selected info rather than
+        # assuming variants[0]: native selection prefers the first cached variant.
         info_before = model.info
-        assert info_before.id == default_variant.id
+        default_variant = next(v for v in variants if v.id == info_before.id)
+        other_variant = next(v for v in variants if v.id != info_before.id)
 
         model.select_variant(other_variant)
 
