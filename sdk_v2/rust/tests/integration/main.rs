@@ -1,10 +1,8 @@
 //! Single integration test binary for the Foundry Local Rust SDK.
 //!
 //! All test modules are compiled into one binary so the native core is only
-//! initialised once (via the `OnceLock` singleton in `FoundryLocalManager`).
-//! Running them as separate binaries causes "already initialized" errors
-//! because the .NET native runtime retains state across process-level
-//! library loads.
+//! initialised once. The shared test helper releases its final manager handle
+//! at process exit before the native library's static destructors run.
 #![allow(deprecated)] // some suites still exercise the deprecated OpenAI facade
 
 mod common;

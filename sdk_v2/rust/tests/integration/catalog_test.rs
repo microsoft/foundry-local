@@ -1,20 +1,23 @@
 use super::common;
-use foundry_local_sdk::Catalog;
+use foundry_local_sdk::FoundryLocalManager;
+use std::sync::Arc;
 
-fn catalog() -> &'static Catalog {
-    common::get_test_manager().catalog()
+fn manager() -> Arc<FoundryLocalManager> {
+    common::get_test_manager()
 }
 
 #[test]
 fn should_initialize_with_catalog_name() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let name = cat.name();
     assert!(!name.is_empty(), "Catalog name must not be empty");
 }
 
 #[tokio::test]
 async fn should_list_models() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let models = cat.get_models().await.expect("get_models failed");
 
     assert!(
@@ -32,7 +35,8 @@ async fn should_list_models() {
 
 #[tokio::test]
 async fn should_get_model_by_alias() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let model = cat
         .get_model(common::TEST_MODEL_ALIAS)
         .await
@@ -43,7 +47,8 @@ async fn should_get_model_by_alias() {
 
 #[tokio::test]
 async fn should_throw_when_getting_model_with_empty_alias() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let result = cat.get_model("").await;
     assert!(result.is_err(), "Expected error for empty alias");
 
@@ -56,7 +61,8 @@ async fn should_throw_when_getting_model_with_empty_alias() {
 
 #[tokio::test]
 async fn should_throw_when_getting_model_with_unknown_alias() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let result = cat.get_model("unknown-nonexistent-model-alias").await;
     assert!(result.is_err(), "Expected error for unknown alias");
 
@@ -73,7 +79,8 @@ async fn should_throw_when_getting_model_with_unknown_alias() {
 
 #[tokio::test]
 async fn should_get_cached_models() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let cached = cat
         .get_cached_models()
         .await
@@ -91,14 +98,16 @@ async fn should_get_cached_models() {
 
 #[tokio::test]
 async fn should_throw_when_getting_model_variant_with_empty_id() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let result = cat.get_model_variant("").await;
     assert!(result.is_err(), "Expected error for empty variant ID");
 }
 
 #[tokio::test]
 async fn should_throw_when_getting_model_variant_with_unknown_id() {
-    let cat = catalog();
+    let manager = manager();
+    let cat = manager.catalog();
     let result = cat
         .get_model_variant("unknown-nonexistent-variant-id")
         .await;

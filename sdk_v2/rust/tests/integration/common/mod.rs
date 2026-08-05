@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use foundry_local_sdk::{FoundryLocalConfig, FoundryLocalManager, LogLevel};
 
@@ -115,19 +115,49 @@ pub fn test_config() -> FoundryLocalConfig {
         .log_level(LogLevel::Warn)
 }
 
-/// Create (or return the cached) [`FoundryLocalManager`] for tests.
+static TEST_MANAGER: OnceLock<Mutex<Option<Arc<FoundryLocalManager>>>> = OnceLock::new();
+static REGISTER_MANAGER_CLEANUP: Once = Once::new();
+
+extern "C" {
+    fn atexit(callback: extern "C" fn()) -> std::os::raw::c_int;
+}
+
+extern "C" fn cleanup_test_manager() {
+    let Some(slot) = TEST_MANAGER.get() else {
+        return;
+    };
+    let manager = slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(manager) = manager {
+        let _ = manager.shutdown();
+        drop(manager);
+    }
+}
+
+/// Create (or return) the shared [`FoundryLocalManager`] for tests.
 ///
-/// Holds a process-lifetime strong handle so the shared instance survives for
-/// the whole test binary (avoiding repeated native init), and hands out a
-/// `'static` borrow into it.
-///
-/// Panics if creation fails so that test set-up failures are immediately
-/// visible.
-pub fn get_test_manager() -> &'static FoundryLocalManager {
-    static TEST_MANAGER: OnceLock<Arc<FoundryLocalManager>> = OnceLock::new();
-    TEST_MANAGER.get_or_init(|| {
+/// The manager remains shared for the test run, then an `atexit` callback drops
+/// the final strong handle before the native library's C++ static destructors
+/// run. This preserves one-time initialization without leaking the manager into
+/// process teardown.
+pub fn get_test_manager() -> Arc<FoundryLocalManager> {
+    let slot = TEST_MANAGER.get_or_init(|| Mutex::new(None));
+    let mut manager = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let manager = manager.get_or_insert_with(|| {
         FoundryLocalManager::create(test_config()).expect("Failed to create FoundryLocalManager")
-    })
+    });
+    let result = Arc::clone(manager);
+
+    REGISTER_MANAGER_CLEANUP.call_once(|| {
+        // SAFETY: the callback has C ABI, takes no arguments, and remains valid
+        // for the process lifetime.
+        let status = unsafe { atexit(cleanup_test_manager) };
+        assert_eq!(status, 0, "failed to register test-manager cleanup");
+    });
+
+    result
 }
 
 /// Serialises the web-service integration tests.
