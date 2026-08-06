@@ -8,6 +8,14 @@
 #   pack_nuget  – Microsoft.AI.Foundry.Local.Runtime
 #                 (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64;
 #                  Windows ships WinML; ARM64 Linux is CPU-only)
+#
+# Android (arm64-v8a, x86_64) is built and published as an artifact but is
+# deliberately *not* fed into either pack stage: neither the NuGet package nor
+# the C++ SDK tgz has an Android consumer today, and Android's dependency
+# origins differ enough (GenAI ships as a GitHub Releases AAR rather than a
+# NuGet package) that packaging is a separate design question. The stages exist
+# so that a dependency bump which is valid on desktop but unavailable for
+# Android fails here rather than silently.
 
 parameters:
 - name: buildConfig
@@ -191,6 +199,67 @@ stages:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
           runTests: true
+
+  # ====================================================================
+  # Android arm64-v8a — cross-compiled on a Linux host (build only)
+  # ====================================================================
+  - stage: cpp_build_android_arm64
+    displayName: 'C++ Native: Android arm64-v8a'
+    dependsOn:
+    - compute_version
+    jobs:
+    - job: build
+      pool:
+        name: onnxruntime-Ubuntu2404-AMD-CPU
+        os: linux
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'version-info'
+          targetPath: '$(Pipeline.Workspace)/version-info'
+        outputs:
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-android-arm64-v8a'
+          targetPath: '$(Build.ArtifactStagingDirectory)/native'
+      steps:
+      - template: steps-build-android.yml
+        parameters:
+          abi: arm64-v8a
+          buildConfig: ${{ parameters.buildConfig }}
+          ortVersion: ${{ parameters.ortVersion }}
+          genaiVersion: ${{ parameters.genaiVersion }}
+
+  # ====================================================================
+  # Android x86_64 — cross-compiled on a Linux host (build only)
+  #
+  # This is the emulator ABI, so it is the leg that can eventually run tests
+  # (see steps-build-android.yml's runEmulatorTests). Kept build-only for now.
+  # ====================================================================
+  - stage: cpp_build_android_x86_64
+    displayName: 'C++ Native: Android x86_64'
+    dependsOn:
+    - compute_version
+    jobs:
+    - job: build
+      pool:
+        name: onnxruntime-Ubuntu2404-AMD-CPU
+        os: linux
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'version-info'
+          targetPath: '$(Pipeline.Workspace)/version-info'
+        outputs:
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-android-x86_64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/native'
+      steps:
+      - template: steps-build-android.yml
+        parameters:
+          abi: x86_64
+          buildConfig: ${{ parameters.buildConfig }}
+          ortVersion: ${{ parameters.ortVersion }}
+          genaiVersion: ${{ parameters.genaiVersion }}
 
   # ====================================================================
   # Pack — C++ SDK tgz bundles (base platforms)
