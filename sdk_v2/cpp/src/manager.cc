@@ -311,7 +311,9 @@ Manager::Manager(const Configuration& config)
     telemetry_->RecordProcessInfo(
         BuildProcessInfo(BuildTelemetryMetadata(config_.app_name), !disable_nonessential_telemetry));
   } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning, fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+    logger_->Log(
+        LogLevel::Warning,
+        fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
   }

@@ -87,6 +87,8 @@ struct ActionCall {
 
 class CapturingTelemetry : public ITelemetry {
  public:
+  using ITelemetry::RecordAction;
+
   void RecordAction(Action action, ActionStatus status,
                     const InvocationContext& context, int64_t duration_ms) override {
     action_calls.push_back(
@@ -168,6 +170,17 @@ TEST(TelemetryActionTest, DirectContextUsesDefaultUserAgent) {
   EXPECT_EQ(context.user_agent, "foundry-local-test/1.0");
   EXPECT_FALSE(context.correlation_id.empty());
   EXPECT_FALSE(context.indirect);
+}
+
+TEST(TelemetryActionTest, CompatibilityActionOverloadCreatesCorrelationId) {
+  CapturingTelemetry telemetry;
+
+  telemetry.RecordAction(Action::kCoreInitialize, ActionStatus::kSuccess, "test-agent", true, 42);
+
+  ASSERT_EQ(telemetry.action_calls.size(), 1u);
+  EXPECT_EQ(telemetry.action_calls.front().user_agent, "test-agent");
+  EXPECT_TRUE(telemetry.action_calls.front().indirect);
+  EXPECT_EQ(telemetry.action_calls.front().duration_ms, 42);
   SetDefaultUserAgent({});
 }
 

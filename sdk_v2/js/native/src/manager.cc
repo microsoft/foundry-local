@@ -213,13 +213,13 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       for (const auto& entry : additional_settings) {
         kvp.Set(entry.first.c_str(), entry.second.c_str());
       }
-      if (has_disable_nonessential_telemetry) {
+      if (has_disable_nonessential_telemetry && disable_nonessential_telemetry) {
         kvp.Set("DisableNonessentialTelemetry", disable_nonessential_telemetry ? "true" : "false");
       }
       config.SetAdditionalOptions(kvp);
-    } else if (has_disable_nonessential_telemetry) {
+    } else if (has_disable_nonessential_telemetry && disable_nonessential_telemetry) {
       foundry_local::KeyValuePairs kvp;
-      kvp.Set("DisableNonessentialTelemetry", disable_nonessential_telemetry ? "true" : "false");
+      kvp.Set("DisableNonessentialTelemetry", "true");
       config.SetAdditionalOptions(kvp);
     }
     impl_ = std::make_unique<foundry_local::Manager>(std::move(config));

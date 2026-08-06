@@ -209,7 +209,9 @@ class ITelemetry {
 
   void RecordAction(Action action, ActionStatus status, const std::string& user_agent,
                     bool indirect, int64_t duration_ms) {
-    RecordAction(action, status, InvocationContext{user_agent, {}, indirect}, duration_ms);
+    auto context = InvocationContext::Direct(user_agent);
+    context.indirect = indirect;
+    RecordAction(action, status, context, duration_ms);
   }
 
   /// Record a completed action with timing and status. The context carries the
