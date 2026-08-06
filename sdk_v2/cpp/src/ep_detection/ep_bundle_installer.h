@@ -24,6 +24,7 @@ using EpArtifactDownloadFn = std::function<bool(const std::string& url,
                                                 std::atomic<bool>* cancel_flag,
                                                 const std::function<void(float)>& progress_cb,
                                                 ILogger& logger)>;
+using EpBundleManifestFactory = std::function<std::optional<EpBundleManifest>()>;
 
 enum class EpBundleInstallPolicy {
   ReuseVerified,
@@ -34,8 +35,8 @@ class EpInstallTransaction {
  public:
   EpInstallTransaction(std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
                        std::string ep_display_name, EpBundleManifest manifest, std::string generation_id,
-                       std::filesystem::path bin_dir);
-  ~EpInstallTransaction();
+                       std::filesystem::path bin_dir, std::optional<std::string> previous_active_generation);
+  ~EpInstallTransaction() noexcept;
 
   EpInstallTransaction(const EpInstallTransaction&) = delete;
   EpInstallTransaction& operator=(const EpInstallTransaction&) = delete;
@@ -43,19 +44,26 @@ class EpInstallTransaction {
   EpInstallTransaction& operator=(EpInstallTransaction&&) = delete;
 
   const std::filesystem::path& bin_dir() const { return bin_dir_; }
+  std::filesystem::path provider_path() const { return bin_dir_ / manifest_.provider_relative_path; }
 
   const std::string& bundle_id() const { return manifest_.bundle_id; }
 
-  bool CommitActive(ILogger& logger);
+  bool Activate(ILogger& logger);
+  void Finalize(ILogger& logger);
+  bool Rollback(ILogger& logger) noexcept;
 
  private:
+  bool RollbackInternal(ILogger* logger, bool log_recovery_error) noexcept;
+
   std::unique_ptr<FileLock> lock_;
   std::filesystem::path root_dir_;
   std::string ep_display_name_;
   EpBundleManifest manifest_;
   std::string generation_id_;
   std::filesystem::path bin_dir_;
-  bool committed_ = false;
+  std::optional<std::string> previous_active_generation_;
+  bool activated_ = false;
+  bool finalized_ = false;
 };
 
 class EpBundleInstaller {

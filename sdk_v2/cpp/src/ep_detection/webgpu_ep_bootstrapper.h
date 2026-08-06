@@ -20,7 +20,9 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
  public:
   /// @param root_dir  Root directory for the WebGPU EP bundle, e.g. "<app_data_dir>/ep/webgpu-ep".
   /// @param register_ep  Callback to register the EP DLL with ORT.
-  WebGpuEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep);
+  WebGpuEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
+                       EpBundleManifestFactory manifest_factory = nullptr,
+                       EpArtifactDownloadFn download_fn = nullptr);
   ~WebGpuEpBootstrapper() override = default;
 
   // Non-copyable
@@ -39,6 +41,7 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
   bool registered_ = false;
   int attempts_ = 0;
   EpRegistrationCallback register_ep_;
+  EpBundleManifestFactory manifest_factory_;
   EpBundleInstaller installer_;
 #ifdef _WIN32
   EpBundleSearchPathOwner search_path_owner_;

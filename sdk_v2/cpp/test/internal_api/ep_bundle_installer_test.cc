@@ -11,8 +11,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -27,6 +29,21 @@ namespace {
 class NullLogger : public ILogger {
  public:
   void Log(LogLevel /*level*/, std::string_view /*message*/) override {}
+};
+
+class RecordingLogger : public ILogger {
+ public:
+  void Log(LogLevel level, std::string_view message) override {
+    entries.emplace_back(level, std::string(message));
+  }
+
+  bool Contains(std::string_view fragment) const {
+    return std::any_of(entries.begin(), entries.end(), [&](const auto& entry) {
+      return entry.second.find(fragment) != std::string::npos;
+    });
+  }
+
+  std::vector<std::pair<LogLevel, std::string>> entries;
 };
 
 std::vector<uint8_t> AsBytes(const std::string& text) { return std::vector<uint8_t>(text.begin(), text.end()); }
@@ -129,18 +146,19 @@ EpBundleManifest MakeArchiveManifest(const std::string& bundle_id, const std::st
   return manifest;
 }
 
-std::optional<std::filesystem::path> InstallAndCommit(EpBundleInstaller& installer, const EpBundleManifest& manifest,
-                                                      ILogger& logger) {
+std::optional<std::filesystem::path> InstallAndFinalize(EpBundleInstaller& installer, const EpBundleManifest& manifest,
+                                                        ILogger& logger) {
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   if (!txn) {
     return std::nullopt;
   }
 
   const auto bin_dir = txn->bin_dir();
-  if (!txn->CommitActive(logger)) {
+  if (!txn->Activate(logger)) {
     return std::nullopt;
   }
 
+  txn->Finalize(logger);
   return bin_dir;
 }
 
@@ -190,7 +208,8 @@ TEST(EpBundleInstallerTest, ReusesValidBundleWithoutRedownloading) {
     auto first = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
     ASSERT_NE(first, nullptr);
     first_bin = first->bin_dir();
-    ASSERT_TRUE(first->CommitActive(logger));
+    ASSERT_TRUE(first->Activate(logger));
+    first->Finalize(logger);
   }
 
   auto second = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
@@ -236,7 +255,7 @@ TEST(EpBundleInstallerTest, ForceDownloadRedownloadsEveryArtifactFromValidActive
 
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
-  ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
 
   auto replacement =
       installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger, EpBundleInstallPolicy::ForceDownload);
@@ -349,7 +368,7 @@ TEST(EpBundleInstallerTest, MissingExpectedExtractedFileFails) {
   EXPECT_EQ(txn, nullptr);
 }
 
-TEST(EpBundleInstallerTest, CommitActiveWritesActiveMarkerFile) {
+TEST(EpBundleInstallerTest, ActivateWritesActiveMarkerFile) {
   auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
   auto payload = AsBytes("content");
   FakeDownloads downloads;
@@ -361,12 +380,12 @@ TEST(EpBundleInstallerTest, CommitActiveWritesActiveMarkerFile) {
 
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  EXPECT_TRUE(txn->CommitActive(logger));
+  EXPECT_TRUE(txn->Activate(logger));
 
   EXPECT_TRUE(ReadFile(root.path() / "active").starts_with("bundle-42-"));
 }
 
-TEST(EpBundleInstallerTest, CommitActiveReplacesExistingActiveMarker) {
+TEST(EpBundleInstallerTest, ActivateReplacesExistingActiveMarker) {
   auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
   auto payload = AsBytes("content");
   FakeDownloads downloads;
@@ -382,7 +401,7 @@ TEST(EpBundleInstallerTest, CommitActiveReplacesExistingActiveMarker) {
 
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  EXPECT_TRUE(txn->CommitActive(logger));
+  EXPECT_TRUE(txn->Activate(logger));
   EXPECT_TRUE(ReadFile(root.path() / "active").starts_with("bundle-1-"))
       << "publishing replaces an existing active marker atomically";
 }
@@ -407,7 +426,7 @@ TEST(EpBundleInstallerTest, InstallTransactionHoldsLockUntilReleased) {
   EXPECT_NO_THROW({ FileLock probe(lock_path, /*timeout_ms=*/0); });
 }
 
-TEST(EpBundleInstallerTest, CommitActiveRevalidatesUnderLockAndRefusesTamperedBundle) {
+TEST(EpBundleInstallerTest, ActivateRevalidatesUnderLockAndRefusesTamperedBundle) {
   auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
   auto payload_v1 = AsBytes("v1");
   auto payload_v2 = AsBytes("v2");
@@ -418,7 +437,7 @@ TEST(EpBundleInstallerTest, CommitActiveRevalidatesUnderLockAndRefusesTamperedBu
   NullLogger logger;
 
   auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
-  ASSERT_TRUE(InstallAndCommit(installer, manifest_v1, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
   ASSERT_TRUE(active_v1.starts_with("bundle-v1-"));
 
@@ -429,14 +448,14 @@ TEST(EpBundleInstallerTest, CommitActiveRevalidatesUnderLockAndRefusesTamperedBu
     std::ofstream(txn->bin_dir() / "unexpected.txt") << "surprise";
   }
 
-  EXPECT_FALSE(txn->CommitActive(logger)) << "re-verification under the lock must reject a tampered bundle";
+  EXPECT_FALSE(txn->Activate(logger)) << "re-verification under the lock must reject a tampered bundle";
   EXPECT_EQ(ReadFile(root.path() / "active"), active_v1)
       << "a bundle failing re-verification must not advance the active marker";
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1))
       << "the previous generation is preserved when activation fails";
 }
 
-TEST(EpBundleInstallerTest, CommitActivePreservesPreviousMarkerWhenPublicationFails) {
+TEST(EpBundleInstallerTest, ActivatePreservesPreviousMarkerWhenPublicationFails) {
   auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
   auto payload_v1 = AsBytes("v1");
   auto payload_v2 = AsBytes("v2");
@@ -447,7 +466,7 @@ TEST(EpBundleInstallerTest, CommitActivePreservesPreviousMarkerWhenPublicationFa
   NullLogger logger;
 
   auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
-  ASSERT_TRUE(InstallAndCommit(installer, manifest_v1, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
   ASSERT_TRUE(active_v1.starts_with("bundle-v1-"));
 
@@ -461,7 +480,7 @@ TEST(EpBundleInstallerTest, CommitActivePreservesPreviousMarkerWhenPublicationFa
     std::ofstream(root.path() / "active" / "blocker") << "x";
   }
 
-  EXPECT_FALSE(txn->CommitActive(logger)) << "a failed marker publication is reported as failure";
+  EXPECT_FALSE(txn->Activate(logger)) << "a failed marker publication is reported as failure";
   EXPECT_TRUE(std::filesystem::is_directory(root.path() / "active"))
       << "the failed publication left the marker path untouched";
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1))
@@ -469,7 +488,7 @@ TEST(EpBundleInstallerTest, CommitActivePreservesPreviousMarkerWhenPublicationFa
   EXPECT_TRUE(std::filesystem::exists(txn->bin_dir()));
 }
 
-TEST(EpBundleInstallerTest, CommitActiveRemovesOldGenerations) {
+TEST(EpBundleInstallerTest, FinalizeRemovesOldGenerationsOnlyAfterSuccessfulActivation) {
   auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
   auto payload_v1 = AsBytes("v1");
   auto payload_v2 = AsBytes("v2");
@@ -481,17 +500,209 @@ TEST(EpBundleInstallerTest, CommitActiveRemovesOldGenerations) {
   NullLogger logger;
 
   auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
-  ASSERT_TRUE(InstallAndCommit(installer, manifest_v1, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
   ASSERT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1));
 
   auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
-  ASSERT_TRUE(InstallAndCommit(installer, manifest_v2, logger).has_value());
+  auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
   const auto active_v2 = ReadFile(root.path() / "active");
 
-  EXPECT_FALSE(std::filesystem::exists(root.path() / "bundles" / active_v1))
-      << "the previous generation is removed once the new one is committed";
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1))
+      << "activation must not delete the previously active generation";
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v2));
+
+  txn->Finalize(logger);
+
+  EXPECT_FALSE(std::filesystem::exists(root.path() / "bundles" / active_v1))
+      << "finalization removes the previous generation only after registration succeeds";
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v2));
+}
+
+TEST(EpBundleInstallerTest, RollbackRestoresPreviousMarkerAndRetainsGenerations) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload_v1 = AsBytes("v1");
+  auto payload_v2 = AsBytes("v2");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload_v1});
+  downloads.SetSequence("https://example.test/v2.so", {payload_v2});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  NullLogger logger;
+
+  const auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
+  const auto active_v1 = ReadFile(root.path() / "active");
+
+  const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
+  auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_NE(ReadFile(root.path() / "active"), active_v1);
+
+  const auto candidate_generation = txn->bin_dir().parent_path().filename().string();
+  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_EQ(ReadFile(root.path() / "active"), active_v1);
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1));
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / candidate_generation));
+}
+
+TEST(EpBundleInstallerTest, RollbackFirstInstallRemovesCandidateMarkerAndRetainsGeneration) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload = AsBytes("v1");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  NullLogger logger;
+
+  const auto manifest = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload));
+  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+
+  const auto candidate_generation = txn->bin_dir().parent_path().filename().string();
+  ASSERT_EQ(ReadFile(root.path() / "active"), candidate_generation);
+
+  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_FALSE(std::filesystem::exists(root.path() / "active"));
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / candidate_generation));
+}
+
+TEST(EpBundleInstallerTest, RollbackFirstInstallLeavesDifferentMarkerUntouched) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload = AsBytes("v1");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  NullLogger logger;
+
+  const auto manifest = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload));
+  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+
+  {
+    std::ofstream(root.path() / "active", std::ios::binary | std::ios::trunc) << "manual-marker";
+  }
+
+  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_EQ(ReadFile(root.path() / "active"), "manual-marker");
+}
+
+TEST(EpBundleInstallerTest, RollbackOnReusedActiveBundleLeavesMarkerUnchanged) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload = AsBytes("v1");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  NullLogger logger;
+
+  const auto manifest = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload));
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
+  const auto active_generation = ReadFile(root.path() / "active");
+
+  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_EQ(ReadFile(root.path() / "active"), active_generation);
+
+  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_EQ(ReadFile(root.path() / "active"), active_generation);
+}
+
+TEST(EpBundleInstallerTest, ActivatedTransactionDestructorRestoresPreviousMarkerBeforeReleasingLock) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload_v1 = AsBytes("v1");
+  auto payload_v2 = AsBytes("v2");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload_v1});
+  downloads.SetSequence("https://example.test/v2.so", {payload_v2});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  NullLogger logger;
+
+  const auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
+  const auto active_v1 = ReadFile(root.path() / "active");
+
+  const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
+  auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+
+  const auto lock_path = root.path() / "test.lock";
+  EXPECT_THROW({ FileLock probe(lock_path, /*timeout_ms=*/0); }, std::runtime_error);
+
+  txn.reset();
+
+  EXPECT_EQ(ReadFile(root.path() / "active"), active_v1);
+  EXPECT_NO_THROW({ FileLock probe(lock_path, /*timeout_ms=*/0); });
+}
+
+TEST(EpBundleInstallerTest, RollbackFailureLogsCacheRecoveryMessageAndRetainsGenerations) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload_v1 = AsBytes("v1");
+  auto payload_v2 = AsBytes("v2");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload_v1});
+  downloads.SetSequence("https://example.test/v2.so", {payload_v2});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  RecordingLogger logger;
+
+  const auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
+  const auto active_v1 = ReadFile(root.path() / "active");
+
+  const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
+  auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+
+  const auto candidate_generation = txn->bin_dir().parent_path().filename().string();
+  std::filesystem::remove(root.path() / "active");
+  std::filesystem::create_directory(root.path() / "active");
+  {
+    std::ofstream(root.path() / "active" / "blocker") << "x";
+  }
+
+  EXPECT_FALSE(txn->Rollback(logger));
+  EXPECT_TRUE(logger.Contains("failed to recover the active bundle marker after bootstrap failure"));
+  EXPECT_TRUE(logger.Contains(root.path().string()));
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1));
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / candidate_generation));
+}
+
+TEST(EpBundleInstallerTest, FinalizeCleanupFailureKeepsPublishedMarker) {
+  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
+  auto payload_v1 = AsBytes("v1");
+  auto payload_v2 = AsBytes("v2");
+  FakeDownloads downloads;
+  downloads.SetSequence("https://example.test/v1.so", {payload_v1});
+  downloads.SetSequence("https://example.test/v2.so", {payload_v2});
+  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
+  RecordingLogger logger;
+
+  const auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload_v1));
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest_v1, logger).has_value());
+  const auto active_v1 = ReadFile(root.path() / "active");
+
+  const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
+  auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
+  ASSERT_NE(txn, nullptr);
+  ASSERT_TRUE(txn->Activate(logger));
+  const auto active_v2 = ReadFile(root.path() / "active");
+
+  std::filesystem::rename(root.path() / "bundles", root.path() / "bundles_saved");
+  {
+    std::ofstream(root.path() / "bundles") << "block cleanup";
+  }
+
+  txn->Finalize(logger);
+  txn.reset();
+
+  EXPECT_EQ(ReadFile(root.path() / "active"), active_v2);
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles_saved" / active_v1));
+  EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles_saved" / active_v2));
 }
 
 TEST(EpBundleInstallerTest, StaleStagingDirectoryIsCleanedUpOnNextInstall) {
@@ -580,7 +791,7 @@ TEST(EpBundleInstallerTest, DoesNotCopyUnexpectedFilesFromExistingBundle) {
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
 
-  ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
 
   auto bin_dir = root.path() / "bundles" / ReadFile(root.path() / "active") / "bin";
   {
@@ -729,7 +940,7 @@ TEST(EpBundleInstallerTest, ReuseDependsOnlyOnInstalledRuntimeFiles) {
 
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
-  ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
 
   manifest.artifacts.front().ignored_archive_paths = {"different-packaging-metadata.json"};
   auto reused = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
@@ -776,7 +987,7 @@ TEST(EpBundleInstallerTest, ReusesValidArtifactsAndDownloadsOnlyMismatches) {
 
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
-  ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
 
   const auto active_bin = root.path() / "bundles" / ReadFile(root.path() / "active") / "bin";
   std::ofstream(active_bin / "second.bin", std::ios::binary | std::ios::trunc) << "corrupt";
@@ -848,7 +1059,7 @@ TEST(EpBundleInstallerTest, CancellationOnVerifiedBundleReuseReturnsNoTransactio
   const auto manifest = MakeRawManifest("bundle-1", "https://example.test/provider.so", HashOf(payload));
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
-  ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
   const auto active_generation = ReadFile(root.path() / "active");
 
   auto cancel_reuse = [](const std::string&, float percent) { return percent != kEpReadyToRegisterProgress; };
@@ -895,7 +1106,7 @@ TEST(EpBundleInstallerTest, CancellationAfterCopiedArtifactRemovesStagingCopy) {
 
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
-  ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
+  ASSERT_TRUE(InstallAndFinalize(installer, manifest, logger).has_value());
   const auto active_generation = ReadFile(root.path() / "active");
   const auto active_bin = root.path() / "bundles" / active_generation / "bin";
   std::ofstream(active_bin / "second.bin", std::ios::binary | std::ios::trunc) << "corrupt";

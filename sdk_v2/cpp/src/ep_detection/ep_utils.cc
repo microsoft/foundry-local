@@ -16,15 +16,30 @@
 namespace fl {
 
 #ifdef _WIN32
+namespace {
+
+std::filesystem::path NormalizeDirectory(const std::filesystem::path& directory) {
+  return std::filesystem::absolute(directory).lexically_normal();
+}
+
+}  // namespace
+
 EpBundleSearchPathOwner::~EpBundleSearchPathOwner() {
   for (auto it = cookies_.rbegin(); it != cookies_.rend(); ++it) {
-    RemoveDllDirectory(*it);
+    if (*it != nullptr) {
+      RemoveDllDirectory(*it);
+    }
   }
 }
 
+bool EpBundleSearchPathOwner::Owns(const std::filesystem::path& directory) const {
+  const auto absolute_directory = NormalizeDirectory(directory);
+  return std::find(directories_.begin(), directories_.end(), absolute_directory) != directories_.end();
+}
+
 bool EpBundleSearchPathOwner::Add(const std::filesystem::path& directory, std::string_view ep_name, ILogger& logger) {
-  const auto absolute_directory = std::filesystem::absolute(directory).lexically_normal();
-  if (std::find(directories_.begin(), directories_.end(), absolute_directory) != directories_.end()) {
+  const auto absolute_directory = NormalizeDirectory(directory);
+  if (Owns(absolute_directory)) {
     return true;
   }
 
@@ -36,8 +51,27 @@ bool EpBundleSearchPathOwner::Add(const std::filesystem::path& directory, std::s
   }
   directories_.push_back(absolute_directory);
   cookies_.push_back(cookie);
-  cookies_.push_back(cookie);
   return true;
+}
+
+void EpBundleSearchPathOwner::MergeFrom(EpBundleSearchPathOwner&& other) noexcept {
+  for (size_t i = 0; i < other.directories_.size() && i < other.cookies_.size(); ++i) {
+    if (other.cookies_[i] == nullptr) {
+      continue;
+    }
+
+    if (Owns(other.directories_[i])) {
+      RemoveDllDirectory(other.cookies_[i]);
+    } else {
+      directories_.push_back(std::move(other.directories_[i]));
+      cookies_.push_back(other.cookies_[i]);
+    }
+
+    other.cookies_[i] = nullptr;
+  }
+
+  other.directories_.clear();
+  other.cookies_.clear();
 }
 #endif
 

@@ -40,6 +40,11 @@ namespace {
 constexpr int kArchiveHashRetries = 1;
 constexpr int kRawHashRetries = 0;
 
+class NoOpLogger : public ILogger {
+ public:
+  void Log(LogLevel /*level*/, std::string_view /*message*/) override {}
+};
+
 class ScopedDirectoryCleanup {
  public:
   explicit ScopedDirectoryCleanup(std::filesystem::path path) : path_(std::move(path)) {}
@@ -127,6 +132,32 @@ bool PublishActiveMarker(const std::filesystem::path& root_dir, const std::strin
   }
 
   return true;
+}
+
+bool RemoveActiveMarkerIfStillCandidate(const std::filesystem::path& root_dir, const std::string& generation_id,
+                                        std::string_view ep_display_name, ILogger& logger) {
+  const auto active_path = root_dir / "active";
+  const auto active_generation = ReadActiveMarker(active_path);
+  if (!active_generation.has_value() || *active_generation != generation_id) {
+    return true;
+  }
+
+  std::error_code ec;
+  if (!std::filesystem::remove(active_path, ec) && ec) {
+    logger.Log(LogLevel::Warning, fmt::format("{}: failed to remove active marker '{}': {}", ep_display_name,
+                                              active_path.string(), ec.message()));
+    return false;
+  }
+
+  return true;
+}
+
+void LogRollbackRecoveryError(std::string_view ep_display_name, const std::filesystem::path& root_dir,
+                              ILogger& logger) {
+  logger.Log(LogLevel::Warning,
+             fmt::format("{}: failed to recover the active bundle marker after bootstrap failure. Clear the EP cache "
+                         "directory '{}' and retry",
+                         ep_display_name, root_dir.string()));
 }
 
 bool IsSha256(std::string_view value) {
@@ -628,7 +659,7 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
       }
 
       return std::make_unique<EpInstallTransaction>(std::move(lock), root_dir_, ep_display_name_, manifest,
-                                                    *active_generation, active_bin);
+                                                    *active_generation, active_bin, active_generation);
     }
 
     auto staging_dir = staging_root / GenerateUniqueId();
@@ -683,7 +714,8 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
     }
 
     auto transaction = std::make_unique<EpInstallTransaction>(std::move(lock), root_dir_, ep_display_name_, manifest,
-                                                              generation_id, final_bundle_dir / "bin");
+                                                              generation_id, final_bundle_dir / "bin",
+                                                              active_generation);
     final_cleanup.Release();
     return transaction;
   } catch (const std::exception& e) {
@@ -694,18 +726,26 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
 
 EpInstallTransaction::EpInstallTransaction(std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
                                            std::string ep_display_name, EpBundleManifest manifest,
-                                           std::string generation_id, std::filesystem::path bin_dir)
+                                           std::string generation_id, std::filesystem::path bin_dir,
+                                           std::optional<std::string> previous_active_generation)
     : lock_(std::move(lock)),
       root_dir_(std::move(root_dir)),
       ep_display_name_(std::move(ep_display_name)),
       manifest_(std::move(manifest)),
       generation_id_(std::move(generation_id)),
-      bin_dir_(std::move(bin_dir)) {}
+      bin_dir_(std::move(bin_dir)),
+      previous_active_generation_(std::move(previous_active_generation)) {}
 
-EpInstallTransaction::~EpInstallTransaction() = default;
+EpInstallTransaction::~EpInstallTransaction() noexcept {
+  if (!activated_ || finalized_) {
+    return;
+  }
 
-bool EpInstallTransaction::CommitActive(ILogger& logger) {
-  if (committed_) {
+  (void)RollbackInternal(/*logger=*/nullptr, /*log_recovery_error=*/false);
+}
+
+bool EpInstallTransaction::Activate(ILogger& logger) {
+  if (activated_ || finalized_) {
     return true;
   }
 
@@ -723,15 +763,87 @@ bool EpInstallTransaction::CommitActive(ILogger& logger) {
       return false;
     }
 
+    if (previous_active_generation_.has_value() && *previous_active_generation_ == generation_id_) {
+      activated_ = true;
+      return true;
+    }
+
     if (!PublishActiveMarker(root_dir_, generation_id_, ep_display_name_, logger)) {
       return false;
     }
 
-    committed_ = true;
-    CleanupStaleGenerations(bundles_dir, staging_root, {generation_id_}, ep_display_name_, logger);
+    activated_ = true;
     return true;
   } catch (const std::exception& e) {
-    logger.Log(LogLevel::Warning, fmt::format("{}: failed to commit active bundle: {}", ep_display_name_, e.what()));
+    logger.Log(LogLevel::Warning, fmt::format("{}: failed to activate bundle: {}", ep_display_name_, e.what()));
+    return false;
+  }
+}
+
+void EpInstallTransaction::Finalize(ILogger& logger) {
+  if (finalized_ || !activated_) {
+    return;
+  }
+
+  finalized_ = true;
+
+  try {
+    const auto bundles_dir = root_dir_ / "bundles";
+    const auto staging_root = root_dir_ / "staging";
+    (void)CleanupStaleGenerations(bundles_dir, staging_root, {generation_id_}, ep_display_name_, logger);
+  } catch (const std::exception& e) {
+    logger.Log(LogLevel::Warning,
+               fmt::format("{}: failed to clean stale bundle generations after activation: {}", ep_display_name_,
+                           e.what()));
+  }
+}
+
+bool EpInstallTransaction::Rollback(ILogger& logger) noexcept {
+  if (!activated_ || finalized_) {
+    return true;
+  }
+
+  return RollbackInternal(&logger, /*log_recovery_error=*/true);
+}
+
+bool EpInstallTransaction::RollbackInternal(ILogger* logger, bool log_recovery_error) noexcept {
+  if (!activated_ || finalized_) {
+    return true;
+  }
+
+  NoOpLogger no_op_logger;
+  auto& active_logger = logger == nullptr ? static_cast<ILogger&>(no_op_logger) : *logger;
+
+  try {
+    bool rollback_succeeded = true;
+    if (previous_active_generation_.has_value()) {
+      if (*previous_active_generation_ != generation_id_) {
+        rollback_succeeded =
+            PublishActiveMarker(root_dir_, *previous_active_generation_, ep_display_name_, active_logger);
+      }
+    } else {
+      rollback_succeeded =
+          RemoveActiveMarkerIfStillCandidate(root_dir_, generation_id_, ep_display_name_, active_logger);
+    }
+
+    if (!rollback_succeeded) {
+      if (logger != nullptr && log_recovery_error) {
+        LogRollbackRecoveryError(ep_display_name_, root_dir_, *logger);
+      }
+      return false;
+    }
+
+    activated_ = false;
+    return true;
+  } catch (const std::exception& e) {
+    if (logger != nullptr) {
+      logger->Log(LogLevel::Warning,
+                  fmt::format("{}: failed to roll back active bundle marker: {}", ep_display_name_, e.what()));
+      if (log_recovery_error) {
+        LogRollbackRecoveryError(ep_display_name_, root_dir_, *logger);
+      }
+    }
+
     return false;
   }
 }

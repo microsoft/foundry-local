@@ -21,7 +21,9 @@ class EpBundleSearchPathOwner {
   EpBundleSearchPathOwner(const EpBundleSearchPathOwner&) = delete;
   EpBundleSearchPathOwner& operator=(const EpBundleSearchPathOwner&) = delete;
 
+  bool Owns(const std::filesystem::path& directory) const;
   bool Add(const std::filesystem::path& directory, std::string_view ep_name, ILogger& logger);
+  void MergeFrom(EpBundleSearchPathOwner&& other) noexcept;
 
  private:
   std::vector<std::filesystem::path> directories_;

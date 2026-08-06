@@ -7,11 +7,19 @@
 #include "ep_detection/ep_types.h"
 #include "ep_detection/ep_utils.h"
 
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace fl {
 
 class ILogger;
+
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+using CudaGenAiDependencyLoader =
+    std::function<std::shared_ptr<void>(const std::filesystem::path&, ILogger&)>;
+#endif
 
 /// Bootstrapper for the CUDA execution provider.
 ///
@@ -20,7 +28,14 @@ class CudaEpBootstrapper : public IEpBootstrapper {
  public:
   /// @param root_dir  Root directory for the CUDA EP bundle, e.g. "<app_data_dir>/ep/cuda-ep".
   /// @param register_ep  Callback to register the EP DLL with ORT.
-  CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep);
+  CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
+                     EpBundleManifestFactory manifest_factory = nullptr,
+                     EpArtifactDownloadFn download_fn = nullptr
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+                     ,
+                     CudaGenAiDependencyLoader genai_cuda_loader = nullptr
+#endif
+                     );
   ~CudaEpBootstrapper() override;
 
   // Non-copyable
@@ -42,12 +57,16 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   bool registered_ = false;
   int attempts_ = 0;
   EpRegistrationCallback register_ep_;
+  EpBundleManifestFactory manifest_factory_;
   EpBundleInstaller installer_;
 #ifdef _WIN32
   EpBundleSearchPathOwner search_path_owner_;
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
-  void* genai_cuda_handle_ = nullptr;
+  std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>> genai_cuda_libraries_;
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+  CudaGenAiDependencyLoader genai_cuda_loader_;
+#endif
 #endif
 };
 

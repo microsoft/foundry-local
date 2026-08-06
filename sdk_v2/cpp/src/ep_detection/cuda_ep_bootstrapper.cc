@@ -10,8 +10,10 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
@@ -42,20 +44,42 @@ fl::CudaEpPlatform HostCudaEpPlatform() {
 }
 
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
-bool LoadGenAiCudaLibrary(const std::filesystem::path& path, void*& handle, fl::ILogger& logger) {
-  if (handle) {
-    return true;
-  }
-
+std::shared_ptr<void> DefaultGenAiCudaLoader(const std::filesystem::path& path, fl::ILogger& logger) {
   dlerror();
-  handle = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL | RTLD_NODELETE);
+  void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
   if (!handle) {
     const char* error = dlerror();
     logger.Log(fl::LogLevel::Warning,
                fmt::format("CUDA EP: failed to load '{}' ({})", path.string(), error ? error : "unknown error"));
+    return {};
+  }
+
+  return std::shared_ptr<void>(handle, [](void* loaded_library) {
+    if (loaded_library != nullptr) {
+      dlclose(loaded_library);
+    }
+  });
+}
+
+bool LoadGenAiCudaLibrary(
+    const std::filesystem::path& path,
+    const std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>>& loaded_libraries,
+    const fl::CudaGenAiDependencyLoader& loader,
+    std::pair<std::filesystem::path, std::shared_ptr<void>>& provisional_library, fl::ILogger& logger) {
+  const auto absolute_path = std::filesystem::absolute(path).lexically_normal();
+  const auto already_loaded =
+      std::any_of(loaded_libraries.begin(), loaded_libraries.end(),
+                  [&](const auto& loaded_library) { return loaded_library.first == absolute_path; });
+  if (already_loaded) {
+    return true;
+  }
+
+  auto loaded_library = loader ? loader(absolute_path, logger) : DefaultGenAiCudaLoader(absolute_path, logger);
+  if (!loaded_library) {
     return false;
   }
 
+  provisional_library = {absolute_path, std::move(loaded_library)};
   return true;
 }
 #endif
@@ -64,16 +88,25 @@ bool LoadGenAiCudaLibrary(const std::filesystem::path& path, void*& handle, fl::
 
 namespace fl {
 
-CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep)
-    : register_ep_(std::move(register_ep)), installer_(std::filesystem::path(root_dir), kLockFileName, "CUDA EP") {}
-
-CudaEpBootstrapper::~CudaEpBootstrapper() {
-#if defined(__linux__) && !defined(__ANDROID__)
-  if (genai_cuda_handle_) {
-    dlclose(genai_cuda_handle_);
-  }
+CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
+                                       EpBundleManifestFactory manifest_factory, EpArtifactDownloadFn download_fn
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+                                       ,
+                                       CudaGenAiDependencyLoader genai_cuda_loader
 #endif
+                                       )
+    : register_ep_(std::move(register_ep)),
+      manifest_factory_(manifest_factory ? std::move(manifest_factory)
+                                         : [] { return BuildCudaEpManifest(HostCudaEpPlatform()); }),
+      installer_(std::filesystem::path(root_dir), kLockFileName, "CUDA EP", std::move(download_fn))
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+      ,
+      genai_cuda_loader_(genai_cuda_loader ? std::move(genai_cuda_loader) : DefaultGenAiCudaLoader)
+#endif
+{
 }
+
+CudaEpBootstrapper::~CudaEpBootstrapper() = default;
 
 const std::string& CudaEpBootstrapper::Name() const { return name_; }
 
@@ -110,13 +143,17 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
       }
 
 #ifdef _WIN32
-      if (!search_path_owner_.Add(provider_path.parent_path(), "CUDA EP", logger)) {
+      EpBundleSearchPathOwner provisional_search_path_owner;
+      if (!search_path_owner_.Owns(provider_path.parent_path()) &&
+          !provisional_search_path_owner.Add(provider_path.parent_path(), "CUDA EP", logger)) {
         return false;
       }
 #endif
 
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
-      if (!LoadGenAiCudaLibrary(provider_path.parent_path() / kGenAiCudaLibrary, genai_cuda_handle_, logger)) {
+      std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
+      if (!LoadGenAiCudaLibrary(provider_path.parent_path() / kGenAiCudaLibrary, genai_cuda_libraries_,
+                                genai_cuda_loader_, provisional_genai_cuda_library, logger)) {
         return false;
       }
 #endif
@@ -126,6 +163,16 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
                                                   kCudaProviderOverrideEnv, provider_path.string()));
         return false;
       }
+
+#ifdef _WIN32
+      search_path_owner_.MergeFrom(std::move(provisional_search_path_owner));
+#endif
+
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+      if (provisional_genai_cuda_library.second) {
+        genai_cuda_libraries_.push_back(std::move(provisional_genai_cuda_library));
+      }
+#endif
 
       registered_ = true;
 
@@ -138,7 +185,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
       return true;
     }
 
-    auto manifest = BuildCudaEpManifest(HostCudaEpPlatform());
+    auto manifest = manifest_factory_();
     if (!manifest.has_value()) {
       logger.Log(LogLevel::Warning, "CUDA EP: no bundle available for this platform");
       return false;
@@ -150,28 +197,44 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
       return false;
     }
 
-    if (!txn->CommitActive(logger)) {
-      logger.Log(LogLevel::Warning, "CUDA EP: failed to publish active bundle marker");
+    if (!txn->Activate(logger)) {
+      logger.Log(LogLevel::Warning, "CUDA EP: failed to activate bundle");
       return false;
     }
 
-    const auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
+    const auto provider_path = txn->provider_path();
 #ifdef _WIN32
-    if (!search_path_owner_.Add(txn->bin_dir(), "CUDA EP", logger)) {
+    EpBundleSearchPathOwner provisional_search_path_owner;
+    if (!search_path_owner_.Owns(txn->bin_dir()) &&
+        !provisional_search_path_owner.Add(txn->bin_dir(), "CUDA EP", logger)) {
+      txn->Rollback(logger);
       return false;
     }
 #elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
-    if (!LoadGenAiCudaLibrary(txn->bin_dir() / kGenAiCudaLibrary, genai_cuda_handle_, logger)) {
+    std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
+    if (!LoadGenAiCudaLibrary(txn->bin_dir() / kGenAiCudaLibrary, genai_cuda_libraries_, genai_cuda_loader_,
+                              provisional_genai_cuda_library, logger)) {
+      txn->Rollback(logger);
       return false;
     }
 #endif
 
     if (!register_ep_(kRegistrationName, provider_path)) {
       logger.Log(LogLevel::Warning, "CUDA EP: ORT registration failed");
+      txn->Rollback(logger);
       return false;
     }
 
+#ifdef _WIN32
+    search_path_owner_.MergeFrom(std::move(provisional_search_path_owner));
+#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+    if (provisional_genai_cuda_library.second) {
+      genai_cuda_libraries_.push_back(std::move(provisional_genai_cuda_library));
+    }
+#endif
+
     registered_ = true;
+    txn->Finalize(logger);
 
     if (progress_cb) {
       progress_cb(name_, 100.0f);
