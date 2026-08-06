@@ -106,6 +106,12 @@ else()
 endif()
 
 set(_GENAI_PACKAGE_NAME "Microsoft.ML.OnnxRuntimeGenAI.Foundry")
+if(ANDROID)
+    # The Foundry meta-package ships desktop RIDs only; the base package embeds
+    # an AAR with the Android headers and native .so files. Mirrors the same
+    # split handled in FindOnnxRuntime.cmake.
+    set(_GENAI_PACKAGE_NAME "Microsoft.ML.OnnxRuntimeGenAI")
+endif()
 
 if(NOT ORT_GENAI_VERSION)
     # Single source of truth: sdk_v2/deps_versions.json. The Python SDK build
@@ -120,75 +126,63 @@ if(NOT ORT_GENAI_VERSION)
     message(STATUS "ORT_GENAI_VERSION=${ORT_GENAI_VERSION} (from ${_GENAI_DEPS_FILE})")
 endif()
 
-if(ANDROID)
-    # GenAI publishes a standalone AAR on GitHub Releases that contains
-    # both C/C++ headers and native .so files — no NuGet package needed.
-    set(_GENAI_AAR_URL "https://github.com/microsoft/onnxruntime-genai/releases/download/v${ORT_GENAI_VERSION}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
-    set(_GENAI_AAR_DIR "${CMAKE_BINARY_DIR}/_deps/genai-android-aar")
-    set(_GENAI_AAR_FILE "${_GENAI_AAR_DIR}/onnxruntime-genai-android.aar")
-
-    if(NOT EXISTS "${_GENAI_AAR_FILE}")
-        message(STATUS "Downloading ORT GenAI Android AAR v${ORT_GENAI_VERSION} from GitHub Releases")
-        file(DOWNLOAD "${_GENAI_AAR_URL}" "${_GENAI_AAR_FILE}"
-             STATUS _GENAI_DL_STATUS)
-        list(GET _GENAI_DL_STATUS 0 _GENAI_DL_CODE)
-        if(NOT _GENAI_DL_CODE EQUAL 0)
-            list(GET _GENAI_DL_STATUS 1 _GENAI_DL_MSG)
-            message(FATAL_ERROR "Failed to download GenAI AAR: ${_GENAI_DL_MSG}")
-        endif()
-    endif()
-
-    if(NOT EXISTS "${_GENAI_AAR_DIR}/jni")
-        file(ARCHIVE_EXTRACT INPUT "${_GENAI_AAR_FILE}"
-             DESTINATION "${_GENAI_AAR_DIR}")
-    endif()
-
-    set(_GENAI_HEADER_DIR "${_GENAI_AAR_DIR}/headers")
-    set(_GENAI_LIB_DIR "${_GENAI_AAR_DIR}/jni/${ANDROID_ABI}")
-
-    message(STATUS "OnnxRuntimeGenAI via GitHub AAR: ${_GENAI_AAR_DIR}")
-else()
-    # Allow the pipeline or caller to override the download URL (e.g., to use a local
-    # file:// path when direct nuget.org access is blocked in CI).
-    if(NOT GENAI_FETCH_URL)
-        # Dev builds come from the ADO nightly feed; release versions come from nuget.org.
-        if(ORT_GENAI_VERSION MATCHES "-dev-")
-            set(ORT_GENAI_FEED_ORG  "aiinfra")
-            set(ORT_GENAI_FEED_PROJECT "2692857e-05ef-43b4-ba9c-ccf1c22c437c")
-            set(ORT_GENAI_FEED_ID   "7982ae20-ed19-4a35-a362-a96ac99897b7")
-            set(GENAI_FETCH_URL "https://pkgs.dev.azure.com/${ORT_GENAI_FEED_ORG}/${ORT_GENAI_FEED_PROJECT}/_apis/packaging/feeds/${ORT_GENAI_FEED_ID}/nuget/packages/${_GENAI_PACKAGE_NAME}/versions/${ORT_GENAI_VERSION}/content?api-version=6.0-preview.1")
-            message(STATUS "Downloading ${_GENAI_PACKAGE_NAME} ${ORT_GENAI_VERSION} from ORT-Nightly feed")
-        else()
-            string(TOLOWER "${_GENAI_PACKAGE_NAME}" _GENAI_PACKAGE_LOWER)
-            set(GENAI_FETCH_URL "https://api.nuget.org/v3-flatcontainer/${_GENAI_PACKAGE_LOWER}/${ORT_GENAI_VERSION}/${_GENAI_PACKAGE_LOWER}.${ORT_GENAI_VERSION}.nupkg")
-            message(STATUS "Downloading ${_GENAI_PACKAGE_NAME} ${ORT_GENAI_VERSION} from nuget.org")
-        endif()
+# Allow the pipeline or caller to override the download URL (e.g., to use a local
+# file:// path when direct nuget.org access is blocked in CI).
+if(NOT GENAI_FETCH_URL)
+    # Dev builds come from the ADO nightly feed; release versions come from nuget.org.
+    if(ORT_GENAI_VERSION MATCHES "-dev-")
+        set(ORT_GENAI_FEED_ORG  "aiinfra")
+        set(ORT_GENAI_FEED_PROJECT "2692857e-05ef-43b4-ba9c-ccf1c22c437c")
+        set(ORT_GENAI_FEED_ID   "7982ae20-ed19-4a35-a362-a96ac99897b7")
+        set(GENAI_FETCH_URL "https://pkgs.dev.azure.com/${ORT_GENAI_FEED_ORG}/${ORT_GENAI_FEED_PROJECT}/_apis/packaging/feeds/${ORT_GENAI_FEED_ID}/nuget/packages/${_GENAI_PACKAGE_NAME}/versions/${ORT_GENAI_VERSION}/content?api-version=6.0-preview.1")
+        message(STATUS "Downloading ${_GENAI_PACKAGE_NAME} ${ORT_GENAI_VERSION} from ORT-Nightly feed")
     else()
-        message(STATUS "Using caller-provided GENAI_FETCH_URL: ${GENAI_FETCH_URL}")
+        string(TOLOWER "${_GENAI_PACKAGE_NAME}" _GENAI_PACKAGE_LOWER)
+        set(GENAI_FETCH_URL "https://api.nuget.org/v3-flatcontainer/${_GENAI_PACKAGE_LOWER}/${ORT_GENAI_VERSION}/${_GENAI_PACKAGE_LOWER}.${ORT_GENAI_VERSION}.nupkg")
+        message(STATUS "Downloading ${_GENAI_PACKAGE_NAME} ${ORT_GENAI_VERSION} from nuget.org")
     endif()
+else()
+    message(STATUS "Using caller-provided GENAI_FETCH_URL: ${GENAI_FETCH_URL}")
+endif()
 
-    # Normalize to forward slashes — backslashes from Windows paths cause CMake
-    # string-parsing errors inside FetchContent/ExternalProject_Add.
-    string(REPLACE "\\" "/" GENAI_FETCH_URL "${GENAI_FETCH_URL}")
+# Normalize to forward slashes — backslashes from Windows paths cause CMake
+# string-parsing errors inside FetchContent/ExternalProject_Add.
+string(REPLACE "\\" "/" GENAI_FETCH_URL "${GENAI_FETCH_URL}")
 
-    # CMake's ExternalProject doesn't recognize .nupkg as an archive format.
-    # Since .nupkg is just a ZIP file, copy it with a .zip extension if it's a local file.
-    if(GENAI_FETCH_URL MATCHES "\\.nupkg$" AND NOT GENAI_FETCH_URL MATCHES "^https?://")
-        set(_GENAI_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/genai-download/genai.zip")
-        get_filename_component(_GENAI_ZIP_DIR "${_GENAI_ZIP_PATH}" DIRECTORY)
-        file(MAKE_DIRECTORY "${_GENAI_ZIP_DIR}")
-        file(COPY_FILE "${GENAI_FETCH_URL}" "${_GENAI_ZIP_PATH}")
-        set(GENAI_FETCH_URL "${_GENAI_ZIP_PATH}")
-        message(STATUS "Copied .nupkg to .zip for CMake extraction: ${GENAI_FETCH_URL}")
+# CMake's ExternalProject doesn't recognize .nupkg as an archive format.
+# Since .nupkg is just a ZIP file, copy it with a .zip extension if it's a local file.
+if(GENAI_FETCH_URL MATCHES "\\.nupkg$" AND NOT GENAI_FETCH_URL MATCHES "^https?://")
+    set(_GENAI_ZIP_PATH "${CMAKE_BINARY_DIR}/_deps/genai-download/genai.zip")
+    get_filename_component(_GENAI_ZIP_DIR "${_GENAI_ZIP_PATH}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_GENAI_ZIP_DIR}")
+    file(COPY_FILE "${GENAI_FETCH_URL}" "${_GENAI_ZIP_PATH}")
+    set(GENAI_FETCH_URL "${_GENAI_ZIP_PATH}")
+    message(STATUS "Copied .nupkg to .zip for CMake extraction: ${GENAI_FETCH_URL}")
+endif()
+
+FetchContent_Declare(genailib
+    URL ${GENAI_FETCH_URL}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    DOWNLOAD_NAME genai.zip  # .nupkg is a ZIP; force CMake to recognize the format
+)
+FetchContent_MakeAvailable(genailib)
+
+if(ANDROID)
+    # The NuGet package embeds an AAR with the headers and native .so files.
+    # Extract it to get headers/ and jni/<abi>/libonnxruntime-genai.so.
+    set(_GENAI_ANDROID_DIR "${genailib_SOURCE_DIR}/runtimes/android/native")
+    set(_GENAI_AAR_PATH "${_GENAI_ANDROID_DIR}/onnxruntime-genai.aar")
+    if(NOT EXISTS "${_GENAI_AAR_PATH}")
+        message(FATAL_ERROR "GenAI Android AAR not found at ${_GENAI_AAR_PATH}. "
+                            "Ensure the package contains Android binaries (e.g. Microsoft.ML.OnnxRuntimeGenAI).")
     endif()
-
-    FetchContent_Declare(genailib
-        URL ${GENAI_FETCH_URL}
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        DOWNLOAD_NAME genai.zip  # .nupkg is a ZIP; force CMake to recognize the format
-    )
-    FetchContent_MakeAvailable(genailib)
-
+    if(NOT EXISTS "${_GENAI_ANDROID_DIR}/jni")
+        file(ARCHIVE_EXTRACT INPUT "${_GENAI_AAR_PATH}" DESTINATION "${_GENAI_ANDROID_DIR}/")
+    endif()
+    set(_GENAI_HEADER_DIR "${_GENAI_ANDROID_DIR}/headers")
+    set(_GENAI_LIB_DIR    "${_GENAI_ANDROID_DIR}/jni/${ANDROID_ABI}")
+    message(STATUS "Extracted GenAI Android AAR: ${_GENAI_AAR_PATH}")
+else()
     set(_GENAI_HEADER_DIR "${genailib_SOURCE_DIR}/build/native/include")
     set(_GENAI_LIB_DIR    "${genailib_SOURCE_DIR}/runtimes/${_GENAI_PLATFORM}/native")
 endif()

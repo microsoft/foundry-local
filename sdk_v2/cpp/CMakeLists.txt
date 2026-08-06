@@ -441,6 +441,18 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
         )
 
+        # GenAI 0.15.0+ splits its matrix-multiplication kernels into a separate
+        # libmat.so that libonnxruntime-genai.so links against (DT_NEEDED). It is
+        # absent from older packages and from the desktop builds, so only copy it
+        # when the package actually ships it.
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/libmat.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/libmat.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+
         if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_shared.so")
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
