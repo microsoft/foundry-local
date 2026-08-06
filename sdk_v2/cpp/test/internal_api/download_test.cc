@@ -19,6 +19,7 @@
 #include "logger.h"
 #include "model_info.h"
 #include "test_helpers.h"
+#include "util/model_layout.h"
 #include "util/path_safety.h"
 #include "util/region_fallback.h"
 #include <foundry_local/foundry_local_c.h>
@@ -755,6 +756,45 @@ TEST(InferenceModelWriterTest, WritesNullPromptTemplateWhenEmpty) {
 }
 
 // ========================================================================
+// Model layout classifier tests
+// ========================================================================
+
+TEST(ModelLayoutTest, ManifestWithoutRootGenaiConfigIsModelPackage) {
+  auto tmpdir = TempPath::CreateTempDir();
+  std::ofstream(tmpdir.path() / "manifest.json") << "{}";
+
+  EXPECT_EQ(ClassifyModelLayout(tmpdir.path()), ModelLayout::ModelPackage);
+}
+
+TEST(ModelLayoutTest, ManifestWithRootGenaiConfigIsFlatModel) {
+  auto tmpdir = TempPath::CreateTempDir();
+  std::ofstream(tmpdir.path() / "manifest.json") << "{}";
+  std::ofstream(tmpdir.path() / "genai_config.json") << "{}";
+
+  EXPECT_EQ(ClassifyModelLayout(tmpdir.path()), ModelLayout::FlatModel);
+}
+
+TEST(ModelLayoutTest, NonRegularGenaiConfigDoesNotCountAsAbsent) {
+  auto tmpdir = TempPath::CreateTempDir();
+  std::ofstream(tmpdir.path() / "manifest.json") << "{}";
+  fs::create_directory(tmpdir.path() / "genai_config.json");
+
+  EXPECT_EQ(ClassifyModelLayout(tmpdir.path()), ModelLayout::Invalid);
+}
+
+TEST(ModelLayoutTest, DirectoryWithoutIdentifyingFilesIsIncomplete) {
+  auto tmpdir = TempPath::CreateTempDir();
+
+  EXPECT_EQ(ClassifyModelLayout(tmpdir.path()), ModelLayout::Incomplete);
+}
+
+TEST(ModelLayoutTest, RegularFilePathIsInvalid) {
+  auto tmpfile = TempPath::CreateTempFile();
+
+  EXPECT_EQ(ClassifyModelLayout(tmpfile.path()), ModelLayout::Invalid);
+}
+
+// ========================================================================
 // Variant fixup tests
 // ========================================================================
 
@@ -838,6 +878,21 @@ TEST(VariantFixupTest, PreservesRootFileWhenNoSubdirs) {
   auto content = ReadFile(root / "inference_model.json");
   auto j = nlohmann::json::parse(content);
   EXPECT_EQ(j["Name"], "root-only");
+}
+
+TEST(VariantFixupTest, ModelPackageKeepsInferenceModelAtRoot) {
+  auto tmpdir = TempPath::CreateTempDir();
+  const auto& root = tmpdir.path();
+  std::ofstream(root / "manifest.json") << "{}";
+  std::ofstream(root / "inference_model.json") << R"({"Name": "package"})";
+  fs::create_directories(root / "variants" / "cpu");
+  fs::create_directories(root / "shared_assets");
+
+  FixVariantInferenceModelJson(root.string());
+
+  EXPECT_TRUE(fs::is_regular_file(root / "inference_model.json"));
+  EXPECT_FALSE(fs::exists(root / "variants" / "inference_model.json"));
+  EXPECT_FALSE(fs::exists(root / "shared_assets" / "inference_model.json"));
 }
 
 // ========================================================================
@@ -1038,6 +1093,59 @@ TEST(DownloadManagerTest, IsModelCachedReturnsFalseForEmptyDir) {
   fs::create_directories(model_dir);
 
   EXPECT_FALSE(manager.IsModelCached(info));
+}
+
+TEST(DownloadManagerTest, CachedModelPackageUsesRootMarkerAndReturnsRootPath) {
+  auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  ModelInfo info;
+  info.model_id = "package:1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Publisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "Publisher" / "package-1";
+  fs::create_directories(model_dir / "variants" / "cpu");
+  std::ofstream(model_dir / "manifest.json") << "{}";
+  std::ofstream(model_dir / "inference_model.json") << R"({"Name": "package:1"})";
+  std::ofstream(model_dir / "variants" / "cpu" / "genai_config.json") << "{}";
+
+  EXPECT_TRUE(manager.IsModelCached(info));
+  EXPECT_EQ(manager.DownloadModel(info), model_dir.string());
+}
+
+TEST(DownloadManagerTest, ModelPackageWithoutRootMarkerIsNotCached) {
+  auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  ModelInfo info;
+  info.model_id = "package:2";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Publisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "Publisher" / "package-2";
+  fs::create_directories(model_dir / "variants" / "cpu");
+  std::ofstream(model_dir / "manifest.json") << "{}";
+  std::ofstream(model_dir / "variants" / "cpu" / "genai_config.json") << "{}";
+  std::ofstream(model_dir / "variants" / "cpu" / "inference_model.json") << "{}";
+
+  EXPECT_FALSE(manager.IsModelCached(info));
+}
+
+TEST(DownloadManagerTest, LegacyFlatVariantReturnsFirstChildWithGenaiConfig) {
+  auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  ModelInfo info;
+  info.model_id = "flat-variant:1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Publisher";
+
+  auto model_dir = fs::path(tmpdir.string()) / "Publisher" / "flat-variant-1";
+  auto variant_dir = model_dir / "cpu";
+  fs::create_directories(variant_dir);
+  std::ofstream(variant_dir / "genai_config.json") << "{}";
+  std::ofstream(variant_dir / "inference_model.json") << R"({"Name": "flat-variant:1"})";
+
+  EXPECT_TRUE(manager.IsModelCached(info));
+  EXPECT_EQ(manager.DownloadModel(info), variant_dir.string());
 }
 
 TEST(DownloadManagerTest, VersionSuffixConversion) {
