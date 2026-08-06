@@ -337,17 +337,11 @@ void Model::Load(ExecutionProvider ep) {
     enrich(tag_info.bor_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
     enrich(tag_info.eor_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
 
-    // Infer support flags from the presence of valid tag IDs
-    if (!info_.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT)) {
-      if (tag_info.bot_id.has_value()) {
-        info_.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] = 1;
-      }
-    }
-    if (!info_.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT)) {
-      if (tag_info.bor_id.has_value()) {
-        info_.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] = 1;
-      }
-    }
+    // Note: we intentionally do NOT infer SUPPORTS_TOOL_CALLING or SUPPORTS_REASONING
+    // from the mere presence of tag token IDs.  The GenAI fallback map defines bor/eor
+    // tokens for entire model families (e.g. all qwen2), but that doesn't mean every
+    // variant actually supports reasoning (qwen2.5-0.5b is not a thinking model).
+    // The catalog is the authority for support flags; tag IDs only provide marker strings.
   }
 }
 
