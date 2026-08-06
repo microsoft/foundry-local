@@ -55,11 +55,13 @@ inline size_t FindPathAnchor(std::string_view s) {
       }
 
       size_t segments = 0;
+      bool segment_has_dot = false;
       size_t j = i;
       while (j < s.size() && s[j] == '/') {
         const size_t seg_start = ++j;
         while (j < s.size() && s[j] != '/' && s[j] != '\r' && s[j] != '\n' && s[j] != ' ' &&
                s[j] != '\t') {
+          segment_has_dot = segment_has_dot || s[j] == '.';
           ++j;
         }
         if (j > seg_start) {
@@ -69,7 +71,7 @@ inline size_t FindPathAnchor(std::string_view s) {
         }
       }
 
-      if (segments >= 2) {
+      if (segments >= 2 || (segments == 1 && segment_has_dot)) {
         size_t start = i;
         while (start > 0) {
           const unsigned char prev = static_cast<unsigned char>(s[start - 1]);

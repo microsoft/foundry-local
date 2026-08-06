@@ -351,6 +351,7 @@ TEST(TelemetryRedactionTest, ScrubsPathsKeepsNonPathTextAndCapsLength) {
   EXPECT_EQ(ScrubStringForTelemetry("failed at /secret"), "failed at [path]");
   EXPECT_EQ(ScrubStringForTelemetry("Load C:\\Users\\First Last\\model.onnx failed"), "Load [path]");
   EXPECT_EQ(ScrubStringForTelemetry("open /home/alice/model.onnx failed"), "open [path]");
+  EXPECT_EQ(ScrubStringForTelemetry("failed at models/alice.onnx"), "failed at [path]");
   EXPECT_EQ(ScrubStringForTelemetry("ratio 3/4 and and/or"), "ratio 3/4 and and/or");
 
   const std::string long_msg(kMaxTelemetryStringLength + 100, 'x');
@@ -373,6 +374,17 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
 TEST(TelemetrySamplingTest, SamplesCoreAudioTranscribeAtTwoPercent) {
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 2.0);
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
+
+  bool retained = false;
+  bool dropped = false;
+  for (int i = 0; i < 10'000 && (!retained || !dropped); ++i) {
+    const bool sampled = TelemetryInternal::ShouldSampleTelemetryEvent(
+        "app-session", "audio-correlation-" + std::to_string(i), 2.0);
+    retained = retained || sampled;
+    dropped = dropped || !sampled;
+  }
+  EXPECT_TRUE(retained);
+  EXPECT_TRUE(dropped);
 }
 
 TEST(ActionTrackerTest, DestructorRecordsFailureByDefaultWithoutModelId) {
