@@ -83,6 +83,7 @@ struct ActionCall {
   std::string user_agent;
   bool indirect;
   int64_t duration_ms;
+  std::string model_id;
 };
 
 class CapturingTelemetry : public ITelemetry {
@@ -90,9 +91,10 @@ class CapturingTelemetry : public ITelemetry {
   using ITelemetry::RecordAction;
 
   void RecordAction(Action action, ActionStatus status,
-                    const InvocationContext& context, int64_t duration_ms) override {
+                    const InvocationContext& context, int64_t duration_ms,
+                    const std::string& model_id) override {
     action_calls.push_back(
-        ActionCall{action, status, context.user_agent, context.indirect, duration_ms});
+        ActionCall{action, status, context.user_agent, context.indirect, duration_ms, model_id});
   }
 
   void RecordException(Action action, const std::exception& exception,
@@ -101,11 +103,6 @@ class CapturingTelemetry : public ITelemetry {
   }
 
   void RecordModelUsage(const ModelUsageInfo&) override {}
-
-  void RecordModelId(Action action, const std::string& model_id,
-                     ActionStatus /*status*/, const InvocationContext& /*context*/) override {
-    model_id_calls.emplace_back(action, model_id);
-  }
 
   void RecordEpDownloadAttempt(const EpDownloadAttemptInfo&) override {}
 
@@ -117,7 +114,6 @@ class CapturingTelemetry : public ITelemetry {
 
   std::vector<ActionCall> action_calls;
   std::vector<std::pair<Action, std::string>> exception_calls;
-  std::vector<std::pair<Action, std::string>> model_id_calls;
 };
 
 }  // namespace
@@ -217,8 +213,8 @@ TEST(TelemetryLoggerTest, RecordExceptionAndModelEventsIncludeSpecificValues) {
   usage.total_time_ms = 250;
   telemetry.RecordModelUsage(usage);
 
-  telemetry.RecordModelId(Action::kModelLoad, "phi-3-mini", ActionStatus::kSuccess,
-                          InvocationContext{"cli/1.0", "", false});
+  telemetry.RecordAction(Action::kModelLoad, ActionStatus::kSuccess,
+                         InvocationContext{"cli/1.0", "", false}, 250, "phi-3-mini");
 
   ASSERT_EQ(logger.entries.size(), 3u);
   EXPECT_NE(logger.entries[0].message.find("Action=ModelLoad"), std::string::npos);
@@ -400,11 +396,11 @@ TEST(ActionTrackerTest, DestructorRecordsFailureByDefaultWithoutModelId) {
   EXPECT_EQ(telemetry.action_calls[0].user_agent, "foundry-local-test/2.0");
   EXPECT_FALSE(telemetry.action_calls[0].indirect);
   EXPECT_GE(telemetry.action_calls[0].duration_ms, 0);
-  EXPECT_TRUE(telemetry.model_id_calls.empty());
+  EXPECT_TRUE(telemetry.action_calls[0].model_id.empty());
   SetDefaultUserAgent({});
 }
 
-TEST(ActionTrackerTest, RecordsExceptionSuccessAndModelId) {
+TEST(ActionTrackerTest, RecordsExceptionSuccessAndModelIdOnAction) {
   CapturingTelemetry telemetry;
 
   {
@@ -425,7 +421,5 @@ TEST(ActionTrackerTest, RecordsExceptionSuccessAndModelId) {
   EXPECT_FALSE(telemetry.action_calls[0].indirect);
   EXPECT_GE(telemetry.action_calls[0].duration_ms, 0);
 
-  ASSERT_EQ(telemetry.model_id_calls.size(), 1u);
-  EXPECT_EQ(telemetry.model_id_calls[0].first, Action::kModelLoad);
-  EXPECT_EQ(telemetry.model_id_calls[0].second, "phi-3-mini");
+  EXPECT_EQ(telemetry.action_calls[0].model_id, "phi-3-mini");
 }

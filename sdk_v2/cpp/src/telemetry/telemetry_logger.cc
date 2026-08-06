@@ -13,12 +13,12 @@ TelemetryLogger::TelemetryLogger(const std::string& app_name, ILogger& logger)
 }
 
 void TelemetryLogger::RecordAction(Action action, ActionStatus status, const InvocationContext& context,
-                                   int64_t duration_ms) {
+                                   int64_t duration_ms, const std::string& model_id) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] Action AppName={} UserAgent={} CorrelationId={} Action={} Status={} "
-                          "Direct={} TimeMs={}",
+                          "Direct={} TimeMs={} ModelId={}",
                           app_name_, context.user_agent, context.correlation_id, ActionToString(action),
-                          ActionStatusToString(status), !context.indirect, duration_ms));
+                          ActionStatusToString(status), !context.indirect, duration_ms, model_id));
 }
 
 void TelemetryLogger::RecordException(Action action, const std::exception& exception,
@@ -51,15 +51,6 @@ void TelemetryLogger::RecordAudioUsage(const AudioUsageInfo& info) {
                           info.audio_source, info.language, info.stream, !info.indirect, info.total_time_ms,
                           info.total_tokens, info.input_token_count, info.completion_token_count,
                           info.audio_duration_ms, info.sample_rate, info.channels));
-}
-
-void TelemetryLogger::RecordModelId(Action action, const std::string& model_id,
-                                   ActionStatus status, const InvocationContext& context) {
-  logger_.Log(LogLevel::Debug,
-              fmt::format("[Telemetry] ModelId AppName={} UserAgent={} CorrelationId={} Action={} ModelId={} "
-                          "Status={}",
-                          app_name_, context.user_agent, context.correlation_id, ActionToString(action),
-                          model_id, ActionStatusToString(status)));
 }
 
 void TelemetryLogger::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) {

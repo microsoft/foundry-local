@@ -24,11 +24,7 @@ ActionTracker::~ActionTracker() {
     auto end = std::chrono::steady_clock::now();
     auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_).count();
 
-    telemetry_.RecordAction(action_, status_, context_, duration_ms);
-
-    if (!model_id_.empty()) {
-      telemetry_.RecordModelId(action_, model_id_, status_, context_);
-    }
+    telemetry_.RecordAction(action_, status_, context_, duration_ms, model_id_);
   } catch (...) {
     // Telemetry is best-effort and must not throw from RAII cleanup.
   }

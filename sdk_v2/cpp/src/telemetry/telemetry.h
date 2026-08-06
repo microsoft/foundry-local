@@ -215,9 +215,11 @@ class ITelemetry {
 
   /// Record a completed action with timing and status. The context carries the
   /// user agent, the correlation id grouping this operation's events, and whether
-  /// the action was indirect (triggered by another action).
+  /// the action was indirect (triggered by another action). ModelId is included
+  /// when the action resolved a model.
   virtual void RecordAction(Action action, ActionStatus status,
-                            const InvocationContext& context, int64_t duration_ms) = 0;
+                            const InvocationContext& context, int64_t duration_ms,
+                            const std::string& model_id = {}) = 0;
 
   /// Record an exception associated with an action.
   virtual void RecordException(Action action, const std::exception& exception,
@@ -232,14 +234,6 @@ class ITelemetry {
 
   /// Record audio-specific inference metrics after audio inference (AudioModel event).
   virtual void RecordAudioUsage(const AudioUsageInfo& /*info*/) {}
-
-  /// Record which model was used for an action (ModelId event).
-  virtual void RecordModelId(Action action, const std::string& model_id,
-                             ActionStatus status, const InvocationContext& context) = 0;
-
-  void RecordModelId(Action action, const std::string& model_id) {
-    RecordModelId(action, model_id, ActionStatus::kSuccess, InvocationContext::Direct());
-  }
 
   /// Record the result of a DownloadAndRegisterEps call (EPDownloadAttempt event).
   virtual void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) = 0;

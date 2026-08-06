@@ -285,8 +285,8 @@ OneDsTelemetry::~OneDsTelemetry() {
 }
 
 void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const InvocationContext& context,
-                                  int64_t duration_ms) {
-  local_log_.RecordAction(action, status, context, duration_ms);
+                                  int64_t duration_ms, const std::string& model_id) {
+  local_log_.RecordAction(action, status, context, duration_ms, model_id);
   auto lock = LockForLogging();
   if (!lock.owns_lock()) {
     return;
@@ -303,6 +303,9 @@ void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const Invo
   ev.SetProperty("CorrelationId", context.correlation_id);
   ev.SetProperty("Direct", !context.indirect);
   ev.SetProperty("TimeMs", duration_ms);
+  if (!model_id.empty()) {
+    ev.SetProperty("ModelId", model_id);
+  }
   SafeLog(impl_->logger, ev);
 }
 
@@ -381,25 +384,6 @@ void OneDsTelemetry::RecordAudioUsage(const AudioUsageInfo& info) {
   ev.SetProperty("AudioDurationMs", info.audio_duration_ms);
   ev.SetProperty("SampleRate", static_cast<int64_t>(info.sample_rate));
   ev.SetProperty("Channels", static_cast<int64_t>(info.channels));
-  SafeLog(impl_->logger, ev);
-}
-
-void OneDsTelemetry::RecordModelId(Action action, const std::string& model_id,
-                                   ActionStatus status, const InvocationContext& context) {
-  local_log_.RecordModelId(action, model_id, status, context);
-  auto lock = LockForLogging();
-  if (!lock.owns_lock() || model_id.empty()) {
-    return;
-  }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id)) {
-    return;
-  }
-  auto ev = MakeEvent("ModelId");
-  ev.SetProperty("Action", std::string(ActionToString(action)));
-  ev.SetProperty("ModelId", model_id);
-  ev.SetProperty("Status", std::string(ActionStatusToString(status)));
-  ev.SetProperty("UserAgent", context.user_agent);
-  ev.SetProperty("CorrelationId", context.correlation_id);
   SafeLog(impl_->logger, ev);
 }
 
