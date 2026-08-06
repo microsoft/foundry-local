@@ -244,10 +244,10 @@ describe("generateRestoreProjectXml", () => {
   it("includes bracketed exact versions for every artifact", () => {
     const xml = generateRestoreProjectXml([
       { name: "Microsoft.ML.OnnxRuntime", version: "1.28.0", expected: "onnxruntime.dll" },
-      { name: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.1", expected: "onnxruntime-genai.dll" },
+      { name: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.2", expected: "onnxruntime-genai.dll" },
     ]);
     expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.28.0]" />');
-    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.15.1]" />');
+    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.15.2]" />');
   });
 
   it("targets net8.0", () => {
@@ -364,13 +364,13 @@ describe("buildNugetInstallArgs", () => {
   it("passes -ConfigFile and no -Source args when a config file is set", () => {
     const args = buildNugetInstallArgs(
       { ...config, configFile: "NuGet.config" },
-      { id: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.1", outputDir: "pkgs" },
+      { id: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.2", outputDir: "pkgs" },
     );
     expect(args).toEqual([
       "install",
       "Microsoft.ML.OnnxRuntimeGenAI.Foundry",
       "-Version",
-      "0.15.1",
+      "0.15.2",
       "-OutputDirectory",
       "pkgs",
       "-NonInteractive",
@@ -425,9 +425,9 @@ describe("findNugetPackageDir", () => {
   });
 
   it("matches case-insensitively regardless of the casing nuget.exe produced", () => {
-    const dir = join(outputDir, "microsoft.ml.onnxruntimegenai.foundry.0.15.1");
+    const dir = join(outputDir, "microsoft.ml.onnxruntimegenai.foundry.0.15.2");
     mkdirSync(dir, { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntimeGenAI.Foundry", "0.15.1")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntimeGenAI.Foundry", "0.15.2")).toBe(dir);
   });
 
   it("only looks at immediate children of outputDir, not nested dependency package folders", () => {
