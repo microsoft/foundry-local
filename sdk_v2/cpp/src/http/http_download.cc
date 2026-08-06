@@ -15,6 +15,8 @@
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 #include <azure/core/http/win_http_transport.hpp>
 #else
+#include "http/curl_transport.h"
+
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
@@ -77,14 +79,9 @@ bool HttpDownloadFile(const std::string& url, const std::filesystem::path& desti
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  // The bundled libcurl does not honor the SSL_CERT_FILE environment variable (it was built with a
-  // compiled-in default CA path that does not exist on platforms like Android). Explicitly pass the
-  // CA bundle via CAInfo so the caller-provided trust store is actually used for TLS verification.
-  CurlTransportOptions curl_opts;
-  if (std::string ca_bundle = http::CaBundleFile(); !ca_bundle.empty()) {
-    curl_opts.CAInfo = std::move(ca_bundle);
-  }
-  CurlTransport transport(curl_opts);
+  // libcurl does not honor SSL_CERT_FILE (its compiled-in default CA path is absent on Android), so
+  // pass the shared CA bundle explicitly via CAInfo (see http/curl_transport.h).
+  CurlTransport transport(http::CachedCurlTransportOptions());
 #endif
   Request request(HttpMethod::Get, Url(url));
   request.SetHeader("User-Agent", user_agent);

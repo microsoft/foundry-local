@@ -18,11 +18,12 @@
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 #include <azure/core/http/win_http_transport.hpp>
 #else
+#include "http/curl_transport.h"
+
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
 #include <chrono>
-#include <cstdlib>
 #include <random>
 #include <string>
 #include <thread>
@@ -33,11 +34,13 @@ namespace fl {
 namespace http {
 
 std::string CaBundleFile() {
-  const char* cert_file = std::getenv("SSL_CERT_FILE");
-  if (cert_file != nullptr && cert_file[0] != '\0') {
-    return cert_file;
-  }
-  return {};
+  // SSL_CERT_FILE is fixed for the process lifetime (callers set it before loading the library), so
+  // read it once and reuse the cached path for every request.
+  static const std::string ca_bundle = [] {
+    auto cert_file = Utils::GetEnv("SSL_CERT_FILE");
+    return (cert_file && !cert_file->empty()) ? std::move(*cert_file) : std::string();
+  }();
+  return ca_bundle;
 }
 
 namespace {
@@ -58,14 +61,10 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  // The bundled libcurl does not honor the SSL_CERT_FILE environment variable (it was built with a
-  // compiled-in default CA path that does not exist on platforms like Android). Explicitly pass the
-  // CA bundle via CAInfo so the caller-provided trust store is actually used for TLS verification.
-  CurlTransportOptions curl_opts;
-  if (std::string ca_bundle = CaBundleFile(); !ca_bundle.empty()) {
-    curl_opts.CAInfo = std::move(ca_bundle);
-  }
-  CurlTransport transport(curl_opts);
+  // libcurl does not honor SSL_CERT_FILE (its compiled-in default CA path is absent on Android), so
+  // we pass the CA bundle explicitly via CAInfo. The options are cached and shared (see
+  // http/curl_transport.h) and copied into the per-request transport.
+  CurlTransport transport(CachedCurlTransportOptions());
 #endif
 
   // Build the request. For methods with a body (POST), attach a MemoryBodyStream.

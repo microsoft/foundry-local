@@ -230,6 +230,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/exception.cc
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
+    src/http/curl_transport.cc
     src/inferencing/generative/genai_model_instance.cc
     src/inferencing/generative/tokenizer.cc
     src/logger.cc
