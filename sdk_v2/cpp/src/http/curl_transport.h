@@ -12,12 +12,9 @@
 namespace fl {
 namespace http {
 
-/// Returns the process-wide libcurl transport options, with `CAInfo` populated from `SSL_CERT_FILE`
-/// (via `CaBundleFile`). Built once and shared by every libcurl transport we construct — direct
-/// requests, file downloads, and the Azure Storage blob client — because the CA bundle path is fixed
-/// for the process lifetime. When `SSL_CERT_FILE` is unset, `CAInfo` is empty and libcurl falls back
-/// to its compiled-in default. The returned reference is valid for the lifetime of the process.
-const Azure::Core::Http::CurlTransportOptions& CachedCurlTransportOptions();
+/// Creates libcurl transport options with `CAInfo` populated from `SSL_CERT_FILE` via `CABundleFilePath`.
+/// When `SSL_CERT_FILE` is unset, `CAInfo` is empty and libcurl falls back to its compiled-in default.
+Azure::Core::Http::CurlTransportOptions MakeCurlTransportOptions();
 
 }  // namespace http
 }  // namespace fl

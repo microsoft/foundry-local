@@ -52,11 +52,11 @@ constexpr size_t kStreamingBufferBytes = 64 * 1024;
 Azure::Storage::Blobs::BlobClientOptions MakeBlobClientOptions() {
   Azure::Storage::Blobs::BlobClientOptions options;
 #if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
-  // Only override the Storage SDK's default transport when a CA bundle is configured; the options are
-  // cached and shared with our other curl transports (see http/curl_transport.h).
-  if (!fl::http::CaBundleFile().empty()) {
+  // Only override the Storage SDK's default transport when a CA bundle is configured.
+  auto curl_options = fl::http::MakeCurlTransportOptions();
+  if (!curl_options.CAInfo.empty()) {
     options.Transport.Transport =
-        std::make_shared<Azure::Core::Http::CurlTransport>(fl::http::CachedCurlTransportOptions());
+        std::make_shared<Azure::Core::Http::CurlTransport>(curl_options);
   }
 #endif
   return options;

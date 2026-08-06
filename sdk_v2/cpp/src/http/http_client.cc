@@ -33,7 +33,7 @@
 namespace fl {
 namespace http {
 
-const std::string& CaBundleFile() {
+const std::string& CABundleFilePath() {
   // SSL_CERT_FILE is fixed for the process lifetime (callers set it before loading the library), so
   // read it once and return a reference to the cached path for every request.
   static const std::string ca_bundle = [] {
@@ -62,9 +62,8 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
   WinHttpTransport transport;
 #else
   // libcurl does not honor SSL_CERT_FILE (its compiled-in default CA path is absent on Android), so
-  // we pass the CA bundle explicitly via CAInfo. The options are cached and shared (see
-  // http/curl_transport.h) and copied into the per-request transport.
-  CurlTransport transport(CachedCurlTransportOptions());
+  // pass the CA bundle explicitly via CAInfo (see http/curl_transport.h).
+  CurlTransport transport(MakeCurlTransportOptions());
 #endif
 
   // Build the request. For methods with a body (POST), attach a MemoryBodyStream.
