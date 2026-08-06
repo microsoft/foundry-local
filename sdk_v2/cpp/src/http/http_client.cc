@@ -33,9 +33,9 @@
 namespace fl {
 namespace http {
 
-std::string CaBundleFile() {
+const std::string& CaBundleFile() {
   // SSL_CERT_FILE is fixed for the process lifetime (callers set it before loading the library), so
-  // read it once and reuse the cached path for every request.
+  // read it once and return a reference to the cached path for every request.
   static const std::string ca_bundle = [] {
     auto cert_file = Utils::GetEnv("SSL_CERT_FILE");
     return (cert_file && !cert_file->empty()) ? std::move(*cert_file) : std::string();

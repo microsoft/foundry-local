@@ -15,8 +15,8 @@ namespace http {
 const Azure::Core::Http::CurlTransportOptions& CachedCurlTransportOptions() {
   static const Azure::Core::Http::CurlTransportOptions options = [] {
     Azure::Core::Http::CurlTransportOptions opts;
-    if (std::string ca_bundle = CaBundleFile(); !ca_bundle.empty()) {
-      opts.CAInfo = std::move(ca_bundle);
+    if (const std::string& ca_bundle = CaBundleFile(); !ca_bundle.empty()) {
+      opts.CAInfo = ca_bundle;
     }
     return opts;
   }();
