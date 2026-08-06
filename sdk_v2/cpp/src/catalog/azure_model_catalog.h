@@ -3,10 +3,12 @@
 #pragma once
 
 #include "catalog/base_model_catalog.h"
+#include "catalog/catalog_client.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -20,6 +22,14 @@ namespace fl {
 class AzureModelCatalog : public BaseModelCatalog {
  public:
   using ModelFactory = std::function<Model(ModelInfo info, std::string local_path)>;
+  using CatalogClientFactory = std::function<std::unique_ptr<ICatalogClient>(
+      const std::string& base_url,
+      const std::string& filter_override,
+      const IEpDetector& ep_detector,
+      ILogger& logger,
+      const std::string& cache_directory,
+      const std::string& catalog_region,
+      bool disable_region_fallback)>;
 
   AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
                     std::string cache_dir,
@@ -28,7 +38,8 @@ class AzureModelCatalog : public BaseModelCatalog {
                     ILogger& logger,
                     bool cache_only = false,
                     std::string catalog_region = "",
-                    bool disable_region_fallback = false);
+                    bool disable_region_fallback = false,
+                    CatalogClientFactory catalog_client_factory = {});
   ~AzureModelCatalog() override;
 
  protected:
@@ -47,6 +58,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   bool cache_only_;
+  CatalogClientFactory catalog_client_factory_;
   // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
   std::string catalog_region_;
   bool disable_region_fallback_;

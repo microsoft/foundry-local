@@ -63,6 +63,50 @@ class TempModelDir {
   std::string path_;
 };
 
+class TempModelPackage {
+ public:
+  TempModelPackage(const std::string& model_name,
+                   const std::string& first_config,
+                   const std::string& second_config = {}) {
+    path_ = (std::filesystem::temp_directory_path() / ("fl_package_test_" + model_name)).string();
+    std::filesystem::create_directories(std::filesystem::path(path_) / "variant-a");
+
+    std::ofstream manifest(std::filesystem::path(path_) / "manifest.json");
+    manifest << R"({
+      "schema_version": "1.0",
+      "components": {
+        "model": {
+          "variants": {
+            "variant-a": { "ep": "CPUExecutionProvider" })";
+    if (!second_config.empty()) {
+      manifest << R"(,
+            "variant-b": { "ep": "CPUExecutionProvider" })";
+      std::filesystem::create_directories(std::filesystem::path(path_) / "variant-b");
+      std::ofstream(std::filesystem::path(path_) / "variant-b" / "genai_config.json") << second_config;
+    }
+    manifest << R"(
+          }
+        }
+      }
+    })";
+
+    std::ofstream(std::filesystem::path(path_) / "variant-a" / "genai_config.json") << first_config;
+  }
+
+  ~TempModelPackage() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+
+  TempModelPackage(const TempModelPackage&) = delete;
+  TempModelPackage& operator=(const TempModelPackage&) = delete;
+
+  const std::string& path() const { return path_; }
+
+ private:
+  std::string path_;
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -167,6 +211,36 @@ TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
   } catch (const fl::Exception& e) {
     // Should NOT be an EP guard error
     EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+}
+
+TEST(ModelLoadManagerTest, ModelPackageDoesNotRequireRootGenaiConfig) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+  TempModelPackage package("package-no-root-config",
+                           R"({"model":{"type":"phi3","context_length":128},"search":{"max_length":128}})");
+
+  try {
+    mgr.LoadModel(package.path(), "package-no-root-config");
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(std::string(e.what()).find("does not contain genai_config.json"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, ModelPackageAcceptsDivergentRuntimeMetadataConservatively) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+  TempModelPackage package(
+      "package-divergent-config",
+      R"({"model":{"type":"phi3","context_length":128},"search":{"max_length":128}})",
+      R"({"model":{"type":"phi3","context_length":256},"search":{"max_length":256}})");
+
+  try {
+    mgr.LoadModel(package.path(), "package-divergent-config");
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(std::string(e.what()).find("runtime metadata"), std::string::npos);
   }
 }
 

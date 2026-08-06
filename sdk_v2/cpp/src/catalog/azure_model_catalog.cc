@@ -12,9 +12,178 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <map>
+#include <span>
 #include <utility>
 
 namespace fl {
+
+namespace {
+
+bool IsCompatible(CompiledModelCompatibility compatibility) {
+  return compatibility == CompiledModelCompatibility::kSupportedOptimal ||
+         compatibility == CompiledModelCompatibility::kSupportedPreferRecompilation;
+}
+
+bool IsRelevantPackageVariant(const ModelInfo& info, const ModelPackageVariant& package_variant) {
+  if (!info.execution_provider.empty() && !package_variant.execution_provider.empty() &&
+      info.execution_provider != package_variant.execution_provider) {
+    return false;
+  }
+
+  if (info.device_type != DeviceType::kNotSet &&
+      package_variant.device_type != DeviceType::kNotSet &&
+      info.device_type != package_variant.device_type) {
+    return false;
+  }
+
+  return true;
+}
+
+std::optional<DeviceType> GetDeviceConstraint(const ModelInfo& info,
+                                              const ModelPackageVariant& package_variant) {
+  if (package_variant.device_type != DeviceType::kNotSet) {
+    return package_variant.device_type;
+  }
+
+  if (info.device_type != DeviceType::kNotSet) {
+    return info.device_type;
+  }
+
+  return std::nullopt;
+}
+
+std::string_view GetRequestedExecutionProvider(const ModelInfo& info,
+                                               const ModelPackageVariant& package_variant) {
+  if (!package_variant.execution_provider.empty()) {
+    return package_variant.execution_provider;
+  }
+
+  return info.execution_provider;
+}
+
+bool ShouldExposeModelInfo(const ModelInfo& info,
+                           const IEpDetector& ep_detector,
+                           ILogger& logger) {
+  if (!info.variant_metadata.has_value() ||
+      !info.variant_metadata->model_package.has_value() ||
+      info.variant_metadata->model_package->variants.empty()) {
+    return true;
+  }
+
+  bool saw_relevant_variant = false;
+  bool saw_unknown_compatibility = false;
+
+  for (const auto& package_variant : info.variant_metadata->model_package->variants) {
+    if (!IsRelevantPackageVariant(info, package_variant)) {
+      continue;
+    }
+
+    saw_relevant_variant = true;
+
+    const auto execution_provider = GetRequestedExecutionProvider(info, package_variant);
+    if (execution_provider.empty() || package_variant.compatibility_string.empty()) {
+      logger.Log(LogLevel::Debug,
+                 fmt::format("Keeping catalog model '{}' because package variant '{}' has incomplete "
+                             "compatibility metadata.",
+                             info.model_id,
+                             package_variant.name));
+      saw_unknown_compatibility = true;
+      continue;
+    }
+
+    const auto compatibility = ep_detector.GetModelCompatibilityForEpDevices(
+        execution_provider,
+        GetDeviceConstraint(info, package_variant),
+        package_variant.compatibility_string);
+
+    if (IsCompatible(compatibility)) {
+      return true;
+    }
+
+    if (compatibility == CompiledModelCompatibility::kUnknown) {
+      logger.Log(LogLevel::Debug,
+                 fmt::format("Keeping catalog model '{}' because compatibility is unknown for package "
+                             "variant '{}'.",
+                             info.model_id,
+                             package_variant.name));
+      saw_unknown_compatibility = true;
+    }
+  }
+
+  if (!saw_relevant_variant) {
+    logger.Log(LogLevel::Debug,
+               fmt::format("Keeping catalog model '{}' because no package variant definitively matches "
+                           "its catalog EP/device.",
+                           info.model_id));
+    return true;
+  }
+
+  if (saw_unknown_compatibility) {
+    return true;
+  }
+
+  logger.Log(LogLevel::Debug,
+             fmt::format("Filtering catalog model '{}' because all relevant ORT model package variants "
+                         "are unsupported.",
+                         info.model_id));
+  return false;
+}
+
+std::vector<const ModelInfo*> SelectVisibleInfos(std::span<const ModelInfo> infos,
+                                                 const IEpDetector& ep_detector,
+                                                 ILogger& logger) {
+  std::vector<const ModelInfo*> visible_infos;
+  visible_infos.reserve(infos.size());
+
+  for (const auto& info : infos) {
+    if (ShouldExposeModelInfo(info, ep_detector, logger)) {
+      visible_infos.push_back(&info);
+    }
+  }
+
+  return visible_infos;
+}
+
+void AppendVisibleModels(std::span<const ModelInfo> infos,
+                         const std::map<std::string, std::string>& local_models,
+                         const AzureModelCatalog::ModelFactory& model_factory,
+                         const IEpDetector& ep_detector,
+                         ILogger& logger,
+                         std::vector<Model>& models) {
+  const auto visible_infos = SelectVisibleInfos(infos, ep_detector, logger);
+  models.reserve(models.size() + visible_infos.size());
+
+  for (const ModelInfo* info : visible_infos) {
+    std::string local_path;
+    const auto it = local_models.find(info->model_id);
+    if (it != local_models.end()) {
+      local_path = it->second;
+    }
+
+    models.push_back(model_factory(ModelInfo(*info), std::move(local_path)));
+  }
+}
+
+AzureModelCatalog::CatalogClientFactory MakeDefaultCatalogClientFactory() {
+  return [](const std::string& base_url,
+            const std::string& filter_override,
+            const IEpDetector& ep_detector,
+            ILogger& logger,
+            const std::string& cache_directory,
+            const std::string& catalog_region,
+            bool disable_region_fallback) {
+    return MakeCatalogClient(base_url,
+                             filter_override,
+                             ep_detector,
+                             logger,
+                             cache_directory,
+                             catalog_region,
+                             disable_region_fallback);
+  };
+}
+
+}  // namespace
 
 AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
                                      std::string cache_dir,
@@ -23,7 +192,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      ILogger& logger,
                                      bool cache_only,
                                      std::string catalog_region,
-                                     bool disable_region_fallback)
+                                     bool disable_region_fallback,
+                                     CatalogClientFactory catalog_client_factory)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
@@ -31,10 +201,15 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
       ep_detector_(ep_detector),
       logger_(logger),
       cache_only_(cache_only),
+      catalog_client_factory_(std::move(catalog_client_factory)),
       catalog_region_(std::move(catalog_region)),
       disable_region_fallback_(disable_region_fallback) {
   if (catalog_urls_.empty()) {
     catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
+  }
+
+  if (!catalog_client_factory_) {
+    catalog_client_factory_ = MakeDefaultCatalogClientFactory();
   }
 
   logger_.Log(LogLevel::Information,
@@ -58,17 +233,14 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
     CatalogCache cache(cache_dir_, logger_);
     cache.Load();
     auto cached = cache.GetCachedModels();
-
     std::vector<Model> models;
-
     if (cached) {
-      for (const auto& info : *cached) {
-        models.push_back(model_factory_(ModelInfo(info), /*local_path=*/""));
-      }
+      AppendVisibleModels(*cached, /*local_models=*/{}, model_factory_, ep_detector_, logger_, models);
     }
 
     logger_.Log(LogLevel::Information,
-                fmt::format("Cache-only mode: populated {} models from cache file.", models.size()));
+                fmt::format("Cache-only mode: populated {} visible models from {} cached catalog entries.",
+                            models.size(), cached ? cached->size() : 0));
 
     return models;
   }
@@ -94,21 +266,11 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   auto fetch_from = [&](const std::string& url, const std::optional<std::string>& filter) {
     // Preserve byte-identical behavior for the "no override" case (previously stored as ""),
     // while letting callers explicitly request "" as a real filter override.
-    auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir,
-                                    catalog_region_, disable_region_fallback_);
+    auto client = catalog_client_factory_(url, filter.value_or(""), ep_detector_, logger_, cache_dir,
+                                          catalog_region_, disable_region_fallback_);
     auto model_infos = FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_);
-
-    for (const auto& info : model_infos) {
-      // Check if the model is locally cached and pass the path if so.
-      std::string local_path;
-      auto it = local_models.find(info.model_id);
-      if (it != local_models.end()) {
-        local_path = it->second;
-      }
-
-      fetched_infos.push_back(info);
-      models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
-    }
+    fetched_infos.insert(fetched_infos.end(), model_infos.begin(), model_infos.end());
+    AppendVisibleModels(model_infos, local_models, model_factory_, ep_detector_, logger_, models);
   };
 
   for (const auto& [url, filter] : catalog_urls_) {
@@ -148,13 +310,14 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
 
   for (const auto& [url, filter] : catalog_urls_) {
     try {
-      auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
-                                      catalog_region_, disable_region_fallback_);
+      auto client = catalog_client_factory_(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
+                                            catalog_region_, disable_region_fallback_);
       auto model_infos = client->FetchAllVersionsByAlias(model_alias, model_name);
+      const auto visible_infos = SelectVisibleInfos(model_infos, ep_detector_, logger_);
 
-      out.reserve(out.size() + model_infos.size());
-      for (auto& info : model_infos) {
-        out.push_back(model_factory_(std::move(info), /*local_path=*/""));
+      out.reserve(out.size() + visible_infos.size());
+      for (const ModelInfo* info : visible_infos) {
+        out.push_back(model_factory_(ModelInfo(*info), /*local_path=*/""));
       }
     } catch (const std::exception& ex) {
       logger_.Log(LogLevel::Error,
@@ -193,24 +356,25 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
     }
 
     try {
-      auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
-                                      catalog_region_, disable_region_fallback_);
+      auto client = catalog_client_factory_(url, filter.value_or(""), ep_detector_, logger_, cache_dir_,
+                                            catalog_region_, disable_region_fallback_);
       auto model_infos = client->FetchModelsByIds(remaining);
+      const auto visible_infos = SelectVisibleInfos(model_infos, ep_detector_, logger_);
 
-      for (auto& info : model_infos) {
+      for (const ModelInfo* info : visible_infos) {
         std::string local_path;
-        auto it = local_models.find(info.model_id);
+        auto it = local_models.find(info->model_id);
         if (it != local_models.end()) {
           local_path = it->second;
         }
 
         // Drop this id from the remaining list now that it's resolved.
-        auto rit = std::find(remaining.begin(), remaining.end(), info.model_id);
+        auto rit = std::find(remaining.begin(), remaining.end(), info->model_id);
         if (rit != remaining.end()) {
           remaining.erase(rit);
         }
 
-        models.push_back(model_factory_(std::move(info), std::move(local_path)));
+        models.push_back(model_factory_(ModelInfo(*info), std::move(local_path)));
       }
     } catch (const std::exception& ex) {
       logger_.Log(LogLevel::Error,

@@ -5,12 +5,16 @@
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "util/model_layout.h"
+#include "util/path_safety.h"
 #include "utils.h"
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 #include <thread>
 
 namespace fl {
@@ -19,6 +23,116 @@ namespace {
 
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
+
+int ConservativePositiveMinimum(int left, int right) {
+  if (left <= 0) {
+    return right;
+  }
+
+  if (right <= 0) {
+    return left;
+  }
+
+  return std::min(left, right);
+}
+
+struct PackageRuntimeConfig {
+  GenAIConfig config;
+  bool is_multimodal = false;
+};
+
+PackageRuntimeConfig LoadPackageRuntimeConfig(const std::filesystem::path& package_root) {
+  const auto manifest_path = package_root / "manifest.json";
+  std::ifstream manifest_file(manifest_path);
+  if (!manifest_file.is_open()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to open model package manifest: " + manifest_path.string());
+  }
+
+  nlohmann::json manifest;
+  try {
+    manifest_file >> manifest;
+  } catch (const nlohmann::json::exception& e) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to parse model package manifest: " + std::string(e.what()));
+  }
+
+  if (!manifest.contains("components") || !manifest["components"].is_object() ||
+      manifest["components"].size() != 1) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "Foundry Local Stage 1 requires a model package with exactly one inline component");
+  }
+
+  const auto& component = manifest["components"].begin().value();
+  if (!component.is_object() || !component.contains("variants") || !component["variants"].is_object() ||
+      component["variants"].empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model package component does not contain any variants");
+  }
+
+  PackageRuntimeConfig result;
+  bool has_config = false;
+  for (const auto& [variant_name, variant] : component["variants"].items()) {
+    if (!variant.is_object()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "model package variant '" + variant_name + "' must be an object");
+    }
+
+    std::filesystem::path variant_directory = variant_name;
+    if (variant.contains("variant_directory")) {
+      if (!variant["variant_directory"].is_string()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 "model package variant '" + variant_name + "' has an invalid variant_directory");
+      }
+
+      variant_directory = variant["variant_directory"].get<std::string>();
+    }
+
+    const auto variant_path = package_root / variant_directory;
+    if (!IsPathWithinDirectory(variant_path, package_root)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "model package variant '" + variant_name + "' resolves outside the package root");
+    }
+
+    auto config = GenAIConfig::LoadFromFile((variant_path / kGenAIConfigFileName).string());
+    result.is_multimodal = result.is_multimodal || (config.model && config.model->IsMultiModal());
+    if (!has_config) {
+      result.config = std::move(config);
+      has_config = true;
+      continue;
+    }
+
+    if (result.config.model && config.model) {
+      if (result.config.model->type != config.model->type) {
+        result.config.model->type.clear();
+      }
+
+      result.config.model->context_length =
+          ConservativePositiveMinimum(result.config.model->context_length, config.model->context_length);
+    } else {
+      result.config.model.reset();
+    }
+
+    if (result.config.search && config.search) {
+      result.config.search->max_length =
+          ConservativePositiveMinimum(result.config.search->max_length, config.search->max_length);
+    } else {
+      result.config.search.reset();
+    }
+
+    if (result.config.hidden_size != config.hidden_size) {
+      result.config.hidden_size.reset();
+    }
+  }
+
+  if (result.config.model && result.config.model->context_length > 0 &&
+      (!result.config.search || result.config.search->max_length <= 0)) {
+    result.config.search = GenAIConfig::Search{result.config.model->context_length};
+  }
+
+  return result;
+}
+
+bool IsTaskMultiModal(std::string_view task) {
+  return task == "vision-language-chat" || task == "automatic-speech-recognition";
+}
 
 /// Maps model_id substrings to their required execution provider registration name.
 /// If a model_id contains one of these keys, the corresponding EP must be registered.
@@ -79,7 +193,8 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 
 ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_path,
                                                          std::string_view model_id,
-                                                         ExecutionProvider ep_override) {
+                                                         ExecutionProvider ep_override,
+                                                         std::string_view task) {
   if (shutdown_.load()) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "cannot load model during shutdown");
@@ -104,16 +219,25 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
 
   logger_.Log(LogLevel::Debug, fmt::format("loading model from {}", path_str));
 
-  // The caller provides the effective model path — the directory containing genai_config.json.
-  // DownloadManager and ScanLocalModels resolve this before passing it here.
-  auto config_path = (std::filesystem::path(path_str) / kGenAIConfigFileName).string();
-
-  if (!std::filesystem::exists(config_path)) {
-    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "model does not contain ", kGenAIConfigFileName, ": ", id_str);
+  const auto layout = ClassifyModelLayout(path_str);
+  if (layout != ModelLayout::FlatModel && layout != ModelLayout::ModelPackage) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL, "model has an unsupported or incomplete layout: ", id_str);
   }
 
-  auto genai_config = GenAIConfig::LoadFromFile(config_path);
+  const bool is_model_package = layout == ModelLayout::ModelPackage;
+  GenAIConfig genai_config;
+  bool package_is_multimodal = false;
+  if (is_model_package) {
+    auto package_config = LoadPackageRuntimeConfig(path_str);
+    genai_config = std::move(package_config.config);
+    package_is_multimodal = package_config.is_multimodal;
+  } else {
+    genai_config = GenAIConfig::LoadFromFile(
+        (std::filesystem::path(path_str) / kGenAIConfigFileName).string());
+  }
+
+  const bool is_multimodal =
+      package_is_multimodal || (genai_config.model && genai_config.model->IsMultiModal()) || IsTaskMultiModal(task);
 
   // Determine execution provider
   auto resolved_ep = ep_override;
@@ -157,6 +281,8 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                                                                            path_str,
                                                                            std::move(genai_config),
                                                                            resolved_ep,
+                                                                           is_model_package,
+                                                                           is_multimodal,
                                                                            logger_));
 
   auto* raw_ptr = loaded.get();

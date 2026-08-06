@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fl {
 
@@ -19,7 +21,7 @@ namespace fl {
 // -----------------------------------------------------------------------
 
 /// Device type the model is optimized for. Mirrors flDeviceType.
-enum class DeviceType {
+enum class DeviceType : int {
   kNotSet = 0,
   kCPU = 1,
   kGPU = 2,
@@ -28,6 +30,27 @@ enum class DeviceType {
 
 /// Returns "CPU"/"GPU"/"NPU" or "Invalid" for kNotSet.
 std::string DeviceTypeToString(DeviceType dt);
+
+/// Parses "CPU"/"GPU"/"NPU" (case-insensitive). Returns kNotSet if unknown.
+DeviceType DeviceTypeFromString(std::string_view device_type);
+
+struct ModelPackageVariant {
+  std::string name;
+  std::string execution_provider;
+  DeviceType device_type = DeviceType::kNotSet;
+  std::string compatibility_string;
+};
+
+struct ModelPackageMetadata {
+  std::optional<int> schema_version;
+  std::vector<ModelPackageVariant> variants;
+};
+
+/// Internal representation of the provisional catalog `variantMetadata` payload.
+struct ModelVariantMetadata {
+  std::optional<std::string> model_format;
+  std::optional<ModelPackageMetadata> model_package;
+};
 
 struct ModelInfo {
   std::string model_id;
@@ -44,6 +67,10 @@ struct ModelInfo {
   // Empty for non-Azure / BYO models. Used to target the matching regional model
   // registry when downloading. Round-trips through the on-disk catalog cache.
   std::string detected_region;
+
+  // Optional typed metadata for ORT model packages. This remains internal-only:
+  // the public catalog surface still exposes one model entry per model/version/EP.
+  std::optional<ModelVariantMetadata> variant_metadata;
 
   KeyValuePairs prompt_templates;
   KeyValuePairs model_settings;
@@ -80,6 +107,15 @@ struct ModelInfo {
     return (it != int_properties.end()) ? it->second : default_value;
   }
 };
+
+void to_json(nlohmann::json& j, const ModelPackageVariant& variant);
+void from_json(const nlohmann::json& j, ModelPackageVariant& variant);
+
+void to_json(nlohmann::json& j, const ModelPackageMetadata& metadata);
+void from_json(const nlohmann::json& j, ModelPackageMetadata& metadata);
+
+void to_json(nlohmann::json& j, const ModelVariantMetadata& metadata);
+void from_json(const nlohmann::json& j, ModelVariantMetadata& metadata);
 
 /// Deserialize a ModelInfo from JSON.
 ModelInfo ModelInfoFromJson(const nlohmann::json& j);

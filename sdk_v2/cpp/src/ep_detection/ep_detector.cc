@@ -4,13 +4,92 @@
 
 #include "ep_detection/ep_bootstrapper.h"
 #include "logger.h"
+#include "model_info.h"
 
 #include <onnxruntime_c_api.h>
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
+#include <vector>
 
 namespace fl {
+
+namespace {
+
+struct EpDeviceSnapshot {
+  std::vector<const OrtEpDevice*> devices;
+};
+
+std::optional<EpDeviceSnapshot> TryGetEpDeviceSnapshot(const OrtApi& ort_api,
+                                                       OrtEnv& ort_env,
+                                                       ILogger& logger) {
+  const OrtEpDevice* const* ep_devices = nullptr;
+  size_t num_devices = 0;
+  OrtStatus* status = ort_api.GetEpDevices(&ort_env, &ep_devices, &num_devices);
+
+  if (status != nullptr) {
+    const char* message = ort_api.GetErrorMessage(status);
+    logger.Log(LogLevel::Warning,
+               std::string("GetEpDevices failed: ") + (message ? message : "unknown"));
+    ort_api.ReleaseStatus(status);
+    return std::nullopt;
+  }
+
+  EpDeviceSnapshot snapshot;
+  snapshot.devices.reserve(num_devices);
+  for (size_t i = 0; i < num_devices; ++i) {
+    snapshot.devices.push_back(ep_devices[i]);
+  }
+
+  logger.Log(LogLevel::Debug,
+             std::string("GetEpDevices: ORT reports ") + std::to_string(snapshot.devices.size()) +
+                 " EP device(s)");
+
+  return snapshot;
+}
+
+const char* DeviceKey(OrtHardwareDeviceType device_type) {
+  switch (device_type) {
+    case OrtHardwareDeviceType_CPU:
+      return "CPU";
+    case OrtHardwareDeviceType_GPU:
+      return "GPU";
+    case OrtHardwareDeviceType_NPU:
+      return "NPU";
+    default:
+      return "CPU";
+  }
+}
+
+DeviceType ToDeviceType(OrtHardwareDeviceType device_type) {
+  switch (device_type) {
+    case OrtHardwareDeviceType_CPU:
+      return DeviceType::kCPU;
+    case OrtHardwareDeviceType_GPU:
+      return DeviceType::kGPU;
+    case OrtHardwareDeviceType_NPU:
+      return DeviceType::kNPU;
+    default:
+      return DeviceType::kNotSet;
+  }
+}
+
+CompiledModelCompatibility ToCompiledModelCompatibility(OrtCompiledModelCompatibility compatibility) {
+  switch (compatibility) {
+    case OrtCompiledModelCompatibility_EP_SUPPORTED_OPTIMAL:
+      return CompiledModelCompatibility::kSupportedOptimal;
+    case OrtCompiledModelCompatibility_EP_SUPPORTED_PREFER_RECOMPILATION:
+      return CompiledModelCompatibility::kSupportedPreferRecompilation;
+    case OrtCompiledModelCompatibility_EP_UNSUPPORTED:
+      return CompiledModelCompatibility::kUnsupported;
+    case OrtCompiledModelCompatibility_EP_NOT_APPLICABLE:
+    default:
+      return CompiledModelCompatibility::kUnknown;
+  }
+}
+
+}  // namespace
 
 EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
                        std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
@@ -41,51 +120,27 @@ std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesT
   // running in parallel.
   std::map<std::string, std::vector<std::string>> devices;
 
-  // Query ORT for all registered EP devices. Each OrtEpDevice pairs an
-  // execution provider name with a hardware device (CPU/GPU/NPU).
-  const OrtEpDevice* const* ep_devices = nullptr;
-  size_t num_devices = 0;
-  OrtStatus* status = ort_api_.GetEpDevices(&ort_env_, &ep_devices, &num_devices);
-
-  if (status != nullptr) {
-    const char* msg = ort_api_.GetErrorMessage(status);
-    logger_.Log(LogLevel::Warning,
-                std::string("GetEpDevices failed: ") + (msg ? msg : "unknown"));
-    ort_api_.ReleaseStatus(status);
-
+  const auto snapshot = TryGetEpDeviceSnapshot(ort_api_, ort_env_, logger_);
+  if (!snapshot.has_value()) {
     // Fall back to a minimal CPU entry so catalog queries still work.
     devices["CPU"] = {"CPUExecutionProvider"};
     return devices;
   }
 
-  logger_.Log(LogLevel::Debug,
-              std::string("GetEpDevices: ORT reports ") + std::to_string(num_devices) + " EP device(s)");
-
-  for (size_t i = 0; i < num_devices; ++i) {
-    const OrtEpDevice* ep_device = ep_devices[i];
+  for (size_t i = 0; i < snapshot->devices.size(); ++i) {
+    const OrtEpDevice* ep_device = snapshot->devices[i];
     const char* ep_name = ort_api_.EpDevice_EpName(ep_device);
     const OrtHardwareDevice* hw = ort_api_.EpDevice_Device(ep_device);
-    OrtHardwareDeviceType hw_type = ort_api_.HardwareDevice_Type(hw);
-
-    const char* device_key = nullptr;
-    switch (hw_type) {
-      case OrtHardwareDeviceType_CPU:
-        device_key = "CPU";
-        break;
-      case OrtHardwareDeviceType_GPU:
-        device_key = "GPU";
-        break;
-      case OrtHardwareDeviceType_NPU:
-        device_key = "NPU";
-        break;
-      default:
-        device_key = "CPU";
-        break;
-    }
+    const auto hw_type = hw != nullptr ? ort_api_.HardwareDevice_Type(hw) : OrtHardwareDeviceType_CPU;
+    const char* device_key = DeviceKey(hw_type);
 
     logger_.Log(LogLevel::Debug,
                 std::string("  [") + std::to_string(i) + "] ep=" + (ep_name ? ep_name : "<null>") +
                     " device=" + device_key + " (hw_type=" + std::to_string(static_cast<int>(hw_type)) + ")");
+
+    if (ep_name == nullptr) {
+      continue;
+    }
 
     auto& eps = devices[device_key];
 
@@ -202,6 +257,73 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
 
 bool EpDetector::IsDownloadInProgress() const {
   return download_in_progress_;
+}
+
+CompiledModelCompatibility EpDetector::GetModelCompatibilityForEpDevices(
+    std::string_view execution_provider,
+    std::optional<DeviceType> device_type,
+    std::string_view compatibility_string) const {
+  if (execution_provider.empty() || compatibility_string.empty()) {
+    return CompiledModelCompatibility::kUnknown;
+  }
+
+  if (device_type.has_value() && *device_type == DeviceType::kNotSet) {
+    device_type.reset();
+  }
+
+  const auto snapshot = TryGetEpDeviceSnapshot(ort_api_, ort_env_, logger_);
+  if (!snapshot.has_value()) {
+    return CompiledModelCompatibility::kUnknown;
+  }
+
+  std::vector<const OrtEpDevice*> matching_devices;
+  for (const OrtEpDevice* ep_device : snapshot->devices) {
+    if (ep_device == nullptr) {
+      continue;
+    }
+
+    const char* ep_name = ort_api_.EpDevice_EpName(ep_device);
+    if (ep_name == nullptr || execution_provider != ep_name) {
+      continue;
+    }
+
+    if (device_type.has_value()) {
+      const OrtHardwareDevice* hw_device = ort_api_.EpDevice_Device(ep_device);
+      const auto hw_type = hw_device != nullptr ? ort_api_.HardwareDevice_Type(hw_device)
+                                                : OrtHardwareDeviceType_CPU;
+      if (ToDeviceType(hw_type) != *device_type) {
+        continue;
+      }
+    }
+
+    matching_devices.push_back(ep_device);
+  }
+
+  if (matching_devices.empty()) {
+    logger_.Log(LogLevel::Debug,
+                std::string("GetModelCompatibilityForEpDevices: no registered devices matched EP '") +
+                    std::string(execution_provider) + "'.");
+    return CompiledModelCompatibility::kUnknown;
+  }
+
+  std::string compatibility_copy(compatibility_string);
+  OrtCompiledModelCompatibility ort_compatibility = OrtCompiledModelCompatibility_EP_NOT_APPLICABLE;
+  OrtStatus* status = ort_api_.GetModelCompatibilityForEpDevices(
+      matching_devices.data(),
+      matching_devices.size(),
+      compatibility_copy.c_str(),
+      &ort_compatibility);
+
+  if (status != nullptr) {
+    const char* message = ort_api_.GetErrorMessage(status);
+    logger_.Log(LogLevel::Warning,
+                std::string("GetModelCompatibilityForEpDevices failed for EP '") +
+                    std::string(execution_provider) + "': " + (message ? message : "unknown"));
+    ort_api_.ReleaseStatus(status);
+    return CompiledModelCompatibility::kUnknown;
+  }
+
+  return ToCompiledModelCompatibility(ort_compatibility);
 }
 
 }  // namespace fl
