@@ -15,13 +15,14 @@ public class Model : IModel
     private readonly ILogger _logger;
     internal NativeModel NativeModel { get; }
 
-    private ModelInfo? _info;
     private IReadOnlyList<IModel>? _variants;
 
     public string Id => NativeModel.GetInfo().Id;
     public string Alias => NativeModel.GetInfo().Alias;
 
-    public ModelInfo Info => _info ??= ModelInfo.FromNative(NativeModel);
+    // The native model is the source of truth. Reading fresh every time keeps metadata correct after
+    // SelectVariant / download / cache changes. Each read returns a point-in-time ModelInfo snapshot.
+    public ModelInfo Info => ModelInfo.FromNative(NativeModel);
 
     public IReadOnlyList<IModel> Variants
     {

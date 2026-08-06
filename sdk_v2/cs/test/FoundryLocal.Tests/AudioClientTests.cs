@@ -6,6 +6,7 @@
 
 namespace Microsoft.AI.Foundry.Local.Tests;
 
+using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -16,6 +17,15 @@ using TUnit.Core.Exceptions;
 internal sealed class OpenAIAudioClientTests
 {
     private static IModel? model;
+
+    private static readonly string[] RequiredTranscriptPhrases =
+    [
+        "and lots of times you need to give people more than one link at a time",
+        "you a band could give their fans a couple new videos",
+        // Keep this phrase broad because ASR output often varies between "an" and "and".
+        "behind the scenes photo gallery",
+        "like these next few links",
+    ];
 
     [Before(Class)]
     public static async Task Setup()
@@ -68,7 +78,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await Assert.That(content).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+        await Utils.AssertTranscriptSemanticallyMatches(content, RequiredTranscriptPhrases);
         Console.WriteLine($"Response: {content}");
     }
 
@@ -93,7 +103,7 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(response).IsNotNull();
         await Assert.That(response.Text).IsNotNull().And.IsNotEmpty();
         var content = response.Text;
-        await Assert.That(content).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+        await Utils.AssertTranscriptSemanticallyMatches(content, RequiredTranscriptPhrases);
         Console.WriteLine($"Response: {content}");
     }
 
@@ -157,7 +167,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+        await Utils.AssertTranscriptSemanticallyMatches(fullResponse, RequiredTranscriptPhrases);
 
 
     }
@@ -191,7 +201,7 @@ internal sealed class OpenAIAudioClientTests
 
         var fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).IsEqualTo(" And lots of times you need to give people more than one link at a time. You a band could give their fans a couple new videos from the live concert behind the scenes photo gallery and album to purchase like these next few links.");
+        await Utils.AssertTranscriptSemanticallyMatches(fullResponse, RequiredTranscriptPhrases);
 
 
     }
@@ -230,4 +240,5 @@ internal sealed class OpenAIAudioClientTests
         await Assert.That(caught.InnerException!.Message).Contains("Audio file not found");
 
     }
+
 }

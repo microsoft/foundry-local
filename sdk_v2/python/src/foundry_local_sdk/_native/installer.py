@@ -6,8 +6,7 @@ Usage::
 
 Re-installs the SDK wheel (``foundry-local-sdk``) via pip — pip then resolves the
 ORT and GenAI runtime packages declared as dependencies in ``pyproject.toml``.
-After install we materialise the platform's DLL search path / symlink workarounds
-and verify ``onnxruntime`` and ``onnxruntime_genai`` import cleanly.
+After installation, the command prepares native loading and verifies both runtime packages.
 
 This is the v2 equivalent of the legacy ``foundry-local-install`` command.
 v2 ships a single SDK wheel (rather than the legacy split between ``-sdk`` and
@@ -39,16 +38,8 @@ def _wheel_native_dir() -> pathlib.Path:
 
 
 def _expected_import_names() -> tuple[str, str]:
-    """Return (ort_import_name, genai_import_name) for the current platform.
-
-    Linux uses the GPU/CUDA-flavored packages whose import names are the
-    canonical ``onnxruntime`` / ``onnxruntime_genai``. Windows and macOS
-    install the ``-core`` PyPI packages, which expose distinct
-    ``onnxruntime_core`` / ``onnxruntime_genai_core`` import names.
-    """
-    if sys.platform.startswith("linux"):
-        return ("onnxruntime", "onnxruntime_genai")
-    return ("onnxruntime_core", "onnxruntime_genai_core")
+    """Return the required runtime modules."""
+    return ("onnxruntime", "onnxruntime_genai_core")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,16 +73,12 @@ def main(argv: list[str] | None = None) -> int:
     dirs = find_ort_native_dirs()
     if not dirs:
         print(
-            "[foundry-local] ERROR: Could not locate onnxruntime / onnxruntime-genai after install.",
+            "[foundry-local] ERROR: Could not locate onnxruntime / onnxruntime-genai-core after install.",
             file=sys.stderr,
         )
         return 1
 
-    # Verification: ensure the expected ORT / GenAI packages are *importable*
-    # without actually running their import-time side effects. On Windows the
-    # real `import onnxruntime_core` would fail until prepare_native_dependencies
-    # has wired up the DLL search path for *this* process — but find_spec only
-    # needs the package metadata to be on sys.path, which pip just guaranteed.
+    # Check package metadata without triggering native import side effects.
     missing: list[str] = []
     for mod in _expected_import_names():
         if importlib.util.find_spec(mod) is None:

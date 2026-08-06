@@ -109,7 +109,10 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
-  bool IsActive() const { return selected_variant_ ? selected_variant_->IsActive() : active_.load(); }
+  bool IsActive() const {
+    Model* selected = selected_variant_.load(std::memory_order_acquire);
+    return selected ? selected->IsActive() : active_.load();
+  }
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.
@@ -125,7 +128,7 @@ class Model {
   IOInfo GetInputOutputInfo() const;
 
   /// True if this is a multi-variant container.
-  bool IsContainer() const { return selected_variant_ != nullptr; }
+  bool IsContainer() const { return selected_variant_.load(std::memory_order_acquire) != nullptr; }
 
   // --- Mutation methods ---
 
@@ -162,7 +165,8 @@ class Model {
   /// or removal of the same Model are out of contract.
   const std::string& LocalPath() const { return local_path_; }
   const std::string& RuntimeId() const {
-    return selected_variant_ ? selected_variant_->RuntimeId() : runtime_model_id_;
+    Model* selected = selected_variant_.load(std::memory_order_acquire);
+    return selected ? selected->RuntimeId() : runtime_model_id_;
   }
 
  private:
@@ -173,9 +177,10 @@ class Model {
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
   // manager remains the single source of truth (Manager::Shutdown clears its map without
   // having to walk every Model and reset a local flag).
-  // local_path_ is set once during Download() (or at construction for already-cached models)
-  // and cleared by RemoveFromCache(). It is intentionally NOT mutex-protected: concurrent
-  // mutation alongside reads on the same Model* is not a supported pattern.
+  // local_path_ is set during Download() (or at construction for already-cached models) and
+  // cleared by RemoveFromCache(). Its mutation is guarded by state_mutex_; the reader-safety
+  // contract is that the path is published before cached_ flips true (and cleared after cached_
+  // flips false), so any reader that gates on IsCached() observes a complete path.
   ModelInfo info_;
   std::atomic<bool> cached_{false};
   std::atomic<bool> active_{true};
@@ -194,7 +199,7 @@ class Model {
   // Container data (empty/null for leaves). unique_ptr keeps Model addresses
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
-  Model* selected_variant_ = nullptr;  // non-null = this is a container
+  std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).

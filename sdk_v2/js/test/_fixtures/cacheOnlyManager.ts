@@ -87,7 +87,46 @@ export interface CacheOnlyManagerFixture {
 export interface SetupOptions {
   /** Override the appName. Defaults to a fixed test id. */
   readonly appName?: string;
+  /** Override the catalog model entries. Defaults to the two-model fixture above. */
+  readonly models?: readonly unknown[];
 }
+
+/**
+ * Two variants of a single alias (generic-gpu + generic-cpu). The catalog groups
+ * these into one selectable Model. With nothing cached, the higher-priority GPU
+ * variant is the default selection and `variants` is ordered [gpu, cpu]. Used to
+ * exercise `selectVariant` and verify metadata reads reflect the current selection.
+ */
+export const TWO_VARIANT_MODELS = [
+  {
+    id: "multi-variant-model-generic-gpu:1",
+    name: "multi-variant-model-generic-gpu",
+    version: 1,
+    alias: "multi-variant-model",
+    uri: "azureml://registries/azureml/models/multi-variant-model-generic-gpu/versions/1",
+    providerType: "FoundryLocal",
+    modelType: "ONNX",
+    task: "chat-completion",
+    publisher: "Contoso",
+    displayName: "Multi Variant Model",
+    // Cache-only JSON derives info.deviceType from runtime.deviceType, not the id suffix.
+    runtime: { deviceType: "GPU" },
+  },
+  {
+    id: "multi-variant-model-generic-cpu:1",
+    name: "multi-variant-model-generic-cpu",
+    version: 1,
+    alias: "multi-variant-model",
+    uri: "azureml://registries/azureml/models/multi-variant-model-generic-cpu/versions/1",
+    providerType: "FoundryLocal",
+    modelType: "ONNX",
+    task: "chat-completion",
+    publisher: "Contoso",
+    displayName: "Multi Variant Model",
+    // Cache-only JSON derives info.deviceType from runtime.deviceType, not the id suffix.
+    runtime: { deviceType: "CPU" },
+  },
+] as const;
 
 /**
  * Construct a Manager pointed at a fresh temp cache directory pre-populated
@@ -96,7 +135,8 @@ export interface SetupOptions {
  */
 export function setupCacheOnlyManager(opts: SetupOptions = {}): CacheOnlyManagerFixture {
   const tmpDir = mkdtempSync(join(tmpdir(), "fl-js-v2-test-"));
-  writeFileSync(join(tmpDir, "foundry.modelinfo.json"), JSON.stringify(FIXTURE_CATALOG, null, 2));
+  const catalog = opts.models === undefined ? FIXTURE_CATALOG : { ...FIXTURE_CATALOG, models: opts.models };
+  writeFileSync(join(tmpDir, "foundry.modelinfo.json"), JSON.stringify(catalog, null, 2));
   const config: FoundryLocalConfig = {
     appName: opts.appName ?? "foundry-local-js-sdk-v2-tests",
     modelCacheDir: tmpDir,
