@@ -48,6 +48,12 @@ inline size_t FindPathAnchor(std::string_view s) {
         return i;
       }
 
+      const unsigned char prev_anchor = static_cast<unsigned char>(s[i - 1]);
+      if ((std::isspace(prev_anchor) || s[i - 1] == '"' || s[i - 1] == '\'') && i + 1 < s.size() &&
+          !std::isspace(static_cast<unsigned char>(s[i + 1]))) {
+        return i;
+      }
+
       size_t segments = 0;
       size_t j = i;
       while (j < s.size() && s[j] == '/') {

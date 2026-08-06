@@ -348,6 +348,7 @@ TEST(TelemetryDeviceIdTest, ValidatesGuidShapeAndHashesForUpload) {
 TEST(TelemetryRedactionTest, ScrubsPathsKeepsNonPathTextAndCapsLength) {
   EXPECT_EQ(ScrubStringForTelemetry("config missing"), "config missing");
   EXPECT_EQ(ScrubStringForTelemetry("/secret"), "[path]");
+  EXPECT_EQ(ScrubStringForTelemetry("failed at /secret"), "failed at [path]");
   EXPECT_EQ(ScrubStringForTelemetry("Load C:\\Users\\First Last\\model.onnx failed"), "Load [path]");
   EXPECT_EQ(ScrubStringForTelemetry("open /home/alice/model.onnx failed"), "open [path]");
   EXPECT_EQ(ScrubStringForTelemetry("ratio 3/4 and and/or"), "ratio 3/4 and and/or");
