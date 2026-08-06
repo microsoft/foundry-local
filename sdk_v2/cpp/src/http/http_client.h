@@ -34,7 +34,7 @@ struct HttpRequestOptions {
 /// does not exist on platforms like Android), so every libcurl-based transport we construct — direct
 /// requests, file downloads, and the Azure Storage blob client — must pass this explicitly as
 /// `CAInfo`. On desktop Windows the WinHTTP transport uses the OS trust store and ignores this.
-const std::string& CaBundleFile();
+const std::string& CABundleFilePath();
 
 /// Perform an HTTP POST and return status, headers, and body without throwing on non-2xx responses.
 /// Transport failures are returned as `status == 0` with the error message in `body`.

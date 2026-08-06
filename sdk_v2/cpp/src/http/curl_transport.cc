@@ -7,19 +7,16 @@
 #include "http/http_client.h"
 
 #include <string>
-#include <utility>
 
 namespace fl {
 namespace http {
 
-const Azure::Core::Http::CurlTransportOptions& CachedCurlTransportOptions() {
-  static const Azure::Core::Http::CurlTransportOptions options = [] {
-    Azure::Core::Http::CurlTransportOptions opts;
-    if (const std::string& ca_bundle = CaBundleFile(); !ca_bundle.empty()) {
-      opts.CAInfo = ca_bundle;
-    }
-    return opts;
-  }();
+Azure::Core::Http::CurlTransportOptions MakeCurlTransportOptions() {
+  Azure::Core::Http::CurlTransportOptions options;
+  if (const std::string& ca_bundle = CABundleFilePath(); !ca_bundle.empty()) {
+    options.CAInfo = ca_bundle;
+  }
+
   return options;
 }
 
