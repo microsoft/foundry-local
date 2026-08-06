@@ -242,7 +242,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
 
   // Detected once and reused below for the WinML catalog skip-list and CUDA bootstrapper.
   // Avoid probing NVML on platforms where Foundry Local does not publish a CUDA bundle.
-  const bool has_nvidia_gpu = CudaEpBootstrapper::IsSupportedPlatform() && CudaEpBootstrapper::HasNvidiaGpu();
+  const bool has_nvidia_gpu =
+      CudaEpBootstrapper::IsSupportedPlatform() && CudaEpBootstrapper::HasNvidiaGpu(*logger_);
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
   // WinML EPs — enumerate from the OS EP catalog (Windows 10 19H1+ reg-free runtime).
@@ -314,11 +315,8 @@ Manager::~Manager() {
   try {
     Shutdown();
   } catch (const std::exception& e) {
-    try {
-      safe_log(LogLevel::Error,
-               std::string("Exception while shutting down Manager subsystems during destruction: ") + e.what());
-    } catch (...) {
-    }
+    safe_log(LogLevel::Error,
+             std::string("Exception while shutting down Manager subsystems during destruction: ") + e.what());
   } catch (...) {
     safe_log(LogLevel::Error, "Unknown exception while shutting down Manager subsystems during destruction.");
   }
@@ -340,11 +338,8 @@ Manager::~Manager() {
       OrtStatus* status = ort_api_->UnregisterExecutionProviderLibrary(ort_env_, name.c_str());
       if (status != nullptr) {
         const char* msg = ort_api_->GetErrorMessage(status);
-        try {
-          safe_log(LogLevel::Warning, std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
-                                          name + "': " + (msg ? msg : "unknown"));
-        } catch (...) {
-        }
+        safe_log(LogLevel::Warning, std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
+                                        name + "': " + (msg ? msg : "unknown"));
         ort_api_->ReleaseStatus(status);
       }
     }

@@ -40,7 +40,9 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
   int attempts_ = 0;
   EpRegistrationCallback register_ep_;
   EpBundleInstaller installer_;
-  EpBundleDependencyOwner dependency_owner_;
+#ifdef _WIN32
+  EpBundleSearchPathOwner search_path_owner_;
+#endif
 };
 
 }  // namespace fl

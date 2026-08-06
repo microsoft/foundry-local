@@ -2,9 +2,13 @@
 // Licensed under the MIT License.
 #include "ep_detection/nvml_gpu_detector.h"
 
+#include "logger.h"
+
+#include <fmt/format.h>
+
 #include <filesystem>
 
-#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 #define WIN32_LEAN_AND_MEAN
 #include <shlobj.h>
 #include <windows.h>
@@ -25,7 +29,7 @@ using NvmlDeviceGetCountFn = int (*)(unsigned int*);
 using NvmlDeviceGetHandleByIndexFn = int (*)(unsigned int, NvmlDevice*);
 using NvmlDeviceGetCudaComputeCapabilityFn = int (*)(NvmlDevice, int*, int*);
 
-#if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 
 using LibraryHandle = HMODULE;
 constexpr LibraryHandle kNullLibrary = nullptr;
@@ -96,7 +100,7 @@ void UnloadLibrary(LibraryHandle lib) {
 
 class NvmlLibrary {
  public:
-  NvmlLibrary() {
+  explicit NvmlLibrary(ILogger& logger) {
     lib_ = LoadNvmlLibrary();
     if (!lib_) {
       return;
@@ -110,12 +114,18 @@ class NvmlLibrary {
         reinterpret_cast<NvmlDeviceGetCudaComputeCapabilityFn>(GetSymbol(lib_, "nvmlDeviceGetCudaComputeCapability"));
 
     if (!init_ || !shutdown_ || !get_count_ || !get_handle_ || !get_compute_cap_) {
+      logger.Log(LogLevel::Warning, "NVML library is missing required symbols; CUDA detection is unavailable");
       UnloadLibrary(lib_);
       lib_ = kNullLibrary;
       return;
     }
 
-    initialized_ = (init_() == kNvmlSuccess);
+    const auto init_result = init_();
+    initialized_ = (init_result == kNvmlSuccess);
+    if (!initialized_) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("NVML initialization failed with error {}; CUDA detection is unavailable", init_result));
+    }
   }
 
   ~NvmlLibrary() {
@@ -180,8 +190,8 @@ bool HasQualifyingComputeCapability(const std::vector<std::pair<int, int>>& capa
   return false;
 }
 
-bool NvmlGpuDetector::HasNvidiaGpu() {
-  NvmlLibrary nvml;
+bool NvmlGpuDetector::HasNvidiaGpu(ILogger& logger) {
+  NvmlLibrary nvml(logger);
   if (!nvml.IsReady()) {
     return false;
   }

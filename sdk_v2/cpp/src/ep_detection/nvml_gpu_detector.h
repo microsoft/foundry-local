@@ -7,13 +7,15 @@
 
 namespace fl {
 
+class ILogger;
+
 bool HasQualifyingComputeCapability(const std::vector<std::pair<int, int>>& capabilities,
                                     int min_major = 5,
                                     int min_minor = 0);
 
 class NvmlGpuDetector {
  public:
-  static bool HasNvidiaGpu();
+  static bool HasNvidiaGpu(ILogger& logger);
 };
 
 }  // namespace fl

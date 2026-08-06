@@ -9,6 +9,8 @@ namespace fl {
 
 class ILogger;
 
+inline constexpr float kEpReadyToRegisterProgress = 90.0f;
+
 /// Interface for a single execution provider bootstrapper.
 /// Each bootstrapper manages discovery, download, and registration of one EP.
 class IEpBootstrapper {

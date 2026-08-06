@@ -830,7 +830,9 @@ TEST(EpBundleInstallerTest, CancellationBeforeReturningNewTransactionRemovesPubl
   EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
   NullLogger logger;
 
-  auto cancel_before_transaction = [](const std::string&, float percent) { return percent < 90.0f; };
+  auto cancel_before_transaction = [](const std::string&, float percent) {
+    return percent < kEpReadyToRegisterProgress;
+  };
 
   EXPECT_EQ(installer.EnsureInstalled(manifest, cancel_before_transaction, logger), nullptr);
   EXPECT_TRUE(std::filesystem::is_empty(root.path() / "staging"));
@@ -849,7 +851,7 @@ TEST(EpBundleInstallerTest, CancellationOnVerifiedBundleReuseReturnsNoTransactio
   ASSERT_TRUE(InstallAndCommit(installer, manifest, logger).has_value());
   const auto active_generation = ReadFile(root.path() / "active");
 
-  auto cancel_reuse = [](const std::string&, float percent) { return percent != 90.0f; };
+  auto cancel_reuse = [](const std::string&, float percent) { return percent != kEpReadyToRegisterProgress; };
 
   EXPECT_EQ(installer.EnsureInstalled(manifest, cancel_reuse, logger), nullptr);
   EXPECT_EQ(downloads.CallCount("https://example.test/provider.so"), 1);

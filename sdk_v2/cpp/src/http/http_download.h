@@ -26,9 +26,9 @@ bool ContentLengthMatchesBody(int64_t content_length, int64_t bytes_downloaded);
 /// @param cancel_flag  Set to true to cancel. nullptr if not needed.
 /// @param progress_cb  Called with percent 0.0-100.0. Empty = no callback.
 /// @param logger  Logger for diagnostic output on failure.
-/// @param max_bytes  Fail closed if a Content-Length header exceeds this, and abort mid-stream
-///                   if the body exceeds it regardless of what Content-Length promised (defends
-///                   against a missing/incorrect header on chunked transfers). -1 means no cap.
+/// @param max_bytes  Maximum accepted response size. This bounds disk and network usage if the
+///                   endpoint unexpectedly returns a larger body than the artifact manifest allows.
+///                   -1 means no cap.
 /// @return true on success, false on failure.
 bool HttpDownloadFile(const std::string& url, const std::filesystem::path& destination, const std::string& user_agent,
                       std::atomic<bool>* cancel_flag, std::function<void(float percent)> progress_cb, ILogger& logger,

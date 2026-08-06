@@ -253,8 +253,9 @@ bool EnsureManagedDirectory(const std::filesystem::path& path, std::string_view 
   }
 
   if (ec || !std::filesystem::is_directory(status)) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: refusing unsafe managed directory '{}'", ep_display_name, path.string()));
+    logger.Log(LogLevel::Warning, fmt::format("{}: refusing unsafe managed directory '{}'. Clear the EP cache "
+                                              "directory '{}' and retry",
+                                              ep_display_name, path.string(), path.parent_path().string()));
     return false;
   }
 
@@ -266,15 +267,17 @@ bool ValidateManagedDirectories(const std::filesystem::path& bundles_dir, const 
   std::error_code ec;
   const auto bundles_status = std::filesystem::symlink_status(bundles_dir, ec);
   if (ec || !std::filesystem::is_directory(bundles_status)) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: refusing unsafe managed directory '{}'", ep_display_name, bundles_dir.string()));
+    logger.Log(LogLevel::Warning, fmt::format("{}: refusing unsafe managed directory '{}'. Clear the EP cache "
+                                              "directory '{}' and retry",
+                                              ep_display_name, bundles_dir.string(), bundles_dir.parent_path().string()));
     return false;
   }
 
   const auto staging_status = std::filesystem::symlink_status(staging_root, ec);
   if (ec || !std::filesystem::is_directory(staging_status)) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: refusing unsafe managed directory '{}'", ep_display_name, staging_root.string()));
+    logger.Log(LogLevel::Warning, fmt::format("{}: refusing unsafe managed directory '{}'. Clear the EP cache "
+                                              "directory '{}' and retry",
+                                              ep_display_name, staging_root.string(), staging_root.parent_path().string()));
     return false;
   }
 
@@ -511,8 +514,10 @@ bool InstallArchiveArtifact(const EpArtifactDownloadFn& download_fn, const EpBun
   for (const auto& file : artifact.extracted_files) {
     const auto file_path = extraction_dir / file.relative_path;
     if (!std::filesystem::is_regular_file(file_path, ec)) {
-      logger.Log(LogLevel::Warning, fmt::format("{}: artifact '{}' is missing expected extracted file '{}'",
-                                                ep_display_name, artifact.id, file.relative_path));
+      logger.Log(LogLevel::Warning,
+                 fmt::format("{}: expected extracted file '{}' from artifact '{}' is unavailable or is not a regular "
+                             "file",
+                             ep_display_name, file.relative_path, artifact.id));
       return false;
     }
 
@@ -618,12 +623,12 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
         VerifyBundleDir(active_bin, manifest, ep_display_name_, logger)) {
       logger.Log(LogLevel::Information,
                  fmt::format("{}: reusing verified bundle '{}'", ep_display_name_, manifest.bundle_id));
-      if (!ReportProgress(progress_cb, ep_display_name_, 90.0f)) {
+      if (!ReportProgress(progress_cb, ep_display_name_, kEpReadyToRegisterProgress)) {
         return nullptr;
       }
 
-      return std::unique_ptr<EpInstallTransaction>(new EpInstallTransaction(
-          std::move(lock), root_dir_, ep_display_name_, manifest, *active_generation, active_bin));
+      return std::make_unique<EpInstallTransaction>(std::move(lock), root_dir_, ep_display_name_, manifest,
+                                                    *active_generation, active_bin);
     }
 
     auto staging_dir = staging_root / GenerateUniqueId();
@@ -673,12 +678,12 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
 
     logger.Log(LogLevel::Information, fmt::format("{}: installed bundle '{}'", ep_display_name_, manifest.bundle_id));
 
-    if (!ReportProgress(progress_cb, ep_display_name_, 90.0f)) {
+    if (!ReportProgress(progress_cb, ep_display_name_, kEpReadyToRegisterProgress)) {
       return nullptr;
     }
 
-    auto transaction = std::unique_ptr<EpInstallTransaction>(new EpInstallTransaction(
-        std::move(lock), root_dir_, ep_display_name_, manifest, generation_id, final_bundle_dir / "bin"));
+    auto transaction = std::make_unique<EpInstallTransaction>(std::move(lock), root_dir_, ep_display_name_, manifest,
+                                                              generation_id, final_bundle_dir / "bin");
     final_cleanup.Release();
     return transaction;
   } catch (const std::exception& e) {

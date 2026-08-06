@@ -32,7 +32,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
 
   /// Check for an NVIDIA GPU with compute capability >= 5.0 using NVML.
-  static bool HasNvidiaGpu();
+  static bool HasNvidiaGpu(ILogger& logger);
 
   /// Whether Foundry Local publishes a CUDA EP bundle for this platform.
   static bool IsSupportedPlatform();
@@ -43,7 +43,9 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   int attempts_ = 0;
   EpRegistrationCallback register_ep_;
   EpBundleInstaller installer_;
-  EpBundleDependencyOwner dependency_owner_;
+#ifdef _WIN32
+  EpBundleSearchPathOwner search_path_owner_;
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
   void* genai_cuda_handle_ = nullptr;
 #endif

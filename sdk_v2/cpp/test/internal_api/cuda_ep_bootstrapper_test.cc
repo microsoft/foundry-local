@@ -166,23 +166,6 @@ TEST(CudaEpManifestTest, UnsupportedPlatformsHaveNoManifest) {
   EXPECT_FALSE(BuildCudaEpManifest(CudaEpPlatform::Unsupported).has_value());
 }
 
-TEST(CudaEpManifestTest, WindowsPreloadIncludesRuntimeDependenciesButExcludesProviderAndCoreOrt) {
-  const auto manifest = BuildCudaEpManifest(CudaEpPlatform::WindowsX64);
-  ASSERT_TRUE(manifest.has_value());
-
-  const auto dependencies = SelectEpBundleDependenciesToPreload("bin", *manifest);
-  std::vector<std::string> filenames;
-  std::transform(dependencies.begin(), dependencies.end(), std::back_inserter(filenames),
-                 [](const auto& path) { return path.filename().string(); });
-
-  EXPECT_NE(std::find(filenames.begin(), filenames.end(), "cudart64_12.dll"), filenames.end());
-  EXPECT_NE(std::find(filenames.begin(), filenames.end(), "cudnn64_9.dll"), filenames.end());
-  EXPECT_NE(std::find(filenames.begin(), filenames.end(), "onnxruntime-genai-cuda.dll"), filenames.end());
-  EXPECT_EQ(std::find(filenames.begin(), filenames.end(), "onnxruntime_providers_cuda.dll"), filenames.end());
-  EXPECT_EQ(std::find(filenames.begin(), filenames.end(), "onnxruntime.dll"), filenames.end());
-  EXPECT_EQ(std::find(filenames.begin(), filenames.end(), "onnxruntime-genai.dll"), filenames.end());
-}
-
 TEST(CudaEpBootstrapperTest, OverrideCancellationBeforeRegistrationReturnsFalse) {
   auto root = test::TempPath::CreateTempDir("fl_cuda_bootstrapper_");
   const auto provider_path = root.path() / "custom_cuda_provider";
@@ -197,7 +180,7 @@ TEST(CudaEpBootstrapperTest, OverrideCancellationBeforeRegistrationReturnsFalse)
   StderrLogger logger;
 
   EXPECT_FALSE(bootstrapper.DownloadAndRegister(
-      false, [](const std::string&, float percent) { return percent != 90.0f; }, logger));
+      false, [](const std::string&, float percent) { return percent != kEpReadyToRegisterProgress; }, logger));
   EXPECT_FALSE(bootstrapper.IsRegistered());
   EXPECT_EQ(registration_count, 0);
 }

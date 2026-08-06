@@ -86,7 +86,7 @@ TEST(WebGpuEpBootstrapperTest, OverrideRegistersUsingExistingProviderConvention)
   EXPECT_EQ(registered_path, std::filesystem::absolute(provider_path));
   EXPECT_EQ(registration_count, 1);
   ASSERT_EQ(progress.size(), 2u);
-  EXPECT_EQ(progress[0], std::make_pair(std::string("WebGpuExecutionProvider"), 90.0f));
+  EXPECT_EQ(progress[0], std::make_pair(std::string("WebGpuExecutionProvider"), kEpReadyToRegisterProgress));
   EXPECT_EQ(progress[1], std::make_pair(std::string("WebGpuExecutionProvider"), 100.0f));
 
   progress.clear();
@@ -117,7 +117,7 @@ TEST(WebGpuEpBootstrapperTest, OverrideCancellationBeforeRegistrationReturnsFals
   StderrLogger logger;
 
   EXPECT_FALSE(bootstrapper.DownloadAndRegister(
-      false, [](const std::string&, float percent) { return percent != 90.0f; }, logger));
+      false, [](const std::string&, float percent) { return percent != kEpReadyToRegisterProgress; }, logger));
   EXPECT_FALSE(bootstrapper.IsRegistered());
   EXPECT_EQ(registration_count, 0);
 }

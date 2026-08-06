@@ -32,6 +32,9 @@ enum class EpBundleInstallPolicy {
 
 class EpInstallTransaction {
  public:
+  EpInstallTransaction(std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
+                       std::string ep_display_name, EpBundleManifest manifest, std::string generation_id,
+                       std::filesystem::path bin_dir);
   ~EpInstallTransaction();
 
   EpInstallTransaction(const EpInstallTransaction&) = delete;
@@ -46,12 +49,6 @@ class EpInstallTransaction {
   bool CommitActive(ILogger& logger);
 
  private:
-  friend class EpBundleInstaller;
-
-  EpInstallTransaction(std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
-                       std::string ep_display_name, EpBundleManifest manifest, std::string generation_id,
-                       std::filesystem::path bin_dir);
-
   std::unique_ptr<FileLock> lock_;
   std::filesystem::path root_dir_;
   std::string ep_display_name_;

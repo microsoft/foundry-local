@@ -105,12 +105,14 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
         return false;
       }
 
-      if (progress_cb && !progress_cb(name_, 90.0f)) {
+      if (progress_cb && !progress_cb(name_, kEpReadyToRegisterProgress)) {
         return false;
       }
 
 #ifdef _WIN32
-      PrependDirToProcessPath(provider_path.parent_path());
+      if (!search_path_owner_.Add(provider_path.parent_path(), "CUDA EP", logger)) {
+        return false;
+      }
 #endif
 
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
@@ -155,7 +157,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
 
     const auto provider_path = txn->bin_dir() / manifest->provider_relative_path;
 #ifdef _WIN32
-    if (!dependency_owner_.Load(txn->bin_dir(), *manifest, "CUDA EP", logger)) {
+    if (!search_path_owner_.Add(txn->bin_dir(), "CUDA EP", logger)) {
       return false;
     }
 #elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
@@ -183,7 +185,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
   }
 }
 
-bool CudaEpBootstrapper::HasNvidiaGpu() { return NvmlGpuDetector::HasNvidiaGpu(); }
+bool CudaEpBootstrapper::HasNvidiaGpu(ILogger& logger) { return NvmlGpuDetector::HasNvidiaGpu(logger); }
 
 bool CudaEpBootstrapper::IsSupportedPlatform() {
 #if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
