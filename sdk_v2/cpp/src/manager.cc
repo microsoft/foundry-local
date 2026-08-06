@@ -23,6 +23,7 @@
 #include "spdlog_logger.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/one_ds_telemetry.h"
+#include "telemetry/telemetry_environment.h"
 #include "telemetry/telemetry_metadata.h"
 #include "util/string_utils.h"
 #include "utils.h"
@@ -306,10 +307,13 @@ Manager::Manager(const Configuration& config)
   const bool disable_nonessential_telemetry =
       config_.disable_nonessential_telemetry ||
       IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
+  const bool telemetry_hard_disabled =
+      TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
   telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
     telemetry_->RecordProcessInfo(
-        BuildProcessInfo(BuildTelemetryMetadata(config_.app_name), !disable_nonessential_telemetry));
+        BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
+                         !disable_nonessential_telemetry && !telemetry_hard_disabled));
   } catch (const std::exception& ex) {
     logger_->Log(
         LogLevel::Warning,
