@@ -3,19 +3,16 @@
 #include "ep_detection/webgpu_ep_bootstrapper.h"
 
 #include "ep_detection/ep_bundle_installer.h"
+#include "internal_api/ep_bundle_test_helpers.h"
+#include "internal_api/test_helpers.h"
 #include "logger.h"
-#include "util/sha256.h"
 #include "utils/scoped_environment_variable.h"
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
-#include <atomic>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,75 +27,11 @@ constexpr const char* kOverrideEnv = "FOUNDRY_LOCAL_WEBGPU_EP_LIBRARY";
 constexpr const char* kScopedEnvironmentVariableTestEnv = "FOUNDRY_LOCAL_SCOPED_ENVIRONMENT_VARIABLE_TEST";
 constexpr const char* kLockFileName = "webgpu-ep.lock";
 
-class RecordingLogger : public ILogger {
- public:
-  void Log(LogLevel level, std::string_view message) override {
-    entries.emplace_back(level, std::string(message));
-  }
-
-  std::vector<std::pair<LogLevel, std::string>> entries;
-};
-
-std::vector<uint8_t> AsBytes(std::string_view text) { return std::vector<uint8_t>(text.begin(), text.end()); }
-
-std::string HashOf(const std::vector<uint8_t>& bytes) {
-  auto tmp = test::TempPath::CreateTempFile("fl_webgpu_bootstrapper_hash_");
-  std::ofstream out(tmp.path(), std::ios::binary);
-  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-  out.close();
-  return Sha256File(tmp.path());
-}
-
-std::string ReadFile(const std::filesystem::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-}
-
-class FakeDownloads {
- public:
-  void SetSequence(const std::string& url, std::vector<std::vector<uint8_t>> payloads) {
-    payloads_[url] = std::move(payloads);
-  }
-
-  EpArtifactDownloadFn AsFn() {
-    return [this](const std::string& url, const std::filesystem::path& destination, uint64_t /*max_bytes*/,
-                  std::atomic<bool>* cancel_flag, const std::function<void(float)>& progress_cb,
-                  ILogger& /*logger*/) -> bool {
-      auto it = payloads_.find(url);
-      if (it == payloads_.end() || it->second.empty()) {
-        return false;
-      }
-
-      if (progress_cb) {
-        progress_cb(0.0f);
-      }
-
-      if (cancel_flag && cancel_flag->load()) {
-        return false;
-      }
-
-      int& count = call_counts_[url];
-      const size_t index = std::min(static_cast<size_t>(count), it->second.size() - 1);
-      const auto& bytes = it->second[index];
-      count++;
-
-      std::filesystem::create_directories(destination.parent_path());
-      std::ofstream out(destination, std::ios::binary);
-      out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-      out.close();
-
-      if (progress_cb) {
-        progress_cb(100.0f);
-      }
-
-      return true;
-    };
-  }
-
- private:
-  std::map<std::string, std::vector<std::vector<uint8_t>>> payloads_;
-  std::map<std::string, int> call_counts_;
-};
+using test::AsBytes;
+using test::FakeDownloads;
+using test::FindGenerationWithPrefix;
+using test::HashOf;
+using test::ReadFile;
 
 EpBundleManifest MakeRawManifest(const std::string& bundle_id, const std::string& url) {
   const auto payload = AsBytes(bundle_id + "-provider");
@@ -117,36 +50,6 @@ EpBundleManifest MakeRawManifest(const std::string& bundle_id, const std::string
                                          .raw_sha256 = HashOf(payload),
                                          .raw_max_bytes = 1024}};
   return manifest;
-}
-
-std::optional<std::filesystem::path> InstallAndFinalize(const std::filesystem::path& root,
-                                                        const EpBundleManifest& manifest,
-                                                        EpArtifactDownloadFn download_fn,
-                                                        ILogger& logger) {
-  EpBundleInstaller installer(root, kLockFileName, "WebGPU EP", std::move(download_fn));
-  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
-  if (!txn) {
-    return std::nullopt;
-  }
-
-  const auto bin_dir = txn->bin_dir();
-  if (!txn->Activate(logger)) {
-    return std::nullopt;
-  }
-
-  txn->Finalize(logger);
-  return bin_dir;
-}
-
-std::optional<std::string> FindGenerationWithPrefix(const std::filesystem::path& bundles_dir, std::string_view prefix) {
-  for (const auto& entry : std::filesystem::directory_iterator(bundles_dir)) {
-    const auto generation = entry.path().filename().string();
-    if (generation.starts_with(prefix)) {
-      return generation;
-    }
-  }
-
-  return std::nullopt;
 }
 
 }  // namespace
@@ -263,7 +166,7 @@ TEST(WebGpuEpBootstrapperTest, BundleActivationFailurePreventsRegistration) {
   }
 
   int registration_count = 0;
-  RecordingLogger logger;
+  test::NullLogger logger;
   WebGpuEpBootstrapper bootstrapper(
       root.string(),
       [&](const std::string&, const std::filesystem::path&) {
@@ -286,9 +189,10 @@ TEST(WebGpuEpBootstrapperTest, BundleRegistrationFailureRollsBackToPreviousGener
   downloads.SetSequence("https://example.test/provider-v2.so", {AsBytes("bundle-v2-provider")});
   const auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/provider-v1.so");
   const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/provider-v2.so");
-  RecordingLogger logger;
+  test::NullLogger logger;
 
-  ASSERT_TRUE(InstallAndFinalize(root.path(), manifest_v1, downloads.AsFn(), logger).has_value());
+  ASSERT_TRUE(test::InstallAndFinalize(root.path(), kLockFileName, "WebGPU EP", manifest_v1, downloads.AsFn(), logger)
+                  .has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
 
   int registration_count = 0;
@@ -319,9 +223,10 @@ TEST(WebGpuEpBootstrapperTest, SuccessfulBundleRegistrationFinalizesPreviousGene
   downloads.SetSequence("https://example.test/provider-v2.so", {AsBytes("bundle-v2-provider")});
   const auto manifest_v1 = MakeRawManifest("bundle-v1", "https://example.test/provider-v1.so");
   const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/provider-v2.so");
-  RecordingLogger logger;
+  test::NullLogger logger;
 
-  ASSERT_TRUE(InstallAndFinalize(root.path(), manifest_v1, downloads.AsFn(), logger).has_value());
+  ASSERT_TRUE(test::InstallAndFinalize(root.path(), kLockFileName, "WebGPU EP", manifest_v1, downloads.AsFn(), logger)
+                  .has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
 
   int registration_count = 0;

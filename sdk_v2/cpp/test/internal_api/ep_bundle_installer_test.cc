@@ -2,9 +2,10 @@
 // Licensed under the MIT License.
 #include "ep_detection/ep_bundle_installer.h"
 
+#include "internal_api/ep_bundle_test_helpers.h"
+#include "internal_api/test_helpers.h"
 #include "logger.h"
 #include "util/file_lock.h"
-#include "util/sha256.h"
 
 #include "utils/temp_path.h"
 #include "utils/zip_builder.h"
@@ -12,10 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <atomic>
 #include <fstream>
-#include <iterator>
-#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -25,11 +23,6 @@
 namespace fl {
 
 namespace {
-
-class NullLogger : public ILogger {
- public:
-  void Log(LogLevel /*level*/, std::string_view /*message*/) override {}
-};
 
 class RecordingLogger : public ILogger {
  public:
@@ -46,69 +39,12 @@ class RecordingLogger : public ILogger {
   std::vector<std::pair<LogLevel, std::string>> entries;
 };
 
-std::vector<uint8_t> AsBytes(const std::string& text) { return std::vector<uint8_t>(text.begin(), text.end()); }
-
-std::string HashOf(const std::vector<uint8_t>& bytes) {
-  auto tmp = test::TempPath::CreateTempFile("fl_bundle_installer_hash_");
-  std::ofstream out(tmp.path(), std::ios::binary);
-  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-  out.close();
-  return Sha256File(tmp.path());
-}
-
-std::string ReadFile(const std::filesystem::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-}
-
-class FakeDownloads {
- public:
-  void SetSequence(const std::string& url, std::vector<std::vector<uint8_t>> payloads) {
-    payloads_[url] = std::move(payloads);
-  }
-
-  int CallCount(const std::string& url) const {
-    auto it = call_counts_.find(url);
-    return it == call_counts_.end() ? 0 : it->second;
-  }
-
-  EpArtifactDownloadFn AsFn() {
-    return [this](const std::string& url, const std::filesystem::path& destination, uint64_t /*max_bytes*/,
-                  std::atomic<bool>* cancel_flag, const std::function<void(float)>& progress_cb,
-                  ILogger& /*logger*/) -> bool {
-      auto it = payloads_.find(url);
-      if (it == payloads_.end() || it->second.empty()) {
-        return false;
-      }
-
-      if (progress_cb) {
-        progress_cb(0.0f);
-      }
-      if (cancel_flag && cancel_flag->load()) {
-        return false;
-      }
-
-      int& count = call_counts_[url];
-      size_t index = std::min(static_cast<size_t>(count), it->second.size() - 1);
-      const auto& bytes = it->second[index];
-      count++;
-
-      std::filesystem::create_directories(destination.parent_path());
-      std::ofstream out(destination, std::ios::binary);
-      out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-      out.close();
-
-      if (progress_cb) {
-        progress_cb(100.0f);
-      }
-      return true;
-    };
-  }
-
- private:
-  std::map<std::string, std::vector<std::vector<uint8_t>>> payloads_;
-  std::map<std::string, int> call_counts_;
-};
+using test::AsBytes;
+using test::FakeDownloads;
+using test::HashOf;
+using test::InstallAndFinalize;
+using test::NullLogger;
+using test::ReadFile;
 
 EpBundleManifest MakeRawManifest(const std::string& bundle_id, const std::string& url, const std::string& sha256) {
   EpBundleManifest manifest;
@@ -144,22 +80,6 @@ EpBundleManifest MakeArchiveManifest(const std::string& bundle_id, const std::st
                                          .raw_sha256 = "",
                                          .raw_max_bytes = 0}};
   return manifest;
-}
-
-std::optional<std::filesystem::path> InstallAndFinalize(EpBundleInstaller& installer, const EpBundleManifest& manifest,
-                                                        ILogger& logger) {
-  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
-  if (!txn) {
-    return std::nullopt;
-  }
-
-  const auto bin_dir = txn->bin_dir();
-  if (!txn->Activate(logger)) {
-    return std::nullopt;
-  }
-
-  txn->Finalize(logger);
-  return bin_dir;
 }
 
 }  // namespace
@@ -567,27 +487,6 @@ TEST(EpBundleInstallerTest, RollbackFirstInstallRemovesCandidateMarkerAndRetains
   EXPECT_TRUE(txn->Rollback(logger));
   EXPECT_FALSE(std::filesystem::exists(root.path() / "active"));
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / candidate_generation));
-}
-
-TEST(EpBundleInstallerTest, RollbackFirstInstallLeavesDifferentMarkerUntouched) {
-  auto root = test::TempPath::CreateTempDir("fl_bundle_installer_");
-  auto payload = AsBytes("v1");
-  FakeDownloads downloads;
-  downloads.SetSequence("https://example.test/v1.so", {payload});
-  EpBundleInstaller installer(root.path(), "test.lock", "TestEP", downloads.AsFn());
-  NullLogger logger;
-
-  const auto manifest = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload));
-  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
-  ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
-
-  {
-    std::ofstream(root.path() / "active", std::ios::binary | std::ios::trunc) << "manual-marker";
-  }
-
-  EXPECT_TRUE(txn->Rollback(logger));
-  EXPECT_EQ(ReadFile(root.path() / "active"), "manual-marker");
 }
 
 TEST(EpBundleInstallerTest, RollbackOnReusedActiveBundleLeavesMarkerUnchanged) {

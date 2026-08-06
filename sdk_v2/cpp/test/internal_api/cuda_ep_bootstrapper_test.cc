@@ -5,20 +5,18 @@
 #include "ep_detection/cuda_ep_manifest.h"
 #include "ep_detection/ep_bundle_installer.h"
 #include "ep_detection/ep_utils.h"
+#include "internal_api/ep_bundle_test_helpers.h"
+#include "internal_api/test_helpers.h"
 #include "logger.h"
-#include "util/sha256.h"
 #include "utils/scoped_environment_variable.h"
 #include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,71 +64,12 @@ void ExpectUniqueInstalledPaths(const EpBundleManifest& manifest) {
   }
 }
 
-class NullLogger : public ILogger {
- public:
-  void Log(LogLevel /*level*/, std::string_view /*message*/) override {}
-};
-
-std::vector<uint8_t> AsBytes(std::string_view text) { return std::vector<uint8_t>(text.begin(), text.end()); }
-
-std::string HashOf(const std::vector<uint8_t>& bytes) {
-  auto tmp = test::TempPath::CreateTempFile("fl_cuda_bootstrapper_hash_");
-  std::ofstream out(tmp.path(), std::ios::binary);
-  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-  out.close();
-  return Sha256File(tmp.path());
-}
-
-std::string ReadFile(const std::filesystem::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-}
-
-class FakeDownloads {
- public:
-  void SetSequence(const std::string& url, std::vector<std::vector<uint8_t>> payloads) {
-    payloads_[url] = std::move(payloads);
-  }
-
-  EpArtifactDownloadFn AsFn() {
-    return [this](const std::string& url, const std::filesystem::path& destination, uint64_t /*max_bytes*/,
-                  std::atomic<bool>* cancel_flag, const std::function<void(float)>& progress_cb,
-                  ILogger& /*logger*/) -> bool {
-      auto it = payloads_.find(url);
-      if (it == payloads_.end() || it->second.empty()) {
-        return false;
-      }
-
-      if (progress_cb) {
-        progress_cb(0.0f);
-      }
-
-      if (cancel_flag && cancel_flag->load()) {
-        return false;
-      }
-
-      int& count = call_counts_[url];
-      const size_t index = std::min(static_cast<size_t>(count), it->second.size() - 1);
-      const auto& bytes = it->second[index];
-      count++;
-
-      std::filesystem::create_directories(destination.parent_path());
-      std::ofstream out(destination, std::ios::binary);
-      out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-      out.close();
-
-      if (progress_cb) {
-        progress_cb(100.0f);
-      }
-
-      return true;
-    };
-  }
-
- private:
-  std::map<std::string, std::vector<std::vector<uint8_t>>> payloads_;
-  std::map<std::string, int> call_counts_;
-};
+using test::AsBytes;
+using test::FakeDownloads;
+using test::FindGenerationWithPrefix;
+using test::HashOf;
+using test::NullLogger;
+using test::ReadFile;
 
 #if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
     (defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__))
@@ -183,36 +122,6 @@ EpBundleManifest MakeRawManifest(FakeDownloads& downloads, const std::string& bu
 #endif
 
   return manifest;
-}
-
-std::optional<std::filesystem::path> InstallAndFinalize(const std::filesystem::path& root,
-                                                        const EpBundleManifest& manifest,
-                                                        EpArtifactDownloadFn download_fn,
-                                                        ILogger& logger) {
-  EpBundleInstaller installer(root, kLockFileName, "CUDA EP", std::move(download_fn));
-  auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
-  if (!txn) {
-    return std::nullopt;
-  }
-
-  const auto bin_dir = txn->bin_dir();
-  if (!txn->Activate(logger)) {
-    return std::nullopt;
-  }
-
-  txn->Finalize(logger);
-  return bin_dir;
-}
-
-std::optional<std::string> FindGenerationWithPrefix(const std::filesystem::path& bundles_dir, std::string_view prefix) {
-  for (const auto& entry : std::filesystem::directory_iterator(bundles_dir)) {
-    const auto generation = entry.path().filename().string();
-    if (generation.starts_with(prefix)) {
-      return generation;
-    }
-  }
-
-  return std::nullopt;
 }
 
 template <typename RegisterEp>
@@ -397,7 +306,8 @@ TEST(CudaEpBootstrapperTest, BundleRegistrationFailureRollsBackToPreviousGenerat
   const auto manifest_v2 = MakeRawManifest(downloads, "bundle-v2");
   NullLogger logger;
 
-  ASSERT_TRUE(InstallAndFinalize(root.path(), manifest_v1, downloads.AsFn(), logger).has_value());
+  ASSERT_TRUE(test::InstallAndFinalize(root.path(), kLockFileName, "CUDA EP", manifest_v1, downloads.AsFn(), logger)
+                  .has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
 
   int registration_count = 0;
@@ -427,7 +337,8 @@ TEST(CudaEpBootstrapperTest, SuccessfulBundleRegistrationFinalizesPreviousGenera
   const auto manifest_v2 = MakeRawManifest(downloads, "bundle-v2");
   NullLogger logger;
 
-  ASSERT_TRUE(InstallAndFinalize(root.path(), manifest_v1, downloads.AsFn(), logger).has_value());
+  ASSERT_TRUE(test::InstallAndFinalize(root.path(), kLockFileName, "CUDA EP", manifest_v1, downloads.AsFn(), logger)
+                  .has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
 
   int registration_count = 0;
@@ -461,7 +372,8 @@ TEST(CudaEpBootstrapperTest, InstalledBundleGenAiDependencyLoaderFailureRollsBac
   const auto manifest_v2 = MakeRawManifest(downloads, "bundle-v2");
   NullLogger logger;
 
-  ASSERT_TRUE(InstallAndFinalize(root.path(), manifest_v1, downloads.AsFn(), logger).has_value());
+  ASSERT_TRUE(test::InstallAndFinalize(root.path(), kLockFileName, "CUDA EP", manifest_v1, downloads.AsFn(), logger)
+                  .has_value());
   const auto active_v1 = ReadFile(root.path() / "active");
 
   int registration_count = 0;
