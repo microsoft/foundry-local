@@ -282,7 +282,6 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   info.device_id_status = "Existing";
   info.cpu_count = 8;
   info.total_memory_mb = 32768;
-  info.locale = "en-US";
 
   telemetry.RecordProcessInfo(info);
 

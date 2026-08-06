@@ -109,10 +109,10 @@ void TelemetryLogger::RecordProcessInfo(const ProcessInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] ProcessInfo AppName={} AppVersion={} OsName={} "
                           "OsVersion={} CpuArch={} "
-                          "ProcessName={} DeviceIdStatus={} CpuCount={} TotalMemoryMB={} Locale={}",
+                          "ProcessName={} DeviceIdStatus={} CpuCount={} TotalMemoryMB={}",
                           app_name_, info.app_version, info.os_name, info.os_version,
                           info.cpu_arch, info.process_name, info.device_id_status, info.cpu_count,
-                          info.total_memory_mb, info.locale));
+                          info.total_memory_mb));
 }
 
 void TelemetryLogger::RecordHardwareInfo(const HardwareInfo& info) {

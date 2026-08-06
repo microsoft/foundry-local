@@ -8,7 +8,6 @@
 #include "version.h"
 
 #include <array>
-#include <clocale>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -284,11 +283,6 @@ std::string GetHostAppVersion() {
 #endif
 #endif
 
-std::string GetLocaleName() {
-  const char* locale = std::setlocale(LC_ALL, nullptr);
-  return (locale != nullptr && locale[0] != '\0') ? std::string(locale) : std::string{"unknown"};
-}
-
 }  // namespace
 
 TelemetryMetadata BuildTelemetryMetadata(std::string app_name) {
@@ -323,7 +317,6 @@ ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, bool include_dev
   info.os_version = metadata.os_version;
   info.cpu_arch = metadata.cpu_arch;
   info.process_name = GetProcessName();
-  info.locale = GetLocaleName();
   info.device_id_status = include_device_id_status ? TelemetryDeviceId::Instance().GetStatusString() : "Disabled";
   info.cpu_count = static_cast<int32_t>(std::thread::hardware_concurrency());
   info.total_memory_mb = GetTotalMemoryMB();

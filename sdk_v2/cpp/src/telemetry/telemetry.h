@@ -193,7 +193,6 @@ struct ProcessInfo {
   std::string os_version;
   std::string cpu_arch;
   std::string process_name;
-  std::string locale;
   std::string device_id_status;
   int32_t cpu_count = 0;
   int64_t total_memory_mb = -1;
