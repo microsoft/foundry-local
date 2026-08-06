@@ -52,6 +52,7 @@ class LoadModelHandler : public HttpRequestHandler {
 
     auto name_raw = request->getPathVariable("name");
     if (!name_raw) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Missing model name");
     }
 
@@ -59,6 +60,7 @@ class LoadModelHandler : public HttpRequestHandler {
     auto* model = ctx_.catalog.GetModel(name);
 
     if (!model) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
 
@@ -69,6 +71,7 @@ class LoadModelHandler : public HttpRequestHandler {
     }
 
     if (!model->IsCached()) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Model not cached", "Model must be downloaded before loading");
     }
 
@@ -105,6 +108,7 @@ class UnloadModelHandler : public HttpRequestHandler {
 
     auto name_raw = request->getPathVariable("name");
     if (!name_raw) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Missing model name");
     }
 
@@ -112,6 +116,7 @@ class UnloadModelHandler : public HttpRequestHandler {
     auto* model = ctx_.catalog.GetModel(name);
 
     if (!model) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
 
@@ -207,6 +212,7 @@ class OpenAIRetrieveModelHandler : public HttpRequestHandler {
 
     auto name_raw = request->getPathVariable("name");
     if (!name_raw) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Missing model name");
     }
 
@@ -214,6 +220,7 @@ class OpenAIRetrieveModelHandler : public HttpRequestHandler {
     auto* model = ctx_.catalog.GetModelVariant(name);
 
     if (!model) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
 

@@ -32,6 +32,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
 
     auto body_str = request->readBodyToString();
     if (!body_str || body_str->empty()) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Empty request body");
     }
 
@@ -41,6 +42,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
       auto j = nlohmann::json::parse(*body_str);
       req = j.get<EmbeddingCreateRequest>();
     } catch (const nlohmann::json::exception& ex) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Invalid JSON", ex.what());
     }
 
@@ -53,6 +55,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
     }
 
     if (inputs.empty()) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "\"input\" must not be empty");
     }
 
@@ -60,11 +63,13 @@ class EmbeddingsHandler : public HttpRequestHandler {
     std::string model_name = req.model;
     auto* model = ctx_.catalog.GetModelVariant(model_name);
     if (!model) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", model_name);
     }
 
     auto* loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
     if (!loaded) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Model not loaded", model_name);
     }
 

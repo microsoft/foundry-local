@@ -462,6 +462,13 @@ void Manager::StartWebService() {
 
   bound_urls_ = web_service_->Start(endpoints);
   web_service_running_ = true;
+  try {
+    telemetry_->StartSession();
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -488,6 +495,13 @@ void Manager::StopWebService() {
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_->Stop();
+  try {
+    telemetry_->EndSession();
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
+  }
   web_service_.reset();
   web_service_running_ = false;
   bound_urls_.clear();
