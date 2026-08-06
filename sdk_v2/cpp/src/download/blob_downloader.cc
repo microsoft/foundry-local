@@ -29,6 +29,8 @@
 // does not honor SSL_CERT_FILE. On non-Windows builds we install a CurlTransport preconfigured with
 // CAInfo (see MakeBlobClientOptions below). Desktop Windows uses the default WinHTTP transport.
 #if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#include "http/curl_transport.h"
+
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
@@ -50,10 +52,11 @@ constexpr size_t kStreamingBufferBytes = 64 * 1024;
 Azure::Storage::Blobs::BlobClientOptions MakeBlobClientOptions() {
   Azure::Storage::Blobs::BlobClientOptions options;
 #if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
-  if (std::string ca_bundle = fl::http::CaBundleFile(); !ca_bundle.empty()) {
-    Azure::Core::Http::CurlTransportOptions curl_opts;
-    curl_opts.CAInfo = std::move(ca_bundle);
-    options.Transport.Transport = std::make_shared<Azure::Core::Http::CurlTransport>(curl_opts);
+  // Only override the Storage SDK's default transport when a CA bundle is configured; the options are
+  // cached and shared with our other curl transports (see http/curl_transport.h).
+  if (!fl::http::CaBundleFile().empty()) {
+    options.Transport.Transport =
+        std::make_shared<Azure::Core::Http::CurlTransport>(fl::http::CachedCurlTransportOptions());
   }
 #endif
   return options;
