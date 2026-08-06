@@ -20,10 +20,8 @@
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <utility>
 
 namespace fl {
 
