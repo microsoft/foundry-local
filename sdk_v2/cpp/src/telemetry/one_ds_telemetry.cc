@@ -217,7 +217,9 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
     config[CFG_INT_SDK_MODE] = SdkModeTypes_CS;
     config[CFG_INT_MAX_TEARDOWN_TIME] = kMaxTeardownUploadTimeSec;
     if (const auto cache_dir = TelemetryDeviceId::EnsureCacheDirectory(); !cache_dir.empty()) {
-      config[CFG_STR_CACHE_FILE_PATH] = (cache_dir / "foundry-local.db").string();
+      const auto cache_file_name =
+          disable_nonessential_telemetry ? "foundry-local-processinfo.db" : "foundry-local.db";
+      config[CFG_STR_CACHE_FILE_PATH] = (cache_dir / cache_file_name).string();
     }
 
     status_t status = STATUS_SUCCESS;
