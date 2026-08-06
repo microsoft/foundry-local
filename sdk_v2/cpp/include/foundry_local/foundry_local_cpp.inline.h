@@ -327,6 +327,22 @@ inline ModelInfo::ModelInfo()
 inline ModelInfo::ModelInfo(flModelInfo& info)
     : handle_(&info, detail::model_api()->ReleaseModelInfo) {}
 
+inline ModelInfo::ModelInfo(const ModelInfo& other)
+    : handle_([&other] {
+        flModelInfo* info = nullptr;
+        Check(detail::model_api()->Info_Clone(other.handle_.get(), &info));
+        return info;
+      }(), detail::model_api()->ReleaseModelInfo) {}
+
+inline ModelInfo& ModelInfo::operator=(const ModelInfo& other) {
+  if (this != &other) {
+    ModelInfo clone(other);
+    *this = std::move(clone);
+  }
+
+  return *this;
+}
+
 inline ModelInfo& ModelInfo::SetStringProperty(const char* key, const char* value) {
   Check(detail::model_api()->Info_SetStringProperty(handle_.get_mutable(), key, value));
   return *this;

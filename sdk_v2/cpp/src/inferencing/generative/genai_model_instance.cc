@@ -35,8 +35,9 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to create OGA config for model ", model_id_, ": ", e.what());
   }
 
-  // Apply EP override to the OGA config
-  if (ep_ != ExecutionProvider::kDefault) {
+  // CPU is OGA's default when no provider is configured. EPtoGenAI intentionally has no CPU name, so only
+  // non-default accelerator overrides should replace the providers from genai_config.json.
+  if (ep_ != ExecutionProvider::kDefault && ep_ != ExecutionProvider::kCPU) {
     try {
       oga_config->ClearProviders();
       std::string_view provider_str = EPUtils::EPtoGenAI(ep_);

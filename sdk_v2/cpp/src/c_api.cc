@@ -1107,6 +1107,22 @@ FL_API_STATUS_IMPL(Info_DeserializeFromFileImpl, const char* file_path, flModelI
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Info_CloneImpl, const flModelInfo* info, flModelInfo** out_info) {
+  API_IMPL_BEGIN
+  if (!out_info) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_info must not be null");
+  }
+
+  *out_info = nullptr;
+  if (!info) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "info must not be null");
+  }
+
+  *out_info = AsHandle<flModelInfo>(new fl::ModelInfo(*AsImpl(info)));
+  return nullptr;
+  API_IMPL_END
+}
+
 static const flModelApi g_model_api_v1 = {
   Model_GetInfoImpl,
   Model_GetInputOutputInfoImpl,
@@ -1133,7 +1149,7 @@ static const flModelApi g_model_api_v1 = {
   Info_GetIntPropertyImpl,
 };
 
-static const flModelApi g_model_api = {
+static const flModelApi g_model_api_v2 = {
     Model_GetInfoImpl,
     Model_GetInputOutputInfoImpl,
     Model_IsCachedImpl,
@@ -1163,6 +1179,39 @@ static const flModelApi g_model_api = {
     Info_SetIntPropertyImpl,
     Info_SerializeToFileImpl,
     Info_DeserializeFromFileImpl,
+  };
+
+  static const flModelApi g_model_api = {
+    Model_GetInfoImpl,
+    Model_GetInputOutputInfoImpl,
+    Model_IsCachedImpl,
+    Model_GetPathImpl,
+    Model_DownloadImpl,
+    Model_IsLoadedImpl,
+    Model_LoadImpl,
+    Model_UnloadImpl,
+    Model_RemoveFromCacheImpl,
+    Model_GetVariantsImpl,
+    Model_SelectVariantImpl,
+    Info_GetIdImpl,
+    Info_GetNameImpl,
+    Info_GetVersionImpl,
+    Info_GetAliasImpl,
+    Info_GetUriImpl,
+    Info_GetDeviceTypeImpl,
+    Info_GetExecutionProviderImpl,
+    Info_GetTaskImpl,
+    Info_GetPromptTemplatesImpl,
+    Info_GetModelSettingsImpl,
+    Info_GetStringPropertyImpl,
+    Info_GetIntPropertyImpl,
+    ModelInfo_CreateImpl,
+    ModelInfo_ReleaseImpl,
+    Info_SetStringPropertyImpl,
+    Info_SetIntPropertyImpl,
+    Info_SerializeToFileImpl,
+    Info_DeserializeFromFileImpl,
+    Info_CloneImpl,
 };
 
 // ========================================================================
@@ -2016,6 +2065,10 @@ static const flModelApi* FL_API_CALL GetModelApiImpl() FL_NO_EXCEPTION {
   return &g_model_api;
 }
 
+static const flModelApi* FL_API_CALL GetModelApiV2Impl() FL_NO_EXCEPTION {
+  return &g_model_api_v2;
+}
+
 static const flModelApi* FL_API_CALL GetModelApiV1Impl() FL_NO_EXCEPTION {
   return &g_model_api_v1;
 }
@@ -2082,7 +2135,7 @@ static const flApi g_api_v1 = {
     GetConfigurationApiImpl,
     GetItemApiImpl,
     GetInferenceApiImpl,
-    GetModelApiImpl,
+    GetModelApiV2Impl,
     CreateKeyValuePairsImpl,
     AddKeyValuePairImpl,
     GetKeyValueImpl,
@@ -2101,6 +2154,40 @@ static const flApi g_api_v1 = {
     Manager_GetCatalogByNameImpl,
 };
 
+  static const flApi g_api_v3 = {
+    Status_CreateImpl,
+    Status_ReleaseImpl,
+    Status_GetErrorCodeImpl,
+    Status_GetErrorMessageImpl,
+    Manager_CreateImpl,
+    Manager_ReleaseImpl,
+    Manager_GetCatalogImpl,
+    Manager_WebServiceStartImpl,
+    Manager_WebServiceUrlsImpl,
+    Manager_WebServiceStopImpl,
+    GetCatalogApiImpl,
+    GetConfigurationApiImpl,
+    GetItemApiImpl,
+    GetInferenceApiImpl,
+    GetModelApiImpl,
+    CreateKeyValuePairsImpl,
+    AddKeyValuePairImpl,
+    GetKeyValueImpl,
+    GetKeyValuePairsImpl,
+    RemoveKeyValuePairImpl,
+    KeyValuePairs_ReleaseImpl,
+    ModelList_ReleaseImpl,
+    ModelList_SizeImpl,
+    ModelList_GetAtImpl,
+    Manager_GetDiscoverableEpsImpl,
+    Manager_DownloadAndRegisterEpsImpl,
+    Manager_IsEpDownloadInProgressImpl,
+    Manager_ShutdownImpl,
+    Manager_IsShutdownRequestedImpl,
+    Manager_GetCatalogByTypeImpl,
+    Manager_GetCatalogByNameImpl,
+  };
+
 // ========================================================================
 // Exported symbols — the ONLY symbols the library exports
 // ========================================================================
@@ -2111,8 +2198,11 @@ FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EX
   if (version == 1) {
     return &g_api_v1;
   }
-  if (version == 0 || version == 2) {
+  if (version == 2) {
     return &g_api_v2;
+  }
+  if (version == 0 || version == 3) {
+    return &g_api_v3;
   }
 
   return nullptr;

@@ -315,6 +315,9 @@ class ModelInfo {
   ModelInfo();
   explicit ModelInfo(const flModelInfo& info) noexcept : handle_(&info) {}
 
+  /// Create an independent, owning, mutable deep copy, including when the source is a borrowed view.
+  ModelInfo(const ModelInfo& other);
+  ModelInfo& operator=(const ModelInfo& other);
   ModelInfo(ModelInfo&&) noexcept = default;
   ModelInfo& operator=(ModelInfo&&) noexcept = default;
 
