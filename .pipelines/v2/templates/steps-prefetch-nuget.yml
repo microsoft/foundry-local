@@ -7,6 +7,10 @@
 # Parameters:
 #   ortVersion     – Microsoft.ML.OnnxRuntime version
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
+#   genaiPackageId – GenAI package to pre-download. Defaults to the .Foundry
+#                    meta-package used by the desktop platforms; Android must
+#                    override this with the base Microsoft.ML.OnnxRuntimeGenAI
+#                    package, which is the only one that ships the Android AAR.
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
 #   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
 #   shell          – 'pwsh' (Windows/macOS) or 'bash' (Linux)
@@ -17,6 +21,9 @@ parameters:
   type: string
 - name: genaiVersion
   type: string
+- name: genaiPackageId
+  type: string
+  default: 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'
 - name: winmlVersion
   type: string
   default: ''
@@ -83,7 +90,7 @@ steps:
         $feed = "https://www.nuget.org/api/v2/package"
 
         $packages = @(
-          @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
+          @{ key = 'genai'; id = '${{ parameters.genaiPackageId }}'; version = '${{ parameters.genaiVersion }}' },
           @{ key = 'ort';   id = 'Microsoft.ML.OnnxRuntime';             version = '${{ parameters.ortVersion }}'   }
         )
 
@@ -131,7 +138,7 @@ steps:
       feed="https://www.nuget.org/api/v2/package"
 
       declare -a entries=(
-        "genai:Microsoft.ML.OnnxRuntimeGenAI.Foundry:${{ parameters.genaiVersion }}"
+        "genai:${{ parameters.genaiPackageId }}:${{ parameters.genaiVersion }}"
         "ort:Microsoft.ML.OnnxRuntime:${{ parameters.ortVersion }}"
       )
       if [ "${{ parameters.includeWinml }}" = "True" ]; then

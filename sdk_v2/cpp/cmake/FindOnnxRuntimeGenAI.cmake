@@ -127,7 +127,10 @@ if(NOT ORT_GENAI_VERSION)
 endif()
 
 # Allow the pipeline or caller to override the download URL (e.g., to use a local
-# file:// path when direct nuget.org access is blocked in CI).
+# file:// path when direct nuget.org access is blocked in CI). When cross-compiling
+# for Android the override must point at a package that ships the Android AAR --
+# the base Microsoft.ML.OnnxRuntimeGenAI package, not the desktop-only .Foundry
+# meta-package selected above.
 if(NOT GENAI_FETCH_URL)
     # Dev builds come from the ADO nightly feed; release versions come from nuget.org.
     if(ORT_GENAI_VERSION MATCHES "-dev-")
@@ -173,8 +176,20 @@ if(ANDROID)
     set(_GENAI_ANDROID_DIR "${genailib_SOURCE_DIR}/runtimes/android/native")
     set(_GENAI_AAR_PATH "${_GENAI_ANDROID_DIR}/onnxruntime-genai.aar")
     if(NOT EXISTS "${_GENAI_AAR_PATH}")
-        message(FATAL_ERROR "GenAI Android AAR not found at ${_GENAI_AAR_PATH}. "
-                            "Ensure the package contains Android binaries (e.g. Microsoft.ML.OnnxRuntimeGenAI).")
+        # Most likely cause: the package that was fetched has no Android binaries.
+        # Only the base Microsoft.ML.OnnxRuntimeGenAI package ships them; the
+        # .Foundry meta-package is desktop-only. A caller-supplied
+        # GENAI_FETCH_URL bypasses the package selection above, so it must point
+        # at the base package when cross-compiling for Android.
+        string(CONCAT _GENAI_AAR_HINT
+               "Expected the base Microsoft.ML.OnnxRuntimeGenAI package, which ships Android binaries; "
+               "the .Foundry meta-package does not.")
+        if(GENAI_FETCH_URL)
+            string(CONCAT _GENAI_AAR_HINT "${_GENAI_AAR_HINT}"
+                   " GENAI_FETCH_URL was supplied by the caller (${GENAI_FETCH_URL});"
+                   " point it at the base package for Android builds.")
+        endif()
+        message(FATAL_ERROR "GenAI Android AAR not found at ${_GENAI_AAR_PATH}. ${_GENAI_AAR_HINT}")
     endif()
     if(NOT EXISTS "${_GENAI_ANDROID_DIR}/jni")
         file(ARCHIVE_EXTRACT INPUT "${_GENAI_AAR_PATH}" DESTINATION "${_GENAI_ANDROID_DIR}/")
