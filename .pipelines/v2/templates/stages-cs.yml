@@ -268,7 +268,6 @@ stages:
             <packageSources>
               <clear />
               <add key="LocalPackages" value="$feedDir" />
-              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
               <add key="AIFoundryLocal_PublicPackages" value="https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json" />
             </packageSources>
           </configuration>
