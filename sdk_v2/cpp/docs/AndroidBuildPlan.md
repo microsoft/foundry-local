@@ -192,11 +192,27 @@ When `--android_run_emulator --test` is specified, `build.py`:
 
 ### Problem
 
-Statically-linked OpenSSL (built by vcpkg) **ignores the `SSL_CERT_DIR` environment variable** at
-runtime. The `--openssldir` path is baked at build time to a non-existent location on Android.
-`SSL_CERT_FILE` with a single concatenated PEM bundle *is* honored.
+Statically-linked OpenSSL/libcurl (built by vcpkg) **ignores both the `SSL_CERT_DIR` and the
+`SSL_CERT_FILE` environment variables** at request time. The default CA location (`--openssldir`) is
+baked at build time to a path that does not exist on Android, and this libcurl build was not
+compiled with the fallback that would otherwise consult `SSL_CERT_FILE`. As a result, setting either
+environment variable alone has **no effect** — curl uses its (non-existent) compiled-in default and
+verification fails with a misleading "self-signed certificate in certificate chain".
 
-### Solution for Testing
+> This was confirmed on-device: passing the device's own trust store via `SSL_CERT_FILE` still
+> failed, while the *exact same* bundle passed explicitly as a CA file (`openssl s_client -CAfile`,
+> equivalent to `CURLOPT_CAINFO`) verified `ai.azure.com` with `Verify return code: 0 (ok)`. Only the
+> delivery mechanism differed.
+
+### Solution
+
+The Core reads the `SSL_CERT_FILE` environment variable and forwards it explicitly to libcurl via
+`CurlTransportOptions.CAInfo` (`CURLOPT_CAINFO`), which libcurl **always** honors. See
+`src/http/http_client.cc` and `src/http/http_download.cc`. Callers therefore still set
+`SSL_CERT_FILE`, but its effect now comes from the Core forwarding it to `CAInfo` — not from OpenSSL
+auto-reading the environment.
+
+### Building the bundle for testing
 
 `tools/android.py` builds a CA bundle at test time from the device's system certificates:
 
@@ -207,7 +223,7 @@ runtime. The `--openssldir` path is baked at build time to a non-existent locati
    ```
    cat /system/etc/security/cacerts/*.0 > /data/local/tmp/foundry_tests/cacert.pem
    ```
-3. Sets `SSL_CERT_FILE` pointing to the bundle
+3. Sets `SSL_CERT_FILE` pointing to the bundle (the Core forwards it to `CAInfo`)
 
 This approach uses the device's actual trust store, so it works with any API level and includes
 all root CAs that the device trusts (including DigiCert Global Root G2 needed for Azure endpoints).
@@ -220,9 +236,11 @@ the same pattern FL Core used.
 
 ### Key Insight
 
-`SSL_CERT_DIR` does **not** work with statically-linked OpenSSL on Android. Always use `SSL_CERT_FILE`
-with a concatenated PEM bundle. The error message when this fails is misleading: "self-signed
-certificate in certificate chain" — it actually means OpenSSL cannot find **any** CA store.
+Neither `SSL_CERT_DIR` nor `SSL_CERT_FILE` is auto-consulted by this statically-linked
+OpenSSL/libcurl on Android. The CA bundle **must** be passed explicitly via `CURLOPT_CAINFO`; the
+Core does this by forwarding `SSL_CERT_FILE`. The error message when the store is missing is
+misleading: "self-signed certificate in certificate chain" — it actually means OpenSSL cannot find
+**any** CA store.
 
 ---
 
