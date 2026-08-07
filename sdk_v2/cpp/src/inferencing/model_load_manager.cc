@@ -114,28 +114,16 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   auto genai_config = GenAIConfig::LoadFromFile(config_path);
-
-  // Determine execution provider
   auto resolved_ep = ep_override;
-
-  if (resolved_ep == ExecutionProvider::kDefault) {
-    // Auto-select EP for generic-gpu models: DML models are compatible with
-    // CUDA and WebGPU, so try those in order when available.
-    if (id_str.find("generic-gpu") != std::string::npos) {
-      if (HasEP("CUDAExecutionProvider")) {
-        resolved_ep = ExecutionProvider::kCUDA;
-        logger_.Log(LogLevel::Information, fmt::format("using CUDA EP for model: {}", id_str));
-      } else if (HasEP("WebGpuExecutionProvider")) {
-        resolved_ep = ExecutionProvider::kWebGPU;
-        logger_.Log(LogLevel::Information, fmt::format("using WebGPU EP for model: {}", id_str));
-      }
-    }
+  if (resolved_ep == ExecutionProvider::kDefault &&
+      id_str.find("generic-gpu") != std::string::npos &&
+      genai_config.DefaultProvider() == "dml") {
+    resolved_ep = ExecutionProvider::kWebGPU;
   }
 
   // EP guard: verify the required EP is registered before attempting to load.
   // OGA will crash or hang if we try to load a model with an unregistered EP.
   if (resolved_ep != ExecutionProvider::kDefault && resolved_ep != ExecutionProvider::kCPU) {
-    // Explicit EP resolved — check it directly
     auto required = EPUtils::EPtoRegistrationName(resolved_ep);
     if (!required.empty() && !HasEP(std::string(required))) {
       FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -143,7 +131,6 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                        " which is not registered. Call DownloadAndRegisterEps() first.");
     }
   } else {
-    // No explicit EP — check model_id for device hints
     auto required = RequiredEpForModelId(id_str);
     if (!required.empty() && !HasEP(std::string(required))) {
       FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,

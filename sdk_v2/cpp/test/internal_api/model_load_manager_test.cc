@@ -17,17 +17,6 @@
 
 namespace {
 
-/// EP detector that reports GPU EPs as available.
-class GpuEpDetector : public fl::IEpDetector {
- public:
-  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
-    return {
-        {"CPU", {"CPUExecutionProvider"}},
-        {"GPU", {"CUDAExecutionProvider"}},
-    };
-  }
-};
-
 /// EP detector that reports CPU only.
 class CpuOnlyDetector : public fl::IEpDetector {
  public:
@@ -40,13 +29,14 @@ class CpuOnlyDetector : public fl::IEpDetector {
 /// Cleans up on destruction.
 class TempModelDir {
  public:
-  TempModelDir(const std::string& model_name) {
+  TempModelDir(const std::string& model_name,
+               const std::string& config_json = R"({"model": {"type": "phi3"}})") {
     path_ = (std::filesystem::temp_directory_path() / ("fl_test_" + model_name)).string();
     std::filesystem::create_directories(path_);
 
     // Write a minimal genai_config.json
     std::ofstream config(std::filesystem::path(path_) / "genai_config.json");
-    config << R"({"model": {"type": "phi3"}})";
+    config << config_json;
   }
 
   ~TempModelDir() {
@@ -153,20 +143,19 @@ TEST(ModelLoadManagerTest, LoadCpuModel_AlwaysSucceeds_NoEpGuard) {
   }
 }
 
-TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
-  GpuEpDetector ep;
+TEST(ModelLoadManagerTest, LoadGenericGpuDmlModel_DefaultRoutesToWebGpu) {
+  CpuOnlyDetector ep;
   fl::StderrLogger logger;
   fl::ModelLoadManager mgr(ep, logger);
+  TempModelDir dir("phi-4-mini-generic-gpu",
+                   R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{"dml":{}}]}}}})");
 
-  TempModelDir dir("phi-4-mini-generic-gpu");
-
-  // Will fail at GenAIModelInstance construction, but should NOT fail at EP guard.
-  // The auto-select logic should pick CUDA, and CUDA IS available.
   try {
     mgr.LoadModel(dir.path(), "phi-4-mini-generic-gpu");
+    FAIL() << "Expected WebGPU availability error";
   } catch (const fl::Exception& e) {
-    // Should NOT be an EP guard error
-    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("WebGpuExecutionProvider"), std::string::npos);
   }
 }
 

@@ -48,8 +48,8 @@ class ModelLoadManager {
   /// Load a model from the given path using ORT GenAI.
   /// @param model_path  Path to the model directory (must contain genai_config.json).
   /// @param model_id    Unique identifier for the model.
-  /// @param ep_override Execution provider override (kDefault = use genai_config.json default,
-  ///                    or auto-select CUDA for generic-gpu models if available).
+  /// @param ep_override Execution provider override. kDefault preserves genai_config.json, except unsupported DML
+  ///                    generic-gpu models use WebGPU.
   /// @returns LoadResult with status and non-owning pointer to the loaded model.
   LoadResult LoadModel(std::string_view model_path,
                        std::string_view model_id,
