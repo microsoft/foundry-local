@@ -317,7 +317,7 @@ Manager::Manager(const Configuration& config)
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       *config_.app_data_dir,
       [this](ModelInfo info, std::string local_path, std::function<void(const std::string&)> unregister_callback,
-             std::function<void()> prepare_callback) {
+              std::function<std::optional<ModelInfo>()> prepare_callback) {
         return CreateLocalModel(std::move(info), std::move(local_path), std::move(unregister_callback),
                                 std::move(prepare_callback));
       },
@@ -556,7 +556,7 @@ Model Manager::CreateModel(ModelInfo info, std::string local_path) {
 
 Model Manager::CreateLocalModel(ModelInfo info, std::string local_path,
             std::function<void(const std::string&)> unregister_callback,
-            std::function<void()> prepare_callback) {
+                                std::function<std::optional<ModelInfo>()> prepare_callback) {
   return Model::FromLocalRegistration(std::move(info), std::move(local_path), *download_manager_,
               *model_load_manager_, std::move(unregister_callback),
               std::move(prepare_callback));

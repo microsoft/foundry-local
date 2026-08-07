@@ -113,6 +113,7 @@ nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registr
       {"model_path", registration.model_path},
       {"registered_at", registration.info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, {})},
       {"properties", ModelInfoToPropertyBagJson(registration.info)},
+      {"metadata_prepared", registration.metadata_prepared},
   };
 }
 
@@ -167,7 +168,16 @@ Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
       }
     }
 
-    registration = {ResolveMetadata(model_info, model_path, *alias_value), model_path};
+    bool assets_inspected = false;
+    registration = {ResolveMetadata(model_info, nullptr, model_path, *alias_value, &assets_inspected), model_path,
+            assets_inspected};
+    auto registration_id = registration.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{});
+    while (std::any_of(registrations.begin(), registrations.end(), [&](const Registration& existing) {
+      return existing.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{}) == registration_id;
+    })) {
+      registration_id += "-1";
+    }
+    SetModelInfoStringProperty(registration.info, kRegistrationIdProperty, std::move(registration_id));
     WriteMetadata(registration);
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -238,10 +248,13 @@ std::vector<Model*> LocalModelCatalog::GetLocalModels() const {
   return ListModels();
 }
 
-ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& supplied,
-                                             const std::string& model_path,
-                                             const std::string& alias) const {
-  auto resolved = supplied;
+ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const ModelInfo* previous,
+                                             const std::string& model_path, const std::string& alias,
+                                             bool* assets_inspected) const {
+  if (assets_inspected) {
+    *assets_inspected = false;
+  }
+  auto resolved = previous ? *previous : metadata;
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   const auto version = resolved.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT, int64_t{0});
   if (version < 0 || version > std::numeric_limits<int>::max()) {
@@ -262,33 +275,38 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& supplied,
   SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "LocalRegistration");
   SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "Model");
   SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "ONNX");
-  SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, UtcTimestamp(now));
-  if (!resolved.GetPropertyStr(kRegistrationIdProperty)) {
+  if (!previous) {
+    SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
+    SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, UtcTimestamp(now));
+  }
+  if (!previous) {
     const auto registration_id = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     SetModelInfoStringProperty(resolved, kRegistrationIdProperty, std::to_string(registration_id));
   }
-  SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT, DirectorySize(model_path));
-
   const auto config_path = std::filesystem::path(model_path) / "genai_config.json";
   try {
     if (std::filesystem::exists(config_path)) {
       const auto config = GenAIConfig::LoadFromFile(config_path.string());
-      if (config.model && config.model->context_length > 0 &&
-          !resolved.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT)) {
+      if (assets_inspected) {
+        *assets_inspected = true;
+      }
+      SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT, DirectorySize(model_path));
+      resolved.int_properties.erase(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT);
+      if (config.model && config.model->context_length > 0) {
         SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, config.model->context_length);
       }
       // Keep the default provider in genai_config.json authoritative when the caller did not supply one. Some OGA
       // providers such as DML are not represented by the SDK's explicit ExecutionProvider enum and use kDefault.
-      if (resolved.task.empty()) {
-        std::string task = "chat-completion";
-        if (config.hidden_size) {
-          task = "embeddings";
-        } else if (config.model && config.model->type == "whisper") {
-          task = "automatic-speech-recognition";
-        }
-        SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, task);
+      std::string task = "chat-completion";
+      if (config.hidden_size) {
+        task = "embeddings";
+      } else if (config.model && config.model->type == "whisper") {
+        task = "automatic-speech-recognition";
       }
+      SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, task);
+      SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR,
+                                 task == "automatic-speech-recognition" ? "audio" : "language");
+      SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "language");
     }
   } catch (const std::exception& ex) {
     logger_.Log(LogLevel::Warning, "Ignoring BYOM metadata inspection failure for '" + model_path + "': " + ex.what());
@@ -328,7 +346,17 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
             !item.contains("properties")) {
           continue;
         }
+        if (item.contains("metadata_prepared") && !item["metadata_prepared"].is_boolean()) {
+          logger_.Log(LogLevel::Warning, "Ignoring local model registration with invalid metadata preparation state");
+          continue;
+        }
+
         auto info = ModelInfoFromPropertyBagJson(item["properties"]);
+        const auto* registration_id = info.GetPropertyStr(kRegistrationIdProperty);
+        if (!registration_id || registration_id->empty()) {
+          logger_.Log(LogLevel::Warning, "Ignoring local model registration missing its stable registration ID");
+          continue;
+        }
         const auto* alias = info.GetPropertyStr(FOUNDRY_LOCAL_REG_ALIAS);
         if (!alias || !std::regex_match(*alias, std::regex("[A-Za-z0-9][A-Za-z0-9._-]*"))) {
           continue;
@@ -348,10 +376,12 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
         info.model_id = info.alias + ":" + std::to_string(info.version);
         SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, model_path.string());
         const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const Registration& entry) {
-          return entry.info.alias == info.alias || entry.info.model_id == info.model_id;
+          return entry.info.alias == info.alias || entry.info.model_id == info.model_id ||
+                 entry.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{}) == *registration_id;
         });
         if (duplicate == registrations.end()) {
-          registrations.push_back({std::move(info), model_path.string()});
+          registrations.push_back(
+              {std::move(info), model_path.string(), item.value("metadata_prepared", false)});
         }
       } catch (const std::exception& ex) {
         logger_.Log(LogLevel::Warning, std::string("Ignoring malformed local model registration: ") + ex.what());
@@ -361,6 +391,37 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
     logger_.Log(LogLevel::Warning, std::string("Ignoring unreadable local model registration index: ") + ex.what());
   }
   return registrations;
+}
+
+std::optional<ModelInfo> LocalModelCatalog::PrepareRegistrationMetadata(const std::string& registration_id) const {
+  std::lock_guard<std::mutex> guard(registration_mutex_);
+  FileLock file_lock(lock_path_);
+  auto registrations = LoadRegistrations();
+  auto it = std::find_if(registrations.begin(), registrations.end(), [&](const Registration& registration) {
+    return registration.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{}) == registration_id;
+  });
+  if (it == registrations.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+  if (it->metadata_prepared) {
+    const auto metadata_path = std::filesystem::path(it->model_path) / "model_metadata.yml";
+    if (!std::filesystem::is_regular_file(metadata_path)) {
+      WriteMetadata(*it);
+    }
+    return it->info;
+  }
+
+  bool assets_inspected = false;
+  auto refreshed = ResolveMetadata(it->info, &it->info, it->model_path, it->info.alias, &assets_inspected);
+  if (!assets_inspected) {
+    return std::nullopt;
+  }
+
+  it->info = std::move(refreshed);
+  it->metadata_prepared = true;
+  WriteMetadata(*it);
+  SaveRegistrations(registrations);
+  return it->info;
 }
 
 void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& registrations) const {
@@ -482,7 +543,7 @@ Model LocalModelCatalog::CreateModel(const Registration& registration) const {
         }
         const_cast<LocalModelCatalog*>(this)->UnregisterModel(model_id);
       },
-      [this, registration]() { WriteMetadata(registration); });
+      [this, registration_id]() { return PrepareRegistrationMetadata(registration_id); });
 }
 
 }  // namespace fl

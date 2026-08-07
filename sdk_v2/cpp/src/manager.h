@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -158,7 +159,7 @@ class Manager {
   Model CreateModel(ModelInfo info, std::string local_path);
   Model CreateLocalModel(ModelInfo info, std::string local_path,
                          std::function<void(const std::string&)> unregister_callback,
-                         std::function<void()> prepare_callback);
+                         std::function<std::optional<ModelInfo>()> prepare_callback);
 
   static std::mutex s_mutex_;
   static std::unique_ptr<Manager> s_instance_;

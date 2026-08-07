@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -57,7 +58,7 @@ class Model {
                                      DownloadManager& download_manager,
                                      ModelLoadManager& model_load_manager,
                                      std::function<void(const std::string&)> unregister_callback,
-                                     std::function<void()> prepare_callback);
+                                     std::function<std::optional<ModelInfo>()> prepare_callback);
 
   // --- Container construction ---
 
@@ -171,6 +172,7 @@ class Model {
 
  private:
   void EnsureLocalMetadata() const;
+  void PublishInfo(ModelInfo info);
 
   // Leaf data (default/empty for containers).
   // cached_ is atomic — flipped concurrently by the download path.
@@ -181,14 +183,16 @@ class Model {
   // cleared by RemoveFromCache(). Its mutation is guarded by state_mutex_; the reader-safety
   // contract is that the path is published before cached_ flips true (and cleared after cached_
   // flips false), so any reader that gates on IsCached() observes a complete path.
-  ModelInfo info_;
+  mutable std::mutex metadata_mutex_;
+  mutable std::vector<std::unique_ptr<const ModelInfo>> info_snapshots_;
+  mutable std::atomic<const ModelInfo*> current_info_{nullptr};
   std::atomic<bool> cached_{false};
   std::atomic<bool> active_{true};
   std::string local_path_;
   std::string runtime_model_id_;
   bool external_registration_ = false;
   std::function<void(const std::string&)> unregister_callback_;
-  std::function<void()> prepare_callback_;
+  std::function<std::optional<ModelInfo>()> prepare_callback_;
   mutable std::atomic<bool> metadata_prepared_{false};
 
   // Non-owning service bindings for leaf operations. Set once at construction and never

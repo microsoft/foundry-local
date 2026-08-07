@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <optional>
 
 namespace fl {
 
@@ -14,7 +15,7 @@ namespace fl {
 class LocalModelCatalog final : public BaseModelCatalog {
  public:
   using ModelFactory = std::function<Model(ModelInfo, std::string, std::function<void(const std::string&)>,
-                                           std::function<void()>)>;
+                                           std::function<std::optional<ModelInfo>()>)>;
 
   LocalModelCatalog(std::filesystem::path app_data_dir, ModelFactory model_factory, ILogger& logger);
 
@@ -25,13 +26,17 @@ class LocalModelCatalog final : public BaseModelCatalog {
   struct Registration {
     ModelInfo info;
     std::string model_path;
+    bool metadata_prepared = false;
   };
 
  protected:
   std::vector<Model> FetchModels() const override;
 
  private:
-  ModelInfo ResolveMetadata(const ModelInfo& supplied, const std::string& model_path, const std::string& alias) const;
+  ModelInfo ResolveMetadata(const ModelInfo& metadata, const ModelInfo* previous, const std::string& model_path,
+                            const std::string& alias,
+                            bool* assets_inspected = nullptr) const;
+  std::optional<ModelInfo> PrepareRegistrationMetadata(const std::string& registration_id) const;
   std::vector<Registration> LoadRegistrations() const;
   void SaveRegistrations(const std::vector<Registration>& registrations) const;
   void WriteMetadata(const Registration& registration) const;

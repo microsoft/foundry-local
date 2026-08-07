@@ -106,8 +106,7 @@ bool CompareModelsForSort(const Model& m1, const Model& m2) {
 Model::~Model() = default;
 
 Model::Model(Model&& other) noexcept
-    : info_(std::move(other.info_)),
-      cached_(other.cached_.load()),
+  : cached_(other.cached_.load()),
       active_(other.active_.load()),
       local_path_(std::move(other.local_path_)),
       runtime_model_id_(std::move(other.runtime_model_id_)),
@@ -119,6 +118,11 @@ Model::Model(Model&& other) noexcept
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
       selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)) {
+  {
+    std::lock_guard<std::mutex> lock(other.metadata_mutex_);
+    info_snapshots_ = std::move(other.info_snapshots_);
+  }
+  current_info_.store(other.current_info_.load(std::memory_order_relaxed), std::memory_order_relaxed);
   // After vector move, selected_variant_ still points into the transferred buffer.
   other.download_manager_ = nullptr;
   other.model_load_manager_ = nullptr;
@@ -127,7 +131,11 @@ Model::Model(Model&& other) noexcept
 
 Model& Model::operator=(Model&& other) noexcept {
   if (this != &other) {
-    info_ = std::move(other.info_);
+    {
+      std::scoped_lock lock(metadata_mutex_, other.metadata_mutex_);
+      info_snapshots_ = std::move(other.info_snapshots_);
+    }
+    current_info_.store(other.current_info_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     cached_.store(other.cached_.load());
     active_.store(other.active_.load());
     local_path_ = std::move(other.local_path_);
@@ -157,8 +165,8 @@ Model Model::FromModelInfo(ModelInfo info,
                            DownloadManager& download_manager,
                            ModelLoadManager& model_load_manager) {
   Model model;
-  model.info_ = std::move(info);
-  model.runtime_model_id_ = model.info_.model_id;
+  model.runtime_model_id_ = info.model_id;
+  model.PublishInfo(std::move(info));
   model.download_manager_ = &download_manager;
   model.model_load_manager_ = &model_load_manager;
 
@@ -175,14 +183,13 @@ Model Model::FromLocalRegistration(ModelInfo info,
                                    DownloadManager& download_manager,
                                    ModelLoadManager& model_load_manager,
                                    std::function<void(const std::string&)> unregister_callback,
-                                   std::function<void()> prepare_callback) {
+                                   std::function<std::optional<ModelInfo>()> prepare_callback) {
   auto model = FromModelInfo(std::move(info), std::move(local_path), download_manager, model_load_manager);
   model.external_registration_ = true;
-  model.runtime_model_id_ = "local/" + model.info_.model_id;
+  model.runtime_model_id_ = "local/" + model.Info().model_id;
   model.unregister_callback_ = std::move(unregister_callback);
   model.prepare_callback_ = std::move(prepare_callback);
-  model.metadata_prepared_.store(
-      std::filesystem::is_regular_file(std::filesystem::path(model.local_path_) / "model_metadata.yml"));
+  model.metadata_prepared_.store(false);
   return model;
 }
 
@@ -243,7 +250,7 @@ const std::string& Model::Id() const {
     return sv->Id();
   }
 
-  return info_.model_id;
+  return Info().model_id;
 }
 
 const std::string& Model::Alias() const {
@@ -251,7 +258,7 @@ const std::string& Model::Alias() const {
     return sv->Alias();
   }
 
-  return info_.alias;
+  return Info().alias;
 }
 
 const ModelInfo& Model::Info() const {
@@ -259,7 +266,11 @@ const ModelInfo& Model::Info() const {
     return sv->Info();
   }
 
-  return info_;
+  const auto* info = current_info_.load(std::memory_order_acquire);
+  if (!info) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model metadata is not initialized");
+  }
+  return *info;
 }
 
 std::vector<Model*> Model::Variants() const {
@@ -356,7 +367,7 @@ void Model::Download(std::function<int(float)> progress_cb) {
     return;
   }
 
-  auto path = download_manager_->DownloadModel(info_, std::move(progress_cb));
+  auto path = download_manager_->DownloadModel(Info(), std::move(progress_cb));
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     local_path_ = std::move(path);
@@ -386,11 +397,12 @@ void Model::Load(ExecutionProvider ep) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
 
-  if (external_registration_ && ep == ExecutionProvider::kDefault && !info_.execution_provider.empty()) {
-    ep = EPUtils::StringtoEP(info_.execution_provider);
+  const auto& info = Info();
+  if (external_registration_ && ep == ExecutionProvider::kDefault && !info.execution_provider.empty()) {
+    ep = EPUtils::StringtoEP(info.execution_provider);
     if (ep == ExecutionProvider::kUnknown) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "unknown execution provider for local model: " + info_.execution_provider);
+               "unknown execution provider for local model: " + info.execution_provider);
     }
   }
 
@@ -439,7 +451,7 @@ void Model::RemoveFromCache() {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "local model is missing its unregister callback");
     }
 
-    unregister_callback_(info_.model_id);
+    unregister_callback_(Info().model_id);
     return;
   }
 
@@ -482,9 +494,29 @@ void Model::EnsureLocalMetadata() const {
     return;
   }
 
-  prepare_callback_();
-  metadata_prepared_.store(
-      std::filesystem::is_regular_file(std::filesystem::path(local_path_) / "model_metadata.yml"));
+  std::lock_guard<std::mutex> lock(metadata_mutex_);
+  if (metadata_prepared_.load()) {
+    return;
+  }
+
+  auto refreshed = prepare_callback_();
+  if (!refreshed) {
+    return;
+  }
+
+  auto snapshot = std::make_unique<const ModelInfo>(std::move(*refreshed));
+  const auto* snapshot_ptr = snapshot.get();
+  info_snapshots_.push_back(std::move(snapshot));
+  current_info_.store(snapshot_ptr, std::memory_order_release);
+  metadata_prepared_.store(true);
+}
+
+void Model::PublishInfo(ModelInfo info) {
+  auto snapshot = std::make_unique<const ModelInfo>(std::move(info));
+  const auto* snapshot_ptr = snapshot.get();
+  std::lock_guard<std::mutex> lock(metadata_mutex_);
+  info_snapshots_.push_back(std::move(snapshot));
+  current_info_.store(snapshot_ptr, std::memory_order_release);
 }
 
 void Model::BeginUnregister() {
