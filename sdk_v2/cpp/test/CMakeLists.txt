@@ -29,7 +29,6 @@ add_executable(foundry_local_tests
     internal_api/embeddings/fp16_test.cc
     internal_api/ep_bundle_installer_test.cc
     internal_api/ep_detector_test.cc
-    internal_api/ep_utils_test.cc
     internal_api/exception_test.cc
     internal_api/execution_provider_test.cc
     internal_api/file_lock_test.cc

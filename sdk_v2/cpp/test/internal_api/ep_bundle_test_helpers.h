@@ -98,11 +98,11 @@ inline std::optional<std::filesystem::path> InstallAndFinalize(EpBundleInstaller
   }
 
   const auto bin_dir = txn->bin_dir();
-  if (!txn->Activate(logger)) {
+  if (!txn->Activate()) {
     return std::nullopt;
   }
 
-  txn->Finalize(logger);
+  txn->Finalize();
   return bin_dir;
 }
 

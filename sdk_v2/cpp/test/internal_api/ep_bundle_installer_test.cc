@@ -128,8 +128,8 @@ TEST(EpBundleInstallerTest, ReusesValidBundleWithoutRedownloading) {
     auto first = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
     ASSERT_NE(first, nullptr);
     first_bin = first->bin_dir();
-    ASSERT_TRUE(first->Activate(logger));
-    first->Finalize(logger);
+    ASSERT_TRUE(first->Activate());
+    first->Finalize();
   }
 
   auto second = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
@@ -300,7 +300,7 @@ TEST(EpBundleInstallerTest, ActivateWritesActiveMarkerFile) {
 
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  EXPECT_TRUE(txn->Activate(logger));
+  EXPECT_TRUE(txn->Activate());
 
   EXPECT_TRUE(ReadFile(root.path() / "active").starts_with("bundle-42-"));
 }
@@ -321,7 +321,7 @@ TEST(EpBundleInstallerTest, ActivateReplacesExistingActiveMarker) {
 
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  EXPECT_TRUE(txn->Activate(logger));
+  EXPECT_TRUE(txn->Activate());
   EXPECT_TRUE(ReadFile(root.path() / "active").starts_with("bundle-1-"))
       << "publishing replaces an existing active marker atomically";
 }
@@ -368,7 +368,7 @@ TEST(EpBundleInstallerTest, ActivateRevalidatesUnderLockAndRefusesTamperedBundle
     std::ofstream(txn->bin_dir() / "unexpected.txt") << "surprise";
   }
 
-  EXPECT_FALSE(txn->Activate(logger)) << "re-verification under the lock must reject a tampered bundle";
+  EXPECT_FALSE(txn->Activate()) << "re-verification under the lock must reject a tampered bundle";
   EXPECT_EQ(ReadFile(root.path() / "active"), active_v1)
       << "a bundle failing re-verification must not advance the active marker";
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1))
@@ -400,7 +400,7 @@ TEST(EpBundleInstallerTest, ActivatePreservesPreviousMarkerWhenPublicationFails)
     std::ofstream(root.path() / "active" / "blocker") << "x";
   }
 
-  EXPECT_FALSE(txn->Activate(logger)) << "a failed marker publication is reported as failure";
+  EXPECT_FALSE(txn->Activate()) << "a failed marker publication is reported as failure";
   EXPECT_TRUE(std::filesystem::is_directory(root.path() / "active"))
       << "the failed publication left the marker path untouched";
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1))
@@ -427,14 +427,14 @@ TEST(EpBundleInstallerTest, FinalizeRemovesOldGenerationsOnlyAfterSuccessfulActi
   auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
   auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
   const auto active_v2 = ReadFile(root.path() / "active");
 
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1))
       << "activation must not delete the previously active generation";
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v2));
 
-  txn->Finalize(logger);
+  txn->Finalize();
 
   EXPECT_FALSE(std::filesystem::exists(root.path() / "bundles" / active_v1))
       << "finalization removes the previous generation only after registration succeeds";
@@ -458,11 +458,11 @@ TEST(EpBundleInstallerTest, RollbackRestoresPreviousMarkerAndRetainsGenerations)
   const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
   auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
   ASSERT_NE(ReadFile(root.path() / "active"), active_v1);
 
   const auto candidate_generation = txn->bin_dir().parent_path().filename().string();
-  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_TRUE(txn->Rollback());
   EXPECT_EQ(ReadFile(root.path() / "active"), active_v1);
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1));
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / candidate_generation));
@@ -479,12 +479,12 @@ TEST(EpBundleInstallerTest, RollbackFirstInstallRemovesCandidateMarkerAndRetains
   const auto manifest = MakeRawManifest("bundle-v1", "https://example.test/v1.so", HashOf(payload));
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
 
   const auto candidate_generation = txn->bin_dir().parent_path().filename().string();
   ASSERT_EQ(ReadFile(root.path() / "active"), candidate_generation);
 
-  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_TRUE(txn->Rollback());
   EXPECT_FALSE(std::filesystem::exists(root.path() / "active"));
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / candidate_generation));
 }
@@ -503,10 +503,10 @@ TEST(EpBundleInstallerTest, RollbackOnReusedActiveBundleLeavesMarkerUnchanged) {
 
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
   ASSERT_EQ(ReadFile(root.path() / "active"), active_generation);
 
-  EXPECT_TRUE(txn->Rollback(logger));
+  EXPECT_TRUE(txn->Rollback());
   EXPECT_EQ(ReadFile(root.path() / "active"), active_generation);
 }
 
@@ -527,7 +527,7 @@ TEST(EpBundleInstallerTest, ActivatedTransactionDestructorRestoresPreviousMarker
   const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
   auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
 
   const auto lock_path = root.path() / "test.lock";
   EXPECT_THROW({ FileLock probe(lock_path, /*timeout_ms=*/0); }, std::runtime_error);
@@ -555,7 +555,7 @@ TEST(EpBundleInstallerTest, RollbackFailureLogsCacheRecoveryMessageAndRetainsGen
   const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
   auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
 
   const auto candidate_generation = txn->bin_dir().parent_path().filename().string();
   std::filesystem::remove(root.path() / "active");
@@ -564,7 +564,7 @@ TEST(EpBundleInstallerTest, RollbackFailureLogsCacheRecoveryMessageAndRetainsGen
     std::ofstream(root.path() / "active" / "blocker") << "x";
   }
 
-  EXPECT_FALSE(txn->Rollback(logger));
+  EXPECT_FALSE(txn->Rollback());
   EXPECT_TRUE(logger.Contains("failed to recover the active bundle marker after bootstrap failure"));
   EXPECT_TRUE(logger.Contains(root.path().string()));
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v1));
@@ -588,7 +588,7 @@ TEST(EpBundleInstallerTest, FinalizeCleanupFailureKeepsPublishedMarker) {
   const auto manifest_v2 = MakeRawManifest("bundle-v2", "https://example.test/v2.so", HashOf(payload_v2));
   auto txn = installer.EnsureInstalled(manifest_v2, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
-  ASSERT_TRUE(txn->Activate(logger));
+  ASSERT_TRUE(txn->Activate());
   const auto active_v2 = ReadFile(root.path() / "active");
 
   std::filesystem::rename(root.path() / "bundles", root.path() / "bundles_saved");
@@ -596,7 +596,7 @@ TEST(EpBundleInstallerTest, FinalizeCleanupFailureKeepsPublishedMarker) {
     std::ofstream(root.path() / "bundles") << "block cleanup";
   }
 
-  txn->Finalize(logger);
+  txn->Finalize();
   txn.reset();
 
   EXPECT_EQ(ReadFile(root.path() / "active"), active_v2);

@@ -5,8 +5,9 @@
 #include "ep_detection/ep_bootstrapper.h"
 #include "ep_detection/ep_bundle_installer.h"
 #include "ep_detection/ep_types.h"
-#include "ep_detection/ep_utils.h"
 
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -35,7 +36,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
                      ,
                      CudaGenAiDependencyLoader genai_cuda_loader = nullptr
 #endif
-                     );
+  );
   ~CudaEpBootstrapper() override;
 
   // Non-copyable
@@ -45,6 +46,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   const std::string& Name() const override;
   bool IsRegistered() const override;
   bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
+  bool PrepareForModelLoad(ILogger& logger) override;
 
   /// Check for an NVIDIA GPU with compute capability >= 5.0 using NVML.
   static bool HasNvidiaGpu(ILogger& logger);
@@ -59,9 +61,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   EpRegistrationCallback register_ep_;
   EpBundleManifestFactory manifest_factory_;
   EpBundleInstaller installer_;
-#ifdef _WIN32
-  EpBundleSearchPathOwner search_path_owner_;
-#endif
+  std::filesystem::path bundle_dir_;
 #if defined(__linux__) && !defined(__ANDROID__)
   std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>> genai_cuda_libraries_;
 #if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)

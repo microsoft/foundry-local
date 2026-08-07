@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 #include "ep_detection/webgpu_ep_bootstrapper.h"
 
-#include "ep_detection/ep_utils.h"
 #include "logger.h"
+#include "platform/dynlib_loader.h"
 #include "utils.h"
 
 #include <fmt/format.h>
@@ -143,25 +143,14 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallbac
         return false;
       }
 
-#ifdef _WIN32
-      EpBundleSearchPathOwner provisional_search_path_owner;
-      if (!search_path_owner_.Owns(provider_path.parent_path()) &&
-          !provisional_search_path_owner.Add(provider_path.parent_path(), "WebGPU EP", logger)) {
-        return false;
-      }
-#endif
-
       if (!register_ep_(kRegistrationName, provider_path)) {
         logger.Log(LogLevel::Warning, fmt::format("WebGPU EP: ORT registration failed for override {}={}",
                                                   kWebGpuProviderOverrideEnv, provider_path.string()));
         return false;
       }
 
-#ifdef _WIN32
-      search_path_owner_.MergeFrom(std::move(provisional_search_path_owner));
-#endif
-
       registered_ = true;
+      bundle_dir_ = provider_path.parent_path();
 
       if (progress_cb) {
         progress_cb(name_, 100.0f);
@@ -184,33 +173,21 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallbac
       return false;
     }
 
-    if (!txn->Activate(logger)) {
+    if (!txn->Activate()) {
       logger.Log(LogLevel::Warning, "WebGPU EP: failed to activate bundle");
       return false;
     }
 
     const auto provider_path = txn->provider_path();
-#ifdef _WIN32
-    EpBundleSearchPathOwner provisional_search_path_owner;
-    if (!search_path_owner_.Owns(txn->bin_dir()) &&
-        !provisional_search_path_owner.Add(txn->bin_dir(), "WebGPU EP", logger)) {
-      txn->Rollback(logger);
-      return false;
-    }
-#endif
-
     if (!register_ep_(kRegistrationName, provider_path)) {
       logger.Log(LogLevel::Warning, "WebGPU EP: ORT registration failed");
-      txn->Rollback(logger);
+      txn->Rollback();
       return false;
     }
 
-#ifdef _WIN32
-    search_path_owner_.MergeFrom(std::move(provisional_search_path_owner));
-#endif
-
     registered_ = true;
-    txn->Finalize(logger);
+    bundle_dir_ = txn->bin_dir();
+    txn->Finalize();
 
     if (progress_cb) {
       progress_cb(name_, 100.0f);
@@ -222,6 +199,14 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallbac
     logger.Log(LogLevel::Warning, fmt::format("WebGPU EP: error: {}", e.what()));
     return false;
   }
+}
+
+bool WebGpuEpBootstrapper::PrepareForModelLoad(ILogger& logger) {
+#ifdef _WIN32
+  return platform::SetDynamicLibrarySearchDirectory(bundle_dir_, logger);
+#else
+  return true;
+#endif
 }
 
 bool WebGpuEpBootstrapper::IsSupportedPlatform() {

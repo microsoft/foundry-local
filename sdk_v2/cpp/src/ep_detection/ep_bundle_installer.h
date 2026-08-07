@@ -33,7 +33,7 @@ enum class EpBundleInstallPolicy {
 
 class EpInstallTransaction {
  public:
-  EpInstallTransaction(std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
+  EpInstallTransaction(ILogger& logger, std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
                        std::string ep_display_name, EpBundleManifest manifest, std::string generation_id,
                        std::filesystem::path bin_dir, std::optional<std::string> previous_active_generation);
   ~EpInstallTransaction() noexcept;
@@ -48,13 +48,14 @@ class EpInstallTransaction {
 
   const std::string& bundle_id() const { return manifest_.bundle_id; }
 
-  bool Activate(ILogger& logger);
-  void Finalize(ILogger& logger);
-  bool Rollback(ILogger& logger) noexcept;
+  bool Activate();
+  void Finalize();
+  bool Rollback() noexcept;
 
  private:
-  bool RollbackInternal(ILogger* logger, bool log_recovery_error) noexcept;
+  bool RollbackInternal(bool log_recovery_error) noexcept;
 
+  ILogger& logger_;
   std::unique_ptr<FileLock> lock_;
   std::filesystem::path root_dir_;
   std::string ep_display_name_;

@@ -4,7 +4,6 @@
 
 #include "ep_detection/cuda_ep_manifest.h"
 #include "ep_detection/ep_bundle_installer.h"
-#include "ep_detection/ep_utils.h"
 #include "internal_api/ep_bundle_test_helpers.h"
 #include "internal_api/test_helpers.h"
 #include "logger.h"
@@ -134,12 +133,9 @@ CudaEpBootstrapper MakeInstalledBundleBootstrapper(std::string root_dir, Registe
     });
   };
 
-  return CudaEpBootstrapper(std::move(root_dir), std::move(register_ep),
-                            [manifest] { return std::optional<EpBundleManifest>(manifest); }, std::move(download_fn),
-                            loader);
+  return CudaEpBootstrapper(std::move(root_dir), std::move(register_ep), [manifest] { return std::optional<EpBundleManifest>(manifest); }, std::move(download_fn), loader);
 #else
-  return CudaEpBootstrapper(std::move(root_dir), std::move(register_ep),
-                            [manifest] { return std::optional<EpBundleManifest>(manifest); }, std::move(download_fn));
+  return CudaEpBootstrapper(std::move(root_dir), std::move(register_ep), [manifest] { return std::optional<EpBundleManifest>(manifest); }, std::move(download_fn));
 #endif
 }
 #endif
@@ -404,7 +400,7 @@ TEST(CudaEpBootstrapperTest, InstalledBundleGenAiDependencyLoaderFailureRollsBac
   ASSERT_EQ(requested_paths.size(), 1u);
   EXPECT_EQ(requested_paths[0], std::filesystem::absolute(root.path() / "bundles" / *candidate_v2 / "bin" /
                                                           kGenAiCudaLibrary)
-                                     .lexically_normal());
+                                    .lexically_normal());
 }
 
 TEST(CudaEpBootstrapperTest, OverrideRegistrationFailureDoesNotPoisonGenAiCudaRetryState) {
@@ -434,8 +430,7 @@ TEST(CudaEpBootstrapperTest, OverrideRegistrationFailureDoesNotPoisonGenAiCudaRe
 
   CudaEpBootstrapper bootstrapper(root.string(), [&](const std::string&, const std::filesystem::path&) {
     ++registration_count;
-    return allow_registration;
-  },
+    return allow_registration; },
                                   /*manifest_factory=*/nullptr,
                                   /*download_fn=*/nullptr, loader);
   StderrLogger logger;

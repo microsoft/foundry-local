@@ -106,6 +106,7 @@ if(WIN32)
         src/platform/windows/path.cc
         src/platform/windows/file_io.cc
         src/platform/windows/cross_process_file_lock.cc
+        src/platform/windows/dynlib_loader.cc
     )
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
@@ -114,6 +115,13 @@ else()
         src/platform/posix/file_io.cc
         src/platform/posix/cross_process_file_lock.cc
     )
+    # Android does not support the dlopen-based loader; dynlib_loader.cc is
+    # only compiled for Linux and macOS.
+    if(NOT ANDROID)
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/posix/dynlib_loader.cc
+        )
+    endif()
 endif()
 
 # WinML EP bootstrapper is only built when the WinML EP catalog package is
@@ -166,7 +174,6 @@ set(FOUNDRY_LOCAL_SOURCES
     src/ep_detection/cuda_ep_manifest.cc
     src/ep_detection/ep_bundle_installer.cc
     src/ep_detection/ep_detector.cc
-    src/ep_detection/ep_utils.cc
     src/ep_detection/nvml_gpu_detector.cc
     src/ep_detection/runtime_version_info.cc
     src/ep_detection/webgpu_ep_bootstrapper.cc

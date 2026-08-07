@@ -40,11 +40,6 @@ namespace {
 constexpr int kArchiveHashRetries = 1;
 constexpr int kRawHashRetries = 0;
 
-class NoOpLogger : public ILogger {
- public:
-  void Log(LogLevel /*level*/, std::string_view /*message*/) override {}
-};
-
 class ScopedDirectoryCleanup {
  public:
   explicit ScopedDirectoryCleanup(std::filesystem::path path) : path_(std::move(path)) {}
@@ -658,7 +653,7 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
         return nullptr;
       }
 
-      return std::make_unique<EpInstallTransaction>(std::move(lock), root_dir_, ep_display_name_, manifest,
+      return std::make_unique<EpInstallTransaction>(logger, std::move(lock), root_dir_, ep_display_name_, manifest,
                                                     *active_generation, active_bin, active_generation);
     }
 
@@ -713,8 +708,8 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
       return nullptr;
     }
 
-    auto transaction = std::make_unique<EpInstallTransaction>(std::move(lock), root_dir_, ep_display_name_, manifest,
-                                                              generation_id, final_bundle_dir / "bin",
+    auto transaction = std::make_unique<EpInstallTransaction>(logger, std::move(lock), root_dir_, ep_display_name_,
+                                                              manifest, generation_id, final_bundle_dir / "bin",
                                                               active_generation);
     final_cleanup.Release();
     return transaction;
@@ -724,11 +719,13 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
   }
 }
 
-EpInstallTransaction::EpInstallTransaction(std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
-                                           std::string ep_display_name, EpBundleManifest manifest,
-                                           std::string generation_id, std::filesystem::path bin_dir,
+EpInstallTransaction::EpInstallTransaction(ILogger& logger, std::unique_ptr<FileLock> lock,
+                                           std::filesystem::path root_dir, std::string ep_display_name,
+                                           EpBundleManifest manifest, std::string generation_id,
+                                           std::filesystem::path bin_dir,
                                            std::optional<std::string> previous_active_generation)
-    : lock_(std::move(lock)),
+    : logger_(logger),
+      lock_(std::move(lock)),
       root_dir_(std::move(root_dir)),
       ep_display_name_(std::move(ep_display_name)),
       manifest_(std::move(manifest)),
@@ -741,10 +738,10 @@ EpInstallTransaction::~EpInstallTransaction() noexcept {
     return;
   }
 
-  (void)RollbackInternal(/*logger=*/nullptr, /*log_recovery_error=*/false);
+  (void)RollbackInternal(/*log_recovery_error=*/false);
 }
 
-bool EpInstallTransaction::Activate(ILogger& logger) {
+bool EpInstallTransaction::Activate() {
   if (activated_ || finalized_) {
     return true;
   }
@@ -752,14 +749,14 @@ bool EpInstallTransaction::Activate(ILogger& logger) {
   try {
     const auto bundles_dir = root_dir_ / "bundles";
     const auto staging_root = root_dir_ / "staging";
-    if (!ValidateManagedDirectories(bundles_dir, staging_root, ep_display_name_, logger)) {
+    if (!ValidateManagedDirectories(bundles_dir, staging_root, ep_display_name_, logger_)) {
       return false;
     }
 
-    if (!VerifyBundleDir(bin_dir_, manifest_, ep_display_name_, logger)) {
-      logger.Log(LogLevel::Warning,
-                 fmt::format("{}: bundle '{}' failed re-verification before activation; active marker unchanged",
-                             ep_display_name_, manifest_.bundle_id));
+    if (!VerifyBundleDir(bin_dir_, manifest_, ep_display_name_, logger_)) {
+      logger_.Log(LogLevel::Warning,
+                  fmt::format("{}: bundle '{}' failed re-verification before activation; active marker unchanged",
+                              ep_display_name_, manifest_.bundle_id));
       return false;
     }
 
@@ -768,19 +765,19 @@ bool EpInstallTransaction::Activate(ILogger& logger) {
       return true;
     }
 
-    if (!PublishActiveMarker(root_dir_, generation_id_, ep_display_name_, logger)) {
+    if (!PublishActiveMarker(root_dir_, generation_id_, ep_display_name_, logger_)) {
       return false;
     }
 
     activated_ = true;
     return true;
   } catch (const std::exception& e) {
-    logger.Log(LogLevel::Warning, fmt::format("{}: failed to activate bundle: {}", ep_display_name_, e.what()));
+    logger_.Log(LogLevel::Warning, fmt::format("{}: failed to activate bundle: {}", ep_display_name_, e.what()));
     return false;
   }
 }
 
-void EpInstallTransaction::Finalize(ILogger& logger) {
+void EpInstallTransaction::Finalize() {
   if (finalized_ || !activated_) {
     return;
   }
@@ -790,45 +787,42 @@ void EpInstallTransaction::Finalize(ILogger& logger) {
   try {
     const auto bundles_dir = root_dir_ / "bundles";
     const auto staging_root = root_dir_ / "staging";
-    (void)CleanupStaleGenerations(bundles_dir, staging_root, {generation_id_}, ep_display_name_, logger);
+    (void)CleanupStaleGenerations(bundles_dir, staging_root, {generation_id_}, ep_display_name_, logger_);
   } catch (const std::exception& e) {
-    logger.Log(LogLevel::Warning,
-               fmt::format("{}: failed to clean stale bundle generations after activation: {}", ep_display_name_,
-                           e.what()));
+    logger_.Log(LogLevel::Warning,
+                fmt::format("{}: failed to clean stale bundle generations after activation: {}", ep_display_name_,
+                            e.what()));
   }
 }
 
-bool EpInstallTransaction::Rollback(ILogger& logger) noexcept {
+bool EpInstallTransaction::Rollback() noexcept {
   if (!activated_ || finalized_) {
     return true;
   }
 
-  return RollbackInternal(&logger, /*log_recovery_error=*/true);
+  return RollbackInternal(/*log_recovery_error=*/true);
 }
 
-bool EpInstallTransaction::RollbackInternal(ILogger* logger, bool log_recovery_error) noexcept {
+bool EpInstallTransaction::RollbackInternal(bool log_recovery_error) noexcept {
   if (!activated_ || finalized_) {
     return true;
   }
-
-  NoOpLogger no_op_logger;
-  auto& active_logger = logger == nullptr ? static_cast<ILogger&>(no_op_logger) : *logger;
 
   try {
     bool rollback_succeeded = true;
     if (previous_active_generation_.has_value()) {
       if (*previous_active_generation_ != generation_id_) {
         rollback_succeeded =
-            PublishActiveMarker(root_dir_, *previous_active_generation_, ep_display_name_, active_logger);
+            PublishActiveMarker(root_dir_, *previous_active_generation_, ep_display_name_, logger_);
       }
     } else {
       rollback_succeeded =
-          RemoveActiveMarkerIfStillCandidate(root_dir_, generation_id_, ep_display_name_, active_logger);
+          RemoveActiveMarkerIfStillCandidate(root_dir_, generation_id_, ep_display_name_, logger_);
     }
 
     if (!rollback_succeeded) {
-      if (logger != nullptr && log_recovery_error) {
-        LogRollbackRecoveryError(ep_display_name_, root_dir_, *logger);
+      if (log_recovery_error) {
+        LogRollbackRecoveryError(ep_display_name_, root_dir_, logger_);
       }
       return false;
     }
@@ -836,12 +830,10 @@ bool EpInstallTransaction::RollbackInternal(ILogger* logger, bool log_recovery_e
     activated_ = false;
     return true;
   } catch (const std::exception& e) {
-    if (logger != nullptr) {
-      logger->Log(LogLevel::Warning,
-                  fmt::format("{}: failed to roll back active bundle marker: {}", ep_display_name_, e.what()));
-      if (log_recovery_error) {
-        LogRollbackRecoveryError(ep_display_name_, root_dir_, *logger);
-      }
+    logger_.Log(LogLevel::Warning,
+                fmt::format("{}: failed to roll back active bundle marker: {}", ep_display_name_, e.what()));
+    if (log_recovery_error) {
+      LogRollbackRecoveryError(ep_display_name_, root_dir_, logger_);
     }
 
     return false;

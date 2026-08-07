@@ -34,6 +34,9 @@ class IEpBootstrapper {
   virtual bool DownloadAndRegister(bool force,
                                    const ProgressCallback& progress_cb,
                                    ILogger& logger) = 0;
+
+  /// Prepare process state needed to load a model with this EP.
+  virtual bool PrepareForModelLoad(ILogger& /*logger*/) { return true; }
 };
 
 }  // namespace fl

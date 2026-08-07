@@ -26,6 +26,13 @@ class GpuEpDetector : public fl::IEpDetector {
         {"GPU", {"CUDAExecutionProvider"}},
     };
   }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return true;
+  }
+
+  std::string prepared_ep;
 };
 
 /// EP detector that reports CPU only.
@@ -168,6 +175,8 @@ TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
     // Should NOT be an EP guard error
     EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
   }
+
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
 // ---------------------------------------------------------------------------

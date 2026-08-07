@@ -9,6 +9,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -61,6 +62,9 @@ class IEpDetector {
   /// Whether an EP download/registration operation is currently in progress.
   /// Default: false.
   virtual bool IsDownloadInProgress() const { return false; }
+
+  /// Prepare the registered EP for model loading.
+  virtual bool PrepareForModelLoad(std::string_view /*ep_name*/) { return true; }
 };
 
 /// Real EP detector that orchestrates bootstrappers for EP discovery and registration.
@@ -86,6 +90,7 @@ class EpDetector : public IEpDetector {
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
                                           const IEpBootstrapper::ProgressCallback& progress_cb) override;
   bool IsDownloadInProgress() const override;
+  bool PrepareForModelLoad(std::string_view ep_name) override;
 
  private:
   const OrtApi& ort_api_;

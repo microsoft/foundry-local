@@ -5,8 +5,8 @@
 #include "ep_detection/ep_bootstrapper.h"
 #include "ep_detection/ep_bundle_installer.h"
 #include "ep_detection/ep_types.h"
-#include "ep_detection/ep_utils.h"
 
+#include <filesystem>
 #include <string>
 
 namespace fl {
@@ -32,6 +32,7 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
   const std::string& Name() const override;
   bool IsRegistered() const override;
   bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
+  bool PrepareForModelLoad(ILogger& logger) override;
 
   /// Whether Foundry Local publishes a WebGPU EP bundle for this platform.
   static bool IsSupportedPlatform();
@@ -43,9 +44,7 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
   EpRegistrationCallback register_ep_;
   EpBundleManifestFactory manifest_factory_;
   EpBundleInstaller installer_;
-#ifdef _WIN32
-  EpBundleSearchPathOwner search_path_owner_;
-#endif
+  std::filesystem::path bundle_dir_;
 };
 
 }  // namespace fl
