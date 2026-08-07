@@ -113,17 +113,16 @@ steps:
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-        # The native artifact is produced by steps-build-{windows,linux,macos}.yml
-        # which is responsible for staging exactly the right contents for the
-        # downstream wheel. Vcpkg is statically linked on every platform, so each
-        # artifact is just the primary foundry_local library plus (on Windows)
-        # its .pdb and .lib companions:
+        # The native artifact is produced by steps-build-{windows,linux,macos}.yml.
+        # C++ bundles consume its co-located ORT/GenAI libraries, but Python gets
+        # those libraries from pip dependencies, so filter them out here. The
+        # remaining files are the primary foundry_local library plus (on Windows)
+        # its .pdb, .lib, and optional WinML companions:
         #   - Windows:  foundry_local.{dll,pdb,lib}
         #   - Linux:    libfoundry_local.so
         #   - macOS:    libfoundry_local.dylib
-        # ORT/GenAI come from pip dependencies; this artifact contains only the
-        # curated Foundry Local native files.
-        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File
+        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File |
+            Where-Object { $_.Name -notlike 'onnxruntime*' -and $_.Name -notlike 'libonnxruntime*' }
         if ($files.Count -eq 0) {
             throw "No native artifacts found under ${{ parameters.nativeArtifactDir }}"
         }

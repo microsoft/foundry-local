@@ -134,11 +134,10 @@ def main() -> None:
     if model is None:
         model = _select_downloadable_preferred_model(manager)
         if model is None:
-            print(
+            raise RuntimeError(
                 f"\nCPU chat model matching {PREFERRED_MODEL_PREFIXES} "
                 "not found in catalog."
             )
-            return
 
     if not model.is_cached:
         print(f"\nDownloading {model.alias}...")

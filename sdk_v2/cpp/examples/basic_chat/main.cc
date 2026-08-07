@@ -187,9 +187,9 @@ int main() {
     // 4. Download if not already cached (with cancellable progress).
     if (!model->IsCached()) {
       std::cout << "Downloading...\n";
-      model->Download([](float progress) -> bool {
+      model->Download([](float progress) -> int {
         std::cout << "\r  " << static_cast<int>(progress) << "%" << std::flush;
-        return true;  // return false to cancel
+        return 0;  // return non-zero to cancel
       });
       std::cout << "\n";
     }

@@ -80,13 +80,9 @@ steps:
   displayName: 'Dump vcpkg error logs'
   condition: failed()
 
-# Stage the redistributable native artifact. Vcpkg uses static linkage on
-# Linux (see sdk_v2/cpp/triplets/x64-linux.cmake), so libfoundry_local.so
-# carries its transitive deps (azure-*, spdlog, fmt, libcurl, libssl/libcrypto,
-# zlib, brotli*) inside itself — the only file we need to forward downstream
-# is libfoundry_local.so. ORT/GenAI .so files are also present in bin/ but are
-# supplied to consumers separately (pip on the Python side, NuGet on the C#
-# side); test/example binaries are not part of the redistributable surface.
+# Stage the native build artifacts. The C++ SDK bundle consumes the co-located
+# ORT/GenAI libraries directly. Python wheel staging filters them out because
+# its pip dependencies provide and preload those libraries.
 - bash: |
     set -euo pipefail
     src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/bin'
@@ -100,6 +96,19 @@ steps:
     fi
     cp -P "$primary" "$dst/"
     echo "  staged libfoundry_local.so"
+
+    for required in libonnxruntime.so libonnxruntime-genai.so; do
+      if [ ! -e "$src/$required" ]; then
+        echo "ERROR: $required not found at $src/$required" >&2
+        exit 1
+      fi
+    done
+    for runtime in "$src"/libonnxruntime.so* "$src"/libonnxruntime-genai.so* "$src"/libonnxruntime_providers_shared.so; do
+      if [ -e "$runtime" ]; then
+        cp -P "$runtime" "$dst/"
+        echo "  staged $(basename "$runtime")"
+      fi
+    done
 
   displayName: 'Stage native artifacts'
 

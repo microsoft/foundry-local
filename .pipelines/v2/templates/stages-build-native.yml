@@ -345,15 +345,18 @@ stages:
             @echo off
             call "$vsDevCmd" -arch=x64 -host_arch=x64
             if errorlevel 1 exit /b %errorlevel%
-            cl /nologo /EHsc /std:c++17 /I"$consumerDir\include" "$source" /Fe:"$consumerDir\basic_chat.exe" /link /LIBPATH:"$consumerDir\lib" foundry_local.lib
+            cl /nologo /EHsc /std:c++17 /I"$consumerDir\include" "$source" /Fe:"$consumerDir\lib\basic_chat.exe" /link /LIBPATH:"$consumerDir\lib" foundry_local.lib
             "@ | Set-Content -Path $cmdFile
             & $cmdFile
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            $env:PATH = "$consumerDir\lib;$env:PATH"
+            # The executable sits beside every packaged DLL. Keep PATH limited
+            # to Windows system DLLs so an agent-installed ORT cannot mask a
+            # broken bundle.
+            $env:PATH = "$env:SystemRoot\System32"
             $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR = Join-Path '$(Agent.TempDirectory)' 'cpp-package-model-cache'
             if (Test-Path $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR) {
               Remove-Item $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR -Recurse -Force
             }
-            & (Join-Path $consumerDir 'basic_chat.exe')
+            & (Join-Path $consumerDir 'lib\basic_chat.exe')
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
