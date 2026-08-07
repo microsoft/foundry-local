@@ -279,9 +279,11 @@ stages:
           }
           dotnet restore $project `
             --configfile (Join-Path $consumerDir 'NuGet.config') `
+            --runtime win-x64 `
             /p:FoundryLocalPackageVersion=$version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet run --project $project --no-restore /p:FoundryLocalPackageVersion=$version
+          dotnet run --project $project --no-restore --runtime win-x64 `
+            /p:FoundryLocalPackageVersion=$version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       env:
         FOUNDRY_LOCAL_SAMPLE_CACHE_DIR: '$(Agent.TempDirectory)/cs-package-model-cache'
