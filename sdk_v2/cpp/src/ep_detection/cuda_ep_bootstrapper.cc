@@ -21,7 +21,7 @@ constexpr const char* kLockFileName = "cuda-ep.lock";
 constexpr int kMaxInstallAttempts = 5;
 constexpr const char* kRegistrationName = "CUDAExecutionProvider";
 constexpr const char* kCudaProviderOverrideEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
 constexpr const char* kGenAiCudaLibrary = "libonnxruntime-genai-cuda.so";
 #endif
 
@@ -30,16 +30,14 @@ fl::CudaEpPlatform HostCudaEpPlatform() {
   return fl::CudaEpPlatform::WindowsArm64;
 #elif defined(_WIN32) && defined(_M_X64)
   return fl::CudaEpPlatform::WindowsX64;
-#elif defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#elif defined(__linux__)
   return fl::CudaEpPlatform::LinuxX64;
-#elif defined(__linux__) && defined(__aarch64__) && !defined(__ANDROID__)
-  return fl::CudaEpPlatform::LinuxArm64;
 #else
   return fl::CudaEpPlatform::Unsupported;
 #endif
 }
 
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
 bool LoadGenAiCudaLibrary(
     const std::filesystem::path& path,
     const std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>>& loaded_libraries,
@@ -69,7 +67,7 @@ namespace fl {
 
 CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
                                        EpBundleManifestFactory manifest_factory, EpArtifactDownloadFn download_fn
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
                                        ,
                                        CudaGenAiDependencyLoader genai_cuda_loader
 #endif
@@ -78,7 +76,7 @@ CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallb
       manifest_factory_(manifest_factory ? std::move(manifest_factory)
                                          : [] { return BuildCudaEpManifest(HostCudaEpPlatform()); }),
       installer_(std::filesystem::path(root_dir), kLockFileName, "CUDA EP", std::move(download_fn))
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
       ,
       genai_cuda_loader_(genai_cuda_loader ? std::move(genai_cuda_loader) : platform::LoadSharedLibrary)
 #endif
@@ -121,7 +119,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
         return false;
       }
 
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
       std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
       if (!LoadGenAiCudaLibrary(provider_path.parent_path() / kGenAiCudaLibrary, genai_cuda_libraries_,
                                 genai_cuda_loader_, provisional_genai_cuda_library, logger)) {
@@ -135,7 +133,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
         return false;
       }
 
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
       if (provisional_genai_cuda_library.second) {
         genai_cuda_libraries_.push_back(std::move(provisional_genai_cuda_library));
       }
@@ -171,7 +169,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
     }
 
     const auto provider_path = txn->provider_path();
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
     std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
     if (!LoadGenAiCudaLibrary(txn->bin_dir() / kGenAiCudaLibrary, genai_cuda_libraries_, genai_cuda_loader_,
                               provisional_genai_cuda_library, logger)) {
@@ -186,7 +184,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
       return false;
     }
 
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
     if (provisional_genai_cuda_library.second) {
       genai_cuda_libraries_.push_back(std::move(provisional_genai_cuda_library));
     }
@@ -219,8 +217,7 @@ bool CudaEpBootstrapper::PrepareForModelLoad([[maybe_unused]] ILogger& logger) {
 bool CudaEpBootstrapper::HasNvidiaGpu(ILogger& logger) { return NvmlGpuDetector::HasNvidiaGpu(logger); }
 
 bool CudaEpBootstrapper::IsSupportedPlatform() {
-#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
-    (defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__))
+#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || defined(__linux__)
   return true;
 #else
   return false;

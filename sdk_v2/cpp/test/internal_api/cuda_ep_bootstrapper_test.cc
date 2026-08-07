@@ -70,15 +70,14 @@ using test::HashOf;
 using test::NullLogger;
 using test::ReadFile;
 
-#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
-    (defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__))
+#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || defined(__linux__)
 constexpr const char* kLockFileName = "cuda-ep.lock";
 #if defined(_WIN32)
 constexpr const char* kProviderRelativePath = "onnxruntime_providers_cuda.dll";
 #else
 constexpr const char* kProviderRelativePath = "libonnxruntime_providers_cuda.so";
 #endif
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
 constexpr const char* kGenAiCudaLibrary = "libonnxruntime-genai-cuda.so";
 #endif
 
@@ -102,7 +101,7 @@ EpBundleManifest MakeRawManifest(FakeDownloads& downloads, const std::string& bu
                                          .raw_sha256 = HashOf(provider_payload),
                                          .raw_max_bytes = 1024}};
 
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
   const auto genai_url = std::string("https://example.test/") + bundle_id + "/genai";
   const auto genai_payload = AsBytes(bundle_id + "-genai");
 
@@ -126,7 +125,7 @@ EpBundleManifest MakeRawManifest(FakeDownloads& downloads, const std::string& bu
 template <typename RegisterEp>
 CudaEpBootstrapper MakeInstalledBundleBootstrapper(std::string root_dir, RegisterEp register_ep,
                                                    const EpBundleManifest& manifest, EpArtifactDownloadFn download_fn) {
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
   auto loader = [](const std::filesystem::path&, ILogger&) -> std::shared_ptr<void> {
     return std::shared_ptr<void>(new int(0), [](void* token) {
       delete static_cast<int*>(token);
@@ -143,8 +142,7 @@ CudaEpBootstrapper MakeInstalledBundleBootstrapper(std::string root_dir, Registe
 }  // namespace
 
 TEST(CudaEpBootstrapperTest, PlatformSupportMatchesPublishedBundles) {
-#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
-    (defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__))
+#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || defined(__linux__)
   EXPECT_TRUE(CudaEpBootstrapper::IsSupportedPlatform());
 #else
   EXPECT_FALSE(CudaEpBootstrapper::IsSupportedPlatform());
@@ -266,8 +264,7 @@ TEST(CudaEpBootstrapperTest, OverrideCancellationBeforeRegistrationReturnsFalse)
   EXPECT_EQ(registration_count, 0);
 }
 
-#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || \
-    (defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__))
+#if (defined(_WIN32) && (defined(_M_ARM64) || defined(_M_X64))) || defined(__linux__)
 TEST(CudaEpBootstrapperTest, BundleActivationFailurePreventsRegistration) {
   auto root = test::TempPath::CreateTempDir("fl_cuda_bootstrapper_");
   FakeDownloads downloads;
@@ -360,7 +357,7 @@ TEST(CudaEpBootstrapperTest, SuccessfulBundleRegistrationFinalizesPreviousGenera
 }
 #endif
 
-#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__)
+#if defined(__linux__)
 TEST(CudaEpBootstrapperTest, InstalledBundleGenAiDependencyLoaderFailureRollsBackMarkerAndSkipsRegistration) {
   auto root = test::TempPath::CreateTempDir("fl_cuda_bootstrapper_");
   FakeDownloads downloads;

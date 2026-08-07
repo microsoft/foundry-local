@@ -135,6 +135,24 @@ if(WinMLEpCatalog_FOUND)
     )
 endif()
 
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FOUNDRY_LOCAL_SYSTEM_PROCESSOR)
+set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS ON)
+if(ANDROID OR
+   (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+    NOT FOUNDRY_LOCAL_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+    set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS OFF)
+endif()
+
+if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
+    list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+        src/ep_detection/cuda_ep_bootstrapper.cc
+        src/ep_detection/cuda_ep_manifest.cc
+        src/ep_detection/ep_bundle_installer.cc
+        src/ep_detection/nvml_gpu_detector.cc
+        src/ep_detection/webgpu_ep_bootstrapper.cc
+    )
+endif()
+
 if(ANDROID)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES src/platform/android/ssl_cert_checker.cc)
 endif()
@@ -170,13 +188,8 @@ set(FOUNDRY_LOCAL_SOURCES
     src/download/file_writer.cc
     src/download/inference_model_writer.cc
     src/download/model_registry_client.cc
-    src/ep_detection/cuda_ep_bootstrapper.cc
-    src/ep_detection/cuda_ep_manifest.cc
-    src/ep_detection/ep_bundle_installer.cc
     src/ep_detection/ep_detector.cc
-    src/ep_detection/nvml_gpu_detector.cc
     src/ep_detection/runtime_version_info.cc
-    src/ep_detection/webgpu_ep_bootstrapper.cc
     src/exception.cc
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
@@ -282,6 +295,10 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     if(ANDROID)
         target_link_libraries(${TARGET} ${LINK_SCOPE} log)
     endif()
+    target_compile_definitions(
+        ${TARGET}
+        PRIVATE FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
+    )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)
         target_link_libraries(${TARGET} ${LINK_SCOPE} oatpp::oatpp)

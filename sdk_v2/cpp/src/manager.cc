@@ -12,11 +12,15 @@
 #include "catalog.h"
 #include "catalog/azure_model_catalog.h"
 #include "download/download_manager.h"
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/cuda_ep_bootstrapper.h"
+#endif
 #include "ep_detection/ep_detector.h"
 #include "ep_detection/ep_types.h"
 #include "ep_detection/runtime_version_info.h"
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/webgpu_ep_bootstrapper.h"
+#endif
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
@@ -192,8 +196,6 @@ Manager::Manager(const Configuration& config) : config_(config) {
   CheckSslCertSetup(*logger_);
 #endif
 
-  // Build the EP registration callback. When a bootstrapper successfully
-  // prepares an EP, this callback registers it with ORT via the C API.
   // OrtEnv is a singleton — CreateEnv returns the existing instance if GenAI
   // (or any other ORT consumer) already created one, with a bumped refcount.
   // We own one refcount and release it (plus unregister each EP we registered)
@@ -216,6 +218,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
 
   LogRuntimeVersions(*logger_);
 
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
+  // Build the EP registration callback. When a bootstrapper successfully
+  // prepares an EP, this callback registers it with ORT via the C API.
   EpRegistrationCallback register_ep = [this, &log = *logger_](const std::string& registration_name,
                                                                const std::filesystem::path& library_path) -> bool {
     OrtStatus* status =
@@ -236,10 +241,12 @@ Manager::Manager(const Configuration& config) : config_(config) {
                                        ", version=" + version + ")");
     return true;
   };
+#endif
 
   // Discover bootstrappers from available EP sources
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
 
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
   // Detected once and reused below for the WinML catalog skip-list and CUDA bootstrapper.
   // Avoid probing NVML on platforms where Foundry Local does not publish a CUDA bundle.
   const bool has_nvidia_gpu =
@@ -268,6 +275,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
     const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
     bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
   }
+#endif
 
   ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
 
