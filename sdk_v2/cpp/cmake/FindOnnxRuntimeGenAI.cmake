@@ -123,19 +123,36 @@ endif()
 if(ANDROID)
     # GenAI publishes a standalone AAR on GitHub Releases that contains
     # both C/C++ headers and native .so files — no NuGet package needed.
+    #
+    # Both the archive and the extracted tree are scoped by version. They previously
+    # shared one version-less path, so bumping ORT_GENAI_VERSION silently reused
+    # whichever AAR had been downloaded first while logging the new version — a warm
+    # build directory produced binaries from the old release. CI never saw this
+    # (fresh binary directory every run); developers did.
     set(_GENAI_AAR_URL "https://github.com/microsoft/onnxruntime-genai/releases/download/v${ORT_GENAI_VERSION}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
-    set(_GENAI_AAR_DIR "${CMAKE_BINARY_DIR}/_deps/genai-android-aar")
-    set(_GENAI_AAR_FILE "${_GENAI_AAR_DIR}/onnxruntime-genai-android.aar")
+    set(_GENAI_AAR_DIR "${CMAKE_BINARY_DIR}/_deps/genai-android-aar/${ORT_GENAI_VERSION}")
+    set(_GENAI_AAR_FILE "${_GENAI_AAR_DIR}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
 
     if(NOT EXISTS "${_GENAI_AAR_FILE}")
         message(STATUS "Downloading ORT GenAI Android AAR v${ORT_GENAI_VERSION} from GitHub Releases")
-        file(DOWNLOAD "${_GENAI_AAR_URL}" "${_GENAI_AAR_FILE}"
+        # Download to a temporary path and publish it only on success. file(DOWNLOAD)
+        # leaves the destination behind even when it fails — an unpublished release
+        # returns HTTP 404, which yields status 22 and a 0-byte file. Writing straight
+        # to the cached path would make the EXISTS check above treat that empty file as
+        # a valid cache entry, so every later configure would skip the download and fail
+        # in ARCHIVE_EXTRACT instead, until someone deleted it by hand.
+        set(_GENAI_AAR_TMP "${_GENAI_AAR_FILE}.tmp")
+        file(DOWNLOAD "${_GENAI_AAR_URL}" "${_GENAI_AAR_TMP}"
              STATUS _GENAI_DL_STATUS)
         list(GET _GENAI_DL_STATUS 0 _GENAI_DL_CODE)
         if(NOT _GENAI_DL_CODE EQUAL 0)
             list(GET _GENAI_DL_STATUS 1 _GENAI_DL_MSG)
-            message(FATAL_ERROR "Failed to download GenAI AAR: ${_GENAI_DL_MSG}")
+            file(REMOVE "${_GENAI_AAR_TMP}")
+            message(FATAL_ERROR "Failed to download GenAI Android AAR v${ORT_GENAI_VERSION} from "
+                                "${_GENAI_AAR_URL}: ${_GENAI_DL_MSG}. Verify that this version has "
+                                "an Android AAR attached to its GitHub release.")
         endif()
+        file(RENAME "${_GENAI_AAR_TMP}" "${_GENAI_AAR_FILE}")
     endif()
 
     if(NOT EXISTS "${_GENAI_AAR_DIR}/jni")
@@ -146,7 +163,7 @@ if(ANDROID)
     set(_GENAI_HEADER_DIR "${_GENAI_AAR_DIR}/headers")
     set(_GENAI_LIB_DIR "${_GENAI_AAR_DIR}/jni/${ANDROID_ABI}")
 
-    message(STATUS "OnnxRuntimeGenAI via GitHub AAR: ${_GENAI_AAR_DIR}")
+    message(STATUS "OnnxRuntimeGenAI via GitHub AAR v${ORT_GENAI_VERSION}: ${_GENAI_AAR_DIR}")
 else()
     # Allow the pipeline or caller to override the download URL (e.g., to use a local
     # file:// path when direct nuget.org access is blocked in CI).
