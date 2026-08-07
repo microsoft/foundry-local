@@ -1,0 +1,200 @@
+# Reusable Android cross-compile steps for the Foundry Local C++ SDK.
+#
+# Runs on a Linux host and cross-compiles with the Android NDK, so it uses the
+# same pool as the linux-x64 stage. Supports arm64-v8a (devices) and x86_64
+# (emulator) via the `abi` parameter.
+#
+# Android resolves its native dependencies differently from the desktop
+# platforms, which is the main reason this stage earns its keep:
+#
+#   ORT   – Microsoft.ML.OnnxRuntime NuGet, runtimes/android-{arm64,x64}
+#           (same package as desktop, so steps-prefetch-nuget.yml applies)
+#   GenAI – a standalone AAR on *GitHub Releases*, not NuGet
+#           (see cmake/FindOnnxRuntimeGenAI.cmake)
+#
+# Because GenAI comes from a different origin, a version that exists on NuGet
+# does not necessarily exist as an Android AAR. Without this stage that skew is
+# invisible: every desktop leg goes green while Android cannot configure at all.
+
+parameters:
+- name: abi
+  type: string
+  values: ['arm64-v8a', 'x86_64']
+- name: buildConfig
+  type: string
+- name: ortVersion
+  type: string
+- name: genaiVersion
+  type: string
+# Minimum supported API level. Keep in sync with build.py's --android_api default.
+- name: androidApi
+  type: number
+  default: 28
+# Pinned so a pool image refresh cannot silently change the toolchain.
+- name: ndkVersion
+  type: string
+  default: '29.0.14206865'
+# Emulator tests require the x86_64 ABI. Off by default: this stage exists to
+# guard the build and the dependency wiring, and an emulator boot adds both
+# runtime and flakiness. Enable per-stage once the leg is proven stable.
+- name: runEmulatorTests
+  type: boolean
+  default: false
+
+steps:
+
+- bash: |
+    set -euo pipefail
+    git clone https://github.com/microsoft/vcpkg.git "$(Build.BinariesDirectory)/vcpkg"
+    "$(Build.BinariesDirectory)/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+  displayName: 'Bootstrap vcpkg'
+
+# Resolve the NDK from the pool image when possible, and only fall back to
+# sdkmanager if the pinned version is genuinely absent. Both paths converge on
+# the same pinned version so the toolchain is identical either way.
+- bash: |
+    set -euo pipefail
+    pinned='${{ parameters.ndkVersion }}'
+    sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+
+    if [ -z "$sdk" ]; then
+      echo "ERROR: neither ANDROID_SDK_ROOT nor ANDROID_HOME is set on this agent." >&2
+      exit 1
+    fi
+
+    ndk="$sdk/ndk/$pinned"
+    if [ ! -d "$ndk" ]; then
+      echo "NDK $pinned not present; installing via sdkmanager."
+      sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+      if [ ! -x "$sdkmanager" ]; then
+        echo "ERROR: sdkmanager not found at $sdkmanager" >&2
+        exit 1
+      fi
+      yes | "$sdkmanager" --install "ndk;$pinned" > /dev/null
+    fi
+
+    if [ ! -d "$ndk" ]; then
+      echo "ERROR: NDK $pinned still not found at $ndk" >&2
+      exit 1
+    fi
+
+    echo "ANDROID_HOME     = $sdk"
+    echo "ANDROID_NDK_HOME = $ndk"
+    echo "##vso[task.setvariable variable=androidSdkRoot]$sdk"
+    echo "##vso[task.setvariable variable=androidNdkHome]$ndk"
+  displayName: 'Resolve Android NDK (${{ parameters.ndkVersion }})'
+
+# Prefetches ORT (used by the Android build) and GenAI (unused here — Android
+# takes the GitHub AAR instead — but harmless, and it keeps the pinned-version
+# drift check against deps_versions.json running on this leg too).
+- template: steps-prefetch-nuget.yml
+  parameters:
+    ortVersion: ${{ parameters.ortVersion }}
+    genaiVersion: ${{ parameters.genaiVersion }}
+    winmlVersion: ''
+    includeWinml: false
+    shell: bash
+
+# Bake the pipeline-computed version into the binary so
+# FoundryLocalGetVersionString() matches the package version rather than the
+# cmake default. Mirrors the desktop legs.
+- bash: |
+    set -euo pipefail
+    version=$(cat "$(Pipeline.Workspace)/version-info/sdkVersion.txt" | tr -d '[:space:]')
+    defines="$(cmakeFetchDefines) \"FOUNDRY_LOCAL_VERSION_STRING=$version\""
+    echo "##vso[task.setvariable variable=cmakeFetchDefines]$defines"
+    echo "cmakeFetchDefines = $defines"
+  displayName: 'Append version define'
+
+- bash: |
+    set -euo pipefail
+    python3 build.py --configure --build \
+      --android \
+      --android_abi ${{ parameters.abi }} \
+      --android_api ${{ parameters.androidApi }} \
+      --config ${{ parameters.buildConfig }} \
+      --cmake_extra_defines $(cmakeFetchDefines)
+  displayName: 'Configure and build (${{ parameters.abi }})'
+  workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+  env:
+    VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
+    ANDROID_HOME: $(androidSdkRoot)
+    ANDROID_NDK_HOME: $(androidNdkHome)
+
+- ${{ if eq(parameters.runEmulatorTests, true) }}:
+  - bash: |
+      set -euo pipefail
+      python3 build.py --test \
+        --android \
+        --android_abi ${{ parameters.abi }} \
+        --android_api ${{ parameters.androidApi }} \
+        --android_run_emulator \
+        --config ${{ parameters.buildConfig }}
+    displayName: 'Run tests on emulator (${{ parameters.abi }})'
+    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+    env:
+      VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
+      ANDROID_HOME: $(androidSdkRoot)
+      ANDROID_NDK_HOME: $(androidNdkHome)
+
+- bash: |
+    echo "=== vcpkg buildtrees error logs ==="
+    find "$(Build.BinariesDirectory)/vcpkg/buildtrees" -name "*err.log" -exec echo "--- {} ---" \; -exec cat {} \; || true
+    echo "=== vcpkg buildtrees config output logs ==="
+    find "$(Build.BinariesDirectory)/vcpkg/buildtrees" -name "config-*-out.log" -exec echo "--- {} ---" \; -exec tail -100 {} \; || true
+  displayName: 'Dump vcpkg error logs'
+  condition: failed()
+
+# Unlike the desktop legs, Android stages the ORT/GenAI runtime alongside
+# libfoundry_local.so. Desktop consumers get those out of band (pip on the
+# Python side, NuGet on the C# side), but an Android consumer has no such
+# channel — the libraries have to be packaged into the APK/AAR, so the build
+# that produced them is the only place they can be captured consistently.
+- bash: |
+    set -euo pipefail
+    src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Android-${{ parameters.abi }}/${{ parameters.buildConfig }}/bin'
+    dst='$(Build.ArtifactStagingDirectory)/native'
+    mkdir -p "$dst"
+
+    missing=0
+    for lib in libfoundry_local.so libonnxruntime.so libonnxruntime-genai.so; do
+      if [ -f "$src/$lib" ]; then
+        cp -P "$src/$lib" "$dst/"
+        echo "  staged $lib"
+      else
+        echo "ERROR: $lib not found at $src/$lib" >&2
+        missing=1
+      fi
+    done
+    [ "$missing" -eq 0 ] || exit 1
+
+    # GenAI 0.15.0 split its implementation into libmat.so, which
+    # libonnxruntime-genai.so lists as a DT_NEEDED — omitting it makes the
+    # consuming APK fail to dlopen at runtime. Guarded on existence to mirror
+    # the copy in sdk_v2/cpp/CMakeLists.txt, which keeps 0.14.x working.
+    if [ -f "$src/libmat.so" ]; then
+      cp -P "$src/libmat.so" "$dst/"
+      echo "  staged libmat.so"
+    fi
+
+    # Fail loudly if a staged library has a DT_NEEDED that the build produced
+    # but we did not stage: a future GenAI repackaging that adds another .so
+    # would otherwise give a green build and a runtime dlopen failure. Keying
+    # off "present in the build output" needs no whitelist of system libs —
+    # those never appear in bin/ — so it cannot fail spuriously on an agent.
+    readelf=$(command -v readelf || true)
+    if [ -n "$readelf" ]; then
+      unmet=0
+      for so in "$dst"/*.so; do
+        for need in $("$readelf" -d "$so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+          if [ -f "$src/$need" ] && [ ! -f "$dst/$need" ]; then
+            echo "ERROR: $(basename "$so") needs $need, which the build produced but this step did not stage" >&2
+            unmet=1
+          fi
+        done
+      done
+      [ "$unmet" -eq 0 ] || exit 1
+    else
+      echo "NOTE: readelf unavailable; skipped DT_NEEDED closure check."
+    fi
+  displayName: 'Stage native artifacts'
