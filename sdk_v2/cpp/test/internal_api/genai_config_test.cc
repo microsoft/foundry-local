@@ -67,6 +67,9 @@ TEST(GenAIConfigModelTest, IsMultiModalTrueForKnownTypes) {
 
   model.type = "qwen3_5";
   EXPECT_TRUE(model.IsMultiModal());
+
+  model.type = "gemma4";
+  EXPECT_TRUE(model.IsMultiModal());
 }
 
 TEST(GenAIConfigModelTest, IsMultiModalFalseForOtherTypes) {
