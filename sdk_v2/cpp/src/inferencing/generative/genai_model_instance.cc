@@ -35,13 +35,15 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to create OGA config for model ", model_id_, ": ", e.what());
   }
 
-  // CPU is OGA's default when no provider is configured. EPtoGenAI intentionally has no CPU name, so only
-  // non-default accelerator overrides should replace the providers from genai_config.json.
-  if (ep_ != ExecutionProvider::kDefault && ep_ != ExecutionProvider::kCPU) {
+  // Every explicit EP overrides providers from genai_config.json. CPU is OGA's default when the provider list is
+  // empty, and EPtoGenAI intentionally has no CPU name, so CPU clears the list without appending a provider.
+  if (ep_ != ExecutionProvider::kDefault) {
     try {
       oga_config->ClearProviders();
-      std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
-      oga_config->AppendProvider(provider_str.data());
+      if (ep_ != ExecutionProvider::kCPU) {
+        std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
+        oga_config->AppendProvider(provider_str.data());
+      }
 
       // Disable CUDA graph for CUDA EP (matches C# behavior)
       if (ep_ == ExecutionProvider::kCUDA) {
