@@ -24,10 +24,6 @@
 #include <EventProperties.hpp>
 #include "one_ds_tenant_token.h"
 
-#if defined(__ANDROID__)
-extern "C" bool FoundryLocalIsAndroidTelemetryReady() noexcept;
-#endif
-
 namespace fl {
 
 namespace {
@@ -192,14 +188,6 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                 "[Telemetry] Disabled via configuration; non-essential 1DS upload disabled "
                 "(ProcessInfo still uploads)");
   }
-#if defined(__ANDROID__)
-  if (!FoundryLocalIsAndroidTelemetryReady()) {
-    logger_.Log(LogLevel::Information,
-                "[Telemetry] Android 1DS Java HTTP bridge is not initialized; 1DS upload disabled "
-                "(events still logged locally)");
-    return;
-  }
-#endif
   const auto token = GetToken();
   if (token.empty()) {
     logger_.Log(LogLevel::Information,

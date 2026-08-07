@@ -252,9 +252,6 @@ set(FOUNDRY_LOCAL_SOURCES
 
 # 1DS bridge — always compiled for Foundry Local Core.
 list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
-if(ANDROID)
-    list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/android_telemetry_bridge.cc)
-endif()
 
 # Organize headers into filters matching the directory structure in Visual Studio
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source" FILES ${FOUNDRY_LOCAL_SOURCES})
