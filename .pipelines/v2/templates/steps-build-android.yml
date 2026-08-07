@@ -145,11 +145,11 @@ steps:
   displayName: 'Dump vcpkg error logs'
   condition: failed()
 
-# Unlike the desktop legs, Android stages all three .so files. Desktop
-# consumers get ORT/GenAI out of band (pip on the Python side, NuGet on the C#
-# side), but an Android consumer has no such channel — the libraries have to be
-# packaged into the APK/AAR alongside libfoundry_local.so, so the build that
-# produced them is the only place they can be captured consistently.
+# Unlike the desktop legs, Android stages the ORT/GenAI runtime alongside
+# libfoundry_local.so. Desktop consumers get those out of band (pip on the
+# Python side, NuGet on the C# side), but an Android consumer has no such
+# channel — the libraries have to be packaged into the APK/AAR, so the build
+# that produced them is the only place they can be captured consistently.
 - bash: |
     set -euo pipefail
     src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Android-${{ parameters.abi }}/${{ parameters.buildConfig }}/bin'
@@ -167,4 +167,34 @@ steps:
       fi
     done
     [ "$missing" -eq 0 ] || exit 1
+
+    # GenAI 0.15.0 split its implementation into libmat.so, which
+    # libonnxruntime-genai.so lists as a DT_NEEDED — omitting it makes the
+    # consuming APK fail to dlopen at runtime. Guarded on existence to mirror
+    # the copy in sdk_v2/cpp/CMakeLists.txt, which keeps 0.14.x working.
+    if [ -f "$src/libmat.so" ]; then
+      cp -P "$src/libmat.so" "$dst/"
+      echo "  staged libmat.so"
+    fi
+
+    # Fail loudly if a staged library has a DT_NEEDED that the build produced
+    # but we did not stage: a future GenAI repackaging that adds another .so
+    # would otherwise give a green build and a runtime dlopen failure. Keying
+    # off "present in the build output" needs no whitelist of system libs —
+    # those never appear in bin/ — so it cannot fail spuriously on an agent.
+    readelf=$(command -v readelf || true)
+    if [ -n "$readelf" ]; then
+      unmet=0
+      for so in "$dst"/*.so; do
+        for need in $("$readelf" -d "$so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+          if [ -f "$src/$need" ] && [ ! -f "$dst/$need" ]; then
+            echo "ERROR: $(basename "$so") needs $need, which the build produced but this step did not stage" >&2
+            unmet=1
+          fi
+        done
+      done
+      [ "$unmet" -eq 0 ] || exit 1
+    else
+      echo "NOTE: readelf unavailable; skipped DT_NEEDED closure check."
+    fi
   displayName: 'Stage native artifacts'
