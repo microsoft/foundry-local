@@ -123,19 +123,27 @@ endif()
 if(ANDROID)
     # GenAI publishes a standalone AAR on GitHub Releases that contains
     # both C/C++ headers and native .so files — no NuGet package needed.
+    #
+    # Scope the archive and extracted tree by version. A version-less path let a
+    # warm build dir reuse the old AAR after a bump while logging the new version for stateful builds
     set(_GENAI_AAR_URL "https://github.com/microsoft/onnxruntime-genai/releases/download/v${ORT_GENAI_VERSION}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
-    set(_GENAI_AAR_DIR "${CMAKE_BINARY_DIR}/_deps/genai-android-aar")
-    set(_GENAI_AAR_FILE "${_GENAI_AAR_DIR}/onnxruntime-genai-android.aar")
+    set(_GENAI_AAR_DIR "${CMAKE_BINARY_DIR}/_deps/genai-android-aar/${ORT_GENAI_VERSION}")
+    set(_GENAI_AAR_FILE "${_GENAI_AAR_DIR}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
 
     if(NOT EXISTS "${_GENAI_AAR_FILE}")
         message(STATUS "Downloading ORT GenAI Android AAR v${ORT_GENAI_VERSION} from GitHub Releases")
-        file(DOWNLOAD "${_GENAI_AAR_URL}" "${_GENAI_AAR_FILE}"
+        set(_GENAI_AAR_TMP "${_GENAI_AAR_FILE}.tmp")
+        file(DOWNLOAD "${_GENAI_AAR_URL}" "${_GENAI_AAR_TMP}"
              STATUS _GENAI_DL_STATUS)
         list(GET _GENAI_DL_STATUS 0 _GENAI_DL_CODE)
         if(NOT _GENAI_DL_CODE EQUAL 0)
             list(GET _GENAI_DL_STATUS 1 _GENAI_DL_MSG)
-            message(FATAL_ERROR "Failed to download GenAI AAR: ${_GENAI_DL_MSG}")
+            file(REMOVE "${_GENAI_AAR_TMP}")
+            message(FATAL_ERROR "Failed to download GenAI Android AAR v${ORT_GENAI_VERSION} from "
+                                "${_GENAI_AAR_URL}: ${_GENAI_DL_MSG}. Verify that this version has "
+                                "an Android AAR attached to its GitHub release.")
         endif()
+        file(RENAME "${_GENAI_AAR_TMP}" "${_GENAI_AAR_FILE}")
     endif()
 
     if(NOT EXISTS "${_GENAI_AAR_DIR}/jni")
@@ -146,7 +154,7 @@ if(ANDROID)
     set(_GENAI_HEADER_DIR "${_GENAI_AAR_DIR}/headers")
     set(_GENAI_LIB_DIR "${_GENAI_AAR_DIR}/jni/${ANDROID_ABI}")
 
-    message(STATUS "OnnxRuntimeGenAI via GitHub AAR: ${_GENAI_AAR_DIR}")
+    message(STATUS "OnnxRuntimeGenAI via GitHub AAR v${ORT_GENAI_VERSION}: ${_GENAI_AAR_DIR}")
 else()
     # Allow the pipeline or caller to override the download URL (e.g., to use a local
     # file:// path when direct nuget.org access is blocked in CI).
