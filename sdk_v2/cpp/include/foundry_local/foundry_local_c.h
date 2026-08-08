@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 1
+#define FOUNDRY_LOCAL_API_VERSION 3
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -202,6 +202,12 @@ typedef enum flDeviceType {
   FOUNDRY_LOCAL_DEVICE_NPU = 3
 } flDeviceType;
 
+typedef enum flCatalogType {
+  FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
+  FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
+  FOUNDRY_LOCAL_CATALOG_PRIVATE = 2,
+} flCatalogType;
+
 /// Tensor element data types. Values match ONNX TensorProto.DataType.
 typedef enum flTensorDataType {
   FOUNDRY_LOCAL_TENSOR_UNDEFINED = 0,
@@ -256,6 +262,16 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR "tool_call_end"              ///< optional tool call end marker token
 #define FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR "reasoning_start"          ///< optional reasoning/think start marker token
 #define FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR "reasoning_end"              ///< optional reasoning/think end marker token
+#define FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR "device_type"                  ///< CPU, GPU, or NPU
+#define FOUNDRY_LOCAL_MODEL_PROP_EP_STR "execution_provider"                    ///< optional execution provider
+#define FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR "entity_type"                  ///< fixed to "Model" for BYOM
+#define FOUNDRY_LOCAL_MODEL_PROP_AUTHOR_STR "author"                            ///< optional
+#define FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR "quantization"                ///< optional
+#define FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR "creation_time"              ///< ISO-8601 UTC timestamp
+
+/* flModelInfo registration properties */
+#define FOUNDRY_LOCAL_REG_MODEL_PATH "model_path"
+#define FOUNDRY_LOCAL_REG_ALIAS "alias"
 
 /* flModelInfo Int properties. Comments provide details on the type and expected values. */
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"  ///< optional bool (not set or -1=unknown, 0=false, 1=true)
@@ -265,6 +281,9 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"              ///< Unix timestamp. default=0
 #define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                  ///< bool (0=false, 1=true)
 #define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                ///< optional int64_t
+#define FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT "version"                              ///< optional non-negative integer
+#define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT "file_size_bytes"                ///< optional int64_t
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT "supports_hybrid_reasoning"  ///< optional bool
 
 #define FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR "input_modalities"    ///< optional, comma-separated
 #define FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR "output_modalities"  ///< optional, comma-separated
@@ -706,6 +725,12 @@ typedef struct flApi {
   bool FL_API_T(Manager_IsShutdownRequested, _In_ const flManager* manager);
 
   // End V1
+  FL_API_STATUS(Manager_GetCatalogByType, _In_ const flManager* manager, flCatalogType catalog_type,
+                _Outptr_ flCatalog** out_catalog);
+  FL_API_STATUS(Manager_GetCatalogByName, _In_ const flManager* manager, _In_ const char* catalog_name,
+                _Outptr_ flCatalog** out_catalog);
+
+  // End V2
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;
 
@@ -969,6 +994,15 @@ struct flCatalogApi {
                 _In_opt_ const char* model_name, int32_t max_versions, _Outptr_ flModelList** out_models);
 
   // End V1
+  /// Register a model in a local catalog. The input ModelInfo is copied.
+  FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const flModelInfo* model_info,
+                _Outptr_ flModel** out_model);
+  /// Unregister by alias or model ID without deleting model assets.
+  FL_API_STATUS(UnregisterModel, _In_ flCatalog* catalog, _In_ const char* alias_or_model_id);
+  /// List models explicitly registered in this local catalog.
+  FL_API_STATUS(GetLocalModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
+
+  // End V2
 };
 
 /* --- Model API --------------------------------------------------------- */
@@ -1038,6 +1072,19 @@ struct flModelApi {
   int64_t FL_API_T(Info_GetIntProperty, _In_ const flModelInfo* info, _In_ const char* key, int64_t default_value);
 
   // End V1
+  /// Create a caller-owned mutable ModelInfo. Release it with ReleaseModelInfo.
+  FL_API_STATUS(CreateModelInfo, _Outptr_ flModelInfo** out_info);
+  void FL_API_T(ReleaseModelInfo, _Frees_ptr_opt_ flModelInfo* info);
+  FL_API_STATUS(Info_SetStringProperty, _In_ flModelInfo* info, _In_ const char* key, _In_ const char* value);
+  FL_API_STATUS(Info_SetIntProperty, _In_ flModelInfo* info, _In_ const char* key, int64_t value);
+  FL_API_STATUS(Info_SerializeToFile, _In_ const flModelInfo* info, _In_ const char* file_path);
+  FL_API_STATUS(Info_DeserializeFromFile, _In_ const char* file_path, _Outptr_ flModelInfo** out_info);
+
+  // End V2
+  /// Create a caller-owned deep copy. Release it with ReleaseModelInfo.
+  FL_API_STATUS(Info_Clone, _In_ const flModelInfo* info, _Outptr_ flModelInfo** out_info);
+
+  // End V3
 };
 
 #ifdef __cplusplus

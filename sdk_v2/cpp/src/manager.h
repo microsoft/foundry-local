@@ -7,8 +7,10 @@
 #include "logger.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,7 @@ namespace fl {
 
 // Forward declarations
 class ICatalog;
+enum class CatalogType;
 class DownloadManager;
 class ITelemetry;
 class Model;
@@ -49,6 +52,8 @@ class Manager {
   /// The catalog is owned by the manager and shared across all consumers
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
+  ICatalog& GetCatalog(CatalogType type);
+  ICatalog& GetCatalog(const std::string& catalog_name);
 
   /// Get the configuration used to create this manager.
   const Configuration& GetConfiguration() const;
@@ -137,7 +142,8 @@ class Manager {
   std::unique_ptr<ILogger> logger_;
   std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ITelemetry> telemetry_;
-  std::unique_ptr<ICatalog> catalog_;
+  std::unique_ptr<ICatalog> public_catalog_;
+  std::unique_ptr<ICatalog> local_catalog_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;
@@ -151,6 +157,9 @@ class Manager {
 
  private:
   Model CreateModel(ModelInfo info, std::string local_path);
+  Model CreateLocalModel(ModelInfo info, std::string local_path,
+                         std::function<void(const std::string&)> unregister_callback,
+                         std::function<std::optional<ModelInfo>()> prepare_callback);
 
   static std::mutex s_mutex_;
   static std::unique_ptr<Manager> s_instance_;

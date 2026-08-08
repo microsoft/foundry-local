@@ -33,6 +33,20 @@ TEST(CApiTest, GetApiReturnsNullForFutureVersion) {
   EXPECT_EQ(api, nullptr);
 }
 
+TEST(CApiTest, ModelInfoCloneIsAvailableOnlyInV3) {
+  const flApi* v2 = FoundryLocalGetApi(2);
+  const flApi* v3 = FoundryLocalGetApi(3);
+  ASSERT_NE(v2, nullptr);
+  ASSERT_NE(v3, nullptr);
+
+  const flModelApi* model_v2 = v2->GetModelApi();
+  const flModelApi* model_v3 = v3->GetModelApi();
+  ASSERT_NE(model_v2, nullptr);
+  ASSERT_NE(model_v3, nullptr);
+  EXPECT_EQ(model_v2->Info_Clone, nullptr);
+  EXPECT_NE(model_v3->Info_Clone, nullptr);
+}
+
 TEST(CApiTest, VersionReturnsNonNull) {
   const char* version = FoundryLocalGetVersionString();
   ASSERT_NE(version, nullptr);
@@ -95,6 +109,53 @@ TEST(CApiTest, SubApiAccessorsReturnNonNull) {
   EXPECT_NE(api->GetItemApi(), nullptr);
   EXPECT_NE(api->GetInferenceApi(), nullptr);
   EXPECT_NE(api->GetModelApi(), nullptr);
+}
+
+TEST(CApiTest, ModelInfoCloneCreatesIndependentDeepCopy) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+  const flModelApi* model_api = api->GetModelApi();
+  ASSERT_NE(model_api, nullptr);
+  ASSERT_NE(model_api->Info_Clone, nullptr);
+
+  flModelInfo* source = nullptr;
+  ASSERT_TRUE(IsOk(model_api->CreateModelInfo(&source)));
+  ASSERT_NE(source, nullptr);
+  ASSERT_TRUE(IsOk(model_api->Info_SetStringProperty(source, "custom_string", "source")));
+  ASSERT_TRUE(IsOk(model_api->Info_SetIntProperty(source, "custom_int", 42)));
+
+  flModelInfo* clone = nullptr;
+  ASSERT_TRUE(IsOk(model_api->Info_Clone(source, &clone)));
+  ASSERT_NE(clone, nullptr);
+  EXPECT_NE(clone, source);
+  EXPECT_STREQ(model_api->Info_GetStringProperty(clone, "custom_string"), "source");
+  EXPECT_EQ(model_api->Info_GetIntProperty(clone, "custom_int", -1), 42);
+
+  ASSERT_TRUE(IsOk(model_api->Info_SetStringProperty(clone, "custom_string", "clone")));
+  ASSERT_TRUE(IsOk(model_api->Info_SetIntProperty(clone, "custom_int", 99)));
+  EXPECT_STREQ(model_api->Info_GetStringProperty(source, "custom_string"), "source");
+  EXPECT_EQ(model_api->Info_GetIntProperty(source, "custom_int", -1), 42);
+
+  model_api->ReleaseModelInfo(clone);
+  model_api->ReleaseModelInfo(source);
+}
+
+TEST(CApiTest, ModelInfoCloneValidatesArguments) {
+  const flApi* api = GetApi();
+  const flModelApi* model_api = api->GetModelApi();
+
+  flModelInfo* clone = reinterpret_cast<flModelInfo*>(1);
+  StatusGuard null_source{model_api->Info_Clone(nullptr, &clone), api};
+  ASSERT_NE(null_source.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(null_source.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_EQ(clone, nullptr);
+
+  flModelInfo* source = nullptr;
+  ASSERT_TRUE(IsOk(model_api->CreateModelInfo(&source)));
+  StatusGuard null_output{model_api->Info_Clone(source, nullptr), api};
+  ASSERT_NE(null_output.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(null_output.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  model_api->ReleaseModelInfo(source);
 }
 
 // ========================================================================

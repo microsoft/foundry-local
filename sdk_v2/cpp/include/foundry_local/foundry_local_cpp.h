@@ -64,6 +64,9 @@ namespace detail {
 /// Returns nullptr if the library does not support the requested API version.
 inline const flApi* api() {
   static const flApi* p = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  if (!p) {
+    throw std::runtime_error("Foundry Local runtime does not support the API version requested by this header");
+  }
   return p;
 }
 
@@ -299,14 +302,33 @@ struct Runtime {
   std::optional<std::string_view> execution_provider;
 };
 
+enum class CatalogType {
+  Public = FOUNDRY_LOCAL_CATALOG_PUBLIC,
+  Local = FOUNDRY_LOCAL_CATALOG_LOCAL,
+  Private = FOUNDRY_LOCAL_CATALOG_PRIVATE,
+};
+
 // ===========================================================================
-// ModelInfo — non-owning read-only view
+// ModelInfo — owning mutable value or non-owning read-only view
 // ===========================================================================
 
-/// Non-owning view over an opaque flModelInfo. Lifetime is tied to the owning Model/Catalog. Immutable.
+/// Opaque model metadata. Default construction creates an owning mutable value for registration.
+/// Construction from `const flModelInfo&` creates a non-owning read-only view tied to its Model/Catalog.
 class ModelInfo {
  public:
-  explicit ModelInfo(const flModelInfo& info) noexcept : info_(&info) {}
+  ModelInfo();
+  explicit ModelInfo(const flModelInfo& info) noexcept : handle_(&info) {}
+
+  /// Create an independent, owning, mutable deep copy, including when the source is a borrowed view.
+  ModelInfo(const ModelInfo& other);
+  ModelInfo& operator=(const ModelInfo& other);
+  ModelInfo(ModelInfo&&) noexcept = default;
+  ModelInfo& operator=(ModelInfo&&) noexcept = default;
+
+  ModelInfo& SetStringProperty(const char* key, const char* value);
+  ModelInfo& SetIntProperty(const char* key, int64_t value);
+  void SerializeToFile(const std::string& file_path) const;
+  static ModelInfo DeserializeFromFile(const std::string& file_path);
 
   // Core identity.
   std::string_view Id() const noexcept;
@@ -376,8 +398,11 @@ class ModelInfo {
   std::optional<std::string_view> Capabilities() const noexcept;
 
  private:
+  explicit ModelInfo(flModelInfo& info);
   static std::string_view safe(const char* s) noexcept { return s ? s : ""; }
-  const flModelInfo* info_;
+  detail::Base<flModelInfo> handle_;
+
+  friend class Catalog;
 };
 
 // ===========================================================================
@@ -781,6 +806,15 @@ class ICatalog {
   virtual ModelList GetModelVersions(const std::string& model_alias,
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
+  virtual std::unique_ptr<IModel> RegisterModel(const ModelInfo&) {
+    throw Error("models can only be registered in a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+  virtual void UnregisterModel(const std::string&) {
+    throw Error("models can only be unregistered from a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+  virtual ModelList GetLocalModels() const {
+    throw Error("local model listing is unsupported by this catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
 };
 
 // ===========================================================================
@@ -806,6 +840,9 @@ class Catalog final : public ICatalog {
   ModelList GetModelVersions(const std::string& model_alias,
                              const std::string& variant_name = {},
                              int max_versions = 50) override;
+  std::unique_ptr<IModel> RegisterModel(const ModelInfo& model_info) override;
+  void UnregisterModel(const std::string& alias_or_model_id) override;
+  ModelList GetLocalModels() const override;
 
  private:
   detail::Base<flCatalog> handle_;
@@ -835,6 +872,8 @@ class Manager {
 
   /// Get the catalog for querying models. Creates on first call, caches internally.
   ICatalog& GetCatalog() const;
+  ICatalog& GetCatalog(CatalogType type) const;
+  ICatalog& GetCatalog(const std::string& catalog_name) const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -870,7 +909,9 @@ class Manager {
   detail::Base<flManager> handle_;
   Configuration config_;
   mutable std::unique_ptr<Catalog> catalog_;
+  mutable std::unique_ptr<Catalog> local_catalog_;
   mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
+  mutable std::unique_ptr<std::once_flag> local_catalog_once_{std::make_unique<std::once_flag>()};
 };
 
 // ===========================================================================

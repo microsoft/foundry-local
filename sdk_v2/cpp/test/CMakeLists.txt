@@ -37,6 +37,7 @@ add_executable(foundry_local_tests
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
     internal_api/item_test.cc
+    internal_api/local_model_catalog_test.cc
     internal_api/local_model_scanner_test.cc
     internal_api/model_info_test.cc
     internal_api/model_info_accessors_test.cc

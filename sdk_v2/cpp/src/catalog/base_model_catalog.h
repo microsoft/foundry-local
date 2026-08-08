@@ -33,6 +33,7 @@ class BaseModelCatalog : public ICatalog {
   ~BaseModelCatalog() override;
 
   const std::string& GetName() const override { return name_; }
+  CatalogType GetType() const override { return type_; }
 
   // ICatalog implementations — query/lookup layer
   std::vector<Model*> ListModels() const override;
@@ -47,6 +48,11 @@ class BaseModelCatalog : public ICatalog {
   void InvalidateCache() override;
 
  protected:
+  BaseModelCatalog(std::string name, CatalogType type, ILogger& logger);
+
+  Model* AddModel(Model model);
+  bool DeactivateModel(const std::string& alias_or_model_id);
+
   /// Derived classes implement this to fetch model variants from their source.
   /// Returns the full variant list. Base class handles caching and indexing.
   /// Maps to C# FetchModelInfoAsync.
@@ -82,9 +88,13 @@ class BaseModelCatalog : public ICatalog {
     std::unordered_map<std::string, Model*> name_index;   // name -> latest version Model*
   };
 
-  /// Stable model storage. unique_ptr ensures addresses never change.
-  /// Models are only appended, never removed — external Model* pointers remain valid.
-  mutable std::vector<std::unique_ptr<Model>> models_;
+  struct StoredModel {
+    std::unique_ptr<Model> model;
+    bool active = true;
+  };
+
+  /// Stable append-only storage. Inactive models are tombstones retained for pointer safety.
+  mutable std::vector<StoredModel> models_;
 
   /// Lookup indices, rebuilt on each populate/refresh.
   /// Guarded by std::atomic_load/store free functions so readers get a consistent
@@ -127,6 +137,7 @@ class BaseModelCatalog : public ICatalog {
   mutable std::vector<std::unique_ptr<Model>> version_query_models_;
 
   std::string name_;
+  CatalogType type_;
   ILogger& logger_;
 };
 

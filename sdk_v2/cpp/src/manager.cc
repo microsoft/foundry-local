@@ -11,6 +11,7 @@
 
 #include "catalog.h"
 #include "catalog/azure_model_catalog.h"
+#include "catalog/local_model_catalog.h"
 #include "download/download_manager.h"
 #if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/cuda_ep_bootstrapper.h"
@@ -305,27 +306,34 @@ Manager::Manager(const Configuration& config) : config_(config) {
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   const bool disable_nonessential_telemetry =
-      config_.disable_nonessential_telemetry ||
-      IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
   const bool telemetry_hard_disabled =
       TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
   telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
-    telemetry_->RecordProcessInfo(
-        BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
-                         !disable_nonessential_telemetry && !telemetry_hard_disabled));
+    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
+                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
   } catch (const std::exception& ex) {
-    logger_->Log(
-        LogLevel::Warning,
-        fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+    logger_->Log(LogLevel::Warning,
+                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
   }
-  catalog_ = std::make_unique<AzureModelCatalog>(
+
+  public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
       *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
       disable_region_fallback);
+  local_catalog_ = std::make_unique<LocalModelCatalog>(
+      *config_.app_data_dir,
+      [this](ModelInfo info, std::string local_path, std::function<void(const std::string&)> unregister_callback,
+              std::function<std::optional<ModelInfo>()> prepare_callback) {
+        return CreateLocalModel(std::move(info), std::move(local_path), std::move(unregister_callback),
+                                std::move(prepare_callback));
+      },
+      *logger_);
+  local_catalog_->ListModels();
 }
 
 Manager::~Manager() {
@@ -353,7 +361,8 @@ Manager::~Manager() {
   session_manager_.reset();
   model_load_manager_.reset();
   download_manager_.reset();
-  catalog_.reset();
+  local_catalog_.reset();
+  public_catalog_.reset();
   telemetry_.reset();
 
   OgaShutdown();
@@ -434,7 +443,32 @@ void Manager::Destroy() {
   s_instance_.reset();
 }
 
-ICatalog& Manager::GetCatalog() { return *catalog_; }
+ICatalog& Manager::GetCatalog() {
+  return *public_catalog_;
+}
+
+ICatalog& Manager::GetCatalog(CatalogType type) {
+  switch (type) {
+    case CatalogType::kPublic:
+      return *public_catalog_;
+    case CatalogType::kLocal:
+      return *local_catalog_;
+    case CatalogType::kPrivate:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "no private catalog has been configured");
+    default:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
+  }
+}
+
+ICatalog& Manager::GetCatalog(const std::string& catalog_name) {
+  if (catalog_name == "local") {
+    return *local_catalog_;
+  }
+  if (catalog_name == "public" || catalog_name == public_catalog_->GetName()) {
+    return *public_catalog_;
+  }
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "catalog not found: " + catalog_name);
+}
 
 void Manager::StartWebService() {
   if (web_service_running_) {
@@ -449,8 +483,10 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*catalog_, *logger_, *config_.model_cache_dir, *model_load_manager_,
-                                              *session_manager_, *telemetry_, [this]() { Shutdown(); });
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *logger_, *config_.model_cache_dir,
+                                              *model_load_manager_,
+                                              *session_manager_, *telemetry_,
+                                              [this]() { Shutdown(); });
 
   auto endpoints = config_.web_service_endpoints;
   if (endpoints.empty()) {
@@ -541,6 +577,14 @@ Model Manager::CreateModel(ModelInfo info, std::string local_path) {
   return Model::FromModelInfo(std::move(info), std::move(local_path), *download_manager_, *model_load_manager_);
 }
 
+Model Manager::CreateLocalModel(ModelInfo info, std::string local_path,
+            std::function<void(const std::string&)> unregister_callback,
+                                std::function<std::optional<ModelInfo>()> prepare_callback) {
+  return Model::FromLocalRegistration(std::move(info), std::move(local_path), *download_manager_,
+              *model_load_manager_, std::move(unregister_callback),
+              std::move(prepare_callback));
+}
+
 DownloadManager& Manager::GetDownloadManager() { return *download_manager_; }
 
 ModelLoadManager& Manager::GetModelLoadManager() { return *model_load_manager_; }
@@ -562,7 +606,7 @@ EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>*
   // EP registration changes which device/EP filters the catalog uses.
   // Invalidate so the next catalog query re-fetches with updated filters.
   if (result.success && !result.registered_eps.empty()) {
-    catalog_->InvalidateCache();
+    public_catalog_->InvalidateCache();
   }
 
   return result;

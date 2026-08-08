@@ -206,6 +206,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc
     src/catalog/catalog_client.cc
+    src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc

@@ -42,6 +42,55 @@ fl::ModelInfo MakeBareInfo() {
 
 }  // namespace
 
+TEST(ModelInfoCopy, OwningCopyIsIndependent) {
+  foundry_local::ModelInfo source;
+  source.SetStringProperty("custom_string", "source").SetIntProperty("custom_int", 42);
+
+  foundry_local::ModelInfo copy(source);
+  copy.SetStringProperty("custom_string", "copy").SetIntProperty("custom_int", 99);
+
+  EXPECT_EQ(source.GetStringProperty("custom_string"), "source");
+  EXPECT_EQ(source.GetIntProperty("custom_int"), 42);
+  EXPECT_EQ(copy.GetStringProperty("custom_string"), "copy");
+  EXPECT_EQ(copy.GetIntProperty("custom_int"), 99);
+}
+
+TEST(ModelInfoCopy, BorrowedViewCopyBecomesOwningSnapshot) {
+  fl::ModelInfo internal = MakeBareInfo();
+  internal.string_properties["custom_string"] = "borrowed";
+
+  auto borrowed = MakeView(internal);
+  foundry_local::ModelInfo snapshot = borrowed;
+  internal.string_properties["custom_string"] = "changed";
+
+  EXPECT_EQ(borrowed.GetStringProperty("custom_string"), "changed");
+  EXPECT_EQ(snapshot.GetStringProperty("custom_string"), "borrowed");
+  snapshot.SetStringProperty("custom_string", "snapshot");
+  EXPECT_EQ(internal.string_properties["custom_string"], "changed");
+}
+
+TEST(ModelInfoCopy, CopyAssignmentHasIndependentValueSemantics) {
+  foundry_local::ModelInfo source;
+  source.SetStringProperty("custom_string", "source");
+  foundry_local::ModelInfo destination;
+  destination.SetStringProperty("custom_string", "destination");
+
+  destination = source;
+  destination.SetStringProperty("custom_string", "assigned");
+
+  EXPECT_EQ(source.GetStringProperty("custom_string"), "source");
+  EXPECT_EQ(destination.GetStringProperty("custom_string"), "assigned");
+}
+
+TEST(ModelInfoCopy, SelfAssignmentPreservesValue) {
+  foundry_local::ModelInfo info;
+  info.SetStringProperty("custom_string", "value");
+
+  info = info;
+
+  EXPECT_EQ(info.GetStringProperty("custom_string"), "value");
+}
+
 // ============================================================================
 // ContextLength
 // ============================================================================

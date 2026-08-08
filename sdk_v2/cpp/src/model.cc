@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 
 namespace fl {
 
@@ -105,13 +106,23 @@ bool CompareModelsForSort(const Model& m1, const Model& m2) {
 Model::~Model() = default;
 
 Model::Model(Model&& other) noexcept
-    : info_(std::move(other.info_)),
-      cached_(other.cached_.load()),
+  : cached_(other.cached_.load()),
+      active_(other.active_.load()),
       local_path_(std::move(other.local_path_)),
+      runtime_model_id_(std::move(other.runtime_model_id_)),
+      external_registration_(other.external_registration_),
+      unregister_callback_(std::move(other.unregister_callback_)),
+      prepare_callback_(std::move(other.prepare_callback_)),
+      metadata_prepared_(other.metadata_prepared_.load()),
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
       selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)) {
+  {
+    std::lock_guard<std::mutex> lock(other.metadata_mutex_);
+    info_snapshots_ = std::move(other.info_snapshots_);
+  }
+  current_info_.store(other.current_info_.load(std::memory_order_relaxed), std::memory_order_relaxed);
   // After vector move, selected_variant_ still points into the transferred buffer.
   other.download_manager_ = nullptr;
   other.model_load_manager_ = nullptr;
@@ -120,9 +131,19 @@ Model::Model(Model&& other) noexcept
 
 Model& Model::operator=(Model&& other) noexcept {
   if (this != &other) {
-    info_ = std::move(other.info_);
+    {
+      std::scoped_lock lock(metadata_mutex_, other.metadata_mutex_);
+      info_snapshots_ = std::move(other.info_snapshots_);
+    }
+    current_info_.store(other.current_info_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     cached_.store(other.cached_.load());
+    active_.store(other.active_.load());
     local_path_ = std::move(other.local_path_);
+    runtime_model_id_ = std::move(other.runtime_model_id_);
+    external_registration_ = other.external_registration_;
+    unregister_callback_ = std::move(other.unregister_callback_);
+    prepare_callback_ = std::move(other.prepare_callback_);
+    metadata_prepared_.store(other.metadata_prepared_.load());
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
@@ -144,7 +165,8 @@ Model Model::FromModelInfo(ModelInfo info,
                            DownloadManager& download_manager,
                            ModelLoadManager& model_load_manager) {
   Model model;
-  model.info_ = std::move(info);
+  model.runtime_model_id_ = info.model_id;
+  model.PublishInfo(std::move(info));
   model.download_manager_ = &download_manager;
   model.model_load_manager_ = &model_load_manager;
 
@@ -153,6 +175,21 @@ Model Model::FromModelInfo(ModelInfo info,
     model.local_path_ = std::move(local_path);
   }
 
+  return model;
+}
+
+Model Model::FromLocalRegistration(ModelInfo info,
+                                   std::string local_path,
+                                   DownloadManager& download_manager,
+                                   ModelLoadManager& model_load_manager,
+                                   std::function<void(const std::string&)> unregister_callback,
+                                   std::function<std::optional<ModelInfo>()> prepare_callback) {
+  auto model = FromModelInfo(std::move(info), std::move(local_path), download_manager, model_load_manager);
+  model.external_registration_ = true;
+  model.runtime_model_id_ = "local/" + model.Info().model_id;
+  model.unregister_callback_ = std::move(unregister_callback);
+  model.prepare_callback_ = std::move(prepare_callback);
+  model.metadata_prepared_.store(false);
   return model;
 }
 
@@ -213,7 +250,7 @@ const std::string& Model::Id() const {
     return sv->Id();
   }
 
-  return info_.model_id;
+  return Info().model_id;
 }
 
 const std::string& Model::Alias() const {
@@ -221,7 +258,7 @@ const std::string& Model::Alias() const {
     return sv->Alias();
   }
 
-  return info_.alias;
+  return Info().alias;
 }
 
 const ModelInfo& Model::Info() const {
@@ -229,7 +266,11 @@ const ModelInfo& Model::Info() const {
     return sv->Info();
   }
 
-  return info_;
+  const auto* info = current_info_.load(std::memory_order_acquire);
+  if (!info) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model metadata is not initialized");
+  }
+  return *info;
 }
 
 std::vector<Model*> Model::Variants() const {
@@ -255,6 +296,21 @@ bool Model::IsCached() const {
     return sv->IsCached();
   }
 
+  if (!active_) {
+    return false;
+  }
+
+  if (external_registration_) {
+    std::error_code ec;
+    const bool available = std::filesystem::is_directory(local_path_, ec) &&
+                           std::filesystem::is_regular_file(
+                               std::filesystem::path(local_path_) / "genai_config.json", ec);
+    if (available) {
+      EnsureLocalMetadata();
+    }
+    return available;
+  }
+
   return cached_;
 }
 
@@ -263,10 +319,14 @@ bool Model::IsLoaded() const {
     return sv->IsLoaded();
   }
 
+  if (!active_) {
+    return false;
+  }
+
   // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
   // construction and never reassigned, so querying it here stays in sync with paths that
   // bypass Model::Load/Unload (e.g., Manager::Shutdown -> ModelLoadManager::UnloadAll).
-  return model_load_manager_->GetLoadedModel(info_.model_id) != nullptr;
+  return model_load_manager_->GetLoadedModel(runtime_model_id_) != nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +336,17 @@ bool Model::IsLoaded() const {
 void Model::Download(std::function<int(float)> progress_cb) {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->Download(std::move(progress_cb));
+    return;
+  }
+
+  if (!active_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+
+  if (external_registration_) {
+    if (progress_cb) {
+      progress_cb(100.0f);
+    }
     return;
   }
 
@@ -296,7 +367,7 @@ void Model::Download(std::function<int(float)> progress_cb) {
     return;
   }
 
-  auto path = download_manager_->DownloadModel(info_, std::move(progress_cb));
+  auto path = download_manager_->DownloadModel(Info(), std::move(progress_cb));
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     local_path_ = std::move(path);
@@ -320,9 +391,28 @@ void Model::Load(ExecutionProvider ep) {
     return;
   }
 
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+
+  if (!active_ || unregistering_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+
+  const auto& info = Info();
+  if (external_registration_ && ep == ExecutionProvider::kDefault && !info.execution_provider.empty()) {
+    ep = EPUtils::StringtoEP(info.execution_provider);
+    if (ep == ExecutionProvider::kUnknown) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "unknown execution provider for local model: " + info.execution_provider);
+    }
+  }
+
+  if (external_registration_) {
+    EnsureLocalMetadata();
+  }
+
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, info_.model_id, ep);
+  auto result = model_load_manager_->LoadModel(local_path_, runtime_model_id_, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
@@ -335,13 +425,33 @@ void Model::Unload() {
     return;
   }
 
+  if (!active_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+
   // UnloadModel is idempotent — returns false if the id isn't loaded.
-  model_load_manager_->UnloadModel(info_.model_id);
+  model_load_manager_->UnloadModel(runtime_model_id_);
 }
 
 void Model::RemoveFromCache() {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     sv->RemoveFromCache();
+    return;
+  }
+
+  if (external_registration_) {
+    if (!active_) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+    }
+    if (IsLoaded()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot unregister a loaded model; unload it first");
+    }
+
+    if (!unregister_callback_) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "local model is missing its unregister callback");
+    }
+
+    unregister_callback_(Info().model_id);
     return;
   }
 
@@ -368,6 +478,73 @@ void Model::RemoveFromCache() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     local_path_.clear();
   }
+}
+
+void Model::Deactivate() {
+  active_.store(false);
+  if (IsContainer()) {
+    for (auto* variant : Variants()) {
+      variant->Deactivate();
+    }
+  }
+}
+
+void Model::EnsureLocalMetadata() const {
+  if (metadata_prepared_.load() || !prepare_callback_) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(metadata_mutex_);
+  if (metadata_prepared_.load()) {
+    return;
+  }
+
+  auto refreshed = prepare_callback_();
+  if (!refreshed) {
+    return;
+  }
+
+  auto snapshot = std::make_unique<const ModelInfo>(std::move(*refreshed));
+  const auto* snapshot_ptr = snapshot.get();
+  info_snapshots_.push_back(std::move(snapshot));
+  current_info_.store(snapshot_ptr, std::memory_order_release);
+  metadata_prepared_.store(true);
+}
+
+void Model::PublishInfo(ModelInfo info) {
+  auto snapshot = std::make_unique<const ModelInfo>(std::move(info));
+  const auto* snapshot_ptr = snapshot.get();
+  std::lock_guard<std::mutex> lock(metadata_mutex_);
+  info_snapshots_.push_back(std::move(snapshot));
+  current_info_.store(snapshot_ptr, std::memory_order_release);
+}
+
+void Model::BeginUnregister() {
+  if (selected_variant_.load(std::memory_order_acquire)) {
+    for (auto* variant : Variants()) {
+      variant->BeginUnregister();
+    }
+    return;
+  }
+
+  lifecycle_mutex_.lock();
+  if (!active_ || unregistering_) {
+    lifecycle_mutex_.unlock();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+  }
+  unregistering_ = true;
+}
+
+void Model::CancelUnregister() {
+  if (selected_variant_.load(std::memory_order_acquire)) {
+    for (auto* variant : Variants()) {
+      variant->CancelUnregister();
+    }
+    return;
+  }
+
+  unregistering_ = false;
+  lifecycle_mutex_.unlock();
 }
 
 void Model::SelectVariant(const Model& variant) {

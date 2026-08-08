@@ -2,12 +2,21 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "exception.h"
 #include "model.h"
+
+#include <foundry_local/foundry_local_c.h>
 
 #include <string>
 #include <vector>
 
 namespace fl {
+
+enum class CatalogType {
+  kPublic,
+  kLocal,
+  kPrivate,
+};
 
 /// Abstract catalog interface for querying available models.
 /// Mirrors the C API's flCatalogApi surface.
@@ -18,6 +27,8 @@ class ICatalog {
   /// Returns a human-readable name for this catalog.
   /// For Azure catalogs this is the catalog URI.
   virtual const std::string& GetName() const = 0;
+
+  virtual CatalogType GetType() const { return CatalogType::kPublic; }
 
   /// Lists all models in the catalog.
   virtual std::vector<Model*> ListModels() const = 0;
@@ -56,6 +67,16 @@ class ICatalog {
 
   /// Lists only models that are currently loaded into a runtime.
   virtual std::vector<Model*> GetLoadedModels() const = 0;
+
+  virtual Model* RegisterModel(const ModelInfo& /*model_info*/) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "models can only be registered in a local catalog");
+  }
+
+  virtual void UnregisterModel(const std::string& /*alias_or_model_id*/) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "models can only be unregistered from a local catalog");
+  }
+
+  virtual std::vector<Model*> GetLocalModels() const { return {}; }
 
   /// Invalidate the cached model list so the next query re-fetches.
   /// Called after EP registration changes, since the available device filters

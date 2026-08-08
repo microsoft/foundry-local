@@ -1,10 +1,14 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "model_info.h"
+#include "exception.h"
+#include "util/string_utils.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace fl {
@@ -28,15 +32,16 @@ std::string DeviceTypeToString(DeviceType dt) {
 namespace {
 
 DeviceType DeviceTypeFromString(const std::string& s) {
-  if (s == "CPU") {
+  const auto lowered = ToLower(s);
+  if (lowered == "cpu") {
     return DeviceType::kCPU;
   }
 
-  if (s == "GPU") {
+  if (lowered == "gpu") {
     return DeviceType::kGPU;
   }
 
-  if (s == "NPU") {
+  if (lowered == "npu") {
     return DeviceType::kNPU;
   }
 
@@ -340,6 +345,122 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   }
 
   return j;
+}
+
+void SetModelInfoStringProperty(ModelInfo& info, std::string key, std::string value) {
+  if (key == FOUNDRY_LOCAL_REG_ALIAS) {
+    info.alias = value;
+  } else if (key == FOUNDRY_LOCAL_MODEL_PROP_TASK_STR) {
+    info.task = value;
+  } else if (key == FOUNDRY_LOCAL_MODEL_PROP_EP_STR) {
+    info.execution_provider = value;
+  } else if (key == FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR) {
+    info.device_type = DeviceTypeFromString(value);
+  }
+
+  info.string_properties[std::move(key)] = std::move(value);
+}
+
+void SetModelInfoIntProperty(ModelInfo& info, std::string key, int64_t value) {
+  if (key == FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT) {
+    info.version = static_cast<int>(value);
+  }
+
+  info.int_properties[std::move(key)] = value;
+}
+
+nlohmann::json ModelInfoToPropertyBagJson(const ModelInfo& info) {
+  nlohmann::json json = nlohmann::json::object();
+  for (const auto& [key, value] : info.string_properties) {
+    json[key] = value;
+  }
+
+  for (const auto& [key, value] : info.int_properties) {
+    json[key] = value;
+  }
+
+  return json;
+}
+
+ModelInfo ModelInfoFromPropertyBagJson(const nlohmann::json& json) {
+  if (!json.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info JSON must contain an object");
+  }
+
+  ModelInfo info;
+  for (const auto& [key, value] : json.items()) {
+    if (value.is_number_integer()) {
+      SetModelInfoIntProperty(info, key, value.get<int64_t>());
+      continue;
+    }
+
+    if (!value.is_string()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info property values must be strings or integers");
+    }
+
+    const auto text = value.get<std::string>();
+    const bool known_int = key == FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT ||
+                           key == FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT;
+    if (known_int) {
+      try {
+        size_t parsed = 0;
+        const auto integer = std::stoll(text, &parsed);
+        if (parsed != text.size()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid integer model info property: " + key);
+        }
+        SetModelInfoIntProperty(info, key, integer);
+      } catch (const std::exception&) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid integer model info property: " + key);
+      }
+    } else {
+      SetModelInfoStringProperty(info, key, text);
+    }
+  }
+
+  return info;
+}
+
+void SerializeModelInfoToFile(const ModelInfo& info, const std::filesystem::path& file_path) {
+  if (file_path.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info file path must not be empty");
+  }
+
+  std::ofstream stream(file_path, std::ios::binary | std::ios::trunc);
+  if (!stream) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to open model info file for writing: " + file_path.string());
+  }
+
+  stream << ModelInfoToPropertyBagJson(info).dump(2) << '\n';
+  if (!stream) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write model info file: " + file_path.string());
+  }
+}
+
+ModelInfo DeserializeModelInfoFromFile(const std::filesystem::path& file_path) {
+  if (file_path.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info file path must not be empty");
+  }
+
+  std::ifstream stream(file_path, std::ios::binary);
+  if (!stream) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "failed to open model info file: " + file_path.string());
+  }
+
+  try {
+    nlohmann::json json;
+    stream >> json;
+    return ModelInfoFromPropertyBagJson(json);
+  } catch (const nlohmann::json::exception& ex) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string("failed to parse model info file: ") + ex.what());
+  }
 }
 
 }  // namespace fl
