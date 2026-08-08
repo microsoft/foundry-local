@@ -1,0 +1,281 @@
+# Build + test + pack stages for the sdk_v2 Rust SDK (foundry-local crate).
+#
+# Builds win-x64 + win-arm64 + linux-x64 + linux-arm64 + osx-arm64;
+# runs unit + integration tests on win-x64 + linux-x64 + linux-arm64 + osx-arm64
+# (win-arm64 is cross-compiled from an x64 host, so it is clippy/check-only —
+# matching the build-only treatment it gets in the C# / Python matrices).
+#
+# Unlike the wheel/npm SDKs, the Rust crate is a source package: there is no
+# per-platform binary to hand off, so each platform stage rebuilds from source
+# and there is a single, platform-independent `.crate` produced once by the pack
+# stage. Each build stage depends on the matching native stage from
+# stages-build-native.yml and consumes the `cpp-native-<rid>` artifact for
+# `foundry_local`; the test platforms additionally pull ONNX Runtime + GenAI from
+# the pinned public NuGet packages so a model can be loaded at run time.
+#
+# The pack stage emits the `rust-sdk-v2` pipeline artifact (the `.crate`).
+
+parameters:
+- name: ortVersion
+  type: string
+- name: genaiVersion
+  type: string
+
+stages:
+
+# =====================================================================
+# Build (+ test) win-x64 / win-arm64 / linux-x64 / linux-arm64 / osx-arm64
+# =====================================================================
+- stage: rust_build_win_x64
+  displayName: 'Rust SDK: Build + Test Windows x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/checkout-steps.yml@self
+      parameters:
+        repoName: test-data-shared
+    - template: steps-build-rust.yml
+      parameters:
+        rid: 'win-x64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
+        runTests: true
+        ortVersion: ${{ parameters.ortVersion }}
+        genaiVersion: ${{ parameters.genaiVersion }}
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: rust_build_win_arm64
+  displayName: 'Rust SDK: Build Windows ARM64 (cross)'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_arm64
+  jobs:
+  - job: build
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: steps-build-rust.yml
+      parameters:
+        rid: 'win-arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+        crossTarget: 'aarch64-pc-windows-msvc'
+
+- stage: rust_build_linux_x64
+  displayName: 'Rust SDK: Build + Test Linux x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_x64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-build-rust.yml
+      parameters:
+        rid: 'linux-x64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+        runTests: true
+        ortVersion: ${{ parameters.ortVersion }}
+        genaiVersion: ${{ parameters.genaiVersion }}
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: rust_build_linux_arm64
+  displayName: 'Rust SDK: Build + Test Linux ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_arm64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-build-rust.yml
+      parameters:
+        rid: 'linux-arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        runTests: true
+        ortVersion: ${{ parameters.ortVersion }}
+        genaiVersion: ${{ parameters.genaiVersion }}
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: rust_build_osx_arm64
+  displayName: 'Rust SDK: Build + Test macOS ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_osx_arm64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: steps-build-rust.yml
+      parameters:
+        rid: 'osx-arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+        runTests: true
+        ortVersion: ${{ parameters.ortVersion }}
+        genaiVersion: ${{ parameters.genaiVersion }}
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+# ================================================================
+# Pack the platform-independent crate (rust-sdk-v2). Runs only if
+# every platform build/test stage succeeded.
+# ================================================================
+- stage: rust_pack_crate
+  displayName: 'Rust SDK: Pack crate (rust-sdk-v2)'
+  dependsOn:
+  - compute_version
+  - rust_build_win_x64
+  - rust_build_win_arm64
+  - rust_build_linux_x64
+  - rust_build_linux_arm64
+  - rust_build_osx_arm64
+  jobs:
+  - job: pack
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'rust-sdk-v2'
+        targetPath: '$(Build.ArtifactStagingDirectory)/rust-sdk-v2'
+    steps:
+    - checkout: self
+      clean: true
+    - task: PowerShell@2
+      displayName: 'Install Rust toolchain (stable)'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $rustup = Get-Command rustup -ErrorAction SilentlyContinue
+          if ($rustup) {
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+            $cargoBin = Split-Path $rustup.Source
+          } else {
+            $init = Join-Path $env:TEMP 'rustup-init.exe'
+            Invoke-WebRequest -Uri 'https://win.rustup.rs/x86_64' -OutFile $init -UseBasicParsing
+            & $init -y --default-toolchain stable --profile minimal
+            Remove-Item $init -Force -ErrorAction SilentlyContinue
+            $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+          }
+          Write-Host "##vso[task.prependpath]$cargoBin"
+    - task: PowerShell@2
+      displayName: 'Set crate version from sdkVersion.txt'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $verFile = Join-Path '$(Pipeline.Workspace)/version-info' 'sdkVersion.txt'
+          $cargo   = '$(Build.SourcesDirectory)/sdk_v2/rust/Cargo.toml'
+          if (-not (Test-Path $verFile)) {
+            Write-Host "sdkVersion.txt not found; keeping the in-repo Cargo.toml version."
+            return
+          }
+          $v = (Get-Content $verFile -Raw).Trim()
+          $content = Get-Content $cargo -Raw
+          $rx = [regex]::new('(?m)^version\s*=\s*"[^"]+"')
+          if (-not $rx.IsMatch($content)) { throw "No [package] version line found in $cargo" }
+          $content = $rx.Replace($content, "version = `"$v`"", 1)
+          Set-Content -Path $cargo -Value $content -NoNewline
+          Write-Host "Set crate version to $v"
+    - task: PowerShell@2
+      displayName: 'cargo package'
+      inputs:
+        targetType: inline
+        pwsh: true
+        workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+        script: |
+          $ErrorActionPreference = 'Stop'
+          # --allow-dirty: the version stamp above mutates Cargo.toml in the
+          # checked-out tree. No native is wired in here; build.rs resolves the
+          # library at run time, so packaging (a compile-only verify) succeeds
+          # without foundry_local present.
+          cargo package --allow-dirty
+          if ($LASTEXITCODE -ne 0) { throw "cargo package failed" }
+
+          $out = '$(Build.ArtifactStagingDirectory)/rust-sdk-v2'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $crates = @(Get-ChildItem -Path 'target/package' -Filter '*.crate' -File)
+          if ($crates.Count -eq 0) { throw "No .crate produced under target/package" }
+          foreach ($c in $crates) {
+            Copy-Item $c.FullName (Join-Path $out $c.Name) -Force
+            Write-Host "Staged crate: $($c.Name)"
+          }

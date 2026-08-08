@@ -1,0 +1,281 @@
+# Build + lint (+ unit / integration test) steps for the sdk_v2 Rust SDK
+# (foundry-local crate). Cross-platform via pwsh (`pwsh: true`), so a single
+# code path serves Windows, Linux and macOS agents.
+#
+# What it does, in order:
+#   1. Install a stable Rust toolchain (clippy + rustfmt), plus the cross target
+#      when `crossTarget` is set (win-arm64 is cross-compiled from an x64 host).
+#   2. Assemble a native runtime directory:
+#        * `foundry_local` (+ the reg-free WinML DLL on Windows) taken from the
+#          `cpp-native-<rid>` pipeline artifact, and
+#        * ONNX Runtime + GenAI extracted from the pinned public NuGet packages
+#          (only when `runTests` — the SDK compiles without them, but loading a
+#          model at runtime needs them next to `foundry_local`).
+#      The directory is handed to build.rs via `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
+#      which copies every platform library into OUT_DIR and bakes the path into
+#      the crate, so both unit and integration tests resolve the native by that
+#      baked path.
+#   3. Stamp the crate version from the shared `version-info` artifact.
+#   4. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, and — when
+#      `runTests` — `cargo test --lib` (unit) followed by the `tests/`
+#      integration suite (serialised: the native core enforces a single manager
+#      per process).
+#
+# For a cross build (`crossTarget` set) only fmt + `cargo clippy --target`
+# (check-level) run: the arm64 binaries can't execute on the x64 host, matching
+# the build-only treatment win-arm64 gets in the C# / Python matrices.
+
+parameters:
+- name: rid
+  type: string
+  # win-x64 | win-arm64 | linux-x64 | linux-arm64 | osx-arm64
+- name: nativeArtifactDir
+  type: string
+  # Downloaded `cpp-native-<rid>` artifact (carries foundry_local, + WinML on Windows).
+- name: runTests
+  type: boolean
+  default: false
+- name: crossTarget
+  type: string
+  default: ''
+  # e.g. 'aarch64-pc-windows-msvc' for the win-arm64 cross build; '' for native.
+- name: ortVersion
+  type: string
+  default: ''
+- name: genaiVersion
+  type: string
+  default: ''
+- name: testDataSharedDir
+  type: string
+  default: ''
+
+steps:
+
+# ── 1. Rust toolchain ────────────────────────────────────────────────────────
+- task: PowerShell@2
+  displayName: 'Install Rust toolchain (stable + clippy + rustfmt)'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $rustup = Get-Command rustup -ErrorAction SilentlyContinue
+      if ($rustup) {
+        Write-Host "rustup already present; ensuring stable toolchain."
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+        $cargoBin = Split-Path $rustup.Source
+      } else {
+        Write-Host "Bootstrapping rustup."
+        if ($IsWindows) {
+          $init = Join-Path $env:TEMP 'rustup-init.exe'
+          Invoke-WebRequest -Uri 'https://win.rustup.rs/x86_64' -OutFile $init -UseBasicParsing
+          & $init -y --default-toolchain stable --profile minimal
+          Remove-Item $init -Force -ErrorAction SilentlyContinue
+          $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+        } else {
+          bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal"
+          $cargoBin = Join-Path $env:HOME '.cargo/bin'
+        }
+      }
+
+      # Prepend to PATH for every later task in this job.
+      Write-Host "##vso[task.prependpath]$cargoBin"
+      # …and make cargo/rustup usable within *this* task too.
+      $env:PATH = "$cargoBin$([IO.Path]::PathSeparator)$env:PATH"
+
+      rustup component add clippy rustfmt --toolchain stable
+
+      $cross = '${{ parameters.crossTarget }}'
+      if ($cross -ne '') {
+        Write-Host "Adding cross target $cross"
+        rustup target add $cross
+      }
+
+      rustup show
+      cargo --version
+      rustc --version
+
+# ── 2. Assemble the native runtime directory ─────────────────────────────────
+- task: PowerShell@2
+  displayName: 'Assemble native runtime (foundry_local + ORT/GenAI)'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $rid = '${{ parameters.rid }}'
+      $ext = switch -Regex ($rid) { '^win' { 'dll' } '^osx' { 'dylib' } default { 'so' } }
+
+      $assembled = Join-Path '$(Build.BinariesDirectory)' 'fl-native'
+      if (Test-Path $assembled) { Remove-Item -Recurse -Force $assembled }
+      New-Item -ItemType Directory -Force -Path $assembled | Out-Null
+
+      # 2a. foundry_local (+ WinML on Windows) from the cpp-native-<rid> artifact.
+      $nativeSrc = '${{ parameters.nativeArtifactDir }}'
+      $nativeFiles = @(Get-ChildItem -Path $nativeSrc -Recurse -File |
+        Where-Object { $_.Extension -eq ".$ext" })
+      if ($nativeFiles.Count -eq 0) {
+        throw "No *.$ext libraries found under native artifact dir '$nativeSrc'."
+      }
+      foreach ($f in $nativeFiles) {
+        Copy-Item $f.FullName (Join-Path $assembled $f.Name) -Force
+        Write-Host "  native : $($f.Name)"
+      }
+
+      # 2b. ONNX Runtime + GenAI from the pinned public NuGet packages — needed
+      #     only to *run* a model (integration tests). The versions come from the
+      #     same pipeline literals that drive the C++ native build, which
+      #     steps-prefetch-nuget.yml asserts against sdk_v2/deps_versions.json.
+      $ortVersion   = '${{ parameters.ortVersion }}'
+      $genaiVersion = '${{ parameters.genaiVersion }}'
+      if ($ortVersion -ne '' -and $genaiVersion -ne '') {
+        $feed = 'https://www.nuget.org/api/v2/package'
+        $tmp  = Join-Path '$(Build.BinariesDirectory)' 'rt-nupkg'
+        if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+
+        $pkgs = @(
+          @{ id = 'Microsoft.ML.OnnxRuntime';              version = $ortVersion   },
+          @{ id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = $genaiVersion }
+        )
+        foreach ($p in $pkgs) {
+          $zip = Join-Path $tmp "$($p.id).$($p.version).zip"
+          $out = Join-Path $tmp $p.id
+          Write-Host "Downloading $($p.id) $($p.version)"
+          Invoke-WebRequest -Uri "$feed/$($p.id)/$($p.version)" -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+
+          $nativeDir = Join-Path $out "runtimes/$rid/native"
+          if (-not (Test-Path $nativeDir)) {
+            throw "runtimes/$rid/native not found in $($p.id) $($p.version)."
+          }
+          $libs = @(Get-ChildItem -Path $nativeDir -File |
+            Where-Object { $_.Extension -eq ".$ext" })
+          if ($libs.Count -eq 0) {
+            throw "No *.$ext libraries under runtimes/$rid/native for $($p.id)."
+          }
+          foreach ($lib in $libs) {
+            Copy-Item $lib.FullName (Join-Path $assembled $lib.Name) -Force
+            Write-Host "  runtime: $($lib.Name)"
+          }
+        }
+      }
+
+      Write-Host "Assembled native dir: $assembled"
+      Get-ChildItem -Path $assembled -File | ForEach-Object { Write-Host "  $($_.Name)" }
+      Write-Host "##vso[task.setvariable variable=flNativeDir]$assembled"
+
+# ── 3. Version stamp ─────────────────────────────────────────────────────────
+- task: PowerShell@2
+  displayName: 'Set crate version from sdkVersion.txt'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $verFile = Join-Path '$(Pipeline.Workspace)/version-info' 'sdkVersion.txt'
+      $cargo   = '$(Build.SourcesDirectory)/sdk_v2/rust/Cargo.toml'
+      if (-not (Test-Path $verFile)) {
+        Write-Host "sdkVersion.txt not found; keeping the in-repo Cargo.toml version."
+        return
+      }
+      $v = (Get-Content $verFile -Raw).Trim()
+      $content = Get-Content $cargo -Raw
+      # Only the first, line-anchored `version = "..."` (the [package] version).
+      # Inline dependency `version = "..."` keys are never at column 0.
+      $rx = [regex]::new('(?m)^version\s*=\s*"[^"]+"')
+      if (-not $rx.IsMatch($content)) { throw "No [package] version line found in $cargo" }
+      $content = $rx.Replace($content, "version = `"$v`"", 1)
+      Set-Content -Path $cargo -Value $content -NoNewline
+      Write-Host "Set crate version to $v"
+
+# ── 4a. Format check (all platforms, native + cross) ─────────────────────────
+- task: PowerShell@2
+  displayName: 'cargo fmt --check'
+  inputs:
+    targetType: inline
+    pwsh: true
+    workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+    script: |
+      $ErrorActionPreference = 'Stop'
+      cargo fmt --all -- --check
+      if ($LASTEXITCODE -ne 0) { throw "cargo fmt --check failed" }
+
+# ── 4b. Cross build (win-arm64): clippy --target only, check-level ───────────
+- ${{ if ne(parameters.crossTarget, '') }}:
+  - task: PowerShell@2
+    displayName: 'cargo clippy --target ${{ parameters.crossTarget }} (cross, check-only)'
+    inputs:
+      targetType: inline
+      pwsh: true
+      workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        cargo clippy --target ${{ parameters.crossTarget }} --all-targets -- -D warnings
+        if ($LASTEXITCODE -ne 0) { throw "cargo clippy (cross) failed" }
+    env:
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+
+# ── 4c. Native build: clippy + build (+ tests) ───────────────────────────────
+- ${{ if eq(parameters.crossTarget, '') }}:
+  - task: PowerShell@2
+    displayName: 'cargo clippy -D warnings'
+    inputs:
+      targetType: inline
+      pwsh: true
+      workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        cargo clippy --all-targets -- -D warnings
+        if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed" }
+    env:
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+
+  - task: PowerShell@2
+    displayName: 'cargo build --all-targets'
+    inputs:
+      targetType: inline
+      pwsh: true
+      workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        cargo build --all-targets
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    env:
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+
+  - ${{ if parameters.runTests }}:
+    - task: PowerShell@2
+      displayName: 'cargo test --lib (unit)'
+      inputs:
+        targetType: inline
+        pwsh: true
+        workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+        script: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --lib -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "cargo test --lib failed" }
+      env:
+        FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+        FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
+
+    - task: PowerShell@2
+      displayName: 'cargo test --tests (integration)'
+      inputs:
+        targetType: inline
+        pwsh: true
+        workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+        script: |
+          $ErrorActionPreference = 'Stop'
+          # Serialise: the native core enforces a single FoundryLocalManager per
+          # process, so tests that each create one must not run concurrently.
+          cargo test --tests -- --test-threads=1 --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "cargo test --tests failed" }
+      env:
+        FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+        FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
+        FOUNDRY_TEST_DATA_DIR: ${{ parameters.testDataSharedDir }}
+        TF_BUILD: 'true'
