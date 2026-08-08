@@ -62,11 +62,40 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     }
   });
 
+  it("a cached catalog handle throws after manager disposal and does not block a new manager", () => {
+    const mgr = freshManager("cached-catalog");
+    const catalog = mgr.catalog;
+    mgr.dispose();
+
+    expect(() => catalog.name).toThrow(/disposed/i);
+
+    const next = freshManager("after-cached-catalog");
+    try {
+      expect(next.disposed).toBe(false);
+    } finally {
+      next.dispose();
+    }
+  });
+
   it("Symbol.dispose is wired and idempotent", () => {
     const mgr = freshManager("symbol-dispose");
     mgr[Symbol.dispose]();
     expect(mgr.disposed).toBe(true);
     expect(() => mgr[Symbol.dispose]()).not.toThrow();
+    expect(mgr.disposed).toBe(true);
+  });
+
+  it("dispose() rejects while a native EP worker is in flight", async () => {
+    const mgr = freshManager("async-worker");
+    const pending = mgr.downloadAndRegisterEps(["__not-a-provider__"]);
+    try {
+      expect(() => mgr.dispose()).toThrow(/active native workers/i);
+      await pending.catch(() => undefined);
+    } finally {
+      if (!mgr.disposed) {
+        mgr.dispose();
+      }
+    }
     expect(mgr.disposed).toBe(true);
   });
 

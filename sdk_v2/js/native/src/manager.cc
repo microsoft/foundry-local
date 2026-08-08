@@ -20,6 +20,24 @@ namespace foundry_local_node {
 
 namespace {
 
+struct WorkerLease {
+  explicit WorkerLease(std::shared_ptr<ManagerLifecycle> lifecycle) : lifecycle_(std::move(lifecycle)) {
+    if (lifecycle_) {
+      lifecycle_->active_workers.fetch_add(1, std::memory_order_acq_rel);
+    }
+  }
+  ~WorkerLease() {
+    if (lifecycle_) {
+      lifecycle_->active_workers.fetch_sub(1, std::memory_order_acq_rel);
+    }
+  }
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
+};
+
+std::shared_ptr<void> MakeWorkerLease(std::shared_ptr<ManagerLifecycle> lifecycle) {
+  return std::make_shared<WorkerLease>(std::move(lifecycle));
+}
+
 Napi::Value ConvertEndpoints(Napi::Env env, std::vector<std::string>& endpoints) {
   Napi::Array out = Napi::Array::New(env, endpoints.size());
   for (size_t i = 0; i < endpoints.size(); ++i) {
@@ -222,7 +240,7 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       kvp.Set("DisableNonessentialTelemetry", "true");
       config.SetAdditionalOptions(kvp);
     }
-    impl_ = std::make_unique<foundry_local::Manager>(std::move(config));
+    impl_ = std::make_shared<foundry_local::Manager>(std::move(config));
   });
 }
 
@@ -256,6 +274,8 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
     CatalogCtorToken token;
     token.impl = &cat;
     token.manager = std::move(owner);
+    token.manager_keepalive = impl_;
+    token.lifecycle = lifecycle_;
     return Catalog::NewInstance(env, std::move(token));
   });
 }
@@ -263,6 +283,17 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
 Napi::Value Manager::Dispose(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   // Idempotent — releasing an already-null unique_ptr is a no-op.
+  if (lifecycle_->active_sessions.load(std::memory_order_acquire) > 0) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "Manager has active sessions; dispose sessions before disposing the manager");
+    return env.Undefined();
+  }
+  if (lifecycle_->active_workers.load(std::memory_order_acquire) > 0) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "Manager has active native workers; await them before disposing the manager");
+    return env.Undefined();
+  }
+  lifecycle_->disposed.store(true, std::memory_order_release);
   impl_.reset();
   return env.Undefined();
 }
@@ -317,11 +348,13 @@ namespace {
 // progress callback. Mirrors the pattern in model.cc's DownloadWorker.
 class EpDownloadWorker : public Napi::AsyncWorker {
  public:
-  EpDownloadWorker(Napi::Env env, foundry_local::Manager* impl, std::vector<std::string> ep_names,
-                   Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
+  EpDownloadWorker(Napi::Env env, std::shared_ptr<foundry_local::Manager> impl, std::shared_ptr<void> worker_lease,
+                   std::vector<std::string> ep_names, Napi::ObjectReference owner,
+                   Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
+        worker_lease_(std::move(worker_lease)),
         ep_names_(std::move(ep_names)),
         owner_(std::move(owner)),
         tsfn_(std::move(tsfn)) {}
@@ -385,7 +418,8 @@ class EpDownloadWorker : public Napi::AsyncWorker {
   }
 
   Napi::Promise::Deferred deferred_;
-  foundry_local::Manager* impl_;
+  std::shared_ptr<foundry_local::Manager> impl_;
+  std::shared_ptr<void> worker_lease_;
   std::vector<std::string> ep_names_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
@@ -442,7 +476,8 @@ Napi::Value Manager::DownloadAndRegisterEps(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
-  auto* w = new EpDownloadWorker(env, impl_.get(), std::move(ep_names), std::move(owner), std::move(tsfn));
+  auto* w = new EpDownloadWorker(env, impl_, MakeWorkerLease(lifecycle_), std::move(ep_names), std::move(owner),
+                                 std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;

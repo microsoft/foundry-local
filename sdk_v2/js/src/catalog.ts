@@ -4,6 +4,7 @@
 //
 // The underlying native catalog operations are synchronous; the async surface here is for parity with the C# /
 // Python SDKs. `getModel`, `getModelVariant`, and `getLatestVersion` throw when the alias / id is not found.
+// After the parent manager is disposed, native catalog methods throw a FoundryLocalError.
 
 import type { NativeCatalog, NativeModel } from "./detail/native.js";
 import type { IModel } from "./imodel.js";

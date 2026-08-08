@@ -32,6 +32,8 @@
 
 namespace foundry_local_node {
 
+struct ManagerLifecycle;
+
 struct ModelCtorToken {
   // The IModel accessor. Never null when the token is constructed.
   foundry_local::IModel* impl = nullptr;
@@ -39,6 +41,8 @@ struct ModelCtorToken {
   // or a std::shared_ptr<foundry_local::ModelList>) alive for the JS Model's
   // lifetime.
   std::shared_ptr<void> keepalive;
+  std::weak_ptr<foundry_local::Manager> manager_keepalive;
+  std::shared_ptr<ManagerLifecycle> lifecycle;
   // Pins the parent Manager so its native handle (and the Catalog's flCatalog*
   // which the IModel views into) cannot be released first.
   Napi::ObjectReference manager;
@@ -62,6 +66,9 @@ class Model : public Napi::ObjectWrap<Model> {
   // Internal accessor used by Session / ChatSession ctors so they can clone
   // the parent Manager ObjectReference and pin it for the session lifetime.
   const Napi::ObjectReference& manager() const noexcept { return manager_; }
+  std::shared_ptr<foundry_local::Manager> manager_keepalive() const noexcept { return manager_keepalive_.lock(); }
+  std::shared_ptr<ManagerLifecycle> manager_lifecycle() const noexcept { return lifecycle_; }
+  bool manager_disposed() const noexcept;
 
  private:
   Napi::Value GetInfo(const Napi::CallbackInfo& info);
@@ -78,6 +85,8 @@ class Model : public Napi::ObjectWrap<Model> {
 
   foundry_local::IModel* impl_ = nullptr;
   std::shared_ptr<void> keepalive_;
+  std::weak_ptr<foundry_local::Manager> manager_keepalive_;
+  std::shared_ptr<ManagerLifecycle> lifecycle_;
   Napi::ObjectReference manager_;
 };
 
