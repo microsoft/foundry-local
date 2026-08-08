@@ -5,8 +5,8 @@
 // machine (see ort-loading-contract.instructions.md). The .node addon itself
 // is already produced into prebuilds/<plat>-<arch>/ by `node-gyp rebuild`.
 //
-// Also copies sdk_v2/deps_versions.json next to package.json so the published
-// tarball carries the ORT/ORT-GenAI versions that install-native.cjs needs.
+// The prepack hook separately stages sdk_v2/deps_versions.json next to
+// package.json so the tarball carries the native dependency versions.
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,8 +53,7 @@ const wanted = (() => {
 // Optional native siblings — copied when present, skipped (with a warning) when
 // not. The reg-free WinML 2.x runtime ships next to foundry_local.dll on Windows
 // so WinML hardware EPs work out of the box without an install-time download.
-const optional =
-  process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll"] : [];
+const optional = process.platform === "win32" ? ["Microsoft.Windows.AI.MachineLearning.dll"] : [];
 
 let copied = 0;
 const available = new Set(readdirSync(sourceDir));
@@ -85,14 +84,3 @@ for (const file of optional) {
 }
 
 console.log(`[pack-prebuilds] Copied ${copied} file(s) to ${destDir}`);
-
-// Also copy deps_versions.json to the package root so install-native.cjs can
-// find it when the published tarball is installed by an end user.
-const depsSrc = resolve(repoRoot, "sdk_v2", "deps_versions.json");
-const depsDst = resolve(pkgRoot, "deps_versions.json");
-if (!existsSync(depsSrc)) {
-  console.error(`[pack-prebuilds] deps_versions.json not found at ${depsSrc}`);
-  process.exit(1);
-}
-copyFileSync(depsSrc, depsDst);
-console.log(`[pack-prebuilds] Staged deps_versions.json -> ${depsDst}`);

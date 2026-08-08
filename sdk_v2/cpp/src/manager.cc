@@ -13,17 +13,23 @@
 #include "catalog/azure_model_catalog.h"
 #include "catalog/local_model_catalog.h"
 #include "download/download_manager.h"
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/cuda_ep_bootstrapper.h"
+#endif
 #include "ep_detection/ep_detector.h"
 #include "ep_detection/ep_types.h"
 #include "ep_detection/runtime_version_info.h"
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/webgpu_ep_bootstrapper.h"
+#endif
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "spdlog_logger.h"
 #include "telemetry/telemetry_action_tracker.h"
-#include "telemetry/telemetry_logger.h"
+#include "telemetry/one_ds_telemetry.h"
+#include "telemetry/telemetry_environment.h"
+#include "telemetry/telemetry_metadata.h"
 #include "util/string_utils.h"
 #include "utils.h"
 
@@ -88,12 +94,8 @@ LogLevel MapOrtLogLevel(OrtLoggingLevel severity) {
   }
 }
 
-void ORT_API_CALL OrtLogCallback(void* /*logger_param*/,
-                                 OrtLoggingLevel severity,
-                                 const char* category,
-                                 const char* logid,
-                                 const char* code_location,
-                                 const char* message) {
+void ORT_API_CALL OrtLogCallback(void* /*logger_param*/, OrtLoggingLevel severity, const char* category,
+                                 const char* logid, const char* code_location, const char* message) {
   auto* logger = s_ort_logger.load(std::memory_order_acquire);
   if (logger == nullptr) {
     return;
@@ -161,14 +163,18 @@ void SetOgaLogCallback(ILogger* logger) {
     return;
   }
 
+  if (logger == nullptr) {
+    OgaDestroyResult(result);
+    s_oga_logger.store(nullptr, std::memory_order_release);
+    return;
+  }
+
   const char* err = OgaResultGetError(result);
   std::string err_msg = err ? err : "unknown";
   OgaDestroyResult(result);
 
-  if (logger != nullptr) {
-    logger->Log(LogLevel::Warning, "Failed to set GenAI log callback: " + err_msg);
-    s_oga_logger.store(nullptr, std::memory_order_release);
-  }
+  logger->Log(LogLevel::Warning, "Failed to set GenAI log callback: " + err_msg);
+  s_oga_logger.store(nullptr, std::memory_order_release);
 }
 
 }  // namespace
@@ -176,8 +182,7 @@ void SetOgaLogCallback(ILogger* logger) {
 std::mutex Manager::s_mutex_;
 std::unique_ptr<Manager> Manager::s_instance_;
 
-Manager::Manager(const Configuration& config)
-    : config_(config) {
+Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
@@ -194,8 +199,6 @@ Manager::Manager(const Configuration& config)
   CheckSslCertSetup(*logger_);
 #endif
 
-  // Build the EP registration callback. When a bootstrapper successfully
-  // prepares an EP, this callback registers it with ORT via the C API.
   // OrtEnv is a singleton — CreateEnv returns the existing instance if GenAI
   // (or any other ORT consumer) already created one, with a bumped refcount.
   // We own one refcount and release it (plus unregister each EP we registered)
@@ -218,16 +221,17 @@ Manager::Manager(const Configuration& config)
 
   LogRuntimeVersions(*logger_);
 
-  EpRegistrationCallback register_ep = [this, &log = *logger_](
-                                           const std::string& registration_name,
-                                           const std::filesystem::path& library_path) -> bool {
-    OrtStatus* status = ort_api_->RegisterExecutionProviderLibrary(
-        ort_env_, registration_name.c_str(), library_path.c_str());
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
+  // Build the EP registration callback. When a bootstrapper successfully
+  // prepares an EP, this callback registers it with ORT via the C API.
+  EpRegistrationCallback register_ep = [this, &log = *logger_](const std::string& registration_name,
+                                                               const std::filesystem::path& library_path) -> bool {
+    OrtStatus* status =
+        ort_api_->RegisterExecutionProviderLibrary(ort_env_, registration_name.c_str(), library_path.c_str());
     if (status != nullptr) {
       const char* msg = ort_api_->GetErrorMessage(status);
-      log.Log(LogLevel::Warning,
-              std::string("EP registration: RegisterExecutionProviderLibrary failed for '") +
-                  registration_name + "': " + (msg ? msg : "unknown"));
+      log.Log(LogLevel::Warning, std::string("EP registration: RegisterExecutionProviderLibrary failed for '") +
+                                     registration_name + "': " + (msg ? msg : "unknown"));
       ort_api_->ReleaseStatus(status);
       return false;
     }
@@ -235,19 +239,21 @@ Manager::Manager(const Configuration& config)
     registered_ep_libraries_.push_back(registration_name);
 
     auto version = GetEpVersion(*ort_api_, *ort_env_, registration_name);
-    log.Log(LogLevel::Information,
-            std::string("EP registration: '") + registration_name +
-                "' registered successfully (library=" + library_path.string() +
-                ", version=" + version + ")");
+    log.Log(LogLevel::Information, std::string("EP registration: '") + registration_name +
+                                       "' registered successfully (library=" + library_path.string() +
+                                       ", version=" + version + ")");
     return true;
   };
+#endif
 
   // Discover bootstrappers from available EP sources
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
 
-  // Detected once and reused below for the Foundry CUDA bootstrapper. HasNvidiaGpu()
-  // shells out to nvidia-smi, so caching the result here avoids a second subprocess spawn.
-  const bool has_nvidia_gpu = CudaEpBootstrapper::HasNvidiaGpu();
+#if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
+  // Detected once and reused below for the WinML catalog skip-list and CUDA bootstrapper.
+  // Avoid probing NVML on platforms where Foundry Local does not publish a CUDA bundle.
+  const bool has_nvidia_gpu =
+      CudaEpBootstrapper::IsSupportedPlatform() && CudaEpBootstrapper::HasNvidiaGpu(*logger_);
 
 #if FOUNDRY_LOCAL_HAS_EP_CATALOG
   // WinML EPs — enumerate from the OS EP catalog (Windows 10 19H1+ reg-free runtime).
@@ -260,19 +266,18 @@ Manager::Manager(const Configuration& config)
   }
 #endif
 
-  const auto cache_dir = std::filesystem::path(*config_.model_cache_dir).parent_path();
-
-  // CUDA EP — only if an NVIDIA GPU is detected
+  // CUDA EP — only if an NVIDIA GPU is detected. Rooted under app_data_dir (not the model cache
+  // parent) so the install survives a user pointing model_cache_dir somewhere ephemeral.
   if (has_nvidia_gpu) {
-    const auto cuda_ep_dir = cache_dir / "cuda-ep";
-    bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_dir.string(), register_ep));
+    const auto cuda_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "cuda-ep";
+    bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_root.string(), register_ep));
   }
 
-  // WebGPU EP — only on platforms that ship a WebGPU EP payload (Windows
-  // x64/ARM64, macOS ARM64). Not injected on Linux or Android.
-#if defined(_WIN32) || defined(__APPLE__)
-  const auto webgpu_ep_dir = cache_dir / "webgpu-ep";
-  bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_dir.string(), register_ep));
+  // WebGPU EP — only on exact architectures for which a bundle is published.
+  if (WebGpuEpBootstrapper::IsSupportedPlatform()) {
+    const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
+    bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
+  }
 #endif
 
   ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
@@ -295,24 +300,30 @@ Manager::Manager(const Configuration& config)
   // Accepts case-insensitive true/1/yes.
   const bool disable_region_fallback = IsAdditionalOptionEnabled(config_, "DisableRegionFallback");
 
-  download_manager_ = std::make_unique<DownloadManager>(
-      *config_.model_cache_dir,
-      config_.catalog_region.value_or("auto"),
-      download_concurrency,
-      *logger_,
-      disable_region_fallback);
+  download_manager_ =
+      std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
+                                        download_concurrency, *logger_, disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
-  telemetry_ = std::make_unique<TelemetryLogger>(config_.app_name, *logger_);
+  const bool disable_nonessential_telemetry =
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
+  const bool telemetry_hard_disabled =
+      TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
+  try {
+    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
+                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning,
+                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
+  }
+
   public_catalog_ = std::make_unique<AzureModelCatalog>(
-      config_.catalog_urls,
-      download_manager_->GetCacheDirectory(),
-      [this](ModelInfo info, std::string local_path) {
-        return CreateModel(std::move(info), std::move(local_path));
-      },
-      *ep_detector_, *logger_,
-      config_.external_service_url.has_value(),
-      config_.catalog_region.value_or("auto"),
+      config_.catalog_urls, download_manager_->GetCacheDirectory(),
+      [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
       disable_region_fallback);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       *config_.app_data_dir,
@@ -326,21 +337,24 @@ Manager::Manager(const Configuration& config)
 }
 
 Manager::~Manager() {
-  // Signal subsystems to drain before tearing down infrastructure
+  const auto safe_log = [this](LogLevel level, std::string_view message) noexcept {
+    try {
+      if (logger_ != nullptr) {
+        logger_->Log(level, message);
+      }
+    } catch (...) {
+    }
+  };
+
   try {
     Shutdown();
   } catch (const std::exception& e) {
-    logger_->Log(LogLevel::Error,
-                 std::string("Exception while shutting down Manager subsystems during destruction: ") + e.what());
+    safe_log(LogLevel::Error,
+             std::string("Exception while shutting down Manager subsystems during destruction: ") + e.what());
   } catch (...) {
-    // Suppress exceptions during destruction
-    logger_->Log(LogLevel::Error, "Unknown exception while shutting down Manager subsystems during destruction.");
+    safe_log(LogLevel::Error, "Unknown exception while shutting down Manager subsystems during destruction.");
   }
 
-  // Tear down members that hold OrtEnv references / live ORT sessions before
-  // we unregister EPs and release the env. C++ would destroy these in reverse
-  // declaration order after this function returns, but the env release below
-  // requires they be gone *now*.
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_.reset();
 #endif
@@ -350,31 +364,33 @@ Manager::~Manager() {
   local_catalog_.reset();
   public_catalog_.reset();
   telemetry_.reset();
-  ep_detector_.reset();
 
-  // Unregister EPs we registered, then drop our OrtEnv refcount. Best-effort:
-  // log failures but don't throw from a destructor.
+  OgaShutdown();
+
   if (ort_api_ != nullptr && ort_env_ != nullptr) {
-    for (const auto& name : registered_ep_libraries_) {
+    for (auto it = registered_ep_libraries_.rbegin(); it != registered_ep_libraries_.rend(); ++it) {
+      const auto& name = *it;
       OrtStatus* status = ort_api_->UnregisterExecutionProviderLibrary(ort_env_, name.c_str());
       if (status != nullptr) {
         const char* msg = ort_api_->GetErrorMessage(status);
-        logger_->Log(LogLevel::Warning,
-                     std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
-                         name + "': " + (msg ? msg : "unknown"));
+        safe_log(LogLevel::Warning, std::string("EP unregister: UnregisterExecutionProviderLibrary failed for '") +
+                                        name + "': " + (msg ? msg : "unknown"));
         ort_api_->ReleaseStatus(status);
       }
     }
 
+    ep_detector_.reset();
     ort_api_->ReleaseEnv(ort_env_);
     ort_env_ = nullptr;
+  } else {
+    ep_detector_.reset();
   }
 
   if (s_oga_logger.load(std::memory_order_acquire) != nullptr) {
     SetOgaLogCallback(nullptr);
   }
 
-  logger_->Log(LogLevel::Information, "Manager is being disposed.");
+  safe_log(LogLevel::Information, "Manager is being disposed.");
 
   // ORT may still emit late teardown logs from internal static cleanup after Manager destruction
   // due to GenAI keeping the OrtEnv alive until the process exits.
@@ -479,6 +495,13 @@ void Manager::StartWebService() {
 
   bound_urls_ = web_service_->Start(endpoints);
   web_service_running_ = true;
+  try {
+    telemetry_->StartSession();
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, std::string("telemetry StartSession failed: ") + ex.what());
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry StartSession failed with unknown error");
+  }
   tracker.SetStatus(ActionStatus::kSuccess);
 #else
   FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -505,6 +528,13 @@ void Manager::StopWebService() {
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
   web_service_->Stop();
+  try {
+    telemetry_->EndSession();
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning, std::string("telemetry EndSession failed: ") + ex.what());
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry EndSession failed with unknown error");
+  }
   web_service_.reset();
   web_service_running_ = false;
   bound_urls_.clear();
@@ -539,19 +569,12 @@ void Manager::Shutdown() {
   model_load_manager_->UnloadAll();
 }
 
-bool Manager::IsShutdownRequested() const {
-  return shutdown_requested_.load();
-}
+bool Manager::IsShutdownRequested() const { return shutdown_requested_.load(); }
 
-const Configuration& Manager::GetConfiguration() const {
-  return config_;
-}
+const Configuration& Manager::GetConfiguration() const { return config_; }
 
 Model Manager::CreateModel(ModelInfo info, std::string local_path) {
-  return Model::FromModelInfo(std::move(info),
-                              std::move(local_path),
-                              *download_manager_,
-                              *model_load_manager_);
+  return Model::FromModelInfo(std::move(info), std::move(local_path), *download_manager_, *model_load_manager_);
 }
 
 Model Manager::CreateLocalModel(ModelInfo info, std::string local_path,
@@ -562,37 +585,22 @@ Model Manager::CreateLocalModel(ModelInfo info, std::string local_path,
               std::move(prepare_callback));
 }
 
-DownloadManager& Manager::GetDownloadManager() {
-  return *download_manager_;
-}
+DownloadManager& Manager::GetDownloadManager() { return *download_manager_; }
 
-ModelLoadManager& Manager::GetModelLoadManager() {
-  return *model_load_manager_;
-}
+ModelLoadManager& Manager::GetModelLoadManager() { return *model_load_manager_; }
 
-SessionManager& Manager::GetSessionManager() {
-  return *session_manager_;
-}
+SessionManager& Manager::GetSessionManager() { return *session_manager_; }
 
-ILogger& Manager::GetLogger() {
-  return *logger_;
-}
+ILogger& Manager::GetLogger() { return *logger_; }
 
-ITelemetry& Manager::GetTelemetry() {
-  return *telemetry_;
-}
+ITelemetry& Manager::GetTelemetry() { return *telemetry_; }
 
-const IEpDetector& Manager::GetEpDetector() const {
-  return *ep_detector_;
-}
+const IEpDetector& Manager::GetEpDetector() const { return *ep_detector_; }
 
-IEpDetector& Manager::GetEpDetector() {
-  return *ep_detector_;
-}
+IEpDetector& Manager::GetEpDetector() { return *ep_detector_; }
 
-EpDownloadResult Manager::DownloadAndRegisterEps(
-    const std::vector<std::string>* names,
-    const IEpBootstrapper::ProgressCallback& progress_cb) {
+EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>* names,
+                                                 const IEpBootstrapper::ProgressCallback& progress_cb) {
   auto result = ep_detector_->DownloadAndRegisterEps(names, progress_cb);
 
   // EP registration changes which device/EP filters the catalog uses.

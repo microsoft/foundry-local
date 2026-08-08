@@ -132,24 +132,23 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     }
   }
 
-  // EP guard: verify the required EP is registered before attempting to load.
-  // OGA will crash or hang if we try to load a model with an unregistered EP.
+  std::string_view required_ep;
   if (resolved_ep != ExecutionProvider::kDefault && resolved_ep != ExecutionProvider::kCPU) {
-    // Explicit EP resolved — check it directly
-    auto required = EPUtils::EPtoRegistrationName(resolved_ep);
-    if (!required.empty() && !HasEP(std::string(required))) {
-      FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                       "model '", id_str, "' requires ", required,
-                       " which is not registered. Call DownloadAndRegisterEps() first.");
-    }
+    required_ep = EPUtils::EPtoRegistrationName(resolved_ep);
   } else {
-    // No explicit EP — check model_id for device hints
-    auto required = RequiredEpForModelId(id_str);
-    if (!required.empty() && !HasEP(std::string(required))) {
-      FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-                       "model '", id_str, "' requires ", required,
-                       " which is not registered. Call DownloadAndRegisterEps() first.");
-    }
+    required_ep = RequiredEpForModelId(id_str);
+  }
+
+  // OGA can crash or hang if a model is loaded with an unregistered EP.
+  if (!required_ep.empty() && !HasEP(std::string(required_ep))) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     "model '", id_str, "' requires ", required_ep,
+                     " which is not registered. Call DownloadAndRegisterEps() first.");
+  }
+
+  if (!required_ep.empty() && !ep_detector_.PrepareForModelLoad(required_ep)) {
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "failed to prepare ", required_ep, " for model loading");
   }
 
   // std::make_unique cannot access the private constructor; using new directly is intentional.

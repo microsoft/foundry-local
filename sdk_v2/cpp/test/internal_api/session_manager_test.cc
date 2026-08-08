@@ -10,7 +10,6 @@
 #include "exception.h"
 #include "logger.h"
 #include "model.h"
-#include "internal_api/null_telemetry.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 
@@ -84,7 +83,7 @@ class SessionManagerTest : public ::testing::Test {
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
       ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
-  fl::test::NullTelemetry null_telemetry_;
+  TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
 };
 
 // ===========================================================================

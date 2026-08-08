@@ -204,4 +204,10 @@ bool EpDetector::IsDownloadInProgress() const {
   return download_in_progress_;
 }
 
+bool EpDetector::PrepareForModelLoad(std::string_view ep_name) {
+  auto it = std::find_if(bootstrappers_.begin(), bootstrappers_.end(),
+                         [&](const auto& bootstrapper) { return bootstrapper->Name() == ep_name; });
+  return it == bootstrappers_.end() || (*it)->PrepareForModelLoad(logger_);
+}
+
 }  // namespace fl

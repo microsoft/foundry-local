@@ -392,3 +392,59 @@ stages:
     - template: steps-pack-js.yml
       parameters:
         outputDir: '$(Build.ArtifactStagingDirectory)/js-sdk-v2'
+
+# =====================================================================
+# Package test — install the tarball as a clean npm consumer
+# =====================================================================
+
+- stage: js_package_test
+  displayName: 'JS SDK: Test packaged tarball'
+  dependsOn:
+  - js_pack
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'js-sdk-v2'
+        targetPath: '$(Pipeline.Workspace)/js-sdk-v2'
+    steps:
+    - checkout: self
+      clean: true
+    - task: NodeTool@0
+      displayName: 'Use Node.js 20'
+      inputs:
+        versionSpec: '20.x'
+    - task: PowerShell@2
+      displayName: 'Run packaged JS basic_chat sample'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          $package = Get-ChildItem '$(Pipeline.Workspace)/js-sdk-v2' -Recurse -Filter '*.tgz' |
+            Select-Object -First 1
+          if (-not $package) { throw 'JS SDK tarball not found' }
+
+          $consumerDir = Join-Path '$(Agent.TempDirectory)' 'js-sdk-package-test'
+          if (Test-Path $consumerDir) { Remove-Item -Recurse -Force $consumerDir }
+          if (Test-Path $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR) {
+            Remove-Item $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force -Path $consumerDir | Out-Null
+          Set-Location $consumerDir
+
+          npm init -y | Out-Null
+          npm install $package.FullName --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $sample = Join-Path $consumerDir 'basic_chat.mjs'
+          Copy-Item '$(Build.SourcesDirectory)/sdk_v2/js/examples/basic_chat.mjs' -Destination $sample -Force
+          node $sample
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      env:
+        FOUNDRY_LOCAL_SAMPLE_CACHE_DIR: '$(Agent.TempDirectory)/js-package-model-cache'

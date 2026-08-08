@@ -180,6 +180,12 @@ inline Configuration& Configuration::SetCatalogRegion(const std::string& region)
   return *this;
 }
 
+inline Configuration& Configuration::SetDisableNonessentialTelemetry(bool disable) {
+  KeyValuePairs options;
+  options.Set("DisableNonessentialTelemetry", disable ? "true" : "false");
+  return SetAdditionalOptions(options);
+}
+
 inline flConfiguration* detail::CreateConfiguration(const std::string& app_name) {
   flConfiguration* config = nullptr;
   Check(detail::config_api()->Create(app_name.c_str(), &config));

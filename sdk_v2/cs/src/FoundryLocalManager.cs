@@ -254,6 +254,10 @@ public class FoundryLocalManager : IDisposable
                     additionalSettings[kvp.Key] = kvp.Value ?? string.Empty;
                 }
             }
+            if (_config.DisableNonessentialTelemetry)
+            {
+                additionalSettings["DisableNonessentialTelemetry"] = "true";
+            }
 
             if (additionalSettings.Count > 0)
             {

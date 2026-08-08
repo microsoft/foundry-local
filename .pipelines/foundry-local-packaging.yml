@@ -58,7 +58,7 @@ variables:
 - name: cppOrtVersion
   value: '1.28.0'
 - name: cppGenaiVersion
-  value: '0.15.1'
+  value: '0.15.2'
 - name: cppWinmlVersion
   value: '2.1.70'
 - name: cppBuildConfig

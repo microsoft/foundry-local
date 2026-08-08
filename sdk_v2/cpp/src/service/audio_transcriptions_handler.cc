@@ -91,12 +91,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
   // 1. Parse & validate
   AudioTranscriptionRequest req;
   if (auto err = ParseAndValidateRequest(body_str->c_str(), req)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -108,9 +110,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   // 2. Validate file path
   try {
     if (!std::filesystem::exists(req.filename)) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Audio file not found", "'" + req.filename + "'");
     }
   } catch (const std::filesystem::filesystem_error& ex) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Invalid file path", ex.what());
   }
 
@@ -119,6 +123,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   Model* model = nullptr;
   GenAIModelInstance* loaded = nullptr;
   if (auto err = ResolveModel(model_name, model, loaded)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 

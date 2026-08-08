@@ -292,3 +292,71 @@ stages:
         parameters:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
+
+  # ====================================================================
+  # Package test — consume the Windows x64 C++ SDK bundle
+  # ====================================================================
+  - stage: cpp_package_test
+    displayName: 'C++ SDK: Test packaged bundle'
+    dependsOn:
+    - cpp_pack_sdk_v2
+    jobs:
+    - job: test
+      pool:
+        name: onnxruntime-Win-CPU-2022
+        os: windows
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'cpp-sdk-v2'
+          targetPath: '$(Pipeline.Workspace)/cpp-sdk-v2'
+      steps:
+      - checkout: self
+        clean: true
+      - task: PowerShell@2
+        displayName: 'Compile and link basic_chat sample'
+        inputs:
+          targetType: inline
+          pwsh: true
+          script: |
+            $ErrorActionPreference = 'Stop'
+
+            $archive = Get-ChildItem '$(Pipeline.Workspace)/cpp-sdk-v2' -Recurse -Filter '*win-x64.tgz' |
+              Select-Object -First 1
+            if (-not $archive) { throw 'Windows x64 C++ SDK archive not found' }
+
+            $consumerDir = Join-Path '$(Agent.TempDirectory)' 'cpp-sdk-package-test'
+            if (Test-Path $consumerDir) { Remove-Item -Recurse -Force $consumerDir }
+            New-Item -ItemType Directory -Force -Path $consumerDir | Out-Null
+            tar -xzf $archive.FullName -C $consumerDir
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $source = '$(Build.SourcesDirectory)/sdk_v2/cpp/examples/basic_chat/main.cc'
+            if (-not (Test-Path $source)) { throw "C++ basic_chat sample not found: $source" }
+
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+            if (-not $vsInstall) { throw 'Visual Studio C++ toolchain not found' }
+            $vsDevCmd = Join-Path $vsInstall 'Common7\Tools\VsDevCmd.bat'
+
+            $cmdFile = Join-Path $consumerDir 'build.cmd'
+            @"
+            @echo off
+            call "$vsDevCmd" -arch=x64 -host_arch=x64
+            if errorlevel 1 exit /b %errorlevel%
+            cl /nologo /EHsc /std:c++17 /I"$consumerDir\include" "$source" /Fe:"$consumerDir\lib\basic_chat.exe" /link /LIBPATH:"$consumerDir\lib" foundry_local.lib
+            "@ | Set-Content -Path $cmdFile
+            & $cmdFile
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            # The executable sits beside every packaged DLL. Keep PATH limited
+            # to Windows system DLLs so an agent-installed ORT cannot mask a
+            # broken bundle.
+            $env:PATH = "$env:SystemRoot\System32"
+            $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR = Join-Path '$(Agent.TempDirectory)' 'cpp-package-model-cache'
+            if (Test-Path $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR) {
+              Remove-Item $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR -Recurse -Force
+            }
+            & (Join-Path $consumerDir 'lib\basic_chat.exe')
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -199,15 +199,9 @@ steps:
         VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
         FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
-# Stage the redistributable native artifacts. vcpkg statically links
-# ORT/GenAI/azure-*/spdlog/fmt/libcurl/libssl/zlib/brotli* into foundry_local.dll
-# (see sdk_v2/cpp/triplets/x64-windows.cmake), so foundry_local.dll carries that
-# payload itself. It also picks up one extra runtime dependency,
-# Microsoft.Windows.AI.MachineLearning.dll, which must travel with the wheel.
-# The WinML DLL is delay-loaded (see /DELAYLOAD in CMakeLists.txt) so it is
-# NOT needed at foundry_local.dll load time, but the cmake post-build copy
-# stages it next to foundry_local.dll for runtime EP discovery. ORT/GenAI
-# come from the onnxruntime / onnxruntime-genai-core pip deps.
+# Stage the native build artifacts. The C++ SDK bundle consumes the co-located
+# ORT/GenAI DLLs directly. Python wheel staging filters them out because its
+# pip dependencies provide and preload those libraries.
 - task: PowerShell@2
   displayName: 'Stage native artifacts'
   inputs:
@@ -223,6 +217,8 @@ steps:
         (Join-Path $binDir  'foundry_local.dll'),
         (Join-Path $binDir  'foundry_local.pdb'),
         (Join-Path $linkDir 'foundry_local.lib'),
+        (Join-Path $binDir  'onnxruntime.dll'),
+        (Join-Path $binDir  'onnxruntime-genai.dll'),
         (Join-Path $binDir  'Microsoft.Windows.AI.MachineLearning.dll')
       )
 
@@ -235,6 +231,11 @@ steps:
         Write-Host "  staged $(Split-Path -Leaf $s)"
       }
 
+      $providersShared = Join-Path $binDir 'onnxruntime_providers_shared.dll'
+      if (Test-Path $providersShared) {
+        Copy-Item -Path $providersShared -Destination $dst -Force
+        Write-Host "  staged onnxruntime_providers_shared.dll"
+      }
 
 - ${{ if eq(parameters.stageHeaders, true) }}:
   - task: CopyFiles@2
