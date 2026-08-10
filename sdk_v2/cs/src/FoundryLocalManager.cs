@@ -199,7 +199,17 @@ public class FoundryLocalManager : IDisposable
     {
         _config = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger;
+
+        // Ensure the native manager is torn down deterministically while the process (and the
+        // native library) is still healthy. Without this, a caller that never calls Dispose leaves
+        // the native Manager singleton to be destroyed during C runtime static destruction, after
+        // spdlog's shared console/registry mutexes have already been destroyed — which surfaces as
+        // "[foundry_local] mutex lock failed: Invalid argument" on shutdown. The finalizer path
+        // cannot help here because it is skipped once Environment.HasShutdownStarted is true.
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
     }
+
+    private void OnProcessExit(object? sender, EventArgs e) => Dispose();
 
     private async Task InitializeAsync(CancellationToken? ct = null)
     {
@@ -408,6 +418,10 @@ public class FoundryLocalManager : IDisposable
 
         if (disposing)
         {
+            // Unhook the process-exit safety net; we are disposing now (either explicitly or from
+            // the ProcessExit handler itself). Safe to call even if the handler is what triggered us.
+            AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+
             if (Urls != null)
             {
                 try
