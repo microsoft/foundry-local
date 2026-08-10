@@ -17,6 +17,11 @@ Read [`VALIDATION.md`](VALIDATION.md) for intent and how to run, and
 3. **Aggregate.** Anyone can regenerate the combined checklist:
    `python3 validation/orchestrator/aggregate.py` → writes
    `validation/results/COMBINED_CHECKLIST.md` and prints the provisional go/no-go verdict.
+4. **Planned tracking matrix.** [`STATUS_MATRIX.md`](STATUS_MATRIX.md) is the up-front
+   go/no-go matrix for **every** planned cell across all target platforms (regenerate with
+   `python3 validation/orchestrator/plan_matrix.py`). Cells show `NOT RUN` until a result
+   record is committed, then the recorded outcome is overlaid — so it doubles as a live
+   tracker of what has passed/failed/blocked and what is still outstanding.
 
 Do **not** hand-edit another agent's results file. Do **not** overwrite
 `COMBINED_CHECKLIST.md` by hand — it is generated.
