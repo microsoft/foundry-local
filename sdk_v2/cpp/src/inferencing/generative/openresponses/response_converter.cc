@@ -188,7 +188,7 @@ std::string MimeFromExtension(const std::string& path) {
   return {};
 }
 
-std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
+std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url, std::string_view error_source) {
   // Format: "data:<media-type>;base64,<payload>"
   // Strict: we require base64 encoding (not raw text) and a `;base64,`
   // marker. Anything else throws — vision models can't consume non-base64
@@ -196,7 +196,7 @@ std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
   auto comma = url.find(',');
   if (comma == std::string::npos) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "image_url data URL is missing payload separator ','");
+             std::string(error_source) + " is missing payload separator ','");
   }
 
   std::string header = url.substr(kDataUrlPrefix.size(), comma - kDataUrlPrefix.size());
@@ -204,8 +204,7 @@ std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
   constexpr std::string_view kBase64Marker = ";base64";
   auto base64_pos = header.find(kBase64Marker);
   if (base64_pos == std::string::npos) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "image_url data URL must use ';base64,' encoding");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " must use ';base64,' encoding");
   }
 
   std::string media_type = header.substr(0, base64_pos);
@@ -216,11 +215,11 @@ std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
     bytes = Azure::Core::Convert::Base64Decode(payload);
   } catch (const std::exception& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             std::string("image_url data URL has invalid base64 payload: ") + e.what());
+             std::string(error_source) + " has invalid base64 payload: " + e.what());
   }
 
   if (bytes.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url data URL decoded to zero bytes");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " decoded to zero bytes");
   }
 
   return std::make_unique<ImageItem>(std::move(bytes), std::move(media_type));
@@ -259,31 +258,36 @@ std::unique_ptr<ImageItem> MakeImageItemFromLocalFile(const std::string& url,
 }
 
 std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& c) {
-  if (c.file_id.has_value() && !c.file_id->empty()) {
+  if (c.image_url.has_value() && !c.image_url->empty()) {
+    const std::string& url = *c.image_url;
+
+    if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
+      return MakeImageItemFromDataUrl(url, "image_url data URL");
+    }
+
+    // file:// URI or absolute local path.
+    if (url.compare(0, kFileScheme.size(), kFileScheme) == 0 ||
+        (url.size() >= 2 && (url[0] == '/' || url[0] == '\\' ||
+                             (url.size() >= 3 && url[1] == ':' && (url[2] == '/' || url[2] == '\\'))))) {
+      return MakeImageItemFromLocalFile(url, c.media_type);
+    }
+
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-             "image input via file_id is not supported on Foundry Local");
+             "image_url must be a data: URL or a local file path; remote http(s) URLs are not supported");
   }
 
-  if (!c.image_url.has_value() || c.image_url->empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "input_image content requires a non-empty image_url or file_id");
+  if (c.image_data.has_value() && !c.image_data->empty()) {
+    const std::string media_type =
+        c.media_type.has_value() && !c.media_type->empty() ? *c.media_type : "image/png";
+    return MakeImageItemFromDataUrl("data:" + media_type + ";base64," + *c.image_data, "image_data");
   }
 
-  const std::string& url = *c.image_url;
-
-  if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
-    return MakeImageItemFromDataUrl(url);
+  if (c.file_id.has_value() && !c.file_id->empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "image input via file_id is not supported on Foundry Local");
   }
 
-  // file:// URI or absolute local path.
-  if (url.compare(0, kFileScheme.size(), kFileScheme) == 0 ||
-      (url.size() >= 2 && (url[0] == '/' || url[0] == '\\' ||
-                           (url.size() >= 3 && url[1] == ':' && (url[2] == '/' || url[2] == '\\'))))) {
-    return MakeImageItemFromLocalFile(url, c.media_type);
-  }
-
-  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-           "image_url must be a data: URL or a local file path; remote http(s) URLs are not supported");
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+           "input_image content requires a non-empty image_url, image_data, or file_id");
 }
 
 }  // namespace

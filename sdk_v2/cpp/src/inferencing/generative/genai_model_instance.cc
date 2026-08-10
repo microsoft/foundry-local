@@ -62,7 +62,7 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
 
   // Create Tokenizer
   try {
-    tokenizer_ = OgaTokenizer::Create(*oga_model_);
+    tokenizer_ = std::make_unique<fl::Tokenizer>(OgaTokenizer::Create(*oga_model_));
   } catch (const std::runtime_error& e) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to create tokenizer for model ", model_id_, ": ", e.what());
@@ -111,14 +111,6 @@ OgaModel& GenAIModelInstance::GetOgaModel() {
   return *oga_model_;
 }
 
-OgaTokenizer& GenAIModelInstance::GetOgaTokenizer() {
-  if (!tokenizer_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "OGA tokenizer is null");
-  }
-
-  return *tokenizer_;
-}
-
 OgaTokenizer& GenAIModelInstance::GetOgaTokenizerWithSpecial() {
   if (!tokenizer_with_special_) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "OGA tokenizer with special is null");
@@ -127,13 +119,21 @@ OgaTokenizer& GenAIModelInstance::GetOgaTokenizerWithSpecial() {
   return *tokenizer_with_special_;
 }
 
+Tokenizer& GenAIModelInstance::Tokenizer() {
+  if (!tokenizer_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "OGA tokenizer is null");
+  }
+
+  return *tokenizer_;
+}
+
 OgaMultiModalProcessor* GenAIModelInstance::GetProcessor() {
   return processor_.get();
 }
 
 const std::vector<int32_t>& GenAIModelInstance::GetEosTokenIds() {
   std::call_once(eos_token_ids_init_flag_, [this]() {
-    auto ids = tokenizer_->GetEosTokenIds();
+    auto ids = tokenizer_->Oga().GetEosTokenIds();
     eos_token_ids_.assign(ids.begin(), ids.end());
   });
 

@@ -44,16 +44,16 @@ classifiers = [
 # If a wheel ever ships with ``==0.0.0`` it means the backend wasn't
 # invoked (e.g. raw setuptools bypass) — pip install will fail loudly
 # with "no matching version", which is the desired safety net.
+#
+# The same ORT and GenAI packages are used on every supported platform.
 dependencies = [
     "cffi>=1.16",
     "typing_extensions>=4.5",
     "pydantic>=2.0.0",
     "requests>=2.32.4",
     "openai>=2.24.0",
-    "onnxruntime-gpu==0.0.0; platform_system == 'Linux'",
-    "onnxruntime-core==0.0.0; platform_system != 'Linux'",
-    "onnxruntime-genai-cuda==0.0.0; platform_system == 'Linux'",
-    "onnxruntime-genai-core==0.0.0; platform_system != 'Linux'",
+    "onnxruntime==0.0.0",
+    "onnxruntime-genai-core==0.0.0",
 ]
 
 [project.urls]

@@ -3,8 +3,10 @@
 #pragma once
 
 #include "ep_detection/ep_bootstrapper.h"
+#include "ep_detection/ep_bundle_installer.h"
 #include "ep_detection/ep_types.h"
 
+#include <filesystem>
 #include <string>
 
 namespace fl {
@@ -13,16 +15,14 @@ class ILogger;
 
 /// Bootstrapper for the WebGPU execution provider.
 ///
-/// Uses platform-specific package metadata (download URL and SHA-256 hash),
-/// downloads the binary, verifies integrity, then registers with ORT.
-///
-/// Supports Windows x64/ARM64, Linux x64, and macOS ARM64.
+/// Installs and registers the WebGPU execution provider.
 class WebGpuEpBootstrapper : public IEpBootstrapper {
  public:
-  /// @param ep_dir  Base directory for EP packages (e.g., appdata/foundry-local).
-  ///                The WebGPU package will be at ep_dir/webgpu-ep/.
+  /// @param root_dir  Root directory for the WebGPU EP bundle, e.g. "<app_data_dir>/ep/webgpu-ep".
   /// @param register_ep  Callback to register the EP DLL with ORT.
-  WebGpuEpBootstrapper(std::string ep_dir, EpRegistrationCallback register_ep);
+  WebGpuEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
+                       EpBundleManifestFactory manifest_factory = nullptr,
+                       EpArtifactDownloadFn download_fn = nullptr);
   ~WebGpuEpBootstrapper() override = default;
 
   // Non-copyable
@@ -31,16 +31,20 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
 
   const std::string& Name() const override;
   bool IsRegistered() const override;
-  bool DownloadAndRegister(bool force,
-                           const ProgressCallback& progress_cb,
-                           ILogger& logger) override;
+  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
+  bool PrepareForModelLoad(ILogger& logger) override;
+
+  /// Whether Foundry Local publishes a WebGPU EP bundle for this platform.
+  static bool IsSupportedPlatform();
 
  private:
-  std::string ep_dir_;
   std::string name_ = "WebGpuExecutionProvider";
   bool registered_ = false;
   int attempts_ = 0;
   EpRegistrationCallback register_ep_;
+  EpBundleManifestFactory manifest_factory_;
+  EpBundleInstaller installer_;
+  std::filesystem::path bundle_dir_;
 };
 
 }  // namespace fl

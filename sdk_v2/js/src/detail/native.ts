@@ -14,6 +14,7 @@ export interface NativeManagerCtor {
     appName: string;
     modelCacheDir?: string;
     serviceEndpoint?: string;
+    disableNonessentialTelemetry?: boolean;
     appDataDir?: string;
     logsDir?: string;
     logLevel?: "trace" | "debug" | "info" | "warn" | "error" | "fatal";

@@ -21,31 +21,50 @@ parameters:
   type: string
   default: '$(Build.ArtifactStagingDirectory)/python-sdk'
   displayName: 'Path to directory for the built wheel'
-- name: targetArch
-  type: string
-  default: 'native'
-  values: ['native', 'arm64']
-  displayName: 'Cross-compile target arch on a Windows x64 host. Use "native" for no cross-compile.'
 - name: pythonArchitecture
   type: string
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
+- name: useSystemPython
+  type: boolean
+  default: false
+  displayName: 'Use the agent system Python instead of the Azure Pipelines toolcache.'
 
 steps:
 
-- task: UsePythonVersion@0
-  displayName: 'Use Python 3.12'
-  inputs:
-    versionSpec: '3.12'
-    addToPath: true
-    architecture: '${{ parameters.pythonArchitecture }}'
+- ${{ if eq(parameters.useSystemPython, false) }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12'
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+      architecture: '${{ parameters.pythonArchitecture }}'
+
+- ${{ if eq(parameters.useSystemPython, true) }}:
+  - task: PowerShell@2
+    displayName: 'Configure system Python 3.12'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        python3 --version
+        python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
+        $venvDir = "$(Agent.TempDirectory)/fl-py-build-$(System.JobId)"
+        if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
+        python3 -m venv $venvDir
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $venvBin = Join-Path $venvDir 'bin'
+        Write-Host "##vso[task.prependpath]$venvBin"
+        Write-Host "Using system Python through build venv: $venvDir"
 
 - task: PowerShell@2
   displayName: 'Set package version from pyVersion.txt'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $versionFile = "$(Pipeline.Workspace)/version-info/pyVersion.txt"
         if (-not (Test-Path $versionFile)) { throw "Missing $versionFile" }
@@ -57,7 +76,7 @@ steps:
   displayName: 'Stamp version into pyproject.toml'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $pyproject = "$(Build.SourcesDirectory)/sdk_v2/python/pyproject.toml"
         $content = Get-Content $pyproject -Raw
@@ -78,7 +97,7 @@ steps:
   displayName: 'List downloaded native artifact'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Write-Host "Contents of ${{ parameters.nativeArtifactDir }}:"
         Get-ChildItem "${{ parameters.nativeArtifactDir }}" -Recurse -File |
@@ -88,25 +107,22 @@ steps:
   displayName: 'Stage native lib into _native/${{ parameters.rid }}/'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $dest = "$(Build.SourcesDirectory)/sdk_v2/python/src/foundry_local_sdk/_native/${{ parameters.rid }}"
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-        # The native artifact is produced by steps-build-{windows,linux,macos}.yml
-        # which is responsible for staging exactly the right contents for the
-        # downstream wheel. Vcpkg is statically linked on every platform, so each
-        # artifact is just the primary foundry_local library plus (on Windows)
-        # its .pdb and .lib companions:
+        # The native artifact is produced by steps-build-{windows,linux,macos}.yml.
+        # C++ bundles consume its co-located ORT/GenAI libraries, but Python gets
+        # those libraries from pip dependencies, so filter them out here. The
+        # remaining files are the primary foundry_local library plus (on Windows)
+        # its .pdb, .lib, and optional WinML companions:
         #   - Windows:  foundry_local.{dll,pdb,lib}
         #   - Linux:    libfoundry_local.so
         #   - macOS:    libfoundry_local.dylib
-        # ORT/GenAI native libs are intentionally absent — those come from pip
-        # deps (onnxruntime-{core,gpu} / onnxruntime-genai-{core,cuda}). Test
-        # and example binaries are also filtered out upstream. We just copy
-        # the curated artifact contents straight in.
-        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File
+        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File |
+            Where-Object { $_.Name -notlike 'onnxruntime*' -and $_.Name -notlike 'libonnxruntime*' }
         if ($files.Count -eq 0) {
             throw "No native artifacts found under ${{ parameters.nativeArtifactDir }}"
         }
@@ -116,18 +132,14 @@ steps:
         Write-Host "Copied $($files.Count) native file(s) to $dest"
         Get-ChildItem $dest | ForEach-Object { Write-Host "  $($_.Name)" }
 
-# Note: libfoundry_local.{so,dylib} already has $ORIGIN / @loader_path baked
-# into its rpath at CMake build time (see sdk_v2/cpp/CMakeLists.txt's RPATH
-# block on the foundry_local target). No patchelf / install_name_tool fixup
-# is needed here — the binary will look for ORT/GenAI deps next to itself
-# in _native/<rid>/, which is where lib_loader._create_ort_symlinks drops
-# them at process start.
+# lib_loader.py preloads the pip-installed ORT and GenAI libraries, so no
+# patchelf or install_name_tool fixup is needed.
 
 - task: PowerShell@2
   displayName: 'Clean stale build artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $py = "$(Build.SourcesDirectory)/sdk_v2/python"
         # Remove stale, untagged cffi extension from prior dev compiles.
@@ -153,166 +165,76 @@ steps:
   displayName: 'Install build tooling'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
         python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-- ${{ if eq(parameters.targetArch, 'arm64') }}:
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
   - task: PowerShell@2
-    displayName: 'Locate MSVC arm64 cross-tools (vswhere)'
+    displayName: 'Ensure Visual Studio Build Tools for Windows ARM64 Python build'
     inputs:
       targetType: inline
-      pwsh: true
+      pwsh: false
       script: |
-          # Resolve vcvarsall.bat once and stash the path in a pipeline variable. The actual
-          # invocation happens inside the build step's child cmd.exe so its env is inherited
-          # directly by python -m build, with no need to propagate vars across ADO steps.
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
-          $vsInstall = & $vswhere -latest -property installationPath
-          if (-not $vsInstall) { throw "Could not locate a Visual Studio installation" }
-          $vcvars = Join-Path $vsInstall 'VC\Auxiliary\Build\vcvarsall.bat'
-          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          $installRoot = 'C:\BuildTools'
+          $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+
+          if (-not (Test-Path $vcvars)) {
+              Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+              $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+              Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+              $arguments = @(
+                  '--quiet',
+                  '--wait',
+                  '--norestart',
+                  '--nocache',
+                  '--installPath', $installRoot,
+                  '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                  '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+                  '--includeRecommended'
+              )
+
+              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              }
+          }
+
+          if (-not (Test-Path $vcvars)) {
+              throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+          }
+
           Write-Host "vcvarsall.bat: $vcvars"
           Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
-
-  - task: Cache@2
-    displayName: 'Cache pythonarm64 NuGet package'
-    inputs:
-      # Key on (package, version, OS). Bumping the version below in the
-      # nuget install step MUST be matched here, otherwise stale headers/libs
-      # get reused across version changes and the linker will silently produce
-      # an ABI-broken extension. The OS axis prevents Windows/Linux/macOS
-      # agents from sharing each other's cache entries (only Windows uses this
-      # path today, but the safety belt is free).
-      key: 'pythonarm64 | "3.12.10" | "$(Agent.OS)"'
-      path: '$(Build.BinariesDirectory)/python-arm64'
-      cacheHitVar: PYTHON_ARM64_CACHE_HIT
-
-  - task: PowerShell@2
-    displayName: 'Provision arm64 Python (headers + import lib only) via NuGet'
-    condition: and(succeeded(), ne(variables.PYTHON_ARM64_CACHE_HIT, 'true'))
-    inputs:
-      targetType: inline
-      pwsh: true
-      script: |
-          # We need arm64 Python's headers + python3.lib to link the cffi extension
-          # for win-arm64 from an x64 host. We do NOT need to *run* the arm64
-          # interpreter — and we couldn't anyway, since x64 Windows has no arm64
-          # user-code emulation.
-          #
-          # UsePythonVersion@0 doesn't support that mode: even with addToPath:false
-          # it runs an "install" phase after extracting the zip that invokes the
-          # freshly-copied arm64 python.exe to bootstrap pip. On an x64 host that
-          # fails with a generic "Error happened during Python installation" because
-          # the host CPU can't execute the arm64 binary.
-          #
-          # The pythonarm64 NuGet package (published by python.org) ships exactly
-          # the same files as a plain archive — `tools/python.exe`, `tools/include/`,
-          # `tools/libs/python3.lib`. `nuget install` only extracts; it never tries
-          # to run anything. So this works regardless of host architecture.
-          #
-          # Pin the version to match the host x64 interpreter version (3.12.x) so
-          # ABI tags / structure layouts line up. Keep this in sync with the
-          # Cache@2 key above.
-          $stageRoot = "$(Build.BinariesDirectory)/python-arm64"
-          New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
-
-          # nuget.exe is on PATH on Microsoft-hosted Windows agents and on most
-          # self-hosted ones. The package is on nuget.org; -Source pins it
-          # explicitly so a misconfigured local nuget.config can't redirect us.
-          & nuget install pythonarm64 `
-              -Version 3.12.10 `
-              -OutputDirectory $stageRoot `
-              -Source 'https://api.nuget.org/v3/index.json' `
-              -ExcludeVersion `
-              -NonInteractive
-          if ($LASTEXITCODE -ne 0) { throw "nuget install pythonarm64 failed ($LASTEXITCODE)" }
-
-          $arm64Root = Join-Path $stageRoot 'pythonarm64/tools'
-          if (-not (Test-Path $arm64Root)) {
-              throw "Expected $arm64Root after nuget install — package layout changed?"
-          }
-
-  - task: PowerShell@2
-    displayName: 'Capture arm64 Python paths for cross-link'
-    inputs:
-      targetType: inline
-      pwsh: true
-      script: |
-          # Path is the same whether we just installed via NuGet above or restored
-          # the directory from cache — both produce $stageRoot/pythonarm64/tools/.
-          $arm64Root = Join-Path "$(Build.BinariesDirectory)/python-arm64" 'pythonarm64/tools'
-          $arm64Libs = Join-Path $arm64Root 'libs'
-          $arm64Include = Join-Path $arm64Root 'include'
-          if (-not (Test-Path (Join-Path $arm64Libs 'python3.lib'))) {
-              throw "arm64 Python missing python3.lib at $arm64Libs (cache hit: $env:PYTHON_ARM64_CACHE_HIT)"
-          }
-          if (-not (Test-Path (Join-Path $arm64Include 'Python.h'))) {
-              throw "arm64 Python missing Python.h at $arm64Include (cache hit: $env:PYTHON_ARM64_CACHE_HIT)"
-          }
-          Write-Host "arm64 Python root:    $arm64Root  (cache hit: $env:PYTHON_ARM64_CACHE_HIT)"
-          Write-Host "arm64 Python libs:    $arm64Libs"
-          Write-Host "arm64 Python include: $arm64Include"
-          Write-Host "##vso[task.setvariable variable=pythonArm64Libs]$arm64Libs"
-          Write-Host "##vso[task.setvariable variable=pythonArm64Include]$arm64Include"
 
 - task: PowerShell@2
   displayName: 'Build wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-        $targetArch = '${{ parameters.targetArch }}'
         $extraArgs = @()
-        if ($targetArch -eq 'arm64') {
-            # Force the wheel platform tag to win_arm64; otherwise bdist_wheel
-            # tags it win_amd64 because the host interpreter is x64.
-            $extraArgs += '--config-setting=--build-option=--plat-name=win_arm64'
-            Write-Host "Cross-compile: forcing wheel plat tag win_arm64"
+        if ('${{ parameters.rid }}' -eq 'osx-arm64') {
+            $extraArgs += '--config-setting=--build-option=--plat-name=macosx_11_0_arm64'
+            Write-Host "Forcing wheel plat tag macosx_11_0_arm64"
         }
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
-            if ($targetArch -eq 'arm64') {
-                # Run vcvarsall and the build in a single child cmd.exe process so the cross
-                # toolchain env (PATH, INCLUDE, LIB, LIBPATH, ...) is inherited directly by
-                # python -m build. This avoids ADO's ##vso[setvariable] mechanism entirely
-                # — no readonly-system-var conflicts, no env-diff bookkeeping. DISTUTILS_USE_SDK
-                # tells setuptools to trust the env we set up rather than re-running its own
-                # vcvars probe (which would target the host arch and clobber everything).
-                #
-                # We prepend the arm64 Python import lib + headers (from the pythonarm64 nuget
-                # package staged in the previous step) to LIB / INCLUDE so the linker resolves
-                # __imp_PyImport_ImportModule etc. against the arm64 python3.lib instead of the
-                # x64 host's python3.lib (which has x64-mangled symbols).
-                #
-                # IMPORTANT: cmd /v:on (delayed expansion) + !INCLUDE! / !LIB! is required.
-                # Without it cmd would expand %INCLUDE% / %LIB% at parse time — BEFORE
-                # vcvarsall.bat has run on the same line — leaving the literal string
-                # "%INCLUDE%" in our value, which setuptools then passes to cl.exe as
-                # "-I%INCLUDE%" and UCRT headers like io.h fail to resolve.
+        if ('${{ parameters.rid }}' -eq 'win-arm64') {
                 $vcvars = "$(vcvarsAllPath)"
                 if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
-                $arm64Libs = "$(pythonArm64Libs)"
-                $arm64Include = "$(pythonArm64Include)"
-                if (-not $arm64Libs -or -not $arm64Include) {
-                    throw "pythonArm64Libs/pythonArm64Include pipeline variables are empty"
-                }
                 $buildArgs = @('-m', 'build', '--wheel', '--outdir', $outDir) + $extraArgs
                 $quoted = ($buildArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
-                # FL_PYTHON_EXTRA_{INCLUDE,LIBRARY}_DIRS are read by build_cffi.py
-                # and prepended to set_source(include_dirs=, library_dirs=). setuptools
-                # places those at the FRONT of /I and /LIBPATH, ahead of the host x64
-                # python paths it auto-injects from sysconfig — which is the only way
-                # to make the linker pick the arm64 python312.lib instead of the host
-                # x64 one for `#pragma comment(lib, "python312.lib")` from pyconfig.h.
-                $cmdLine = "`"$vcvars`" amd64_arm64 && set `"LIB=$arm64Libs;!LIB!`" && set `"INCLUDE=$arm64Include;!INCLUDE!`" && set `"FL_PYTHON_EXTRA_LIBRARY_DIRS=$arm64Libs`" && set `"FL_PYTHON_EXTRA_INCLUDE_DIRS=$arm64Include`" && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python $quoted"
-                Write-Host "cmd /v:on /c $cmdLine"
-                cmd /v:on /c $cmdLine
+                $cmdLine = ('"{0}" arm64 && set DISTUTILS_USE_SDK=1 && set MSSdk=1 && python {1}' -f $vcvars, $quoted)
+                Write-Host "cmd /c $cmdLine"
+                cmd /c $cmdLine
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             } else {
                 python -m build --wheel --outdir $outDir @extraArgs
@@ -326,7 +248,60 @@ steps:
   displayName: 'List produced wheel'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl' |
             ForEach-Object { Write-Host ("{0,12}  {1}" -f $_.Length, $_.Name) }
+
+# Assert every build stage produced the expected platform-specific wheel.
+- task: PowerShell@2
+  displayName: 'Assert wheel platform tag and bundled native lib'
+  inputs:
+    targetType: inline
+    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
+    script: |
+        $ErrorActionPreference = 'Stop'
+        switch ('${{ parameters.rid }}') {
+            'win-x64'     { $tags = @('win_amd64');             $lib = 'foundry_local.dll' }
+            'win-arm64'   { $tags = @('win_arm64');             $lib = 'foundry_local.dll' }
+            'linux-x64'   { $tags = @('linux_x86_64');          $lib = 'libfoundry_local.so' }
+            'linux-arm64' { $tags = @('linux_aarch64');         $lib = 'libfoundry_local.so' }
+            'osx-arm64'   { $tags = @('macosx', 'arm64');       $lib = 'libfoundry_local.dylib' }
+            default       { throw "Unknown rid: ${{ parameters.rid }}" }
+        }
+
+        $wheels = @(Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl')
+        if ($wheels.Count -ne 1) {
+            throw "Expected exactly one .whl under ${{ parameters.outputDir }}, found $($wheels.Count)"
+        }
+
+        $whl = $wheels[0]
+        Write-Host "Wheel: $($whl.Name)"
+
+        foreach ($tag in $tags) {
+            if ($whl.Name -notlike "*$tag*") {
+                throw "Expected platform tag '$tag' in wheel name: $($whl.Name)"
+            }
+        }
+
+        $expected = "_native/${{ parameters.rid }}/$lib"
+        $code = @'
+        import sys, zipfile
+
+        whl, expected = sys.argv[1], sys.argv[2]
+        with zipfile.ZipFile(whl) as wheel:
+            names = wheel.namelist()
+
+        hits = [name for name in names if name.endswith(expected)]
+        if not hits:
+            print("ERROR: " + expected + " not found in wheel")
+            for name in names:
+                if name.endswith((".so", ".dll", ".dylib")):
+                    print("  " + name)
+            sys.exit(1)
+
+        print("OK: found " + hits[0])
+        '@
+        $code | python - "$($whl.FullName)" "$expected"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "Wheel validation passed."

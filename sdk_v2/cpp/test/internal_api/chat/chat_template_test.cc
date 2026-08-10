@@ -51,7 +51,6 @@ class ChatTemplateTest : public ::testing::Test {
     model_ = nullptr;
   }
 
-  OgaTokenizer& GetTokenizer() { return model_->GetOgaTokenizer(); }
   GenAIModelInstance& GetModel() { return *model_; }
 
   static inline std::unique_ptr<StderrLogger> logger_;
@@ -67,7 +66,7 @@ class ChatTemplateTest : public ::testing::Test {
 TEST_F(ChatTemplateTest, SingleUserMessage) {
   std::vector<MessageItem> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
 
-  std::string prompt = BuildChatPrompt(messages, GetTokenizer());
+  std::string prompt = BuildChatPrompt(messages, GetModel());
   EXPECT_FALSE(prompt.empty());
   // The prompt should contain the user message content
   EXPECT_NE(prompt.find("Hello!"), std::string::npos)
@@ -79,7 +78,7 @@ TEST_F(ChatTemplateTest, SystemAndUserMessages) {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a helpful assistant."},
       {FOUNDRY_LOCAL_ROLE_USER, "What is 2+2?"}};
 
-  std::string prompt = BuildChatPrompt(messages, GetTokenizer());
+  std::string prompt = BuildChatPrompt(messages, GetModel());
   EXPECT_FALSE(prompt.empty());
   EXPECT_NE(prompt.find("helpful assistant"), std::string::npos);
   EXPECT_NE(prompt.find("2+2"), std::string::npos);
@@ -91,7 +90,7 @@ TEST_F(ChatTemplateTest, MultiTurnConversation) {
       {FOUNDRY_LOCAL_ROLE_USER, "What is 2+2?"},
       {FOUNDRY_LOCAL_ROLE_ASSISTANT, "4"},
       {FOUNDRY_LOCAL_ROLE_USER, "What about 3+3?"}};
-  std::string prompt = BuildChatPrompt(messages, GetTokenizer());
+  std::string prompt = BuildChatPrompt(messages, GetModel());
   EXPECT_FALSE(prompt.empty());
   // Multi-turn should contain all messages
   EXPECT_NE(prompt.find("math tutor"), std::string::npos);
@@ -101,7 +100,7 @@ TEST_F(ChatTemplateTest, MultiTurnConversation) {
 
 TEST_F(ChatTemplateTest, EmptyMessagesThrows) {
   std::vector<MessageItem> messages;
-  EXPECT_THROW(BuildChatPrompt(messages, GetTokenizer()), fl::Exception);
+  EXPECT_THROW(BuildChatPrompt(messages, GetModel()), fl::Exception);
 }
 
 TEST_F(ChatTemplateTest, PromptEndsWithAssistantPrefix) {
@@ -110,7 +109,7 @@ TEST_F(ChatTemplateTest, PromptEndsWithAssistantPrefix) {
   std::vector<MessageItem> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
 
-  std::string prompt = BuildChatPrompt(messages, GetTokenizer());
+  std::string prompt = BuildChatPrompt(messages, GetModel());
   // Qwen2.5 uses <|im_start|>assistant format
   EXPECT_NE(prompt.find("assistant"), std::string::npos)
       << "Prompt should end with assistant prefix for generation. Got: " << prompt;
@@ -124,8 +123,8 @@ TEST_F(ChatTemplateTest, EncodeProducesTokens) {
   std::vector<MessageItem> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
 
-  std::string prompt = BuildChatPrompt(messages, GetTokenizer());
-  auto sequences = EncodePrompt(prompt, GetTokenizer());
+  std::string prompt = BuildChatPrompt(messages, GetModel());
+  auto sequences = EncodePrompt(prompt, GetModel());
 
   ASSERT_NE(sequences, nullptr);
   size_t token_count = sequences->SequenceCount(0);
@@ -138,11 +137,11 @@ TEST_F(ChatTemplateTest, LongerMessageProducesMoreTokens) {
   std::vector<MessageItem> long_msgs = {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a detailed technical writer who explains everything thoroughly."},
       {FOUNDRY_LOCAL_ROLE_USER, "Explain the theory of relativity in detail, covering both special and general relativity."}};
-  std::string short_prompt = BuildChatPrompt(short_msgs, GetTokenizer());
-  std::string long_prompt = BuildChatPrompt(long_msgs, GetTokenizer());
+  std::string short_prompt = BuildChatPrompt(short_msgs, GetModel());
+  std::string long_prompt = BuildChatPrompt(long_msgs, GetModel());
 
-  auto short_seq = EncodePrompt(short_prompt, GetTokenizer());
-  auto long_seq = EncodePrompt(long_prompt, GetTokenizer());
+  auto short_seq = EncodePrompt(short_prompt, GetModel());
+  auto long_seq = EncodePrompt(long_prompt, GetModel());
 
   EXPECT_GT(long_seq->SequenceCount(0), short_seq->SequenceCount(0))
       << "Longer message should produce more tokens";
@@ -150,6 +149,6 @@ TEST_F(ChatTemplateTest, LongerMessageProducesMoreTokens) {
 
 TEST_F(ChatTemplateTest, EmptyStringEncodesSuccessfully) {
   // Even an empty string should encode without crashing
-  auto sequences = EncodePrompt("", GetTokenizer());
+  auto sequences = EncodePrompt("", GetModel());
   ASSERT_NE(sequences, nullptr);
 }

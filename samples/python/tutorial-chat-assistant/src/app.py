@@ -63,6 +63,8 @@ def main():
         print("Assistant: ", end="", flush=True)
         full_response = ""
         for chunk in client.complete_streaming_chat(messages):
+            if not chunk.choices:  # the final chunk can carry no choices
+                continue
             content = chunk.choices[0].delta.content
             if content:
                 print(content, end="", flush=True)

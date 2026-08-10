@@ -6,7 +6,8 @@
 # (PR and main):
 #
 #   pack_nuget  – Microsoft.AI.Foundry.Local.Runtime
-#                 (win-x64, win-arm64, linux-x64, osx-arm64; Windows ships WinML)
+#                 (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64;
+#                  Windows ships WinML; ARM64 Linux is CPU-only)
 
 parameters:
 - name: buildConfig
@@ -56,7 +57,7 @@ stages:
           stageHeaders: true
 
   # ====================================================================
-  # Windows ARM64 — cross-compile only (no tests on x64 host)
+  # Windows ARM64 — build + test
   # ====================================================================
   - stage: cpp_build_win_arm64
     displayName: 'C++ Native: Windows ARM64'
@@ -65,8 +66,9 @@ stages:
     jobs:
     - job: build
       pool:
-        name: onnxruntime-Win-CPU-2022
+        name: onnxruntime-native-arm64-16core
         os: windows
+        hostArchitecture: arm64
       templateContext:
         inputs:
         - input: pipelineArtifact
@@ -84,8 +86,10 @@ stages:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
           winmlVersion: ${{ parameters.winmlVersion }}
-          runTests: false
+          runTests: true
           stageHeaders: false
+          pythonArchitecture: arm64
+          usePwsh: false
 
   # ====================================================================
   # Linux x64 — build + test
@@ -114,6 +118,41 @@ stages:
       steps:
       - template: steps-build-linux.yml
         parameters:
+          arch: x64
+          buildConfig: ${{ parameters.buildConfig }}
+          ortVersion: ${{ parameters.ortVersion }}
+          genaiVersion: ${{ parameters.genaiVersion }}
+          runTests: true
+
+  # ====================================================================
+  # Linux ARM64 — build + test (native, CPU-only)
+  # ====================================================================
+  - stage: cpp_build_linux_arm64
+    displayName: 'C++ Native: Linux ARM64'
+    dependsOn:
+    - compute_version
+    jobs:
+    - job: build
+      pool:
+        name: onnxruntime-linux-ARM64-CPU-2019
+        os: linux
+        hostArchitecture: arm64
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'version-info'
+          targetPath: '$(Pipeline.Workspace)/version-info'
+        outputs:
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-linux-arm64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/native'
+        - output: pipelineArtifact
+          artifactName: 'cpp-native-symbols-linux-arm64'
+          targetPath: '$(Build.ArtifactStagingDirectory)/symbols'
+      steps:
+      - template: steps-build-linux.yml
+        parameters:
+          arch: arm64
           buildConfig: ${{ parameters.buildConfig }}
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
@@ -162,6 +201,7 @@ stages:
     - cpp_build_win_x64
     - cpp_build_win_arm64
     - cpp_build_linux_x64
+    - cpp_build_linux_arm64
     - cpp_build_osx_arm64
     jobs:
     - job: pack
@@ -186,6 +226,12 @@ stages:
           artifactName: 'cpp-native-symbols-linux-x64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-symbols-linux-x64'
         - input: pipelineArtifact
+          artifactName: 'cpp-native-linux-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        - input: pipelineArtifact
+          artifactName: 'cpp-native-symbols-linux-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-symbols-linux-arm64'
+        - input: pipelineArtifact
           artifactName: 'cpp-native-osx-arm64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         - input: pipelineArtifact
@@ -201,7 +247,7 @@ stages:
           outputDir: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
 
   # ====================================================================
-  # Pack — NuGet package (all 4 platforms; Windows includes WinML)
+  # Pack — NuGet package (all 5 platforms; Windows includes WinML)
   # ====================================================================
   - stage: cpp_pack_nuget
     displayName: 'C++ Native: Pack NuGet'
@@ -210,6 +256,7 @@ stages:
     - cpp_build_win_x64
     - cpp_build_win_arm64
     - cpp_build_linux_x64
+    - cpp_build_linux_arm64
     - cpp_build_osx_arm64
     jobs:
     - job: pack
@@ -231,6 +278,9 @@ stages:
           artifactName: 'cpp-native-linux-x64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         - input: pipelineArtifact
+          artifactName: 'cpp-native-linux-arm64'
+          targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        - input: pipelineArtifact
           artifactName: 'cpp-native-osx-arm64'
           targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         outputs:
@@ -242,3 +292,71 @@ stages:
         parameters:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
+
+  # ====================================================================
+  # Package test — consume the Windows x64 C++ SDK bundle
+  # ====================================================================
+  - stage: cpp_package_test
+    displayName: 'C++ SDK: Test packaged bundle'
+    dependsOn:
+    - cpp_pack_sdk_v2
+    jobs:
+    - job: test
+      pool:
+        name: onnxruntime-Win-CPU-2022
+        os: windows
+      templateContext:
+        inputs:
+        - input: pipelineArtifact
+          artifactName: 'cpp-sdk-v2'
+          targetPath: '$(Pipeline.Workspace)/cpp-sdk-v2'
+      steps:
+      - checkout: self
+        clean: true
+      - task: PowerShell@2
+        displayName: 'Compile and link basic_chat sample'
+        inputs:
+          targetType: inline
+          pwsh: true
+          script: |
+            $ErrorActionPreference = 'Stop'
+
+            $archive = Get-ChildItem '$(Pipeline.Workspace)/cpp-sdk-v2' -Recurse -Filter '*win-x64.tgz' |
+              Select-Object -First 1
+            if (-not $archive) { throw 'Windows x64 C++ SDK archive not found' }
+
+            $consumerDir = Join-Path '$(Agent.TempDirectory)' 'cpp-sdk-package-test'
+            if (Test-Path $consumerDir) { Remove-Item -Recurse -Force $consumerDir }
+            New-Item -ItemType Directory -Force -Path $consumerDir | Out-Null
+            tar -xzf $archive.FullName -C $consumerDir
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $source = '$(Build.SourcesDirectory)/sdk_v2/cpp/examples/basic_chat/main.cc'
+            if (-not (Test-Path $source)) { throw "C++ basic_chat sample not found: $source" }
+
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+            if (-not $vsInstall) { throw 'Visual Studio C++ toolchain not found' }
+            $vsDevCmd = Join-Path $vsInstall 'Common7\Tools\VsDevCmd.bat'
+
+            $cmdFile = Join-Path $consumerDir 'build.cmd'
+            @"
+            @echo off
+            call "$vsDevCmd" -arch=x64 -host_arch=x64
+            if errorlevel 1 exit /b %errorlevel%
+            cl /nologo /EHsc /std:c++17 /I"$consumerDir\include" "$source" /Fe:"$consumerDir\lib\basic_chat.exe" /link /LIBPATH:"$consumerDir\lib" foundry_local.lib
+            "@ | Set-Content -Path $cmdFile
+            & $cmdFile
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            # The executable sits beside every packaged DLL. Keep PATH limited
+            # to Windows system DLLs so an agent-installed ORT cannot mask a
+            # broken bundle.
+            $env:PATH = "$env:SystemRoot\System32"
+            $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR = Join-Path '$(Agent.TempDirectory)' 'cpp-package-model-cache'
+            if (Test-Path $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR) {
+              Remove-Item $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR -Recurse -Force
+            }
+            & (Join-Path $consumerDir 'lib\basic_chat.exe')
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

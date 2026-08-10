@@ -14,9 +14,7 @@ namespace fl {
 /// Matches the C# ActionTracker (IDisposable) pattern.
 class ActionTracker {
  public:
-  ActionTracker(Action action, ITelemetry& telemetry,
-                const std::string& user_agent = "",
-                bool indirect = false);
+  ActionTracker(Action action, ITelemetry& telemetry, InvocationContext context = {});
   ~ActionTracker();
 
   // Non-copyable, non-movable
@@ -32,11 +30,15 @@ class ActionTracker {
   /// Associate a model ID with this action.
   void SetModelId(const std::string& model_id);
 
+  /// This action's context, with its correlation id resolved. Use to derive a
+  /// child context (Context().AsIndirect()) for any caused-by action so all
+  /// events from one operation share a correlation id.
+  const InvocationContext& Context() const { return context_; }
+
  private:
   Action action_;
   ITelemetry& telemetry_;
-  std::string user_agent_;
-  bool indirect_;
+  InvocationContext context_;
   ActionStatus status_ = ActionStatus::kFailure;
   std::string model_id_;
   std::chrono::steady_clock::time_point start_;

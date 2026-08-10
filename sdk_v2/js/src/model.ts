@@ -69,21 +69,21 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
     promptTemplate: normalizePromptTemplate(raw.promptTemplate),
     modelSettings: normalizeModelSettings(raw.modelSettings),
     cached: raw.cached ?? native.isCached(),
-    runtime: raw.runtime !== undefined
-      ? {
-          deviceType: toDeviceType(raw.runtime.deviceType),
-          executionProvider: raw.runtime.executionProvider,
-        }
-      : {
-          deviceType,
-          executionProvider,
-        },
+    runtime:
+      raw.runtime !== undefined
+        ? {
+            deviceType: toDeviceType(raw.runtime.deviceType),
+            executionProvider: raw.runtime.executionProvider,
+          }
+        : {
+            deviceType,
+            executionProvider,
+          },
   };
 }
 
 export class Model implements IModel {
   readonly #native: NativeModel;
-  readonly #info: ModelInfo;
 
   /** @internal — wraps a native Model handle. Do not call from user code. */
   constructor(token: typeof internalCtorKey, native: NativeModel) {
@@ -91,23 +91,21 @@ export class Model implements IModel {
       throw new TypeError("Model is internal — obtain instances via Catalog/FoundryLocalManager methods");
     }
     this.#native = native;
-    // Cache the snapshot eagerly. The underlying native getInfo() copies every call, so we avoid repeating that
-    // work for the property getters below. Native variant selection re-wraps with a fresh JS Model, so the
-    // snapshot can never go stale on this instance.
-    this.#info = normalizeModelInfo(native.getInfo(), native);
     nativeByModel.set(this, native);
   }
 
   get id(): string {
-    return this.#info.id;
+    return this.info.id;
   }
 
   get alias(): string {
-    return this.#info.alias;
+    return this.info.alias;
   }
 
   get info(): ModelInfo {
-    return this.#info;
+    // The native model is the source of truth. Read fresh every time so metadata stays correct after
+    // selectVariant / download / cache changes. Each read returns a point-in-time snapshot.
+    return normalizeModelInfo(this.#native.getInfo(), this.#native);
   }
 
   get isCached(): boolean {
@@ -132,23 +130,23 @@ export class Model implements IModel {
   }
 
   get contextLength(): number | null {
-    return this.#info.contextLength ?? null;
+    return this.info.contextLength ?? null;
   }
 
   get inputModalities(): string | null {
-    return this.#info.inputModalities ?? null;
+    return this.info.inputModalities ?? null;
   }
 
   get outputModalities(): string | null {
-    return this.#info.outputModalities ?? null;
+    return this.info.outputModalities ?? null;
   }
 
   get capabilities(): string | null {
-    return this.#info.capabilities ?? null;
+    return this.info.capabilities ?? null;
   }
 
   get supportsToolCalling(): boolean | null {
-    return this.#info.supportsToolCalling ?? null;
+    return this.info.supportsToolCalling ?? null;
   }
 
   async load(): Promise<void> {

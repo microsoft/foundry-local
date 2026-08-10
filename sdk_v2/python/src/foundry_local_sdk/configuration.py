@@ -47,6 +47,8 @@ class Configuration:
             Each entry is a ``(url, filter)`` tuple where filter may be ``None``.
             Defaults to the Azure Foundry Local Catalog when empty or ``None``.
         catalog_region: Region hint forwarded to the catalog service
+        disable_nonessential_telemetry: When True, disable non-essential telemetry. Foundry
+            Local may still send a minimal ProcessInfo event. Defaults to False.
         external_service_url: URL of an external Foundry Local service. When
             set, the catalog operates in cache-only mode — it reads only the
             local disk cache populated by that external service and skips
@@ -86,6 +88,7 @@ class Configuration:
         additional_settings: dict[str, str] | None = None,
         catalog_urls: list[tuple[str, str | None]] | None = None,
         catalog_region: str | None = None,
+        disable_nonessential_telemetry: bool = False,
     ) -> None:
         self.app_name = app_name
         # v1-compat no-op: native loading happens at import time in
@@ -99,6 +102,7 @@ class Configuration:
         self.additional_settings = additional_settings
         self.catalog_urls = catalog_urls
         self.catalog_region = catalog_region
+        self.disable_nonessential_telemetry = disable_nonessential_telemetry
 
     def validate(self) -> None:
         """Validate the configuration.
@@ -220,7 +224,6 @@ class Configuration:
                     native_config, self.catalog_region.encode("utf-8")
                 )
             )
-
         # Web service configuration
         if self.web is not None:
             if self.web.urls is not None:
@@ -239,12 +242,18 @@ class Configuration:
                 )
 
         # Additional key/value settings
+        additional_settings: dict[str, str] = {}
         if self.additional_settings:
+            additional_settings.update(self.additional_settings)
+        if self.disable_nonessential_telemetry:
+            additional_settings["DisableNonessentialTelemetry"] = "true"
+
+        if additional_settings:
             kvp_out = ffi.new("flKeyValuePairs**")
             api.root.CreateKeyValuePairs(kvp_out)
             kvp = kvp_out[0]
             try:
-                for key, value in self.additional_settings.items():
+                for key, value in additional_settings.items():
                     if not key:
                         continue
                     api.root.AddKeyValuePair(

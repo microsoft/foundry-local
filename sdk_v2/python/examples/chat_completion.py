@@ -16,7 +16,9 @@ import os
 from foundry_local_sdk import (
     ChatSession,
     Configuration,
+    DeviceType,
     FoundryLocalManager,
+    IModel,
     MessageItem,
     Request,
     RequestOptions,
@@ -25,7 +27,57 @@ from foundry_local_sdk import (
 )
 
 
-CACHED_MODEL_ALIAS = "qwen2.5-0.5b"
+PREFERRED_MODEL_PREFIXES = ("qwen2.5-0.5b", "qwen3.5-0.8b")
+SKIP_EP_REGISTRATION_ENV = "FOUNDRY_LOCAL_SKIP_EP_REGISTRATION"
+
+
+def _is_cpu_chat_model(model: IModel) -> bool:
+    info = model.info
+    return (
+        info.task in ("chat-completion", "vision-language-chat")
+        and info.runtime is not None
+        and info.runtime.device_type == DeviceType.CPU
+    )
+
+
+def _model_size_key(model: IModel) -> tuple[bool, int, str]:
+    size = model.info.file_size_mb
+    return (size is None or size <= 0, size or 0, model.id.casefold())
+
+
+def _is_preferred_model(model: IModel) -> bool:
+    info = model.info
+    return any(
+        value.casefold().startswith(prefix.casefold())
+        for prefix in PREFERRED_MODEL_PREFIXES
+        for value in (model.alias, info.name, model.id)
+        if value
+    )
+
+
+def _select_cached_cpu_chat_model(models: list[IModel]) -> IModel | None:
+    candidates = [model for model in models if _is_cpu_chat_model(model)]
+    if not candidates:
+        return None
+
+    preferred = [model for model in candidates if _is_preferred_model(model)]
+    return min(preferred or candidates, key=_model_size_key)
+
+
+def _select_downloadable_preferred_model(manager: FoundryLocalManager) -> IModel | None:
+    """Resolve the preferred model and explicitly select its CPU chat variant."""
+    for prefix in PREFERRED_MODEL_PREFIXES:
+        model = manager.catalog.get_model(prefix)
+        if model is None:
+            continue
+        if _is_cpu_chat_model(model):
+            return model
+
+        for variant in model.variants:
+            if _is_cpu_chat_model(variant):
+                model.select_variant(variant)
+                return model
+    return None
 
 
 def _print_response_text(response) -> None:
@@ -47,21 +99,26 @@ def _print_response_text(response) -> None:
 
 def main() -> None:
     # 1. Initialize the SDK
+    sample_cache_dir = os.environ.get("FOUNDRY_LOCAL_SAMPLE_CACHE_DIR") or None
     config = Configuration(
         app_name="ChatCompletionExample",
+        model_cache_dir=sample_cache_dir,
     )
     print("Initializing Foundry Local Manager")
     FoundryLocalManager.initialize(config)
     manager = FoundryLocalManager.instance
 
-    # Discover available EPs and register them so hardware-accelerated providers are usable.
-    eps = manager.discover_eps()
-    print("Available execution providers:")
-    for ep in eps:
-        print(f"  - {ep.name} (registered: {ep.is_registered})")
+    if os.environ.get(SKIP_EP_REGISTRATION_ENV) == "1":
+        print(f"Skipping execution provider registration ({SKIP_EP_REGISTRATION_ENV}=1).")
+    else:
+        # Discover and register EPs so hardware-accelerated providers are usable.
+        eps = manager.discover_eps()
+        print("Available execution providers:")
+        for ep in eps:
+            print(f"  - {ep.name} (registered: {ep.is_registered})")
 
-    ep_result = manager.download_and_register_eps()
-    print(f"EP registration success: {ep_result.success} ({ep_result.status})")
+        ep_result = manager.download_and_register_eps()
+        print(f"EP registration success: {ep_result.success} ({ep_result.status})")
 
     # 2. Print available models in the catalog and cache
     print("\nAvailable models in catalog:")
@@ -72,11 +129,15 @@ def main() -> None:
     for m in manager.catalog.get_cached_models():
         print(f"  - {m.alias} ({m.id})")
 
-    # 3. Find a model (download if not cached)
-    model = manager.catalog.get_model(CACHED_MODEL_ALIAS)
+    # 3. Prefer the known small model, but accept any cached CPU chat model.
+    model = _select_cached_cpu_chat_model(manager.catalog.get_cached_models())
     if model is None:
-        print(f"\nModel '{CACHED_MODEL_ALIAS}' not found in catalog.")
-        return
+        model = _select_downloadable_preferred_model(manager)
+        if model is None:
+            raise RuntimeError(
+                f"\nCPU chat model matching {PREFERRED_MODEL_PREFIXES} "
+                "not found in catalog."
+            )
 
     if not model.is_cached:
         print(f"\nDownloading {model.alias}...")

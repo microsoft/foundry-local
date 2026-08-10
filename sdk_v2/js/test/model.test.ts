@@ -58,7 +58,7 @@ describeIfBuilt("Model (cache-only)", () => {
 
   it("info preserves v1 compatibility fields with sane defaults", () => {
     const info = model.info;
-    expect(info.providerType).toBe("AzureFoundry");
+    expect(info.providerType).toBe("FoundryLocal");
     expect(typeof info.cached).toBe("boolean");
     expect(info.runtime).toBeDefined();
     expect(info.runtime?.deviceType).toBe(info.deviceType);
@@ -67,9 +67,13 @@ describeIfBuilt("Model (cache-only)", () => {
     expect(info.promptTemplate ?? null).toBeNull();
   });
 
-  it("info is a stable snapshot (same object identity across reads)", () => {
-    // V1 surface caches the snapshot eagerly in the wrapper ctor.
-    expect(model.info).toBe(model.info);
+  it("info reads fresh from native each time (native is the source of truth)", () => {
+    // Each read returns a new point-in-time snapshot.
+    // This keeps reported metadata correct after selectVariant / download / cache changes.
+    const a = model.info;
+    const b = model.info;
+    expect(a).not.toBe(b);
+    expect(a).toEqual(b);
   });
 
   it("isCached returns a boolean", () => {
