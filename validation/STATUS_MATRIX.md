@@ -55,8 +55,8 @@ One row per planned runnable cell. `status` is `NOT RUN` until a result record f
 | linux-x64 | cpp | chat | cpu | **yes** | NOT RUN |
 | linux-x64 | cpp | chat | cuda | **yes** | NOT RUN |
 | linux-x64 | cpp | chat | webgpu | **yes** | NOT RUN |
-| linux-x64 | cs | chat | cpu | **yes** | fail |
-| linux-x64 | cs | chat | cuda | **yes** | NOT RUN |
+| linux-x64 | cs | chat | cpu | **yes** | NOT RUN |
+| linux-x64 | cs | chat | cuda | **yes** | fail |
 | linux-x64 | cs | chat | webgpu | **yes** | NOT RUN |
 | linux-x64 | js | chat | cpu | **yes** | pass |
 | linux-x64 | js | chat | cuda | **yes** | NOT RUN |

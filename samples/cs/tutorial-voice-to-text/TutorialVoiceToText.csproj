@@ -11,12 +11,6 @@
     <PackageReference Include="Microsoft.AI.Foundry.Local" />
   </ItemGroup>
 
-  <!-- Linux GPU support -->
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Cuda" />
-  </ItemGroup>
-
   <!-- Packages -->
   <ItemGroup>
     <PackageReference Include="Betalgo.Ranul.OpenAI" />

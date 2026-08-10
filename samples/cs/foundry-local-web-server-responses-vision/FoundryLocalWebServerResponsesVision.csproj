@@ -11,12 +11,6 @@
     <PackageReference Include="Microsoft.AI.Foundry.Local" />
   </ItemGroup>
 
-  <!-- Linux GPU support -->
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Cuda" />
-  </ItemGroup>
-
   <!-- Bundled test image is copied next to the binary so the default path resolves at runtime -->
   <ItemGroup>
     <None Update="test_image.jpg">

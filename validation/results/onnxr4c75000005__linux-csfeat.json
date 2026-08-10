@@ -1,8 +1,8 @@
 [
   {
     "schema_version": "1.0",
-    "cell_id": "cs__chat__linux-x64__cpu",
-    "run_id": "linux-csfeat",
+    "cell_id": "cs__chat__linux-x64__cuda",
+    "run_id": "linux-csretest",
     "sdk": "cs",
     "feature": "chat",
     "category": "feature",
@@ -10,12 +10,12 @@
     "model": {
       "task": "chat-small",
       "alias": "qwen2.5-0.5b",
-      "variant": "qwen2.5-0.5b-generic-cpu",
+      "variant": "qwen2.5-0.5b-cuda-gpu",
       "expected": true
     },
-    "accelerator": "cpu",
+    "accelerator": "cuda",
     "result": "fail",
-    "duration_seconds": 22.3,
+    "duration_seconds": 22.9,
     "env": {
       "platform_id": "linux-x64",
       "os": "linux",
@@ -68,15 +68,15 @@
       }
     ],
     "waiver": null,
-    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__chat__linux-x64__cpu/sample-run.log",
-    "notes": "sample-backed run completed",
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csretest/cs__chat__linux-x64__cuda/sample-run.log",
+    "notes": "Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/OnnxRuntimeGenAI.Cuda from csproj); default Microsoft.ML.OnnxRuntime 1.28.0 + Microsoft.ML.OnnxRuntimeGenAI.Foundry 0.15.2 (via Foundry.Local.Runtime). CUDA model ran on A100 (cuda-gpu variant) using CUDA 12.8 runtime at /datadisks/.../cuda12.8/lib64. Correct output (marker+sanity pass); process SIGSEGVs exit 139 at shutdown = F6.",
     "owner": null,
-    "timestamp": "2026-08-10T22:07:29+00:00"
+    "timestamp": "2026-08-10T22:47:55+00:00"
   },
   {
     "schema_version": "1.0",
     "cell_id": "cs__embeddings__linux-x64__cpu",
-    "run_id": "linux-csfeat",
+    "run_id": "linux-csretest2",
     "sdk": "cs",
     "feature": "embeddings",
     "category": "feature",
@@ -89,7 +89,7 @@
     },
     "accelerator": "cpu",
     "result": "fail",
-    "duration_seconds": 21.0,
+    "duration_seconds": 19.7,
     "env": {
       "platform_id": "linux-x64",
       "os": "linux",
@@ -142,15 +142,15 @@
       }
     ],
     "waiver": null,
-    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__embeddings__linux-x64__cpu/sample-run.log",
-    "notes": "sample-backed run completed",
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csretest2/cs__embeddings__linux-x64__cpu/sample-run.log",
+    "notes": "Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/OnnxRuntimeGenAI.Cuda from csproj); default Microsoft.ML.OnnxRuntime 1.28.0 + Microsoft.ML.OnnxRuntimeGenAI.Foundry 0.15.2 (via Foundry.Local.Runtime). CUDA model ran on A100 (cuda-gpu variant) using CUDA 12.8 runtime at /datadisks/.../cuda12.8/lib64. Correct output (marker+sanity pass); process SIGSEGVs exit 139 at shutdown = F6.",
     "owner": null,
-    "timestamp": "2026-08-10T22:07:50+00:00"
+    "timestamp": "2026-08-10T22:48:39+00:00"
   },
   {
     "schema_version": "1.0",
     "cell_id": "cs__web-server__linux-x64__cpu",
-    "run_id": "linux-csfeat",
+    "run_id": "linux-csretest2",
     "sdk": "cs",
     "feature": "web-server",
     "category": "feature",
@@ -163,7 +163,7 @@
     },
     "accelerator": "cpu",
     "result": "fail",
-    "duration_seconds": 24.0,
+    "duration_seconds": 22.3,
     "env": {
       "platform_id": "linux-x64",
       "os": "linux",
@@ -216,15 +216,15 @@
       }
     ],
     "waiver": null,
-    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__web-server__linux-x64__cpu/sample-run.log",
-    "notes": "sample-backed run completed",
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csretest2/cs__web-server__linux-x64__cpu/sample-run.log",
+    "notes": "Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/OnnxRuntimeGenAI.Cuda from csproj); default Microsoft.ML.OnnxRuntime 1.28.0 + Microsoft.ML.OnnxRuntimeGenAI.Foundry 0.15.2 (via Foundry.Local.Runtime). CUDA model ran on A100 (cuda-gpu variant) using CUDA 12.8 runtime at /datadisks/.../cuda12.8/lib64. Correct output (marker+sanity pass); process SIGSEGVs exit 139 at shutdown = F6.",
     "owner": null,
-    "timestamp": "2026-08-10T22:08:14+00:00"
+    "timestamp": "2026-08-10T22:49:02+00:00"
   },
   {
     "schema_version": "1.0",
     "cell_id": "cs__model-mgmt__linux-x64__cpu",
-    "run_id": "linux-csfeat",
+    "run_id": "linux-csretest2",
     "sdk": "cs",
     "feature": "model-mgmt",
     "category": "runtime",
@@ -237,7 +237,7 @@
     },
     "accelerator": "cpu",
     "result": "fail",
-    "duration_seconds": 22.3,
+    "duration_seconds": 21.9,
     "env": {
       "platform_id": "linux-x64",
       "os": "linux",
@@ -290,9 +290,9 @@
       }
     ],
     "waiver": null,
-    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__model-mgmt__linux-x64__cpu/sample-run.log",
-    "notes": "sample-backed run completed",
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csretest2/cs__model-mgmt__linux-x64__cpu/sample-run.log",
+    "notes": "Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/OnnxRuntimeGenAI.Cuda from csproj); default Microsoft.ML.OnnxRuntime 1.28.0 + Microsoft.ML.OnnxRuntimeGenAI.Foundry 0.15.2 (via Foundry.Local.Runtime). CUDA model ran on A100 (cuda-gpu variant) using CUDA 12.8 runtime at /datadisks/.../cuda12.8/lib64. Correct output (marker+sanity pass); process SIGSEGVs exit 139 at shutdown = F6.",
     "owner": null,
-    "timestamp": "2026-08-10T22:08:36+00:00"
+    "timestamp": "2026-08-10T22:49:24+00:00"
   }
 ]

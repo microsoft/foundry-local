@@ -23,10 +23,10 @@
 
 | cell_id | result | machine | notes |
 |---------|--------|---------|-------|
-| cs__chat__linux-x64__cpu | **fail** | onnxr4c75000005 | sample-backed run completed |
-| cs__embeddings__linux-x64__cpu | **fail** | onnxr4c75000005 | sample-backed run completed |
-| cs__model-mgmt__linux-x64__cpu | **fail** | onnxr4c75000005 | sample-backed run completed |
-| cs__web-server__linux-x64__cpu | **fail** | onnxr4c75000005 | sample-backed run completed |
+| cs__chat__linux-x64__cuda | **fail** | onnxr4c75000005 | Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/Onn |
+| cs__embeddings__linux-x64__cpu | **fail** | onnxr4c75000005 | Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/Onn |
+| cs__model-mgmt__linux-x64__cpu | **fail** | onnxr4c75000005 | Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/Onn |
+| cs__web-server__linux-x64__cpu | **fail** | onnxr4c75000005 | Built WITHOUT GPU-specialized packages (removed Microsoft.ML.OnnxRuntime.Gpu/Onn |
 | js__pkg-inspect__macos-arm64__cpu | **fail** | Baijus-Mac-mini.local | inspected foundry-local-sdk-2.0.0-rc1.tgz |
 | js__pkg-inspect__linux-x64__cpu | **fail** | onnxr4c75000005 | inspected foundry-local-sdk-2.0.0-rc1.tgz |
 | js__tool-calling__macos-arm64__cpu | **fail** | Baijus-Mac-mini.local | sample-backed run completed |
@@ -40,7 +40,7 @@
 | cpp | install-smoke | cpu | - | **pass** | yes | onnxr4c75000005 |
 | cpp | pkg-inspect | cpu | - | **pass** | yes | Baijus-Mac-mini.local |
 | cpp | pkg-inspect | cpu | - | **pass** | yes | onnxr4c75000005 |
-| cs | chat | cpu | qwen2.5-0.5b | **fail** | yes | onnxr4c75000005 |
+| cs | chat | cuda | qwen2.5-0.5b | **fail** | yes | onnxr4c75000005 |
 | cs | embeddings | cpu | qwen3-embedding-0.6b | **fail** | yes | onnxr4c75000005 |
 | cs | install-smoke | cpu | - | **pass** | yes | Baijus-Mac-mini.local |
 | cs | install-smoke | cpu | - | **pass** | yes | onnxr4c75000005 |
