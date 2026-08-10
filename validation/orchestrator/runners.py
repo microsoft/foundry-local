@@ -214,9 +214,14 @@ def _install_smoke_cs(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
     # project to net9.0 + this machine's RID so restore produces a RID-resolved assets file.
     csproj = os.path.join(proj, "smoke.csproj")
     text = _read(csproj)
-    text = text.replace("<TargetFramework>net10.0</TargetFramework>",
-                        f"<TargetFramework>net9.0</TargetFramework>"
-                        f"<RuntimeIdentifier>{_dotnet_rid()}</RuntimeIdentifier>")
+    # `dotnet new console` emits whatever TFM the installed SDK defaults to (net9.0, net10.0, ...).
+    # Rewrite that TFM to net9.0 and pin this machine's RID so restore produces a RID-resolved
+    # assets file — matching the fully version-agnostic approach used by the cpp runner.
+    import re
+    text = re.sub(r"<TargetFramework>net\d+\.\d+</TargetFramework>",
+                  f"<TargetFramework>net9.0</TargetFramework>"
+                  f"<RuntimeIdentifier>{_dotnet_rid()}</RuntimeIdentifier>",
+                  text, count=1)
     with open(csproj, "w", encoding="utf-8") as f:
         f.write(text)
     shutil.copy(os.path.join(ws, "nuget.config"), os.path.join(proj, "nuget.config"))

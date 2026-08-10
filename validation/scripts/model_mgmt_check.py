@@ -32,12 +32,17 @@ check("catalog.list_models returns many models", len(models) > 20, f"{len(models
 m = cat.get_model("qwen2.5-0.5b")
 check("get_model('qwen2.5-0.5b')", m is not None and m.alias == "qwen2.5-0.5b", m.alias)
 
-# 3. variants + EP metadata (CPU + WebGPU present)
+# 3. variants + EP metadata (CPU always; plus this platform's GPU EP — WebGPU on macOS,
+#    CUDA on a CUDA box, WebGPU/DirectML on Windows). Assert CPU + at least one GPU EP so the
+#    check is portable across the platform matrix instead of hard-coding WebGPU.
 eps = set()
 for v in m.variants:
     rt = v.info.get_string_property("runtime")
     eps.add(getattr(rt, "execution_provider", str(rt)))
-check("model exposes CPU + WebGPU variants", {"CPUExecutionProvider", "WebGPUExecutionProvider"} <= eps, str(sorted(eps)))
+gpu_eps = {"WebGPUExecutionProvider", "CUDAExecutionProvider", "DmlExecutionProvider",
+           "QNNExecutionProvider", "CoreMLExecutionProvider"}
+check("model exposes CPU + a GPU-accelerated variant",
+      "CPUExecutionProvider" in eps and bool(eps & gpu_eps), str(sorted(eps)))
 
 # 4. Explicit variant selection (CPU)
 cpu = [v for v in m.variants if getattr(v.info.get_string_property("runtime"), "execution_provider", "") == "CPUExecutionProvider"][0]

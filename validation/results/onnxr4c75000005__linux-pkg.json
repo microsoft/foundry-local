@@ -1,0 +1,549 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "cpp__install-smoke__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "cpp",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 3.2,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local.Runtime",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "native lib present for linux-x64: /datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/cpp__install-smoke__linux-x64__cpu/cpp-smoke/packages/microsoft.ai.foundry.local.runtime/2.0.0-rc1/runtimes/linux-x64/native/libfoundry_local.so"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/cpp__install-smoke__linux-x64__cpu/install-smoke.log",
+    "notes": "native lib present for linux-x64: /datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/cpp__install-smoke__linux-x64__cpu/cpp-smoke/packages/microsoft.ai.foundry.local.runtime/2.0.0-rc1/runtimes/linux-x64/native/libfoundry_local.so",
+    "owner": null,
+    "timestamp": "2026-08-10T21:52:07+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__install-smoke__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "cs",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 8.0,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "restored+built Microsoft.AI.Foundry.Local 2.0.0-rc1 (linux-x64)"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/cs__install-smoke__linux-x64__cpu/install-smoke.log",
+    "notes": "restored+built Microsoft.AI.Foundry.Local 2.0.0-rc1 (linux-x64)",
+    "owner": null,
+    "timestamp": "2026-08-10T21:52:15+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__install-smoke__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "js",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 9.1,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "installed version=2.0.0-rc1"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/js__install-smoke__linux-x64__cpu/install-smoke.log",
+    "notes": "installed version=2.0.0-rc1",
+    "owner": null,
+    "timestamp": "2026-08-10T21:52:24+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__install-smoke__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "python",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 19.7,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "installed version=2.0.0rc1"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/python__install-smoke__linux-x64__cpu/install-smoke.log",
+    "notes": "installed version=2.0.0rc1",
+    "owner": null,
+    "timestamp": "2026-08-10T21:52:43+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cpp__pkg-inspect__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "cpp",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 4.5,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local.Runtime",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": "62ff5e14f2c41c2167d3244648046b084ccdd1c3bf619b0db38c3c680343a627",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/cpp__pkg-inspect__linux-x64__cpu/pkg-inspect.log",
+    "notes": "inspected microsoft.ai.foundry.local.runtime.2.0.0-rc1.nupkg",
+    "owner": null,
+    "timestamp": "2026-08-10T21:52:48+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__pkg-inspect__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "cs",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 7.8,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": "84040c695fae123eac4974cabd234a477ce6213994cb3cce108db47006ec8892",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/cs__pkg-inspect__linux-x64__cpu/pkg-inspect.log",
+    "notes": "inspected microsoft.ai.foundry.local.2.0.0-rc1.nupkg",
+    "owner": null,
+    "timestamp": "2026-08-10T21:52:56+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__pkg-inspect__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "js",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 8.8,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": "f6e431f363917c24507d2248f8befa10ef4ca1e7b6cd7d7a0a62b0a7328f5840",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": false,
+        "detail": "license={'expression': None, 'file': None}"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/js__pkg-inspect__linux-x64__cpu/pkg-inspect.log",
+    "notes": "inspected foundry-local-sdk-2.0.0-rc1.tgz",
+    "owner": null,
+    "timestamp": "2026-08-10T21:53:05+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__pkg-inspect__linux-x64__cpu",
+    "run_id": "linux-pkg",
+    "sdk": "python",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 20.7,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": "2aae288a5744547759214bca17e9de307fbb77476266a8b6d4e3078c57767ab4",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-pkg/python__pkg-inspect__linux-x64__cpu/pkg-inspect.log",
+    "notes": "inspected foundry_local_sdk-2.0.0rc1-cp311-abi3-linux_x86_64.whl",
+    "owner": null,
+    "timestamp": "2026-08-10T21:53:25+00:00"
+  }
+]

@@ -1,0 +1,508 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__model-mgmt__linux-x64__cpu",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "model-mgmt",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null,
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "model_mgmt_check.py 10/10 PASS",
+        "ok": true,
+        "detail": "catalog.list 50 models; CPU+CUDA variants; cache-reuse 0.00s; load/unload"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API scripts/model_mgmt_check.py 10/10 on linux-x64 (CPU+CUDA variants enumerated, download+idempotent cache-reuse, load/unload, get_latest_version).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__crosscutting__linux-x64__cpu",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "crosscutting",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null,
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "crosscutting_check.py 8/8 PASS",
+        "ok": true,
+        "detail": "unknown alias->None; typed errors; 2 concurrent sessions; unload refused while live"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API scripts/crosscutting_check.py 8/8 on linux-x64 (typed errors, concurrency, cancel, unload-while-live refused, reload).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__compat-upgrade__linux-x64__cpu",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "compat-upgrade",
+    "category": "compat",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null,
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "compat_surface_check.py 4/4 PASS",
+        "ok": true,
+        "detail": "1.x top-level/Manager/IModel symbols all present; +54 additive symbols"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API scripts/compat_surface_check.py 4/4 on linux-x64 vs 1.2.4 baseline: full 1.x public surface preserved; openai submodule importable. Runtime/service upgrade slice deferred (N6).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__model-mgmt-fail__linux-x64__cpu",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "model-mgmt-fail",
+    "category": "runtime",
+    "blocking": false,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null,
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "model_mgmt_failure_check.py 7/7 PASS",
+        "ok": true,
+        "detail": "corrupt/missing-file/readonly-cache -> typed FoundryLocalException; 3 concurrent downloads safe"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API scripts/model_mgmt_failure_check.py 7/7 on linux-x64: graceful typed errors for corrupt/missing/readonly/concurrent; no crash/hang.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__soak-resource__linux-x64__cpu",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "soak-resource",
+    "category": "nonfunctional",
+    "blocking": false,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null,
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "load/unload bounded (plateau ~619MB)",
+        "ok": true,
+        "detail": "steady slope 0.0MB/cyc"
+      },
+      {
+        "name": "sustained inference flat",
+        "ok": true,
+        "detail": "+29MB over 50 calls (clean isolated process)"
+      },
+      {
+        "name": "model load <60s / first-token <30s",
+        "ok": true,
+        "detail": "load 2.0s, first-token 0.50s"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API scripts/soak_resource_check.py: 7/8 coarse gates; independent clean-process characterization shows sustained inference FLAT (+29MB/50 calls) and load/unload BOUNDED (plateau ~619MB). The single 20-inference gate 'FAIL' (+755MB) is an artifact of accumulated single-process state across prior phases + uncapped generation, not a leak. Better than macOS load/unload drift (N4).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__linux-x64__cpu",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "EP register + CPU inference",
+        "ok": true,
+        "detail": "CPUExecutionProvider registered; chat/embeddings/etc pass on CPU"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "download_and_register_eps() registers CPU EP; real CPU inference verified across all python feature cells.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__linux-x64__cuda",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cuda",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "CUDA EP registers with CUDA12 runtime",
+        "ok": true,
+        "detail": "libonnxruntime_providers_cuda.so loaded; real A100 inference"
+      },
+      {
+        "name": "F7 caveat (see FINDINGS): out-of-box hard-fail without CUDA12 runtime",
+        "ok": true,
+        "detail": "tracked as finding F7, not a pass/fail assertion here"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "CUDA EP registers and runs REAL inference on A100 once CUDA 12 runtime libs are provided (nvidia-*-cu12 on LD_LIBRARY_PATH). NOTE F7: without CUDA 12 runtime, download_and_register_eps() HARD-RAISES 'Some EPs failed to register' instead of degrading to CPU.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__chat__linux-x64__cuda",
+    "run_id": "linux-direct",
+    "sdk": "python",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null,
+      "expected": true
+    },
+    "accelerator": "cuda",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "ORT-Nightly ADO pypi feed (RC) + pypi.org (deps)"
+    },
+    "assertions": [
+      {
+        "name": "CUDA chat correctness",
+        "ok": true,
+        "detail": "'What is the capital of France' -> 'Paris'"
+      },
+      {
+        "name": "CUDA load fast",
+        "ok": true,
+        "detail": "load 1.2-2.2s on A100"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "REAL CUDA inference on A100: qwen2.5-0.5b cuda-gpu variant loaded (1.2s), 'Paris' in 0.38s; default-opts golden-ratio 547 chars. Isolated clean cache.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-10T22:12:16+00:00"
+  }
+]

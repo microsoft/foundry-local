@@ -5,6 +5,10 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="Microsoft.AI.Foundry.Local" Version="*-*" />
+    <!-- Linux GPU packages referenced conditionally by the native-* samples (RuntimeIdentifier==linux-x64).
+         Required as PackageVersion entries because the repo uses Central Package Management. -->
+    <PackageVersion Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.28.0" />
+    <PackageVersion Include="Microsoft.ML.OnnxRuntimeGenAI.Cuda" Version="0.15.2" />
     <PackageVersion Include="Betalgo.Ranul.OpenAI" Version="9.1.0" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="9.0.15" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="9.0.15" />

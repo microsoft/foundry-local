@@ -1,0 +1,298 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__chat__linux-x64__cpu",
+    "run_id": "linux-csfeat",
+    "sdk": "cs",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 22.3,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 139"
+      },
+      {
+        "name": "output contains marker: Chat completion response:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__chat__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T22:07:29+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__embeddings__linux-x64__cpu",
+    "run_id": "linux-csfeat",
+    "sdk": "cs",
+    "feature": "embeddings",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "embeddings",
+      "alias": "qwen3-embedding-0.6b",
+      "variant": "qwen3-embedding-0.6b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 21.0,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 139"
+      },
+      {
+        "name": "output contains marker: Number of embeddings:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__embeddings__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T22:07:50+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__web-server__linux-x64__cpu",
+    "run_id": "linux-csfeat",
+    "sdk": "cs",
+    "feature": "web-server",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 24.0,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 139"
+      },
+      {
+        "name": "output contains marker: [ASSISTANT]:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__web-server__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T22:08:14+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__model-mgmt__linux-x64__cpu",
+    "run_id": "linux-csfeat",
+    "sdk": "cs",
+    "feature": "model-mgmt",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 22.3,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 139"
+      },
+      {
+        "name": "output contains marker: Sample complete.",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-csfeat/cs__model-mgmt__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T22:08:36+00:00"
+  }
+]

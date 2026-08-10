@@ -1,0 +1,520 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__chat__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 12.7,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Chat completion result:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__chat__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:57:38+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__tool-calling__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "tool-calling",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 12.0,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 1"
+      },
+      {
+        "name": "output contains marker: Tool calls completed",
+        "ok": false,
+        "detail": "marker not found"
+      },
+      {
+        "name": "feature output sanity",
+        "ok": false,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__tool-calling__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:57:50+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__embeddings__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "embeddings",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "embeddings",
+      "alias": "qwen3-embedding-0.6b",
+      "variant": "qwen3-embedding-0.6b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 14.5,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Number of embeddings:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__embeddings__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:58:05+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__audio-file__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "audio-file",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "audio-file",
+      "alias": "whisper-tiny",
+      "variant": "whisper-tiny-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 11.9,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Audio transcription result:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__audio-file__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:58:17+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__vision__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "vision",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "vision",
+      "alias": "qwen3-vl-2b-instruct",
+      "variant": "qwen3-vl-2b-instruct-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 17.4,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: [ASSISTANT]:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__vision__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:58:34+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__web-server__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "web-server",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 15.5,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Testing chat completion with OpenAI client",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__web-server__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:58:50+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__integrations__linux-x64__cpu",
+    "run_id": "linux-jsfeat",
+    "sdk": "js",
+    "feature": "integrations",
+    "category": "feature",
+    "blocking": false,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 16.2,
+    "env": {
+      "platform_id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "hostname": "onnxr4c75000005",
+      "cpu": "x86_64",
+      "gpus": [
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100-SXM4-80GB"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "| NVIDIA-SMI 580.105.08             Driver Version: 580.105.08     CUDA Version: 13.0     |",
+      "runtimes": {
+        "python": "3.12.9",
+        "dotnet": "9.0.316",
+        "node": "v24.14.1",
+        "npm": "11.11.0",
+        "cmake": "cmake version 4.1.2\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Response:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/datadisks/disk4/bmeswani/Foundry-Local/validation/results/work-onnxr4c75000005-linux-jsfeat/js__integrations__linux-x64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T21:59:06+00:00"
+  }
+]
