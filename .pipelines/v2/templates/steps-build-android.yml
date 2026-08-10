@@ -30,10 +30,20 @@ parameters:
 - name: androidApi
   type: number
   default: 28
-# Pinned so a pool image refresh cannot silently change the toolchain.
+# Pinned so a pool image refresh cannot silently change the toolchain. All
+# three values come from the same entry in Google's package manifest:
+#   https://dl.google.com/android/repository/repository2-3.xml  (ndk;<version>)
+# They must be bumped together. A mismatched triple is caught at runtime: the
+# extracted NDK's Pkg.Revision is asserted against ndkVersion below.
 - name: ndkVersion
   type: string
   default: '29.0.14206865'
+- name: ndkArchive
+  type: string
+  default: 'android-ndk-r29-linux.zip'
+- name: ndkSha1
+  type: string
+  default: '87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b'
 # Emulator tests require the x86_64 ABI. Off by default: this stage exists to
 # guard the build and the dependency wiring, and an emulator boot adds both
 # runtime and flakiness. Enable per-stage once the leg is proven stable.
@@ -49,38 +59,78 @@ steps:
     "$(Build.BinariesDirectory)/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
   displayName: 'Bootstrap vcpkg'
 
-# Resolve the NDK from the pool image when possible, and only fall back to
-# sdkmanager if the pinned version is genuinely absent. Both paths converge on
-# the same pinned version so the toolchain is identical either way.
+# Resolve the NDK. Fast path: the pool image already has the pinned version.
+# Otherwise fetch Google's published archive and verify it, rather than going
+# through sdkmanager -- that needs cmdline-tools on the image, prompts for
+# licence acceptance, and gives no integrity check on what it downloaded.
+#
+# Note this deliberately does not require an Android SDK. A cross-compile only
+# needs the NDK; the SDK is an emulator concern and is resolved separately by
+# the test step below, so a pool image without one can still build.
 - bash: |
     set -euo pipefail
     pinned='${{ parameters.ndkVersion }}'
-    sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+    archive='${{ parameters.ndkArchive }}'
+    expected_sha1='${{ parameters.ndkSha1 }}'
 
-    if [ -z "$sdk" ]; then
-      echo "ERROR: neither ANDROID_SDK_ROOT nor ANDROID_HOME is set on this agent." >&2
-      exit 1
-    fi
+    # Look for the pinned NDK where agent images conventionally place it.
+    ndk=''
+    for candidate in \
+      "${ANDROID_NDK_HOME:-}" \
+      "${ANDROID_NDK_ROOT:-}" \
+      "${ANDROID_SDK_ROOT:-}/ndk/$pinned" \
+      "${ANDROID_HOME:-}/ndk/$pinned"; do
+      [ -n "$candidate" ] || continue
+      if [ -r "$candidate/source.properties" ] &&
+         grep -qx "Pkg.Revision = $pinned" "$candidate/source.properties"; then
+        ndk="$candidate"
+        echo "Found pinned NDK on the image: $ndk"
+        break
+      fi
+    done
 
-    ndk="$sdk/ndk/$pinned"
-    if [ ! -d "$ndk" ]; then
-      echo "NDK $pinned not present; installing via sdkmanager."
-      sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
-      if [ ! -x "$sdkmanager" ]; then
-        echo "ERROR: sdkmanager not found at $sdkmanager" >&2
+    if [ -z "$ndk" ]; then
+      echo "NDK $pinned not on this image; downloading the pinned archive."
+
+      # unzip, not python -m zipfile: zipfile drops the executable bit, which
+      # would leave every toolchain binary in the NDK unusable.
+      command -v unzip >/dev/null || { echo "ERROR: unzip is required but not installed." >&2; exit 1; }
+
+      workdir="$(Agent.TempDirectory)/ndk-download"
+      mkdir -p "$workdir"
+      curl -fsSL --retry 3 --retry-delay 5 \
+        -o "$workdir/$archive" \
+        "https://dl.google.com/android/repository/$archive"
+
+      actual_sha1=$(sha1sum "$workdir/$archive" | cut -d' ' -f1)
+      if [ "$actual_sha1" != "$expected_sha1" ]; then
+        echo "ERROR: checksum mismatch for $archive" >&2
+        echo "  expected $expected_sha1" >&2
+        echo "  actual   $actual_sha1" >&2
         exit 1
       fi
-      yes | "$sdkmanager" --install "ndk;$pinned" > /dev/null
+      echo "Checksum verified: $actual_sha1"
+
+      unzip -q "$workdir/$archive" -d "$workdir/extracted"
+      # The archive expands to a single release-named directory (android-ndk-r29).
+      extracted=$(find "$workdir/extracted" -maxdepth 1 -mindepth 1 -type d)
+      [ "$(echo "$extracted" | wc -l)" -eq 1 ] || {
+        echo "ERROR: expected exactly one top-level directory in $archive" >&2; exit 1; }
+      ndk="$extracted"
+      rm -f "$workdir/$archive"
     fi
 
-    if [ ! -d "$ndk" ]; then
-      echo "ERROR: NDK $pinned still not found at $ndk" >&2
+    # Assert we got what we pinned. This is what catches a partially-updated
+    # parameter triple: bump ndkVersion without ndkArchive/ndkSha1 and the
+    # checksum still matches, but the revision here will not.
+    revision=$(sed -n 's/^Pkg.Revision = //p' "$ndk/source.properties")
+    if [ "$revision" != "$pinned" ]; then
+      echo "ERROR: NDK at $ndk reports revision '$revision', expected '$pinned'." >&2
+      echo "       ndkVersion, ndkArchive and ndkSha1 must be bumped together." >&2
       exit 1
     fi
 
-    echo "ANDROID_HOME     = $sdk"
-    echo "ANDROID_NDK_HOME = $ndk"
-    echo "##vso[task.setvariable variable=androidSdkRoot]$sdk"
+    echo "ANDROID_NDK_HOME = $ndk  (revision $revision)"
     echo "##vso[task.setvariable variable=androidNdkHome]$ndk"
   displayName: 'Resolve Android NDK (${{ parameters.ndkVersion }})'
 
@@ -118,10 +168,23 @@ steps:
   workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
   env:
     VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
-    ANDROID_HOME: $(androidSdkRoot)
     ANDROID_NDK_HOME: $(androidNdkHome)
 
 - ${{ if eq(parameters.runEmulatorTests, true) }}:
+  # Only the emulator needs a full SDK (avdmanager/emulator/adb), so this is
+  # resolved here rather than as a precondition of the whole stage.
+  - bash: |
+      set -euo pipefail
+      sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+      if [ -z "$sdk" ] || [ ! -d "$sdk" ]; then
+        echo "ERROR: emulator tests need an Android SDK, but neither ANDROID_SDK_ROOT" >&2
+        echo "       nor ANDROID_HOME points at one on this agent." >&2
+        exit 1
+      fi
+      echo "ANDROID_HOME = $sdk"
+      echo "##vso[task.setvariable variable=androidSdkRoot]$sdk"
+    displayName: 'Resolve Android SDK (emulator)'
+
   - bash: |
       set -euo pipefail
       python3 build.py --test \
