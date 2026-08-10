@@ -1,0 +1,62 @@
+{
+  "$comment": "Frozen supported-platform baseline for Foundry Local 2.0.0 RC validation. Coverage is measured against this manifest. A deviation (a supported combination that fails) is a FAILURE, not n-a. Ratify exact versions with the release owners before execution.",
+  "release": {
+    "version": "2.0.0-rc1",
+    "branch": "releases/rel-2.0.0",
+    "feed": "ORT-Nightly (Azure DevOps)",
+    "native_deps": {
+      "onnxruntime": "1.28.0",
+      "onnxruntime-genai": "0.15.2",
+      "windows-ai-machinelearning": "2.1.70"
+    }
+  },
+  "packages": {
+    "cpp": "Microsoft.AI.Foundry.Local.Runtime==2.0.0-rc1",
+    "cs": "Microsoft.AI.Foundry.Local==2.0.0-rc1",
+    "js": "foundry-local-sdk@2.0.0-rc1",
+    "python": "foundry-local-sdk==2.0.0rc1"
+  },
+  "platforms": [
+    {
+      "id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "os_versions": ["Windows 11 23H2+"],
+      "runtimes": { "dotnet": ["net9.0"], "python": ["3.10", "3.11", "3.12"], "node": ["20", "22"], "cpp": ["MSVC 19.3x / C++20"] },
+      "accelerators": ["cpu", "cuda", "winml-dml", "npu-winml", "webgpu"]
+    },
+    {
+      "id": "windows-arm64",
+      "os": "windows",
+      "arch": "arm64",
+      "os_versions": ["Windows 11 23H2+"],
+      "runtimes": { "dotnet": ["net9.0"], "python": ["3.11", "3.12"], "node": ["20", "22"], "cpp": ["MSVC 19.3x / C++20"] },
+      "accelerators": ["cpu", "winml-dml", "npu-winml", "webgpu"]
+    },
+    {
+      "id": "linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "os_versions": ["Ubuntu 22.04+ (glibc >= 2.35)"],
+      "runtimes": { "dotnet": ["net9.0"], "python": ["3.10", "3.11", "3.12"], "node": ["20", "22"], "cpp": ["GCC 11+ / Clang 14+ / C++20"] },
+      "accelerators": ["cpu", "cuda", "webgpu"]
+    },
+    {
+      "id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "os_versions": ["macOS 14+"],
+      "runtimes": { "dotnet": ["net9.0"], "python": ["3.10", "3.11", "3.12"], "node": ["20", "22"], "cpp": ["AppleClang 15+ / C++20"] },
+      "accelerators": ["cpu", "coreml-metal"]
+    }
+  ],
+  "accelerator_ep_map": {
+    "$comment": "Exact EP expected per accelerator, and whether the path is a GA-blocking requirement or experimental. Confirm with release owners.",
+    "cpu": { "ep": "CPUExecutionProvider", "requirement": "required" },
+    "cuda": { "ep": "CUDAExecutionProvider", "requirement": "required", "driver": "CUDA 12.x runtime; NVIDIA driver per ORT 1.28 matrix" },
+    "winml-dml": { "ep": "WinML / DirectML", "requirement": "required" },
+    "npu-winml": { "ep": "WinML (NPU)", "requirement": "required", "note": "requires supported NPU hardware" },
+    "coreml-metal": { "ep": "CoreML / Metal", "requirement": "required" },
+    "webgpu": { "ep": "WebGPUExecutionProvider", "requirement": "experimental" }
+  }
+}

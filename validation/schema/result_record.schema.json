@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://foundry-local/validation/result_record.schema.json",
+  "title": "Foundry Local 2.0.0 validation result record",
+  "description": "One record per executed cell. Records from every machine share this schema so cross-machine results merge into a single go/no-go checklist without manual reconciliation.",
+  "type": "object",
+  "required": ["schema_version", "cell_id", "sdk", "feature", "result", "category", "blocking", "env", "package", "timestamp"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "cell_id": { "type": "string", "description": "Stable id: <sdk>__<feature>__<platform>__<accelerator>." },
+    "run_id": { "type": "string", "description": "Groups all cells from a single harness invocation." },
+    "sdk": { "enum": ["cpp", "cs", "js", "python"] },
+    "feature": { "type": "string" },
+    "category": { "enum": ["packaging", "runtime", "feature", "compat", "nonfunctional"] },
+    "blocking": { "type": "boolean" },
+    "model": {
+      "type": ["object", "null"],
+      "properties": {
+        "task": { "type": ["string", "null"] },
+        "alias": { "type": ["string", "null"] },
+        "variant": { "type": ["string", "null"] }
+      }
+    },
+    "accelerator": { "enum": ["cpu", "cuda", "winml-dml", "npu-winml", "coreml-metal", "webgpu", "none"] },
+    "result": {
+      "enum": ["pass", "fail", "blocked", "waived", "n-a", "skipped"],
+      "description": "pass/fail per assertions; blocked = could not run (e.g., insufficient resources); waived = approved known issue; n-a = not applicable per manifest; skipped = not selected this run."
+    },
+    "duration_seconds": { "type": ["number", "null"] },
+    "env": {
+      "type": "object",
+      "required": ["platform_id", "os", "arch"],
+      "properties": {
+        "platform_id": { "type": "string" },
+        "os": { "type": "string" },
+        "arch": { "type": "string" },
+        "hostname": { "type": ["string", "null"] },
+        "cpu": { "type": ["string", "null"] },
+        "gpus": { "type": "array", "items": { "type": "string" } },
+        "npu": { "type": ["string", "null"] },
+        "driver": { "type": ["string", "null"] },
+        "cuda": { "type": ["string", "null"] },
+        "runtimes": { "type": "object" }
+      }
+    },
+    "package": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "resolved_source": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"] },
+        "native_lib_versions": { "type": "object" }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok"],
+        "properties": {
+          "name": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "detail": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "waiver": {
+      "type": ["object", "null"],
+      "properties": {
+        "issue": { "type": "string" },
+        "owner": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    },
+    "log_path": { "type": ["string", "null"] },
+    "notes": { "type": ["string", "null"] },
+    "owner": { "type": ["string", "null"] },
+    "timestamp": { "type": "string", "format": "date-time" }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$comment": "Expected model + variant availability per task and accelerator for the representative go/no-go slice. Produced/ratified up front from the published 2.0.0 catalog. If the harness cannot find a variant listed here as 'expected: true', that cell is a FAILURE (mis-published / missing variant), NOT n-a. Variants not listed for a platform are legitimately n-a.",
+  "variant_suffixes": {
+    "cpu": "generic-cpu",
+    "cuda": "cuda-gpu",
+    "winml-dml": "generic-gpu",
+    "npu-winml": "generic-npu",
+    "coreml-metal": "generic-cpu"
+  },
+  "models": [
+    {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": true }
+    },
+    {
+      "task": "chat-large",
+      "alias": "deepseek-r1-distill-qwen-14b",
+      "note": "large-memory / GPU path; may be skipped on low-RAM CPU-only agents (record as blocked with rationale, not pass)",
+      "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": true }
+    },
+    {
+      "task": "embeddings",
+      "alias": "qwen3-embedding-0.6b",
+      "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": true }
+    },
+    {
+      "task": "audio-file",
+      "alias": "whisper-tiny",
+      "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": false }
+    },
+    {
+      "task": "audio-stream",
+      "alias": "nemotron-speech-streaming-en-0.6b",
+      "expected": { "cpu": true, "cuda": true, "winml-dml": false, "npu-winml": false, "coreml-metal": true, "webgpu": false }
+    },
+    {
+      "task": "vision",
+      "alias": "Qwen2.5-VL-7B-Instruct",
+      "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": false }
+    }
+  ]
+}

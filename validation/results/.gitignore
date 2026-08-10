@@ -1,0 +1,4 @@
+# Transient harness workspaces (isolated caches, installed projects) — never commit.
+work-*/
+# Local run outputs are captured per-agent; commit deliberately, not automatically.
+*.log

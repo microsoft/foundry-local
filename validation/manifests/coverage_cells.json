@@ -1,0 +1,29 @@
+{
+  "$comment": "Feature/cell catalog for the validation matrix. The orchestrator expands these into concrete cells per {sdk x platform x accelerator} using the platform + availability manifests, then filters to what the current machine actually supports. 'category' drives the acceptance policy. 'runner' names the per-SDK entrypoint under validation/runners/<sdk>/.",
+  "sdks": ["cpp", "cs", "js", "python"],
+  "features": [
+    { "id": "install-smoke",   "runner": "install_smoke",   "category": "packaging",     "model_task": null,          "accelerators": ["cpu"], "blocking": true,  "desc": "Install RC package into fresh isolated project; verify native load + version == 2.0.0-rc1." },
+    { "id": "pkg-inspect",     "runner": "pkg_inspect",     "category": "packaging",     "model_task": null,          "accelerators": ["cpu"], "blocking": true,  "desc": "Inspect package contents/identity: native assets, RID/wheel/arch tags, signatures, licenses, no internal/debug files; record hash + provenance." },
+    { "id": "chat",            "runner": "chat",            "category": "feature",       "model_task": "chat-small",  "accelerators": ["cpu","cuda","winml-dml","npu-winml","coreml-metal","webgpu"], "blocking": true,  "desc": "Native chat completions, non-streaming + streaming, with correctness assertions." },
+    { "id": "chat-large",      "runner": "chat",            "category": "feature",       "model_task": "chat-large",  "accelerators": ["cuda","winml-dml","coreml-metal"], "blocking": false, "desc": "Large chat model on accelerated path (memory/perf)." },
+    { "id": "tool-calling",    "runner": "tool_calling",    "category": "feature",       "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": true,  "desc": "Tool/function calling, native path + web-server path; assert tool-call arguments." },
+    { "id": "embeddings",      "runner": "embeddings",      "category": "feature",       "model_task": "embeddings",  "accelerators": ["cpu"], "blocking": true,  "desc": "Single + batch embeddings; assert vector shape/count/numeric sanity." },
+    { "id": "audio-file",      "runner": "audio_file",      "category": "feature",       "model_task": "audio-file",  "accelerators": ["cpu"], "blocking": true,  "desc": "Whisper file transcription; assert text within tolerance of reference." },
+    { "id": "audio-stream",    "runner": "audio_stream",    "category": "feature",       "model_task": "audio-stream","accelerators": ["cpu"], "blocking": false, "desc": "Live/streaming transcription (incl. C++ realtime)." },
+    { "id": "vision",          "runner": "vision",          "category": "feature",       "model_task": "vision",      "accelerators": ["cpu"], "blocking": true,  "desc": "Image understanding via Responses API (web server); assert non-empty grounded description." },
+    { "id": "web-server",      "runner": "web_server",      "category": "feature",       "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": true,  "desc": "OpenAI-compatible web server: chat, Responses, REST + negative/lifecycle cases; OpenAI SDK against endpoint." },
+    { "id": "integrations",    "runner": "integrations",    "category": "feature",       "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": false, "desc": "LangChain integration (python/js)." },
+    { "id": "model-mgmt",      "runner": "model_mgmt",      "category": "runtime",       "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": true,  "desc": "Catalog list, variant/EP selection, download progress+cancel, cache reuse, offline load, update, pinning." },
+    { "id": "model-mgmt-fail", "runner": "model_mgmt_fail", "category": "runtime",       "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": false, "desc": "Hostile download/cache: interrupted/resumed, checksum fail, corrupt cache, concurrent, no-disk, odd paths, cancel cleanup." },
+    { "id": "ep-bootstrap",    "runner": "ep_bootstrap",    "category": "runtime",       "model_task": null,          "accelerators": ["cpu","cuda","winml-dml","npu-winml","coreml-metal","webgpu"], "blocking": true, "desc": "EP download/register; auto + explicit selection; documented fallback." },
+    { "id": "crosscutting",    "runner": "crosscutting",    "category": "feature",       "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": true,  "desc": "Cancellation, offline/error, dispose/lifecycle, concurrent sessions, telemetry privacy (network-observed)." },
+    { "id": "soak-resource",   "runner": "soak_resource",   "category": "nonfunctional", "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": false, "desc": "Repeated load/unload, long streaming, cancel races, concurrency, restart, memory/handle growth, latency/startup gates." },
+    { "id": "compat-upgrade",  "runner": "compat_upgrade",  "category": "compat",        "model_task": "chat-small",  "accelerators": ["cpu"], "blocking": true,  "desc": "Upgrade from latest 1.x, cache/config migration, API-break check, uninstall/reinstall, side-by-side." }
+  ],
+  "feature_sdk_applicability": {
+    "$comment": "Overrides where a feature is not applicable to a given SDK (e.g., vision/web-server are exercised via server + OpenAI clients; C++ has no LangChain).",
+    "integrations": ["python", "js"],
+    "vision": ["cs", "js", "python"],
+    "audio-stream": ["cpp", "cs", "js", "python"]
+  }
+}
