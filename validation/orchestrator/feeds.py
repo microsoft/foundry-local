@@ -1,23 +1,46 @@
 """Isolated package-feed configuration for the validation harness.
 
-Every install is done against the ORT-Nightly ADO feed in an ISOLATED environment
-(dedicated caches, no fallback feeds) so a clean end-user install is truly proven.
+The RC packages under test live ONLY on the ORT-Nightly ADO feed; their transitive
+dependencies (cffi, node-addon-api, Microsoft.ML.OnnxRuntime, Betalgo.Ranul.OpenAI, ...)
+live on the public registries. The ORT-Nightly feed is anonymous for its OWN packages, but
+its upstream proxy requires authentication to *save* an upstream package on first fetch, so
+transitive deps must be resolved from a separate deps source, not the ORT feed.
 
-Feed locations/credentials are provided via environment variables so no secrets are
-committed. Set these on each agent before running (see validation/VALIDATION.md):
+The harness therefore uses TWO sources per ecosystem:
+  * the ORT feed  -> the RC package (and only the RC package)
+  * a deps source -> everything else (public registry, or a corporate mirror)
 
-  FOUNDRY_VALIDATION_NUGET_FEED   NuGet v3 index URL for the ORT-Nightly feed
-  FOUNDRY_VALIDATION_NPM_REGISTRY npm registry URL for the ORT-Nightly feed
-  FOUNDRY_VALIDATION_PIP_INDEX    PyPI-style index URL for the ORT-Nightly feed
-  FOUNDRY_VALIDATION_FEED_TOKEN   PAT/token for the feed (if the feed is private)
+Feed locations/credentials come from environment variables so no secrets are committed.
+Set these on each agent before running (see validation/VALIDATION.md):
 
-The helpers below emit per-run, throwaway config files inside the run's workspace so
-the host's global NuGet/npm/pip config is never mutated.
+  RC package source (ORT-Nightly):
+    FOUNDRY_VALIDATION_NUGET_FEED     NuGet v3 index URL for the ORT-Nightly feed
+    FOUNDRY_VALIDATION_NPM_REGISTRY   npm registry URL for the ORT-Nightly feed
+    FOUNDRY_VALIDATION_PIP_INDEX      PyPI-style index URL for the ORT-Nightly feed
+    FOUNDRY_VALIDATION_FEED_TOKEN     PAT for the ORT feed (only if it is private)
+
+  Transitive-dependency source (defaults to the public registries; override to a mirror on
+  locked-down machines whose egress to the public registries is blocked):
+    FOUNDRY_VALIDATION_DEPS_NUGET_FEED   default https://api.nuget.org/v3/index.json
+    FOUNDRY_VALIDATION_DEPS_NPM_REGISTRY default https://registry.npmjs.org/
+    FOUNDRY_VALIDATION_DEPS_PIP_INDEX    default https://pypi.org/simple
+
+The helpers below emit per-run, throwaway config files inside the run's workspace so the
+host's global NuGet/npm/pip config is never mutated.
 """
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+
+# The RC packages that must be sourced from the ORT feed (everything else -> deps source).
+RC_NUGET_PACKAGES: List[str] = ["Microsoft.AI.Foundry.Local", "Microsoft.AI.Foundry.Local.Runtime"]
+
+_DEPS_DEFAULT = {
+    "nuget": "https://api.nuget.org/v3/index.json",
+    "npm": "https://registry.npmjs.org/",
+    "pip": "https://pypi.org/simple",
+}
 
 
 def feed_env() -> Dict[str, Optional[str]]:
@@ -27,6 +50,16 @@ def feed_env() -> Dict[str, Optional[str]]:
         "pip": os.environ.get("FOUNDRY_VALIDATION_PIP_INDEX"),
         "token": os.environ.get("FOUNDRY_VALIDATION_FEED_TOKEN"),
     }
+
+
+def deps_source(kind: str) -> str:
+    """Return the transitive-dependency source URL for `kind` (nuget|npm|pip)."""
+    env = {
+        "nuget": os.environ.get("FOUNDRY_VALIDATION_DEPS_NUGET_FEED"),
+        "npm": os.environ.get("FOUNDRY_VALIDATION_DEPS_NPM_REGISTRY"),
+        "pip": os.environ.get("FOUNDRY_VALIDATION_DEPS_PIP_INDEX"),
+    }[kind]
+    return env or _DEPS_DEFAULT[kind]
 
 
 def missing_feed(sdk: str) -> Optional[str]:
@@ -42,8 +75,10 @@ def missing_feed(sdk: str) -> Optional[str]:
 
 
 def write_nuget_config(workspace: str) -> str:
+    """Two-source nuget.config: RC packages from the ORT feed, all deps from the deps source."""
     env = feed_env()
-    feed = env["nuget"] or "https://api.nuget.org/v3/index.json"
+    ort = env["nuget"] or "https://api.nuget.org/v3/index.json"
+    deps = deps_source("nuget")
     token = env["token"]
     creds = ""
     if token:
@@ -54,6 +89,7 @@ def write_nuget_config(workspace: str) -> str:
       <add key="ClearTextPassword" value="{token}" />
     </ortnightly>
   </packageSourceCredentials>"""
+    rc_patterns = "\n      ".join(f'<package pattern="{p}" />' for p in RC_NUGET_PACKAGES)
     cfg = f"""<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <config>
@@ -61,14 +97,14 @@ def write_nuget_config(workspace: str) -> str:
   </config>
   <packageSources>
     <clear />
-    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-    <add key="ortnightly" value="{feed}" />
+    <add key="ortnightly" value="{ort}" />
+    <add key="deps" value="{deps}" />
   </packageSources>
   <packageSourceMapping>
     <packageSource key="ortnightly">
-      <package pattern="Microsoft.AI.Foundry.Local*" />
+      {rc_patterns}
     </packageSource>
-    <packageSource key="nuget.org">
+    <packageSource key="deps">
       <package pattern="*" />
     </packageSource>
   </packageSourceMapping>{creds}
@@ -80,14 +116,17 @@ def write_nuget_config(workspace: str) -> str:
     return path
 
 
-def write_npmrc(workspace: str) -> str:
+def write_npmrc(workspace: str, registry: Optional[str] = None) -> str:
+    """Write an isolated .npmrc. `registry` selects the default registry for this file
+    (ORT feed for fetching the RC tarball, or the deps registry for resolving deps)."""
     env = feed_env()
+    reg = registry or env["npm"]
     lines = [f"cache={os.path.join(workspace, 'npm-cache')}"]
-    if env["npm"]:
-        lines.append(f"registry={env['npm']}")
-        if env["token"]:
-            reg = env["npm"].split("://", 1)[-1].rstrip("/")
-            lines.append(f"//{reg}/:_authToken={env['token']}")
+    if reg:
+        lines.append(f"registry={reg}")
+        if env["token"] and env["npm"] and reg == env["npm"]:
+            host = env["npm"].split("://", 1)[-1].rstrip("/")
+            lines.append(f"//{host}/:_authToken={env['token']}")
     path = os.path.join(workspace, ".npmrc")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -95,8 +134,11 @@ def write_npmrc(workspace: str) -> str:
 
 
 def pip_install_args(workspace: str) -> Dict[str, str]:
-    """Return env/args fragments for an isolated pip install against the feed."""
+    """Return isolated pip fragments. `ort_index` fetches the RC wheel (no deps); `deps_index`
+    resolves transitive deps. See runners._install_smoke_python for the two-step flow."""
     env = feed_env()
-    args = {"index_url": env["pip"] or "https://pypi.org/simple"}
-    args["cache_dir"] = os.path.join(workspace, "pip-cache")
-    return args
+    return {
+        "ort_index": env["pip"] or "https://pypi.org/simple",
+        "deps_index": deps_source("pip"),
+        "cache_dir": os.path.join(workspace, "pip-cache"),
+    }

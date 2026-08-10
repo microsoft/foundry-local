@@ -114,6 +114,19 @@ def _feed_key(sdk: str) -> str:
     return {"python": "pip", "js": "npm", "cs": "nuget", "cpp": "nuget"}[sdk]
 
 
+def _dotnet_rid() -> str:
+    """Best-effort .NET RuntimeIdentifier for the current machine."""
+    import platform
+    sysname = platform.system().lower()
+    machine = platform.machine().lower()
+    arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
+    if sysname == "darwin":
+        return f"osx-{arch}"
+    if sysname == "windows":
+        return f"win-{arch}"
+    return f"linux-{arch}"
+
+
 def _install_smoke_python(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
     import sys
     venv = os.path.join(ws, "venv")
@@ -122,11 +135,23 @@ def _install_smoke_python(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]
         return False, "venv creation failed"
     py = os.path.join(venv, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv, "bin", "python")
     pip = feeds.pip_install_args(ws)
-    rc = _exec([py, "-m", "pip", "install", "--no-input", "--cache-dir", pip["cache_dir"],
-                "--index-url", pip["index_url"],
+    # Step 1: fetch the RC wheel from the ORT feed WITHOUT deps (that download is anonymous).
+    dl = os.path.join(ws, "wheelhouse")
+    os.makedirs(dl, exist_ok=True)
+    rc = _exec([py, "-m", "pip", "download", "--no-deps", "--dest", dl, "--cache-dir", pip["cache_dir"],
+                "--index-url", pip["ort_index"],
                 f"{PKG_NAMES['python']}=={RC_VERSIONS['python']}"], ws, log, ctx["install_timeout"])
     if rc != 0:
-        return False, "pip install failed"
+        return False, "pip download of RC wheel from ORT feed failed"
+    wheels = [f for f in os.listdir(dl) if f.endswith((".whl", ".tar.gz"))]
+    if not wheels:
+        return False, "RC wheel not downloaded from ORT feed"
+    # Step 2: install the local wheel; resolve transitive deps from the deps index only.
+    rc = _exec([py, "-m", "pip", "install", "--no-input", "--cache-dir", pip["cache_dir"],
+                "--index-url", pip["deps_index"], os.path.join(dl, wheels[0])],
+               ws, log, ctx["install_timeout"])
+    if rc != 0:
+        return False, "pip install of RC wheel (with deps) failed"
     check = ("import importlib.metadata as m;"
              "import foundry_local_sdk as f;"
              "print('VERSION=' + m.version('foundry-local-sdk'))")
@@ -141,25 +166,39 @@ def _install_smoke_python(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]
 
 
 def _install_smoke_js(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
-    feeds.write_npmrc(ws)
+    # Step 1: fetch the RC tarball from the ORT registry (anonymous for the RC package itself).
+    feeds.write_npmrc(ws)  # default registry = ORT feed, for `npm pack`
+    rc = _exec(["npm", "pack", f"{PKG_NAMES['js']}@{RC_VERSIONS['js']}",
+                "--userconfig", os.path.join(ws, ".npmrc")], ws, log, ctx["install_timeout"])
+    if rc != 0:
+        return False, "npm pack of RC tarball from ORT feed failed"
+    tgz = [f for f in os.listdir(ws) if f.endswith(".tgz")]
+    if not tgz:
+        return False, "RC tarball not produced by npm pack"
+    # Step 2: install the tarball; resolve deps from the deps registry only.
+    feeds.write_npmrc(ws, registry=feeds.deps_source("npm"))
     with open(os.path.join(ws, "package.json"), "w", encoding="utf-8") as f:
         f.write('{"name":"fl-smoke","version":"1.0.0","type":"module","private":true}\n')
     rc = _exec(["npm", "install", "--no-audit", "--no-fund",
-                f"{PKG_NAMES['js']}@{RC_VERSIONS['js']}"], ws, log, ctx["install_timeout"])
+                "--userconfig", os.path.join(ws, ".npmrc"), os.path.join(ws, tgz[0])],
+               ws, log, ctx["install_timeout"])
     if rc != 0:
-        return False, "npm install failed"
-    script = ("import {createRequire} from 'module';const r=createRequire(import.meta.url);"
-              "const p=r('foundry-local-sdk/package.json');console.log('VERSION='+p.version);")
-    js = os.path.join(ws, "smoke.mjs")
-    with open(js, "w", encoding="utf-8") as f:
-        f.write(script)
+        return False, "npm install of RC tarball (with deps) failed"
+    # ESM import smoke: the package is "type":"module" and exports only an import condition.
+    # Read the version straight from the installed package.json (its exports map does NOT
+    # expose the ./package.json subpath, so require('foundry-local-sdk/package.json') fails).
+    smoke = os.path.join(ws, "smoke.mjs")
     out_path = os.path.join(ws, "jsver.txt")
-    rc = _exec(["node", "-e",
-                f"const{{createRequire}}=require('module');const r=createRequire('{ws}/x');"
-                f"const p=r('foundry-local-sdk/package.json');require('fs').writeFileSync('{out_path}',p.version);"],
-               ws, log, 60)
+    pkg_json = os.path.join(ws, "node_modules", "foundry-local-sdk", "package.json")
+    with open(smoke, "w", encoding="utf-8") as f:
+        f.write("import * as fl from 'foundry-local-sdk';\n"
+                "import fs from 'fs';\n"
+                f"const p=JSON.parse(fs.readFileSync({pkg_json!r},'utf-8'));\n"
+                "if(!fl.FoundryLocalManager){throw new Error('missing FoundryLocalManager export');}\n"
+                f"fs.writeFileSync({out_path!r}, p.version);\n")
+    rc = _exec(["node", smoke], ws, log, 60)
     if rc != 0:
-        return False, "resolving foundry-local-sdk failed"
+        return False, "ESM import of foundry-local-sdk failed"
     ver = _read(out_path)
     return ver.startswith("2.0.0-rc1"), f"installed version={ver}"
 
@@ -171,6 +210,15 @@ def _install_smoke_cs(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
     rc = _exec(["dotnet", "new", "console", "-o", proj, "--force"], ws, log, 180)
     if rc != 0:
         return False, "dotnet new failed"
+    # The RC package targets net8.0/net9.0; the runtime package is RID-specific. Pin the smoke
+    # project to net9.0 + this machine's RID so restore produces a RID-resolved assets file.
+    csproj = os.path.join(proj, "smoke.csproj")
+    text = _read(csproj)
+    text = text.replace("<TargetFramework>net10.0</TargetFramework>",
+                        f"<TargetFramework>net9.0</TargetFramework>"
+                        f"<RuntimeIdentifier>{_dotnet_rid()}</RuntimeIdentifier>")
+    with open(csproj, "w", encoding="utf-8") as f:
+        f.write(text)
     shutil.copy(os.path.join(ws, "nuget.config"), os.path.join(proj, "nuget.config"))
     rc = _exec(["dotnet", "add", proj, "package", PKG_NAMES["cs"],
                 "--version", RC_VERSIONS["cs"]], ws, log, ctx["install_timeout"])
@@ -179,7 +227,7 @@ def _install_smoke_cs(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
     rc = _exec(["dotnet", "build", proj, "-c", "Release"], ws, log, ctx["install_timeout"])
     if rc != 0:
         return False, "dotnet build failed"
-    return True, f"restored+built {PKG_NAMES['cs']} {RC_VERSIONS['cs']}"
+    return True, f"restored+built {PKG_NAMES['cs']} {RC_VERSIONS['cs']} ({_dotnet_rid()})"
 
 
 def _install_smoke_cpp(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
@@ -192,6 +240,7 @@ def _install_smoke_cpp(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
         f.write(
             '<Project Sdk="Microsoft.NET.Sdk">\n'
             '  <PropertyGroup><TargetFramework>net9.0</TargetFramework>'
+            f'<RuntimeIdentifier>{_dotnet_rid()}</RuntimeIdentifier>'
             '<RestorePackagesPath>packages</RestorePackagesPath></PropertyGroup>\n'
             '  <ItemGroup><PackageReference Include="' + PKG_NAMES["cpp"] +
             '" Version="' + RC_VERSIONS["cpp"] + '" /></ItemGroup>\n'
@@ -200,17 +249,32 @@ def _install_smoke_cpp(ws: str, log, ctx: Dict[str, Any]) -> tuple[bool, str]:
     rc = _exec(["dotnet", "restore", csproj], proj, log, ctx["install_timeout"])
     if rc != 0:
         return False, "nuget restore of runtime package failed"
-    # Look for a native lib (foundry_local.{dll,so,dylib}) in the restored package tree.
-    found = _find_native(os.path.join(proj, "packages"))
-    return bool(found), (f"native lib present: {found}" if found else "native library not found in package")
+    # Assert the native lib for THIS platform's RID is present (not just any platform's).
+    rid = _dotnet_rid()
+    want_ext = ".dylib" if rid.startswith("osx") else ".dll" if rid.startswith("win") else ".so"
+    found = _find_native(os.path.join(proj, "packages"), rid, want_ext)
+    if found:
+        return True, f"native lib present for {rid}: {found}"
+    any_native = _find_native(os.path.join(proj, "packages"))
+    if any_native:
+        return False, f"native lib for {rid} ({want_ext}) missing; only found {any_native}"
+    return False, "native library not found in package"
 
 
-def _find_native(root: str) -> str | None:
+def _find_native(root: str, rid: str | None = None, ext: str | None = None) -> str | None:
+    # Windows libs are named foundry_local.dll; macOS/Linux use the lib-prefixed
+    # libfoundry_local.dylib / libfoundry_local.so.
     for base, _dirs, files in os.walk(root):
         for fn in files:
             low = fn.lower()
-            if low.startswith("foundry_local") and low.endswith((".dll", ".so", ".dylib")):
-                return os.path.join(base, fn)
+            stem = low[3:] if low.startswith("lib") else low
+            if not (stem.startswith("foundry_local") and low.endswith((".dll", ".so", ".dylib"))):
+                continue
+            if ext and not low.endswith(ext):
+                continue
+            if rid and (os.sep + rid + os.sep) not in (base + os.sep):
+                continue
+            return os.path.join(base, fn)
     return None
 
 
@@ -278,7 +342,10 @@ def run_pkg_inspect(cell: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]
             "log_path": log_path,
         }
     report = pkg_inspect.inspect(artifact)
-    asserts = pkg_inspect.to_assertions(report, PKG_NAMES[sdk], RC_VERSIONS[sdk])
+    # The C# Microsoft.AI.Foundry.Local package is pure-managed; native libs ship in the
+    # separate Microsoft.AI.Foundry.Local.Runtime dependency, so don't require native here.
+    expect_native = sdk != "cs"
+    asserts = pkg_inspect.to_assertions(report, PKG_NAMES[sdk], RC_VERSIONS[sdk], expect_native=expect_native)
     ok = all(a["ok"] for a in asserts)
     pkg = _pkg(sdk, feeds.feed_env().get(_feed_key(sdk)))
     pkg["sha256"] = report.get("sha256")
@@ -294,6 +361,16 @@ def run_pkg_inspect(cell: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]
 
 def _find_artifact(sdk: str, ws: str) -> str | None:
     exts = {"python": (".whl",), "js": (".tgz",), "cs": (".nupkg",), "cpp": (".nupkg",)}[sdk]
+    # NuGet artifacts are named "<id>.<version>.nupkg"; cs and cpp share a cache and the cs id
+    # is a prefix of the cpp id (Microsoft.AI.Foundry.Local vs ...Runtime), so require an
+    # EXACT "<pkg>.<version>.nupkg" filename match to avoid grabbing the wrong package.
+    if sdk in ("cs", "cpp"):
+        want = f"{PKG_NAMES[sdk].lower()}.{RC_VERSIONS[sdk].lower()}.nupkg"
+        for base, _dirs, files in os.walk(ws):
+            for fn in files:
+                if fn.lower() == want:
+                    return os.path.join(base, fn)
+        return None
     token = PKG_NAMES[sdk].lower().replace(".", "").replace("-", "")
     best = None
     for base, _dirs, files in os.walk(ws):

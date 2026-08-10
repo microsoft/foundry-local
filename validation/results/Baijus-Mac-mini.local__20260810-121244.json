@@ -1,0 +1,493 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "cpp__install-smoke__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "cpp",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 1.4,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local.Runtime",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "native lib present for osx-arm64: /Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/cpp__install-smoke__macos-arm64__cpu/cpp-smoke/packages/microsoft.ai.foundry.local.runtime/2.0.0-rc1/runtimes/osx-arm64/native/libfoundry_local.dylib"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/cpp__install-smoke__macos-arm64__cpu/install-smoke.log",
+    "notes": "native lib present for osx-arm64: /Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/cpp__install-smoke__macos-arm64__cpu/cpp-smoke/packages/microsoft.ai.foundry.local.runtime/2.0.0-rc1/runtimes/osx-arm64/native/libfoundry_local.dylib",
+    "owner": null,
+    "timestamp": "2026-08-10T19:12:46+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__install-smoke__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "cs",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 4.8,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "restored+built Microsoft.AI.Foundry.Local 2.0.0-rc1 (osx-arm64)"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/cs__install-smoke__macos-arm64__cpu/install-smoke.log",
+    "notes": "restored+built Microsoft.AI.Foundry.Local 2.0.0-rc1 (osx-arm64)",
+    "owner": null,
+    "timestamp": "2026-08-10T19:12:50+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__install-smoke__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "js",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 8.9,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "installed version=2.0.0-rc1"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/js__install-smoke__macos-arm64__cpu/install-smoke.log",
+    "notes": "installed version=2.0.0-rc1",
+    "owner": null,
+    "timestamp": "2026-08-10T19:12:59+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__install-smoke__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "python",
+    "feature": "install-smoke",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 42.3,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package installs and reports RC version",
+        "ok": true,
+        "detail": "installed version=2.0.0rc1"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/python__install-smoke__macos-arm64__cpu/install-smoke.log",
+    "notes": "installed version=2.0.0rc1",
+    "owner": null,
+    "timestamp": "2026-08-10T19:13:42+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cpp__pkg-inspect__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "cpp",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 1.4,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local.Runtime",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": "62ff5e14f2c41c2167d3244648046b084ccdd1c3bf619b0db38c3c680343a627",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/cpp__pkg-inspect__macos-arm64__cpu/pkg-inspect.log",
+    "notes": "inspected microsoft.ai.foundry.local.runtime.2.0.0-rc1.nupkg",
+    "owner": null,
+    "timestamp": "2026-08-10T19:13:43+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__pkg-inspect__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "cs",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 4.4,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": "84040c695fae123eac4974cabd234a477ce6213994cb3cce108db47006ec8892",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/cs__pkg-inspect__macos-arm64__cpu/pkg-inspect.log",
+    "notes": "inspected microsoft.ai.foundry.local.2.0.0-rc1.nupkg",
+    "owner": null,
+    "timestamp": "2026-08-10T19:13:47+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__pkg-inspect__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "js",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 9.6,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": "f6e431f363917c24507d2248f8befa10ef4ca1e7b6cd7d7a0a62b0a7328f5840",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": false,
+        "detail": "license={'expression': None, 'file': None}"
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/js__pkg-inspect__macos-arm64__cpu/pkg-inspect.log",
+    "notes": "inspected foundry-local-sdk-2.0.0-rc1.tgz",
+    "owner": null,
+    "timestamp": "2026-08-10T19:13:57+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__pkg-inspect__macos-arm64__cpu",
+    "run_id": "20260810-121244",
+    "sdk": "python",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 44.0,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": "14e228ddd9530baf530d2f653960a24d73e834f67b1995407aa9ad4be50d8a97",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-20260810-121244/python__pkg-inspect__macos-arm64__cpu/pkg-inspect.log",
+    "notes": "inspected foundry_local_sdk-2.0.0rc1-cp311-abi3-macosx_11_0_arm64.whl",
+    "owner": null,
+    "timestamp": "2026-08-10T19:14:41+00:00"
+  }
+]

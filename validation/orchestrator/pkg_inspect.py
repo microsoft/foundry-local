@@ -148,12 +148,13 @@ def inspect_npm(path: str) -> Dict[str, Any]:
     }
 
 
-def to_assertions(report: Dict[str, Any], expected_name: str, expected_version: str) -> List[Dict[str, Any]]:
+def to_assertions(report: Dict[str, Any], expected_name: str, expected_version: str,
+                  expect_native: bool = True) -> List[Dict[str, Any]]:
     actual_name = report.get("name") or report.get("id")
     actual_version = report.get("version")
     leakage = report.get("internal_path_leakage") or []
     license_info = report.get("license")
-    return [
+    asserts = [
         _assertion(
             "package name matches",
             actual_name == expected_name,
@@ -164,14 +165,20 @@ def to_assertions(report: Dict[str, Any], expected_name: str, expected_version: 
             _normalize_version(actual_version) == _normalize_version(expected_version),
             f"actual={actual_version!r}, expected={expected_version!r}",
         ),
-        _assertion(
+    ]
+    if expect_native:
+        # Some packages are pure-managed and ship native code in a separate runtime package
+        # (e.g. the C# Microsoft.AI.Foundry.Local depends on ...Runtime for the native libs);
+        # for those, callers pass expect_native=False so this check is not applied.
+        asserts.append(_assertion(
             "native lib present",
             bool(report.get("native_lib_present")),
             f"native_libs={report.get('native_libs', [])!r}",
-        ),
-        _assertion("no internal-path/debug leakage", not leakage, "; ".join(leakage) if leakage else None),
-        _assertion("license present", _license_present(license_info), f"license={license_info!r}"),
-    ]
+        ))
+    asserts.append(_assertion("no internal-path/debug leakage", not leakage,
+                              "; ".join(leakage) if leakage else None))
+    asserts.append(_assertion("license present", _license_present(license_info), f"license={license_info!r}"))
+    return asserts
 
 
 def _assertion(name: str, ok: bool, detail: str | None = None) -> Dict[str, Any]:

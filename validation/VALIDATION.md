@@ -81,13 +81,25 @@ time with `python3 validation/orchestrator/plan_matrix.py`.
 
 
 ```bash
-# ORT-Nightly feed — project-scoped, org=aiinfra, project=PublicPackages.
+# --- RC package source: the ORT-Nightly feed (anonymous for its own packages) ---
 # Full URL derivation + auth notes: validation/manifests/feeds.json
 export FOUNDRY_VALIDATION_NUGET_FEED="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json"   # C# + C++
 export FOUNDRY_VALIDATION_NPM_REGISTRY="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/"        # JS
 export FOUNDRY_VALIDATION_PIP_INDEX="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/"            # Python
-export FOUNDRY_VALIDATION_FEED_TOKEN="<Azure DevOps PAT, Packaging:Read scope; may be optional if the feed is public>"
+export FOUNDRY_VALIDATION_FEED_TOKEN="<ORT feed PAT; only needed if the feed itself is private>"
+
+# --- Transitive-dependency source (everything that is NOT the RC package) ---
+# The ORT feed's upstream proxy needs auth to save an upstream package on first fetch, so
+# deps (cffi, node-addon-api, Microsoft.ML.OnnxRuntime, Betalgo.Ranul.OpenAI, ...) come from
+# here. Defaults to the PUBLIC registries; override to a mirror if public egress is blocked.
+export FOUNDRY_VALIDATION_DEPS_NUGET_FEED="https://api.nuget.org/v3/index.json"     # or a corp mirror
+export FOUNDRY_VALIDATION_DEPS_NPM_REGISTRY="https://registry.npmjs.org/"           # or a corp mirror
+export FOUNDRY_VALIDATION_DEPS_PIP_INDEX="https://pypi.org/simple"                  # or a corp mirror
 ```
+
+> Install model: the RC package is fetched from the ORT feed (pip `download --no-deps` /
+> `npm pack` / NuGet source-mapped to the two RC package IDs), then transitive deps resolve
+> from the deps source only. Validated on macos-arm64: all four RC packages install & load.
 
 The harness writes throwaway `nuget.config` / `.npmrc` and uses isolated NuGet/npm/pip +
 model caches inside its run workspace, so your global config is never mutated.

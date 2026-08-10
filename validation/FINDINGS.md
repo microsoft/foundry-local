@@ -30,6 +30,7 @@ Do **not** hand-edit another agent's results file. Do **not** overwrite
 
 | date | agent/owner | platform_id | arch | accelerators exercised | results file | pass | fail | blocked | notes |
 |------|-------------|-------------|------|------------------------|--------------|------|------|---------|-------|
+| 2026-08-10 | @baijumeswani / mac-mini | macos-arm64 | arm64 | cpu | `results/Baijus-Mac-mini.local__*.json` | 7 | 1 | 0 | install-smoke: all 4 SDKs PASS. pkg-inspect: cpp/cs/python PASS, js FAIL (no license — F1). |
 | _e.g. 2026-08-11_ | _@you / linux-cuda-agent_ | _linux-x64_ | _x64_ | _cpu, cuda_ | _`results/host__id.json`_ | _–_ | _–_ | _–_ | _–_ |
 
 ## Open blockers / triage log
@@ -38,7 +39,19 @@ Track every `fail` in a GA-blocking cell and every proposed `waived` here until 
 
 | id | cell_id | severity | owner | status (open/fixed-in-rcN/waived) | issue link | notes |
 |----|---------|----------|-------|-----------------------------------|-----------|-------|
-| _B1_ | _–_ | _blocker/major/minor_ | _–_ | _open_ | _–_ | _–_ |
+| F1 | js__pkg-inspect__macos-arm64__cpu | major | _TBD_ | open | _–_ | `foundry-local-sdk@2.0.0-rc1` ships **no license**: package.json has no `license` field AND the published tgz contains no LICENSE file (only package.json, README, dist, prebuilds), even though `files` lists `LICENSE`. Legal/compliance gap for a public release. Fix: add `"license": "MIT"` (or correct SPDX) and ensure LICENSE is packed. |
+
+### Feed-access note (validated 2026-08-10, macos-arm64)
+
+The ORT-Nightly ADO feed is anonymous for its **own** packages, but its **upstream proxy
+requires authentication to save an upstream package on first fetch** — so anonymous installs
+that pull ANY transitive dep (cffi, node-addon-api, Microsoft.ML.OnnxRuntime, Betalgo.Ranul.OpenAI,
+Microsoft.Extensions.Logging) fail with 401/E401. The harness therefore uses a **two-source
+model**: RC package from the ORT feed + all transitive deps from a separate deps source
+(public registry, or a mirror on locked-down machines). With that, **all four RC packages
+install & import/build cleanly on macos-arm64**. Earlier `adm-zip@^0.6.0` "missing" was a stale
+upstream cache (adm-zip 0.6.0 exists on public npmjs) — NOT an RC bug.
+
 
 ## Waivers (approved known issues)
 
