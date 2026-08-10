@@ -8,14 +8,6 @@
 #   pack_nuget  – Microsoft.AI.Foundry.Local.Runtime
 #                 (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64;
 #                  Windows ships WinML; ARM64 Linux is CPU-only)
-#
-# Android (arm64-v8a, x86_64) is built and published as an artifact but is
-# deliberately *not* fed into either pack stage: neither the NuGet package nor
-# the C++ SDK tgz has an Android consumer today, and Android's dependency
-# origins differ enough (GenAI ships as a GitHub Releases AAR rather than a
-# NuGet package) that packaging is a separate design question. The stages exist
-# so that a dependency bump which is valid on desktop but unavailable for
-# Android fails here rather than silently.
 
 parameters:
 - name: buildConfig

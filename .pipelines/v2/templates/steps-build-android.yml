@@ -1,21 +1,3 @@
-# Reusable Android cross-compile steps for the Foundry Local C++ SDK.
-#
-# Runs on a Linux host and cross-compiles with the Android NDK, so it uses the
-# same pool as the linux-x64 stage. Supports arm64-v8a (devices) and x86_64
-# (emulator) via the `abi` parameter.
-#
-# Android resolves its native dependencies differently from the desktop
-# platforms, which is the main reason this stage earns its keep:
-#
-#   ORT   – Microsoft.ML.OnnxRuntime NuGet, runtimes/android-{arm64,x64}
-#           (same package as desktop, so steps-prefetch-nuget.yml applies)
-#   GenAI – a standalone AAR on *GitHub Releases*, not NuGet
-#           (see cmake/FindOnnxRuntimeGenAI.cmake)
-#
-# Because GenAI comes from a different origin, a version that exists on NuGet
-# does not necessarily exist as an Android AAR. Without this stage that skew is
-# invisible: every desktop leg goes green while Android cannot configure at all.
-
 parameters:
 - name: abi
   type: string
@@ -30,11 +12,6 @@ parameters:
 - name: androidApi
   type: number
   default: 28
-# Pinned so a pool image refresh cannot silently change the toolchain. All
-# three values come from the same entry in Google's package manifest:
-#   https://dl.google.com/android/repository/repository2-3.xml  (ndk;<version>)
-# They must be bumped together. A mismatched triple is caught at runtime: the
-# extracted NDK's Pkg.Revision is asserted against ndkVersion below.
 - name: ndkVersion
   type: string
   default: '29.0.14206865'
@@ -44,9 +21,6 @@ parameters:
 - name: ndkSha1
   type: string
   default: '87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b'
-# Emulator tests require the x86_64 ABI. Off by default: this stage exists to
-# guard the build and the dependency wiring, and an emulator boot adds both
-# runtime and flakiness. Enable per-stage once the leg is proven stable.
 - name: runEmulatorTests
   type: boolean
   default: false
@@ -59,14 +33,6 @@ steps:
     "$(Build.BinariesDirectory)/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
   displayName: 'Bootstrap vcpkg'
 
-# Resolve the NDK. Fast path: the pool image already has the pinned version.
-# Otherwise fetch Google's published archive and verify it, rather than going
-# through sdkmanager -- that needs cmdline-tools on the image, prompts for
-# licence acceptance, and gives no integrity check on what it downloaded.
-#
-# Note this deliberately does not require an Android SDK. A cross-compile only
-# needs the NDK; the SDK is an emulator concern and is resolved separately by
-# the test step below, so a pool image without one can still build.
 - bash: |
     set -euo pipefail
     pinned='${{ parameters.ndkVersion }}'
@@ -134,9 +100,6 @@ steps:
     echo "##vso[task.setvariable variable=androidNdkHome]$ndk"
   displayName: 'Resolve Android NDK (${{ parameters.ndkVersion }})'
 
-# Prefetches ORT (used by the Android build) and GenAI (unused here — Android
-# takes the GitHub AAR instead — but harmless, and it keeps the pinned-version
-# drift check against deps_versions.json running on this leg too).
 - template: steps-prefetch-nuget.yml
   parameters:
     ortVersion: ${{ parameters.ortVersion }}
@@ -208,11 +171,6 @@ steps:
   displayName: 'Dump vcpkg error logs'
   condition: failed()
 
-# Unlike the desktop legs, Android stages the ORT/GenAI runtime alongside
-# libfoundry_local.so. Desktop consumers get those out of band (pip on the
-# Python side, NuGet on the C# side), but an Android consumer has no such
-# channel — the libraries have to be packaged into the APK/AAR, so the build
-# that produced them is the only place they can be captured consistently.
 - bash: |
     set -euo pipefail
     src='$(Build.SourcesDirectory)/sdk_v2/cpp/build/Android-${{ parameters.abi }}/${{ parameters.buildConfig }}/bin'
@@ -231,20 +189,13 @@ steps:
     done
     [ "$missing" -eq 0 ] || exit 1
 
-    # GenAI 0.15.0 split its implementation into libmat.so, which
-    # libonnxruntime-genai.so lists as a DT_NEEDED — omitting it makes the
-    # consuming APK fail to dlopen at runtime. Guarded on existence to mirror
-    # the copy in sdk_v2/cpp/CMakeLists.txt, which keeps 0.14.x working.
     if [ -f "$src/libmat.so" ]; then
       cp -P "$src/libmat.so" "$dst/"
       echo "  staged libmat.so"
     fi
 
     # Fail loudly if a staged library has a DT_NEEDED that the build produced
-    # but we did not stage: a future GenAI repackaging that adds another .so
-    # would otherwise give a green build and a runtime dlopen failure. Keying
-    # off "present in the build output" needs no whitelist of system libs —
-    # those never appear in bin/ — so it cannot fail spuriously on an agent.
+    # but we did not stage.
     readelf=$(command -v readelf || true)
     if [ -n "$readelf" ]; then
       unmet=0
