@@ -59,7 +59,26 @@ large), `qwen3-embedding-0.6b` (embeddings), `whisper-tiny` (audio file),
 
 The orchestrator is **stdlib-only Python 3.10+** — no packages needed to run it.
 
-### 1. Configure the feed (isolated; secrets via env vars, never committed)
+### Fleet quickstart (per machine)
+
+Each agent runs the **same three steps**; only the feed secrets differ per environment. The
+harness auto-detects the platform and hardware and runs exactly the cells that machine owns
+(see [`STATUS_MATRIX.md`](STATUS_MATRIX.md) for the per-platform scope).
+
+```bash
+# 1. Export the feed env vars (see step 1 below for the exact URLs).
+# 2. Run every cell applicable to this machine, then aggregate:
+./validation/run.sh                                   # Linux/macOS   (pwsh validation/run.ps1 on Windows)
+python3 validation/orchestrator/aggregate.py          # roll up + provisional go/no-go verdict
+# 3. Commit this machine's results/<hostname>__<run-id>.json and append a row to FINDINGS.md.
+```
+
+Owner split (from the frozen platform manifest): **windows-x64** → cpu, cuda, winml-dml,
+npu-winml, webgpu · **windows-arm64** → cpu, winml-dml, npu-winml, webgpu · **linux-x64** →
+cpu, cuda, webgpu · **macos-arm64** → cpu, coreml-metal. Regenerate the tracking matrix any
+time with `python3 validation/orchestrator/plan_matrix.py`.
+
+
 
 ```bash
 # ORT-Nightly feed — project-scoped, org=aiinfra, project=PublicPackages.
