@@ -116,7 +116,7 @@ TEST(AzureCatalogClientTest, RequestFormatMatchesKnownGood) {
 
   EXPECT_EQ(filters[0]["field"], "DeploymentOptions");
   EXPECT_EQ(filters[0]["operator"], "eq");
-  EXPECT_EQ(filters[0]["values"], nlohmann::json({"foundryLocalDevices"}));
+  EXPECT_EQ(filters[0]["values"], nlohmann::json({"Foundry Local on Devices"}));
 
   EXPECT_EQ(filters[1]["field"], "VariantInformation/VariantMetadata/Device");
   EXPECT_EQ(filters[1]["operator"], "eq");
@@ -387,7 +387,7 @@ TEST(AzureCatalogClientTest, BuildModelIdFiltersProducesCorrectStructure) {
   ASSERT_EQ(filters.size(), 2u);
 
   EXPECT_EQ(filters[0]["field"], "DeploymentOptions");
-  EXPECT_EQ(filters[0]["values"], nlohmann::json({"foundryLocalDevices"}));
+  EXPECT_EQ(filters[0]["values"], nlohmann::json({"Foundry Local on Devices"}));
 
   EXPECT_EQ(filters[1]["field"], "Name");
   EXPECT_EQ(filters[1]["values"], nlohmann::json({"phi-4-mini", "llama-3"}));
