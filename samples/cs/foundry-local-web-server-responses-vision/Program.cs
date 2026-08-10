@@ -14,7 +14,7 @@ if (args.Length < 1)
     Console.Error.WriteLine("Usage: dotnet run -- <model_alias_or_id> [image_path]");
     Console.Error.WriteLine("         dotnet run -- --list-models");
     Console.Error.WriteLine("  Example: dotnet run -- qwen3.5-0.8b");
-    Console.Error.WriteLine("  Example: dotnet run -- Qwen2.5-VL-7B-Instruct-generic-cpu");
+    Console.Error.WriteLine("  Example: dotnet run -- qwen3-vl-2b-instruct-generic-cpu");
     return 1;
 }
 

@@ -15,7 +15,7 @@ if len(sys.argv) < 2:
     print("Usage: python src/app.py <model_alias_or_id> [image_path]")
     print("         python src/app.py --list-models")
     print("  Example: python src/app.py qwen3.5-0.8b")
-    print("  Example: python src/app.py Qwen2.5-VL-7B-Instruct-generic-cpu")
+    print("  Example: python src/app.py qwen3-vl-2b-instruct-generic-cpu")
     sys.exit(1)
 
 def encode_image(path):

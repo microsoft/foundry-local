@@ -122,8 +122,10 @@ int main(int argc, char* argv[]) {
 
         foundry_local::Manager::Create(config);
         auto& manager = foundry_local::Manager::Instance();
-        auto isCancellationRequested = [] { return !g_running.load(); };
-        manager.DownloadAndRegisterEps(nullptr, isCancellationRequested);
+        // EP-download progress callback: return true to continue, false to cancel
+        // (honors Ctrl+C via g_running).
+        manager.DownloadAndRegisterEps(
+            {}, [](std::string_view /*epName*/, float /*percent*/) { return g_running.load(); });
 
         auto& catalog = manager.GetCatalog();
         // English-only:
@@ -136,12 +138,12 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "Downloading model (if needed)..." << std::endl;
-        model->Download(
-            [](float pct) {
-                std::cout << "\rDownloading: " << pct << "%   " << std::flush;
-                return true;
-            },
-            isCancellationRequested);
+        // Model-download progress callback: return 0 to continue, non-zero to cancel
+        // (honors Ctrl+C via g_running).
+        model->Download([](float pct) {
+            std::cout << "\rDownloading: " << pct << "%   " << std::flush;
+            return g_running.load() ? 0 : 1;
+        });
         std::cout << std::endl;
         std::cout << "Loading model..." << std::endl;
         model->Load();

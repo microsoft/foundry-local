@@ -27,7 +27,7 @@ fn print_usage() {
     eprintln!("Usage: cargo run -p foundry-local-webserver-responses-vision -- <model_alias_or_id> [image_path]");
     eprintln!("         cargo run -p foundry-local-webserver-responses-vision -- --list-models");
     eprintln!("  Example: ... -- {DEFAULT_MODEL_ALIAS}");
-    eprintln!("  Example: ... -- Qwen2.5-VL-7B-Instruct-generic-cpu");
+    eprintln!("  Example: ... -- qwen3-vl-2b-instruct-generic-cpu");
 }
 
 #[tokio::main]

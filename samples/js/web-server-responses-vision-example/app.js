@@ -18,7 +18,7 @@ if (argv.length < 1) {
     console.error('Usage: node app.js <model_alias_or_id> [image_path]');
     console.error('         node app.js --list-models');
     console.error('  Example: node app.js qwen3.5-0.8b');
-    console.error('  Example: node app.js Qwen2.5-VL-7B-Instruct-generic-cpu');
+    console.error('  Example: node app.js qwen3-vl-2b-instruct-generic-cpu');
     process.exit(1);
 }
 
