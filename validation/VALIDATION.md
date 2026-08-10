@@ -75,7 +75,7 @@ python3 validation/orchestrator/aggregate.py          # roll up + provisional go
 
 Owner split (from the frozen platform manifest): **windows-x64** → cpu, cuda, winml-dml,
 npu-winml, webgpu · **windows-arm64** → cpu, winml-dml, npu-winml, webgpu · **linux-x64** →
-cpu, cuda, webgpu · **macos-arm64** → cpu, coreml-metal. Regenerate the tracking matrix any
+cpu, cuda, webgpu · **macos-arm64** → cpu, coreml-metal, webgpu. Regenerate the tracking matrix any
 time with `python3 validation/orchestrator/plan_matrix.py`.
 
 
@@ -149,13 +149,35 @@ Exit code `2` from the orchestrator means at least one **GA-blocking cell failed
 
 ## Runner automation status
 
-`install-smoke` is fully automated for all four SDKs (installs the RC into a fresh isolated
-project and asserts the reported version is `2.0.0-rc1`). Remaining feature runners are
-staged as extension points in `orchestrator/runners.py`: until wired on an agent they emit
-`skipped` with a pointer to the manual procedure below — the matrix stays honest and the
-harness never crashes. Wiring a feature runner means: prepare an isolated copy of the
-corresponding sample, pin the RC package + feed, run it, and assert on output. Contribute
-runners back so every agent benefits.
+`install-smoke` and `pkg-inspect` are fully automated for all four SDKs. The **feature**
+runners (`chat`, `embeddings`, `tool-calling`, `vision`, `web-server`, `audio-file`,
+`integrations`, `model-mgmt`) are wired via `orchestrator/sample_runner.py`: each copies the
+matching sample into an isolated workspace, installs/builds it against the RC package using the
+**two-source** feed model, runs it against the cell's model over the **in-process FFI transport
+(no service required)**, and asserts on exit code + an expected output marker. These have been
+run for real on macos-arm64 (Python: all features pass on cpu + webgpu; JS: chat/embeddings/
+web-server pass). Set the deps env vars for the SDKs you run:
+
+```bash
+# Python feature cells
+export FOUNDRY_VALIDATION_PIP_INDEX="<ORT pypi simple URL>"
+export FOUNDRY_VALIDATION_DEPS_PIP_INDEX="https://pypi.org/simple"   # or a corp mirror
+# JS feature cells
+export FOUNDRY_VALIDATION_NPM_REGISTRY="<ORT npm registry URL>"
+export FOUNDRY_VALIDATION_DEPS_NPM_REGISTRY="https://registry.npmjs.org/"  # or a corp mirror
+# C#/C++ feature cells
+export FOUNDRY_VALIDATION_NUGET_FEED="<ORT nuget v3 index>"
+export FOUNDRY_VALIDATION_DEPS_NUGET_FEED="https://api.nuget.org/v3/index.json"  # or a corp mirror
+
+python3 validation/orchestrator/run_validation.py --sdk python --feature chat --accelerator cpu
+python3 validation/orchestrator/run_validation.py --sdk python --feature chat --accelerator webgpu
+```
+
+C# samples built against `net9.0` run on a newer-only shared runtime because the harness sets
+`DOTNET_ROLL_FORWARD=Major`. The remaining runtime/non-functional cells (`ep-bootstrap`,
+`model-mgmt-fail`, `crosscutting`, `soak-resource`, `compat-upgrade`) are still staged
+extension points that emit `skipped` until wired — the matrix stays honest and the harness
+never crashes. Contribute runners back so every agent benefits.
 
 ### Manual procedure (until a runner is automated)
 

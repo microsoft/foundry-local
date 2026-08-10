@@ -15,7 +15,7 @@
     },
     {
       "task": "chat-large",
-      "alias": "deepseek-r1-distill-qwen-14b",
+      "alias": "deepseek-r1-14b",
       "note": "large-memory / GPU path; may be skipped on low-RAM CPU-only agents (record as blocked with rationale, not pass)",
       "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": true }
     },
@@ -36,7 +36,7 @@
     },
     {
       "task": "vision",
-      "alias": "Qwen2.5-VL-7B-Instruct",
+      "alias": "qwen3-vl-2b-instruct",
       "expected": { "cpu": true, "cuda": true, "winml-dml": true, "npu-winml": false, "coreml-metal": true, "webgpu": false }
     }
   ]

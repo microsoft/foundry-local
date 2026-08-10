@@ -47,7 +47,7 @@
       "arch": "arm64",
       "os_versions": ["macOS 14+"],
       "runtimes": { "dotnet": ["net9.0"], "python": ["3.10", "3.11", "3.12"], "node": ["20", "22"], "cpp": ["AppleClang 15+ / C++20"] },
-      "accelerators": ["cpu", "coreml-metal"]
+      "accelerators": ["cpu", "coreml-metal", "webgpu"]
     }
   ],
   "accelerator_ep_map": {

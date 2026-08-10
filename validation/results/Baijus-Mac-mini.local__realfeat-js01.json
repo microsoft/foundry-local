@@ -1,0 +1,69 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__chat__macos-arm64__cpu",
+    "run_id": "realfeat-js01",
+    "sdk": "js",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 14.6,
+    "env": {
+      "platform_id": "macos-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "hostname": "Baijus-Mac-mini.local",
+      "cpu": "arm",
+      "gpus": [
+        "Apple M4 Pro"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": null,
+      "runtimes": {
+        "python": "3.12.11",
+        "dotnet": "10.0.103",
+        "node": "v24.14.0",
+        "npm": "11.9.0",
+        "cmake": "cmake version 4.1.0\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Chat completion result:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "/Users/baijumeswani/workspace/Foundry-Local/validation/results/work-Baijus-Mac-mini.local-realfeat-js01/js__chat__macos-arm64__cpu/sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-10T19:41:58+00:00"
+  }
+]

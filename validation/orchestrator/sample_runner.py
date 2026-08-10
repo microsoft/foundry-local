@@ -147,25 +147,56 @@ def _setup_python(sample_dir, ws, ctx, log):
     py = _python_exe(venv)
     _pin_python_requirements(sample_dir)
     pip = feeds.pip_install_args(ws)
+    # Two-source model: fetch the RC wheel from the ORT feed WITHOUT deps (that download is
+    # anonymous), then install it plus any sample requirements from the deps index.
+    dl = os.path.join(ws, "wheelhouse")
+    os.makedirs(dl, exist_ok=True)
+    rc = _exec([py, "-m", "pip", "download", "--no-deps", "--dest", dl, "--cache-dir", pip["cache_dir"],
+                "--index-url", pip["ort_index"],
+                f"{PKG_NAMES['python']}=={RC_VERSIONS['python']}"], sample_dir, log, int(ctx["install_timeout"]), None)
+    if rc != 0:
+        return rc
+    wheels = [os.path.join(dl, f) for f in os.listdir(dl) if f.endswith((".whl", ".tar.gz"))]
+    if not wheels:
+        log.write("RC wheel not downloaded from ORT feed\n")
+        return 1
+    cmd = [py, "-m", "pip", "install", "--no-input", "--cache-dir", pip["cache_dir"],
+           "--index-url", pip["deps_index"], wheels[0]]
     req = os.path.join(sample_dir, "requirements.txt")
-    cmd = [py, "-m", "pip", "install", "--no-input", "--cache-dir", pip["cache_dir"], "--index-url", pip["index_url"]]
-    cmd += ["-r", req] if os.path.exists(req) else [f"{PKG_NAMES['python']}=={RC_VERSIONS['python']}"]
+    if os.path.exists(req):
+        cmd += ["-r", req]
     return _exec(cmd, sample_dir, log, int(ctx["install_timeout"]), None)
 
 
 def _setup_node(sample_dir, ctx, log):
-    feeds.write_npmrc(sample_dir)
+    ws = os.path.dirname(sample_dir)
+    # Two-source model: pack the RC package from the ORT registry (anonymous), then rewrite the
+    # sample's dependency to the local tarball so `npm install` pulls only transitive deps from
+    # the deps registry (the ORT feed 401s on upstream deps).
+    feeds.write_npmrc(sample_dir)  # default registry = ORT feed, for `npm pack`
+    rc = _exec(["npm", "pack", f"{PKG_NAMES['js']}@{RC_VERSIONS['js']}",
+                "--userconfig", os.path.join(sample_dir, ".npmrc")], sample_dir, log,
+               int(ctx["install_timeout"]), None)
+    if rc != 0:
+        return rc
+    tgz = [f for f in os.listdir(sample_dir) if f.endswith(".tgz")]
+    if not tgz:
+        log.write("RC tarball not produced by npm pack\n")
+        return 1
     pkg_path = os.path.join(sample_dir, "package.json")
     if os.path.exists(pkg_path):
         with open(pkg_path, encoding="utf-8") as f:
             pkg = json.load(f)
         deps = pkg.setdefault("dependencies", {})
         if PKG_NAMES["js"] in deps:
-            deps[PKG_NAMES["js"]] = RC_VERSIONS["js"]
+            deps[PKG_NAMES["js"]] = f"file:{tgz[0]}"
         with open(pkg_path, "w", encoding="utf-8") as f:
             json.dump(pkg, f, indent=2)
             f.write("\n")
-    return _exec(["npm", "install", "--no-audit", "--no-fund"], sample_dir, log, int(ctx["install_timeout"]), None)
+    feeds.write_npmrc(sample_dir, registry=feeds.deps_source("npm"))
+    return _exec(["npm", "install", "--no-audit", "--no-fund",
+                  "--userconfig", os.path.join(sample_dir, ".npmrc")],
+                 sample_dir, log, int(ctx["install_timeout"]), None)
 
 
 def _setup_dotnet(sample_dir, ws, ctx, log):
@@ -322,14 +353,20 @@ def _resolve_cmd(run, cell, sample_dir, ws):
 
 
 def _model_for_run(cell):
+    # Samples take a model *alias* and let the runtime pick the best-matching variant for the
+    # machine's EPs. The synthetic "<alias>-<suffix>" variant id the matrix builds does not carry
+    # the catalog's version tag (":N") and only resolves via get_model_variant, so prefer the alias.
     model = cell.get("model") or {}
-    return model.get("variant") or model.get("alias") or ""
+    return model.get("alias") or model.get("variant") or ""
 
 
 def _run_env(sample_dir, ws):
     env = os.environ.copy()
     env["FOUNDRY_VALIDATION_SAMPLE_DIR"] = sample_dir
     env["FOUNDRY_VALIDATION_WORKSPACE"] = ws
+    # Let a sample built against an older TFM (e.g. net9.0) run on a machine that only has a
+    # newer shared runtime (e.g. net10). Harmless for non-.NET samples.
+    env.setdefault("DOTNET_ROLL_FORWARD", "Major")
     if os.name != "nt":
         lib_path = os.pathsep.join([os.path.join(ws, "cmake-build"), env.get("LD_LIBRARY_PATH", "")])
         env["LD_LIBRARY_PATH"] = lib_path

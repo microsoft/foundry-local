@@ -92,6 +92,10 @@ def detect_accelerators(os_name: str, gpus: List[str]) -> List[str]:
         # NPU / WebGPU are hardware/feature dependent; agents confirm via ep-bootstrap.
     if os_name == "darwin":
         accels.append("coreml-metal")
+    # WebGPU is a runtime-downloaded, cross-platform EP: usable on any machine with a GPU
+    # (verified end-to-end on macOS Apple Silicon). Register it whenever a GPU is present.
+    if gpus and "webgpu" not in accels:
+        accels.append("webgpu")
     return accels
 
 
