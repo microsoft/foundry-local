@@ -241,20 +241,111 @@ def run_pending(cell: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# Dispatch table: feature runner name -> callable. install_smoke is fully automated;
-# the rest are staged as pending manual/automation hooks the agents extend.
+# --------------------------------------------------------------------------------------
+# pkg-inspect: download the RC artifact from the feed and inspect its contents/identity.
+# --------------------------------------------------------------------------------------
+
+def run_pkg_inspect(cell: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Download the RC package artifact and inspect contents/identity/provenance.
+
+    Fetching the raw artifact differs per ecosystem (nuget/npm/pip). Rather than couple to
+    each feed's download API, we reuse the isolated install performed by install-smoke to
+    populate the local cache, then locate and inspect the downloaded artifact with
+    pkg_inspect. If the feed is not configured we return a non-fatal 'blocked'.
+    """
+    import pkg_inspect  # local module, stdlib-only
+    sdk = cell["sdk"]
+    var = feeds.missing_feed(sdk)
+    if var:
+        return _blocked_feed(sdk, var)
+    ws = ctx["cell_workspace"]
+    os.makedirs(ws, exist_ok=True)
+    log_path = os.path.join(ws, "pkg-inspect.log")
+    t0 = time.time()
+    with open(log_path, "w", encoding="utf-8") as log:
+        # Reuse install-smoke to fetch the artifact into the isolated cache.
+        smoke = run_install_smoke(cell, {**ctx, "cell_workspace": ws})
+        artifact = _find_artifact(sdk, ws)
+        log.write(f"\nlocated artifact: {artifact}\n")
+    if not artifact:
+        return {
+            "result": "blocked",
+            "assertions": [_assert("artifact located for inspection", False,
+                                   "could not find downloaded .nupkg/.whl/.tgz in isolated cache")],
+            "notes": "install step did not yield an inspectable artifact (see log)",
+            "package": _pkg(sdk),
+            "duration_seconds": round(time.time() - t0, 1),
+            "log_path": log_path,
+        }
+    report = pkg_inspect.inspect(artifact)
+    asserts = pkg_inspect.to_assertions(report, PKG_NAMES[sdk], RC_VERSIONS[sdk])
+    ok = all(a["ok"] for a in asserts)
+    pkg = _pkg(sdk, feeds.feed_env().get(_feed_key(sdk)))
+    pkg["sha256"] = report.get("sha256")
+    return {
+        "result": "pass" if ok else "fail",
+        "assertions": asserts,
+        "notes": f"inspected {os.path.basename(artifact)}",
+        "package": pkg,
+        "duration_seconds": round(time.time() - t0, 1),
+        "log_path": log_path,
+    }
+
+
+def _find_artifact(sdk: str, ws: str) -> str | None:
+    exts = {"python": (".whl",), "js": (".tgz",), "cs": (".nupkg",), "cpp": (".nupkg",)}[sdk]
+    token = PKG_NAMES[sdk].lower().replace(".", "").replace("-", "")
+    best = None
+    for base, _dirs, files in os.walk(ws):
+        for fn in files:
+            low = fn.lower()
+            if low.endswith(exts) and token[:12] in low.replace(".", "").replace("-", "").replace("_", ""):
+                best = os.path.join(base, fn)
+    if best:
+        return best
+    # Fallback: any matching-extension file in the workspace.
+    for base, _dirs, files in os.walk(ws):
+        for fn in files:
+            if fn.lower().endswith(exts):
+                return os.path.join(base, fn)
+    return None
+
+
+# Import sample-backed feature runners (author: sample_runner.py). Imported lazily-safe:
+# if the module is missing for any reason, fall back to run_pending so dispatch never breaks.
+try:
+    import sample_runner as _sr
+    _SAMPLE = {
+        "chat": _sr.run_chat,
+        "tool_calling": _sr.run_tool_calling,
+        "embeddings": _sr.run_embeddings,
+        "audio_file": _sr.run_audio_file,
+        "audio_stream": _sr.run_audio_stream,
+        "vision": _sr.run_vision,
+        "web_server": _sr.run_web_server,
+        "integrations": _sr.run_integrations,
+        "model_mgmt": _sr.run_model_mgmt,
+    }
+except Exception:  # pragma: no cover - defensive
+    _SAMPLE = {}
+
+
+# Dispatch table: feature runner name -> callable. install-smoke and pkg-inspect are fully
+# automated; feature cells route to sample-backed runners; the remaining runtime/non-
+# functional cells (ep_bootstrap, model_mgmt_fail, crosscutting, soak, compat) are staged
+# hooks the platform agents extend, and stay honest (skipped) until wired.
 RUNNERS = {
     "install_smoke": run_install_smoke,
-    "pkg_inspect": run_pending,
-    "chat": run_pending,
-    "tool_calling": run_pending,
-    "embeddings": run_pending,
-    "audio_file": run_pending,
-    "audio_stream": run_pending,
-    "vision": run_pending,
-    "web_server": run_pending,
-    "integrations": run_pending,
-    "model_mgmt": run_pending,
+    "pkg_inspect": run_pkg_inspect,
+    "chat": _SAMPLE.get("chat", run_pending),
+    "tool_calling": _SAMPLE.get("tool_calling", run_pending),
+    "embeddings": _SAMPLE.get("embeddings", run_pending),
+    "audio_file": _SAMPLE.get("audio_file", run_pending),
+    "audio_stream": _SAMPLE.get("audio_stream", run_pending),
+    "vision": _SAMPLE.get("vision", run_pending),
+    "web_server": _SAMPLE.get("web_server", run_pending),
+    "integrations": _SAMPLE.get("integrations", run_pending),
+    "model_mgmt": _SAMPLE.get("model_mgmt", run_pending),
     "model_mgmt_fail": run_pending,
     "ep_bootstrap": run_pending,
     "crosscutting": run_pending,

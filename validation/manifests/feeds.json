@@ -1,0 +1,40 @@
+{
+  "org": "aiinfra",
+  "project": "PublicPackages",
+  "feed": "ORT-Nightly",
+  "nuget_v3_index": {
+    "project_scoped": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+    "org_scoped": "https://pkgs.dev.azure.com/aiinfra/_packaging/ORT-Nightly/nuget/v3/index.json",
+    "note": "Use the project-scoped URL (preferred). Set FOUNDRY_VALIDATION_NUGET_FEED to the project_scoped value."
+  },
+  "npm_registry": {
+    "url": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+    "npmrc_lines": [
+      "registry=https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "always-auth=true",
+      "//pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/:_authToken=${FOUNDRY_VALIDATION_FEED_TOKEN}"
+    ],
+    "note": "Set FOUNDRY_VALIDATION_NPM_REGISTRY to the url value above. The harness writes the _authToken line only when FOUNDRY_VALIDATION_FEED_TOKEN is non-empty."
+  },
+  "pip_index": {
+    "url": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+    "note": "Set FOUNDRY_VALIDATION_PIP_INDEX to the url value above. For authenticated access embed credentials in the URL as https://pat:TOKEN@pkgs.dev.azure.com/... or use the artifacts-keyring package."
+  },
+  "auth_notes": {
+    "pat_scope_required": "Packaging (Read) — Azure DevOps Personal Access Token",
+    "how_to_obtain": "Azure DevOps -> User Settings -> Personal Access Tokens -> New Token -> Scopes: Packaging: Read",
+    "public_feed_assessment": "ORT-Nightly is hosted in the 'PublicPackages' project of the 'aiinfra' Azure DevOps organisation. The project name implies public visibility; project-scoped feeds inherit project visibility, so anonymous read may be allowed without a PAT. Org-level policies can still restrict anonymous access. ASSUMPTION: set FOUNDRY_VALIDATION_FEED_TOKEN to a PAT with Packaging:Read for CI reliability; on a truly public feed the token is ignored harmlessly.",
+    "env_var_mapping": {
+      "FOUNDRY_VALIDATION_NUGET_FEED": "NuGet v3 index URL; credentials supplied via per-run nuget.config packageSourceCredentials using FOUNDRY_VALIDATION_FEED_TOKEN as ClearTextPassword (Username='pat')",
+      "FOUNDRY_VALIDATION_NPM_REGISTRY": "npm registry URL; _authToken supplied via per-run .npmrc using FOUNDRY_VALIDATION_FEED_TOKEN",
+      "FOUNDRY_VALIDATION_PIP_INDEX": "pip --index-url value; credentials embedded in URL or via keyring using FOUNDRY_VALIDATION_FEED_TOKEN",
+      "FOUNDRY_VALIDATION_FEED_TOKEN": "Azure DevOps PAT with Packaging:Read scope; consumed by all three ecosystems"
+    }
+  },
+  "sources": [
+    "https://learn.microsoft.com/en-us/azure/devops/artifacts/feeds/project-scoped-feeds?view=azure-devops",
+    "https://learn.microsoft.com/en-us/azure/devops/artifacts/get-started-nuget?view=azure-devops",
+    "https://learn.microsoft.com/en-us/azure/devops/artifacts/get-started-npm?view=azure-devops",
+    "https://learn.microsoft.com/en-us/azure/devops/artifacts/quickstarts/python-packages?view=azure-devops"
+  ]
+}

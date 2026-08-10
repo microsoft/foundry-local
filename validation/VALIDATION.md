@@ -62,10 +62,12 @@ The orchestrator is **stdlib-only Python 3.10+** — no packages needed to run i
 ### 1. Configure the feed (isolated; secrets via env vars, never committed)
 
 ```bash
-export FOUNDRY_VALIDATION_NUGET_FEED="<ORT-Nightly NuGet v3 index URL>"   # C# + C++
-export FOUNDRY_VALIDATION_NPM_REGISTRY="<ORT-Nightly npm registry URL>"   # JS
-export FOUNDRY_VALIDATION_PIP_INDEX="<ORT-Nightly PyPI index URL>"        # Python
-export FOUNDRY_VALIDATION_FEED_TOKEN="<PAT if the feed is private>"
+# ORT-Nightly feed — project-scoped, org=aiinfra, project=PublicPackages.
+# Full URL derivation + auth notes: validation/manifests/feeds.json
+export FOUNDRY_VALIDATION_NUGET_FEED="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json"   # C# + C++
+export FOUNDRY_VALIDATION_NPM_REGISTRY="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/"        # JS
+export FOUNDRY_VALIDATION_PIP_INDEX="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/"            # Python
+export FOUNDRY_VALIDATION_FEED_TOKEN="<Azure DevOps PAT, Packaging:Read scope; may be optional if the feed is public>"
 ```
 
 The harness writes throwaway `nuget.config` / `.npmrc` and uses isolated NuGet/npm/pip +

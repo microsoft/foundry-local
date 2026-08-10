@@ -1,0 +1,230 @@
+{
+  "chat": {
+    "cpp": { "applicable": false, "note": "No C++ chat sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/native-chat-completions",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "Chat completion response:"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/native-chat-completions",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Chat completion result:"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/native-chat-completions",
+      "kind": "python",
+      "run": ["{python}", "src/app.py"],
+      "expect_marker": "Assistant:"
+    }
+  },
+  "chat-large": {
+    "cpp": { "applicable": false, "note": "No C++ chat sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/native-chat-completions",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "Chat completion response:"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/native-chat-completions",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Chat completion result:"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/native-chat-completions",
+      "kind": "python",
+      "run": ["{python}", "src/app.py"],
+      "expect_marker": "Assistant:"
+    }
+  },
+  "tool-calling": {
+    "cpp": { "applicable": false, "note": "No C++ tool-calling sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/tool-calling-foundry-local-sdk",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "Tool response:"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/tool-calling-foundry-local",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Tool calls completed"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/tool-calling",
+      "kind": "python",
+      "run": ["{python}", "src/app.py"],
+      "expect_marker": "Tool call:"
+    }
+  },
+  "embeddings": {
+    "cpp": { "applicable": false, "note": "No C++ embeddings sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/embeddings",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "Number of embeddings:"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/embeddings",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Number of embeddings:"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/embeddings",
+      "kind": "python",
+      "run": ["{python}", "src/app.py"],
+      "expect_marker": "Number of embeddings:"
+    }
+  },
+  "audio-file": {
+    "cpp": { "applicable": false, "note": "No C++ file-transcription sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/audio-transcription-example",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "Transcribing audio"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/audio-transcription-example",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Audio transcription result:"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/audio-transcription",
+      "kind": "python",
+      "run": ["{python}", "src/app.py", "Recording.mp3"],
+      "expect_marker": "Transcription:"
+    }
+  },
+  "audio-stream": {
+    "cpp": {
+      "applicable": true,
+      "path": "samples/cpp/live-audio-transcription",
+      "kind": "cmake",
+      "run": ["{exe}", "--synth"],
+      "expect_marker": "Synthetic audio pushed"
+    },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/live-audio-transcription",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build", "--", "--synth"],
+      "expect_marker": "Synthetic audio pushed"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/live-audio-transcription",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Synthetic audio pushed"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/live-audio-transcription",
+      "kind": "python",
+      "run": ["{python}", "src/app.py", "--synth"],
+      "expect_marker": "Synthetic audio pushed"
+    }
+  },
+  "vision": {
+    "cpp": { "applicable": false, "note": "No C++ vision sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/foundry-local-web-server-responses-vision",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build", "--", "{model}"],
+      "expect_marker": "[ASSISTANT]:"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/web-server-responses-vision-example",
+      "kind": "node",
+      "run": ["node", "app.js", "{model}"],
+      "expect_marker": "[ASSISTANT]:"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/web-server-responses-vision",
+      "kind": "python",
+      "run": ["{python}", "src/app.py", "{model}"],
+      "expect_marker": "[ASSISTANT]:"
+    }
+  },
+  "web-server": {
+    "cpp": { "applicable": false, "note": "No C++ web-server sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/foundry-local-web-server",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "[ASSISTANT]:"
+    },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/web-server-example",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Testing chat completion with OpenAI client"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/web-server",
+      "kind": "python",
+      "run": ["{python}", "src/app.py"],
+      "expect_marker": "Model loaded."
+    }
+  },
+  "integrations": {
+    "cpp": { "applicable": false, "note": "No C++ integration sample exists." },
+    "cs": { "applicable": false, "note": "No C# LangChain/OpenAI integration sample exists." },
+    "js": {
+      "applicable": true,
+      "path": "samples/js/langchain-integration-example",
+      "kind": "node",
+      "run": ["npm", "start"],
+      "expect_marker": "Response:"
+    },
+    "python": {
+      "applicable": true,
+      "path": "samples/python/langchain-integration",
+      "kind": "python",
+      "run": ["{python}", "src/app.py"],
+      "expect_marker": "Translation:"
+    }
+  },
+  "model-mgmt": {
+    "cpp": { "applicable": false, "note": "No C++ model-management sample exists." },
+    "cs": {
+      "applicable": true,
+      "path": "samples/cs/model-management-example",
+      "kind": "dotnet",
+      "run": ["dotnet", "run", "--project", ".", "-c", "Release", "--no-build"],
+      "expect_marker": "Sample complete."
+    },
+    "js": { "applicable": false, "note": "No JS model-management sample exists." },
+    "python": { "applicable": false, "note": "No Python model-management sample exists." }
+  }
+}
