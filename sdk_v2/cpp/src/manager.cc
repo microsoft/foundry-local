@@ -179,7 +179,7 @@ void SetOgaLogCallback(ILogger* logger) {
 }  // namespace
 
 std::mutex Manager::s_mutex_;
-std::unique_ptr<Manager> Manager::s_instance_;
+Manager* Manager::s_instance_ = nullptr;
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
@@ -414,7 +414,7 @@ Manager& Manager::Create(const Configuration& config) {
 
   created->GetLogger().Log(LogLevel::Information, "Manager initialized successfully.");
 
-  s_instance_ = std::move(created);
+  s_instance_ = created.release();
   return *s_instance_;
 }
 
@@ -431,7 +431,8 @@ Manager& Manager::Instance() {
 
 void Manager::Destroy() {
   std::lock_guard<std::mutex> lock(s_mutex_);
-  s_instance_.reset();
+  delete s_instance_;
+  s_instance_ = nullptr;
 }
 
 ICatalog& Manager::GetCatalog() { return *catalog_; }

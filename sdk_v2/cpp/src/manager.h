@@ -153,7 +153,11 @@ class Manager {
   Model CreateModel(ModelInfo info, std::string local_path);
 
   static std::mutex s_mutex_;
-  static std::unique_ptr<Manager> s_instance_;
+  // Raw pointer, deleted only in Destroy(). If a caller never calls Destroy(), the Manager is
+  // intentionally leaked at process exit rather than run through a static destructor: its native
+  // teardown (e.g. 1DS telemetry) must not run during C-runtime static destruction, after the
+  // libraries it depends on are already gone, which would crash.
+  static Manager* s_instance_;
 };
 
 }  // namespace fl
