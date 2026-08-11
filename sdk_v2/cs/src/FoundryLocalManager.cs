@@ -22,6 +22,11 @@ public class FoundryLocalManager : IDisposable
     private static volatile FoundryLocalManager? instance;
     private static readonly AsyncLock asyncLock = new();
 
+    static FoundryLocalManager()
+    {
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+    }
+
     internal static readonly string AssemblyVersion =
         typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString() ?? "unknown";
 
@@ -42,6 +47,26 @@ public class FoundryLocalManager : IDisposable
     public static bool IsInitialized => instance != null;
     public static FoundryLocalManager Instance => instance ??
         throw new FoundryLocalException("FoundryLocalManager has not been created. Call CreateAsync first.");
+
+    private static void OnProcessExit(object? sender, EventArgs eventArgs)
+    {
+        var manager = instance;
+        if (manager == null)
+        {
+            return;
+        }
+
+        try
+        {
+#pragma warning disable IDISP007 // The SDK owns the singleton and must release it before native libraries unload.
+            manager.Dispose();
+#pragma warning restore IDISP007
+        }
+        catch (Exception)
+        {
+            // Process teardown is already in progress; do not depend on logging infrastructure or let cleanup escape.
+        }
+    }
 
     /// <summary>
     /// Bound Urls if the web service has been started. Null otherwise.
