@@ -275,10 +275,7 @@ steps:
 
 # Apple codesign via ESRP for the macOS .node addons. libfoundry_local.dylib
 # is already signed in cpp_build_osx_arm64 before the shared native artifact is
-# published. The exact keyCode +
-# operationSetCode combination depends on the configured ESRP Mac signing
-# policy; this is a placeholder using a commonly-provisioned Mac policy.
-# Adjust during first pipeline run if the policy isn't provisioned.
+# published.
 - ${{ if eq(parameters.signMac, true) }}:
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
     displayName: 'Sign macOS JS addons (.node)'
