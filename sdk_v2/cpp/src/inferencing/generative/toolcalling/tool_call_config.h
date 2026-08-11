@@ -42,7 +42,9 @@ struct ToolCallConfig {
   /// Default config for ChatML-style models (Phi, Qwen).
   /// Markers come from ToolCallContext; this just sets mode = kSimple.
   static ToolCallConfig Simple() {
-    return ToolCallConfig{Mode::kSimple};
+    ToolCallConfig cfg;
+    cfg.mode = Mode::kSimple;
+    return cfg;
   }
 
   /// Config for GPT-OSS (Harmony) models.
