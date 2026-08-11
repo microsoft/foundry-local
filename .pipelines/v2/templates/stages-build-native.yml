@@ -323,15 +323,14 @@ stages:
           script: |
             $ErrorActionPreference = 'Stop'
 
-            $archive = Get-ChildItem '$(Pipeline.Workspace)/cpp-sdk-v2' -Recurse -Filter '*win-x64.tgz' |
+            $archive = Get-ChildItem '$(Pipeline.Workspace)/cpp-sdk-v2' -Recurse -Filter 'foundry-local-win-x64.zip' |
               Select-Object -First 1
             if (-not $archive) { throw 'Windows x64 C++ SDK archive not found' }
 
             $consumerDir = Join-Path '$(Agent.TempDirectory)' 'cpp-sdk-package-test'
             if (Test-Path $consumerDir) { Remove-Item -Recurse -Force $consumerDir }
             New-Item -ItemType Directory -Force -Path $consumerDir | Out-Null
-            tar -xzf $archive.FullName -C $consumerDir
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Expand-Archive -Path $archive.FullName -DestinationPath $consumerDir -Force
 
             $source = '$(Build.SourcesDirectory)/sdk_v2/cpp/examples/basic_chat/main.cc'
             if (-not (Test-Path $source)) { throw "C++ basic_chat sample not found: $source" }
