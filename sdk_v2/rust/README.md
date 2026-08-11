@@ -219,7 +219,7 @@ let model = catalog.get_model("phi-3.5-mini").await?;
 // Inspect available variants
 println!("Selected: {}", model.id());
 for v in model.variants() {
-    println!("  {} (info.cached: {})", v.id(), v.info().cached);
+    println!("  {} (info.cached: {})", v.id(), v.info()?.cached);
 }
 ```
 

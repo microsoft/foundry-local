@@ -42,9 +42,14 @@ async fn main() -> Result<()> {
 
     // ── 2. Load a model ──────────────────────────────────────────────────
     let models = manager.catalog().get_models().await?;
-    let model = models
-        .iter()
-        .find(|m| m.info().supports_tool_calling == Some(true))
+    let mut tool_model = None;
+    for candidate in &models {
+        if candidate.info()?.supports_tool_calling == Some(true) {
+            tool_model = Some(candidate);
+            break;
+        }
+    }
+    let model = tool_model
         .or_else(|| models.first())
         .expect("No models available");
 

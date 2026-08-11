@@ -113,9 +113,10 @@ async fn should_have_selected_variant_matching_id() {
 
     // The model's id() should return the selected variant's id
     // info() delegates to the selected variant, so id() and info().id must agree
+    let info = model.info().expect("model.info() should succeed");
     assert_eq!(
         model.id(),
-        model.info().id,
+        info.id,
         "model.id() should match model.info().id (the selected variant's metadata)"
     );
 }
@@ -134,6 +135,10 @@ async fn should_report_cached_model_as_cached() {
         cached,
         "Test model '{}' should be cached (from test-data-shared)",
         common::TEST_MODEL_ALIAS
+    );
+    assert!(
+        model.info().expect("model.info() should succeed").cached,
+        "model.info().cached should reflect the native cache state"
     );
 }
 

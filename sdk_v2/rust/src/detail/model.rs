@@ -3,8 +3,7 @@
 //! Mirrors the legacy SDK: a `Model` is either a single variant or a group of
 //! variants sharing an alias. Selection is tracked Rust-side (an index) and all
 //! operations delegate to the selected variant's native handle, so
-//! [`Model::info`] / [`Model::id`] return references that always reflect the
-//! current selection.
+//! [`Model::info`] / [`Model::id`] always reflect the current selection.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -213,8 +212,13 @@ impl Model {
     }
 
     /// Full catalog metadata for the (selected) variant.
-    pub fn info(&self) -> &ModelInfo {
-        &self.selected_variant().info
+    ///
+    /// The native model is the source of truth. Each call returns a fresh
+    /// point-in-time snapshot so cache state remains correct after download or
+    /// removal.
+    pub fn info(&self) -> Result<ModelInfo> {
+        let variant = self.selected_variant();
+        build_model_info(&variant.native.api, &variant.native)
     }
 
     /// Maximum context length (in tokens), or `None` if unknown.

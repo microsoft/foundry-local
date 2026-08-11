@@ -29,13 +29,19 @@ async fn live_streaming_e2e_with_synthetic_pcm_returns_valid_response() {
         .get_cached_models()
         .await
         .expect("get_cached_models failed");
-    let model = match cached_models.into_iter().find(|model| {
-        let info = model.info();
-        info.task.as_deref() == Some("automatic-speech-recognition")
+    let mut matching_model = None;
+    for model in cached_models {
+        let info = model.info().expect("model.info() failed");
+        if info.task.as_deref() == Some("automatic-speech-recognition")
             && (info.id.to_lowercase().contains("nemotron")
                 || info.name.to_lowercase().contains("nemotron")
                 || info.alias.to_lowercase().contains("nemotron"))
-    }) {
+        {
+            matching_model = Some(model);
+            break;
+        }
+    }
+    let model = match matching_model {
         Some(model) => model,
         None => {
             eprintln!("Skipping E2E test: no cached Nemotron streaming-audio model available");
