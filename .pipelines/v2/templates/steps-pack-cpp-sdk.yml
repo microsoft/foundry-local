@@ -1,22 +1,22 @@
-# Package per-platform C++ SDK bundles as .tgz files.
+# Package per-platform C++ SDK bundles as .zip or .tgz files.
 #
 # Each bundle has this layout:
 #   include/  -> public headers (from cpp-native-include artifact)
 #   lib/      -> platform native binaries
 #
 # Output:
-#   $(Build.ArtifactStagingDirectory)/cpp-sdk-v2/*.tgz
+#   $(Build.ArtifactStagingDirectory)/cpp-sdk-v2/foundry-local-*.{zip,tgz}
 
 parameters:
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/cpp-sdk-v2'
-  displayName: 'Directory where per-platform .tgz bundles are staged'
+  displayName: 'Directory where per-platform SDK bundles are staged'
 
 steps:
 
 - task: PowerShell@2
-  displayName: 'Create C++ SDK platform bundles (.tgz)'
+  displayName: 'Create C++ SDK platform bundles (.zip/.tgz)'
   inputs:
     targetType: inline
     pwsh: true
@@ -62,7 +62,7 @@ steps:
 
         Copy-Item -Path (Join-Path $includeSrc '*') -Destination $includeDst -Recurse -Force
 
-        # The SDK tgz should include the public wrapper headers and their public
+        # The SDK archive should include the public wrapper headers and their public
         # ms-gsl dependency. Only pipeline artifact metadata is excluded.
         $pathsToPrune = @(
           (Join-Path $includeDst '_manifest')
@@ -105,14 +105,22 @@ steps:
           }
         }
 
-        $archive = Join-Path $outDir ("cpp-sdk-v2-{0}.tgz" -f $Rid)
+        $archiveExtension = if ($Rid -like 'win-*') { 'zip' } else { 'tgz' }
+        $archive = Join-Path $outDir ("foundry-local-{0}.{1}" -f $Rid, $archiveExtension)
         if (Test-Path $archive) { Remove-Item -Force $archive }
 
         Push-Location $root
         try {
-          tar -czf $archive include lib
-          if ($LASTEXITCODE -ne 0) {
-            throw "tar failed for RID '$Rid'"
+          if ($archiveExtension -eq 'zip') {
+            Compress-Archive -Path include, lib -DestinationPath $archive -CompressionLevel Optimal
+            if (-not $?) {
+              throw "Zip creation failed for RID '$Rid'"
+            }
+          } else {
+            tar -czf $archive include lib
+            if ($LASTEXITCODE -ne 0) {
+              throw "Tar creation failed for RID '$Rid'"
+            }
           }
         } finally {
           Pop-Location
@@ -176,4 +184,4 @@ steps:
       )
 
       Write-Host "Staged archives:"
-      Get-ChildItem $outDir -Filter '*.tgz' | ForEach-Object { Write-Host "  $($_.Name)" }
+      Get-ChildItem $outDir -File | ForEach-Object { Write-Host "  $($_.Name)" }

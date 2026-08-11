@@ -40,9 +40,9 @@ REPO_ROOT = SCRIPT_DIR.parent  # sdk_v2/cpp
 #
 # Vcpkg is statically linked on every platform (see sdk_v2/cpp/triplets/), so
 # the foundry_local shared library carries its transitive deps inside itself
-# and the upstream platform-build artifact for each RID contains only the
-# primary library (plus, on Windows, .pdb and .lib companions consumed by the
-# Python wheel build). We copy that one file into runtimes/<rid>/native/.
+# and the upstream platform-build artifact for each RID contains the primary
+# library plus platform-specific companions. We copy the redistributable files
+# into runtimes/<rid>/native/.
 #
 # On Windows the build also drops Microsoft.Windows.AI.MachineLearning.dll — the
 # reg-free WinML 2.x runtime — next to foundry_local.dll (the cmake post-build
@@ -58,9 +58,11 @@ RIDS: dict[str, tuple[str, str]] = {
 }
 
 # Sibling files copied into runtimes/<rid>/native/ when present in the upstream
-# artifact. Windows builds drop Microsoft.Windows.AI.MachineLearning.dll alongside
-# foundry_local.dll; other platforms don't, so presence alone drives inclusion.
+# artifact. Windows builds provide the import library needed by applications
+# that link against foundry_local.dll, plus the WinML runtime DLL. Other
+# platforms don't provide these files, so presence alone drives inclusion.
 OPTIONAL_SIBLINGS: tuple[str, ...] = (
+    "foundry_local.lib",
     "Microsoft.Windows.AI.MachineLearning.dll",
 )
 
@@ -135,6 +137,14 @@ def stage(args: argparse.Namespace, staging: Path) -> int:
     else:
         log.warning("LICENSE.txt not found at %s", license_file)
 
+    # --- package documentation and notices ---
+    for document_name in ("README.md", "Privacy.md", "ThirdPartyNotices.txt"):
+        document_file = SCRIPT_DIR / document_name
+        if document_file.is_file():
+            shutil.copy2(document_file, staging)
+        else:
+            log.warning("Package document not found at %s", document_file)
+
     # --- runtimes/{rid}/native/ ---
     rid_count = 0
     for arg_name, (rid, lib_name) in RIDS.items():
@@ -152,11 +162,8 @@ def stage(args: argparse.Namespace, staging: Path) -> int:
         native_dir = staging / "runtimes" / rid / "native"
         native_dir.mkdir(parents=True, exist_ok=True)
 
-        # The upstream artifact for each RID is the primary library plus, on
-        # Windows, .pdb / .lib companions used by the Python wheel build, and
-        # Microsoft.Windows.AI.MachineLearning.dll (the WinML 2.x runtime).
-        # We forward the primary library plus any present OPTIONAL_SIBLINGS;
-        # everything else (.pdb, .lib) stays out of the NuGet runtime payload.
+        # Forward the primary library plus any present redistributable siblings.
+        # Build symbols such as .pdb remain out of the NuGet runtime payload.
         shutil.copy2(lib_path, native_dir)
         log.info("  %s → runtimes/%s/native/%s", lib_path, rid, lib_path.name)
         staged = 1
