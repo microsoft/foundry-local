@@ -565,6 +565,27 @@ EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>*
     catalog_->InvalidateCache();
   }
 
+  // Warn if any EPs failed to register, but keep going: CPU is always available and any EPs that
+  // did register remain usable. This is not treated as an error.
+  if (!result.cancelled && !result.failed_eps.empty()) {
+    const auto join = [](const std::vector<std::string>& eps) {
+      std::string joined;
+      for (size_t i = 0; i < eps.size(); ++i) {
+        joined += (i ? ", " : "") + eps[i];
+      }
+      return joined;
+    };
+
+    std::string message = "EP registration failed for [" + join(result.failed_eps) +
+                          "]; continuing with the remaining execution providers (CPU is always "
+                          "available";
+    if (!result.registered_eps.empty()) {
+      message += "; also registered: [" + join(result.registered_eps) + "]";
+    }
+    message += "). See earlier logs for the underlying cause.";
+    logger_->Log(LogLevel::Warning, message);
+  }
+
   return result;
 }
 
