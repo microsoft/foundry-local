@@ -190,7 +190,7 @@ Published via 1ES `templateContext.outputs` (no manual `PublishPipelineArtifact`
 | `cpp_build_win_arm64`       | `cpp-native-win-arm64`         | `foundry_local.dll`, `.pdb`, `.lib` + `Microsoft.Windows.AI.MachineLearning.dll` |
 | `cpp_build_linux_x64`       | `cpp-native-linux-x64`         | `libfoundry_local.so`                                      |
 | `cpp_build_linux_arm64`     | `cpp-native-linux-arm64`       | `libfoundry_local.so` (CPU-only)                           |
-| `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | `libfoundry_local.dylib`                                   |
+| `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | Developer ID-signed `libfoundry_local.dylib`               |
 | `cpp_pack_nuget`            | `cpp-nuget`                    | `Microsoft.AI.Foundry.Local.Runtime.<version>.nupkg` (bundles WinML on Windows) |
 
 ## Versioning
@@ -298,14 +298,14 @@ Build output directories follow `build.py`'s convention:
 
 ## Triggers
 
-* `pr: [main, releases/*]` — all build stages run; pack stages run too
-  (unsigned).
+* `pr: [main, releases/*]` — all build and pack stages run. The shared macOS
+   native dylib is Developer ID-signed before its pipeline artifact is published.
 * No CI trigger on push for the initial rollout.
 
 ## What's deliberately deferred
 
-* **ESRP signing of native binaries.** Slot a signing stage between the
-  builds and pack once the unsigned end-to-end is fully stable.
+* **macOS notarization.** Developer ID signing is enforced before packaging,
+   but Apple notary submission is not yet wired into the release pipeline.
 * **Publishing.** No push to NuGet/internal feeds from this pipeline.
 * **macOS x64.** Add when there's a customer ask.
 * **Code coverage upload.** `run_coverage.ps1` exists for local use but is

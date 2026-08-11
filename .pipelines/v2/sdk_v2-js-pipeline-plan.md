@@ -151,7 +151,8 @@ no equivalent to NuGet package signing.
 |---------------------------|-------------------------------------------------------------------------------|---------------|-----------------------|
 | `js_build_win_x64`        | `foundry_local_node.node`, `foundry_local_preload.node`, `foundry_local.dll`  | `CP-230012`   | SigntoolSign          |
 | `js_build_win_arm64`      | same three Windows files                                                      | `CP-230012`   | SigntoolSign          |
-| `js_build_osx_arm64`      | both `.node` files + `libfoundry_local.dylib`                                  | `CP-401337`   | `MacAppDeveloperSign` (placeholder — confirm against ESRP policy on first run) |
+| `cpp_build_osx_arm64`     | `libfoundry_local.dylib` (shared by every SDK v2 package)                       | `CP-401337-Apple` | `MacAppDeveloperSign` |
+| `js_build_osx_arm64`      | both `.node` files                                                              | `CP-401337-Apple` | `MacAppDeveloperSign` |
 | `js_build_linux_x64`      | none                                                                          | n/a           | Linux `.so` has no standard signing |
 | `js_build_linux_arm64`    | none                                                                          | n/a           | Linux `.so` has no standard signing |
 | `js_pack`                 | none                                                                          | n/a           | `.tgz` not signed by npm convention |
@@ -227,7 +228,6 @@ shape.
   agents have limited RAM. If runs go OOM, switch to
   `vitest run --pool=forks --poolOptions.forks.singleFork=true`.
   Measure first.
-- **ESRP macOS keyCode.** Shipped as `CP-401337` /
-  `MacAppDeveloperSign`. Confirm the policy is provisioned on the first
-  pipeline run; the signing block is `condition`-gated by `signMac` so
-  it can be disabled at the stage level if it isn't.
+- **macOS notarization.** Developer ID signing is configured with hardened
+  runtime and verified before packaging. The release pipeline still needs an
+  Apple notary submission for Gatekeeper malware verification.

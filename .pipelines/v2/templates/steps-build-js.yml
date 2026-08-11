@@ -273,13 +273,15 @@ steps:
       inlineOperation: |
         [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
 
-# Apple codesign via ESRP for macOS .node + .dylib. The exact keyCode +
+# Apple codesign via ESRP for the macOS .node addons. libfoundry_local.dylib
+# is already signed in cpp_build_osx_arm64 before the shared native artifact is
+# published. The exact keyCode +
 # operationSetCode combination depends on the configured ESRP Mac signing
 # policy; this is a placeholder using a commonly-provisioned Mac policy.
 # Adjust during first pipeline run if the policy isn't provisioned.
 - ${{ if eq(parameters.signMac, true) }}:
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-    displayName: 'Sign macOS JS addon (.node) + libfoundry_local.dylib'
+    displayName: 'Sign macOS JS addons (.node)'
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
       UseMSIAuthentication: true
@@ -289,10 +291,10 @@ steps:
       AuthAKVName: '$(esrpAkvName)'
       AuthSignCertName: '$(esrpSignCertName)'
       FolderPath: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
-      Pattern: '*.node;libfoundry_local.dylib'
+      Pattern: '*.node'
       SessionTimeout: 90
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
       MaxConcurrency: 25
       signConfigType: inlineSignParams
       inlineOperation: |
-        [{"keyCode":"CP-401337","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"1.0"}]
+        [{"keyCode":"CP-401337-Apple","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"Hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"6.2.9304.0"}]

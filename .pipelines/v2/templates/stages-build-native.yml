@@ -172,6 +172,8 @@ stages:
         os: macOS
         demands:
         - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+      variables:
+      - group: FoundryLocal-ESRP-Signing
       templateContext:
         inputs:
         - input: pipelineArtifact
