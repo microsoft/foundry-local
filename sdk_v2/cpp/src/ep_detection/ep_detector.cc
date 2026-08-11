@@ -136,17 +136,22 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
 
   // Expand the requested set for EPs that depend on another EP's runtime. NvTensorRTRTX (a WinML EP)
   // reuses the GenAI CUDA bridge that ships in the CUDA EP bundle, so requesting it by name must also
-  // register the CUDA EP. Only applies when a CUDA bootstrapper exists (i.e. an NVIDIA GPU is present).
+  // register the CUDA EP. Only applies when both bootstrappers exist: the NvTensorRTRTX bootstrapper
+  // (so we don't act on an unknown name on hosts without it, e.g. Linux) and the CUDA bootstrapper
+  // (i.e. an NVIDIA GPU is present).
   std::vector<std::string> expanded_names;
   if (names != nullptr) {
     constexpr const char* kTrtRtxEp = "NvTensorRTRTXExecutionProvider";
     constexpr const char* kCudaEp = "CUDAExecutionProvider";
     const bool wants_trtrtx = std::find(names->begin(), names->end(), kTrtRtxEp) != names->end();
     const bool cuda_requested = std::find(names->begin(), names->end(), kCudaEp) != names->end();
+    const bool has_trtrtx_bootstrapper =
+        std::any_of(bootstrappers_.begin(), bootstrappers_.end(),
+                    [&](const auto& bs) { return bs->Name() == kTrtRtxEp; });
     const bool has_cuda_bootstrapper =
         std::any_of(bootstrappers_.begin(), bootstrappers_.end(),
                     [&](const auto& bs) { return bs->Name() == kCudaEp; });
-    if (wants_trtrtx && has_cuda_bootstrapper && !cuda_requested) {
+    if (wants_trtrtx && has_trtrtx_bootstrapper && has_cuda_bootstrapper && !cuda_requested) {
       expanded_names = *names;
       expanded_names.emplace_back(kCudaEp);
       names = &expanded_names;
