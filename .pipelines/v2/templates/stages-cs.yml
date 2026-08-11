@@ -198,3 +198,92 @@ stages:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         additionalTestArgs: '--settings $(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/sequential.runsettings'
+
+# ====================================================================
+# Package test — restore the published NuGet packages as a consumer
+# ====================================================================
+- stage: cs_package_test
+  displayName: 'C# SDK: Test packaged NuGet'
+  dependsOn:
+  - cs_build
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-nuget'
+        targetPath: '$(Pipeline.Workspace)/cpp-nuget'
+      - input: pipelineArtifact
+        artifactName: 'cs-sdk-v2'
+        targetPath: '$(Pipeline.Workspace)/cs-sdk-v2'
+    steps:
+    - checkout: self
+      clean: true
+    - task: UseDotNet@2
+      displayName: 'Use .NET 10 SDK'
+      inputs:
+        packageType: sdk
+        version: '10.0.x'
+    - task: UseDotNet@2
+      displayName: 'Install .NET 9 runtime'
+      inputs:
+        packageType: runtime
+        version: '9.0.x'
+    - task: NuGetAuthenticate@1
+      displayName: 'Authenticate NuGet feeds'
+    - task: PowerShell@2
+      displayName: 'Run packaged C# basic chat sample'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          $consumerDir = Join-Path '$(Agent.TempDirectory)' 'cs-sdk-package-test'
+          $feedDir = Join-Path $consumerDir 'feed'
+          if (Test-Path $consumerDir) { Remove-Item -Recurse -Force $consumerDir }
+          New-Item -ItemType Directory -Force -Path $feedDir | Out-Null
+
+          $packages = @(
+            Get-ChildItem '$(Pipeline.Workspace)/cpp-nuget' -Recurse -Filter '*.nupkg' |
+              Where-Object { $_.Name -notlike '*.snupkg' } | Select-Object -First 1
+            Get-ChildItem '$(Pipeline.Workspace)/cs-sdk-v2' -Recurse -Filter '*.nupkg' |
+              Where-Object { $_.Name -notlike '*.snupkg' } | Select-Object -First 1
+          )
+          if ($packages.Count -ne 2 -or $packages -contains $null) {
+            throw 'Expected both runtime and C# SDK NuGet packages'
+          }
+          $packages | ForEach-Object { Copy-Item $_.FullName -Destination $feedDir -Force }
+
+          $version = (Get-Content '$(Pipeline.Workspace)/version-info/sdkVersion.txt' -Raw).Trim()
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="LocalPackages" value="$feedDir" />
+              <add key="AIFoundryLocal_PublicPackages" value="https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json" />
+            </packageSources>
+          </configuration>
+          "@ | Set-Content (Join-Path $consumerDir 'NuGet.config')
+
+          $project = '$(Build.SourcesDirectory)/sdk_v2/cs/examples/BasicChat/BasicChat.csproj'
+          if (Test-Path $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR) {
+            Remove-Item $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR -Recurse -Force
+          }
+          dotnet restore $project `
+            --configfile (Join-Path $consumerDir 'NuGet.config') `
+            --runtime win-x64 `
+            /p:FoundryLocalPackageVersion=$version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project $project --no-restore --runtime win-x64 `
+            /p:FoundryLocalPackageVersion=$version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      env:
+        FOUNDRY_LOCAL_SAMPLE_CACHE_DIR: '$(Agent.TempDirectory)/cs-package-model-cache'

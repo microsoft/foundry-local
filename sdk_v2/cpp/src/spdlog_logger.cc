@@ -87,14 +87,16 @@ SpdlogLogger::SpdlogLogger(LogLevel min_level, const std::string& logs_dir) {
   const bool flush_every_message = debug_build || min_level <= LogLevel::Debug;
 
   logger_->flush_on(flush_every_message ? spdlog::level::trace : spdlog::level::warn);
-
-  spdlog::register_logger(logger_);
 }
 
 SpdlogLogger::~SpdlogLogger() {
   if (logger_) {
-    logger_->flush();
-    spdlog::drop(logger_->name());
+    try {
+      logger_->flush();
+    } catch (...) {
+      // Destructors must not fail, especially during process teardown when logging dependencies may be unavailable.
+    }
+
     logger_.reset();
     thread_pool_.reset();
   }

@@ -4,9 +4,8 @@
 	import { Download, Copy, Check, ExternalLink } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { IsMobile } from '$lib/hooks/is-mobile.svelte';
-
-	const CLI_RELEASE_URL =
-		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
+	import { page } from '$app/stores';
+	import { fallbackCliDownloadLinks, type CliDownloadLink } from '$lib/cli-downloads';
 
 	interface Props {
 		variant?: 'default' | 'ghost' | 'outline';
@@ -43,6 +42,7 @@
 		id: string;
 		label: string;
 		href: string;
+		releaseLabel: string;
 		icon: string;
 	};
 
@@ -54,26 +54,20 @@
 		crossPlatformCommand: string;
 	};
 
-	const cliInstallOptions: CliInstallOption[] = [
-		{
-			id: 'windows',
-			label: 'Windows CLI',
-			href: CLI_RELEASE_URL,
-			icon: WindowsIcon
-		},
-		{
-			id: 'macos',
-			label: 'macOS CLI',
-			href: CLI_RELEASE_URL,
-			icon: AppleIcon
-		},
-		{
-			id: 'linux',
-			label: 'Linux CLI',
-			href: CLI_RELEASE_URL,
-			icon: LinuxIcon
-		}
-	];
+	const cliIcons = {
+		'windows-cli': WindowsIcon,
+		'macos-cli': AppleIcon,
+		'linux-cli': LinuxIcon
+	};
+
+	function getCliInstallOptions(): CliInstallOption[] {
+		const links = ($page.data.cliDownloadLinks as CliDownloadLink[] | undefined) ?? fallbackCliDownloadLinks;
+		return links.map((link) => ({
+			...link,
+			label: `${link.label} CLI`,
+			icon: cliIcons[link.id]
+		}));
+	}
 
 	const sdkInstallOptions: SdkInstallOption[] = [
 		{
@@ -181,7 +175,7 @@
 		</DropdownMenu.Label>
 
 		<DropdownMenu.Group>
-			{#each cliInstallOptions as item}
+			{#each getCliInstallOptions() as item}
 				<DropdownMenu.Item class="p-0">
 					{#snippet child({ props })}
 						<a
@@ -195,7 +189,7 @@
 							<span class="mt-0.5 inline-flex shrink-0" aria-hidden="true">{@html item.icon}</span>
 							<div class="flex flex-1 flex-col gap-1 px-2">
 								<span class="font-medium">{item.label}</span>
-								<code class="text-muted-foreground text-xs break-all">cli-preview-0.10.0 on GitHub</code>
+								<code class="text-muted-foreground text-xs break-all">{item.releaseLabel}</code>
 							</div>
 							<ExternalLink class="size-4 shrink-0 opacity-50" aria-hidden="true" />
 						</a>

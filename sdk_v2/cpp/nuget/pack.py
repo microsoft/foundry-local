@@ -74,7 +74,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True,
                         help="Package version (e.g. 0.1.0 or 0.1.0-dev.20260419).")
     parser.add_argument("--ort_version", required=True,
-                        help="Minimum Microsoft.ML.OnnxRuntime.Foundry version.")
+                        help="Minimum Microsoft.ML.OnnxRuntime version.")
     parser.add_argument("--genai_version", required=True,
                         help="Minimum Microsoft.ML.OnnxRuntimeGenAI.Foundry version.")
     parser.add_argument("--package_id", default="Microsoft.AI.Foundry.Local.Runtime",

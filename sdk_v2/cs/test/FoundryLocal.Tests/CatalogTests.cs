@@ -66,4 +66,45 @@ internal sealed class CatalogTests
         await Assert.That(async () => await catalog.ListModelsAsync(cts.Token).ConfigureAwait(false))
             .Throws<OperationCanceledException>();
     }
+
+    [Test]
+    public async Task SelectVariant_RefreshesReportedMetadata()
+    {
+        var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();
+
+        var models = await catalog.ListModelsAsync();
+        var modelWithVariants = models.FirstOrDefault(m => m.Variants.Count > 1);
+
+        if (modelWithVariants == null)
+        {
+            Skip.Test("No multi-variant model in the catalog.");
+            return;
+        }
+
+        var variants = modelWithVariants.Variants.ToList();
+
+        // Derive the original variant from the currently-selected Info rather than
+        // assuming variants[0]: native selection prefers the first cached variant.
+        var infoBefore = modelWithVariants.Info;
+        var defaultVariant = variants.First(v => v.Id == infoBefore.Id);
+        var otherVariant = variants.First(v => v.Id != infoBefore.Id);
+
+        modelWithVariants.SelectVariant(otherVariant);
+
+        // Native is the source of truth: every read must reflect the selected variant.
+        await Assert.That(modelWithVariants.Id).IsEqualTo(otherVariant.Id);
+        await Assert.That(modelWithVariants.Alias).IsEqualTo(otherVariant.Alias);
+
+        var infoAfter = modelWithVariants.Info;
+        await Assert.That(infoAfter.Id).IsEqualTo(otherVariant.Id);
+        await Assert.That(infoAfter.Name).IsEqualTo(otherVariant.Info.Name);
+        await Assert.That(infoAfter.Version).IsEqualTo(otherVariant.Info.Version);
+
+        // The earlier snapshot is an independent point-in-time value.
+        await Assert.That(infoBefore.Id).IsEqualTo(defaultVariant.Id);
+
+        // Selecting back refreshes again.
+        modelWithVariants.SelectVariant(defaultVariant);
+        await Assert.That(modelWithVariants.Info.Id).IsEqualTo(defaultVariant.Id);
+    }
 }

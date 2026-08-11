@@ -251,16 +251,16 @@ bool TensorDataTypeFromString(const std::string& s, flTensorDataType& out) {
   return false;
 }
 
+struct BytesView {
+  uint8_t* data;
+  size_t size;
+};
+
 // Reads `key` as a Uint8Array / Buffer / ArrayBuffer / ArrayBufferView and
 // returns a (data, size) view into the underlying memory. The view is only
 // valid until the JS object is moved/finalized; raw-bytes call sites pin
 // the source via MakePinnedDeleter so the view stays valid for the Item's
 // full lifetime. Returns {nullptr, 0} when the field is missing or null.
-struct BytesView {
-  const uint8_t* data;
-  size_t size;
-};
-
 // Throws TypeError if `v` is not an accepted byte-buffer shape.
 BytesView ParseBytesValue(Napi::Env env, const Napi::Value& v, const char* item_type_tag,
                           const char* key) {
@@ -660,7 +660,7 @@ foundry_local::Item JsToBytesItem(Napi::Env env, const Napi::Object& obj) {
 
   return foundry_local::Item::Bytes(
       FOUNDRY_LOCAL_ITEM_BYTES,
-      const_cast<void*>(static_cast<const void*>(view.data)),
+      view.data,
       view.size,
       MakePinnedDeleter<flBytesData>(env, src));
 }
@@ -718,7 +718,7 @@ foundry_local::Item JsToTensorItem(Napi::Env env, const Napi::Object& obj) {
 
   return foundry_local::Item::Tensor(
       dt,
-      const_cast<void*>(static_cast<const void*>(view.data)),
+      view.data,
       shape.data(), shape.size(),
       MakePinnedDeleter<flTensorData>(env, src));
 }
@@ -753,7 +753,7 @@ foundry_local::Item JsToImageItem(Napi::Env env, const Napi::Object& obj) {
 
   return foundry_local::Item::ImageFromData(
       *format,
-      const_cast<void*>(static_cast<const void*>(view.data)),
+      view.data,
       view.size,
       MakePinnedDeleter<flImageData>(env, src));
 }
@@ -810,7 +810,7 @@ foundry_local::Item JsToAudioItem(Napi::Env env, const Napi::Object& obj) {
 
   return foundry_local::Item::AudioFromData(
       *format,
-      const_cast<void*>(static_cast<const void*>(view.data)),
+      view.data,
       view.size,
       MakePinnedDeleter<flAudioData>(env, src),
       sample_rate, channels);

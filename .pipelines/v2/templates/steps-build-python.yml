@@ -113,19 +113,16 @@ steps:
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-        # The native artifact is produced by steps-build-{windows,linux,macos}.yml
-        # which is responsible for staging exactly the right contents for the
-        # downstream wheel. Vcpkg is statically linked on every platform, so each
-        # artifact is just the primary foundry_local library plus (on Windows)
-        # its .pdb and .lib companions:
+        # The native artifact is produced by steps-build-{windows,linux,macos}.yml.
+        # C++ bundles consume its co-located ORT/GenAI libraries, but Python gets
+        # those libraries from pip dependencies, so filter them out here. The
+        # remaining files are the primary foundry_local library plus (on Windows)
+        # its .pdb, .lib, and optional WinML companions:
         #   - Windows:  foundry_local.{dll,pdb,lib}
         #   - Linux:    libfoundry_local.so
         #   - macOS:    libfoundry_local.dylib
-        # ORT/GenAI native libs are intentionally absent — those come from pip
-        # deps (onnxruntime-{core,gpu} / onnxruntime-genai-{core,cuda}). Test
-        # and example binaries are also filtered out upstream. We just copy
-        # the curated artifact contents straight in.
-        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File
+        $files = Get-ChildItem -Path "${{ parameters.nativeArtifactDir }}" -Recurse -File |
+            Where-Object { $_.Name -notlike 'onnxruntime*' -and $_.Name -notlike 'libonnxruntime*' }
         if ($files.Count -eq 0) {
             throw "No native artifacts found under ${{ parameters.nativeArtifactDir }}"
         }
@@ -135,12 +132,8 @@ steps:
         Write-Host "Copied $($files.Count) native file(s) to $dest"
         Get-ChildItem $dest | ForEach-Object { Write-Host "  $($_.Name)" }
 
-# Note: libfoundry_local.{so,dylib} already has $ORIGIN / @loader_path baked
-# into its rpath at CMake build time (see sdk_v2/cpp/CMakeLists.txt's RPATH
-# block on the foundry_local target). No patchelf / install_name_tool fixup
-# is needed here — the binary will look for ORT/GenAI deps next to itself
-# in _native/<rid>/, which is where lib_loader._create_ort_symlinks drops
-# them at process start.
+# lib_loader.py preloads the pip-installed ORT and GenAI libraries, so no
+# patchelf or install_name_tool fixup is needed.
 
 - task: PowerShell@2
   displayName: 'Clean stale build artifacts'

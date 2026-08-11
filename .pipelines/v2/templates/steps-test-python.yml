@@ -135,6 +135,10 @@ steps:
         & "$(venvPy)" -m pip install --upgrade pip
         & "$(venvPy)" -m pip install $wheel
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & "$(venvPy)" -c "import importlib.util; assert importlib.util.find_spec('onnxruntime'); assert importlib.util.find_spec('onnxruntime_genai_core')"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Wheel install did not resolve universal onnxruntime / onnxruntime-genai-core dependencies"
+        }
         & "$(venvPy)" -m pip install pytest pytest-cov
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

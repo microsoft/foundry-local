@@ -8,7 +8,9 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
 
 using namespace foundry_local;
@@ -132,6 +134,9 @@ int main() {
     // 1. Create a configuration and manager. Manager should be a long-lived object in your app and must remain valid
     // while using the FL SDK.
     Configuration config("basic_chat");
+    if (const char* cache_dir = std::getenv("FOUNDRY_LOCAL_SAMPLE_CACHE_DIR")) {
+      config.SetModelCacheDir(cache_dir);
+    }
     Manager manager(std::move(config));
 
     // 2. Get the catalog and list all available models.
@@ -150,22 +155,31 @@ int main() {
     // 3. Look up a specific model by alias. This will return the default selected variant.
     //    Use GetModel(alias) to get a Model that contains all variants for an alias (and GetVariants/SelectVariant to choose),
     //    or GetModelVariant(id) to get a specific variant by ID.
-    auto model = catalog.GetModel("qwen2.5-0.5b");
+    std::unique_ptr<IModel> model;
+    for (const std::string alias : {"qwen2.5-0.5b", "qwen3.5-0.8b"}) {
+      auto candidate = catalog.GetModel(alias);
+      if (!candidate) {
+        continue;
+      }
+
+      ModelList variants = candidate->GetVariants();
+      for (const auto& variant : variants.Models()) {
+        ModelInfo variant_info = variant->GetInfo();
+        if (variant_info.DeviceType() == FOUNDRY_LOCAL_DEVICE_CPU &&
+            (variant_info.Task() == "chat-completion" || variant_info.Task() == "vision-language-chat")) {
+          candidate->SelectVariant(*variant);
+          model = std::move(candidate);
+          break;
+        }
+      }
+      if (model) {
+        break;
+      }
+    }
     if (!model) {
-      std::cerr << "Model not found.\n";
+      std::cerr << "No supported CPU chat model found.\n";
       return 1;
     }
-
-    // Example code to pick a variant if the default isn't suitable.
-    //
-    // // Select a CPU variant if available (the default may be GPU which requires CUDA).
-    // ModelList variants = model.GetVariants();
-    // for (Model& v : variants) {
-    //   if (v.GetInfo().DeviceType() == FOUNDRY_LOCAL_DEVICE_CPU) {
-    //     model.SelectVariant(v);
-    //     break;
-    //   }
-    // }
 
     ModelInfo info = model->GetInfo();
     std::cout << "\nUsing model: " << info.Name() << "\n";
@@ -173,9 +187,9 @@ int main() {
     // 4. Download if not already cached (with cancellable progress).
     if (!model->IsCached()) {
       std::cout << "Downloading...\n";
-      model->Download([](float progress) -> bool {
+      model->Download([](float progress) -> int {
         std::cout << "\r  " << static_cast<int>(progress) << "%" << std::flush;
-        return true;  // return false to cancel
+        return 0;  // return non-zero to cancel
       });
       std::cout << "\n";
     }

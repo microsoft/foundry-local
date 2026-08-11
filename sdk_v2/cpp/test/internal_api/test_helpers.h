@@ -7,6 +7,7 @@
 #include "ep_detection/ep_detector.h"
 #include "inferencing/model_load_manager.h"
 #include "logger.h"
+#include "telemetry/telemetry_logger.h"
 
 #include "utils/temp_path.h"
 

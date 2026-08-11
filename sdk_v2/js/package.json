@@ -27,6 +27,8 @@
     "configure:native": "node-gyp configure",
     "copy-native:dev": "node script/copy-native.mjs",
     "pack:prebuild": "node script/pack-prebuilds.mjs",
+    "stage:deps": "node script/stage-deps-versions.mjs",
+    "prepack": "npm run stage:deps",
     "install-native": "node script/install-native.cjs",
     "install": "node script/install-native.cjs",
     "build:ts": "tsc -p tsconfig.build.json",

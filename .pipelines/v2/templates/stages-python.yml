@@ -388,3 +388,58 @@ stages:
           Get-ChildItem -Path $outDir -Filter '*.whl' | ForEach-Object {
             Write-Host "  $($_.Name)"
           }
+
+# ====================================================================
+# Package test — install the aggregated Windows x64 wheel
+# ====================================================================
+- stage: python_package_test
+  displayName: 'Python SDK: Test packaged wheel'
+  dependsOn:
+  - python_pack_all_wheels
+  jobs:
+  - job: test
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'python-sdk-v2'
+        targetPath: '$(Pipeline.Workspace)/python-sdk-v2'
+    steps:
+    - checkout: self
+      clean: true
+    - task: UsePythonVersion@0
+      displayName: 'Use Python 3.12'
+      inputs:
+        versionSpec: '3.12'
+        addToPath: true
+        architecture: 'x64'
+    - task: PowerShell@2
+      displayName: 'Run packaged Python chat_completion sample'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          $wheel = Get-ChildItem '$(Pipeline.Workspace)/python-sdk-v2' -Recurse -Filter '*win_amd64.whl' |
+            Select-Object -First 1
+          if (-not $wheel) { throw 'Windows x64 Python wheel not found' }
+
+          $venvDir = Join-Path '$(Agent.TempDirectory)' 'python-sdk-package-test'
+          if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
+          if (Test-Path $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR) {
+            Remove-Item $env:FOUNDRY_LOCAL_SAMPLE_CACHE_DIR -Recurse -Force
+          }
+          python -m venv $venvDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venvDir 'Scripts\python.exe'
+
+          & $python -m pip install $wheel.FullName --disable-pip-version-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $python '$(Build.SourcesDirectory)/sdk_v2/python/examples/chat_completion.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      env:
+        FOUNDRY_LOCAL_SAMPLE_CACHE_DIR: '$(Agent.TempDirectory)/python-package-model-cache'
+        FOUNDRY_LOCAL_SKIP_EP_REGISTRATION: '1'

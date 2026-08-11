@@ -15,7 +15,6 @@
 #include "logger.h"
 #include "model.h"
 #include "model_info.h"
-#include "null_telemetry.h"
 #include "service/web_service.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -71,7 +70,7 @@ class WebServiceTest : public ::testing::Test {
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
     session_manager_ = std::make_unique<SessionManager>(*logger_);
-    null_telemetry_ = std::make_unique<fl::test::NullTelemetry>();
+    null_telemetry_ = std::make_unique<TelemetryLogger>("test", fl::test::NullLog());
     catalog_ = std::make_unique<test::MockCatalog>();
 
     // Populate with test models
@@ -122,7 +121,7 @@ class WebServiceTest : public ::testing::Test {
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
   static std::unique_ptr<SessionManager> session_manager_;
-  static std::unique_ptr<fl::test::NullTelemetry> null_telemetry_;
+  static std::unique_ptr<TelemetryLogger> null_telemetry_;
   static std::unique_ptr<WebService> service_;
   static std::string base_url_;
   static inline fl::test::FakeServiceBindings svc_;
@@ -134,7 +133,7 @@ std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
 std::unique_ptr<SessionManager> WebServiceTest::session_manager_;
-std::unique_ptr<fl::test::NullTelemetry> WebServiceTest::null_telemetry_;
+std::unique_ptr<TelemetryLogger> WebServiceTest::null_telemetry_;
 std::unique_ptr<WebService> WebServiceTest::service_;
 std::string WebServiceTest::base_url_;
 
@@ -374,7 +373,7 @@ TEST(WebServiceLifecycleTest, StartAndStopOnEphemeralPort) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
   WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
   auto urls = service.Start({"http://127.0.0.1:0"});
@@ -396,7 +395,7 @@ TEST(WebServiceLifecycleTest, DoubleStartThrows) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
   WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
   service.Start({"http://127.0.0.1:0"});
@@ -412,7 +411,7 @@ TEST(WebServiceLifecycleTest, StopWithoutStartIsNoop) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
   WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
   // Should not crash
@@ -425,7 +424,7 @@ TEST(WebServiceLifecycleTest, MultipleEndpoints) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
   WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
   auto urls = service.Start({"http://127.0.0.1:0", "http://127.0.0.1:0"});
@@ -451,7 +450,7 @@ TEST(WebServiceEmptyCatalogTest, ListModelsReturnsEmptyData) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
   WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
   auto urls = service.Start({"http://127.0.0.1:0"});
@@ -471,7 +470,7 @@ TEST(WebServiceEmptyCatalogTest, LoadedModelsReturnsEmptyArray) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
   WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
   auto urls = service.Start({"http://127.0.0.1:0"});
@@ -775,7 +774,7 @@ TEST(WebServiceShutdownTest, StopReturnsQuicklyWithKeepAliveClient) {
   test::CpuOnlyEpDetector ep_detector;
   ModelLoadManager model_load_manager(ep_detector, logger);
   SessionManager session_manager(logger);
-  fl::test::NullTelemetry null_telemetry;
+  TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
   test::MockCatalog catalog;
 
   WebService service(catalog, logger, "/tmp/test-cache", model_load_manager, session_manager, null_telemetry,

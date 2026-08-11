@@ -134,6 +134,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
@@ -141,6 +142,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   nlohmann::json req_json;
   ResponseCreateParams params;
   if (auto err = ParseAndValidateRequest(body_str->c_str(), req_json, params)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -155,6 +157,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   Model* model = nullptr;
   GenAIModelInstance* loaded = nullptr;
   if (auto err = ResolveModel(model_name, model, loaded)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -602,6 +605,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> GetResponseHandler::handle
 
   auto id = request->getPathVariable("id");
   if (!id) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Missing response ID");
   }
 
@@ -692,6 +696,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> DeleteResponseHandler::han
 
   auto id = request->getPathVariable("id");
   if (!id) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Missing response ID");
   }
 
@@ -737,6 +742,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> GetInputItemsHandler::hand
 
   auto id = request->getPathVariable("id");
   if (!id) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Missing response ID");
   }
 
