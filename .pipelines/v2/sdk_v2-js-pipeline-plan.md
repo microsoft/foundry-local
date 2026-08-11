@@ -141,11 +141,13 @@ would otherwise re-run during pack-time install).
 
 ## Signing
 
-ESRP signing of native binaries runs in each `js_build_<rid>` stage on
-the agent that produced them. Doing the signing in `js_pack` would
-require routing back to a macOS agent to sign Darwin binaries; signing
-per-platform avoids that. The `.tgz` itself is **not signed** — npm has
-no equivalent to NuGet package signing.
+The shared macOS `libfoundry_local.dylib` is signed in
+`cpp_build_osx_arm64` before the native artifact is published, so every SDK v2
+package consumes the same signed binary. JS-specific native addons are signed
+in their `js_build_<rid>` stages on the agents that produced them. Doing this
+work in `js_pack` would require routing back to platform-specific agents. The
+`.tgz` itself is **not signed** — npm has no equivalent to NuGet package
+signing.
 
 | Stage                     | Files signed                                                                  | ESRP keyCode  | Tool                  |
 |---------------------------|-------------------------------------------------------------------------------|---------------|-----------------------|
