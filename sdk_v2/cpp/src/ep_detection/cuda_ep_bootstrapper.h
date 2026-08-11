@@ -55,6 +55,11 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   static bool IsSupportedPlatform();
 
  private:
+  /// Windows: load onnxruntime-genai-cuda.dll (the GenAI CUDA bridge) from the installed bundle and
+  /// hold it resident, so WinML EPs that reuse it (e.g. NvTensorRTRTX) resolve it by name regardless
+  /// of EP/model load order. No-op on other platforms.
+  void LoadGenAiCudaBridge(ILogger& logger);
+
   std::string name_ = "CUDAExecutionProvider";
   bool registered_ = false;
   int attempts_ = 0;
@@ -62,6 +67,9 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   EpBundleManifestFactory manifest_factory_;
   EpBundleInstaller installer_;
   std::filesystem::path bundle_dir_;
+#if defined(_WIN32)
+  std::shared_ptr<void> genai_cuda_library_;
+#endif
 #if defined(__linux__)
   std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>> genai_cuda_libraries_;
   CudaGenAiDependencyLoader genai_cuda_loader_;

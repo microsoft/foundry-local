@@ -236,3 +236,49 @@ TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknown_SucceedsWithNothing) {
 
   EXPECT_FALSE(mocks[0]->download_called_);
 }
+
+// NvTensorRTRTX reuses the GenAI CUDA bridge shipped in the CUDA EP bundle, so requesting it by
+// name must also auto-register the CUDA EP (when a CUDA bootstrapper is present).
+TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxAlsoRegistersCuda) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true},
+                                       {"CUDAExecutionProvider", true}});
+
+  std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_TRUE(result.success);
+  EXPECT_TRUE(mocks[0]->download_called_);
+  EXPECT_TRUE(mocks[1]->download_called_);
+  EXPECT_NE(std::find(result.registered_eps.begin(), result.registered_eps.end(), "CUDAExecutionProvider"),
+            result.registered_eps.end());
+}
+
+// The auto-injection must not fabricate a CUDA registration when no CUDA bootstrapper exists
+// (e.g. no NVIDIA GPU present).
+TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxWithoutCudaBootstrapper_NoInjection) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true}});
+
+  std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_TRUE(result.success);
+  ASSERT_EQ(result.registered_eps.size(), 1u);
+  EXPECT_EQ(result.registered_eps[0], "NvTensorRTRTXExecutionProvider");
+}
+
+// Requesting an unrelated EP must not pull in CUDA.
+TEST_F(EpDetectorTest, DownloadFiltered_NonTrtRtxDoesNotRegisterCuda) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"WebGpuExecutionProvider", true},
+                                       {"CUDAExecutionProvider", true}});
+
+  std::vector<std::string> names = {"WebGpuExecutionProvider"};
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_TRUE(result.success);
+  ASSERT_EQ(result.registered_eps.size(), 1u);
+  EXPECT_EQ(result.registered_eps[0], "WebGpuExecutionProvider");
+  EXPECT_FALSE(mocks[1]->download_called_);
+}
