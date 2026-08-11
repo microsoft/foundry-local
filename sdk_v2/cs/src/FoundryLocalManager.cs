@@ -22,11 +22,6 @@ public class FoundryLocalManager : IDisposable
     private static volatile FoundryLocalManager? instance;
     private static readonly AsyncLock asyncLock = new();
 
-    static FoundryLocalManager()
-    {
-        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
-    }
-
     internal static readonly string AssemblyVersion =
         typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString() ?? "unknown";
 
@@ -104,6 +99,8 @@ public class FoundryLocalManager : IDisposable
             instance = manager;
             manager = null;
 #pragma warning restore IDISP003
+
+            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         }
         catch (Exception ex)
         {
@@ -468,6 +465,8 @@ public class FoundryLocalManager : IDisposable
             // field was the only thing keeping the SDK permanently dead after Dispose.
             if (ReferenceEquals(instance, this))
             {
+                AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+
 #pragma warning disable IDISP003 // Dispose previous before re-assigning — `this` was just disposed above
                 instance = null;
 #pragma warning restore IDISP003
