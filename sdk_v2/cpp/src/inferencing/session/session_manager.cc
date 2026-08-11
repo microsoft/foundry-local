@@ -4,6 +4,7 @@
 
 #include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/session/session.h"
 
 #include <cassert>
 #include <fmt/format.h>
@@ -57,7 +58,11 @@ void SessionManager::CancelAll() {
   logger_.Log(LogLevel::Information,
               fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
 
-  // Future (Phase 3): iterate sessions_ and call Cancel() on each
+  // Signal every in-flight request to stop. Cancel() only sets atomic flags — no joins, no
+  // re-entrancy into SessionManager — so calling it while holding mutex_ cannot deadlock.
+  for (Session* s : sessions_) {
+    s->Cancel();
+  }
 }
 
 void SessionManager::WaitForDrain(std::chrono::milliseconds timeout) {
