@@ -60,6 +60,15 @@ class TestSingletonRecreate:
         mgr.close()
         assert FoundryLocalManager.instance is None
 
+    def test_reset_clears_singleton(self, restore_singleton):
+        config = restore_singleton
+        assert FoundryLocalManager.instance is not None
+        FoundryLocalManager.reset()
+        assert FoundryLocalManager.instance is None
+
+        new_mgr = FoundryLocalManager(config)
+        assert FoundryLocalManager.instance is new_mgr
+
     def test_context_manager_clears_singleton(self, restore_singleton):
         config = restore_singleton
         # Tear down the existing singleton so the with-block can build a new one.
