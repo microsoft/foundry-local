@@ -2,9 +2,10 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>
+    <FoundryLocalPackageVersion Condition="'$(FoundryLocalPackageVersion)' == ''">*-*</FoundryLocalPackageVersion>
   </PropertyGroup>
   <ItemGroup>
-    <PackageVersion Include="Microsoft.AI.Foundry.Local" Version="*-*" />
+    <PackageVersion Include="Microsoft.AI.Foundry.Local" Version="$(FoundryLocalPackageVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="9.0.15" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="9.0.15" />
     <PackageVersion Include="NAudio" Version="2.2.1" />

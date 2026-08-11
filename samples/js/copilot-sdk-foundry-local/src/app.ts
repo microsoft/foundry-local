@@ -26,8 +26,23 @@ const endpointUrl = "http://localhost:6543";
 // Timeout for each model turn (ms).  Override with FOUNDRY_TIMEOUT_MS env var.
 // Local models on CPU can be slow — increase this on less powerful hardware.
 const TIMEOUT_MS = Number(process.env.FOUNDRY_TIMEOUT_MS) || 120_000;
+const CLEANUP_TIMEOUT_MS = 5_000;
 
 type Model = Awaited<ReturnType<FoundryLocalManager["catalog"]["getModel"]>>;
+
+async function awaitBestEffort(operation: Promise<unknown>): Promise<void> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+        timeoutId = setTimeout(resolve, CLEANUP_TIMEOUT_MS);
+        timeoutId.unref();
+    });
+
+    try {
+        await Promise.race([operation.then(() => undefined, () => undefined), timeout]);
+    } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helper: send a message and wait for the assistant's full reply.
@@ -40,9 +55,10 @@ async function sendMessage(
     try {
         await session.sendAndWait({ prompt }, timeoutMs);
     } catch (err: any) {
-        // Foundry Local streaming may omit finish_reason, causing a
-        // session.error that rejects sendAndWait. Treat as non-fatal.
+        // Abort the failed turn so the session does not continue processing before the error propagates.
         console.error(`\n[sendMessage error: ${err?.message ?? err}]`);
+        await awaitBestEffort(session.abort());
+        throw err;
     }
 }
 
@@ -51,6 +67,7 @@ async function main() {
     let model: Model | undefined;
     let client: CopilotClient | undefined;
     let session: Awaited<ReturnType<CopilotClient["createSession"]>> | undefined;
+    let isUnwindingDueToError = false;
 
     try {
         // --- Initialize Foundry Local ---
@@ -127,29 +144,38 @@ async function main() {
         console.log("\n");
 
         console.log("Done!");
+    } catch (error) {
+        isUnwindingDueToError = true;
+        throw error;
     } finally {
-        // Clean up resources in reverse order of creation
+        // Service sessions must release the model before it can be unloaded.
         if (session) {
-            await session.destroy().catch(() => {});
+            await awaitBestEffort(session.disconnect());
         }
         if (client) {
-            await client.stop().catch(() => {});
+            await awaitBestEffort(client.forceStop());
         }
-        if (model) {
-            console.log("Unloading model...");
-            await model.unload().catch((e) => {
-                console.warn("Warning: failed to unload model:", e);
-            });
-        }
-        if (manager) {
-            console.log("Stopping web service...");
-            try {
-                manager.stopWebService();
-            } catch (e) {
-                console.warn("Warning: failed to stop web service:", e);
+        // Native cleanup may block behind a failed request; forced process exit lets the OS reclaim it.
+        if (!isUnwindingDueToError) {
+            if (manager) {
+                console.log("Stopping web service...");
+                try {
+                    manager.stopWebService();
+                } catch (e) {
+                    console.warn("Warning: failed to stop web service:", e);
+                }
+            }
+            if (model) {
+                console.log("Unloading model...");
+                await model.unload().catch((e) => {
+                    console.warn("Warning: failed to unload model:", e);
+                });
             }
         }
     }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

@@ -1,20 +1,26 @@
 <#
 .SYNOPSIS
-    Validate samples/js against the local sdk_v2/js build.
+    Validate samples/js against a local sdk_v2/js build or a release candidate.
 
 .DESCRIPTION
     The samples declare `"foundry-local-sdk": "latest"`, which resolves to the
-    published v1 package on npmjs.com. This script:
+    published v1 package on npmjs.com. In Local mode (the default), this script:
 
       1. Builds sdk_v2/cpp via build.py (RelWithDebInfo, --skip_tests). The JS
          native addon links against the C++ SDK.
       2. Builds sdk_v2/js (TS + native addon + prebuilds copy).
       3. Runs `npm pack` to produce a tarball.
-        4. For each sample under samples/js/, runs `npm install <tarball>`, which
-           installs the v2 tarball AS `foundry-local-sdk` (the package name inside
-           the tarball wins, overriding the "latest" specifier).
-      5. Optionally runs each sample with `npm start` under a per-sample
-         timeout and reports pass/fail.
+      4. For each sample under samples/js/, runs `npm install <tarball>`, which
+         installs the v2 tarball AS `foundry-local-sdk` (the package name inside
+         the tarball wins, overriding the "latest" specifier).
+        5. Optionally runs each non-GUI sample under a per-sample timeout and
+            reports pass/fail. ReleaseCandidate full runs use deterministic input
+            profiles where needed; interactive GUI samples are reported as skipped.
+
+    In ReleaseCandidate mode, local build and pack steps are skipped. The script
+    resolves the exact `foundry-local-sdk@<ReleaseCandidateVersion>` tarball from
+    ORT-Nightly, then installs it while ordinary dependencies resolve through the
+    Microsoft npm proxy. It also installs the supplied node-addon-api 8.9.1 package URL.
 
     Nothing about the samples' package.json files is modified. Run the script
     again any time after a rebuild to re-pack and reinstall.
@@ -22,14 +28,22 @@
 .PARAMETER Sample
     Run only the named sample (folder name under samples/js/). Default: all.
 
+.PARAMETER PackageSource
+    Package source to test: Local or ReleaseCandidate. Default: Local.
+
+.PARAMETER ReleaseCandidateVersion
+    foundry-local-sdk version to install in ReleaseCandidate mode.
+    Default: 2.0.0-rc1.
+
 .PARAMETER SkipBuild
     Skip the C++ and sdk_v2/js build + pack steps. Use when iterating on the
-    script itself or when you've already produced a fresh tarball.
+    script itself or when you've already produced a fresh tarball. Ignored in
+    ReleaseCandidate mode because local builds are always skipped.
 
 .PARAMETER Run
-    After installing, actually run each sample (npm start) under a timeout.
-    Default behaviour is install-only — you usually want to run a single
-    sample interactively with `npm start` after install.
+    After installing, run each non-GUI sample under a timeout. ReleaseCandidate
+    full runs supply deterministic arguments or stdin where needed. Interactive
+    GUI samples are installed but reported as skipped. Default: install-only.
 
 .PARAMETER VisionModel
     Model alias or variant ID passed to web-server-responses-vision-example when running it.
@@ -49,10 +63,22 @@
 .EXAMPLE
     pwsh ./test-v2.ps1 -SkipBuild -Run
     # Reuse the existing tarball; install + smoke-run every sample.
+
+.EXAMPLE
+    pwsh ./test-v2.ps1 -PackageSource ReleaseCandidate -Sample native-chat-completions
+    # Install foundry-local-sdk@2.0.0-rc1 into one sample without running local builds.
+
+.EXAMPLE
+    pwsh ./test-v2.ps1 -PackageSource ReleaseCandidate -ReleaseCandidateVersion 2.0.0-rc2 -Run
+    # Install and smoke-run every sample against a specific release candidate.
 #>
 [CmdletBinding()]
 param(
     [string] $Sample,
+    [ValidateSet('Local', 'ReleaseCandidate')]
+    [string] $PackageSource = 'Local',
+    [ValidateNotNullOrEmpty()]
+    [string] $ReleaseCandidateVersion = '2.0.0-rc1',
     [switch] $SkipBuild,
     [switch] $Run,
     [string] $VisionModel = 'qwen3-vl-2b-instruct-generic-cpu:2',
@@ -66,31 +92,42 @@ $sdkDir      = Join-Path $repoRoot 'sdk_v2\js'
 $cppDir      = Join-Path $repoRoot 'sdk_v2\cpp'
 $buildPy     = Join-Path $cppDir 'build.py'
 $npmRegistry = 'https://packagefeedproxy.microsoft.io/npm'
+$rcRegistry  = 'https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/npm/registry/'
+$nodeAddonApiPackage = 'https://packagefeedproxy.microsoft.io/npm/node-addon-api/-/node-addon-api-8.9.1.tgz'
 
-if (-not (Test-Path $sdkDir)) {
-    throw "Cannot find sdk_v2/js at $sdkDir"
-}
-if (-not (Test-Path $buildPy)) {
-    throw "Cannot find $buildPy"
+if ($PackageSource -eq 'Local') {
+    if (-not (Test-Path $sdkDir)) {
+        throw "Cannot find sdk_v2/js at $sdkDir"
+    }
+    if (-not (Test-Path $buildPy)) {
+        throw "Cannot find $buildPy"
+    }
 }
 
 if ($IsWindows -or $env:OS -eq 'Windows_NT') {
     $platform = 'Windows'
+    $npmCommand = 'npm.cmd'
 }
 elseif ($IsLinux) {
     $platform = 'Linux'
+    $npmCommand = 'npm'
 }
 elseif ($IsMacOS) {
     $platform = 'macOS'
+    $npmCommand = 'npm'
 }
 else {
     throw 'Unsupported platform.'
 }
 
 Write-Host "Platform: $platform" -ForegroundColor DarkGray
+Write-Host "Package source: $PackageSource" -ForegroundColor DarkGray
+if ($PackageSource -eq 'ReleaseCandidate') {
+    Write-Host "Package registry: $rcRegistry" -ForegroundColor DarkGray
+}
 
 # ---------- 1. build C++ (the JS native addon links against the C++ SDK) ----------
-if (-not $SkipBuild) {
+if ($PackageSource -eq 'Local' -and -not $SkipBuild) {
     Write-Host "==> Building sdk_v2/cpp (RelWithDebInfo)" -ForegroundColor Cyan
     $buildArgs = @('--config', 'RelWithDebInfo', '--skip_tests')
     & python $buildPy @buildArgs
@@ -98,13 +135,13 @@ if (-not $SkipBuild) {
 }
 
 # ---------- 2. build + pack JS ----------
-if (-not $SkipBuild) {
+if ($PackageSource -eq 'Local' -and -not $SkipBuild) {
     Write-Host "==> Building sdk_v2/js" -ForegroundColor Cyan
     Push-Location $sdkDir
     try {
-        npm install --registry=$npmRegistry
+        & $npmCommand install --registry=$npmRegistry
         if ($LASTEXITCODE -ne 0) { throw "npm install in sdk_v2/js failed" }
-        npm run build
+        & $npmCommand run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build in sdk_v2/js failed" }
 
         # Clean stale tarballs so we always pick up the freshest one.
@@ -112,11 +149,11 @@ if (-not $SkipBuild) {
             Remove-Item -Force -ErrorAction SilentlyContinue
 
         Write-Host "==> Staging sdk_v2/js package contents" -ForegroundColor Cyan
-        npm run pack:prebuild
+        & $npmCommand run pack:prebuild
         if ($LASTEXITCODE -ne 0) { throw "npm run pack:prebuild in sdk_v2/js failed" }
 
         Write-Host "==> Packing sdk_v2/js" -ForegroundColor Cyan
-        npm pack
+        & $npmCommand pack
         if ($LASTEXITCODE -ne 0) { throw "npm pack in sdk_v2/js failed" }
     }
     finally {
@@ -124,14 +161,33 @@ if (-not $SkipBuild) {
     }
 }
 
-$tarball = Get-ChildItem -Path $sdkDir -Filter 'foundry-local-sdk-*.tgz' |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-if (-not $tarball) {
-    throw "No tarball found in $sdkDir. Run without -SkipBuild first."
+if ($PackageSource -eq 'Local') {
+    $tarball = Get-ChildItem -Path $sdkDir -Filter 'foundry-local-sdk-*.tgz' |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if (-not $tarball) {
+        throw "No tarball found in $sdkDir. Run without -SkipBuild first."
+    }
+    $packageSpec = $tarball.FullName
+    $packageVersion = $tarball.BaseName -replace '^foundry-local-sdk-', ''
+    Write-Host "Package artifact: $packageSpec" -ForegroundColor DarkGray
 }
-$tarballPath = $tarball.FullName
-Write-Host "Using tarball: $tarballPath" -ForegroundColor DarkGray
+else {
+    $versionedPackageSpec = "foundry-local-sdk@$ReleaseCandidateVersion"
+    $packageTarballOutput = & $npmCommand view $versionedPackageSpec dist.tarball `
+        --registry=$rcRegistry --replace-registry-host=never
+    $packageTarballExitCode = $LASTEXITCODE
+    $packageSpec = ($packageTarballOutput -join [Environment]::NewLine).Trim()
+    if ($packageTarballExitCode -ne 0) {
+        throw "Could not resolve $versionedPackageSpec from $rcRegistry (exit $packageTarballExitCode)"
+    }
+    if ([string]::IsNullOrWhiteSpace($packageSpec)) {
+        throw "Could not resolve a tarball URL for $versionedPackageSpec from $rcRegistry"
+    }
+    $packageVersion = $ReleaseCandidateVersion
+    Write-Host "Package artifact: $packageSpec" -ForegroundColor DarkGray
+}
+Write-Host "Package version: $packageVersion" -ForegroundColor DarkGray
 
 # ---------- 3. discover samples ----------
 $candidateDirs = Get-ChildItem -Path $samplesRoot -Directory |
@@ -162,6 +218,12 @@ if (-not $samples) {
 }
 
 # ---------- 4. install + (optionally) run ----------
+$runArtifactsDir = $null
+if ($Run) {
+    $runArtifactsDir = Join-Path $sdkDir 'build\samples-run-inputs'
+    New-Item -ItemType Directory -Path $runArtifactsDir -Force | Out-Null
+}
+
 $results = New-Object System.Collections.Generic.List[object]
 
 foreach ($sampleDir in $samples) {
@@ -173,25 +235,35 @@ foreach ($sampleDir in $samples) {
     $runOk     = $null
     $note      = ''
     try {
-        # Remove the old install so the tarball is the canonical source. Do not
+        # Remove the old install so the selected package is the canonical source. Do not
         # suppress file-lock errors: a partial cleanup makes npm fail later with
         # a misleading EBUSY rename error.
         try {
-            Remove-Item -Recurse -Force node_modules, package-lock.json -ErrorAction Stop
+            @('node_modules', 'package-lock.json') |
+                Where-Object { Test-Path $_ } |
+                Remove-Item -Recurse -Force -ErrorAction Stop
         }
         catch {
             throw "Could not clean $($sampleDir.FullName)\node_modules. Close the process holding files in that directory (on Windows, use handle.exe to identify it), then retry. $($_.Exception.Message)"
         }
 
-        # `npm install <tgz>` registers the tarball under its internal package
-        # name (`foundry-local-sdk`), which satisfies the "latest" specifier
-        # in the sample's package.json. --registry overrides any sample-local
-        # .npmrc and routes package traffic through the required internal proxy.
-        npm install --registry=$npmRegistry $tarballPath 2>&1 | Write-Host
+        if ($PackageSource -eq 'Local') {
+            # The tarball's internal package name satisfies the sample's "latest" specifier.
+            & $npmCommand install --no-save --package-lock=false --registry=$npmRegistry $packageSpec 2>&1 | Write-Host
+        }
+        else {
+            & $npmCommand install --no-save --package-lock=false --registry=$npmRegistry `
+                $packageSpec $nodeAddonApiPackage 2>&1 | Write-Host
+        }
         $installOk = ($LASTEXITCODE -eq 0)
         if (-not $installOk) { $note = "npm install exit $LASTEXITCODE" }
 
-        if ($installOk -and $Run) {
+        if ($installOk -and $Run -and $name -eq 'electron-chat-application') {
+            $runOk = 'SKIP'
+            $note = 'interactive GUI sample; install verified, run skipped'
+            Write-Host "==> [$name] run skipped ($note)" -ForegroundColor Yellow
+        }
+        elseif ($installOk -and $Run) {
             Write-Host "==> [$name] run (timeout ${TimeoutSec}s)" -ForegroundColor Cyan
 
             # NOTE: do NOT use Start-Job here. PowerShell jobs run in a child
@@ -211,12 +283,28 @@ foreach ($sampleDir in $samples) {
             # it on failure without interleaving it into the live output.
             $pkgJson    = Get-Content (Join-Path $sampleDir.FullName 'package.json') -Raw | ConvertFrom-Json
             $startCmd   = $pkgJson.scripts.start
-            if (-not $startCmd) { throw "Sample $name has no scripts.start" }
+            if (-not $startCmd -and $pkgJson.main) { $startCmd = "node $($pkgJson.main)" }
+            if (-not $startCmd) { throw "Sample $name has neither scripts.start nor main" }
             $startParts = $startCmd -split '\s+', 2
             $exe        = $startParts[0]    # typically 'node'; may be 'npx' for TS samples
             $exeArgs    = if ($startParts.Count -gt 1) { $startParts[1] } else { '' }
             if ($name -eq 'web-server-responses-vision-example') {
                 $exeArgs += " $VisionModel"
+            }
+
+            $inputFile = $null
+            if ($PackageSource -eq 'ReleaseCandidate' -and -not $Sample) {
+                if ($name -eq 'live-audio-transcription') {
+                    $exeArgs += ' --synth'
+                }
+                elseif ($name -eq 'tutorial-chat-assistant') {
+                    $inputFile = Join-Path $runArtifactsDir "$name.stdin.txt"
+                    [System.IO.File]::WriteAllText($inputFile, "Hello`nquit`n")
+                }
+                elseif ($name -eq 'tutorial-tool-calling') {
+                    $inputFile = Join-Path $runArtifactsDir "$name.stdin.txt"
+                    [System.IO.File]::WriteAllText($inputFile, "What's the weather in Seattle?`nquit`n")
+                }
             }
 
             # Start-Process requires a real Win32 executable; PATHEXT-based
@@ -238,12 +326,18 @@ foreach ($sampleDir in $samples) {
             }
             if ($resolved) { $exe = $resolved }
 
-            $errFile = Join-Path $sampleDir.FullName 'sample-run.err.log'
+            $errFile = Join-Path $runArtifactsDir "$name.stderr.log"
             Remove-Item $errFile -Force -ErrorAction SilentlyContinue
-            $proc = Start-Process -FilePath $exe -ArgumentList $exeArgs `
-                -WorkingDirectory $sampleDir.FullName `
-                -NoNewWindow -PassThru `
-                -RedirectStandardError $errFile
+            $processArgs = @{
+                FilePath = $exe
+                ArgumentList = $exeArgs
+                WorkingDirectory = $sampleDir.FullName
+                NoNewWindow = $true
+                PassThru = $true
+                RedirectStandardError = $errFile
+            }
+            if ($inputFile) { $processArgs.RedirectStandardInput = $inputFile }
+            $proc = Start-Process @processArgs
             $exited = $proc.WaitForExit($TimeoutSec * 1000)
             if (-not $exited) {
                 try { $proc.Kill($true) } catch { }
@@ -254,7 +348,7 @@ foreach ($sampleDir in $samples) {
             else {
                 $exit  = $proc.ExitCode
                 $runOk = ($exit -eq 0)
-                if (-not $runOk) { $note = "npm start exit $exit" }
+                if (-not $runOk) { $note = "sample run exit $exit" }
             }
             # Always surface stderr if non-empty — npm warnings go to stderr
             # too, but on failure this is usually where the real error lives.
@@ -273,10 +367,13 @@ foreach ($sampleDir in $samples) {
     }
 
     $results.Add([pscustomobject]@{
-        Sample  = $name
-        Install = if ($installOk) { 'OK' } else { 'FAIL' }
-        Run     = if ($null -eq $runOk) { '-' } elseif ($runOk) { 'OK' } else { 'FAIL' }
-        Note    = $note
+        Sample        = $name
+        PackageSource = $PackageSource
+        Version       = $packageVersion
+        Package       = $packageSpec
+        Install       = if ($installOk) { 'OK' } else { 'FAIL' }
+        Run           = if ($null -eq $runOk) { '-' } elseif ($runOk -eq 'SKIP') { 'SKIP' } elseif ($runOk) { 'OK' } else { 'FAIL' }
+        Note          = $note
     })
 }
 
