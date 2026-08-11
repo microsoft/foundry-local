@@ -11,7 +11,16 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 from typing import Any, Dict, List
+
+# Windows consoles default to a legacy code page (cp1252) that can't encode the ✅/❌ status
+# glyphs this script prints; force UTF-8 so the verdict line doesn't crash on Windows.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(os.path.dirname(HERE), "results")

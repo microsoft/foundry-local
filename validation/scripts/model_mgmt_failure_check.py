@@ -20,6 +20,32 @@ SCENARIOS = ["unknown-alias", "invalid-variant", "corrupt-data", "missing-file",
              "readonly-cache", "concurrent-download", "remove-recache"]
 
 
+def _set_dir_readonly(path):
+    """Make a directory reject new-file creation. Returns True if enforcement was applied.
+
+    POSIX: strip write bits via os.chmod. Windows: os.chmod cannot do this on a directory,
+    so deny WriteData/AppendData for the current user via icacls. Returns False if neither
+    mechanism could be applied (caller then treats the scenario as not-applicable)."""
+    if os.name != "nt":
+        os.chmod(path, stat.S_IRUSR | stat.S_IXUSR)
+        return True
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    if not user:
+        return False
+    rc = subprocess.run(["icacls", path, "/deny", f"{user}:(WD,AD)"],
+                        capture_output=True, text=True)
+    return rc.returncode == 0
+
+
+def _restore_dir_writable(path):
+    if os.name != "nt":
+        os.chmod(path, stat.S_IRWXU)
+        return
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    if user:
+        subprocess.run(["icacls", path, "/remove:d", user], capture_output=True, text=True)
+
+
 def _mgr(cache_dir=None):
     import foundry_local_sdk as fl
     kwargs = {"app_name": "foundry_local_samples"}
@@ -102,9 +128,15 @@ def run_scenario(name):
 
     if name == "readonly-cache":
         # Fresh, writable-then-readonly cache: download into a dir we then strip write perms on.
+        # POSIX honours os.chmod on directories; Windows ignores POSIX bits on directories
+        # (os.chmod is effectively a no-op for the write permission there), so on Windows we
+        # deny write via an ACL (icacls) to make the scenario meaningful cross-platform.
         _, mgr = _mgr(cache)
         m = mgr.catalog.get_model(ALIAS); m.select_variant(_cpu_variant(m))
-        os.chmod(cache, stat.S_IRUSR | stat.S_IXUSR)  # r-x only
+        made_readonly = _set_dir_readonly(cache)
+        if not made_readonly:
+            print("detail: could not enforce a read-only cache dir on this platform (skipped)")
+            return True
         try:
             m.download(lambda p: None)
             print("detail: download unexpectedly succeeded on read-only cache")
@@ -116,7 +148,7 @@ def run_scenario(name):
             print(f"detail: OSError surfaced (graceful, no crash): {e.__class__.__name__}")
             return True
         finally:
-            os.chmod(cache, stat.S_IRWXU)
+            _restore_dir_writable(cache)
 
     if name == "concurrent-download":
         _, mgr = _mgr(cache)

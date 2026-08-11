@@ -1,0 +1,471 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__chat__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 75.5,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Chat completion result:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__chat__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:50:37+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__tool-calling__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "tool-calling",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 59.8,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 1"
+      },
+      {
+        "name": "output contains marker: Tool calls completed",
+        "ok": false,
+        "detail": "marker not found"
+      },
+      {
+        "name": "feature output sanity",
+        "ok": false,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__tool-calling__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:51:37+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__embeddings__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "embeddings",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "embeddings",
+      "alias": "qwen3-embedding-0.6b",
+      "variant": "qwen3-embedding-0.6b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 33.7,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Number of embeddings:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__embeddings__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:52:11+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__audio-file__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "audio-file",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "audio-file",
+      "alias": "whisper-tiny",
+      "variant": "whisper-tiny-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 38.7,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Audio transcription result:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__audio-file__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:52:49+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__vision__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "vision",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "vision",
+      "alias": "qwen3-vl-2b-instruct",
+      "variant": "qwen3-vl-2b-instruct-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 61.7,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: [ASSISTANT]:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__vision__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:53:51+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__web-server__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "web-server",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 53.9,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Testing chat completion with OpenAI client",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__web-server__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:54:45+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__integrations__windows-x64__cpu",
+    "run_id": "win-jsfeat",
+    "sdk": "js",
+    "feature": "integrations",
+    "category": "feature",
+    "blocking": false,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 90.8,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": true,
+        "detail": "exit code 0"
+      },
+      {
+        "name": "output contains marker: Response:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-jsfeat\\js__integrations__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:56:16+00:00"
+  }
+]

@@ -1,0 +1,733 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__windows-x64__cpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "discover_eps returns provider set",
+        "ok": true,
+        "detail": "CUDA/NvTensorRTRTX/OpenVINO/WebGpu discovered"
+      },
+      {
+        "name": "CPU always available for inference",
+        "ok": true,
+        "detail": "all direct-API scripts run CPU inference"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "CPU EP path exercised by every direct-API script (model-mgmt/crosscutting/soak/compat).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__windows-x64__cuda",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-instruct-cuda-gpu:4"
+    },
+    "accelerator": "cuda",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "CUDAExecutionProvider registers",
+        "ok": true,
+        "detail": "reused verified cuda-ep-win-x64 bundle; registered successfully"
+      },
+      {
+        "name": "download_and_register_eps() no raise",
+        "ok": true,
+        "detail": "registers OpenVINO+NvTRTRTX+CUDA+WebGPU"
+      },
+      {
+        "name": "REAL CUDA inference",
+        "ok": true,
+        "detail": "qwen2.5-0.5b-instruct-cuda-gpu:4 -> 'Paris' (load 2.6s / infer 0.40s)"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Real CUDA inference on NVIDIA RTX A2000 (CUDA 12.8 bundle, driver 13.x).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__windows-x64__webgpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-instruct-generic-gpu:4"
+    },
+    "accelerator": "webgpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "WebGpuExecutionProvider registers",
+        "ok": true,
+        "detail": "reused webgpu-ep-0.2.1-win-x64 bundle; 'Foundry.WebGPU' registered"
+      },
+      {
+        "name": "REAL WebGPU inference",
+        "ok": true,
+        "detail": "qwen2.5-0.5b-instruct-generic-gpu:4 -> 'Paris' (load 3.4s / infer 0.61s)"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Real WebGPU inference verified.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__windows-x64__winml-dml",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": true,
+    "model": null,
+    "accelerator": "winml-dml",
+    "result": "fail",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "DirectML/WinML EP present in RC",
+        "ok": false,
+        "detail": "discover_eps returns NO DirectML/WinML provider; generic-gpu runs WebGPU not DML"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes":     "DIVERGENCE: platform_manifest lists winml-dml as required, but this RC exposes no DirectML/WinML EP (only CUDA/NvTensorRTRTX/OpenVINO/WebGpu). See finding F9.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__ep-bootstrap__windows-x64__npu-winml",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "ep-bootstrap",
+    "category": "runtime",
+    "blocking": false,
+    "model": null,
+    "accelerator": "npu-winml",
+    "result": "blocked",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "NPU hardware present",
+        "ok": false,
+        "detail": "box has no NPU (Intel Iris Xe iGPU + NVIDIA RTX A2000 only)"
+      },
+      {
+        "name": "WinML/NPU EP present in RC",
+        "ok": false,
+        "detail": "no WinML NPU EP exposed by discover_eps"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "No NPU hardware on this box AND no WinML NPU EP in RC -> off-surface/blocked for windows-x64 here.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__chat__windows-x64__cuda",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-instruct-cuda-gpu:4"
+    },
+    "accelerator": "cuda",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "REAL CUDA chat inference",
+        "ok": true,
+        "detail": "'Paris' (load 2.6s / infer 0.40s)"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API real CUDA chat on RTX A2000.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__chat__windows-x64__webgpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-instruct-generic-gpu:4"
+    },
+    "accelerator": "webgpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "REAL WebGPU chat inference",
+        "ok": true,
+        "detail": "'Paris' (load 3.4s / infer 0.61s)"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Direct-API real WebGPU chat.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__model-mgmt__windows-x64__cpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "model-mgmt",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "model_mgmt_check.py 10/10",
+        "ok": true,
+        "detail": "list_models/get_model/variant enum/select_variant/download+cache-reuse/lifecycle/get_latest_version"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "10/10 PASS on windows-x64.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__crosscutting__windows-x64__cpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "crosscutting",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "crosscutting_check.py 8/8",
+        "ok": true,
+        "detail": "unknown alias->None; typed errors; concurrent sessions; cancel; unload-refused-while-live; reload"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "8/8 PASS on windows-x64.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__model-mgmt-fail__windows-x64__cpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "model-mgmt-fail",
+    "category": "runtime",
+    "blocking": false,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "model_mgmt_failure_check.py 7/7",
+        "ok": true,
+        "detail": "unknown alias/invalid variant/corrupt weights/missing file/read-only cache(ACL)/concurrent dl/remove-from-cache \u2014 all typed errors, no crash"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "7/7 PASS on windows-x64 (read-only-cache scenario made cross-platform via icacls).",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__soak-resource__windows-x64__cpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "soak-resource",
+    "category": "nonfunctional",
+    "blocking": false,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "soak load/unload plateaus",
+        "ok": true,
+        "detail": "481MB steady-state, 0.2MB/cycle \u2014 better than macOS(~1.75GB)/linux(619MB)"
+      },
+      {
+        "name": "sustained-inference memory bounded",
+        "ok": true,
+        "detail": "mem_char.py: WorkingSet+Private plateau after ~10 infers (slope 0.01-0.02 MB/infer) \u2014 no unbounded leak"
+      },
+      {
+        "name": "streaming + mid-stream cancel + concurrent sessions",
+        "ok": true,
+        "detail": "process stays healthy"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "Soak PASS. GATE 5 raw +770MB is one-time warm-up that plateaus (mem_char confirms). See N4/windows soak note.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__compat-upgrade__windows-x64__cpu",
+    "run_id": "win-direct",
+    "sdk": "python",
+    "feature": "compat-upgrade",
+    "category": "compat",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": null
+    },
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": null,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": null,
+      "native_lib_versions": {
+        "onnxruntime": "1.28.0",
+        "onnxruntime-genai": "0.15.2"
+      }
+    },
+    "assertions": [
+      {
+        "name": "compat_surface_check.py 4/4",
+        "ok": true,
+        "detail": "2.0 preserves entire 1.x public surface vs 1.2.4; additive only; get_*_client deprecation source-compatible"
+      }
+    ],
+    "waiver": null,
+    "log_path": null,
+    "notes": "4/4 PASS (API-diff slice). Runtime-upgrade slice deferred (needs legacy 1.x service) \u2014 see N6.",
+    "owner": "@baijumeswani",
+    "timestamp": "2026-08-11T12:30:00-07:00"
+  }
+]

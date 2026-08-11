@@ -1,0 +1,285 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "cpp__pkg-inspect__windows-x64__cpu",
+    "run_id": "win-pkg",
+    "sdk": "cpp",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 5.2,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local.Runtime",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": "62ff5e14f2c41c2167d3244648046b084ccdd1c3bf619b0db38c3c680343a627",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-pkg\\cpp__pkg-inspect__windows-x64__cpu\\pkg-inspect.log",
+    "notes": "inspected microsoft.ai.foundry.local.runtime.2.0.0-rc1.nupkg",
+    "owner": null,
+    "timestamp": "2026-08-11T17:51:26+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__pkg-inspect__windows-x64__cpu",
+    "run_id": "win-pkg",
+    "sdk": "cs",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "pass",
+    "duration_seconds": 24.9,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": "84040c695fae123eac4974cabd234a477ce6213994cb3cce108db47006ec8892",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-pkg\\cs__pkg-inspect__windows-x64__cpu\\pkg-inspect.log",
+    "notes": "inspected microsoft.ai.foundry.local.2.0.0-rc1.nupkg",
+    "owner": null,
+    "timestamp": "2026-08-11T17:51:51+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "js__pkg-inspect__windows-x64__cpu",
+    "run_id": "win-pkg",
+    "sdk": "js",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 36.8,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/npm/registry/",
+      "sha256": "f6e431f363917c24507d2248f8befa10ef4ca1e7b6cd7d7a0a62b0a7328f5840",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "license present",
+        "ok": false,
+        "detail": "license={'expression': None, 'file': None}"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-pkg\\js__pkg-inspect__windows-x64__cpu\\pkg-inspect.log",
+    "notes": "inspected foundry-local-sdk-2.0.0-rc1.tgz",
+    "owner": null,
+    "timestamp": "2026-08-11T17:52:28+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "python__pkg-inspect__windows-x64__cpu",
+    "run_id": "win-pkg",
+    "sdk": "python",
+    "feature": "pkg-inspect",
+    "category": "packaging",
+    "blocking": true,
+    "model": null,
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 312.1,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "foundry-local-sdk",
+      "version": "2.0.0rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/pypi/simple/",
+      "sha256": "3863fda6c6e42e1a93230c2a48fd96671eb5838a9d5783938ca87d465c2c68a0",
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "package name matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "package version matches",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "native lib present",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "no internal-path/debug leakage",
+        "ok": false,
+        "detail": "debug/internal file entry: foundry_local_sdk/_native/win-x64/foundry_local.pdb"
+      },
+      {
+        "name": "license present",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-pkg\\python__pkg-inspect__windows-x64__cpu\\pkg-inspect.log",
+    "notes": "inspected foundry_local_sdk-2.0.0rc1-cp311-abi3-win_amd64.whl",
+    "owner": null,
+    "timestamp": "2026-08-11T17:57:40+00:00"
+  }
+]

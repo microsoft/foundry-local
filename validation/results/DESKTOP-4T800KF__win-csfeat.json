@@ -1,0 +1,451 @@
+[
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__chat__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "chat",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 52.8,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 3221226324"
+      },
+      {
+        "name": "output contains marker: Chat completion response:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__chat__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:59:41+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__tool-calling__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "tool-calling",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 9.8,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "install/build exits 0",
+        "ok": false,
+        "detail": "exit code 1"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__tool-calling__windows-x64__cpu\\sample-run.log",
+    "notes": "sample install/build failed",
+    "owner": null,
+    "timestamp": "2026-08-11T18:59:51+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__embeddings__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "embeddings",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "embeddings",
+      "alias": "qwen3-embedding-0.6b",
+      "variant": "qwen3-embedding-0.6b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 24.2,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 3221226324"
+      },
+      {
+        "name": "output contains marker: Number of embeddings:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__embeddings__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T19:00:15+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__audio-file__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "audio-file",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "audio-file",
+      "alias": "whisper-tiny",
+      "variant": "whisper-tiny-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 34.5,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 3221226324"
+      },
+      {
+        "name": "output contains marker: Transcribing audio",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": "structured feature; used exit-code + marker assertion"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__audio-file__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T19:00:49+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__vision__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "vision",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "vision",
+      "alias": "qwen3-vl-2b-instruct",
+      "variant": "qwen3-vl-2b-instruct-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 8.3,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "install/build exits 0",
+        "ok": false,
+        "detail": "exit code 1"
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__vision__windows-x64__cpu\\sample-run.log",
+    "notes": "sample install/build failed",
+    "owner": null,
+    "timestamp": "2026-08-11T19:00:58+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__web-server__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "web-server",
+    "category": "feature",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 49.2,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 3221226324"
+      },
+      {
+        "name": "output contains marker: [ASSISTANT]:",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__web-server__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T19:01:47+00:00"
+  },
+  {
+    "schema_version": "1.0",
+    "cell_id": "cs__model-mgmt__windows-x64__cpu",
+    "run_id": "win-csfeat",
+    "sdk": "cs",
+    "feature": "model-mgmt",
+    "category": "runtime",
+    "blocking": true,
+    "model": {
+      "task": "chat-small",
+      "alias": "qwen2.5-0.5b",
+      "variant": "qwen2.5-0.5b-generic-cpu",
+      "expected": true
+    },
+    "accelerator": "cpu",
+    "result": "fail",
+    "duration_seconds": 43.6,
+    "env": {
+      "platform_id": "windows-x64",
+      "os": "windows",
+      "arch": "x64",
+      "hostname": "DESKTOP-4T800KF",
+      "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+      "gpus": [
+        "NVIDIA RTX A2000 Laptop GPU"
+      ],
+      "npu": null,
+      "driver": null,
+      "cuda": "Cuda compilation tools, release 13.3, V13.3.33",
+      "runtimes": {
+        "python": "3.11.9",
+        "dotnet": "9.0.316",
+        "node": "v24.13.0",
+        "npm": null,
+        "cmake": "cmake version 3.31.6-msvc6\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake)."
+      }
+    },
+    "package": {
+      "name": "Microsoft.AI.Foundry.Local",
+      "version": "2.0.0-rc1",
+      "resolved_source": "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
+      "sha256": null,
+      "native_lib_versions": {}
+    },
+    "assertions": [
+      {
+        "name": "sample exits 0",
+        "ok": false,
+        "detail": "exit code 3221226324"
+      },
+      {
+        "name": "output contains marker: Sample complete.",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "feature output sanity",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "waiver": null,
+    "log_path": "C:\\Code\\foundry-local\\validation\\results\\work-DESKTOP-4T800KF-win-csfeat\\cs__model-mgmt__windows-x64__cpu\\sample-run.log",
+    "notes": "sample-backed run completed",
+    "owner": null,
+    "timestamp": "2026-08-11T19:02:30+00:00"
+  }
+]

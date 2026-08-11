@@ -367,6 +367,11 @@ def _run_env(sample_dir, ws):
     # Let a sample built against an older TFM (e.g. net9.0) run on a machine that only has a
     # newer shared runtime (e.g. net10). Harmless for non-.NET samples.
     env.setdefault("DOTNET_ROLL_FORWARD", "Major")
+    # Windows consoles default to a legacy code page (cp1252); a sample that prints streamed
+    # model text (which can contain arbitrary Unicode) then dies on UnicodeEncodeError. Force
+    # UTF-8 for child stdio so the harness measures RC behavior, not console-encoding luck.
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     if os.name != "nt":
         lib_path = os.pathsep.join([os.path.join(ws, "cmake-build"), env.get("LD_LIBRARY_PATH", "")])
         env["LD_LIBRARY_PATH"] = lib_path
@@ -409,7 +414,28 @@ def _semantic_assertion(feature, log_text, fallback):
         return False, f"{fn_name} raised: {e!r}"
 
 
+def _resolve_exe(cmd):
+    """On Windows, resolve tool names to their real launcher (npm -> npm.cmd, node -> node.exe).
+
+    subprocess with shell=False cannot launch the extensionless `npm`/`npx` shims, so map
+    argv[0] to a concrete .cmd/.exe/.bat via PATH. No-op on POSIX and for absolute paths."""
+    if os.name != "nt" or not cmd:
+        return cmd
+    exe = cmd[0]
+    if os.path.isabs(exe):
+        return cmd
+    found = shutil.which(exe)
+    if found and found.lower().endswith((".exe", ".cmd", ".bat")):
+        return [found, *cmd[1:]]
+    for ext in (".cmd", ".exe", ".bat"):
+        f = shutil.which(exe + ext)
+        if f:
+            return [f, *cmd[1:]]
+    return cmd
+
+
 def _exec(cmd, cwd, log, timeout, env):
+    cmd = _resolve_exe(cmd)
     log.write(f"\n$ {' '.join(cmd)}  (cwd={cwd})\n")
     log.flush()
     try:

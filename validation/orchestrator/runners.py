@@ -47,7 +47,29 @@ def _pkg(sdk: str, resolved_source: str | None = None) -> Dict[str, Any]:
     }
 
 
+def _resolve_exe(cmd: List[str]) -> List[str]:
+    """On Windows, resolve tool names to their real launcher (npm -> npm.cmd, node -> node.exe).
+
+    subprocess with shell=False cannot launch `npm` directly because it is a `.cmd` shim; the
+    bare (extensionless) file is not CreateProcess-executable. Map argv[0] to a concrete
+    .cmd/.exe/.bat via PATH so Windows agents run the same argv as Unix agents."""
+    if os.name != "nt" or not cmd:
+        return cmd
+    exe = cmd[0]
+    if os.path.isabs(exe):
+        return cmd
+    found = shutil.which(exe)
+    if found and found.lower().endswith((".exe", ".cmd", ".bat")):
+        return [found, *cmd[1:]]
+    for ext in (".cmd", ".exe", ".bat"):
+        f = shutil.which(exe + ext)
+        if f:
+            return [f, *cmd[1:]]
+    return cmd
+
+
 def _exec(cmd: List[str], cwd: str, log, timeout: int, env: Dict[str, str] | None = None) -> int:
+    cmd = _resolve_exe(cmd)
     log.write(f"\n$ {' '.join(cmd)}  (cwd={cwd})\n")
     log.flush()
     try:

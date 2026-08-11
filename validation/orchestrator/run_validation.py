@@ -121,6 +121,13 @@ def csv_set(val: str | None) -> set[str] | None:
 
 
 def main() -> int:
+    # Windows consoles default to a legacy code page (cp1252) that cannot encode the status
+    # glyphs the summary prints; force UTF-8 so a run never dies on a print. No-op elsewhere.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(description="Foundry Local 2.0.0 validation orchestrator")
     ap.add_argument("--sdk", help="comma list: cpp,cs,js,python")
     ap.add_argument("--feature", help="comma list of feature ids (see coverage_cells.json)")
