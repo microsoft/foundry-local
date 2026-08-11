@@ -254,31 +254,18 @@ TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxAlsoRegistersCuda) {
             result.registered_eps.end());
 }
 
-// The auto-injection must not fabricate a CUDA registration when no CUDA bootstrapper exists
-// (e.g. no NVIDIA GPU present).
-TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxWithoutCudaBootstrapper_NoInjection) {
+// A host with a CUDA bootstrapper but no NvTensorRTRTX bootstrapper (e.g. Linux + NVIDIA GPU) must
+// preserve unknown-name behavior: requesting the unknown NvTensorRTRTX name must NOT pull in CUDA.
+TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxUnknownWithCudaPresent_NoInjection) {
   std::vector<MockEpBootstrapper*> mocks;
-  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true}});
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true},
+                                       {"WebGpuExecutionProvider", true}});
 
   std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
   auto result = detector->DownloadAndRegisterEps(&names, nullptr);
 
   EXPECT_TRUE(result.success);
-  ASSERT_EQ(result.registered_eps.size(), 1u);
-  EXPECT_EQ(result.registered_eps[0], "NvTensorRTRTXExecutionProvider");
-}
-
-// Requesting an unrelated EP must not pull in CUDA.
-TEST_F(EpDetectorTest, DownloadFiltered_NonTrtRtxDoesNotRegisterCuda) {
-  std::vector<MockEpBootstrapper*> mocks;
-  auto detector = MakeDetector(mocks, {{"WebGpuExecutionProvider", true},
-                                       {"CUDAExecutionProvider", true}});
-
-  std::vector<std::string> names = {"WebGpuExecutionProvider"};
-  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
-
-  EXPECT_TRUE(result.success);
-  ASSERT_EQ(result.registered_eps.size(), 1u);
-  EXPECT_EQ(result.registered_eps[0], "WebGpuExecutionProvider");
+  EXPECT_TRUE(result.registered_eps.empty());
+  EXPECT_FALSE(mocks[0]->download_called_);  // CUDA must not be injected
   EXPECT_FALSE(mocks[1]->download_called_);
 }

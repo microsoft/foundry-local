@@ -69,7 +69,7 @@ namespace fl {
 
 CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
                                        EpBundleManifestFactory manifest_factory, EpArtifactDownloadFn download_fn
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
                                        ,
                                        CudaGenAiDependencyLoader genai_cuda_loader
 #endif
@@ -78,7 +78,7 @@ CudaEpBootstrapper::CudaEpBootstrapper(std::string root_dir, EpRegistrationCallb
       manifest_factory_(manifest_factory ? std::move(manifest_factory)
                                          : [] { return BuildCudaEpManifest(HostCudaEpPlatform()); }),
       installer_(std::filesystem::path(root_dir), kLockFileName, "CUDA EP", std::move(download_fn))
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
       ,
       genai_cuda_loader_(genai_cuda_loader ? std::move(genai_cuda_loader) : platform::LoadSharedLibrary)
 #endif
@@ -121,10 +121,15 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
         return false;
       }
 
+      bundle_dir_ = provider_path.parent_path();
 #if defined(__linux__)
       std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
       if (!LoadGenAiCudaLibrary(provider_path.parent_path() / kGenAiCudaLibrary, genai_cuda_libraries_,
                                 genai_cuda_loader_, provisional_genai_cuda_library, logger)) {
+        return false;
+      }
+#elif defined(_WIN32)
+      if (!LoadGenAiCudaBridge(logger)) {
         return false;
       }
 #endif
@@ -142,8 +147,6 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
 #endif
 
       registered_ = true;
-      bundle_dir_ = provider_path.parent_path();
-      LoadGenAiCudaBridge(logger);
 
       if (progress_cb) {
         progress_cb(name_, 100.0f);
@@ -172,10 +175,16 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
     }
 
     const auto provider_path = txn->provider_path();
+    bundle_dir_ = txn->bin_dir();
 #if defined(__linux__)
     std::pair<std::filesystem::path, std::shared_ptr<void>> provisional_genai_cuda_library;
     if (!LoadGenAiCudaLibrary(txn->bin_dir() / kGenAiCudaLibrary, genai_cuda_libraries_, genai_cuda_loader_,
                               provisional_genai_cuda_library, logger)) {
+      txn->Rollback();
+      return false;
+    }
+#elif defined(_WIN32)
+    if (!LoadGenAiCudaBridge(logger)) {
       txn->Rollback();
       return false;
     }
@@ -194,8 +203,6 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
 #endif
 
     registered_ = true;
-    bundle_dir_ = txn->bin_dir();
-    LoadGenAiCudaBridge(logger);
     txn->Finalize();
 
     if (progress_cb) {
@@ -218,15 +225,19 @@ bool CudaEpBootstrapper::PrepareForModelLoad([[maybe_unused]] ILogger& logger) {
 #endif
 }
 
-void CudaEpBootstrapper::LoadGenAiCudaBridge([[maybe_unused]] ILogger& logger) {
+bool CudaEpBootstrapper::LoadGenAiCudaBridge([[maybe_unused]] ILogger& logger) {
 #if defined(_WIN32)
   // NvTensorRTRTX reuses the GenAI CUDA bridge (onnxruntime-genai-cuda.dll) but, unlike the CUDA
   // path, never adds the cuda-ep bundle to the DLL search path. Load it here and keep the handle so
-  // it stays resident and resolves by name for any later model load. Best-effort: CUDA inference
-  // itself does not depend on it (LoadSharedLibrary logs on failure).
+  // it stays resident and resolves by name for any later model load. Treated as a hard dependency
+  // (mirrors the Linux path): if it cannot be loaded, registration fails so the caller is not told
+  // the CUDA EP is ready when a dependent NvTensorRTRTX model load would still fail.
   if (!genai_cuda_library_) {
-    genai_cuda_library_ = platform::LoadSharedLibrary(bundle_dir_ / kGenAiCudaLibrary, logger);
+    genai_cuda_library_ = genai_cuda_loader_(bundle_dir_ / kGenAiCudaLibrary, logger);
   }
+  return genai_cuda_library_ != nullptr;
+#else
+  return true;
 #endif
 }
 
