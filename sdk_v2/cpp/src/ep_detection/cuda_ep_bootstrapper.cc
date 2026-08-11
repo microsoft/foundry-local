@@ -23,6 +23,8 @@ constexpr const char* kRegistrationName = "CUDAExecutionProvider";
 constexpr const char* kCudaProviderOverrideEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
 #if defined(__linux__)
 constexpr const char* kGenAiCudaLibrary = "libonnxruntime-genai-cuda.so";
+#elif defined(_WIN32)
+constexpr const char* kGenAiCudaLibrary = "onnxruntime-genai-cuda.dll";
 #endif
 
 fl::CudaEpPlatform HostCudaEpPlatform() {
@@ -141,6 +143,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
 
       registered_ = true;
       bundle_dir_ = provider_path.parent_path();
+      LoadGenAiCudaBridge(logger);
 
       if (progress_cb) {
         progress_cb(name_, 100.0f);
@@ -192,6 +195,7 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback&
 
     registered_ = true;
     bundle_dir_ = txn->bin_dir();
+    LoadGenAiCudaBridge(logger);
     txn->Finalize();
 
     if (progress_cb) {
@@ -211,6 +215,18 @@ bool CudaEpBootstrapper::PrepareForModelLoad([[maybe_unused]] ILogger& logger) {
   return platform::SetDynamicLibrarySearchDirectory(bundle_dir_, logger);
 #else
   return true;
+#endif
+}
+
+void CudaEpBootstrapper::LoadGenAiCudaBridge([[maybe_unused]] ILogger& logger) {
+#if defined(_WIN32)
+  // NvTensorRTRTX reuses the GenAI CUDA bridge (onnxruntime-genai-cuda.dll) but, unlike the CUDA
+  // path, never adds the cuda-ep bundle to the DLL search path. Load it here and keep the handle so
+  // it stays resident and resolves by name for any later model load. Best-effort: CUDA inference
+  // itself does not depend on it (LoadSharedLibrary logs on failure).
+  if (!genai_cuda_library_) {
+    genai_cuda_library_ = platform::LoadSharedLibrary(bundle_dir_ / kGenAiCudaLibrary, logger);
+  }
 #endif
 }
 

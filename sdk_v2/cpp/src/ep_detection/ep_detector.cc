@@ -134,6 +134,27 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   EpDownloadResult result;
   result.success = true;
 
+  // Expand the requested set for EPs that depend on another EP's runtime. NvTensorRTRTX (a WinML EP)
+  // reuses the GenAI CUDA bridge that ships in the CUDA EP bundle, so requesting it by name must also
+  // register the CUDA EP. Only applies when a CUDA bootstrapper exists (i.e. an NVIDIA GPU is present).
+  std::vector<std::string> expanded_names;
+  if (names != nullptr) {
+    constexpr const char* kTrtRtxEp = "NvTensorRTRTXExecutionProvider";
+    constexpr const char* kCudaEp = "CUDAExecutionProvider";
+    const bool wants_trtrtx = std::find(names->begin(), names->end(), kTrtRtxEp) != names->end();
+    const bool cuda_requested = std::find(names->begin(), names->end(), kCudaEp) != names->end();
+    const bool has_cuda_bootstrapper =
+        std::any_of(bootstrappers_.begin(), bootstrappers_.end(),
+                    [&](const auto& bs) { return bs->Name() == kCudaEp; });
+    if (wants_trtrtx && has_cuda_bootstrapper && !cuda_requested) {
+      expanded_names = *names;
+      expanded_names.emplace_back(kCudaEp);
+      names = &expanded_names;
+      logger_.Log(LogLevel::Information,
+                  "Auto-registering CUDA EP alongside NvTensorRTRTX (shared GenAI CUDA bridge)");
+    }
+  }
+
   // Track cancellation from the progress callback
   bool cancelled = false;
   IEpBootstrapper::ProgressCallback wrapped_cb;
