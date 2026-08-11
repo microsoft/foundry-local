@@ -273,12 +273,19 @@ steps:
       inlineOperation: |
         [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
 
-# Apple codesign via ESRP for the macOS .node addons. libfoundry_local.dylib
+# ESRP requires a ZIP or DMG transport for macOS signing. libfoundry_local.dylib
 # is already signed in cpp_build_osx_arm64 before the shared native artifact is
-# published.
+# published, so this archive contains only the two JS addons.
 - ${{ if eq(parameters.signMac, true) }}:
+  - bash: |
+      set -euo pipefail
+      rm -f foundry_local_node_addons.zip
+      zip foundry_local_node_addons.zip foundry_local_node.node foundry_local_preload.node
+    displayName: 'Zip macOS JS addons for signing'
+    workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-    displayName: 'Sign macOS JS addons (.node)'
+    displayName: 'Sign macOS JS addon ZIP'
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
       UseMSIAuthentication: true
@@ -288,10 +295,30 @@ steps:
       AuthAKVName: '$(esrpAkvName)'
       AuthSignCertName: '$(esrpSignCertName)'
       FolderPath: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
-      Pattern: '*.node'
+      Pattern: 'foundry_local_node_addons.zip'
       SessionTimeout: 90
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
       MaxConcurrency: 25
       signConfigType: inlineSignParams
       inlineOperation: |
         [{"keyCode":"CP-401337-Apple","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"Hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"6.2.9304.0"}]
+
+  - bash: |
+      set -euo pipefail
+      unzip -o foundry_local_node_addons.zip
+      rm -- foundry_local_node_addons.zip
+    displayName: 'Extract signed macOS JS addons'
+    workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+
+  - bash: |
+      set -euo pipefail
+      for addon in foundry_local_node.node foundry_local_preload.node; do
+        path='${{ parameters.outputDir }}/prebuilds/$(prebuildDir)/'"$addon"
+        codesign --verify --strict --verbose=2 "$path"
+        signature=$(codesign --display --verbose=4 "$path" 2>&1)
+        echo "$signature"
+        grep -q '^Authority=Developer ID Application:' <<<"$signature"
+        grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$signature"
+        grep -q '^Timestamp=' <<<"$signature"
+      done
+    displayName: 'Verify macOS JS addon signatures'
