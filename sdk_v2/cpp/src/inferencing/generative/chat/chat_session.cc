@@ -18,6 +18,7 @@
 #include "model.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <fmt/format.h>
 #include <utility>
@@ -443,6 +444,24 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // Merge session-level and per-request options once for this turn.
   auto effective_kvp = MergedOptions(request.options);
   SearchOptions effective_options = SearchOptions::FromParameters(effective_kvp);
+
+  // Clamp the resolved max output to the model's published ceiling (catalog maxOutputTokens) so a
+  // request can't drive generation past what the model supports. The catalog value is a ceiling, not a
+  // recommended length, so an omitted request value keeps the conservative modality default (2048 text /
+  // 3072 vision, applied later in ApplySearchOptions) rather than defaulting to the full ceiling. We only
+  // pin the omitted case down when that modality default would itself exceed the ceiling.
+  const auto* max_output_ceiling =
+      CatalogModel().Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT);
+  if (max_output_ceiling && *max_output_ceiling > 0) {
+    const int ceiling = static_cast<int>(*max_output_ceiling);
+    const int modality_default = vision_turn ? 3072 : 2048;
+
+    if (effective_options.max_output_tokens.has_value()) {
+      effective_options.max_output_tokens = std::min(*effective_options.max_output_tokens, ceiling);
+    } else if (ceiling < modality_default) {
+      effective_options.max_output_tokens = ceiling;
+    }
+  }
 
   int prompt_tokens = 0;
   int pre_turn_token_count = 0;
