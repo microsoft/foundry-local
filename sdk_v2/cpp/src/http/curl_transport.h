@@ -12,8 +12,8 @@
 namespace fl {
 namespace http {
 
-/// Creates libcurl transport options with `CAInfo` populated from `SSL_CERT_FILE` via `CABundleFilePath`.
-/// When `SSL_CERT_FILE` is unset, `CAInfo` is empty and libcurl falls back to its compiled-in default.
+/// Creates libcurl transport options with `CAInfo` set from `CABundleFilePath` (Android only; empty
+/// elsewhere, so libcurl falls back to the system default CA store).
 Azure::Core::Http::CurlTransportOptions MakeCurlTransportOptions();
 
 }  // namespace http

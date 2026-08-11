@@ -34,11 +34,15 @@ namespace fl {
 namespace http {
 
 const std::string& CABundleFilePath() {
-  // SSL_CERT_FILE is fixed for the process lifetime (callers set it before loading the library), so
-  // read it once and return a reference to the cached path for every request.
   static const std::string ca_bundle = [] {
+#if defined(ANDROID)
+    // Gated to Android: it is the only platform where the bundled libcurl has no default CA store
+    // and where we own the process environment (the Android host sets SSL_CERT_FILE itself).
     auto cert_file = Utils::GetEnv("SSL_CERT_FILE");
     return (cert_file && !cert_file->empty()) ? std::move(*cert_file) : std::string();
+#else
+    return std::string();
+#endif
   }();
   return ca_bundle;
 }
