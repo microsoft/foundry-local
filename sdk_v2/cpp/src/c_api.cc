@@ -527,8 +527,8 @@ FL_API_STATUS_IMPL(Manager_DownloadAndRegisterEpsImpl, flManager* manager,
     return MakeStatus(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "EP download cancelled by user");
   }
 
-  // A failed EP registration is not fatal: CPU is always available and any EPs that did register
-  // remain usable, so only a cancellation is treated as an error. The failure is logged in
+  // A failed EP download/registration is not fatal: CPU is always available and any EPs that did
+  // register remain usable, so only a cancellation is treated as an error. The failure is logged in
   // Manager::DownloadAndRegisterEps and observable via GetDiscoverableEps (is_registered == false).
   return nullptr;
   API_IMPL_END

@@ -683,7 +683,10 @@ typedef struct flApi {
   /// Download and register execution providers. Blocking.
   /// ep_names is an optional array of EP names to download. NULL = all discoverable EPs.
   /// num_ep_names is the number of entries in ep_names. Ignored when ep_names is NULL.
-  /// Returns nullptr on full success, non-null flStatus* when at least one EP failed.
+  /// A failure to download or register an optional EP is non-fatal: the SDK continues with the
+  /// remaining execution providers (CPU is always available), and per-EP status is observable via
+  /// Manager_GetDiscoverableEps (is_registered == false). Returns nullptr on success, including
+  /// such partial failures; returns a non-null flStatus* only if the operation was cancelled.
   FL_API_STATUS(Manager_DownloadAndRegisterEps, _In_ flManager* manager,
                 _In_opt_ const char* const* ep_names,
                 size_t num_ep_names,
