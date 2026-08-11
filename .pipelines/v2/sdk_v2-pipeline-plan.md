@@ -90,9 +90,11 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 10. **C++ staging step is the policy authority for native payload contents.**
     `steps-build-{windows,linux,macos}.yml` stage the **full runtime closure**
     of `foundry_local` into the `cpp-native-<rid>` artifact, with explicit
-    inclusions/exclusions. Downstream consumers (Python wheel build, C# pack)
-    copy the artifact verbatim — they do not re-filter. This keeps the
-    "what ships next to `foundry_local`" decision in exactly one place.
+   inclusions/exclusions. The Python wheel build copies the artifact contents
+   needed by its wheel, while C# packing applies its own explicit runtime
+   payload allow-list in `sdk_v2/cpp/nuget/pack.py`. That allow-list includes
+   the Windows import library (`foundry_local.lib`) for applications that
+   link against `foundry_local.dll`.
 
     Each staging step copies an explicit allow-list, not a glob: just the
     redistributable `foundry_local` library (`.dll` + `.pdb` + `.lib` on
