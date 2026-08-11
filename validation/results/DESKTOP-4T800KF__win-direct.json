@@ -236,14 +236,29 @@
     },
     "assertions": [
       {
-        "name": "DirectML/WinML EP present in RC",
+        "name": "WinML EPs (OpenVINO + NvTensorRTRTX) discoverable and registerable",
+        "ok": true,
+        "detail": "discover_eps returns OpenVINOExecutionProvider + NvTensorRTRTXExecutionProvider (the WinML EPs; no literal DirectML EP); both register successfully"
+      },
+      {
+        "name": "WinML EP catalog variants published",
+        "ok": true,
+        "detail": "after EP registration, catalog exposes 16 trtrtx-gpu + 18 openvino-gpu variants (catalog is EP-registration-filtered)"
+      },
+      {
+        "name": "NvTensorRTRTX real inference loads out-of-box",
         "ok": false,
-        "detail": "discover_eps returns NO DirectML/WinML provider; generic-gpu runs WebGPU not DML"
+        "detail": "qwen2.5-0.5b-instruct-trtrtx-gpu:2 fails to load: onnxruntime-genai-cuda.dll missing (Error 126). Runs REAL inference ('Paris', load 9.0s/infer 1.58s) ONLY when cuda-ep bundle dir is added to the DLL search path -> native-loader discovery gap, not a missing artifact"
+      },
+      {
+        "name": "OpenVINO real inference on Intel iGPU",
+        "ok": false,
+        "detail": "qwen2.5-0.5b-instruct-openvino-gpu:2 fails at generator creation: 'allocator != nullptr was false, Failed to find allocator for device VendorId:32902 (Intel)' on Intel Iris Xe"
       }
     ],
     "waiver": null,
     "log_path": null,
-    "notes":     "DIVERGENCE: platform_manifest lists winml-dml as required, but this RC exposes no DirectML/WinML EP (only CUDA/NvTensorRTRTX/OpenVINO/WebGpu). See finding F9.",
+    "notes": "CORRECTED (supersedes original F9 claim): the WinML EP path IS present. discover_eps exposes OpenVINO (Intel) + NvTensorRTRTX (NVIDIA) WinML EPs; catalog publishes 16 trtrtx + 18 openvino variants once registered. NvTensorRTRTX runs REAL inference ('Paris') but only with onnxruntime-genai-cuda.dll on the DLL search path (out-of-box load fails = loader-contract gap). OpenVINO fails on the Intel iGPU allocator. There is no literal DirectML EP. Recorded fail because neither WinML variant loads out-of-box on this box. See finding F9 (corrected).",
     "owner": "@baijumeswani",
     "timestamp": "2026-08-11T12:30:00-07:00"
   },

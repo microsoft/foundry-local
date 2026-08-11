@@ -40,7 +40,7 @@
 | js__tool-calling__macos-arm64__cpu | **fail** | Baijus-Mac-mini.local | sample-backed run completed |
 | js__tool-calling__windows-x64__cpu | **fail** | DESKTOP-4T800KF | sample-backed run completed |
 | js__tool-calling__linux-x64__cpu | **fail** | onnxr4c75000005 | sample-backed run completed |
-| python__ep-bootstrap__windows-x64__winml-dml | **fail** | DESKTOP-4T800KF | DIVERGENCE: platform_manifest lists winml-dml as required, but this RC exposes n |
+| python__ep-bootstrap__windows-x64__winml-dml | **fail** | DESKTOP-4T800KF | CORRECTED (supersedes original F9 claim): the WinML EP path IS present. discover |
 | python__pkg-inspect__windows-x64__cpu | **fail** | DESKTOP-4T800KF | inspected foundry_local_sdk-2.0.0rc1-cp311-abi3-win_amd64.whl |
 
 ## All cells
