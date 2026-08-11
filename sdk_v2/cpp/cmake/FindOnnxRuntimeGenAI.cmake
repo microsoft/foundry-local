@@ -124,8 +124,9 @@ if(ANDROID)
     # GenAI publishes a standalone AAR on GitHub Releases that contains
     # both C/C++ headers and native .so files — no NuGet package needed.
     #
-    # Scope the archive and extracted tree by version. A version-less path let a
-    # warm build dir reuse the old AAR after a bump while logging the new version for stateful builds
+    # Scope the archive and extracted tree by version. Without a version in the path, a warm build
+    # directory would keep reusing the previously downloaded AAR after a version bump, so pin the
+    # cache path to ${ORT_GENAI_VERSION}.
     set(_GENAI_AAR_URL "https://github.com/microsoft/onnxruntime-genai/releases/download/v${ORT_GENAI_VERSION}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
     set(_GENAI_AAR_DIR "${CMAKE_BINARY_DIR}/_deps/genai-android-aar/${ORT_GENAI_VERSION}")
     set(_GENAI_AAR_FILE "${_GENAI_AAR_DIR}/onnxruntime-genai-android-${ORT_GENAI_VERSION}.aar")
