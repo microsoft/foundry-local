@@ -26,21 +26,8 @@ class FoundryLocalManager:
         urls: Bound URL(s) after ``start_web_service()`` is called, or ``None``.
     """
 
-    _lock: threading.RLock = threading.RLock()
+    _lock: threading.Lock = threading.Lock()
     instance: FoundryLocalManager | None = None
-
-    @classmethod
-    def reset(cls) -> None:
-        """Release the current singleton and clear the class-level slot.
-
-        This allows a fresh ``FoundryLocalManager`` to be constructed after a
-        cold/warm-start cycle in tests or short-lived applications.
-        """
-        with cls._lock:
-            manager = cls.instance
-            cls.instance = None
-            if manager is not None:
-                manager.close()
 
     @staticmethod
     def initialize(config: Configuration) -> None:
