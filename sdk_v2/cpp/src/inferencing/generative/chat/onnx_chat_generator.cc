@@ -15,6 +15,21 @@
 
 namespace fl {
 
+namespace {
+
+void ValidateNoAudioInput(const std::vector<MessageItem>& messages) {
+  for (const auto& msg : messages) {
+    for (const auto& part : msg.content) {
+      if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "audio input is not supported by ChatSession; use AudioSession for audio input");
+      }
+    }
+  }
+}
+
+}  // namespace
+
 OnnxChatGenerator::~OnnxChatGenerator() = default;
 
 // ---------------------------------------------------------------------------
@@ -406,17 +421,6 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
                                                                   model,
                                                                   input_token_count,
                                                                   std::move(named_tensors)));
-}
-
-void OnnxChatGenerator::ValidateNoAudioInput(const std::vector<MessageItem>& messages) {
-  for (const auto& msg : messages) {
-    for (const auto& part : msg.content) {
-      if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "audio input is not supported by ChatSession; use AudioSession for audio input");
-      }
-    }
-  }
 }
 
 }  // namespace fl

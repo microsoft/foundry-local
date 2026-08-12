@@ -123,8 +123,6 @@ class OnnxChatGenerator : public ChatGenerator {
                                                        bool use_full_context,
                                                        const std::vector<const ImageItem*>& images);
 
-  static void ValidateNoAudioInput(const std::vector<MessageItem>& messages);
-
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;
   std::unique_ptr<OgaTokenizerStream> stream_;
