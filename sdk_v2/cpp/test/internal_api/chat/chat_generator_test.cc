@@ -113,6 +113,30 @@ TEST_F(ChatGeneratorTest, CreateWithAudioInputThrows) {
       fl::Exception);
 }
 
+TEST_F(ChatGeneratorTest, AppendMessagesWithAudioInputThrows) {
+  std::vector<MessageItem> messages = {
+      {FOUNDRY_LOCAL_ROLE_USER, "Say hello."}};
+  SearchOptions opts;
+  auto gen = OnnxChatGenerator::Create(messages, opts, GetModel());
+
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<AudioItem>(std::vector<std::uint8_t>(32000), "pcm"));
+  std::vector<MessageItem> audio_turn;
+  audio_turn.emplace_back(FOUNDRY_LOCAL_ROLE_USER, std::move(parts));
+
+  EXPECT_THROW(
+      {
+        try {
+          gen->AppendMessages(audio_turn, GetModel(), "");
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+          EXPECT_NE(std::string(e.what()).find("audio input is not supported by ChatSession"), std::string::npos);
+          throw;
+        }
+      },
+      fl::Exception);
+}
+
 // ---------------------------------------------------------------------------
 // Token generation tests
 // ---------------------------------------------------------------------------
