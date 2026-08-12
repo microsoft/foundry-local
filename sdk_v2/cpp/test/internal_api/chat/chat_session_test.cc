@@ -144,7 +144,7 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(session.GetHistory()[1].GetSimpleText(), text);
 }
 
-TEST_F(ChatSessionTest, RejectsInputTypeNotSupportedByModel) {
+TEST_F(ChatSessionTest, ChatCompletionRejectsAudioInput) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
 
   std::vector<std::unique_ptr<Item>> parts;
