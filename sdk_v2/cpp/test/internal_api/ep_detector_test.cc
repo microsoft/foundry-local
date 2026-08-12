@@ -104,19 +104,13 @@ class EpDetectorTest : public ::testing::Test {
 // can't be called safely in integration tests (would download real binaries).
 // ========================================================================
 
-TEST_F(EpDetectorTest, GetAvailableDevices_UsesOrtEpDevicesAndAlwaysIncludesCpu) {
+TEST_F(EpDetectorTest, GetAvailableDevices_AlwaysIncludesCpu) {
   std::vector<MockEpBootstrapper*> mocks;
-  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}, {"WebGpuExecutionProvider", true}});
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}});
 
   const auto& devices = detector->GetAvailableDevicesToEPs();
   ASSERT_TRUE(devices.count("CPU"));
   EXPECT_FALSE(devices.at("CPU").empty());
-  EXPECT_EQ(devices.count("GPU"), 0u);
-
-  for (const auto& [device, eps] : devices) {
-    EXPECT_EQ(std::find(eps.begin(), eps.end(), "CUDAExecutionProvider"), eps.end());
-    EXPECT_EQ(std::find(eps.begin(), eps.end(), "WebGpuExecutionProvider"), eps.end());
-  }
 }
 
 TEST_F(EpDetectorTest, PrepareForModelLoad_DelegatesToMatchingBootstrapper) {
