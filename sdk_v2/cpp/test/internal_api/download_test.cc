@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -70,6 +71,7 @@ class MockBlobDownloader : public IBlobDownloader {
  public:
   std::vector<BlobItemInfo> blobs_to_return;
   std::vector<std::string> downloaded_blobs;  // names of blobs that were "downloaded"
+  std::map<std::string, std::string> blob_contents;
   std::string expected_sas_uri;
 
   std::vector<BlobItemInfo> ListBlobs(const std::string& sas_uri) override {
@@ -92,7 +94,12 @@ class MockBlobDownloader : public IBlobDownloader {
       fs::create_directories(parent);
     }
     std::ofstream f(local_path);
-    f << "mock content for " << blob_name;
+    const auto content = blob_contents.find(blob_name);
+    if (content != blob_contents.end()) {
+      f << content->second;
+    } else {
+      f << "mock content for " << blob_name;
+    }
 
     // Report byte count for progress tracking (content_length from the matching blob)
     if (bytes_written_cb) {
@@ -945,6 +952,69 @@ TEST(DownloadManagerTest, FullDownloadFlow) {
 
   // Verify progress was reported
   EXPECT_FALSE(progress_values.empty());
+}
+
+TEST(DownloadManagerTest, DownloadedModelPackageWritesRootMarkerAndReturnsRootPath) {
+  auto tmpdir = TempPath::CreateTempDir();
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog());
+
+  const std::string sas_uri = "https://storage.blob.core.windows.net/package?sig=test";
+  auto registry = std::make_unique<ModelRegistryClient>(
+      "eastus", fl::test::NullLog(), std::make_unique<RegionFallback>(fl::test::NullLog(), false),
+      [](const std::string&) {
+        return MakeRegistryResponse(
+            R"({"blobSasUri": "https://storage.blob.core.windows.net/package?sig=test"})");
+      });
+  manager.SetModelRegistryClient(std::move(registry));
+
+  const std::string manifest = R"({
+    "schema_version": "1.0",
+    "components": {
+      "model": {
+        "variants": {
+          "cpu": { "ep": "CPUExecutionProvider" }
+        }
+      }
+    }
+  })";
+  const std::string genai_config = R"({"model": {"type": "decoder-pipeline"}})";
+  const std::string placeholder_model = "placeholder model";
+
+  auto mock_downloader = std::make_unique<MockBlobDownloader>();
+  mock_downloader->expected_sas_uri = sas_uri;
+  mock_downloader->blobs_to_return = {
+      {"manifest.json", static_cast<int64_t>(manifest.size())},
+      {"cpu/genai_config.json", static_cast<int64_t>(genai_config.size())},
+      {"cpu/model.onnx", static_cast<int64_t>(placeholder_model.size())},
+  };
+  mock_downloader->blob_contents = {
+      {"manifest.json", manifest},
+      {"cpu/genai_config.json", genai_config},
+      {"cpu/model.onnx", placeholder_model},
+  };
+  manager.SetBlobDownloader(std::move(mock_downloader));
+
+  ModelInfo info;
+  info.model_id = "package-model:1";
+  info.uri = "azureml://registries/test/models/package-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "TestPublisher";
+
+  const auto package_root = tmpdir.path() / "TestPublisher" / "package-model-1";
+  const auto variant_path = package_root / "cpu";
+  const auto downloaded_path = manager.DownloadModel(info);
+
+  EXPECT_EQ(fs::path(downloaded_path), package_root);
+  EXPECT_EQ(ClassifyModelLayout(package_root), ModelLayout::ModelPackage);
+  EXPECT_TRUE(fs::is_regular_file(package_root / "manifest.json"));
+  ASSERT_TRUE(fs::is_regular_file(package_root / "inference_model.json"));
+  EXPECT_TRUE(fs::is_regular_file(variant_path / "genai_config.json"));
+  EXPECT_TRUE(fs::is_regular_file(variant_path / "model.onnx"));
+
+  const auto marker = nlohmann::json::parse(ReadFile(package_root / "inference_model.json"));
+  EXPECT_EQ(marker["Name"], info.model_id);
+  EXPECT_FALSE(fs::exists(variant_path / "inference_model.json"));
+  EXPECT_FALSE(fs::exists(package_root / "download.tmp"));
+  EXPECT_TRUE(manager.IsModelCached(info));
 }
 
 // --- Region resolution: detected region drives the download endpoint ---
