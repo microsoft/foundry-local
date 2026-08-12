@@ -97,6 +97,24 @@ public sealed class Request : IDisposable
         Api.CheckStatus(Api.Inference.RequestCancel(Ptr));
     }
 
+    /// <summary>
+    /// Set a wall-clock deadline for this request. Pass <see cref="TimeSpan.Zero"/> (or a
+    /// negative value) to disable.
+    /// </summary>
+    /// <remarks>
+    /// The deadline covers the whole ProcessRequest call, including prefill, and applies to
+    /// streaming and non-streaming generation alike. On expiry the run is interrupted
+    /// mid-compute and ProcessRequest throws a timeout error, so a non-terminating model
+    /// cannot pin the session and block model unload. The deadline is re-armed on each
+    /// ProcessRequest call, so a Request may be reused.
+    /// </remarks>
+    public Request SetTimeout(TimeSpan timeout)
+    {
+        ulong timeoutMs = timeout > TimeSpan.Zero ? (ulong)timeout.TotalMilliseconds : 0UL;
+        Api.CheckStatus(Api.Inference.RequestSetTimeoutMs(Ptr, timeoutMs));
+        return this;
+    }
+
     public void Dispose()
     {
         if (!_disposed && Ptr != IntPtr.Zero)

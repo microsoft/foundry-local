@@ -257,10 +257,48 @@ export abstract class Session {
    * Rejects with a `FoundryLocalError` on native failure. Calling
    * `request.cancel()` from another async context causes this promise to
    * reject with `code === FlErrorCode.OperationCancelled`.
+   *
+   * Cancellation: pass `{ signal }` to abort a generation that is already running.
+   * Aborting interrupts inferencing mid-compute, not merely between tokens, so a
+   * non-terminating generation cannot keep this session's reference to the model alive.
    */
-  async processRequest(request: Request): Promise<Response> {
+  async processRequest(request: Request, options?: StreamOptions): Promise<Response> {
     const nativeReq = unwrapNativeRequest(request);
-    return (await this.native.processRequest(nativeReq)) as Response;
+    const signal = options?.signal;
+
+    if (signal?.aborted) {
+      request.cancel();
+    }
+
+    const onAbort = (): void => {
+      try {
+        request.cancel();
+      } catch {
+        // The request may already have completed; cancelling it then is a no-op.
+      }
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      return (await this.native.processRequest(nativeReq)) as Response;
+    } finally {
+      // Detach before returning so the signal cannot cancel a subsequent reuse of
+      // this request, and so an long-lived signal does not retain it.
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * Interrupt any request currently running on this session.
+   *
+   * Unlike `request.cancel()`, this does not require a handle on the in-flight request,
+   * which makes it the right tool for teardown. It interrupts inferencing mid-compute so
+   * the pending `processRequest()` promise settles promptly and releases the session's
+   * reference to the model. Idempotent and safe to call when nothing is running.
+   */
+  cancel(): void {
+    this.native.cancel();
   }
 
   /**
@@ -299,6 +337,17 @@ export abstract class Session {
    * with `FoundryLocalError` / `code === FlErrorCode.InvalidUsage`.
    */
   dispose(): void {
+    // Interrupt anything still running first. Releasing the native session while a worker
+    // thread is inside processRequest is a use-after-free, and a non-terminating
+    // generation would otherwise keep the model loaded past teardown.
+    if (!this.native.isDisposed()) {
+      try {
+        this.native.cancel();
+      } catch {
+        // Best-effort: tear down regardless.
+      }
+    }
+
     this.native.dispose();
   }
 

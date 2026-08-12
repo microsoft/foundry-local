@@ -148,6 +148,7 @@ export interface NativeRequest {
   addItem(item: unknown): void;
   setOptions(options: NativeRequestOptions): void;
   cancel(): void;
+  setTimeout(timeoutMs: number): void;
   getItemCount(): number;
   getItem(index: number): unknown;
 }
@@ -169,6 +170,7 @@ export interface NativeSession {
   processRequest(request: NativeRequest): Promise<NativeResponse>;
   processStreamingRequest(request: NativeRequest, onItem: (item: unknown) => void): Promise<NativeResponse>;
   setOptions(options: NativeRequestOptions): void;
+  cancel(): void;
   dispose(): void;
   isDisposed(): boolean;
 }

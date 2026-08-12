@@ -10,6 +10,8 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -22,6 +24,7 @@ Napi::Function Request::Init(Napi::Env env) {
                          InstanceMethod("addItem", &Request::AddItem),
                          InstanceMethod("setOptions", &Request::SetOptions),
                          InstanceMethod("cancel", &Request::Cancel),
+                         InstanceMethod("setTimeout", &Request::SetTimeout),
                          InstanceMethod("getItemCount", &Request::GetItemCount),
                          InstanceMethod("getItem", &Request::GetItem),
                      });
@@ -91,6 +94,22 @@ Napi::Value Request::Cancel(const Napi::CallbackInfo& info) {
   }
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     impl_->Cancel();
+    return env.Undefined();
+  });
+}
+
+Napi::Value Request::SetTimeout(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (impl_ == nullptr) {
+    return env.Undefined();
+  }
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "setTimeout(timeoutMs: number)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  const double ms = info[0].As<Napi::Number>().DoubleValue();
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    impl_->SetTimeout(std::chrono::milliseconds(ms > 0 ? static_cast<int64_t>(ms) : 0));
     return env.Undefined();
   });
 }

@@ -130,15 +130,43 @@ public abstract class Session : IDisposable
     /// <summary>
     /// Process a request and return the complete response.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="ct"/> genuinely interrupts an in-flight generation: it is registered to
+    /// cancel the native request, which stops inferencing mid-compute. Without that
+    /// registration a token could only prevent the work from starting, and a non-terminating
+    /// generation would keep the session's reference to the model alive indefinitely.
+    /// </remarks>
     public async Task<Response> ProcessRequestAsync(Request request, CancellationToken ct = default)
     {
         ThrowIfDisposed();
 
         return await Task.Run(() =>
         {
+            // Dispose the registration before returning so the token cannot cancel a request
+            // that has already completed and may be reused for a subsequent call.
+            using var registration = ct.Register(static state =>
+            {
+                try { ((Request)state!).Cancel(); } catch { }
+            }, request);
+
             var responsePtr = _session.ProcessRequest(request.Ptr);
             return new Response(responsePtr);
         }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Interrupt any request currently running on this session.
+    /// </summary>
+    /// <remarks>
+    /// Thread-safe and intended to be called from a thread other than the one awaiting
+    /// <see cref="ProcessRequestAsync"/>. Interrupts inferencing mid-compute rather than only
+    /// between tokens, so the in-flight call returns promptly and releases its reference to the
+    /// model. Idempotent and safe to call when no request is running.
+    /// </remarks>
+    public void Cancel()
+    {
+        ThrowIfDisposed();
+        _session.Cancel();
     }
 
     /// <summary>
@@ -275,6 +303,12 @@ public abstract class Session : IDisposable
                 // producer task to complete before tearing down the native session. This prevents
                 // a use-after-free when Dispose() races with an in-flight ProcessStreamingRequestAsync.
                 try { _activeStreamingCts?.Cancel(); } catch { }
+
+                // Also cancel at the session level. _activeStreamingCts covers only the streaming
+                // path; a non-streaming ProcessRequestAsync running on another thread is invisible
+                // to it, and it is exactly the case that otherwise pins the session and blocks
+                // model unload.
+                try { _session.Cancel(); } catch { }
 
                 var streamingTask = _activeStreamingTask;
                 if (streamingTask != null)

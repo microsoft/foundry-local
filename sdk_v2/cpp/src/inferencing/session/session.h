@@ -3,16 +3,19 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_set>
+#include <thread>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
 
 #include "inferencing/session/callback_handler.h"
+#include "inferencing/session/cancellable.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
 #include "inferencing/session/types.h"
@@ -35,7 +38,7 @@ class Session {
  public:
   virtual ~Session();
 
-  Session(Session&&) = default;
+  Session(Session&&) noexcept;
   Session& operator=(Session&&) = delete;
 
   Session(const Session&) = delete;
@@ -51,11 +54,19 @@ class Session {
   /// class, then waits for all async streaming callbacks to complete.
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
+  ///
+  /// Cancellation applies to every path, streaming or not:
+  ///   - `Session::Cancel()` from another thread stops the run promptly.
+  ///   - `Request::SetTimeout()` bounds the run with a wall-clock deadline.
+  /// Both work by flagging the Request and calling Cancel() on the active generator,
+  /// so an in-flight ORT GenAI compute is interrupted rather than waited out.
   void ProcessRequest(const Request& request, Response& response);
 
-  /// Signal every in-flight request on this session to cancel. Only sets each request's atomic
-  /// cancel flag — never blocks and never joins — so it is safe to call from a shutdown path while
-  /// another thread holds a manager lock. Generation loops poll the flag and stop within ~one token.
+  /// Signal every in-flight request on this session to stop, and cause the next ProcessRequest
+  /// on this session to abort immediately. Safe to call from any thread; idempotent.
+  ///
+  /// This is the teardown hook: it guarantees a runaway non-streaming generation
+  /// releases the session's model refcount instead of pinning the model loaded.
   void Cancel();
 
   /// Add a tool definition to this session.
@@ -149,7 +160,46 @@ class Session {
 
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
+  /// RAII guard publishing the generator currently driving a request so that
+  /// Session::Cancel() and the deadline watchdog can interrupt it mid-compute.
+  ///
+  /// Derived classes create one for the scope in which a generator is live. If
+  /// cancellation was already requested when the guard is constructed, the
+  /// generator is cancelled immediately — this closes the race where Cancel()
+  /// lands between the pre-flight check and the generator becoming visible.
+  ///
+  /// Multiple guards may be live at once: sessions that opt into concurrency
+  /// (embeddings) run several requests in parallel, and a nested scope can publish
+  /// a second generator. All registered generators are cancelled together.
+  class ActiveGenerator {
+   public:
+    ActiveGenerator(Session& session, ICancellable& generator)
+        : session_(session), generator_(generator) {
+      session_.AddActiveGenerator(&generator_);
+    }
+
+    ~ActiveGenerator() { session_.RemoveActiveGenerator(&generator_); }
+
+    ActiveGenerator(const ActiveGenerator&) = delete;
+    ActiveGenerator& operator=(const ActiveGenerator&) = delete;
+
+   private:
+    Session& session_;
+    ICancellable& generator_;
+  };
+
  private:
+  /// Publish a generator driving a request. Cancels it inline if a stop was already
+  /// requested, so a generator created after Cancel() cannot run unbounded.
+  void AddActiveGenerator(ICancellable* generator);
+
+  /// Withdraw a generator once its scope ends.
+  void RemoveActiveGenerator(ICancellable* generator);
+
+  /// Body of the deadline watchdog thread. Sleeps until the request's deadline and
+  /// then interrupts the run, unless woken earlier because the request completed.
+  void WatchDeadline(const Request& request);
+
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
@@ -160,17 +210,25 @@ class Session {
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 
-  // In-flight requests tracked so Cancel() can flip their cancel flags from another thread. Guarded
-  // by its own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several
-  // at once, and Cancel() must run without waiting on an active generation holding request_mutex_.
-  // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
-  std::unordered_set<const Request*> active_requests_;
-  mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
+  /// Guards active_generator_/cancel_requested_ and pairs with the condition variable for
+  /// the watchdog. Held behind a unique_ptr because Session must remain movable (the
+  /// Responses API caches ChatSessions by move) and mutex/condition_variable are not.
+  /// Separate from request_mutex_: Cancel() must be serviceable while a request holds that lock.
+  struct CancelState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<ICancellable*> active_generators;
+    /// In-flight requests, so Cancel() can latch the flag that drives finish_reason and
+    /// history rollback. Tracked alongside generators because a request may be cancelled
+    /// before it publishes one (e.g. during prefill).
+    std::vector<const Request*> active_requests_list;
+    bool cancel_requested = false;
+    /// Number of requests currently running, so the watchdog knows when to stop waiting.
+    /// A count rather than a flag because concurrent sessions overlap requests.
+    int active_requests = 0;
+  };
 
-  // Latched by Cancel() under active_requests_mutex_. A request admitted after Cancel() ran (its streaming
-  // thread hadn't reached ProcessRequest when the shutdown sweep happened) is stamped canceled on insert,
-  // so a late arrival during shutdown never runs a full generation while JoinAll() waits to drain.
-  bool session_canceled_ = false;
+  std::unique_ptr<CancelState> cancel_state_ = std::make_unique<CancelState>();
 };
 
 }  // namespace fl

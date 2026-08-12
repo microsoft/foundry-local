@@ -1098,6 +1098,12 @@ inline void Request::Cancel() {
   Check(detail::inference_api()->Request_Cancel(handle_.get_mutable()));
 }
 
+inline Request& Request::SetTimeout(std::chrono::milliseconds timeout) {
+  const auto ms = timeout.count() > 0 ? static_cast<uint64_t>(timeout.count()) : uint64_t{0};
+  Check(detail::inference_api()->Request_SetTimeoutMs(handle_.get_mutable(), ms));
+  return *this;
+}
+
 inline flRequest* detail::CreateRequest() {
   flRequest* req = nullptr;
   Check(detail::inference_api()->Request_Create(&req));
@@ -1149,6 +1155,10 @@ inline Response Session::ProcessRequest(const Request& request) {
   Check(detail::inference_api()->Session_ProcessRequest(
       handle_.get_mutable(), request.native_handle(), &response));
   return Response(response);
+}
+
+inline void Session::Cancel() {
+  Check(detail::inference_api()->Session_Cancel(handle_.get_mutable()));
 }
 
 inline Session& Session::SetOptions(const RequestOptions& options) {

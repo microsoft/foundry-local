@@ -22,6 +22,7 @@
 #include "manager.h"
 #include "ep_detection/ep_bootstrapper.h"
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -1625,6 +1626,17 @@ FL_API_STATUS_IMPL(Request_CancelImpl, flRequest* request) {
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Request_SetTimeoutMsImpl, flRequest* request, uint64_t timeout_ms) {
+  API_IMPL_BEGIN
+  if (!request) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  AsImpl(request)->SetTimeout(std::chrono::milliseconds(timeout_ms));
+  return nullptr;
+  API_IMPL_END
+}
+
 // --- Response ---
 
 FL_API_STATUS_IMPL(Response_CreateImpl, flResponse** out_response) {
@@ -1746,9 +1758,19 @@ FL_API_STATUS_IMPL(Session_SetOptionsImpl, flSession* session, const flKeyValueP
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Session_ProcessRequestImpl, flSession* session, const flRequest* request,
-                   flResponse** response) {
+FL_API_STATUS_IMPL(Session_CancelImpl, flSession* session) {
   API_IMPL_BEGIN
+  if (!session) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null session");
+  }
+
+  AsImpl(session)->Cancel();
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(Session_ProcessRequestImpl, flSession* session, const flRequest* request,
+                   flResponse** response) {  API_IMPL_BEGIN
   if (!session || !request || !response) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
@@ -1816,6 +1838,8 @@ static const flInferenceApi g_inference_api = {
     Session_RemoveToolDefinitionImpl,
     Session_GetTurnCountImpl,
     Session_UndoTurnsImpl,
+    Request_SetTimeoutMsImpl,
+    Session_CancelImpl,
 };
 
 // ========================================================================

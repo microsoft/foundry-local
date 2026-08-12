@@ -298,6 +298,7 @@ Napi::Function ChatSession::Init(Napi::Env env) {
                          InstanceMethod("removeToolDefinition", &ChatSession::RemoveToolDefinition),
                          InstanceMethod("turnCount", &ChatSession::TurnCount),
                          InstanceMethod("undoTurns", &ChatSession::UndoTurns),
+                         InstanceMethod("cancel", &ChatSession::Cancel),
                          InstanceMethod("dispose", &ChatSession::Dispose),
                          InstanceMethod("isDisposed", &ChatSession::IsDisposed),
                      });
@@ -340,6 +341,19 @@ bool ChatSession::ThrowIfDisposed(Napi::Env env) {
     return true;
   }
   return false;
+}
+
+// Cancel is deliberately synchronous: it must be callable from the JS thread while a
+// processRequest promise is still pending on a worker thread. Session::Cancel() only
+// signals the engine and returns promptly, so it does not block the event loop.
+template <typename SessT>
+Napi::Value CancelOn(Napi::Env env, SessT* sess) {
+  try {
+    sess->Cancel();
+  } catch (const std::exception& ex) {
+    Napi::Error::New(env, ex.what()).ThrowAsJavaScriptException();
+  }
+  return env.Undefined();
 }
 
 Napi::Value ChatSession::ProcessRequest(const Napi::CallbackInfo& info) {
@@ -436,6 +450,12 @@ Napi::Value ChatSession::UndoTurns(const Napi::CallbackInfo& info) {
   });
 }
 
+Napi::Value ChatSession::Cancel(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  return CancelOn(env, impl_.get());
+}
+
 Napi::Value ChatSession::Dispose(const Napi::CallbackInfo& info) {
   impl_.reset();
   return info.Env().Undefined();
@@ -454,6 +474,7 @@ Napi::Function EmbeddingsSession::Init(Napi::Env env) {
                      {
                          InstanceMethod("processRequest", &EmbeddingsSession::ProcessRequest),
                          InstanceMethod("setOptions", &EmbeddingsSession::SetOptions),
+                         InstanceMethod("cancel", &EmbeddingsSession::Cancel),
                          InstanceMethod("dispose", &EmbeddingsSession::Dispose),
                          InstanceMethod("isDisposed", &EmbeddingsSession::IsDisposed),
                      });
@@ -525,6 +546,12 @@ Napi::Value EmbeddingsSession::SetOptions(const Napi::CallbackInfo& info) {
   });
 }
 
+Napi::Value EmbeddingsSession::Cancel(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  return CancelOn(env, impl_.get());
+}
+
 Napi::Value EmbeddingsSession::Dispose(const Napi::CallbackInfo& info) {
   impl_.reset();
   return info.Env().Undefined();
@@ -548,6 +575,7 @@ Napi::Function AudioSession::Init(Napi::Env env) {
                          InstanceMethod("processRequest", &AudioSession::ProcessRequest),
                          InstanceMethod("processStreamingRequest", &AudioSession::ProcessStreamingRequest),
                          InstanceMethod("setOptions", &AudioSession::SetOptions),
+                         InstanceMethod("cancel", &AudioSession::Cancel),
                          InstanceMethod("dispose", &AudioSession::Dispose),
                          InstanceMethod("isDisposed", &AudioSession::IsDisposed),
                      });
@@ -624,6 +652,12 @@ Napi::Value AudioSession::SetOptions(const Napi::CallbackInfo& info) {
     impl_->SetOptions(request_options);
     return env.Undefined();
   });
+}
+
+Napi::Value AudioSession::Cancel(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  return CancelOn(env, impl_.get());
 }
 
 Napi::Value AudioSession::Dispose(const Napi::CallbackInfo& info) {

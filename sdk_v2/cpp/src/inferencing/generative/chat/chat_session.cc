@@ -575,20 +575,27 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     }
   };
 
-  while (!cached_generator_->IsDone() && !request.canceled) {
-    cached_generator_->GenerateNextToken();
-    std::string token = cached_generator_->Decode();
-    ++output_tokens;
+  // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
+  // it mid-compute, not just between tokens. Scoped to the generation loop: the cached
+  // generator may be reset below, and it must not stay published past this point.
+  {
+    ActiveGenerator active(*this, *cached_generator_);
 
-    if (!token.empty()) {
-      text += token;
-      emit_segments(splitter.Push(token));
-    }
+    while (!cached_generator_->IsDone() && !request.ShouldStop()) {
+      cached_generator_->GenerateNextToken();
+      std::string token = cached_generator_->Decode();
+      ++output_tokens;
 
-    // Enforce max_output_tokens — with use_full_context the OGA max_length
-    // is the entire context window, so we must cap output ourselves.
-    if (max_output > 0 && output_tokens >= max_output) {
-      break;
+      if (!token.empty()) {
+        text += token;
+        emit_segments(splitter.Push(token));
+      }
+
+      // Enforce max_output_tokens — with use_full_context the OGA max_length
+      // is the entire context window, so we must cap output ourselves.
+      if (max_output > 0 && output_tokens >= max_output) {
+        break;
+      }
     }
   }
 
@@ -795,13 +802,19 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Generate token-by-token
   std::string text;
-  while (!generator->IsDone() && !original_request.canceled) {
-    generator->GenerateNextToken();
-    std::string token = generator->Decode();
+  {
+    // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
+    // an in-flight compute, not just the loop between tokens.
+    ActiveGenerator active(*this, *generator);
 
-    if (!token.empty()) {
-      text += token;
-      process_segments(splitter.Push(token));
+    while (!generator->IsDone() && !original_request.ShouldStop()) {
+      generator->GenerateNextToken();
+      std::string token = generator->Decode();
+
+      if (!token.empty()) {
+        text += token;
+        process_segments(splitter.Push(token));
+      }
     }
   }
 

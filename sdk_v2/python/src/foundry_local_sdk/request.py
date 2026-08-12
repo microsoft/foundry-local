@@ -109,6 +109,27 @@ class Request:
 
         api.check_status(api.inference.Request_Cancel(self._ptr))
 
+    def set_timeout(self, timeout: "float | None") -> "Request":
+        """Set a wall-clock deadline for this request, in seconds.
+
+        The deadline covers the entire ``process_request`` call, including prefill, and
+        applies to streaming and non-streaming generation alike. On expiry the run is
+        interrupted mid-compute and ``process_request`` raises
+        :class:`~foundry_local_sdk.exceptions.FoundryLocalError` with a timeout code.
+
+        The deadline is re-armed on each ``process_request`` call, so a request object may
+        be reused.
+
+        Args:
+            timeout: Deadline in seconds. ``None`` or a non-positive value disables it.
+        """
+        self._check_open()
+        from foundry_local_sdk._native.api import api
+
+        timeout_ms = 0 if timeout is None or timeout <= 0 else int(timeout * 1000)
+        api.check_status(api.inference.Request_SetTimeoutMs(self._ptr, timeout_ms))
+        return self
+
     def _close(self) -> None:
         if self._closed:
             return

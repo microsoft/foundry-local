@@ -61,6 +61,7 @@ typedef enum flErrorCode {
     FOUNDRY_LOCAL_ERROR_INVALID_USAGE = 4,
     FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED = 5,
     FOUNDRY_LOCAL_ERROR_NETWORK = 6,
+    FOUNDRY_LOCAL_ERROR_TIMEOUT = 7,
 } flErrorCode;
 
 typedef enum flLogLevel {
@@ -456,6 +457,8 @@ typedef struct flInferenceApi {
     flStatusPtr (*Session_RemoveToolDefinition)(flSession* session, const char* tool_name, bool* out_removed);
     size_t (*Session_GetTurnCount)(const flSession* session);
     flStatusPtr (*Session_UndoTurns)(flSession* session, size_t count);
+    flStatusPtr (*Request_SetTimeoutMs)(flRequest* request, uint64_t timeout_ms);
+    flStatusPtr (*Session_Cancel)(flSession* session);
 } flInferenceApi;
 
 /* -----------------------------------------------------------------------

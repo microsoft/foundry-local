@@ -37,10 +37,16 @@ class EmbeddingsSession : public Session {
   /// Generate L2-normalized embedding vectors for a list of inputs.
   /// Each input is processed independently (batch_size=1) to avoid
   /// padding artifacts with bidirectional-attention embedding models.
-  std::vector<std::vector<float>> GenerateEmbeddingsBatch(const std::vector<std::string>& inputs);
+  ///
+  /// Stops early if `request` is cancelled or its deadline expires, so the returned
+  /// vector may be shorter than `inputs`. Callers must check the request state before
+  /// treating the result as complete.
+  std::vector<std::vector<float>> GenerateEmbeddingsBatch(const std::vector<std::string>& inputs,
+                                                          const Request& request);
 
   /// Generate a single L2-normalized embedding vector for one input string.
-  std::vector<float> GenerateSingleEmbedding(const std::string& input);
+  /// Returns an empty vector if the forward pass was interrupted by cancellation or a timeout.
+  std::vector<float> GenerateSingleEmbedding(const std::string& input, const Request& request);
 
   /// Process a request whose first item is a TEXT item tagged OPENAI_JSON containing an
   /// OpenAI EmbeddingCreateRequest payload. Parses the JSON, runs generation via the

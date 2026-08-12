@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/cancellable.h"
+
 #include <string>
 
 namespace fl {
@@ -10,13 +12,12 @@ namespace fl {
 /// One generator per request — not reusable, not thread-safe.
 /// Follows the classic pull-based iterator pattern:
 ///   while (!IsDone()) { GenerateNextToken(); text += Decode(); }
-class ChatGenerator {
+class ChatGenerator : public ICancellable {
  public:
   virtual ~ChatGenerator() = default;
 
   ChatGenerator(const ChatGenerator&) = delete;
   ChatGenerator& operator=(const ChatGenerator&) = delete;
-
   /// Returns true when generation is complete (EOS token, max_length, or stop condition).
   virtual bool IsDone() const = 0;
 
@@ -39,7 +40,7 @@ class ChatGenerator {
 
   /// Request cancellation of generation. Thread-safe — can be called from another thread.
   /// After cancellation, IsDone() should return true on the next check.
-  virtual void Cancel() = 0;
+  void Cancel() override = 0;
 
  protected:
   ChatGenerator() = default;

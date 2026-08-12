@@ -18,6 +18,7 @@ export const FlErrorCode = Object.freeze({
   InvalidUsage: 4,
   OperationCancelled: 5,
   Network: 6,
+  Timeout: 7,
 } as const);
 
 export type FlErrorCode = (typeof FlErrorCode)[keyof typeof FlErrorCode];

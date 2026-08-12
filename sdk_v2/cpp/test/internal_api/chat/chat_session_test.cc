@@ -19,8 +19,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace fl;
@@ -337,4 +340,132 @@ TEST_F(ChatSessionTest, SearchOptionsFromEmptyParameters) {
 
   EXPECT_FALSE(opts.temperature.has_value());
   EXPECT_FALSE(opts.max_output_tokens.has_value());
+}
+
+// ===========================================================================
+// Cancellation and deadlines
+//
+// Regression coverage for the defect where a non-streaming generation could not be
+// cancelled or timed out. Because Request::canceled was only polled by the streaming
+// loop, a runaway generation pinned the session refcount forever, so Model unload
+// failed with "N session(s) still using it" and manager teardown blew its drain
+// deadline.
+// ===========================================================================
+
+TEST_F(ChatSessionTest, NonStreamingRequestHonorsTimeout) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
+  // A large budget the model cannot finish inside the deadline, so the deadline is what
+  // ends the run rather than a natural stop.
+  request.options.Add("max_output_tokens", "4096");
+  request.SetTimeout(std::chrono::milliseconds(500));
+
+  Response response;
+  const auto start = std::chrono::steady_clock::now();
+
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_TRUE(request.timed_out.load());
+
+  // Generous ceiling: this asserts the deadline is enforced at all, not its precision.
+  // The check that matters is that the call returns rather than running to 4096 tokens.
+  EXPECT_LT(elapsed, std::chrono::seconds(30));
+}
+
+TEST_F(ChatSessionTest, TimeoutErrorCodeIsTimeout) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
+  request.options.Add("max_output_tokens", "4096");
+  request.SetTimeout(std::chrono::milliseconds(500));
+
+  Response response;
+
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "Expected a timeout";
+  } catch (const fl::Exception& ex) {
+    // Distinguishable from a user-initiated cancel so callers can tell "ran out of time"
+    // from "model stopped early".
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_TIMEOUT);
+  }
+}
+
+TEST_F(ChatSessionTest, TimeoutIsRearmedPerRequest) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
+  request.options.Add("max_output_tokens", "4096");
+  request.SetTimeout(std::chrono::milliseconds(500));
+
+  Response response;
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+
+  // Reusing the object must not leave it permanently in a timed-out state.
+  Request request2;
+  request2.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What is 2+2? Answer with just the number."));
+  request2.options.Add("max_output_tokens", "16");
+  request2.options.Add("temperature", "0");
+
+  Response response2;
+  EXPECT_NO_THROW(session.ProcessRequest(request2, response2));
+  EXPECT_FALSE(request2.timed_out.load());
+}
+
+TEST_F(ChatSessionTest, CancelStopsInFlightNonStreamingRequest) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
+  request.options.Add("max_output_tokens", "4096");
+
+  Response response;
+  std::atomic<bool> finished{false};
+
+  // Cancel from another thread while ProcessRequest is blocked, which is the whole point:
+  // the caller of the non-streaming API has no other opportunity to intervene.
+  std::thread canceller([&]() {
+    while (!finished.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      session.Cancel();
+    }
+  });
+
+  const auto start = std::chrono::steady_clock::now();
+  session.ProcessRequest(request, response);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  finished.store(true);
+  canceller.join();
+
+  EXPECT_LT(elapsed, std::chrono::seconds(60));
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+}
+
+TEST_F(ChatSessionTest, CancelBeforeRequestRejectsImmediately) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  session.Cancel();
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Hello"));
+  request.options.Add("max_output_tokens", "16");
+
+  Response response;
+
+  // A generation started after Cancel() must not run unbounded — otherwise a cancel that
+  // races with request submission is silently lost.
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+}
+
+TEST_F(ChatSessionTest, CancelIsIdempotentAndSafeWhenIdle) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  EXPECT_NO_THROW(session.Cancel());
+  EXPECT_NO_THROW(session.Cancel());
 }

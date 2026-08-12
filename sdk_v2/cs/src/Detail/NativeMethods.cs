@@ -70,6 +70,7 @@ public enum FlErrorCode
     InvalidUsage = 4,
     OperationCancelled = 5,
     Network = 6,
+    Timeout = 7,
 }
 
 public enum FlLogLevel
@@ -669,6 +670,12 @@ public delegate UIntPtr FlInference_SessionGetTurnCountDelegate(IntPtr session);
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlInference_SessionUndoTurnsDelegate(IntPtr session, UIntPtr count);
 
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlInference_RequestSetTimeoutMsDelegate(IntPtr request, ulong timeoutMs);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlInference_SessionCancelDelegate(IntPtr session);
+
 // --- Configuration API (flConfigurationApi) delegates ---
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -921,6 +928,11 @@ public struct FlInferenceApi
     public FlInference_SessionRemoveToolDefinitionDelegate SessionRemoveToolDefinition;
     public FlInference_SessionGetTurnCountDelegate SessionGetTurnCount;
     public FlInference_SessionUndoTurnsDelegate SessionUndoTurns;
+
+    // Cancellation / deadlines. Appended to match the native vtable order — these fields
+    // must stay last, since layout is sequential and positional.
+    public FlInference_RequestSetTimeoutMsDelegate RequestSetTimeoutMs;
+    public FlInference_SessionCancelDelegate SessionCancel;
 }
 
 /// <summary>Configuration API table.</summary>

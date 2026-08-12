@@ -409,16 +409,40 @@ class Session(abc.ABC):
             self._streaming_in_flight.release()
             raise
 
-    def process_request(self, request: "Request") -> "Response":
-        """Run the request synchronously and return the complete response."""
+    def process_request(self, request: "Request", timeout: "float | None" = None) -> "Response":
+        """Run the request synchronously and return the complete response.
+
+        Args:
+            request: The request to run.
+            timeout: Optional wall-clock deadline in seconds. On expiry the generation is
+                interrupted mid-compute and a timeout error is raised, so a non-terminating
+                model cannot pin the session and block model unload. Overrides any deadline
+                previously set via :meth:`Request.set_timeout`.
+        """
         self._check_open()
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
+        if timeout is not None:
+            request.set_timeout(timeout)
+
         out = ffi.new("flResponse**")
         api.check_status(api.inference.Session_ProcessRequest(self._ptr, request._ptr, out))
         return Response(out[0])
+
+    def cancel(self) -> None:
+        """Interrupt any request currently running on this session.
+
+        Thread-safe and intended to be called from a thread other than the one blocked in
+        :meth:`process_request`. Interrupts inferencing mid-compute rather than only
+        between tokens, so the blocked call returns promptly and releases its reference to
+        the model. Idempotent and safe to call when nothing is running.
+        """
+        self._check_open()
+        from foundry_local_sdk._native.api import api
+
+        api.check_status(api.inference.Session_Cancel(self._ptr))
 
     def _close(self) -> None:
         # Defensive: subclasses (ChatSession, AudioSession, EmbeddingsSession) validate
@@ -428,9 +452,17 @@ class Session(abc.ABC):
         if getattr(self, "_closed", True) or getattr(self, "_ptr", None) is None:
             return
 
-        # If a streaming request is in flight, wind it down before Session_Release —
-        # releasing while the worker is inside Session_ProcessRequest is a native
-        # use-after-free.
+        # Wind down anything still running before Session_Release — releasing while a
+        # thread is inside Session_ProcessRequest is a native use-after-free.
+        #
+        # Cancel at the session level rather than only cancelling the streaming request:
+        # a non-streaming generation on another thread is invisible to _stream_request,
+        # and it is exactly the case that otherwise pins the session and blocks unload.
+        try:
+            self.cancel()
+        except Exception:
+            pass
+
         t = getattr(self, "_stream_thread", None)
         if t is not None and t.is_alive():
             req = getattr(self, "_stream_request", None)

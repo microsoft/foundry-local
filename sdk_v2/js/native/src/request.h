@@ -31,6 +31,7 @@ class Request : public Napi::ObjectWrap<Request> {
   Napi::Value AddItem(const Napi::CallbackInfo& info);
   Napi::Value SetOptions(const Napi::CallbackInfo& info);
   Napi::Value Cancel(const Napi::CallbackInfo& info);
+  Napi::Value SetTimeout(const Napi::CallbackInfo& info);
   Napi::Value GetItemCount(const Napi::CallbackInfo& info);
   Napi::Value GetItem(const Napi::CallbackInfo& info);
 

@@ -4,9 +4,12 @@
 
 #include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/session/live_session_registry.h"
 #include "inferencing/session/session.h"
 
 #include <cassert>
+#include <vector>
+
 #include <fmt/format.h>
 
 namespace fl {
@@ -53,23 +56,34 @@ void SessionManager::Deregister(Session& session) {
 }
 
 void SessionManager::CancelAll() {
-  // Clear cache first — frees idle cached sessions so they don't block drain. ClearCache() takes mutex_
-  // internally, so run it before acquiring the lock below.
+  {
+    // Publish shutdown under the same lock used by Register() before clearing the cache or taking the live
+    // snapshot. No registered request or cache check-in can slip past the cancellation sweep.
+    std::lock_guard<std::mutex> lock(mutex_);
+    shutting_down_.store(true);
+  }
+
+  // Clear cache after closing admission so a concurrent check-in cannot repopulate it.
   ClearCache();
 
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Flip the flag under mutex_ before iterating so Register() (which now checks it under the same lock)
-  // cannot admit a new session between this transition and the cancel sweep.
-  shutting_down_.store(true);
+  // Cancel every live session, not just registered ones: direct-API sessions never take a
+  // SessionRegistration, yet a runaway request on one is exactly what pins the model.
+  //
+  // Snapshot first and cancel outside any lock — Session::Cancel() reaches into the ORT
+  // GenAI engine, and a cancelled session unwinding calls back into Deregister().
+  std::vector<Session*> to_cancel = LiveSessionRegistry::Instance().Snapshot();
 
   logger_.Log(LogLevel::Information,
-              fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
+              fmt::format("SessionManager: cancelling all sessions ({} live)", to_cancel.size()));
 
-  // Signal every in-flight request to stop. Cancel() only sets atomic flags — no joins, no
-  // re-entrancy into SessionManager — so calling it while holding mutex_ cannot deadlock.
-  for (Session* s : sessions_) {
-    s->Cancel();
+  for (auto* session : to_cancel) {
+    try {
+      session->Cancel();
+    } catch (const std::exception& ex) {
+      // Cancellation is best-effort during shutdown; one wedged session must not
+      // prevent the others from being signalled.
+      logger_.Log(LogLevel::Warning, fmt::format("SessionManager: failed to cancel a session: {}", ex.what()));
+    }
   }
 }
 
