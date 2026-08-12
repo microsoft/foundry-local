@@ -294,10 +294,8 @@ static std::vector<TextSegment> SplitReasoningContent(const std::string& text,
 
 void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options, bool canceled,
-                                         Response& response, int prompt_tokens, int total_tokens,
+                                         Response& response, int prompt_tokens, int completion_tokens,
                                          std::vector<ParsedToolCall> pre_parsed_calls) {
-  int completion_tokens = total_tokens - prompt_tokens;
-
   // Check if the generated text contains tool calls. If the caller has already parsed them (streaming path), reuse
   // those so call_ids stay stable across stream deltas and the final response — OpenAI Chat Completions semantics.
   bool has_tool_calls = false;
@@ -369,11 +367,11 @@ void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext
 
   response.usage.prompt_tokens = prompt_tokens;
   response.usage.completion_tokens = completion_tokens;
-  response.usage.total_tokens = total_tokens;
+  response.usage.total_tokens = prompt_tokens + completion_tokens;
 
   logger_.Log(LogLevel::Verbose,
               fmt::format("Completion stats: Total Tokens: {}, Prompt Tokens: {}, Completion Tokens: {}",
-                          total_tokens, prompt_tokens, completion_tokens));
+                          response.usage.total_tokens, prompt_tokens, completion_tokens));
 }
 
 void ChatSession::ProcessRequestImpl(const Request& request, Response& response) {
@@ -446,6 +444,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   int prompt_tokens = 0;
   int pre_turn_token_count = 0;
+  int max_output = 0;
+  const int default_max_output = vision_turn ? 3072 : 2048;
 
   if (cached_generator_) {
     // Check if guidance requirements changed since the generator was created. Guidance (LARK grammar) is baked into
@@ -465,6 +465,14 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       // Continuous decoding: append only the new messages to the existing generator.
       pre_turn_token_count = cached_generator_->TokenCount();
       prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json);
+
+      try {
+        max_output = ResolveMaxOutputTokens(effective_options, cached_generator_->TokenCount(),
+                                            Model().GetGenAIConfig(), default_max_output);
+      } catch (...) {
+        cached_generator_->RewindTo(pre_turn_token_count);
+        throw;
+      }
 
       // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
       UpdateToolContextForTurn(request, cached_tool_ctx_);
@@ -496,12 +504,15 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                                             /*use_full_context*/ true);
     }
     prompt_tokens = generator->PromptTokenCount();
+    max_output = ResolveMaxOutputTokens(effective_options, generator->TokenCount(),
+                                        Model().GetGenAIConfig(), default_max_output);
 
     cached_generator_ = std::move(generator);
     cached_tool_ctx_ = std::move(tool_ctx);
   }
 
-  int max_output = effective_options.max_output_tokens.value_or(0);
+  auto resolved_options = effective_options;
+  resolved_options.max_output_tokens = max_output;
 
   // Generate token-by-token with optional streaming.
   // Check request.canceled each iteration — a streaming callback returning
@@ -596,7 +607,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   emit_segments(splitter.Flush());
   flush_accumulator();
 
-  int total_tokens = cached_generator_->TokenCount();
+  const int sequence_token_count = cached_generator_->TokenCount();
 
   if (request.canceled) {
     // Rewind the generator to undo this turn's input. The generator remains valid
@@ -604,8 +615,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     cached_generator_->RewindTo(pre_turn_token_count);
   }
 
-  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, resolved_options, request.canceled,
+                         response, prompt_tokens, output_tokens, std::move(streamed_tool_calls));
 
   // Commit input messages + assistant reply to history only on success (not cancelled)
   if (!request.canceled) {
@@ -625,7 +636,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_ = {};
     }
 
-    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
+    CommitTurn(std::move(new_messages), response, pre_turn_token_count, sequence_token_count);
 
     // After a vision turn, drop the cached generator so any text follow-up
     // rebuilds from history. AppendMessages cannot extend a vision-decoded
@@ -703,6 +714,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // Create generator
   auto generator = OnnxChatGenerator::Create(messages, options, Model(), tool_ctx);
   int prompt_tokens = generator->PromptTokenCount();
+  options.max_output_tokens = ResolveMaxOutputTokens(options, prompt_tokens, Model().GetGenAIConfig());
 
   auto streaming_callback = CreateCallbackHandler(original_request);
   bool is_streaming = (streaming_callback != nullptr);
@@ -794,9 +806,11 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Generate token-by-token
   std::string text;
+  int output_tokens = 0;
   while (!generator->IsDone() && !original_request.canceled) {
     generator->GenerateNextToken();
     std::string token = generator->Decode();
+    ++output_tokens;
 
     if (!token.empty()) {
       text += token;
@@ -813,13 +827,11 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     emit_ready_calls(out.ready_calls);
   }
 
-  int total_tokens = generator->TokenCount();
-
   // Process the generated output into response items (MessageItem, ToolCallItem, etc.)
   // This also updates finish_reason, and usage on the response. Streamed-parsed tool calls are reused so call_ids
   // stay stable across stream deltas and the final ChatCompletionResponse.
   ProcessGeneratedOutput(std::move(text), tool_ctx, options, original_request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+                         response, prompt_tokens, output_tokens, std::move(streamed_tool_calls));
 
   // Emit final streaming chunk with finish_reason
   if (is_streaming) {

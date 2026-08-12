@@ -91,7 +91,7 @@ class ChatSession : public Session {
   /// in the final response.
   void ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options, bool canceled,
-                              Response& response, int prompt_tokens, int total_tokens,
+                              Response& response, int prompt_tokens, int completion_tokens,
                               std::vector<ParsedToolCall> pre_parsed_calls = {});
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions

@@ -38,6 +38,12 @@ TEST(ExecutionProviderTest, EPtoGenAIReturnsExpectedProviderNames) {
   EXPECT_EQ(EPUtils::EPtoGenAI(ExecutionProvider::kQNN), "QNN");
 }
 
+TEST(ExecutionProviderTest, HasExplicitGenAIProviderDistinguishesImplicitAndExplicitProviders) {
+  EXPECT_FALSE(EPUtils::HasExplicitGenAIProvider(ExecutionProvider::kDefault));
+  EXPECT_FALSE(EPUtils::HasExplicitGenAIProvider(ExecutionProvider::kCPU));
+  EXPECT_TRUE(EPUtils::HasExplicitGenAIProvider(ExecutionProvider::kCUDA));
+}
+
 TEST(ExecutionProviderTest, RoundTripPreservesSupportedNonDefaultProviders) {
   const auto providers = {
       ExecutionProvider::kCUDA,

@@ -52,6 +52,57 @@ TEST(ModelIOInfoTest, ChatCompletion_ReturnsMessageAndOpenAIJsonOutputs) {
   EXPECT_EQ(static_cast<const TextItem*>(io.outputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
 }
 
+TEST(ModelIOInfoTest, TextGeneration_ReturnsMessageAndOpenAIJsonInputs) {
+  auto model = MakeModelWithTask("text-generation");
+  auto io = model.GetInputOutputInfo();
+
+  ASSERT_EQ(io.num_inputs, 2u);
+  EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.inputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.inputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+}
+
+TEST(ModelIOInfoTest, TextGeneration_ReturnsMessageAndOpenAIJsonOutputs) {
+  auto model = MakeModelWithTask("text-generation");
+  auto io = model.GetInputOutputInfo();
+
+  ASSERT_EQ(io.num_outputs, 2u);
+  EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.outputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.outputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+}
+
+TEST(ModelIOInfoTest, Text2TextGeneration_ReturnsMessageAndOpenAIJsonInputs) {
+  auto model = MakeModelWithTask("text2text-generation");
+  auto io = model.GetInputOutputInfo();
+
+  ASSERT_EQ(io.num_inputs, 2u);
+  EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.inputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.inputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+}
+
+TEST(ModelIOInfoTest, Text2TextGeneration_ReturnsMessageAndOpenAIJsonOutputs) {
+  auto model = MakeModelWithTask("text2text-generation");
+  auto io = model.GetInputOutputInfo();
+
+  ASSERT_EQ(io.num_outputs, 2u);
+  EXPECT_EQ(io.outputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(io.outputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  EXPECT_EQ(static_cast<const TextItem*>(io.outputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+}
+
+TEST(ModelIOInfoTest, TextGeneration_SharesStaticCacheWithChatCompletion) {
+  auto chat_model = MakeModelWithTask("chat-completion");
+  auto text_gen_model = MakeModelWithTask("text-generation");
+
+  auto chat_io = chat_model.GetInputOutputInfo();
+  auto text_gen_io = text_gen_model.GetInputOutputInfo();
+
+  EXPECT_EQ(chat_io.inputs, text_gen_io.inputs);
+  EXPECT_EQ(chat_io.outputs, text_gen_io.outputs);
+}
+
 // ========================================================================
 // Automatic speech recognition task
 // ========================================================================

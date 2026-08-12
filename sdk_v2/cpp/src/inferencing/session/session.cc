@@ -20,6 +20,22 @@
 
 namespace fl {
 
+std::optional<SessionType> ClassifySessionTask(std::string_view task) {
+  if (IsTextGenerationTask(task) || task == "vision-language-chat") {
+    return SessionType::kChat;
+  }
+
+  if (task == "automatic-speech-recognition") {
+    return SessionType::kAudio;
+  }
+
+  if (task == "embeddings") {
+    return SessionType::kEmbeddings;
+  }
+
+  return std::nullopt;
+}
+
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
     : catalog_model_(catalog_model),
@@ -56,25 +72,29 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
     tracker.SetModelId(model.Id());
 
     const auto& info = model.Info();
-    if (info.task == "chat-completion" || info.task == "vision-language-chat") {
-      auto session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
-      tracker.SetStatus(ActionStatus::kSuccess);
-      return session;
+    const auto session_type = ClassifySessionTask(info.task);
+    if (!session_type) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported model task: ", info.task);
     }
 
-    if (info.task == "automatic-speech-recognition") {
-      auto session = std::make_unique<AudioSession>(model, *loaded, logger, telemetry);
-      tracker.SetStatus(ActionStatus::kSuccess);
-      return session;
+    std::unique_ptr<Session> session;
+    switch (*session_type) {
+      case SessionType::kChat:
+        session = std::make_unique<ChatSession>(model, *loaded, logger, telemetry);
+        break;
+      case SessionType::kAudio:
+        session = std::make_unique<AudioSession>(model, *loaded, logger, telemetry);
+        break;
+      case SessionType::kEmbeddings:
+        session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry);
+        break;
+      case SessionType::kPredictive:
+        FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                         "predictive sessions are not yet implemented, task: ", info.task);
     }
 
-    if (info.task == "embeddings") {
-      auto session = std::make_unique<EmbeddingsSession>(model, *loaded, logger, telemetry);
-      tracker.SetStatus(ActionStatus::kSuccess);
-      return session;
-    }
-
-    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported model task: ", info.task);
+    tracker.SetStatus(ActionStatus::kSuccess);
+    return session;
   } catch (const std::exception& ex) {
     tracker.RecordException(ex);
     throw;

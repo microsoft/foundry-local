@@ -7,17 +7,14 @@
 #include <ort_genai.h>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace fl {
 
-int ApplySearchOptions(const SearchOptions& options,
-                       int input_token_count,
-                       const GenAIConfig& config,
-                       OgaGeneratorParams& gen_params,
-                       ExecutionProvider ep,
-                       bool use_full_context,
-                       int default_max_output_tokens) {
-  // Determine model's max context length from genai_config.json search.max_length
+int ResolveMaxOutputTokens(const SearchOptions& options,
+                           int input_token_count,
+                           const GenAIConfig& config,
+                           int default_max_output_tokens) {
   int model_max_length = 0;
   if (config.search.has_value()) {
     model_max_length = config.search->max_length;
@@ -27,14 +24,28 @@ int ApplySearchOptions(const SearchOptions& options,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
   }
 
-  // Determine max output tokens
+  if (input_token_count < 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "input token count must not be negative");
+  }
+
   int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
   if (max_output < 1) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
   }
 
-  // Validate token budget: input + output must not exceed model's max_length
-  int total_required = input_token_count + max_output;
+  const int64_t remaining_context =
+      static_cast<int64_t>(model_max_length) - static_cast<int64_t>(input_token_count);
+  if (!options.max_output_tokens.has_value()) {
+    max_output = static_cast<int>(std::min<int64_t>(max_output, remaining_context));
+  }
+
+  if (remaining_context < 1 || max_output < 1) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "request input uses or exceeds the model's maximum context length of " +
+                 std::to_string(model_max_length) + " tokens");
+  }
+
+  const int64_t total_required = static_cast<int64_t>(input_token_count) + max_output;
   if (total_required > model_max_length) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "request requires " + std::to_string(total_required) + " total tokens (" +
@@ -42,6 +53,20 @@ int ApplySearchOptions(const SearchOptions& options,
                  " output), which exceeds the model's maximum context length of " +
                  std::to_string(model_max_length) + " tokens");
   }
+
+  return max_output;
+}
+
+int ApplySearchOptions(const SearchOptions& options,
+                       int input_token_count,
+                       const GenAIConfig& config,
+                       OgaGeneratorParams& gen_params,
+                       ExecutionProvider ep,
+                       bool use_full_context,
+                       int default_max_output_tokens) {
+  const int model_max_length = config.search.has_value() ? config.search->max_length : 0;
+  const int max_output = ResolveMaxOutputTokens(options, input_token_count, config, default_max_output_tokens);
+  const int total_required = input_token_count + max_output;
 
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window

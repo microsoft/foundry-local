@@ -84,6 +84,11 @@ struct EPUtils {
     }
   }
 
+  /// CPU and default use GenAI's implicit provider; only mapped EPs have an explicit provider name.
+  static bool HasExplicitGenAIProvider(ExecutionProvider ep) {
+    return !EPtoGenAI(ep).empty();
+  }
+
   /// Convert an ExecutionProvider enum to the ORT registration name.
   /// e.g. kCUDA → "CUDAExecutionProvider"
   static std::string_view EPtoRegistrationName(ExecutionProvider ep) {

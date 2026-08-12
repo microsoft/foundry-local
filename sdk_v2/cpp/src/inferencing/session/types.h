@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 namespace fl {
 
@@ -13,6 +14,10 @@ enum class SessionType {
   kPredictive,
   kEmbeddings,
 };
+
+constexpr bool IsTextGenerationTask(std::string_view task) noexcept {
+  return task == "chat-completion" || task == "text-generation" || task == "text2text-generation";
+}
 
 struct ToolDefinition {
   std::string name;

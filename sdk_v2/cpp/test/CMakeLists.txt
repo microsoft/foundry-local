@@ -47,6 +47,7 @@ add_executable(foundry_local_tests
     internal_api/response_converter_test.cc
     internal_api/response_store_test.cc
     internal_api/responses_json_test.cc
+    internal_api/session_dispatch_test.cc
     internal_api/session_manager_test.cc
     internal_api/sha256_test.cc
     internal_api/region_fallback_test.cc

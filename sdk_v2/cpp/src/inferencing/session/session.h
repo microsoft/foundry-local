@@ -6,7 +6,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -22,6 +24,9 @@ namespace fl {
 class ILogger;     // forward declaration
 class ITelemetry;  // forward declaration
 class Model;       // forward declaration
+
+/// Maps a model task to the concrete session implementation. Returns std::nullopt for unsupported tasks.
+std::optional<SessionType> ClassifySessionTask(std::string_view task);
 
 /// Base class for model inference sessions.
 /// Manages lifecycle, request dispatch, streaming callbacks, and tool definitions.

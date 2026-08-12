@@ -160,6 +160,20 @@ TEST(ModelLoadManagerTest, LoadCpuModel_AlwaysSucceeds_NoEpGuard) {
   }
 }
 
+TEST(ModelLoadManagerTest, LoadWithCpuOverrideUsesImplicitGenAIProvider) {
+  auto model_path = fl::test::GetTestModelPath(fl::test::kTestChatModelAlias).string();
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager manager(ep, logger);
+  const std::string model_id = "cpu-override-model";
+
+  auto result = manager.LoadModel(model_path, model_id, fl::ExecutionProvider::kCPU);
+
+  ASSERT_EQ(result.status, fl::ModelLoadManager::LoadStatus::kSuccess);
+  EXPECT_NE(result.model, nullptr);
+  EXPECT_TRUE(manager.UnloadModel(model_id));
+}
+
 TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
   GpuEpDetector ep;
   fl::StderrLogger logger;

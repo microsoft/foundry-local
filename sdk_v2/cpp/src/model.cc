@@ -5,6 +5,7 @@
 #include "download/download_manager.h"
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
+#include "inferencing/session/types.h"
 #include "items/item.h"
 #include "items/text_item.h"
 #include "util/string_utils.h"
@@ -460,7 +461,7 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   const auto& task = Info().task;
 
-  if (task == "chat-completion") {
+  if (IsTextGenerationTask(task)) {
     return IOInfoFromCache(ChatCompletionIO());
   }
 

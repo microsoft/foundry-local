@@ -268,6 +268,8 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   auto t2 = GetAssistantText(r2);
   EXPECT_NE(t2.find("5"), std::string::npos)
       << "Turn 2: expected '5'. Got: " << t2;
+  EXPECT_EQ(r2.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(r2.usage.total_tokens, r2.usage.prompt_tokens + r2.usage.completion_tokens);
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 

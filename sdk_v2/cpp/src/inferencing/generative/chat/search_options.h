@@ -49,6 +49,13 @@ struct SearchOptions {
   static std::optional<flToolChoice> ParseToolChoice(const KeyValuePairs& params);
 };
 
+/// Resolves and validates the output token budget for a request.
+/// Explicit max_output_tokens must fit; an implicit default is capped to the remaining model context.
+int ResolveMaxOutputTokens(const SearchOptions& options,
+                           int input_token_count,
+                           const GenAIConfig& config,
+                           int default_max_output_tokens = 2048);
+
 /// Apply search options to OgaGeneratorParams.
 /// Validates token budget (input + output vs model max_length from config).
 /// Returns the computed max_length that was set on the params.

@@ -16,6 +16,7 @@
 #include <ort_genai.h>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -79,6 +80,48 @@ TEST_F(SearchOptionsTest, DefaultOptionsApplySuccessfully) {
   EXPECT_GT(max_length, 10);
   // Default output tokens = 2048, so max_length should be 10 + 2048 = 2058
   EXPECT_EQ(max_length, 2058);
+}
+
+TEST_F(SearchOptionsTest, DefaultOutputTokensClampToRemainingContext) {
+  SearchOptions opts;
+  auto params = MakeParams();
+  auto config = GetConfig();
+  config.search = GenAIConfig::Search{2048};
+
+  int max_length = ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kDefault);
+
+  EXPECT_EQ(max_length, 2048);
+}
+
+TEST_F(SearchOptionsTest, ExplicitOutputTokensStillRejectContextOverflow) {
+  SearchOptions opts;
+  opts.max_output_tokens = 2048;
+  auto params = MakeParams();
+  auto config = GetConfig();
+  config.search = GenAIConfig::Search{2048};
+
+  EXPECT_THROW(ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kDefault), fl::Exception);
+}
+
+TEST_F(SearchOptionsTest, ExplicitOutputTokensRejectIntegerOverflow) {
+  SearchOptions opts;
+  opts.max_output_tokens = std::numeric_limits<int>::max();
+  auto params = MakeParams();
+
+  EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault), fl::Exception);
+}
+
+TEST_F(SearchOptionsTest, DefaultOutputBudgetResolvesWhenUsingFullContext) {
+  SearchOptions opts;
+  auto params = MakeParams();
+  auto config = GetConfig();
+  config.search = GenAIConfig::Search{2048};
+
+  int max_length =
+      ApplySearchOptions(opts, 10, config, *params, ExecutionProvider::kDefault, /*use_full_context=*/true);
+
+  EXPECT_EQ(max_length, 2048);
+  EXPECT_EQ(ResolveMaxOutputTokens(opts, 10, config), 2038);
 }
 
 TEST_F(SearchOptionsTest, MaxOutputTokensRespected) {

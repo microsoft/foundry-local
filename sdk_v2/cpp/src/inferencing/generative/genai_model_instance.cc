@@ -39,8 +39,10 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   if (ep_ != ExecutionProvider::kDefault) {
     try {
       oga_config->ClearProviders();
-      std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
-      oga_config->AppendProvider(provider_str.data());
+      if (EPUtils::HasExplicitGenAIProvider(ep_)) {
+        std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
+        oga_config->AppendProvider(provider_str.data());
+      }
 
       // Disable CUDA graph for CUDA EP (matches C# behavior)
       if (ep_ == ExecutionProvider::kCUDA) {
