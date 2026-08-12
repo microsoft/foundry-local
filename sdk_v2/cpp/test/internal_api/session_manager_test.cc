@@ -407,3 +407,34 @@ TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
   EXPECT_TRUE(req1.canceled.load(std::memory_order_relaxed));
   EXPECT_TRUE(req2.canceled.load(std::memory_order_relaxed));
 }
+
+TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
+  // Models the late-admission window: a session is registered (its streaming thread exists) but the
+  // request hasn't reached ProcessRequest when the shutdown sweep runs. Cancel()'s per-request loop
+  // can't see this request yet, so the latch must stamp it on insert — otherwise it would run a full
+  // uncanceled turn and block JoinAll() until the 5s safety deadline.
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  SessionManager mgr(fl::test::NullLog());
+
+  BlockingCancelSession s(catalog_model, fl::test::NullLog(), telemetry);
+  SessionRegistration r(mgr, s);
+
+  // Cancel while no request is in-flight — this only latches session_canceled_; the per-request
+  // cancel loop has nothing to flip.
+  mgr.CancelAll();
+
+  Request req;
+
+  // Now drive the request. It is admitted after Cancel() ran, so ProcessRequest must stamp it on
+  // insert and the blocking loop must observe cancellation at its first poll.
+  auto f = std::async(std::launch::async, [&] {
+    Response resp;
+    s.ProcessRequest(req, resp);
+  });
+
+  EXPECT_EQ(f.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+      << "late-admitted request ran uncanceled — the session_canceled_ latch did not stamp it";
+  EXPECT_TRUE(req.canceled.load(std::memory_order_relaxed));
+}

@@ -101,6 +101,12 @@ class ChatSession : public Session {
   void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                   Response& response);
 
+  /// Clamp resolved max output tokens to the model's catalog ceiling (maxOutputTokens). The catalog value
+  /// is a hard ceiling, not a default: a supplied value is capped to it, and an omitted value is only pinned
+  /// when the modality default (2048 text / 3072 vision) would itself exceed the ceiling. Applied on both the
+  /// native and /v1/chat/completions paths so neither can drive generation past what the model supports.
+  void ClampMaxOutputToCatalogCeiling(SearchOptions& options, bool vision_turn) const;
+
   /// Commit input messages and assistant reply to history after a successful turn.
   void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
                   int pre_turn_token_count, int post_turn_token_count);

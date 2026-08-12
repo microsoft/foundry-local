@@ -377,6 +377,26 @@ void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext
                           total_tokens, prompt_tokens, completion_tokens));
 }
 
+void ChatSession::ClampMaxOutputToCatalogCeiling(SearchOptions& options, bool vision_turn) const {
+  const auto* max_output_ceiling =
+      CatalogModel().Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT);
+  if (!max_output_ceiling || *max_output_ceiling <= 0) {
+    return;
+  }
+
+  // The catalog value is a ceiling, not a recommended length. A supplied value is capped to it; an omitted
+  // value keeps the conservative modality default (2048 text / 3072 vision, applied later in
+  // ApplySearchOptions) unless that default would itself exceed the ceiling, in which case we pin down.
+  const int ceiling = static_cast<int>(*max_output_ceiling);
+  const int modality_default = vision_turn ? 3072 : 2048;
+
+  if (options.max_output_tokens.has_value()) {
+    options.max_output_tokens = std::min(*options.max_output_tokens, ceiling);
+  } else if (ceiling < modality_default) {
+    options.max_output_tokens = ceiling;
+  }
+}
+
 void ChatSession::ProcessRequestImpl(const Request& request, Response& response) {
   // OpenAI chat completions JSON pass-through: a TEXT item tagged OPENAI_JSON. Routes to a separate handler that
   // never uses the cached generator or history (the JSON payload is self-contained).
@@ -445,23 +465,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   auto effective_kvp = MergedOptions(request.options);
   SearchOptions effective_options = SearchOptions::FromParameters(effective_kvp);
 
-  // Clamp the resolved max output to the model's published ceiling (catalog maxOutputTokens) so a
-  // request can't drive generation past what the model supports. The catalog value is a ceiling, not a
-  // recommended length, so an omitted request value keeps the conservative modality default (2048 text /
-  // 3072 vision, applied later in ApplySearchOptions) rather than defaulting to the full ceiling. We only
-  // pin the omitted case down when that modality default would itself exceed the ceiling.
-  const auto* max_output_ceiling =
-      CatalogModel().Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT);
-  if (max_output_ceiling && *max_output_ceiling > 0) {
-    const int ceiling = static_cast<int>(*max_output_ceiling);
-    const int modality_default = vision_turn ? 3072 : 2048;
-
-    if (effective_options.max_output_tokens.has_value()) {
-      effective_options.max_output_tokens = std::min(*effective_options.max_output_tokens, ceiling);
-    } else if (ceiling < modality_default) {
-      effective_options.max_output_tokens = ceiling;
-    }
-  }
+  // Clamp to the model's catalog ceiling before generation. Shared with the /v1/chat/completions path.
+  ClampMaxOutputToCatalogCeiling(effective_options, vision_turn);
 
   int prompt_tokens = 0;
   int pre_turn_token_count = 0;
@@ -709,6 +714,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // Merge session-level and per-request options once.
   auto effective_kvp = MergedOptions(internal_request.options);
   SearchOptions options = SearchOptions::FromParameters(effective_kvp);
+
+  // Same catalog ceiling clamp as the native path. This path extracts no images, so the text default applies.
+  ClampMaxOutputToCatalogCeiling(options, /*vision_turn*/ false);
 
   // Collect MessageItems from the internal request for the generator.
   // We don't use history_ here — all messages come from the parsed JSON input.
