@@ -148,6 +148,7 @@ add_executable(sdk_integration_tests
     sdk_api/embeddings_test.cc
     sdk_api/ep_detection_test.cc
     sdk_api/chat_session_test.cc
+    sdk_api/bring_your_own_model_e2e_test.cc
     sdk_api/model_test.cc
     sdk_api/model_endpoints_test.cc
     sdk_api/chat_completions_test.cc
