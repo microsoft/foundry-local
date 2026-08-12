@@ -272,8 +272,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
     bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_root.string(), register_ep));
   }
 
-  // WebGPU EP — only on exact architectures for which a bundle is published.
-  if (WebGpuEpBootstrapper::IsSupportedPlatform()) {
+  // Avoid downloading WebGPU when ORT's pre-registration hardware inventory has no GPU.
+  if (WebGpuEpBootstrapper::IsSupportedPlatform() &&
+      Utils::HasGpuHardwareDevice(*ort_api_, *ort_env_, *logger_)) {
     const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
     bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
   }

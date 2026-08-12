@@ -5,8 +5,12 @@
 #include "exception.h"
 #include "logger.h"
 
+#include <onnxruntime_c_api.h>
+
+#include <algorithm>
 #include <cstdlib>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -201,6 +205,34 @@ std::pair<std::string, int> Utils::SplitModelNameAndVersion(const std::string& m
   } catch (...) {
     return {model_id, 0};
   }
+}
+
+bool Utils::HasGpuHardwareDevice(const OrtApi& ort_api, const OrtEnv& ort_env, ILogger& logger) {
+  size_t num_devices = 0;
+  OrtStatus* status = ort_api.GetNumHardwareDevices(&ort_env, &num_devices);
+  if (status != nullptr) {
+    const char* message = ort_api.GetErrorMessage(status);
+    logger.Log(LogLevel::Warning,
+               std::string("GetNumHardwareDevices failed: ") + (message ? message : "unknown"));
+    ort_api.ReleaseStatus(status);
+    return false;
+  }
+
+  std::vector<const OrtHardwareDevice*> devices(num_devices);
+  if (num_devices > 0) {
+    status = ort_api.GetHardwareDevices(&ort_env, devices.data(), devices.size());
+    if (status != nullptr) {
+      const char* message = ort_api.GetErrorMessage(status);
+      logger.Log(LogLevel::Warning,
+                 std::string("GetHardwareDevices failed: ") + (message ? message : "unknown"));
+      ort_api.ReleaseStatus(status);
+      return false;
+    }
+  }
+
+  return std::any_of(devices.begin(), devices.end(), [&](const OrtHardwareDevice* device) {
+    return device != nullptr && ort_api.HardwareDevice_Type(device) == OrtHardwareDeviceType_GPU;
+  });
 }
 
 void Utils::LogAndThrow(ILogger& logger, const CodeLocation& location, const std::string& message,
