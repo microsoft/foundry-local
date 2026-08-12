@@ -243,6 +243,15 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
+  for (const auto& msg : messages) {
+    for (const auto& part : msg.content) {
+      if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "audio input is not supported by ChatSession; use AudioSession for audio input");
+      }
+    }
+  }
+
   const bool vision_branch = !images.empty();
 
   if (vision_branch) {

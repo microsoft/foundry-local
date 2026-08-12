@@ -11,6 +11,7 @@
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "ep_detection/ep_detector.h"
+#include "items/audio_item.h"
 #include "logger.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
@@ -88,6 +89,27 @@ TEST_F(ChatGeneratorTest, CreateWithEmptyMessagesThrows) {
 
   EXPECT_THROW(
       OnnxChatGenerator::Create(messages, opts, GetModel()),
+      fl::Exception);
+}
+
+TEST_F(ChatGeneratorTest, CreateWithAudioInputThrows) {
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<AudioItem>(std::vector<std::uint8_t>(32000), "pcm"));
+
+  std::vector<MessageItem> messages;
+  messages.emplace_back(FOUNDRY_LOCAL_ROLE_USER, std::move(parts));
+
+  SearchOptions opts;
+  EXPECT_THROW(
+      {
+        try {
+          OnnxChatGenerator::Create(messages, opts, GetModel());
+        } catch (const fl::Exception& e) {
+          EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+          EXPECT_NE(std::string(e.what()).find("audio input is not supported by ChatSession"), std::string::npos);
+          throw;
+        }
+      },
       fl::Exception);
 }
 
