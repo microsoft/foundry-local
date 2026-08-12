@@ -18,8 +18,7 @@ namespace fl {
 class ILogger;
 
 #if defined(__linux__) || defined(_WIN32)
-using CudaGenAiDependencyLoader =
-    std::function<std::shared_ptr<void>(const std::filesystem::path&, ILogger&)>;
+using GenAiCudaLibraryLoader = std::function<std::shared_ptr<void>(const std::filesystem::path&, ILogger&)>;
 #endif
 
 /// Bootstrapper for the CUDA execution provider.
@@ -34,7 +33,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
                      EpArtifactDownloadFn download_fn = nullptr
 #if defined(__linux__) || defined(_WIN32)
                      ,
-                     CudaGenAiDependencyLoader genai_cuda_loader = nullptr
+                     GenAiCudaLibraryLoader genai_cuda_library_loader = nullptr
 #endif
   );
   ~CudaEpBootstrapper() override;
@@ -55,13 +54,6 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   static bool IsSupportedPlatform();
 
  private:
-  /// Windows: load onnxruntime-genai-cuda.dll (the GenAI CUDA bridge) from the installed bundle and
-  /// hold it resident, so WinML EPs that reuse it (e.g. NvTensorRTRTX) resolve it by name regardless
-  /// of EP/model load order. Returns false if the bridge cannot be loaded so registration can fail
-  /// rather than report a CUDA EP that a dependent NvTensorRTRTX load would still find broken.
-  /// Always returns true on non-Windows platforms.
-  bool LoadGenAiCudaBridge(ILogger& logger);
-
   std::string name_ = "CUDAExecutionProvider";
   bool registered_ = false;
   int attempts_ = 0;
@@ -76,7 +68,7 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>> genai_cuda_libraries_;
 #endif
 #if defined(__linux__) || defined(_WIN32)
-  CudaGenAiDependencyLoader genai_cuda_loader_;
+  GenAiCudaLibraryLoader genai_cuda_library_loader_;
 #endif
 };
 

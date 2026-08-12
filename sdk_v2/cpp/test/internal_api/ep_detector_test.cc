@@ -254,6 +254,20 @@ TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxAlsoRegistersCuda) {
             result.registered_eps.end());
 }
 
+TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxWithoutCudaReportsFailure) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true}});
+
+  std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.registered_eps.empty());
+  ASSERT_EQ(result.failed_eps.size(), 1u);
+  EXPECT_EQ(result.failed_eps[0], "NvTensorRTRTXExecutionProvider");
+  EXPECT_FALSE(mocks[0]->download_called_);
+}
+
 // A host with a CUDA bootstrapper but no NvTensorRTRTX bootstrapper (e.g. Linux + NVIDIA GPU) must
 // preserve unknown-name behavior: requesting the unknown NvTensorRTRTX name must NOT pull in CUDA.
 TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxUnknownWithCudaPresent_NoInjection) {

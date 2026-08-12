@@ -135,7 +135,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   result.success = true;
 
   // Expand the requested set for EPs that depend on another EP's runtime. NvTensorRTRTX (a WinML EP)
-  // reuses the GenAI CUDA bridge that ships in the CUDA EP bundle, so requesting it by name must also
+  // reuses the GenAI CUDA library that ships in the CUDA EP bundle, so requesting it by name must also
   // register the CUDA EP. Only applies when both bootstrappers exist: the NvTensorRTRTX bootstrapper
   // (so we don't act on an unknown name on hosts without it, e.g. Linux) and the CUDA bootstrapper
   // (i.e. an NVIDIA GPU is present).
@@ -143,7 +143,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   if (names != nullptr) {
     constexpr const char* kTrtRtxEp = "NvTensorRTRTXExecutionProvider";
     constexpr const char* kCudaEp = "CUDAExecutionProvider";
-    const bool wants_trtrtx = std::find(names->begin(), names->end(), kTrtRtxEp) != names->end();
+    const bool trtrtx_requested = std::find(names->begin(), names->end(), kTrtRtxEp) != names->end();
     const bool cuda_requested = std::find(names->begin(), names->end(), kCudaEp) != names->end();
     const bool has_trtrtx_bootstrapper =
         std::any_of(bootstrappers_.begin(), bootstrappers_.end(),
@@ -151,12 +151,19 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     const bool has_cuda_bootstrapper =
         std::any_of(bootstrappers_.begin(), bootstrappers_.end(),
                     [&](const auto& bs) { return bs->Name() == kCudaEp; });
-    if (wants_trtrtx && has_trtrtx_bootstrapper && has_cuda_bootstrapper && !cuda_requested) {
+    if (trtrtx_requested && has_trtrtx_bootstrapper && !has_cuda_bootstrapper) {
+      expanded_names = *names;
+      std::erase(expanded_names, kTrtRtxEp);
+      names = &expanded_names;
+      result.failed_eps.emplace_back(kTrtRtxEp);
+      result.success = false;
+      logger_.Log(LogLevel::Warning, "NvTensorRTRTX EP requires the CUDA EP, but CUDA is not available");
+    } else if (trtrtx_requested && has_trtrtx_bootstrapper && !cuda_requested) {
       expanded_names = *names;
       expanded_names.emplace_back(kCudaEp);
       names = &expanded_names;
       logger_.Log(LogLevel::Information,
-                  "Auto-registering CUDA EP alongside NvTensorRTRTX (shared GenAI CUDA bridge)");
+                  "Auto-registering CUDA EP alongside NvTensorRTRTX (shared GenAI CUDA library)");
     }
   }
 
