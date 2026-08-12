@@ -55,7 +55,14 @@ class MockEpBootstrapper : public IEpBootstrapper {
     return succeed_;
   }
 
+  bool PrepareForModelLoad(ILogger&) override {
+    prepare_called_ = true;
+    return prepare_succeeds_;
+  }
+
   bool download_called_ = false;
+  bool prepare_called_ = false;
+  bool prepare_succeeds_ = true;
 
  private:
   std::string name_;
@@ -104,6 +111,15 @@ TEST_F(EpDetectorTest, GetAvailableDevices_AlwaysIncludesCpu) {
   const auto& devices = detector->GetAvailableDevicesToEPs();
   ASSERT_TRUE(devices.count("CPU"));
   EXPECT_FALSE(devices.at("CPU").empty());
+}
+
+TEST_F(EpDetectorTest, PrepareForModelLoad_DelegatesToMatchingBootstrapper) {
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}, {"WebGpuExecutionProvider", true}});
+
+  EXPECT_TRUE(detector->PrepareForModelLoad("WebGpuExecutionProvider"));
+  EXPECT_FALSE(mocks[0]->prepare_called_);
+  EXPECT_TRUE(mocks[1]->prepare_called_);
 }
 
 TEST_F(EpDetectorTest, DownloadAll_CallsAllBootstrappers) {

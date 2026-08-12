@@ -4,10 +4,7 @@
 # --------------------------------------------------------------------------
 """Unit tests for _build_backend pin-rewrite logic.
 
-Exercises the regex patterns and _patch_pyproject_text so we can verify
-that all ORT/GenAI package name variants — including the new plain
-``onnxruntime`` and ``onnxruntime-genai`` names added for Linux ARM64 —
-are correctly rewritten at wheel-build time.
+Exercises version-pin rewriting for the two runtime packages.
 
 The module is loaded via spec_from_file_location to avoid a full `pip install
 foundry-local-sdk[dev]` cycle; setuptools must be installed since
@@ -67,36 +64,20 @@ def _patch(text: str) -> str:
 
 class TestOrtPinRewrite:
     def test_plain_onnxruntime_sentinel_rewritten(self):
-        """Plain onnxruntime== (Linux ARM64 CPU-only package)."""
-        line = '    "onnxruntime==0.0.0; platform_system == \'Linux\' and platform_machine != \'x86_64\'",\n'
+        line = '    "onnxruntime==0.0.0",\n'
         result = _patch(line)
         assert f'"onnxruntime=={_ORT_VER}' in result
         assert "0.0.0" not in result
 
-    def test_onnxruntime_gpu_sentinel_rewritten(self):
-        """onnxruntime-gpu== (Linux x86_64 CUDA package) — must still work."""
-        line = '    "onnxruntime-gpu==0.0.0; platform_system == \'Linux\'",\n'
-        result = _patch(line)
-        assert f'"onnxruntime-gpu=={_ORT_VER}' in result
-        assert "0.0.0" not in result
-
-    def test_onnxruntime_core_sentinel_rewritten(self):
-        """onnxruntime-core== (non-Linux package) — must still work."""
-        line = '    "onnxruntime-core==0.0.0; platform_system != \'Linux\'",\n'
-        result = _patch(line)
-        assert f'"onnxruntime-core=={_ORT_VER}' in result
-        assert "0.0.0" not in result
-
-    def test_ort_pattern_does_not_match_onnxruntime_genai(self):
+    def test_ort_pattern_does_not_match_onnxruntime_genai_core(self):
         """The ORT pattern must not corrupt the genai line."""
-        line = '    "onnxruntime-genai==0.0.0; platform_system == \'Linux\'",\n'
+        line = '    "onnxruntime-genai-core==0.0.0",\n'
         # Only the genai pattern should modify this — apply ORT pattern alone.
         assert _bb is not None
         result = _bb._ORT_PIN_PATTERN.sub(
             lambda m: f"{m.group(1)}{_ORT_VER}", line
         )
-        # onnxruntime-genai should be untouched by the ORT pattern.
-        assert "onnxruntime-genai==0.0.0" in result
+        assert "onnxruntime-genai-core==0.0.0" in result
 
     def test_ort_already_at_target_version_is_idempotent(self):
         line = f'    "onnxruntime=={_ORT_VER}; platform_system == \'Linux\'",\n'
@@ -110,32 +91,16 @@ class TestOrtPinRewrite:
 
 
 class TestGenaiPinRewrite:
-    def test_plain_onnxruntime_genai_sentinel_rewritten(self):
-        """Plain onnxruntime-genai== (Linux ARM64 CPU-only package)."""
-        line = '    "onnxruntime-genai==0.0.0; platform_system == \'Linux\' and platform_machine != \'x86_64\'",\n'
-        result = _patch(line)
-        assert f'"onnxruntime-genai=={_GENAI_VER}' in result
-        assert "0.0.0" not in result
-
-    def test_onnxruntime_genai_cuda_sentinel_rewritten(self):
-        """onnxruntime-genai-cuda== (Linux x86_64) — must still work."""
-        line = '    "onnxruntime-genai-cuda==0.0.0; platform_system == \'Linux\'",\n'
-        result = _patch(line)
-        assert f'"onnxruntime-genai-cuda=={_GENAI_VER}' in result
-        assert "0.0.0" not in result
-
     def test_onnxruntime_genai_core_sentinel_rewritten(self):
-        """onnxruntime-genai-core== (non-Linux) — must still work."""
-        line = '    "onnxruntime-genai-core==0.0.0; platform_system != \'Linux\'",\n'
+        line = '    "onnxruntime-genai-core==0.0.0",\n'
         result = _patch(line)
         assert f'"onnxruntime-genai-core=={_GENAI_VER}' in result
         assert "0.0.0" not in result
 
     def test_genai_already_at_target_version_is_idempotent(self):
-        line = f'    "onnxruntime-genai=={_GENAI_VER}; platform_system == \'Linux\'",\n'
+        line = f'    "onnxruntime-genai-core=={_GENAI_VER}",\n'
         result = _patch(line)
-        assert f'"onnxruntime-genai=={_GENAI_VER}' in result
-
+        assert f'"onnxruntime-genai-core=={_GENAI_VER}' in result
 
 # ---------------------------------------------------------------------------
 # Tests: full pyproject.toml block rewrite (integration-style)
@@ -143,7 +108,7 @@ class TestGenaiPinRewrite:
 
 
 class TestFullDependenciesBlock:
-    """Simulate the complete six-line dependency block from pyproject.toml."""
+    """Simulate the complete dependency block from pyproject.toml."""
 
     _SAMPLE = """\
 dependencies = [
@@ -152,30 +117,22 @@ dependencies = [
     "pydantic>=2.0.0",
     "requests>=2.32.4",
     "openai>=2.24.0",
-    "onnxruntime-gpu==0.0.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
-    "onnxruntime==0.0.0; platform_system == 'Linux' and platform_machine != 'x86_64'",
-    "onnxruntime-core==0.0.0; platform_system != 'Linux'",
-    "onnxruntime-genai-cuda==0.0.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
-    "onnxruntime-genai==0.0.0; platform_system == 'Linux' and platform_machine != 'x86_64'",
-    "onnxruntime-genai-core==0.0.0; platform_system != 'Linux'",
+    "onnxruntime==0.0.0",
+    "onnxruntime-genai-core==0.0.0",
 ]
 """
 
-    def test_all_six_sentinels_rewritten(self):
+    def test_all_sentinels_rewritten(self):
         result = _patch(self._SAMPLE)
         assert "0.0.0" not in result
 
     def test_ort_versions_correct(self):
         result = _patch(self._SAMPLE)
-        assert f'"onnxruntime-gpu=={_ORT_VER}' in result
-        assert f'"onnxruntime=={_ORT_VER}' in result
-        assert f'"onnxruntime-core=={_ORT_VER}' in result
+        assert result.count(f'"onnxruntime=={_ORT_VER}') == 1
 
     def test_genai_versions_correct(self):
         result = _patch(self._SAMPLE)
-        assert f'"onnxruntime-genai-cuda=={_GENAI_VER}' in result
-        assert f'"onnxruntime-genai=={_GENAI_VER}' in result
-        assert f'"onnxruntime-genai-core=={_GENAI_VER}' in result
+        assert result.count(f'"onnxruntime-genai-core=={_GENAI_VER}') == 1
 
     def test_non_ort_dependencies_unchanged(self):
         result = _patch(self._SAMPLE)
@@ -183,9 +140,7 @@ dependencies = [
         assert '"pydantic>=2.0.0"' in result
         assert '"openai>=2.24.0"' in result
 
-    def test_platform_markers_preserved(self):
+    def test_runtime_dependencies_are_unmarked(self):
         result = _patch(self._SAMPLE)
-        assert "platform_machine == 'x86_64'" in result
-        assert "platform_machine != 'x86_64'" in result
-        assert "platform_system == 'Linux'" in result
-        assert "platform_system != 'Linux'" in result
+        assert "platform_machine" not in result
+        assert "platform_system" not in result

@@ -7,6 +7,8 @@
 using namespace fl;
 
 TEST(ExecutionProviderTest, StringToEPRecognizesSupportedNames) {
+  EXPECT_EQ(EPUtils::StringtoEP("cpu"), ExecutionProvider::kCPU);
+  EXPECT_EQ(EPUtils::StringtoEP("CPU"), ExecutionProvider::kCPU);
   EXPECT_EQ(EPUtils::StringtoEP("CPUExecutionProvider"), ExecutionProvider::kCPU);
   EXPECT_EQ(EPUtils::StringtoEP("cuda"), ExecutionProvider::kCUDA);
   EXPECT_EQ(EPUtils::StringtoEP("CUDAExecutionProvider"), ExecutionProvider::kCUDA);
@@ -20,7 +22,6 @@ TEST(ExecutionProviderTest, StringToEPRecognizesSupportedNames) {
 
 TEST(ExecutionProviderTest, StringToEPReturnsUnknownForUnsupportedOrEmptyNames) {
   EXPECT_EQ(EPUtils::StringtoEP(""), ExecutionProvider::kUnknown);
-  EXPECT_EQ(EPUtils::StringtoEP("cpu"), ExecutionProvider::kUnknown);
   EXPECT_EQ(EPUtils::StringtoEP("trt"), ExecutionProvider::kUnknown);
   EXPECT_EQ(EPUtils::StringtoEP("DirectMLExecutionProvider"), ExecutionProvider::kUnknown);
 }

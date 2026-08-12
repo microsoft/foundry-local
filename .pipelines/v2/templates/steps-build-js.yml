@@ -30,11 +30,6 @@ parameters:
   type: string
   default: '$(Build.ArtifactStagingDirectory)/js-prebuild'
   displayName: 'Directory under which prebuilds/<plat>-<arch>/ is produced'
-- name: targetArch
-  type: string
-  default: 'native'
-  values: ['native', 'arm64']
-  displayName: 'Cross-compile target arch for node-gyp on Windows x64 host. "native" = no cross.'
 - name: signWindows
   type: boolean
   default: false
@@ -51,17 +46,72 @@ steps:
   inputs:
     versionSpec: '20.x'
 
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12 (x64)'
+    inputs:
+      versionSpec: '3.12'
+      architecture: 'x64'
+
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - task: UsePythonVersion@0
+    displayName: 'Use Python 3.12 (arm64)'
+    inputs:
+      versionSpec: '3.12'
+      architecture: 'arm64'
+
+- ${{ if eq(parameters.rid, 'win-arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Ensure Visual Studio Build Tools for node-gyp (win-arm64)'
+    inputs:
+      targetType: inline
+      pwsh: false
+      script: |
+          $installRoot = 'C:\BuildTools'
+          $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+
+          if (-not (Test-Path $vcvars)) {
+              Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+              $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+              Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+              $arguments = @(
+                  '--quiet',
+                  '--wait',
+                  '--norestart',
+                  '--nocache',
+                  '--installPath', $installRoot,
+                  '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+                  '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                  '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+                  '--includeRecommended'
+              )
+
+              $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+              }
+          }
+
+          if (-not (Test-Path $vcvars)) {
+              throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+          }
+
+          Write-Host "vcvarsall.bat: $vcvars"
+          Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
+
 # Map ADO RID -> Node-style platform-arch key used inside the npm tarball
 # (prebuilds/<plat>-<arch>/) so downstream consumers find the addon under
 # the directory matching `${process.platform}-${process.arch}` at runtime.
 - ${{ if eq(parameters.rid, 'win-x64') }}:
-  - pwsh: |
+  - powershell: |
       Write-Host "##vso[task.setvariable variable=prebuildDir]win32-x64"
       Write-Host "##vso[task.setvariable variable=nativeLib]foundry_local.dll"
     displayName: 'Set prebuild directory (win32-x64)'
 
 - ${{ if eq(parameters.rid, 'win-arm64') }}:
-  - pwsh: |
+  - powershell: |
       Write-Host "##vso[task.setvariable variable=prebuildDir]win32-arm64"
       Write-Host "##vso[task.setvariable variable=nativeLib]foundry_local.dll"
     displayName: 'Set prebuild directory (win32-arm64)'
@@ -100,15 +150,24 @@ steps:
 # we point INCLUDE_DIR at that artifact root, and the public include path
 # is added separately in binding.gyp via `../cpp/include`.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
-  - pwsh: |
-      $arch = '${{ parameters.targetArch }}'
-      $args = if ($arch -eq 'native') { 'rebuild' } else { "rebuild --arch=$arch" }
-      Write-Host "node-gyp $args"
+  - powershell: |
+      python --version
+      Write-Host "node-gyp rebuild"
       Set-Location "$(Build.SourcesDirectory)/sdk_v2/js"
-      npx --no-install node-gyp $args.Split(' ')
+      if ('${{ parameters.rid }}' -eq 'win-arm64') {
+        $vcvars = "$(vcvarsAllPath)"
+        if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
+        $cmdLine = ('"{0}" arm64 && npx --no-install node-gyp rebuild' -f $vcvars)
+        Write-Host "cmd /c $cmdLine"
+        cmd /c $cmdLine
+      } else {
+        npx --no-install node-gyp rebuild
+      }
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Build Node-API addon'
     env:
+      PYTHON: '$(pythonLocation)\python.exe'
+      npm_config_python: '$(pythonLocation)\python.exe'
       FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
       FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
       # Force the copy_addon_to_prebuilds destination to the target-arch dir.
@@ -134,7 +193,7 @@ steps:
 # into sdk_v2/js/prebuilds/<plat>-<arch>/; we copy from there into the artifact
 # dir alongside the shared library.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
-  - pwsh: |
+  - powershell: |
       $dst = "${{ parameters.outputDir }}/prebuilds/$(prebuildDir)"
       if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
       New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -214,13 +273,19 @@ steps:
       inlineOperation: |
         [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
 
-# Apple codesign via ESRP for macOS .node + .dylib. The exact keyCode +
-# operationSetCode combination depends on the configured ESRP Mac signing
-# policy; this is a placeholder using a commonly-provisioned Mac policy.
-# Adjust during first pipeline run if the policy isn't provisioned.
+# ESRP requires a ZIP or DMG transport for macOS signing. libfoundry_local.dylib
+# is already signed in cpp_build_osx_arm64 before the shared native artifact is
+# published, so this archive contains only the two JS addons.
 - ${{ if eq(parameters.signMac, true) }}:
+  - bash: |
+      set -euo pipefail
+      rm -f foundry_local_node_addons.zip
+      zip foundry_local_node_addons.zip foundry_local_node.node foundry_local_preload.node
+    displayName: 'Zip macOS JS addons for signing'
+    workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-    displayName: 'Sign macOS JS addon (.node) + libfoundry_local.dylib'
+    displayName: 'Sign macOS JS addon ZIP'
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
       UseMSIAuthentication: true
@@ -230,10 +295,30 @@ steps:
       AuthAKVName: '$(esrpAkvName)'
       AuthSignCertName: '$(esrpSignCertName)'
       FolderPath: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
-      Pattern: '*.node;libfoundry_local.dylib'
+      Pattern: 'foundry_local_node_addons.zip'
       SessionTimeout: 90
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
       MaxConcurrency: 25
       signConfigType: inlineSignParams
       inlineOperation: |
-        [{"keyCode":"CP-401337","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"1.0"}]
+        [{"keyCode":"CP-401337-Apple","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"Hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"6.2.9304.0"}]
+
+  - bash: |
+      set -euo pipefail
+      unzip -o foundry_local_node_addons.zip
+      rm -- foundry_local_node_addons.zip
+    displayName: 'Extract signed macOS JS addons'
+    workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+
+  - bash: |
+      set -euo pipefail
+      for addon in foundry_local_node.node foundry_local_preload.node; do
+        path='${{ parameters.outputDir }}/prebuilds/$(prebuildDir)/'"$addon"
+        codesign --verify --strict --verbose=2 "$path"
+        signature=$(codesign --display --verbose=4 "$path" 2>&1)
+        echo "$signature"
+        grep -q '^Authority=Developer ID Application:' <<<"$signature"
+        grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$signature"
+        grep -q '^Timestamp=' <<<"$signature"
+      done
+    displayName: 'Verify macOS JS addon signatures'

@@ -31,7 +31,7 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 |-----------------|-----------------------------------|-------|------|-----------------------------------------|
 | Windows x64     | `onnxruntime-Win-CPU-2022`        | ✅    | ✅   | Also stages public headers              |
 | Windows ARM64   | `onnxruntime-Win-CPU-2022`        | ✅    | ❌   | Cross-compiled from x64 host            |
-| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Pulls extra `OnnxRuntime.Gpu.Linux` pkg |
+| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Native CPU-only build                   |
 | Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | Native CPU-only build                   |
 | macOS ARM64     | `AcesShared` (Sequoia)            | ✅    | ✅   | Native                                  |
 
@@ -85,21 +85,16 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 
    Bumping ORT/GenAI is a one-file edit.
 9. **ORT/GenAI come from public PyPI.** No private feed plumbing required
-   for the wheel install path:
-   - `onnxruntime-core` (Windows/macOS)
-   - `onnxruntime-genai-core` (Windows/macOS)
-   - `onnxruntime-gpu` / `onnxruntime-genai-cuda` (Linux x64)
-   - `onnxruntime` / `onnxruntime-genai` (Linux ARM64, CPU-only)
-
-   Import-name mapping is platform-dependent: Linux uses `onnxruntime` /
-   `onnxruntime_genai`; Windows/macOS use `onnxruntime_core` /
-   `onnxruntime_genai_core`.
+   for the wheel install path. Every platform uses `onnxruntime` and
+   `onnxruntime-genai-core` (`onnxruntime` and `onnxruntime_genai_core` imports).
 10. **C++ staging step is the policy authority for native payload contents.**
     `steps-build-{windows,linux,macos}.yml` stage the **full runtime closure**
     of `foundry_local` into the `cpp-native-<rid>` artifact, with explicit
-    inclusions/exclusions. Downstream consumers (Python wheel build, C# pack)
-    copy the artifact verbatim — they do not re-filter. This keeps the
-    "what ships next to `foundry_local`" decision in exactly one place.
+   inclusions/exclusions. The Python wheel build copies the artifact contents
+   needed by its wheel, while C# packing applies its own explicit runtime
+   payload allow-list in `sdk_v2/cpp/nuget/pack.py`. That allow-list includes
+   the Windows import library (`foundry_local.lib`) for applications that
+   link against `foundry_local.dll`.
 
     Each staging step copies an explicit allow-list, not a glob: just the
     redistributable `foundry_local` library (`.dll` + `.pdb` + `.lib` on
@@ -117,13 +112,9 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 
     Each step fails loudly if its primary library is missing.
 11. **Python runtime ORT discovery.** `lib_loader.py::prepare_native_dependencies()`
-    bridges between the in-wheel `foundry_local` and the pip-installed ORT
-    packages:
-    - **Windows:** `os.add_dll_directory(...)` for each ORT package directory.
-    - **Linux/macOS:** create symlinks
-      `_native/<rid>/{onnxruntime,onnxruntime-genai}.{so,dylib}` pointing at
-      the package-installed `lib*` files (workaround for
-      [onnxruntime#27263](https://github.com/microsoft/onnxruntime/issues/27263)).
+    preloads ORT and GenAI by absolute path. Windows also registers their DLL
+    directories; macOS creates the unversioned ORT symlink required by GenAI
+    ([onnxruntime#27263](https://github.com/microsoft/onnxruntime/issues/27263)).
 
     Wired into `_native/api.py` between `find_library()` and the cffi
     extension import. Idempotent and silent on failure.
@@ -201,7 +192,7 @@ Published via 1ES `templateContext.outputs` (no manual `PublishPipelineArtifact`
 | `cpp_build_win_arm64`       | `cpp-native-win-arm64`         | `foundry_local.dll`, `.pdb`, `.lib` + `Microsoft.Windows.AI.MachineLearning.dll` |
 | `cpp_build_linux_x64`       | `cpp-native-linux-x64`         | `libfoundry_local.so`                                      |
 | `cpp_build_linux_arm64`     | `cpp-native-linux-arm64`       | `libfoundry_local.so` (CPU-only)                           |
-| `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | `libfoundry_local.dylib`                                   |
+| `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | Developer ID-signed `libfoundry_local.dylib`               |
 | `cpp_pack_nuget`            | `cpp-nuget`                    | `Microsoft.AI.Foundry.Local.Runtime.<version>.nupkg` (bundles WinML on Windows) |
 
 ## Versioning
@@ -247,16 +238,16 @@ purposes:
 
 1. **Version pinning** — the `KEY=PATH` pairs are passed via
    `--cmake_extra_defines` (`ORT_FETCH_URL`, `GENAI_FETCH_URL`,
-   `WINML_EP_CATALOG_FETCH_URL`, `ORT_GPU_LINUX_FETCH_URL`) so the cmake
-   defaults in `FindOnnxRuntime.cmake` / `FindOnnxRuntimeGenAI.cmake` are
-   never silently substituted.
+   `WINML_EP_CATALOG_FETCH_URL`) so the cmake defaults in
+   `FindOnnxRuntime.cmake` / `FindOnnxRuntimeGenAI.cmake` are never
+   silently substituted.
 2. **Stage isolation** — the build step no longer needs network access to
    the package feed once prefetch has completed.
 
 Versions are pipeline-level variables, currently:
 
-* `ortVersion`        `1.26.0`   (`Microsoft.ML.OnnxRuntime.Foundry`)
-* `genaiVersion`      `0.14.1`   (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
+* `ortVersion`        `1.28.0`   (`Microsoft.ML.OnnxRuntime`)
+* `genaiVersion`      `0.15.2`   (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
 * `winmlVersion`      `2.1.70`    (`Microsoft.Windows.AI.MachineLearning`, WinML 2.x reg-free)
 
 These must be kept in sync with the cmake defaults and with
@@ -309,14 +300,14 @@ Build output directories follow `build.py`'s convention:
 
 ## Triggers
 
-* `pr: [main, releases/*]` — all build stages run; pack stages run too
-  (unsigned).
+* `pr: [main, releases/*]` — all build and pack stages run. The shared macOS
+   native dylib is Developer ID-signed before its pipeline artifact is published.
 * No CI trigger on push for the initial rollout.
 
 ## What's deliberately deferred
 
-* **ESRP signing of native binaries.** Slot a signing stage between the
-  builds and pack once the unsigned end-to-end is fully stable.
+* **macOS notarization.** Developer ID signing is enforced before packaging,
+   but Apple notary submission is not yet wired into the release pipeline.
 * **Publishing.** No push to NuGet/internal feeds from this pipeline.
 * **macOS x64.** Add when there's a customer ask.
 * **Code coverage upload.** `run_coverage.ps1` exists for local use but is

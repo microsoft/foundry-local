@@ -58,6 +58,17 @@ TEST(InputContentTest, ImageContentWithUrl) {
   EXPECT_FALSE(c.file_id.has_value());
 }
 
+TEST(InputContentTest, ImageContentWithDataAndMediaType) {
+  auto j = json::parse(R"({"image_data": "aW1hZ2U=", "media_type": "image/jpeg"})");
+  auto c = j.get<InputImageContent>();
+
+  ASSERT_TRUE(c.image_data.has_value());
+  EXPECT_EQ(*c.image_data, "aW1hZ2U=");
+  ASSERT_TRUE(c.media_type.has_value());
+  EXPECT_EQ(*c.media_type, "image/jpeg");
+  EXPECT_FALSE(c.image_url.has_value());
+}
+
 TEST(InputContentTest, ImageContentDefaultDetail) {
   auto j = json::parse(R"({})");
   auto c = j.get<InputImageContent>();

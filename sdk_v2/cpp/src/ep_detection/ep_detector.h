@@ -82,6 +82,9 @@ class IEpDetector {
   /// Whether an EP download/registration operation is currently in progress.
   /// Default: false.
   virtual bool IsDownloadInProgress() const { return false; }
+
+  /// Prepare the registered EP for model loading.
+  virtual bool PrepareForModelLoad(std::string_view /*ep_name*/) { return true; }
 };
 
 /// Real EP detector that orchestrates bootstrappers for EP discovery and registration.
@@ -111,6 +114,7 @@ class EpDetector : public IEpDetector {
       std::optional<DeviceType> device_type,
       std::string_view compatibility_string) const override;
   bool IsDownloadInProgress() const override;
+  bool PrepareForModelLoad(std::string_view ep_name) override;
 
  private:
   const OrtApi& ort_api_;

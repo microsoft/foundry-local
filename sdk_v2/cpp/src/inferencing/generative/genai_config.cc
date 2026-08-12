@@ -10,7 +10,7 @@ namespace fl {
 
 bool GenAIConfig::OnnxModel::IsMultiModal() const {
   return type == "phi3v" || type == "whisper" || type == "phi4mm" || type == "fara" ||
-         type == "qwen2_5_vl" || type == "qwen3_vl" || type == "qwen3_5";
+         type == "qwen2_5_vl" || type == "qwen3_vl" || type == "qwen3_5" || type == "gemma4";
 }
 
 std::string GenAIConfig::DefaultProvider() const {

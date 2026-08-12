@@ -117,6 +117,8 @@ class TestStagingLayout(unittest.TestCase):
             nuspec_stub.write_text('<?xml version="1.0"?><package/>', encoding="utf-8")
             (fake_script_dir / "build").mkdir()
             (fake_script_dir / "buildTransitive").mkdir()
+            for document_name in ("README.md", "Privacy.md", "ThirdPartyNotices.txt"):
+                (fake_script_dir / document_name).write_text(document_name, encoding="utf-8")
 
             # REPO_ROOT = SCRIPT_DIR.parent; make include/ optional
             (fake_script_dir.parent / "include").mkdir(exist_ok=True)
@@ -154,6 +156,47 @@ class TestStagingLayout(unittest.TestCase):
         layout, rid_count = self._run_stage("linux_arm64")
         self.assertEqual(rid_count, 1)
         self._check_native_file_present(layout, "linux-arm64", "libfoundry_local.so")
+
+    def test_windows_import_library_is_staged(self):
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            artifact_dir = _make_fake_artifact(tmp / "artifacts", "win_x64")
+            (artifact_dir / "foundry_local.lib").write_bytes(b"fake-import-library")
+            output_dir = tmp / "out"
+            staging_dir = tmp / "_staging"
+            staging_dir.mkdir()
+
+            fake_script_dir = tmp / "nuget_stub"
+            fake_script_dir.mkdir()
+            (fake_script_dir / "Microsoft.AI.Foundry.Local.Runtime.nuspec").write_text(
+                '<?xml version="1.0"?><package/>', encoding="utf-8"
+            )
+            (fake_script_dir / "build").mkdir()
+            (fake_script_dir / "buildTransitive").mkdir()
+            (fake_script_dir.parent / "include").mkdir(exist_ok=True)
+            (fake_script_dir.parent / "LICENSE.txt").write_text("MIT", encoding="utf-8")
+
+            original_script_dir = pack.SCRIPT_DIR
+            original_repo_root = pack.REPO_ROOT
+            try:
+                pack.SCRIPT_DIR = fake_script_dir
+                pack.REPO_ROOT = fake_script_dir.parent
+                args = _fake_args(output_dir=output_dir, win_x64=artifact_dir)
+                pack.stage(args, staging_dir)
+            finally:
+                pack.SCRIPT_DIR = original_script_dir
+                pack.REPO_ROOT = original_repo_root
+
+            self.assertTrue(
+                (staging_dir / "runtimes" / "win-x64" / "native" / "foundry_local.lib").is_file()
+            )
+
+    def test_package_documents_are_staged_at_root(self):
+        layout, rid_count = self._run_stage("linux_x64")
+        self.assertEqual(rid_count, 1)
+        for document_name in ("README.md", "Privacy.md", "ThirdPartyNotices.txt"):
+            with self.subTest(document=document_name):
+                self.assertIn(document_name, layout)
 
     def test_all_platforms_staged_together(self):
         """Staging all five platforms at once yields rid_count == 5."""

@@ -17,6 +17,10 @@ parameters:
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
+- name: usePwsh
+  type: boolean
+  default: true
+  displayName: 'Use PowerShell Core (pwsh). Set false to use Windows PowerShell.'
 - name: useSystemPython
   type: boolean
   default: false
@@ -51,12 +55,51 @@ steps:
         Write-Host "##vso[task.prependpath]$userBin"
         Write-Host "Using system Python: $python3Path"
 
+- task: PowerShell@2
+  displayName: 'Bootstrap VC++ ARM64 runtime'
+  condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
+  inputs:
+    targetType: inline
+    pwsh: ${{ parameters.usePwsh }}
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $url = 'https://aka.ms/vs/17/release/vc_redist.arm64.exe'
+      $installer = Join-Path $env:TEMP 'vc_redist.arm64.exe'
+      $logPath = Join-Path $env:TEMP 'vc_redist_arm64_install.log'
+
+      Write-Host "Downloading ARM64 VC++ runtime from: $url"
+      Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+
+      $arguments = @('/install', '/quiet', '/norestart', '/log', $logPath)
+      $proc = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+      if ($proc.ExitCode -notin @(0, 3010, 1638)) {
+        throw "VC++ ARM64 runtime installer failed with exit code $($proc.ExitCode). Log: $logPath"
+      }
+
+      if ($proc.ExitCode -eq 3010) {
+        Write-Host 'VC++ ARM64 runtime installed; reboot is required by installer but deferred in CI.'
+      } elseif ($proc.ExitCode -eq 1638) {
+        Write-Host 'A newer/same VC++ ARM64 runtime is already installed.'
+      } else {
+        Write-Host 'VC++ ARM64 runtime installation completed successfully.'
+      }
+
+      $runtimeDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+      foreach ($dll in $runtimeDlls) {
+        $path = Join-Path "$env:WINDIR\System32" $dll
+        if (-not (Test-Path $path)) {
+          throw "Expected ARM64 VC runtime DLL not found: $path"
+        }
+        $ver = (Get-Item $path).VersionInfo.FileVersion
+        Write-Host "  $dll => $path (version: $ver)"
+      }
+
 # Job-local venv so installs never pollute the agent's site-packages.
 - task: PowerShell@2
   displayName: 'Create test venv'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
         $venvDir = "$(Agent.TempDirectory)/fl-py-venv-$(System.JobId)"
         if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
@@ -75,7 +118,7 @@ steps:
   displayName: 'Install built wheel + test deps'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
         # Locate the wheel. Each job's wheel lands in its own artifact, so a
         # single match is expected.
@@ -92,6 +135,10 @@ steps:
         & "$(venvPy)" -m pip install --upgrade pip
         & "$(venvPy)" -m pip install $wheel
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & "$(venvPy)" -c "import importlib.util; assert importlib.util.find_spec('onnxruntime'); assert importlib.util.find_spec('onnxruntime_genai_core')"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Wheel install did not resolve universal onnxruntime / onnxruntime-genai-core dependencies"
+        }
         & "$(venvPy)" -m pip install pytest pytest-cov
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -99,7 +146,7 @@ steps:
   displayName: 'Run SDK tests'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {

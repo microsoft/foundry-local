@@ -19,7 +19,7 @@ The Foundry Local Python SDK is a native Python binding for the Foundry Local C+
 pip install foundry-local-sdk
 ```
 
-The wheel ships the Foundry Local native library — bundling the reg-free WinML 2.x runtime on Windows for hardware acceleration — and pulls the matching ONNX Runtime + ONNX Runtime GenAI runtime packages as dependencies.
+The wheel includes the Foundry Local native library and depends on `onnxruntime` and `onnxruntime-genai-core` on every platform. Windows wheels also include the reg-free WinML 2.x runtime.
 
 ### Building from source
 
@@ -56,7 +56,7 @@ pip install -e .
 
 ### Installing native runtime dependencies for development / CI
 
-`foundry-local-install` is a convenience wrapper for end-user / CI environments that want the published wheel plus its ORT / ONNX Runtime GenAI runtime packages installed and verified in one step. It runs `pip install --upgrade foundry-local-sdk` from PyPI and then probes that `onnxruntime[_core]` and `onnxruntime_genai[_core]` import cleanly.
+`foundry-local-install` installs the published wheel and verifies that `onnxruntime` and `onnxruntime_genai_core` are available.
 
 ```bash
 foundry-local-install

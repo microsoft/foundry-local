@@ -113,9 +113,7 @@ matrix.
 
 Build and test on the `onnxruntime-linux-ARM64-CPU-2019` pool
 (`hostArchitecture: arm64`). Same `node-gyp rebuild` path as Linux x64.
-`install-native.cjs` selects the CPU-only ORT NuGet package
-(`Microsoft.ML.OnnxRuntime.Foundry`) for `linux-arm64` — matching the
-C++ native pipeline which also uses CPU-only ORT for ARM64.
+`install-native.cjs` uses `Microsoft.ML.OnnxRuntime`, matching the C++ native pipeline.
 
 ## Test stage details
 
@@ -143,17 +141,20 @@ would otherwise re-run during pack-time install).
 
 ## Signing
 
-ESRP signing of native binaries runs in each `js_build_<rid>` stage on
-the agent that produced them. Doing the signing in `js_pack` would
-require routing back to a macOS agent to sign Darwin binaries; signing
-per-platform avoids that. The `.tgz` itself is **not signed** — npm has
-no equivalent to NuGet package signing.
+The shared macOS `libfoundry_local.dylib` is signed in
+`cpp_build_osx_arm64` before the native artifact is published, so every SDK v2
+package consumes the same signed binary. JS-specific native addons are signed
+in their `js_build_<rid>` stages on the agents that produced them. Doing this
+work in `js_pack` would require routing back to platform-specific agents. The
+`.tgz` itself is **not signed** — npm has no equivalent to NuGet package
+signing.
 
 | Stage                     | Files signed                                                                  | ESRP keyCode  | Tool                  |
 |---------------------------|-------------------------------------------------------------------------------|---------------|-----------------------|
 | `js_build_win_x64`        | `foundry_local_node.node`, `foundry_local_preload.node`, `foundry_local.dll`  | `CP-230012`   | SigntoolSign          |
 | `js_build_win_arm64`      | same three Windows files                                                      | `CP-230012`   | SigntoolSign          |
-| `js_build_osx_arm64`      | both `.node` files + `libfoundry_local.dylib`                                  | `CP-401337`   | `MacAppDeveloperSign` (placeholder — confirm against ESRP policy on first run) |
+| `cpp_build_osx_arm64`     | `libfoundry_local.dylib` (shared by every SDK v2 package)                       | `CP-401337-Apple` | `MacAppDeveloperSign` |
+| `js_build_osx_arm64`      | both `.node` files                                                              | `CP-401337-Apple` | `MacAppDeveloperSign` |
 | `js_build_linux_x64`      | none                                                                          | n/a           | Linux `.so` has no standard signing |
 | `js_build_linux_arm64`    | none                                                                          | n/a           | Linux `.so` has no standard signing |
 | `js_pack`                 | none                                                                          | n/a           | `.tgz` not signed by npm convention |
@@ -220,8 +221,7 @@ shape.
 - **Single combined tarball:** `js_pack` assembles all five prebuilds
   into one `foundry-local-sdk-<version>.tgz`.
 - **JS scoped out of WinML.**
-- **Linux ARM64 ORT package:** `Microsoft.ML.OnnxRuntime.Foundry` (CPU-only),
-  matching the C++ native ARM64 pipeline.
+- **ORT package:** `Microsoft.ML.OnnxRuntime` on every RID.
 
 ## Open items
 
@@ -230,7 +230,6 @@ shape.
   agents have limited RAM. If runs go OOM, switch to
   `vitest run --pool=forks --poolOptions.forks.singleFork=true`.
   Measure first.
-- **ESRP macOS keyCode.** Shipped as `CP-401337` /
-  `MacAppDeveloperSign`. Confirm the policy is provisioned on the first
-  pipeline run; the signing block is `condition`-gated by `signMac` so
-  it can be disabled at the stage level if it isn't.
+- **macOS notarization.** Developer ID signing is configured with hardened
+  runtime and verified before packaging. The release pipeline still needs an
+  Apple notary submission for Gatekeeper malware verification.

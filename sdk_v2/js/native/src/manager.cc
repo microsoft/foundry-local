@@ -88,6 +88,21 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
     return true;
   };
 
+  auto read_optional_bool = [&](const char* key, bool& out, bool& has) -> bool {
+    if (opts.Has(key) && !opts.Get(key).IsUndefined() && !opts.Get(key).IsNull()) {
+      if (!opts.Get(key).IsBoolean()) {
+        std::string msg = "options.";
+        msg += key;
+        msg += " must be a boolean";
+        Napi::TypeError::New(env, msg).ThrowAsJavaScriptException();
+        return false;
+      }
+      out = opts.Get(key).As<Napi::Boolean>();
+      has = true;
+    }
+    return true;
+  };
+
   std::string model_cache_dir;
   bool has_model_cache_dir = false;
   if (!read_optional_string("modelCacheDir", model_cache_dir, has_model_cache_dir)) return;
@@ -95,6 +110,13 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
   std::string external_service_url;
   bool has_external_service_url = false;
   if (!read_optional_string("serviceEndpoint", external_service_url, has_external_service_url)) return;
+
+  bool disable_nonessential_telemetry = false;
+  bool has_disable_nonessential_telemetry = false;
+  if (!read_optional_bool("disableNonessentialTelemetry", disable_nonessential_telemetry,
+                          has_disable_nonessential_telemetry)) {
+    return;
+  }
 
   std::string app_data_dir;
   bool has_app_data_dir = false;
@@ -191,6 +213,13 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       for (const auto& entry : additional_settings) {
         kvp.Set(entry.first.c_str(), entry.second.c_str());
       }
+      if (has_disable_nonessential_telemetry && disable_nonessential_telemetry) {
+        kvp.Set("DisableNonessentialTelemetry", disable_nonessential_telemetry ? "true" : "false");
+      }
+      config.SetAdditionalOptions(kvp);
+    } else if (has_disable_nonessential_telemetry && disable_nonessential_telemetry) {
+      foundry_local::KeyValuePairs kvp;
+      kvp.Set("DisableNonessentialTelemetry", "true");
       config.SetAdditionalOptions(kvp);
     }
     impl_ = std::make_unique<foundry_local::Manager>(std::move(config));

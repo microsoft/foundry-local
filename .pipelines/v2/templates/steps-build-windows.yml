@@ -5,13 +5,15 @@
 # templateContext.outputs.
 #
 # Parameters:
-#   arch           – 'x64' or 'arm64' (arm64 is cross-compiled, no tests)
+#   arch           – 'x64' or 'arm64'
 #   buildConfig    – CMake config (Debug, Release, RelWithDebInfo, MinSizeRel)
-#   ortVersion     – Microsoft.ML.OnnxRuntime.Foundry version
+#   ortVersion     – Microsoft.ML.OnnxRuntime version
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version
 #   runTests       – Whether to run tests
 #   stageHeaders   – Whether to stage public headers as a separate artifact
+#   pythonArchitecture – Python architecture installed by UsePythonVersion
+#   usePwsh        – Whether PowerShell tasks should use PowerShell Core
 
 parameters:
 - name: arch
@@ -31,18 +33,24 @@ parameters:
 - name: stageHeaders
   type: boolean
   default: false
+- name: pythonArchitecture
+  type: string
+  default: 'x64'
+  values: ['x64', 'arm64']
+- name: usePwsh
+  type: boolean
+  default: true
 
 steps:
 
 # Windows hosted agents don't have python on PATH by default — the launcher
 # stub redirects to the Microsoft Store. UsePythonVersion installs and adds it
-# to PATH for the rest of the job. arm64 builds cross-compile on the x64
-# Windows host, so x64 Python is correct for both archs.
+# to PATH for the rest of the job.
 - task: UsePythonVersion@0
   displayName: 'Use Python 3.12'
   inputs:
     versionSpec: '3.12'
-    architecture: 'x64'
+    architecture: '${{ parameters.pythonArchitecture }}'
 
 - script: |
     git clone https://github.com/microsoft/vcpkg.git $(Build.BinariesDirectory)\vcpkg
@@ -58,6 +66,64 @@ steps:
     winmlVersion: ${{ parameters.winmlVersion }}
     includeWinml: true
     shell: pwsh
+    usePwsh: ${{ parameters.usePwsh }}
+
+- ${{ if eq(parameters.arch, 'arm64') }}:
+  - task: PowerShell@2
+    displayName: 'Ensure Visual Studio Build Tools and CMake for ARM64'
+    inputs:
+      targetType: inline
+      pwsh: ${{ parameters.usePwsh }}
+      script: |
+        $installRoot = 'C:\BuildTools'
+        $vcvars = Join-Path $installRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+        $cmakeDir = Join-Path $installRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+        $cmakePath = Join-Path $cmakeDir 'cmake.exe'
+        $ctestPath = Join-Path $cmakeDir 'ctest.exe'
+
+        if (-not (Test-Path $vcvars) -or -not (Test-Path $cmakePath) -or -not (Test-Path $ctestPath)) {
+          Write-Host 'Visual Studio Build Tools not fully present. Installing...'
+          $bootstrapper = Join-Path $env:TEMP 'vs_BuildTools.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $bootstrapper -UseBasicParsing
+
+          $arguments = @(
+            '--quiet',
+            '--wait',
+            '--norestart',
+            '--nocache',
+            '--installPath', $installRoot,
+            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add', 'Microsoft.VisualStudio.Component.VC.CMake.Project',
+            '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
+            '--includeRecommended'
+          )
+
+          $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Visual Studio Build Tools install failed with exit code $($process.ExitCode)."
+          }
+        }
+
+        if (-not (Test-Path $vcvars)) {
+          throw "vcvarsall.bat was not found at $vcvars after Build Tools install."
+        }
+        if (-not (Test-Path $cmakePath)) {
+          throw "cmake.exe was not found at $cmakePath after Build Tools install."
+        }
+        if (-not (Test-Path $ctestPath)) {
+          throw "ctest.exe was not found at $ctestPath after Build Tools install."
+        }
+
+        Write-Host "##vso[task.prependpath]$cmakeDir"
+        Write-Host "vcvarsall.bat: $vcvars"
+        Write-Host "cmake.exe: $cmakePath"
+        Write-Host "ctest.exe: $ctestPath"
+        Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
+        Write-Host "##vso[task.setvariable variable=cmakePath]$cmakePath"
+        Write-Host "##vso[task.setvariable variable=ctestPath]$ctestPath"
+
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
 # matches the .nupkg version (e.g. 0.1.0-dev.202605111234) instead of the cmake default.
@@ -65,7 +131,7 @@ steps:
   displayName: 'Append version define'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
@@ -77,6 +143,8 @@ steps:
   - template: ../../templates/fetch-test-data-from-blob.yml@self
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
+      scriptType: ps
+      installAzCli: true
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-
@@ -94,40 +162,51 @@ steps:
 
 - ${{ if eq(parameters.arch, 'arm64') }}:
   - script: >-
+      call "$(vcvarsAllPath)" arm64 &&
       python build.py
       --configure --build --arm64
       --config ${{ parameters.buildConfig }}
       --cmake_generator "Visual Studio 17 2022"
       --winml_sdk_version ${{ parameters.winmlVersion }}
+      --cmake_path "$(cmakePath)"
+      --ctest_path "$(ctestPath)"
       --cmake_extra_defines $(cmakeFetchDefines)
-    displayName: 'Configure and build (arm64 cross-compile)'
+    displayName: 'Configure and build (arm64)'
     workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
     env:
       VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
-- ${{ if and(eq(parameters.runTests, true), eq(parameters.arch, 'x64')) }}:
-  - script: python build.py --test --config ${{ parameters.buildConfig }}
-    displayName: 'Run tests'
-    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-    env:
-      VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
-      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+- ${{ if eq(parameters.runTests, true) }}:
+  - ${{ if eq(parameters.arch, 'x64') }}:
+    - script: python build.py --test --config ${{ parameters.buildConfig }}
+      displayName: 'Run tests'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
-# Stage the redistributable native artifacts. vcpkg statically links
-# ORT/GenAI/azure-*/spdlog/fmt/libcurl/libssl/zlib/brotli* into foundry_local.dll
-# (see sdk_v2/cpp/triplets/x64-windows.cmake), so foundry_local.dll carries that
-# payload itself. It also picks up one extra runtime dependency,
-# Microsoft.Windows.AI.MachineLearning.dll, which must travel with the wheel.
-# The WinML DLL is delay-loaded (see /DELAYLOAD in CMakeLists.txt) so it is
-# NOT needed at foundry_local.dll load time, but the cmake post-build copy
-# stages it next to foundry_local.dll for runtime EP discovery. ORT/GenAI
-# come from the onnxruntime-core / onnxruntime-genai-core pip deps.
+  - ${{ if eq(parameters.arch, 'arm64') }}:
+    - script: >-
+        python build.py
+        --test
+        --config ${{ parameters.buildConfig }}
+        --cmake_path "$(cmakePath)"
+        --ctest_path "$(ctestPath)"
+      displayName: 'Run tests'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+
+# Stage the native build artifacts. The C++ SDK bundle consumes the co-located
+# ORT/GenAI DLLs directly. Python wheel staging filters them out because its
+# pip dependencies provide and preload those libraries.
 - task: PowerShell@2
   displayName: 'Stage native artifacts'
   inputs:
     targetType: inline
-    pwsh: true
+    pwsh: ${{ parameters.usePwsh }}
     script: |
       $binDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/bin/${{ parameters.buildConfig }}'
       $linkDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/${{ parameters.buildConfig }}'
@@ -138,6 +217,8 @@ steps:
         (Join-Path $binDir  'foundry_local.dll'),
         (Join-Path $binDir  'foundry_local.pdb'),
         (Join-Path $linkDir 'foundry_local.lib'),
+        (Join-Path $binDir  'onnxruntime.dll'),
+        (Join-Path $binDir  'onnxruntime-genai.dll'),
         (Join-Path $binDir  'Microsoft.Windows.AI.MachineLearning.dll')
       )
 
@@ -148,6 +229,12 @@ steps:
         }
         Copy-Item -Path $s -Destination $dst -Force
         Write-Host "  staged $(Split-Path -Leaf $s)"
+      }
+
+      $providersShared = Join-Path $binDir 'onnxruntime_providers_shared.dll'
+      if (Test-Path $providersShared) {
+        Copy-Item -Path $providersShared -Destination $dst -Force
+        Write-Host "  staged onnxruntime_providers_shared.dll"
       }
 
 - ${{ if eq(parameters.stageHeaders, true) }}:

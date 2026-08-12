@@ -14,6 +14,7 @@ int ApplySearchOptions(const SearchOptions& options,
                        int input_token_count,
                        const GenAIConfig& config,
                        OgaGeneratorParams& gen_params,
+                       ExecutionProvider ep,
                        bool use_full_context,
                        int default_max_output_tokens) {
   // Determine model's max context length from genai_config.json search.max_length
@@ -93,6 +94,31 @@ int ApplySearchOptions(const SearchOptions& options,
   // Early stopping — set when stop sequences are present (matches C# behavior)
   if (options.early_stopping.value_or(false)) {
     gen_params.SetSearchOptionBool("early_stopping", true);
+  }
+
+  // Preserve a positive model setting. ORT GenAI reports both an absent setting and explicit zero as zero; Foundry
+  // Local intentionally treats both as unset. ORT GenAI decides whether the model consumes the resulting option.
+  if (gen_params.GetSearchNumber("chunk_size") <= 0) {
+    // The model's resolved EP is kDefault for the common load path, so use the provider declared in
+    // genai_config.json. An empty provider means ORT's CPU fallback.
+    ExecutionProvider effective_ep = ep;
+    if (effective_ep == ExecutionProvider::kDefault) {
+      std::string config_provider = config.DefaultProvider();
+      effective_ep = config_provider.empty() ? ExecutionProvider::kCPU
+                                              : EPUtils::StringtoEP(config_provider);
+    }
+
+    constexpr double kDefaultChunkSize = 2048.0;
+    switch (effective_ep) {
+      case ExecutionProvider::kCUDA:
+      case ExecutionProvider::kTensorRT_RTX:
+      case ExecutionProvider::kWebGPU:
+      case ExecutionProvider::kCPU:
+        gen_params.SetSearchOption("chunk_size", kDefaultChunkSize);
+        break;
+      default:
+        break;
+    }
   }
 
   return effective_max_length;
