@@ -223,6 +223,8 @@ struct TextSegment {
 //
 // - Text outside the markers is emitted as DEFAULT (visible) segments.
 // - Text inside the markers is emitted as REASONING segments. The markers themselves are stripped.
+// - Truncated reasoning (no closing marker) is treated as a REASONING segment running to end of input.
+// - Empty segments are skipped.
 // - When start_marker is empty, the entire input is returned as a single DEFAULT segment.
 //
 // Leading whitespace/newlines on visible segments that immediately follow a closed reasoning block are trimmed —
