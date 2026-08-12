@@ -145,7 +145,7 @@ TEST_F(CacheOnlyTest, CatalogReturnsModelsFromCacheFile) {
     foundry_local::Manager manager(MakeCacheOnlyConfig());
     auto& catalog = manager.GetCatalog();
     auto model_list = catalog.GetModels();
-    const auto& models = model_list.Models();
+    const auto& models = model_list;
 
     ASSERT_EQ(models.size(), 2u);
 
@@ -234,7 +234,7 @@ TEST_F(CacheOnlyTest, EmptyCacheFileReturnsEmptyModelList) {
     auto& catalog = manager.GetCatalog();
     auto model_list = catalog.GetModels();
 
-    EXPECT_EQ(model_list.Models().size(), 0u);
+    EXPECT_TRUE(model_list.empty());
   }
 }
 
@@ -246,7 +246,7 @@ TEST_F(CacheOnlyTest, MissingCacheFileReturnsEmptyModelList) {
     auto& catalog = manager.GetCatalog();
     auto model_list = catalog.GetModels();
 
-    EXPECT_EQ(model_list.Models().size(), 0u);
+    EXPECT_TRUE(model_list.empty());
   }
 }
 
@@ -279,7 +279,7 @@ TEST(CacheOnlyLocalScan, LocalModelsAreReportedAsCached) {
   foundry_local::Manager manager(std::move(config));
   auto& catalog = manager.GetCatalog();
   auto model_list = catalog.GetModels();
-  const auto& models = model_list.Models();
+  const auto& models = model_list;
 
   ASSERT_FALSE(models.empty()) << "Expected the cache file to contain at least one model entry.";
 

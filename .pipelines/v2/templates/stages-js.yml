@@ -10,8 +10,6 @@
 # Build stages depend on:
 #   * compute_version          (sdkVersion.txt for the eventual pack stamp)
 #   * cpp_build_<rid>          (matching native foundry_local lib + import lib)
-#   * cpp_build_win_x64        (the cpp-native-include artifact, which is
-#                               stage-headers-only on the win-x64 build)
 #
 # Tests run on the same platform as the build.
 
@@ -41,9 +39,6 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-win-x64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
-      - input: pipelineArtifact
-        artifactName: 'cpp-native-include'
-        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
       outputs:
       - output: pipelineArtifact
         artifactName: 'js-prebuild-win-x64'
@@ -55,7 +50,6 @@ stages:
       parameters:
         rid: 'win-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
-        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
         signWindows: true
 
@@ -64,7 +58,6 @@ stages:
   dependsOn:
   - compute_version
   - cpp_build_win_arm64
-  - cpp_build_win_x64
   jobs:
   - job: build
     pool:
@@ -81,9 +74,6 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-win-arm64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
-      - input: pipelineArtifact
-        artifactName: 'cpp-native-include'
-        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
       outputs:
       - output: pipelineArtifact
         artifactName: 'js-prebuild-win-arm64'
@@ -95,7 +85,6 @@ stages:
       parameters:
         rid: 'win-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
-        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
         signWindows: true
 
@@ -104,7 +93,6 @@ stages:
   dependsOn:
   - compute_version
   - cpp_build_linux_x64
-  - cpp_build_win_x64
   jobs:
   - job: build
     pool:
@@ -118,9 +106,6 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-linux-x64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
-      - input: pipelineArtifact
-        artifactName: 'cpp-native-include'
-        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
       outputs:
       - output: pipelineArtifact
         artifactName: 'js-prebuild-linux-x64'
@@ -132,7 +117,6 @@ stages:
       parameters:
         rid: 'linux-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
-        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
 
 - stage: js_build_linux_arm64
@@ -140,7 +124,6 @@ stages:
   dependsOn:
   - compute_version
   - cpp_build_linux_arm64
-  - cpp_build_win_x64
   jobs:
   - job: build
     pool:
@@ -155,9 +138,6 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-linux-arm64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
-      - input: pipelineArtifact
-        artifactName: 'cpp-native-include'
-        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
       outputs:
       - output: pipelineArtifact
         artifactName: 'js-prebuild-linux-arm64'
@@ -169,7 +149,6 @@ stages:
       parameters:
         rid: 'linux-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
-        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
 
 - stage: js_build_osx_arm64
@@ -177,7 +156,6 @@ stages:
   dependsOn:
   - compute_version
   - cpp_build_osx_arm64
-  - cpp_build_win_x64
   jobs:
   - job: build
     pool:
@@ -195,9 +173,6 @@ stages:
       - input: pipelineArtifact
         artifactName: 'cpp-native-osx-arm64'
         targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
-      - input: pipelineArtifact
-        artifactName: 'cpp-native-include'
-        targetPath: '$(Pipeline.Workspace)/cpp-native-include'
       outputs:
       - output: pipelineArtifact
         artifactName: 'js-prebuild-osx-arm64'
@@ -209,7 +184,6 @@ stages:
       parameters:
         rid: 'osx-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
-        includeArtifactDir: '$(Pipeline.Workspace)/cpp-native-include'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
         signMac: true
 

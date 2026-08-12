@@ -43,10 +43,6 @@ compute_version
                                                   (all 5 builds) ──> js_pack ──> js-sdk
 ```
 
-Every `js_build_<rid>` stage also depends on `cpp_build_win_x64` because
-the `cpp-native-include` artifact (public + ms-gsl headers) is produced
-only by that stage and consumed by every JS build.
-
 ## Artifacts
 
 | Stage                     | Artifact name               | Contents                                                                                       |
@@ -66,46 +62,30 @@ directory (Node's `process.platform` is `"linux"`, `process.arch` is `"arm64"`).
 
 ## Build-time native dependencies
 
-The Node-API addon links against `foundry_local` and `#include`s both
-the public SDK headers and `<gsl/span>`, transitively included from
-[`foundry_local_cpp.h`](../../sdk_v2/cpp/include/foundry_local/foundry_local_cpp.h).
-The public C++ wrapper API targets C++17 (`gsl::span` instead of
-C++20 `std::span`) for maximum consumer compatibility. The pure C ABI
-(`foundry_local_c.h`) has no vcpkg dependency.
-
-The `cpp_build_win_x64` stage bundles the ms-gsl headers from
-`vcpkg_installed/x64-windows/include/gsl/` into the existing
-`cpp-native-include` artifact alongside `foundry_local/`. ms-gsl is
-header-only and platform-agnostic, so a single payload serves every JS
-build stage. The bundling step lives in
-[`steps-build-windows.yml`](templates/steps-build-windows.yml) and only
-runs on the x64 path.
+The Node-API addon links against `foundry_local` and includes the public
+SDK headers. The public C++ wrapper API remains C++17-compatible and has
+no external header dependency.
 
 The JS build stage points node-gyp at the downloaded artifacts via
-three env-var overrides:
+two env-var overrides:
 
 - `FOUNDRY_LOCAL_LIB_DIR` — directory containing `foundry_local.{lib,dll,so,dylib}`,
   honored by
   [`print-import-lib-dir.mjs`](../../sdk_v2/js/script/gyp/print-import-lib-dir.mjs).
-- `FOUNDRY_LOCAL_INCLUDE_DIR` — directory containing `gsl/`, honored by
-  [`print-vcpkg-include.mjs`](../../sdk_v2/js/script/gyp/print-vcpkg-include.mjs).
-  The public include dir (`../cpp/include`) is added separately by
-  `binding.gyp`.
 - `FOUNDRY_LOCAL_PREBUILD_DIR` — forces the `copy_addon_to_prebuilds`
   destination. Required on win-arm64 because `print-prebuild-dir.mjs`
   otherwise uses the host Node's `process.arch` (x64) and lands the
   cross-compiled addon in `prebuilds/win32-x64/`. Also set on linux-arm64
   for consistency (though native builds already resolve the right arch).
 
-All three overrides are real DX wins for external consumers building
+Both overrides are real DX wins for external consumers building
 the addon themselves against a downloaded native artifact.
 
 ## Cross-compile: win-arm64
 
 Build on the win-x64 agent, invoke `node-gyp rebuild --arch=arm64`.
-`foundry_local.{dll,lib}` from `cpp-native-win-arm64` and the public +
-gsl headers from `cpp-native-include` provide everything the linker
-needs. `FOUNDRY_LOCAL_PREBUILD_DIR` points the addon-copy step at
+`foundry_local.{dll,lib}` from `cpp-native-win-arm64` provides everything
+the linker needs. `FOUNDRY_LOCAL_PREBUILD_DIR` points the addon-copy step at
 `prebuilds/win32-arm64/`. No test stage — matches the C# / Python
 matrix.
 
@@ -176,11 +156,6 @@ shape.
 **Modified:**
 - [`.pipelines/v2/templates/stages-sdk-v2.yml`](templates/stages-sdk-v2.yml)
   — appends `stages-js.yml`.
-- [`.pipelines/v2/templates/steps-build-windows.yml`](templates/steps-build-windows.yml)
-  (x64 path only) — stages `vcpkg_installed/x64-windows/include/gsl/`
-  into the `cpp-native-include` artifact.
-- [`sdk_v2/js/script/gyp/print-vcpkg-include.mjs`](../../sdk_v2/js/script/gyp/print-vcpkg-include.mjs)
-  — honors `FOUNDRY_LOCAL_INCLUDE_DIR`.
 - [`sdk_v2/js/script/gyp/print-import-lib-dir.mjs`](../../sdk_v2/js/script/gyp/print-import-lib-dir.mjs)
   — honors `FOUNDRY_LOCAL_LIB_DIR`.
 - `sdk_v2/js/script/gyp/print-prebuild-dir.mjs` — honors
@@ -204,8 +179,7 @@ shape.
 **Unchanged (intentional):**
 - `sdk_v2/js/script/copy-native.mjs` and `pack-prebuilds.mjs` — local-dev
   helpers. CI consumes `cpp-native-<rid>` artifacts directly.
-- `sdk_v2/cpp/include/foundry_local/foundry_local_cpp.h` — `<gsl/span>`
-  stays; wrapper API is C++17.
+- `sdk_v2/cpp/include/foundry_local/foundry_local_cpp.h` — wrapper API remains C++17.
 
 ## Locked decisions
 
