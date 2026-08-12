@@ -24,7 +24,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
-#include <gsl/span>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -745,7 +744,7 @@ class ModelList {
   ModelList(const ModelList&) = delete;
   ModelList& operator=(const ModelList&) = delete;
 
-  gsl::span<const std::unique_ptr<IModel>> Models() const noexcept;
+  std::vector<IModel*> Models() const;
   size_t size() const noexcept;
   auto begin() const noexcept { return models_.begin(); }
   auto end() const noexcept { return models_.end(); }

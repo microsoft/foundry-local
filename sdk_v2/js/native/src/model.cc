@@ -149,7 +149,7 @@ Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelLis
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
     ModelCtorToken token;
-    token.impl = models[i].get();
+    token.impl = models[i];
     token.keepalive = list;  // shared_ptr copy keeps the ModelList alive
     // Cloning the manager ObjectReference per Model so each entry pins it.
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);

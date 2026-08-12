@@ -153,22 +153,19 @@ Driven by the interface decisions:
   `std::unique_ptr<IModel>`. Null = not found.
 - `Catalog::GetLatestVersion(const IModel&)` returns `std::unique_ptr<IModel>`.
 - `Catalog::GetModels()` / `GetCachedModels()` / `GetLoadedModels()` return
-  `ModelList`. `ModelList::Models()` returns `gsl::span<const std::unique_ptr<IModel>>`.
+  `ModelList`. `ModelList::Models()` returns `std::vector<IModel*>`; the pointers
+  remain valid for the lifetime of the `ModelList`.
 - `Session`, `ChatSession`, `AudioSession` constructors take `IModel&`.
 - `IModel::SelectVariant(const IModel&)` and `Catalog::GetLatestVersion(const IModel&)`
   internally use `static_cast<const Model&>(arg).native_handle()`. RTTI is not used;
   the downcast is sound because `Model` is the only concrete `IModel` produced by
   the SDK.
 
-### 6. GSL dependency
+### 6. Non-owning collections
 
-`microsoft-gsl` is added as a vcpkg dependency.
-
-- `gsl::span` is used in public API where a non-owning view of a contiguous range is
-  returned (e.g. `ModelList::Models()`, `InputOutputInfo::inputs`/`outputs`).
-- `gsl::not_null` is allowed for internal class members. It is **not** used in public
-  API parameters or return types — references convey the same non-null contract more
-  idiomatically.
+- Public collection APIs use standard-library types so consumers do not need extra header dependencies.
+- `ModelList::Models()` projects its internally owned models as non-owning `IModel*` values. It does not
+  expose the `std::unique_ptr` storage used to manage their lifetimes.
 
 ### 7. Removed types
 

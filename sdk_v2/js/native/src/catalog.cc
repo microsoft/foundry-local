@@ -25,7 +25,7 @@ Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml,
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
     ModelCtorToken token;
-    token.impl = models[i].get();
+    token.impl = models[i];
     token.keepalive = list;
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);
     arr.Set(static_cast<uint32_t>(i), Model::NewInstance(env, std::move(token)));

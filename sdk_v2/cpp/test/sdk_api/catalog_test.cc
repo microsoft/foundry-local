@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 // Catalog-focused SDK integration tests using only the public C++ API.
 
-#include <gsl/span>
 #include <memory>
 #include <type_traits>
 
@@ -10,12 +9,11 @@
 
 namespace {
 
-const foundry_local::IModel* FindModelByAlias(
-    gsl::span<const std::unique_ptr<foundry_local::IModel>> models,
-    std::string_view alias) {
+const foundry_local::IModel* FindModelByAlias(const std::vector<foundry_local::IModel*>& models,
+                                              std::string_view alias) {
   for (const auto& model : models) {
     if (model->GetInfo().Alias() == alias) {
-      return model.get();
+      return model;
     }
   }
 
