@@ -33,6 +33,12 @@
 
 using namespace fl;
 
+TEST(ItemTypeNameTest, ReturnsSymbolicNames) {
+  EXPECT_EQ(Item::TypeName(FOUNDRY_LOCAL_ITEM_IMAGE), "IMAGE");
+  EXPECT_EQ(Item::TypeName(FOUNDRY_LOCAL_ITEM_AUDIO), "AUDIO");
+  EXPECT_EQ(Item::TypeName(static_cast<flItemType>(-1)), "UNKNOWN");
+}
+
 // ========================================================================
 // Item::Create factory — every derived type
 // ========================================================================

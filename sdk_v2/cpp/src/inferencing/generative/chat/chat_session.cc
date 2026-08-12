@@ -223,8 +223,6 @@ struct TextSegment {
 //
 // - Text outside the markers is emitted as DEFAULT (visible) segments.
 // - Text inside the markers is emitted as REASONING segments. The markers themselves are stripped.
-// - Truncated reasoning (no closing marker) is treated as a REASONING segment running to end of input.
-// - Empty segments are skipped.
 // - When start_marker is empty, the entire input is returned as a single DEFAULT segment.
 //
 // Leading whitespace/newlines on visible segments that immediately follow a closed reasoning block are trimmed —
@@ -411,6 +409,25 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (new_messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "At least one MESSAGE item with non-empty content is required in the request");
+  }
+
+  const auto io_info = CatalogModel().GetInputOutputInfo();
+  for (const auto& message : new_messages) {
+    for (const auto& part : message.content) {
+      if (!part.view) {
+        continue;
+      }
+
+      const bool supported = std::any_of(io_info.inputs, io_info.inputs + io_info.num_inputs,
+                                         [&part](const Item* input) {
+                                           return input->type == part.view->type;
+                                         });
+      if (!supported) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 fmt::format("{} input is not supported by model task '{}'",
+                             Item::TypeName(part.view->type), CatalogModel().Info().task));
+      }
+    }
   }
 
   // Vision input detection.
