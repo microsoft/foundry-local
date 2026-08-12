@@ -118,7 +118,7 @@ TEST_F(SearchOptionsTest, TemperaturePositiveEnablesSampling) {
 }
 
 TEST_F(SearchOptionsTest, TemperatureOutsideSupportedRangeThrows) {
-  for (float temperature : {-1.0f, 2.1f}) {
+  for (float temperature : {-1.0f, 2.1f, std::stof("nan")}) {
     SearchOptions opts;
     opts.temperature = temperature;
     auto params = MakeParams();
