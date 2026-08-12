@@ -46,6 +46,7 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
   Napi::Value RemoveToolDefinition(const Napi::CallbackInfo& info);
   Napi::Value TurnCount(const Napi::CallbackInfo& info);
   Napi::Value UndoTurns(const Napi::CallbackInfo& info);
+  Napi::Value Cancel(const Napi::CallbackInfo& info);
   Napi::Value Dispose(const Napi::CallbackInfo& info);
   Napi::Value IsDisposed(const Napi::CallbackInfo& info);
 
@@ -77,6 +78,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
  private:
   Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
   Napi::Value SetOptions(const Napi::CallbackInfo& info);
+  Napi::Value Cancel(const Napi::CallbackInfo& info);
   Napi::Value Dispose(const Napi::CallbackInfo& info);
   Napi::Value IsDisposed(const Napi::CallbackInfo& info);
 
@@ -106,6 +108,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
   Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
   Napi::Value ProcessStreamingRequest(const Napi::CallbackInfo& info);
   Napi::Value SetOptions(const Napi::CallbackInfo& info);
+  Napi::Value Cancel(const Napi::CallbackInfo& info);
   Napi::Value Dispose(const Napi::CallbackInfo& info);
   Napi::Value IsDisposed(const Napi::CallbackInfo& info);
 

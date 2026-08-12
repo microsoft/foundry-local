@@ -81,6 +81,23 @@ export class Request {
   cancel(): void {
     this.#native.cancel();
   }
+
+  /**
+   * Set a wall-clock deadline for this request, in milliseconds. Pass `0` (or a
+   * negative value) to disable.
+   *
+   * The deadline covers the whole `Session.processRequest()` call, including prefill,
+   * and applies to streaming and non-streaming generation alike. On expiry the run is
+   * interrupted mid-compute and the promise rejects with a `FoundryLocalError` whose
+   * `code === FlErrorCode.Timeout`, so a non-terminating model cannot pin the session
+   * and block model unload.
+   *
+   * The deadline is re-armed on each `processRequest()` call, so a request may be reused.
+   */
+  setTimeout(timeoutMs: number): this {
+    this.#native.setTimeout(timeoutMs > 0 ? timeoutMs : 0);
+    return this;
+  }
 }
 
 /** @internal — used by `Session.processRequest()` to forward the underlying handle. */

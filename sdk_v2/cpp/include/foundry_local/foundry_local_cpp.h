@@ -20,6 +20,7 @@
 #include "foundry_local/foundry_local_c.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -955,6 +956,15 @@ class Request {
   /// Cancel the current request. Inferencing will stop as soon as possible.
   void Cancel();
 
+  /// Set a wall-clock deadline for the request, in milliseconds. Pass 0 to disable.
+  ///
+  /// The deadline covers the whole ProcessRequest call, including prefill, and applies to
+  /// streaming and non-streaming alike. On expiry the run is interrupted and
+  /// ProcessRequest throws with FOUNDRY_LOCAL_ERROR_TIMEOUT.
+  ///
+  /// The deadline is re-armed on each ProcessRequest call, so a Request may be reused.
+  Request& SetTimeout(std::chrono::milliseconds timeout);
+
   const flRequest* native_handle() const noexcept { return handle_.get(); }
 
  private:
@@ -1000,6 +1010,17 @@ class Session {
   /// Process the request.
   /// Populates the response with output items, finish reason, and usage.
   Response ProcessRequest(const Request& request);
+
+  /// Interrupt any requests currently running on this session.
+  ///
+  /// Thread-safe and callable from any thread — this is the point: it is meant to be
+  /// invoked from a different thread than the one blocked in ProcessRequest. It
+  /// interrupts inferencing mid-compute rather than only between tokens, so a
+  /// non-terminating generation cannot keep the session's reference to the model alive.
+  ///
+  /// The interrupted ProcessRequest returns promptly with a canceled finish reason.
+  /// Idempotent; safe to call when no request is running.
+  void Cancel();
 
  protected:
   detail::Base<flSession> handle_;

@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/cancellable.h"
+
 #include <string>
 
 namespace fl {
@@ -10,7 +12,7 @@ namespace fl {
 /// One generator per request — not reusable, not thread-safe.
 /// Same pull-based iterator pattern as ChatGenerator:
 ///   while (!IsDone()) { GenerateNextToken(); text += Decode(); }
-class AudioGenerator {
+class AudioGenerator : public ICancellable {
  public:
   virtual ~AudioGenerator() = default;
 
@@ -39,7 +41,7 @@ class AudioGenerator {
 
   /// Request cancellation of generation. Thread-safe — can be called from another thread.
   /// After cancellation, IsDone() should return true on the next check.
-  virtual void Cancel() = 0;
+  void Cancel() override = 0;
 
  protected:
   AudioGenerator() = default;

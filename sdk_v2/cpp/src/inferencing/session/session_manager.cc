@@ -4,8 +4,12 @@
 
 #include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/session/live_session_registry.h"
+#include "inferencing/session/session.h"
 
 #include <cassert>
+#include <vector>
+
 #include <fmt/format.h>
 
 namespace fl {
@@ -53,11 +57,25 @@ void SessionManager::CancelAll() {
   // Clear cache — frees idle cached sessions so they don't block drain.
   ClearCache();
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  logger_.Log(LogLevel::Information,
-              fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
+  // Cancel every live session, not just registered ones: direct-API sessions never take a
+  // SessionRegistration, yet a runaway request on one is exactly what pins the model.
+  //
+  // Snapshot first and cancel outside any lock — Session::Cancel() reaches into the ORT
+  // GenAI engine, and a cancelled session unwinding calls back into Deregister().
+  std::vector<Session*> to_cancel = LiveSessionRegistry::Instance().Snapshot();
 
-  // Future (Phase 3): iterate sessions_ and call Cancel() on each
+  logger_.Log(LogLevel::Information,
+              fmt::format("SessionManager: cancelling all sessions ({} live)", to_cancel.size()));
+
+  for (auto* session : to_cancel) {
+    try {
+      session->Cancel();
+    } catch (const std::exception& ex) {
+      // Cancellation is best-effort during shutdown; one wedged session must not
+      // prevent the others from being signalled.
+      logger_.Log(LogLevel::Warning, fmt::format("SessionManager: failed to cancel a session: {}", ex.what()));
+    }
+  }
 }
 
 void SessionManager::WaitForDrain(std::chrono::milliseconds timeout) {

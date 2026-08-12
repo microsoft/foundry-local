@@ -109,6 +109,11 @@ internal static class Api
             throw new OperationCanceledException(msg);
         }
 
+        if (code == FlErrorCode.Timeout)
+        {
+            throw new TimeoutException(msg);
+        }
+
         throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg);
     }
 
@@ -770,6 +775,15 @@ public sealed class Session : IDisposable
         IntPtr responsePtr = IntPtr.Zero;
         Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestPtr, ref responsePtr));
         return responsePtr;
+    }
+
+    /// <summary>
+    /// Interrupt any request currently running on this session. Thread-safe; intended to be
+    /// called from a thread other than the one blocked in ProcessRequest.
+    /// </summary>
+    internal void Cancel()
+    {
+        Api.CheckStatus(Api.Inference.SessionCancel(Ptr));
     }
 
     /// <summary>Get the number of completed turns in the session.</summary>

@@ -184,6 +184,9 @@ typedef enum flErrorCode {
   FOUNDRY_LOCAL_ERROR_INVALID_USAGE = 4,
   FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED = 5,
   FOUNDRY_LOCAL_ERROR_NETWORK = 6,
+  /// An operation exceeded its caller-supplied deadline. Distinct from
+  /// FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, which means an explicit cancel.
+  FOUNDRY_LOCAL_ERROR_TIMEOUT = 7,
 } flErrorCode;
 
 typedef enum flLogLevel {
@@ -891,6 +894,24 @@ struct flInferenceApi {
   /// Undo the last `count` turns. Rewinds the generator and removes the turns' messages from history.
   /// If all turns are undone, the cached generator is destroyed.
   FL_API_STATUS(Session_UndoTurns, _In_ flSession* session, size_t count);
+
+  /// Set a wall-clock budget for the request, in milliseconds. 0 (the default) means no
+  /// deadline. The clock starts when Session_ProcessRequest is called and is re-armed on
+  /// every call, so a Request may be reused.
+  ///
+  /// On expiry the in-flight generation is interrupted — including mid-compute, not just
+  /// at token boundaries — the session's model reference is released, and
+  /// Session_ProcessRequest returns FOUNDRY_LOCAL_ERROR_TIMEOUT.
+  FL_API_STATUS(Request_SetTimeoutMs, _In_ flRequest* request, uint64_t timeout_ms);
+
+  /// Cancel the request currently in flight on this session, and make subsequent
+  /// Session_ProcessRequest calls fail fast with FOUNDRY_LOCAL_ERROR_INVALID_USAGE.
+  ///
+  /// Unlike Request_Cancel — which only reaches generation loops that poll the request —
+  /// this interrupts the underlying engine, so it also stops a non-streaming request that
+  /// is blocked inside a long prefill or decode. Safe to call from any thread; idempotent.
+  /// This is the supported way to release a session that is pinning a model.
+  FL_API_STATUS(Session_Cancel, _In_ flSession* session);
 
   // End V1
 };

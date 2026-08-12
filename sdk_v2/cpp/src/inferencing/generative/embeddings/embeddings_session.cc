@@ -4,6 +4,7 @@
 
 #include "contracts/embeddings.h"
 #include "exception.h"
+#include "inferencing/session/oga_generator_cancellable.h"
 #include "inferencing/generative/embeddings/fp16.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "items/tensor_item.h"
@@ -73,7 +74,14 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
   }
 
   // Single batched forward pass for all inputs.
-  auto embeddings = GenerateEmbeddingsBatch(inputs);
+  auto embeddings = GenerateEmbeddingsBatch(inputs, request);
+
+  // A cancelled or timed-out batch is incomplete — emit no partial items and let the
+  // caller see it stopped early, rather than silently returning fewer vectors than inputs.
+  if (request.canceled) {
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+    return;
+  }
 
   // Wrap each embedding as a TensorItem in the response. The vector is heap-allocated
   // and ownership is transferred to the TensorItem deleter via deleter_user_data_, so
@@ -95,7 +103,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
 }
 
 void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
-                                              const Request& /*original_request*/,
+                                              const Request& original_request,
                                               Response& response) {
   // Parse the OpenAI embeddings request. Let nlohmann::json::parse_error propagate —
   // matches AudioSession::ProcessAudioTranscriptionJson behavior.
@@ -117,7 +125,14 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   // Reuse GenerateEmbeddingsBatch so the typed and JSON paths stay bit-for-bit equal
   // under future refactors (parity test relies on this).
   if (!inputs.empty()) {
-    auto embeddings = GenerateEmbeddingsBatch(inputs);
+    auto embeddings = GenerateEmbeddingsBatch(inputs, original_request);
+
+    // Cancelled or timed out mid-batch: report the stop instead of returning a
+    // short data array that a client would read as a complete result.
+    if (original_request.canceled) {
+      response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+      return;
+    }
 
     output.data.reserve(embeddings.size());
     for (size_t i = 0; i < embeddings.size(); ++i) {
@@ -142,7 +157,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
 }
 
 std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
-    const std::vector<std::string>& inputs) {
+    const std::vector<std::string>& inputs, const Request& request) {
   // Process each input independently (batch_size=1 per forward pass).
   //
   // Embedding models like Qwen3-Embedding use bidirectional attention —
@@ -157,16 +172,22 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   results.reserve(inputs.size());
 
   for (const auto& input : inputs) {
-    results.push_back(GenerateSingleEmbedding(input));
+    // Check between inputs: a large batch is otherwise uninterruptible, which is what
+    // lets a runaway embeddings request pin the session refcount through shutdown.
+    if (request.ShouldStop()) {
+      break;
+    }
+
+    results.push_back(GenerateSingleEmbedding(input, request));
   }
 
   logger_.Log(LogLevel::Verbose,
-              fmt::format("Embeddings: processed {} input(s)", inputs.size()));
+              fmt::format("Embeddings: processed {} of {} input(s)", results.size(), inputs.size()));
 
   return results;
 }
 
-std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input) {
+std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input, const Request& request) {
   auto& oga_model = model_.GetOgaModel();
 
   // 1. Tokenize and append EOS. Encode is serialized on the model's shared tokenizer.
@@ -186,8 +207,19 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
   generator->AppendTokenSequences(*sequences);
 
+  // Publish the generator so cancellation or an expired deadline interrupts this forward
+  // pass. A single long input can exceed the budget without ever reaching the loop check
+  // in GenerateEmbeddingsBatch.
+  OgaGeneratorCancellable cancellable(*generator);
+  ActiveGenerator active(*this, cancellable);
+
   // 3. Single forward pass.
   generator->GenerateNextToken();
+
+  // The pass may have been terminated mid-compute, leaving hidden_states unusable.
+  if (request.ShouldStop()) {
+    return {};
+  }
 
   // 4. Extract hidden_states. Shape: [1, token_count, hidden_size]
   auto hidden_states = generator->GetOutput("hidden_states");
