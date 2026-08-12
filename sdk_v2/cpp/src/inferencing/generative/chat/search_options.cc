@@ -27,7 +27,10 @@ int ApplySearchOptions(const SearchOptions& options,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
   }
 
-  // Determine max output tokens
+  // genai_config.json's search.max_length (read above) is the source of truth for the total input+output budget.
+  // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
+  // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
+  // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
   int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
   if (max_output < 1) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
