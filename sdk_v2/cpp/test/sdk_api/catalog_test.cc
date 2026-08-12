@@ -64,8 +64,7 @@ TEST_F(ModelFixture, CatalogGetModelReturnsNulloptForUnknownAlias) {
 // — the GTEST output captures the catalog snapshot the test run was working
 // against. Always passes; assertions are sanity checks only.
 TEST_F(ModelFixture, CatalogDumpAllModelsAndVariants) {
-  foundry_local::ModelList all_models = catalog().GetModels();
-  const auto& models = all_models;
+  foundry_local::ModelList models = catalog().GetModels();
 
   ASSERT_GE(models.size(), 1u) << "Catalog should expose at least one model";
 
@@ -109,8 +108,7 @@ TEST_F(ModelFixture, CatalogGetModelVariantReturnsNulloptForUnknownId) {
 }
 
 TEST_F(ModelFixture, CatalogGetCachedModelsIncludesDownloadedModel) {
-  foundry_local::ModelList cached_models = catalog().GetCachedModels();
-  const auto& cached = cached_models;
+  foundry_local::ModelList cached = catalog().GetCachedModels();
 
   ASSERT_GE(cached.size(), 1u) << "Expected at least one cached model after fixture download";
 
