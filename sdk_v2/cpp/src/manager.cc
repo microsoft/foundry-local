@@ -7,6 +7,7 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <string_view>
 
 #include "catalog.h"
@@ -50,6 +51,13 @@ namespace {
 
 std::atomic<ILogger*> s_ort_logger{nullptr};
 std::atomic<ILogger*> s_oga_logger{nullptr};
+std::once_flag s_oga_shutdown_registration;
+
+void RegisterOgaShutdownAtProcessExit() {
+  std::call_once(s_oga_shutdown_registration, [] {
+    std::atexit([] { OgaShutdown(); });
+  });
+}
 
 bool IsTruthyConfigValue(const std::string& value) {
   const auto lowered = ToLower(value);
@@ -183,6 +191,7 @@ std::unique_ptr<Manager> Manager::s_instance_;
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+  RegisterOgaShutdownAtProcessExit();
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
   const auto logger_level = genai_verbose_logging ? LogLevel::Verbose : config_.log_level;
@@ -355,8 +364,6 @@ Manager::~Manager() {
   download_manager_.reset();
   catalog_.reset();
   telemetry_.reset();
-
-  OgaShutdown();
 
   if (ort_api_ != nullptr && ort_env_ != nullptr) {
     for (auto it = registered_ep_libraries_.rbegin(); it != registered_ep_libraries_.rend(); ++it) {

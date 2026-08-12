@@ -116,8 +116,8 @@ class Manager {
   //   config_                  — trivial data, no dependencies
   //   ort_api_, ort_env_,
   //     registered_ep_libraries_ — ORT environment & EP registrations;
-  //                                released manually in ~Manager() after all
-  //                                consumers and GenAI globals are gone.
+  //                                released manually in ~Manager(); GenAI
+  //                                globals remain process-scoped until exit.
   //   logger_                  — everything logs through this, destroyed last
   //   ep_detector_             — owns EP bootstrappers and dependency handles;
   //                              reset after provider unregistration and before OrtEnv release
