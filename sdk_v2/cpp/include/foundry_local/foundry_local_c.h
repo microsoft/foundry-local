@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 3
+#define FOUNDRY_LOCAL_API_VERSION 2
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -1079,12 +1079,10 @@ struct flModelApi {
   FL_API_STATUS(Info_SetIntProperty, _In_ flModelInfo* info, _In_ const char* key, int64_t value);
   FL_API_STATUS(Info_SerializeToFile, _In_ const flModelInfo* info, _In_ const char* file_path);
   FL_API_STATUS(Info_DeserializeFromFile, _In_ const char* file_path, _Outptr_ flModelInfo** out_info);
-
-  // End V2
   /// Create a caller-owned deep copy. Release it with ReleaseModelInfo.
   FL_API_STATUS(Info_Clone, _In_ const flModelInfo* info, _Outptr_ flModelInfo** out_info);
 
-  // End V3
+  // End V2
 };
 
 #ifdef __cplusplus

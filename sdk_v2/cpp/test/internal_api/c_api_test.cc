@@ -33,18 +33,18 @@ TEST(CApiTest, GetApiReturnsNullForFutureVersion) {
   EXPECT_EQ(api, nullptr);
 }
 
-TEST(CApiTest, ModelInfoCloneIsAvailableOnlyInV3) {
+TEST(CApiTest, ModelInfoCloneIsAvailableInV2) {
+  const flApi* v1 = FoundryLocalGetApi(1);
   const flApi* v2 = FoundryLocalGetApi(2);
-  const flApi* v3 = FoundryLocalGetApi(3);
+  ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
-  ASSERT_NE(v3, nullptr);
 
+  const flModelApi* model_v1 = v1->GetModelApi();
   const flModelApi* model_v2 = v2->GetModelApi();
-  const flModelApi* model_v3 = v3->GetModelApi();
+  ASSERT_NE(model_v1, nullptr);
   ASSERT_NE(model_v2, nullptr);
-  ASSERT_NE(model_v3, nullptr);
-  EXPECT_EQ(model_v2->Info_Clone, nullptr);
-  EXPECT_NE(model_v3->Info_Clone, nullptr);
+  EXPECT_EQ(model_v1->Info_Clone, nullptr);
+  EXPECT_NE(model_v2->Info_Clone, nullptr);
 }
 
 TEST(CApiTest, VersionReturnsNonNull) {

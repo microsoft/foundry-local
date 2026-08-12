@@ -184,7 +184,7 @@ Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
   }
 
   try {
-    return AddModel(CreateModel(registration));
+    return AppendActiveModel(CreateModel(registration));
   } catch (...) {
     std::lock_guard<std::mutex> guard(registration_mutex_);
     FileLock file_lock(lock_path_);
@@ -233,7 +233,7 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
       SaveRegistrations(registrations);
     }
 
-    DeactivateModel(alias_or_model_id);
+    RetireModel(alias_or_model_id);
     model->CancelUnregister();
     unregister_lock_held = false;
   } catch (...) {

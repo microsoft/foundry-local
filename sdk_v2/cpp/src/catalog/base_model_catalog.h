@@ -50,8 +50,11 @@ class BaseModelCatalog : public ICatalog {
  protected:
   BaseModelCatalog(std::string name, CatalogType type, ILogger& logger);
 
-  Model* AddModel(Model model);
-  bool DeactivateModel(const std::string& alias_or_model_id);
+  /// Append a newly registered active model. Inactive tombstones are never revived.
+  Model* AppendActiveModel(Model model);
+
+  /// Remove a model from catalog lookup while retaining its storage for pointer safety.
+  bool RetireModel(const std::string& alias_or_model_id);
 
   /// Derived classes implement this to fetch model variants from their source.
   /// Returns the full variant list. Base class handles caching and indexing.

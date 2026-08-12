@@ -385,7 +385,7 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
   return result;
 }
 
-Model* BaseModelCatalog::AddModel(Model model) {
+Model* BaseModelCatalog::AppendActiveModel(Model model) {
   EnsurePopulated();
   std::lock_guard<std::mutex> lock(mutex_);
   auto container = std::make_unique<Model>(Model::MakeContainer(std::move(model)));
@@ -396,7 +396,7 @@ Model* BaseModelCatalog::AddModel(Model model) {
   return result;
 }
 
-bool BaseModelCatalog::DeactivateModel(const std::string& alias_or_model_id) {
+bool BaseModelCatalog::RetireModel(const std::string& alias_or_model_id) {
   EnsurePopulated();
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto& stored : models_) {
