@@ -14,7 +14,7 @@ class ILogger;
 /// Bootstrapper for the CUDA execution provider.
 ///
 /// Windows x64: downloads CUDA EP binaries from Azure CDN, extracts,
-/// verifies SHA256, then registers with ORT via SetDllDirectory + callback.
+/// verifies SHA256, preloads the GenAI runtime DLL, then registers with ORT via callback.
 ///
 /// Linux x64: registers from co-located .so files (no download needed).
 ///

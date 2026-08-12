@@ -34,13 +34,15 @@ struct ExpectedBinary {
   const char* sha256;
 };
 
+constexpr const char* kCudaProviderDll = "onnxruntime_providers_cuda.dll";
+constexpr const char* kCudaGenaiDll = "onnxruntime-genai-cuda.dll";
+
 constexpr ExpectedBinary kExpectedBinaries[] = {
-    {"onnxruntime_providers_cuda.dll", "DD540FCFECFBC68B4675C9ADF09C2858CF6B054563859D79598AA2524406A76F"},
-    {"onnxruntime-genai-cuda.dll", "BC953F8E2AAFC6219B2D723B65AB8F1A9426A6B7724D6A01ED756FAE8C3DE6AE"},
+    {kCudaProviderDll, "DD540FCFECFBC68B4675C9ADF09C2858CF6B054563859D79598AA2524406A76F"},
+    {kCudaGenaiDll, "BC953F8E2AAFC6219B2D723B65AB8F1A9426A6B7724D6A01ED756FAE8C3DE6AE"},
 };
 
 constexpr const char* kRegistrationName = "Foundry.CUDA";
-constexpr const char* kCudaProviderDll = "onnxruntime_providers_cuda.dll";
 constexpr const char* kCudaProviderOverrideEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
 
 }  // anonymous namespace
@@ -95,6 +97,25 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
         progress_cb(name_, 90.0f);
       }
 
+#ifdef _WIN32
+      // FOUNDRY_LOCAL_CUDA_EP_LIBRARY only names the provider DLL; the GenAI runtime DLL is
+      // expected to live alongside it, same as the normal install layout. Preload it explicitly
+      // and fail now rather than deferring to model-load time, where a missing or unloadable
+      // sibling surfaces as an opaque Win32 error 126 deep inside GenAI's own lookup.
+      auto override_genai_dll_path = provider_path.parent_path() / kCudaGenaiDll;
+      if (!std::filesystem::exists(override_genai_dll_path)) {
+        logger.Log(LogLevel::Warning,
+                   fmt::format("CUDA EP: {} set but sibling {} not found ({})",
+                               kCudaProviderOverrideEnv, kCudaGenaiDll, override_genai_dll_path.string()));
+        return false;
+      }
+      if (!PreloadAbsoluteDll(override_genai_dll_path, logger)) {
+        logger.Log(LogLevel::Warning,
+                   fmt::format("CUDA EP: failed to preload {}", override_genai_dll_path.string()));
+        return false;
+      }
+#endif
+
       // Prepend the override directory to PATH so sibling dependency DLLs are discoverable,
       // matching the normal install path. The provider DLL delay-loads CUDA/cuDNN dependencies.
       PrependDirToProcessPath(provider_path.parent_path());
@@ -123,8 +144,8 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
 
     // Check if package already exists and is valid
     if (fl::VerifyEpPackage(ep_dir,
-            {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
-             {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
+            {{kCudaProviderDll, kExpectedBinaries[0].sha256},
+             {kCudaGenaiDll, kExpectedBinaries[1].sha256}},
             "CUDA EP", logger)) {
       logger.Log(LogLevel::Information, "CUDA EP: package already valid, skipping download");
     } else {
@@ -169,8 +190,8 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
 
       // Verify
       if (!fl::VerifyEpPackage(ep_dir,
-               {{kExpectedBinaries[0].filename, kExpectedBinaries[0].sha256},
-                {kExpectedBinaries[1].filename, kExpectedBinaries[1].sha256}},
+               {{kCudaProviderDll, kExpectedBinaries[0].sha256},
+                {kCudaGenaiDll, kExpectedBinaries[1].sha256}},
                "CUDA EP", logger)) {
         logger.Log(LogLevel::Warning, "CUDA EP: verification failed after download");
         return false;
@@ -181,13 +202,26 @@ bool CudaEpBootstrapper::DownloadAndRegister(bool force,
       progress_cb(name_, 90.0f);
     }
 
-    // Register with ORT
 #ifdef _WIN32
-    // Permanently prepend the EP directory to PATH. The zip bundles all
-    // required CUDA/cuDNN DLLs, so no system CUDA install is needed.
-    // PATH must stay modified for the process lifetime because:
+    // Explicitly preload onnxruntime-genai-cuda.dll from its absolute, hash-verified path before
+    // registering the provider. It's loaded later, at model-load time, by GenAI's own
+    // module-name lookup rather than through the ORT registration call below, so "present and
+    // hash-verified" here doesn't guarantee that later lookup succeeds — it can still fail with
+    // Win32 error 126 ("module not found") if the search order used for that specific call
+    // doesn't include this directory. Preloading now with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+    // LOAD_LIBRARY_SEARCH_DEFAULT_DIRS pins the resolved module in the process for good.
+    auto genai_dll_path = ep_dir / kCudaGenaiDll;
+    if (!PreloadAbsoluteDll(genai_dll_path, logger)) {
+      logger.Log(LogLevel::Warning,
+                 fmt::format("CUDA EP: failed to preload {}", genai_dll_path.string()));
+      return false;
+    }
+
+    // Register with ORT.
+    // Permanently prepend the EP directory to PATH. The zip bundles all required CUDA/cuDNN
+    // DLLs, so no system CUDA install is needed. PATH must stay modified for the process
+    // lifetime because:
     //   - onnxruntime_providers_cuda.dll delay-loads some dependencies
-    //   - onnxruntime-genai-cuda.dll is loaded later at model-load time
     //   - ORT creates CUDA sessions after registration
     PrependDirToProcessPath(ep_dir);
 #endif

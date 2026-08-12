@@ -34,4 +34,27 @@ bool VerifyEpPackage(
 /// @param dir Directory to prepend to `PATH`.
 void PrependDirToProcessPath(const std::filesystem::path& dir);
 
+/// Explicitly preload a DLL from an absolute path on Windows via `LoadLibraryExW` with
+/// `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`.
+///
+/// `PrependDirToProcessPath` only changes the *default* DLL search order — it helps callers that
+/// do an unqualified `LoadLibrary("name.dll")` or rely on delay-load imports, but it does not help
+/// every loader. In particular, onnxruntime-genai resolves its native runtime DLL by name at
+/// model-load time (well after EP registration finishes), and that lookup can still fail with
+/// Win32 error 126 ("module not found") even though the file is present on disk and its directory
+/// is on `PATH` — the search order the OS ends up using for that specific call is not guaranteed
+/// to include a `PATH`-prepended directory. Preloading the DLL up front with explicit search flags
+/// sidesteps that ambiguity: once the module is mapped into the process, any later lookup by name
+/// finds the already-loaded module instead of re-resolving it from scratch.
+///
+/// The returned module handle is intentionally leaked (never passed to `FreeLibrary`) — the DLL
+/// must stay mapped for the lifetime of the process, since model loading can happen long after
+/// this call returns.
+///
+/// @param dll_path Absolute path to the DLL to preload.
+/// @param logger   Logger used to report the path and Win32 error code if the load fails.
+/// @return true if the DLL is now loaded (freshly loaded or already resident). Always false on
+///         non-Windows platforms.
+bool PreloadAbsoluteDll(const std::filesystem::path& dll_path, ILogger& logger);
+
 }  // namespace fl

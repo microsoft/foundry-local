@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -57,6 +59,36 @@ void PrependDirToProcessPath([[maybe_unused]] const std::filesystem::path& dir) 
 
   std::wstring new_path = dir.wstring() + L";" + prev_path;
   SetEnvironmentVariableW(L"PATH", new_path.c_str());
+#endif
+}
+
+bool PreloadAbsoluteDll([[maybe_unused]] const std::filesystem::path& dll_path,
+                        [[maybe_unused]] ILogger& logger) {
+#ifdef _WIN32
+  HMODULE module = ::LoadLibraryExW(
+      dll_path.c_str(), nullptr,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+
+  if (!module) {
+    DWORD load_err = ::GetLastError();
+    logger.Log(LogLevel::Warning,
+               fmt::format("PreloadAbsoluteDll: LoadLibraryExW failed for '{}' (GetLastError={})",
+                           dll_path.string(), load_err));
+    return false;
+  }
+
+  // Retain the handle for the lifetime of the process. Callers depend on the module staying
+  // mapped long after this function returns (e.g. GenAI resolves it by name at model-load time),
+  // so we deliberately never call FreeLibrary. Guard the static registry with a mutex since
+  // bootstrappers can run preload calls from multiple threads.
+  static std::mutex preloaded_modules_mutex;
+  static std::vector<HMODULE> preloaded_modules;
+  std::lock_guard<std::mutex> lock(preloaded_modules_mutex);
+  preloaded_modules.push_back(module);
+
+  return true;
+#else
+  return false;
 #endif
 }
 

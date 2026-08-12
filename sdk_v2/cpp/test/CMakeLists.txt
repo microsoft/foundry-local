@@ -23,10 +23,12 @@ add_executable(foundry_local_tests
     internal_api/chat_completions_converter_test.cc
     internal_api/configuration_test.cc
     internal_api/cross_process_file_lock_test.cc
+    internal_api/cuda_ep_bootstrapper_test.cc
     internal_api/download_test.cc
     internal_api/embeddings/contracts_embeddings_test.cc
     internal_api/embeddings/fp16_test.cc
     internal_api/ep_detector_test.cc
+    internal_api/ep_utils_test.cc
     internal_api/exception_test.cc
     internal_api/execution_provider_test.cc
     internal_api/file_lock_test.cc
