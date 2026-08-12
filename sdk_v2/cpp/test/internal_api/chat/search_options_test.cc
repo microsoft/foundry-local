@@ -21,6 +21,15 @@
 
 using namespace fl;
 
+TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
+  for (const char* temperature : {"-1", "2.1", "nan"}) {
+    KeyValuePairs params;
+    params.Add(FOUNDRY_LOCAL_PARAM_TEMPERATURE, temperature);
+
+    EXPECT_THROW(SearchOptions::FromParameters(params), fl::Exception);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test fixture: loads the shared test model once per suite
 // ---------------------------------------------------------------------------
