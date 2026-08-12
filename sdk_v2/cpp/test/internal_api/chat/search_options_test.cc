@@ -117,6 +117,27 @@ TEST_F(SearchOptionsTest, TemperaturePositiveEnablesSampling) {
   EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
 }
 
+TEST_F(SearchOptionsTest, TemperatureOutsideSupportedRangeThrows) {
+  for (float temperature : {-1.0f, 2.1f}) {
+    SearchOptions opts;
+    opts.temperature = temperature;
+    auto params = MakeParams();
+
+    EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault),
+                 fl::Exception);
+  }
+}
+
+TEST_F(SearchOptionsTest, TemperatureRangeBoundariesApplySuccessfully) {
+  for (float temperature : {0.0f, 2.0f}) {
+    SearchOptions opts;
+    opts.temperature = temperature;
+    auto params = MakeParams();
+
+    EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
+  }
+}
+
 TEST_F(SearchOptionsTest, AllOptionsSetSimultaneously) {
   SearchOptions opts;
   opts.temperature = 0.8f;

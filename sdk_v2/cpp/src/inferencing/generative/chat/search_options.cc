@@ -53,7 +53,12 @@ int ApplySearchOptions(const SearchOptions& options,
 
   // Temperature
   if (options.temperature.has_value()) {
-    gen_params.SetSearchOption("temperature", static_cast<double>(*options.temperature));
+    const float temperature = *options.temperature;
+    if (!(temperature >= 0.0f && temperature <= 2.0f)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "temperature must be in the range [0.0, 2.0]");
+    }
+
+    gen_params.SetSearchOption("temperature", static_cast<double>(temperature));
   }
 
   // top_p
