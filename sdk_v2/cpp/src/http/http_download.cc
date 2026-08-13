@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "http/http_download.h"
 
+#include "http/http_client.h"
 #include "logger.h"
 #include "util/string_utils.h"
 
@@ -14,6 +15,8 @@
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 #include <azure/core/http/win_http_transport.hpp>
 #else
+#include "http/curl_transport.h"
+
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
@@ -74,7 +77,10 @@ bool HttpDownloadFile(const std::string& url, const std::filesystem::path& desti
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  CurlTransport transport;
+  // On Android, libcurl has no valid default CA path, so MakeCurlTransportOptions() supplies the CA
+  // bundle via CAInfo; on other curl platforms it returns empty options and libcurl uses the system
+  // default trust store (see http/curl_transport.h).
+  CurlTransport transport(http::MakeCurlTransportOptions());
 #endif
   Request request(HttpMethod::Get, Url(url));
   request.SetHeader("User-Agent", user_agent);

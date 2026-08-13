@@ -185,6 +185,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sdk_integration_tests PRIVATE -Wl,--disable-new-dtags)
 endif()
 
+# On Android the ORT/GenAI prebuilts statically link libc++ but export its symbols WEAK.
+# Without this, the executable's own static libc++ symbols (e.g. std::locale::use_facet) are
+# exported GLOBAL and interpose the prebuilts' weak copies.
+if(ANDROID)
+    target_link_options(sdk_integration_tests PRIVATE -Wl,--exclude-libs,ALL)
+endif()
+
 add_custom_command(TARGET sdk_integration_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/testdata

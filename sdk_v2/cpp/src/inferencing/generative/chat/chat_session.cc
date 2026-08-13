@@ -18,6 +18,7 @@
 #include "model.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <fmt/format.h>
 #include <utility>

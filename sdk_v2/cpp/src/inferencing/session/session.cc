@@ -101,6 +101,28 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     lock.lock();
   }
 
+  {
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    active_requests_.insert(&request);
+
+    // If Cancel() already ran (shutdown began before this request was admitted), stamp it now so the
+    // generation loop exits at its first poll instead of running an uncanceled turn.
+    if (session_canceled_) {
+      request.canceled.store(true, std::memory_order_relaxed);
+    }
+  }
+
+  // RAII: deregister the request even if ProcessRequestImpl throws, so Cancel() never
+  // dereferences a dangling Request after this call unwinds.
+  struct ActiveRequestGuard {
+    Session& session;
+    const Request& request;
+    ~ActiveRequestGuard() {
+      std::lock_guard<std::mutex> active_lock(*session.active_requests_mutex_);
+      session.active_requests_.erase(&request);
+    }
+  } active_guard{*this, request};
+
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
   tracker.SetModelId(CatalogModel().Id());
 
@@ -111,6 +133,16 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   } catch (const std::exception& ex) {
     tracker.RecordException(ex);
     throw;
+  }
+}
+
+void Session::Cancel() {
+  // Only flip cancel flags — never block or join — so this is safe to call while the
+  // SessionManager holds its own lock during shutdown. Generation loops poll the flag.
+  std::lock_guard<std::mutex> lock(*active_requests_mutex_);
+  session_canceled_ = true;
+  for (const Request* r : active_requests_) {
+    r->canceled.store(true, std::memory_order_relaxed);
   }
 }
 

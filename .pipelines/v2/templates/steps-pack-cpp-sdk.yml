@@ -62,8 +62,7 @@ steps:
 
         Copy-Item -Path (Join-Path $includeSrc '*') -Destination $includeDst -Recurse -Force
 
-        # The SDK archive should include the public wrapper headers and their public
-        # ms-gsl dependency. Only pipeline artifact metadata is excluded.
+        # Only pipeline artifact metadata is excluded from the public headers.
         $pathsToPrune = @(
           (Join-Path $includeDst '_manifest')
         )

@@ -18,6 +18,8 @@
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 #include <azure/core/http/win_http_transport.hpp>
 #else
+#include "http/curl_transport.h"
+
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
@@ -25,10 +27,25 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fl {
 namespace http {
+
+const std::string& CABundleFilePath() {
+  static const std::string ca_bundle = [] {
+#if defined(ANDROID)
+    // Gated to Android: it is the only platform where the bundled libcurl has no default CA store
+    // and where we own the process environment (the Android host sets SSL_CERT_FILE itself).
+    auto cert_file = Utils::GetEnv("SSL_CERT_FILE");
+    return (cert_file && !cert_file->empty()) ? std::move(*cert_file) : std::string();
+#else
+    return std::string();
+#endif
+  }();
+  return ca_bundle;
+}
 
 namespace {
 
@@ -48,7 +65,10 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  CurlTransport transport;
+  // On Android, libcurl has no valid default CA path, so MakeCurlTransportOptions() supplies the CA
+  // bundle via CAInfo; on other curl platforms it returns empty options and libcurl uses the system
+  // default trust store (see http/curl_transport.h).
+  CurlTransport transport(MakeCurlTransportOptions());
 #endif
 
   // Build the request. For methods with a body (POST), attach a MemoryBodyStream.

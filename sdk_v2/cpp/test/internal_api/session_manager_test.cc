@@ -15,8 +15,12 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <memory>
 #include <string>
+#include <thread>
 
 using namespace fl;
 
@@ -310,4 +314,127 @@ TEST_F(SessionManagerTest, CheckedOutSessionNotAffectedByCheckIn) {
   // Original session still valid
   EXPECT_NE(checked_out, nullptr);
   EXPECT_EQ(checked_out.get(), raw1);
+}
+
+// ===========================================================================
+// Cancel propagation — model-free (own fixture-less tests so they never invoke
+// SessionManagerTest::SetUpTestSuite, which loads a model).
+// ===========================================================================
+
+namespace {
+
+/// Test-only Session that blocks inside ProcessRequestImpl until its request's cancel flag is
+/// observed. Lets a unit test verify SessionManager::CancelAll() propagates cancellation to every
+/// registered session without loading a model. Polls the atomic exactly like the real generation
+/// loop, with a safety deadline so a broken Cancel() fails the test instead of hanging the suite.
+class BlockingCancelSession : public Session {
+ public:
+  BlockingCancelSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+
+  bool InFlight() const { return in_flight_.load(std::memory_order_acquire); }
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& /*response*/) override {
+    in_flight_.store(true, std::memory_order_release);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!request.canceled.load(std::memory_order_relaxed)) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return;  // safety net: a broken Cancel() must not hang the test suite
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  }
+
+ private:
+  std::atomic<bool> in_flight_{false};
+};
+
+/// Spin until `pred` is true or the timeout elapses. Returns pred's final value.
+template <typename Pred>
+bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!pred()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  return true;
+}
+
+}  // namespace
+
+TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  SessionManager mgr(fl::test::NullLog());
+
+  BlockingCancelSession s1(catalog_model, fl::test::NullLog(), telemetry);
+  BlockingCancelSession s2(catalog_model, fl::test::NullLog(), telemetry);
+  SessionRegistration r1(mgr, s1);
+  SessionRegistration r2(mgr, s2);
+
+  Request req1;
+  Request req2;
+
+  // Drive each session's blocking ProcessRequest on its own worker so both requests are in-flight
+  // (registered in active_requests_) at the same time — exercising "every registered session".
+  auto f1 = std::async(std::launch::async, [&] {
+    Response resp;
+    s1.ProcessRequest(req1, resp);
+  });
+  auto f2 = std::async(std::launch::async, [&] {
+    Response resp;
+    s2.ProcessRequest(req2, resp);
+  });
+
+  ASSERT_TRUE(WaitUntil([&] { return s1.InFlight() && s2.InFlight(); }, std::chrono::seconds(2)))
+      << "worker requests never became in-flight";
+
+  mgr.CancelAll();
+
+  // CancelAll set each request's flag; the blocked workers observe it and return promptly.
+  EXPECT_EQ(f1.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  EXPECT_EQ(f2.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  EXPECT_TRUE(req1.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(req2.canceled.load(std::memory_order_relaxed));
+}
+
+TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
+  // Models the late-admission window: a session is registered (its streaming thread exists) but the
+  // request hasn't reached ProcessRequest when the shutdown sweep runs. Cancel()'s per-request loop
+  // can't see this request yet, so the latch must stamp it on insert — otherwise it would run a full
+  // uncanceled turn and block JoinAll() until the 5s safety deadline.
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  SessionManager mgr(fl::test::NullLog());
+
+  BlockingCancelSession s(catalog_model, fl::test::NullLog(), telemetry);
+  SessionRegistration r(mgr, s);
+
+  // Cancel while no request is in-flight — this only latches session_canceled_; the per-request
+  // cancel loop has nothing to flip.
+  mgr.CancelAll();
+
+  Request req;
+
+  // Now drive the request. It is admitted after Cancel() ran, so ProcessRequest must stamp it on
+  // insert and the blocking loop must observe cancellation at its first poll.
+  auto f = std::async(std::launch::async, [&] {
+    Response resp;
+    s.ProcessRequest(req, resp);
+  });
+
+  EXPECT_EQ(f.wait_for(std::chrono::seconds(2)), std::future_status::ready)
+      << "late-admitted request ran uncanceled — the session_canceled_ latch did not stamp it";
+  EXPECT_TRUE(req.canceled.load(std::memory_order_relaxed));
 }
