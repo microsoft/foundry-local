@@ -352,6 +352,43 @@ TEST_F(ToolCallFixture, RequestToolChoiceOverridesSessionToolChoice) {
   }
 }
 
+TEST_F(ToolCallFixture, SessionToolChoiceIsRestoredAfterRequestOverride) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+  AddMultiplyNumbersTool(session);
+
+  RequestOptions session_opts;
+  session_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  session.SetOptions(session_opts);
+
+  Request first_request{
+      SystemMessage("You are a helpful AI assistant."),
+      UserMessage("Respond with the word ready."),
+  };
+  RequestOptions first_request_opts;
+  first_request_opts.search.temperature = 0.0f;
+  first_request_opts.search.max_output_tokens = 256;
+  first_request_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_NONE;
+  first_request.SetOptions(first_request_opts);
+
+  Response first_response = session.ProcessRequest(first_request);
+
+  ASSERT_NE(first_response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+
+  Request second_request{
+      UserMessage("What is the answer to 7 multiplied by 6?"),
+  };
+  RequestOptions second_request_opts;
+  second_request_opts.search.temperature = 0.0f;
+  second_request_opts.search.max_output_tokens = 256;
+  second_request.SetOptions(second_request_opts);
+
+  Response second_response = session.ProcessRequest(second_request);
+
+  EXPECT_EQ(second_response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+}
+
 TEST_F(ToolCallFixture, ToolCallWithResult) {
   using namespace foundry_local;
 
