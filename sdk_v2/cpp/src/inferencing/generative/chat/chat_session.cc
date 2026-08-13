@@ -49,52 +49,49 @@ void ApplyToolChoiceToContext(std::optional<flToolChoice> tool_choice, ToolCallC
 
 }  // namespace
 
-ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry)
-    : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
-  logger_.Log(LogLevel::Debug, fmt::format("Creating ChatSession for model: {}", model.ModelId()));
-  // Last so a throw above does not leak a refcount; nothing below can throw.
-  model_.AcquireSession();
+ChatRuntime::ChatRuntime(const fl::Model& catalog_model, ModelSessionLease lease, ILogger& logger,
+                         ITelemetry& telemetry)
+    : SessionRuntime(catalog_model, logger, telemetry, std::move(lease)), logger_(logger) {
+  logger_.Log(LogLevel::Debug, fmt::format("Creating ChatSession for model: {}", Model().ModelId()));
 }
 
-ChatSession::~ChatSession() {
-  if (owns_session_) {
-    model_.ReleaseSession();
-  }
+ChatRuntime::~ChatRuntime() noexcept {
+  // Nothing to wait for and nothing to release by hand. Reaching this destructor already means no operation
+  // or callback holds a reference to this runtime, and the model lease on the base is released only after
+  // cached_generator_ and the rest of the derived state below have been destroyed.
 }
 
-ChatSession::ChatSession(ChatSession&& other) noexcept
-    : Session(std::move(other)),
-      logger_(other.logger_),
-      model_(other.model_),
-      owns_session_(other.owns_session_),
-      history_(std::move(other.history_)),
-      turns_(std::move(other.turns_)),
-      session_options_(std::move(other.session_options_)),
-      cached_generator_(std::move(other.cached_generator_)) {
-  other.owns_session_ = false;
-}
-
-SessionType ChatSession::Type() const {
+SessionType ChatRuntime::Type() const {
   return SessionType::kChat;
 }
 
-void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
+void ChatRuntime::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
-void ChatSession::OnRequestFinished(const Request& request) noexcept {
-  if (!request.timed_out.load(std::memory_order_relaxed)) {
+void ChatRuntime::OnRequestFinished(const OperationContext& operation, const Request& /*request*/) noexcept {
+  // Discard the cached generator (and its tool context) whenever this run left it in a state that cannot be
+  // safely continued:
+  //   - a delivered engine cancel (session cancel, operation cancel, timeout, or a streaming callback asking
+  //     to stop) permanently terminates the OGA session, and
+  //   - a fault means ProcessRequestImpl threw *after* mutating the generator (e.g. AppendMessages ran but the
+  //     turn never committed), so its KV cache no longer matches committed history.
+  // Safe here because the watchdog is already joined, so no deadline callback can still hold the generator. A
+  // stop latched after the generator guard ended delivers no engine cancel and does not fault; that generator
+  // stays usable and the seal-failure path rewinds it instead.
+  if (!operation.EngineCancelDelivered() && !operation.IsFaulted()) {
     return;
   }
 
-  // The watchdog cancelled the OGA session to enforce the deadline, which permanently terminates the generator: it can
-  // never be rewound or reused. Dropping it here is safe because Session::ProcessRequest has joined the watchdog, so
-  // its deadline cancellation callback can no longer be holding the generator.
+  ResetGeneratorCache();
+}
+
+void ChatRuntime::ResetGeneratorCache() noexcept {
   cached_generator_.reset();
   cached_tool_ctx_ = {};
 }
 
-void ChatSession::UpdateToolContextForTurn(const Request& request, ToolCallContext& tool_ctx) const {
+void ChatRuntime::UpdateToolContextForTurn(const Request& request, ToolCallContext& tool_ctx) const {
   auto get_param = [&](const char* key) -> std::string {
     auto it = request.options.find(key);
     if (it != request.options.end()) {
@@ -116,7 +113,7 @@ void ChatSession::UpdateToolContextForTurn(const Request& request, ToolCallConte
   tool_ctx.guidance_data = get_param("guidance_data");
 }
 
-ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const {
+ToolCallContext ChatRuntime::BuildToolCallContext(const Request& request) const {
   ToolCallContext tool_ctx;
 
   auto get_param = [&](const char* key) -> std::string {
@@ -131,7 +128,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
   tool_ctx.tool_call_end = get_param(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
 
   // Fall back to model info properties if not specified in the request
-  const auto& info = CatalogModel().Info();
+  const auto& info = CatalogModelInfo();
 
   // Check if the model supports tool calling
   const auto* tool_calling_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
@@ -305,7 +302,7 @@ static std::vector<TextSegment> SplitReasoningContent(const std::string& text,
   return segments;
 }
 
-void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
+void ChatRuntime::ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options, bool canceled,
                                          Response& response, int prompt_tokens, int total_tokens,
                                          std::vector<ParsedToolCall> pre_parsed_calls) {
@@ -389,7 +386,7 @@ void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext
                           total_tokens, prompt_tokens, completion_tokens));
 }
 
-void ChatSession::ProcessRequestImpl(const Request& request, Response& response) {
+void ChatRuntime::ProcessRequestImpl(const OperationContext& operation, const Request& request, Response& response) {
   // OpenAI chat completions JSON pass-through: a TEXT item tagged OPENAI_JSON. Routes to a separate handler that
   // never uses the cached generator or history (the JSON payload is self-contained).
   for (const auto* item : request.items) {
@@ -397,7 +394,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       const auto& text_item = static_cast<const fl::TextItem&>(*item);
 
       if (text_item.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
-        ProcessChatCompletionsJson(text_item.text, request, response);
+        ProcessChatCompletionsJson(operation, text_item.text, request, response);
         return;
       }
     }
@@ -424,6 +421,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (new_messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "At least one MESSAGE item with non-empty content is required in the request");
+  }
+
+  if (operation.ShouldStop()) {
+    return;
   }
 
   // Vision input detection.
@@ -458,7 +459,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   SearchOptions effective_options = SearchOptions::FromParameters(effective_kvp);
 
   int prompt_tokens = 0;
-  int pre_turn_token_count = 0;
+  std::optional<RewindBoundary> rewind_boundary;
 
   if (cached_generator_) {
     // Check if guidance requirements changed since the generator was created. Guidance (LARK grammar) is baked into
@@ -472,12 +473,29 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     if (prev_needs_guidance != curr_needs_guidance) {
       // Guidance requirements changed — invalidate. The branch below will rebuild from full history.
-      cached_generator_.reset();
-      cached_tool_ctx_ = {};
+      ResetGeneratorCache();
     } else {
       // Continuous decoding: append only the new messages to the existing generator.
-      pre_turn_token_count = cached_generator_->TokenCount();
-      prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json);
+      {
+        ActiveGenerator active(operation, *cached_generator_);
+        if (operation.ShouldStop()) {
+          return;
+        }
+
+        const RewindBoundary candidate_boundary{
+            .generator_generation = generator_generation_,
+            .token_count = cached_generator_->TokenCount(),
+        };
+        prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json);
+        rewind_boundary = candidate_boundary;
+      }
+
+      if (operation.ShouldStop()) {
+        // The append registration already delivered (or attempted) cancellation. Do not publish the same
+        // generator a second time for this stopped operation, and never retain an append the turn did not commit.
+        ResetGeneratorCache();
+        return;
+      }
 
       // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
       UpdateToolContextForTurn(request, cached_tool_ctx_);
@@ -494,10 +512,14 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     all_messages.insert(all_messages.end(), history_.begin(), history_.end());
     all_messages.insert(all_messages.end(), new_messages.begin(), new_messages.end());
 
+    if (operation.ShouldStop()) {
+      return;
+    }
+
     std::unique_ptr<OnnxChatGenerator> generator;
     if (vision_turn) {
       // Vision is single-shot: the generator is dropped after the turn (see
-      // CommitTurn cleanup below) because AppendMessages can't extend a
+      // the post-seal cleanup below) because AppendMessages can't extend a
       // sequence whose state includes image-derived tokens. Sizing the KV
       // cache to the model's full context window would needlessly allocate
       // gigabytes (262k tokens × 28 layers × 8 heads × 128 dims for
@@ -508,30 +530,41 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       generator = OnnxChatGenerator::Create(all_messages, effective_options, Model(), tool_ctx,
                                             /*use_full_context*/ true);
     }
+
+    if (operation.ShouldStop()) {
+      return;
+    }
+
     prompt_tokens = generator->PromptTokenCount();
 
     cached_generator_ = std::move(generator);
     cached_tool_ctx_ = std::move(tool_ctx);
+
+    // A brand-new generator is a new generation. Turns produced by it record this value so a later rewind or
+    // undo can tell it apart from any generator built afterwards.
+    ++generator_generation_;
   }
 
   int max_output = effective_options.max_output_tokens.value_or(0);
 
   // Generate token-by-token with optional streaming.
-  // Check request.canceled each iteration — a streaming callback returning
-  // non-zero sets this flag asynchronously via CallbackHandler.
+  // Poll the operation each iteration — a streaming callback returning non-zero stops that exact operation
+  // asynchronously via CallbackHandler.
   std::string text;
-  auto streaming_callback = CreateCallbackHandler(request);
+  auto streaming_callback = CreateCallbackHandler(operation);
   int output_tokens = 0;
 
   // Splitter: only active for reasoning models. For non-reasoning models start_marker is empty and the splitter
   // degrades to a passthrough (every token becomes one DEFAULT segment), so the streaming path stays uniform.
-  ReasoningStreamSplitter splitter(
-      cached_tool_ctx_.supports_reasoning ? (cached_tool_ctx_.reasoning_start.empty() ? std::string("<think>")
-                                                                                      : cached_tool_ctx_.reasoning_start)
-                                          : std::string(),
-      cached_tool_ctx_.supports_reasoning ? (cached_tool_ctx_.reasoning_end.empty() ? std::string("</think>")
-                                                                                    : cached_tool_ctx_.reasoning_end)
-                                          : std::string());
+  const auto reasoning_start =
+      cached_tool_ctx_.supports_reasoning
+          ? (cached_tool_ctx_.reasoning_start.empty() ? std::string("<think>") : cached_tool_ctx_.reasoning_start)
+          : std::string();
+  const auto reasoning_end =
+      cached_tool_ctx_.supports_reasoning
+          ? (cached_tool_ctx_.reasoning_end.empty() ? std::string("</think>") : cached_tool_ctx_.reasoning_end)
+          : std::string();
+  ReasoningStreamSplitter splitter(reasoning_start, reasoning_end);
 
   // Accumulator: separates visible text from tool-call blocks in the DEFAULT-segment stream. For models without
   // tool-call markers configured, both marker strings are empty and the accumulator degrades to passthrough.
@@ -591,10 +624,15 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // it mid-compute, not just between tokens. Scoped to the generation loop: the cached
   // generator may be reset below, and it must not stay published past this point.
   {
-    ActiveGenerator active(*this, *cached_generator_);
+    ActiveGenerator active(operation, *cached_generator_);
 
-    while (!cached_generator_->IsDone() && !request.ShouldStop()) {
+    while (!operation.ShouldStop() && !cached_generator_->IsDone()) {
       cached_generator_->GenerateNextToken();
+
+      if (operation.ShouldStop()) {
+        break;
+      }
+
       std::string token = cached_generator_->Decode();
       ++output_tokens;
 
@@ -616,61 +654,103 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   emit_segments(splitter.Flush());
   flush_accumulator();
 
-  int total_tokens = cached_generator_->TokenCount();
+  // Final engine read *before* the seal: total_tokens is part of what the commit records, so it has to be
+  // taken while the generator is still guaranteed usable.
+  const int total_tokens = cached_generator_->TokenCount();
 
-  if (request.canceled) {
-    // Rewind the generator to undo this turn's input. The generator remains valid
-    // for the next attempt — the caller can re-send the same input.
-    //
-    // A timed-out turn is the exception: its generator is already terminated, so it is neither rewound nor reused.
-    // OnRequestFinished() discards it once the watchdog can no longer race that teardown.
-    if (!request.timed_out.load(std::memory_order_relaxed)) {
-      cached_generator_->RewindTo(pre_turn_token_count);
+  // Build the entire turn candidate off to the side, *before* the seal: the response items, the history
+  // additions and the turn record are all prepared here so that once the seal succeeds the commit is nothing
+  // but noexcept moves. Any throw during this preparation (tool-call parsing, allocation) faults the
+  // operation — Run marks it faulted and OnRequestFinished discards the mutated generator — instead of
+  // tearing a half-committed turn.
+  Response pending_response;
+  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, /*canceled=*/false,
+                         pending_response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+
+  const size_t pending_history_start = history_.size();
+  const size_t pending_input_count = new_messages.size();
+
+  std::vector<MessageItem> pending_history = history_;
+  pending_history.reserve(history_.size() + new_messages.size() + 1);
+  for (auto& msg : new_messages) {
+    pending_history.push_back(std::move(msg));
+  }
+
+  // Assistant reply: the first assistant MESSAGE item the output produced, copied before the seal where a
+  // throw is still recoverable.
+  for (const auto& item : pending_response.items) {
+    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
+      const auto& msg = static_cast<const MessageItem&>(*item);
+      if (msg.role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !msg.content.empty()) {
+        pending_history.push_back(msg);
+        break;
+      }
     }
   }
 
-  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+  std::vector<TurnRecord> pending_turns = turns_;
+  pending_turns.push_back(TurnRecord{
+      .history_start = pending_history_start,
+      .input_count = pending_input_count,
+      .rewind_boundary = rewind_boundary,
+  });
 
-  // Commit input messages + assistant reply to history only on success (not cancelled)
-  if (!request.canceled) {
-    // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
-    // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
-    // return true on the next turn. Invalidate after any grammar-guided generation so the next turn rebuilds.
-    //
-    // Reasoning models (qwen3, etc.) also need invalidation: continuous decoding leaves prior <think> tokens in the KV
-    // cache and the model fails to close subsequent reasoning blocks. The chat template strips prior </think> content
-    // when re-applied to history, so a rebuild restores correct behavior. This matches C#, which always applies the
-    // full template per turn.
-    bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
-    bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
+  // Whether continuous decoding must be abandoned after this turn: LARK grammar (tool-call-only mode) is a
+  // single-shot parse that also signals EOS; reasoning leaves prior <think> tokens in the KV cache that break
+  // the next turn's reasoning; a vision sequence cannot be extended by AppendMessages. Decided before the
+  // seal, applied as a noexcept reset after it. The chat template strips prior reasoning when re-applied to
+  // history, so a rebuild is correct and matches C#, which always re-applies the full template per turn.
+  const bool invalidate_generator = (cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output) ||
+                                    cached_tool_ctx_.supports_reasoning || vision_turn;
 
-    if (grammar_was_active || reasoning_was_active) {
-      cached_generator_.reset();
-      cached_tool_ctx_ = {};
+  // Quiesce (not Drain) the callback: wait until every pushed item has been delivered and no callback
+  // invocation is in flight, so a slow callback's stop decision is visible to the seal below instead of
+  // landing after this turn has already been committed. The handler is still usable afterwards and its
+  // destructor performs the real drain+join.
+  if (streaming_callback) {
+    streaming_callback->Quiesce();
+  }
+
+  // Single commit point for this path. The generator guard has ended, the engine reads are done and every
+  // callback decision has landed, so this is the exact moment the outcome can be closed to cancellation.
+  if (!operation.TrySeal()) {
+    // Only a boundary captured from a successful append to this exact cached generator can be rewound. Even a
+    // failed terminate_session signal may already have poisoned pinned OGA state, so delivery success is not
+    // the reuse criterion: this exact generator must never have been cancellation-attempted. A stop after slot
+    // withdrawal never calls Cancel(), leaves this marker false and remains rewindable.
+    if (cached_generator_ && rewind_boundary.has_value() &&
+        rewind_boundary->generator_generation == generator_generation_ &&
+        !cached_generator_->WasCancellationAttempted()) {
+      cached_generator_->RewindTo(rewind_boundary->token_count);
+    } else {
+      ResetGeneratorCache();
     }
 
-    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
+    // Legacy ProcessRequest preserves generated-so-far output and usage on cancellation. Explicit operations
+    // erase this centrally in Operation::Process.
+    pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+    response.Swap(pending_response);
+    return;
+  }
 
-    // After a vision turn, drop the cached generator so any text follow-up
-    // rebuilds from history. AppendMessages cannot extend a vision-decoded
-    // sequence; trying to do so would silently feed text into a state that
-    // includes image-derived tokens.
-    if (vision_turn) {
-      cached_generator_.reset();
-      cached_tool_ctx_ = {};
-    }
+  // Seal won: publish only through noexcept ownership swaps.
+  response.Swap(pending_response);
+  history_.swap(pending_history);
+  turns_.swap(pending_turns);
+
+  if (invalidate_generator) {
+    ResetGeneratorCache();
   }
 }
 
-void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
-                                             Response& response) {
+void ChatRuntime::ProcessChatCompletionsJson(const OperationContext& operation, const std::string& request_json,
+                                             const Request& original_request, Response& response) {
   // Parse the OpenAI chat completions request
   auto req_json = nlohmann::json::parse(request_json);
   auto req = req_json.get<ChatCompletionRequest>();
 
   // Apply catalog defaults passed via request options
-  chat_completions::ApplyCatalogDefaults(req, CatalogModel().Info().model_settings);
+  chat_completions::ApplyCatalogDefaults(req, CatalogModelInfo().model_settings);
 
   std::string model_name = req.model;
   std::string completion_id = chat_completions::GenerateCompletionId();
@@ -726,10 +806,19 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   }
 
   // Create generator
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   auto generator = OnnxChatGenerator::Create(messages, options, Model(), tool_ctx);
+
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   int prompt_tokens = generator->PromptTokenCount();
 
-  auto streaming_callback = CreateCallbackHandler(original_request);
+  auto streaming_callback = CreateCallbackHandler(operation);
   bool is_streaming = (streaming_callback != nullptr);
 
   // Emit initial streaming chunk
@@ -822,10 +911,15 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   {
     // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
     // an in-flight compute, not just the loop between tokens.
-    ActiveGenerator active(*this, *generator);
+    ActiveGenerator active(operation, *generator);
 
-    while (!generator->IsDone() && !original_request.ShouldStop()) {
+    while (!operation.ShouldStop() && !generator->IsDone()) {
       generator->GenerateNextToken();
+
+      if (operation.ShouldStop()) {
+        break;
+      }
+
       std::string token = generator->Decode();
 
       if (!token.empty()) {
@@ -844,67 +938,87 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     emit_ready_calls(out.ready_calls);
   }
 
-  int total_tokens = generator->TokenCount();
+  // Final engine read before the seal — the response's usage block depends on it.
+  const int total_tokens = generator->TokenCount();
 
-  // Process the generated output into response items (MessageItem, ToolCallItem, etc.)
-  // This also updates finish_reason, and usage on the response. Streamed-parsed tool calls are reused so call_ids
-  // stay stable across stream deltas and the final ChatCompletionResponse.
-  ProcessGeneratedOutput(std::move(text), tool_ctx, options, original_request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+  // Build the candidate entirely off to the side. Nothing reaches the caller-owned response until the
+  // operation seals, but constructing the final streaming envelope before that seal lets its callback's stop
+  // decision participate in the same completion race as every earlier chunk.
+  Response completed_response;
+  ProcessGeneratedOutput(std::move(text), tool_ctx, options, /*canceled=*/false,
+                         completed_response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
 
-  // Emit final streaming chunk with finish_reason
+  completed_response.metadata["completion_id"] = completion_id;
+  completed_response.metadata["created"] = std::to_string(created);
+  completed_response.metadata["model"] = model_name;
+
+  // Build both serialized outcomes before the seal. Mutating only the outer finish reason after serialization
+  // would let a cancelled legacy result carry a natural "stop"/"length" inside its JSON payload.
+  auto completed_chat_response =
+      chat_completions::BuildResponse(completed_response, completion_id, created, model_name);
+
+  const auto completed_finish_reason = completed_response.finish_reason;
+  completed_response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+  auto cancelled_chat_response =
+      chat_completions::BuildResponse(completed_response, completion_id, created, model_name);
+  completed_response.finish_reason = completed_finish_reason;
+
+  Response cancelled_response;
+  cancelled_response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+  cancelled_response.usage = completed_response.usage;
+  cancelled_response.metadata = completed_response.metadata;
+  cancelled_response.items.push_back(std::make_unique<TextItem>(nlohmann::json(cancelled_chat_response).dump(),
+                                                                FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  completed_response.items.clear();
+  completed_response.items.push_back(std::make_unique<TextItem>(nlohmann::json(completed_chat_response).dump(),
+                                                                FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  std::unique_ptr<Item> completed_final_item;
+  std::unique_ptr<Item> cancelled_final_item;
   if (is_streaming) {
-    auto final_json = chat_completions::FormatFinalStreamingChunk(response.finish_reason, completion_id, created,
-                                                                  model_name);
-    streaming_callback->PushItem(std::make_unique<TextItem>(std::move(final_json),
-                                                            FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    auto completed_final_json =
+        chat_completions::FormatFinalStreamingChunk(completed_response.finish_reason, completion_id, created,
+                                                    model_name);
+    completed_final_item = std::make_unique<TextItem>(std::move(completed_final_json),
+                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+
+    auto cancelled_final_json =
+        chat_completions::FormatFinalStreamingChunk(FOUNDRY_LOCAL_FINISH_NONE, completion_id, created, model_name);
+    cancelled_final_item = std::make_unique<TextItem>(std::move(cancelled_final_json),
+                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
+
+    // Every content-bearing callback decision must land before the outcome is sealed. The terminal envelope
+    // carries no new generated content, so its callback runs after the decision and cannot reopen it.
+    streaming_callback->Quiesce();
   }
 
-  // Store completion envelope metadata so callers can access without parsing JSON
-  response.metadata["completion_id"] = completion_id;
-  response.metadata["created"] = std::to_string(created);
-  response.metadata["model"] = model_name;
+  // Single decision point for both the returned JSON and the terminal SSE envelope.
+  const bool sealed = operation.TrySeal();
 
-  // Build the ChatCompletionResponse and replace response items with a single OPENAI_JSON-tagged TextItem.
-  auto chat_response = chat_completions::BuildResponse(response, completion_id, created, model_name);
-  response.items.clear();
-  response.items.push_back(std::make_unique<TextItem>(nlohmann::json(chat_response).dump(),
-                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  if (is_streaming) {
+    auto& final_item = sealed ? completed_final_item : cancelled_final_item;
+    streaming_callback->PushFinalItem(std::move(final_item));
+    streaming_callback->Quiesce();
+  }
+
+  if (!sealed) {
+    response.Swap(cancelled_response);
+    return;
+  }
+
+  response.Swap(completed_response);
 }
 
-const std::vector<MessageItem>& ChatSession::GetHistory() const {
+const std::vector<MessageItem>& ChatRuntime::GetHistory() const {
   return history_;
 }
 
-void ChatSession::CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                             int pre_turn_token_count, int post_turn_token_count) {
-  size_t history_start = history_.size();
-  size_t input_count = new_messages.size();
-
-  // Commit input messages to history
-  for (auto& msg : new_messages) {
-    history_.push_back(std::move(msg));
-  }
-
-  // Commit assistant reply from the response (first MESSAGE item with role=assistant)
-  for (const auto& item : response.items) {
-    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
-      const auto& msg = static_cast<const MessageItem&>(*item);
-      if (msg.role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !msg.content.empty()) {
-        history_.push_back(msg);
-        break;
-      }
-    }
-  }
-
-  turns_.push_back({history_start, input_count, pre_turn_token_count, post_turn_token_count});
-}
-
-size_t ChatSession::TurnCount() const {
+size_t ChatRuntime::TurnCount() const {
   return turns_.size();
 }
 
-void ChatSession::UndoTurns(size_t count) {
+void ChatRuntime::UndoTurns(size_t count) {
   if (count == 0) {
     return;
   }
@@ -915,27 +1029,33 @@ void ChatSession::UndoTurns(size_t count) {
                  std::to_string(turns_.size()) + " turns exist");
   }
 
-  // Find the target turn — the one we're rewinding to the start of
-  auto& target = turns_[turns_.size() - count];
+  // Copy the target before truncation invalidates its record.
+  const TurnRecord target = turns_[turns_.size() - count];
+  const size_t retained_turns = turns_.size() - count;
 
-  // Truncate history back to where the target turn started
-  history_.resize(target.history_start);
+  // A token count is meaningful only as part of an exact boundary from a continuous append on this generator.
+  const bool can_rewind = cached_generator_ && target.rewind_boundary.has_value() &&
+                          target.rewind_boundary->generator_generation == generator_generation_;
 
-  // Rewind the generator
-  if (cached_generator_) {
-    if (count == turns_.size()) {
-      // Undoing all turns — destroy the generator entirely
-      cached_generator_.reset();
-      cached_tool_ctx_ = {};
-    } else {
-      cached_generator_->RewindTo(target.pre_turn_token_count);
+  if (!can_rewind) {
+    ResetGeneratorCache();
+  } else {
+    try {
+      cached_generator_->RewindTo(target.rewind_boundary->token_count);
+    } catch (...) {
+      // Rewind is a cache optimization, not part of the logical undo contract. A faulting cache is discarded;
+      // the history transaction below still completes and the next turn rebuilds from retained history.
+      ResetGeneratorCache();
     }
   }
 
-  turns_.resize(turns_.size() - count);
+  // Every potentially throwing operation is complete. Shrinking these vectors performs no allocation, so the
+  // history and turn metadata commit together and cannot expose a partial logical undo.
+  history_.resize(target.history_start);
+  turns_.resize(retained_turns);
 }
 
-size_t ChatSession::MessageCount() const {
+size_t ChatRuntime::MessageCount() const {
   return history_.size();
 }
 }  // namespace fl

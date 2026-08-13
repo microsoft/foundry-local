@@ -119,48 +119,45 @@ bool IsLanguageToken(const std::string& token) {
   return end >= start && token[start] == '<' && token[end] == '>';
 }
 
+void SealAndPublishAudioResponse(const OperationContext& operation, Response& pending_response,
+                                 Response& response) {
+  if (!operation.TrySeal()) {
+    pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+  }
+
+  response.Swap(pending_response);
+}
+
 }  // namespace
 
 
-AudioSession::AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model,
-                           ILogger& logger, ITelemetry& telemetry)
-    : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
-  logger_.Log(LogLevel::Debug, fmt::format("Creating AudioSession for model: {}", model.ModelId()));
-  // Last so a throw above does not leak a refcount; nothing below can throw.
-  model_.AcquireSession();
+AudioRuntime::AudioRuntime(const fl::Model& catalog_model, ModelSessionLease lease, ILogger& logger,
+                           ITelemetry& telemetry)
+    : SessionRuntime(catalog_model, logger, telemetry, std::move(lease)), logger_(logger) {
+  logger_.Log(LogLevel::Debug, fmt::format("Creating AudioSession for model: {}", Model().ModelId()));
 }
 
-AudioSession::~AudioSession() {
-  if (owns_session_) {
-    model_.ReleaseSession();
-  }
+AudioRuntime::~AudioRuntime() noexcept {
+  // Nothing to wait for and no refcount to hand back: reaching this destructor already means no operation or
+  // callback references this runtime, and the base releases the model lease after every derived member dies.
 }
 
-AudioSession::AudioSession(AudioSession&& other) noexcept
-    : Session(std::move(other)),
-      logger_(other.logger_),
-      model_(other.model_),
-      owns_session_(other.owns_session_),
-      session_options_(std::move(other.session_options_)) {
-  other.owns_session_ = false;
-}
-
-SessionType AudioSession::Type() const {
+SessionType AudioRuntime::Type() const {
   return SessionType::kAudio;
 }
 
-void AudioSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
+void AudioRuntime::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
-void AudioSession::ProcessRequestImpl(const Request& request, Response& response) {
+void AudioRuntime::ProcessRequestImpl(const OperationContext& operation, const Request& request, Response& response) {
   // OpenAI audio transcription JSON pass-through: a TEXT item tagged OPENAI_JSON.
   for (const auto* item : request.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
       const auto& text_item = static_cast<const TextItem&>(*item);
 
       if (text_item.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
-        ProcessAudioTranscriptionJson(text_item.text, request, response);
+        ProcessAudioTranscriptionJson(operation, text_item.text, response);
         return;
       }
     }
@@ -191,7 +188,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
     }
 
     auto& queue = static_cast<ItemQueue&>(*request.items[1]);
-    ProcessStreamingAudio(audio_item, queue, request, response);
+    ProcessStreamingAudio(operation, audio_item, queue, request, response);
     return;
   }
 
@@ -237,25 +234,34 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   // `file:///C:/My%20Audio.wav` work the same as a plain path.
   std::string audio_path = PathFromFileUri(audio_item.uri);
 
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   auto generator = OnnxAudioGenerator::Create(audio_path, temperature, Model(), language);
   int prompt_tokens = generator->PromptTokenCount();
 
   // Token-by-token generation with optional streaming.
-  // Check request.canceled each iteration — a streaming callback returning
-  // non-zero sets this flag asynchronously via CallbackHandler.
+  // Poll the operation each iteration — a streaming callback returning non-zero stops that exact operation
+  // asynchronously via CallbackHandler.
   std::vector<std::string> token_texts;
   token_texts.reserve(kInitialTokenCapacity);
-  auto streaming_callback = CreateCallbackHandler(request);
+  auto streaming_callback = CreateCallbackHandler(operation);
   std::vector<std::unique_ptr<SpeechSegmentItem>> segments;
   segments.reserve(kInitialTokenCapacity);
 
   // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
   // an in-flight compute, not just the loop between tokens.
   {
-    ActiveGenerator active(*this, *generator);
+    ActiveGenerator active(operation, *generator);
 
-    while (!generator->IsDone() && !request.ShouldStop()) {
+    while (!operation.ShouldStop() && !generator->IsDone()) {
       generator->GenerateNextToken();
+
+      if (operation.ShouldStop()) {
+        break;
+      }
+
       std::string token = generator->Decode();
 
       if (!token.empty()) {
@@ -267,43 +273,40 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
 
         token_texts.push_back(std::move(token));
       }
-
-      if (request.canceled) {
-        generator->Cancel();
-      }
     }
   }
 
-  int total_tokens = generator->TokenCount();
-  int completion_tokens = total_tokens - prompt_tokens;
-
+  // Final engine reads before the seal: they are part of what the commit records.
+  const int total_tokens = generator->TokenCount();
+  const int completion_tokens = total_tokens - prompt_tokens;
   std::string text = JoinTokens(token_texts);
 
-  response.items.push_back(BuildSpeechResult(std::move(text), std::move(segments)));
-
-  // Set finish reason
-  if (request.canceled) {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
-  } else {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
-  }
-
-  // Set token usage
-  response.usage.prompt_tokens = prompt_tokens;
-  response.usage.completion_tokens = completion_tokens;
-  response.usage.total_tokens = total_tokens;
+  Response pending_response;
+  pending_response.items.push_back(BuildSpeechResult(std::move(text), std::move(segments)));
+  pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  pending_response.usage.prompt_tokens = prompt_tokens;
+  pending_response.usage.completion_tokens = completion_tokens;
+  pending_response.usage.total_tokens = total_tokens;
 
   logger_.Log(LogLevel::Verbose,
               fmt::format("Completion stats: Total Tokens: {}, Prompt Tokens: {}, Completion Tokens: {}",
                           total_tokens, prompt_tokens, completion_tokens));
+
+  // The generator guard has ended and the accumulators are final; let every already-pushed callback item be
+  // delivered so a callback stop is visible to the seal rather than landing after the commit.
+  if (streaming_callback) {
+    streaming_callback->Quiesce();
+  }
+
+  SealAndPublishAudioResponse(operation, pending_response, response);
 }
 
 // ---------------------------------------------------------------------------
 // Streaming audio path
 // ---------------------------------------------------------------------------
 
-void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue& queue,
-                                         const Request& request, Response& response) {
+void AudioRuntime::ProcessStreamingAudio(const OperationContext& operation, const AudioItem& format_item,
+                                         ItemQueue& queue, const Request& request, Response& response) {
   // 1. Validate format
   if (format_item.format != "pcm") {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
@@ -324,6 +327,10 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
 
   logger_.Log(LogLevel::Debug, "Starting streaming audio transcription");
 
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   // 2. Create ORT GenAI streaming pipeline
   auto& oga_model = Model().GetOgaModel();
   auto processor = OgaStreamingProcessor::Create(oga_model);
@@ -338,15 +345,20 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
     gen_params->SetSearchOption("temperature", *options.temperature);
   }
 
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
   auto tokenizer_stream = OgaTokenizerStream::Create(Model().Tokenizer().Oga());
 
-  // Publish the raw generator so Session::Cancel() and the deadline watchdog can interrupt
-  // an in-flight encoder/decoder pass. Spans steps 3-5 below, which all drive this generator.
+  // Publish the raw generator so a session cancel and the deadline watchdog can interrupt an in-flight
+  // encoder/decoder pass. Spans steps 3-5 below, which all drive this generator, and is released explicitly
+  // before the commit so the seal cannot race a cancellation still being delivered to it.
   OgaGeneratorCancellable cancellable(*generator);
-  ActiveGenerator active(*this, cancellable);
+  auto generator_guard = std::make_unique<ActiveGenerator>(operation, cancellable);
 
-  auto streaming_callback = CreateCallbackHandler(request);
+  auto streaming_callback = CreateCallbackHandler(operation);
   std::vector<std::string> token_texts;
   token_texts.reserve(kInitialTokenCapacity);
   std::vector<std::unique_ptr<SpeechSegmentItem>> segments;
@@ -359,12 +371,12 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   if (format_item.data && format_item.data_size > 0) {
     auto float_samples = ConvertS16LEToFloat(
         static_cast<const uint8_t*>(format_item.data), format_item.data_size);
-    ProcessChunk(*processor, *generator, *tokenizer_stream,
-                 float_samples, token_texts, segments, streaming_callback, request, completion_tokens);
+    ProcessChunk(operation, *processor, *generator, *tokenizer_stream,
+                 float_samples, token_texts, segments, streaming_callback, completion_tokens);
   }
 
   // 4. Read from queue until finished or cancelled
-  while (!request.ShouldStop()) {
+  while (!operation.ShouldStop()) {
     auto item = queue.WaitAndPop(std::chrono::milliseconds(100));
 
     if (!item) {
@@ -384,78 +396,102 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
     auto float_samples = ConvertS16LEToFloat(
         static_cast<const uint8_t*>(bytes.data), bytes.data_size);
 
-    ProcessChunk(*processor, *generator, *tokenizer_stream,
-                 float_samples, token_texts, segments, streaming_callback, request, completion_tokens);
+    ProcessChunk(operation, *processor, *generator, *tokenizer_stream,
+                 float_samples, token_texts, segments, streaming_callback, completion_tokens);
   }
 
   // 5. Flush remaining buffered audio
-  if (!request.canceled) {
+  if (!operation.ShouldStop()) {
     auto flush_tensors = processor->Flush();
 
-    if (flush_tensors) {
-      generator->SetInputs(*flush_tensors);
-      DecodeTokens(*generator, *tokenizer_stream, token_texts, segments, streaming_callback, request,
+    if (flush_tensors && TrySetGeneratorInputs(*generator, *flush_tensors, operation)) {
+      DecodeTokens(operation, *generator, *tokenizer_stream, token_texts, segments, streaming_callback,
                    completion_tokens);
     }
   }
 
-  // 6. Produce response — SpeechResultItem carrying all per-token segments.
+  // 6. Produce response — SpeechResultItem carrying all per-token segments. Built as a local first: the
+  //    response is only touched once the outcome has been sealed.
   std::string full_text = JoinTokens(token_texts);
   const size_t full_text_size = full_text.size();
-  response.items.push_back(BuildSpeechResult(std::move(full_text), std::move(segments)));
 
-  if (request.canceled) {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
-  } else {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  // End the generator publication before committing, so no cancellation can still be in flight against it.
+  generator_guard.reset();
+
+  Response pending_response;
+  pending_response.items.push_back(BuildSpeechResult(std::move(full_text), std::move(segments)));
+  pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  pending_response.usage.prompt_tokens = 0;
+  pending_response.usage.completion_tokens = completion_tokens;
+  pending_response.usage.total_tokens = completion_tokens;
+
+  logger_.Log(LogLevel::Debug,
+              fmt::format("Streaming audio transcription complete, text length: {}", full_text_size));
+
+  if (streaming_callback) {
+    streaming_callback->Quiesce();
   }
 
-  response.usage.prompt_tokens = 0;
-  response.usage.completion_tokens = completion_tokens;
-  response.usage.total_tokens = completion_tokens;
-
-  logger_.Log(LogLevel::Debug, fmt::format("Streaming audio transcription complete, text length: {}",
-                                           response.items.empty() ? 0 : full_text_size));
+  SealAndPublishAudioResponse(operation, pending_response, response);
 }
 
-void AudioSession::ProcessChunk(OgaStreamingProcessor& processor, OgaGenerator& generator,
+void AudioRuntime::ProcessChunk(const OperationContext& operation, OgaStreamingProcessor& processor,
+                                OgaGenerator& generator,
                                 OgaTokenizerStream& tokenizer_stream,
                                 const std::vector<float>& samples,
                                 std::vector<std::string>& token_texts,
                                 std::vector<std::unique_ptr<SpeechSegmentItem>>& segments,
                                 const std::unique_ptr<CallbackHandler>& callback,
-                                const Request& request,
                                 int& completion_tokens) {
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   auto tensors = processor.Process(samples.data(), samples.size());
 
   if (tensors) {
-    generator.SetInputs(*tensors);
-    DecodeTokens(generator, tokenizer_stream, token_texts, segments, callback, request, completion_tokens);
+    if (!TrySetGeneratorInputs(generator, *tensors, operation)) {
+      return;
+    }
+
+    DecodeTokens(operation, generator, tokenizer_stream, token_texts, segments, callback, completion_tokens);
   }
 }
 
-void AudioSession::DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream,
+void AudioRuntime::DecodeTokens(const OperationContext& operation, OgaGenerator& generator,
+                                OgaTokenizerStream& tokenizer_stream,
                                 std::vector<std::string>& token_texts,
                                 std::vector<std::unique_ptr<SpeechSegmentItem>>& segments,
                                 const std::unique_ptr<CallbackHandler>& callback,
-                                const Request& request,
                                 int& completion_tokens) {
-  while (!generator.IsDone() && !generator.IsSessionTerminated() && !request.ShouldStop()) {
-    if (!TryGenerateNextToken(generator, request)) {
+  while (!operation.ShouldStop() && !IsGeneratorDoneCancellationSafe(generator, operation)) {
+    if (!TryGenerateNextToken(generator, operation)) {
       break;
     }
 
-    auto next_tokens = generator.GetNextTokens();
+    const auto next_tokens = TryGetNextTokens(generator, operation);
 
-    if (next_tokens.empty()) {
+    if (!next_tokens) {
+      break;
+    }
+
+    if (next_tokens->empty()) {
       continue;
     }
 
-    int32_t token_id = next_tokens[0];
-    const char* token_text = tokenizer_stream.Decode(token_id);
+    int32_t token_id = (*next_tokens)[0];
+    const auto decoded = TryDecodeToken(tokenizer_stream, token_id, operation);
+    if (!decoded) {
+      break;
+    }
+
+    const char* token_text = *decoded;
 
     if (token_text && token_text[0] != '\0') {
-      ++completion_tokens;
+      if (!TryIncrementTokenCount(completion_tokens, operation)) {
+        break;
+      }
+
       segments.push_back(MakeNoneSegment(token_text));
 
       if (callback) {
@@ -467,8 +503,8 @@ void AudioSession::DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tok
   }
 }
 
-void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json,
-                                                 const Request& original_request,
+void AudioRuntime::ProcessAudioTranscriptionJson(const OperationContext& operation,
+                                                 const std::string& request_json,
                                                  Response& response) {
   // Parse the OpenAI audio transcription request
   auto req_json = nlohmann::json::parse(request_json);
@@ -482,13 +518,14 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   // Validate file exists
   namespace fs = std::filesystem;
   if (!fs::exists(req.filename)) {
-    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, fmt::format("Audio file not found: '{}'", req.filename));
+    FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                     fmt::format("Audio file not found: '{}'", req.filename));
   }
 
   // Nemotron speech models are RNNT-based and do not use the Whisper-oriented OnnxAudioGenerator path below.
   // Route file transcription through StreamingProcessor so nemotron_speech models can decode correctly.
   if (IsNemotronSpeechModel()) {
-    ProcessNemotronFileTranscription(req, original_request, response);
+    ProcessNemotronFileTranscription(operation, req, response);
     return;
   }
 
@@ -508,10 +545,14 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   }
 
   // Create the audio generator
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   auto generator = OnnxAudioGenerator::Create(req.filename, temperature, Model(), language);
   int prompt_tokens = generator->PromptTokenCount();
 
-  auto streaming_callback = CreateCallbackHandler(original_request);
+  auto streaming_callback = CreateCallbackHandler(operation);
   bool is_streaming = (streaming_callback != nullptr);
   std::string response_id = ResponseConverter::GenerateId("audio");
 
@@ -520,10 +561,15 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   {
     // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
     // an in-flight compute, not just the loop between tokens.
-    ActiveGenerator active(*this, *generator);
+    ActiveGenerator active(operation, *generator);
 
-    while (!generator->IsDone() && !original_request.ShouldStop()) {
+    while (!operation.ShouldStop() && !generator->IsDone()) {
       generator->GenerateNextToken();
+
+      if (operation.ShouldStop()) {
+        break;
+      }
+
       std::string token = generator->Decode();
 
       if (!token.empty()) {
@@ -539,46 +585,44 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
         }
       }
 
-      if (original_request.canceled) {
-        generator->Cancel();
-      }
     }
   }
 
-  int total_tokens = generator->TokenCount();
-  int completion_tokens = total_tokens - prompt_tokens;
+  // Final engine reads before the seal.
+  const int total_tokens = generator->TokenCount();
+  const int completion_tokens = total_tokens - prompt_tokens;
 
-  // Set finish reason
-  if (original_request.canceled) {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
-  } else {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
-  }
+  Response pending_response;
+  pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  pending_response.usage.prompt_tokens = prompt_tokens;
+  pending_response.usage.completion_tokens = completion_tokens;
+  pending_response.usage.total_tokens = total_tokens;
 
-  // Set token usage
-  response.usage.prompt_tokens = prompt_tokens;
-  response.usage.completion_tokens = completion_tokens;
-  response.usage.total_tokens = total_tokens;
-
-  // Build AudioTranscriptionResponse and wrap as an OPENAI_JSON-tagged TextItem.
+  // Build AudioTranscriptionResponse and serialize it before the completion outcome is sealed.
   AudioTranscriptionResponse output;
   output.id = response_id;
   output.text = std::move(text);
-  response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
-                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  pending_response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
+                                                             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
 
   logger_.Log(LogLevel::Verbose,
               fmt::format("Audio transcription stats: Total Tokens: {}, Prompt Tokens: {}, Completion Tokens: {}",
                           total_tokens, prompt_tokens, completion_tokens));
+
+  if (is_streaming) {
+    streaming_callback->Quiesce();
+  }
+
+  SealAndPublishAudioResponse(operation, pending_response, response);
 }
 
 
-bool AudioSession::IsNemotronSpeechModel() const {
+bool AudioRuntime::IsNemotronSpeechModel() const {
   const auto& cfg = Model().GetGenAIConfig();
   return cfg.model.has_value() && cfg.model->type == "nemotron_speech";
 }
 
-void AudioSession::TryNemotronLanguageId(OgaGenerator& generator, const std::string& language) const {
+void AudioRuntime::TryNemotronLanguageId(OgaGenerator& generator, const std::string& language) const {
   if (language.empty()) {
     return;
   }
@@ -598,29 +642,41 @@ void AudioSession::TryNemotronLanguageId(OgaGenerator& generator, const std::str
   }
 }
 
-void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStream& tokenizer_stream, std::string& text,
+void AudioRuntime::DecodeNemotronTokens(const OperationContext& operation, OgaGenerator& generator,
+                                        OgaTokenizerStream& tokenizer_stream, std::string& text,
                                         const std::unique_ptr<CallbackHandler>& streaming_callback,
-                                        const std::string& response_id, const Request& original_request,
-                                        int& completion_tokens) const {
+                                        const std::string& response_id, int& completion_tokens) const {
   const bool is_streaming = (streaming_callback != nullptr);
 
-  while (!generator.IsDone() && !generator.IsSessionTerminated() && !original_request.ShouldStop()) {
-    if (!TryGenerateNextToken(generator, original_request)) {
+  while (!operation.ShouldStop() && !IsGeneratorDoneCancellationSafe(generator, operation)) {
+    if (!TryGenerateNextToken(generator, operation)) {
       break;
     }
 
-    auto next_tokens = generator.GetNextTokens();
-    if (next_tokens.empty()) {
+    const auto next_tokens = TryGetNextTokens(generator, operation);
+    if (!next_tokens) {
+      break;
+    }
+
+    if (next_tokens->empty()) {
       continue;
     }
 
-    ++completion_tokens;
-    const char* decoded = tokenizer_stream.Decode(next_tokens[0]);
-    if (!decoded || decoded[0] == '\0') {
+    if (!TryIncrementTokenCount(completion_tokens, operation)) {
+      break;
+    }
+
+    const auto decoded = TryDecodeToken(tokenizer_stream, (*next_tokens)[0], operation);
+    if (!decoded) {
+      break;
+    }
+
+    const char* token_text = *decoded;
+    if (!token_text || token_text[0] == '\0') {
       continue;
     }
 
-    std::string token(decoded);
+    std::string token(token_text);
     if (IsLanguageToken(token)) {
       continue;
     }
@@ -637,25 +693,29 @@ void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStr
   }
 }
 
-void AudioSession::RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensors, OgaGenerator& generator,
+void AudioRuntime::RunNemotronDecodePass(const OperationContext& operation,
+                                         std::unique_ptr<OgaNamedTensors> tensors, OgaGenerator& generator,
                                          OgaTokenizerStream& tokenizer_stream, std::string& text,
                                          const std::unique_ptr<CallbackHandler>& streaming_callback,
-                                         const std::string& response_id, const Request& original_request,
-                                         int& completion_tokens) const {
-  if (!tensors || original_request.ShouldStop()) {
+                                         const std::string& response_id, int& completion_tokens) const {
+  if (!tensors || operation.ShouldStop()) {
     return;
   }
 
-  generator.SetInputs(*tensors);
-  DecodeNemotronTokens(generator, tokenizer_stream, text, streaming_callback, response_id, original_request,
+  if (!TrySetGeneratorInputs(generator, *tensors, operation)) {
+    return;
+  }
+
+  DecodeNemotronTokens(operation, generator, tokenizer_stream, text, streaming_callback, response_id,
                        completion_tokens);
 }
 
-void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req,
-                                                    const Request& original_request,
+void AudioRuntime::ProcessNemotronFileTranscription(const OperationContext& operation,
+                                                    const AudioTranscriptionRequest& req,
                                                     Response& response) {
-  if (original_request.canceled) {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+  if (operation.ShouldStop()) {
+    Response stopped_response;
+    response.Swap(stopped_response);
     return;
   }
 
@@ -680,47 +740,69 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   if (temperature.has_value()) {
     generator_params->SetSearchOption("temperature", *temperature);
   }
+
+  if (operation.ShouldStop()) {
+    return;
+  }
+
   auto generator = OgaGenerator::Create(oga_model, *generator_params);
-  TryNemotronLanguageId(*generator, language);
+  if (!operation.ShouldStop()) {
+    TryNemotronLanguageId(*generator, language);
+  }
 
-  // Publish the raw generator so cancellation/deadline can interrupt an in-flight
-  // encoder or decode pass rather than only stopping between chunks.
-  OgaGeneratorCancellable cancellable(*generator);
-  ActiveGenerator active(*this, cancellable);
-
-  auto streaming_callback = CreateCallbackHandler(original_request);
-  std::string response_id = ResponseConverter::GenerateId("audio");
+  auto streaming_callback = CreateCallbackHandler(operation);
+  const std::string response_id = ResponseConverter::GenerateId("audio");
 
   std::string text;
   text.reserve(512);
   int completion_tokens = 0;
 
-  constexpr size_t kNemotronSamplesPerChunk = 1600;  // 100ms at 16kHz
-  for (size_t offset = 0; offset < samples.size() && !original_request.ShouldStop();
-       offset += kNemotronSamplesPerChunk) {
-    size_t count = std::min(kNemotronSamplesPerChunk, samples.size() - offset);
-    RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *tokenizer_stream, text,
-                          streaming_callback, response_id, original_request, completion_tokens);
-  }
-  if (!original_request.canceled) {
-    RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
-                          original_request, completion_tokens);
+  {
+    // Publish the raw generator so cancellation/deadline can interrupt an in-flight encoder or decode pass
+    // rather than only stopping between chunks. Scoped so the publication has ended before the seal below.
+    OgaGeneratorCancellable cancellable(*generator);
+    ActiveGenerator active(operation, cancellable);
+
+    constexpr size_t kNemotronSamplesPerChunk = 1600;  // 100ms at 16kHz
+    for (size_t offset = 0; offset < samples.size() && !operation.ShouldStop();
+         offset += kNemotronSamplesPerChunk) {
+      const size_t count = std::min(kNemotronSamplesPerChunk, samples.size() - offset);
+      if (operation.ShouldStop()) {
+        break;
+      }
+
+      auto tensors = processor->Process(samples.data() + offset, count);
+      RunNemotronDecodePass(operation, std::move(tensors), *generator, *tokenizer_stream, text,
+                            streaming_callback, response_id, completion_tokens);
+    }
+
+    if (!operation.ShouldStop()) {
+      RunNemotronDecodePass(operation, processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback,
+                            response_id, completion_tokens);
+    }
   }
 
-  response.finish_reason = original_request.canceled ? FOUNDRY_LOCAL_FINISH_NONE : FOUNDRY_LOCAL_FINISH_STOP;
-  // Nemotron file-transcription path feeds audio tensors directly and does not expose prompt token accounting.
-  response.usage.prompt_tokens = 0;
-  response.usage.completion_tokens = completion_tokens;
-  response.usage.total_tokens = completion_tokens;
+  Response pending_response;
+  pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  // Nemotron file transcription feeds audio tensors directly and exposes no prompt-token accounting.
+  pending_response.usage.prompt_tokens = 0;
+  pending_response.usage.completion_tokens = completion_tokens;
+  pending_response.usage.total_tokens = completion_tokens;
 
   AudioTranscriptionResponse output;
   output.id = response_id;
   output.text = std::move(text);
-  response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
-                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  pending_response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
+                                                             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  if (streaming_callback) {
+    streaming_callback->Quiesce();
+  }
+
+  SealAndPublishAudioResponse(operation, pending_response, response);
 }
 
-std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
+std::vector<float> AudioRuntime::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
   std::ifstream in(audio_file_path, std::ios::binary);
   if (!in) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,

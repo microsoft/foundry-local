@@ -9,7 +9,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 #include "inferencing/session/request.h"
@@ -110,4 +113,36 @@ TEST(CallbackHandlerTest, NormalCallbackCancelsViaReturnValue) {
 
   EXPECT_EQ(invocations.load(), 1);
   EXPECT_TRUE(request.canceled.load());
+}
+
+TEST(CallbackHandlerTest, FinalItemIsDeliveredAfterOperationHasStopped) {
+  auto state = std::make_shared<OperationState>(
+      std::weak_ptr<SessionRuntime>{}, std::weak_ptr<RequestControl>{}, std::nullopt,
+      std::chrono::milliseconds(0));
+  OperationContext operation(state);
+  ASSERT_TRUE(state->RequestStop(StopReason::kExternalCancel));
+
+  std::mutex mutex;
+  std::string delivered_text;
+
+  auto callback = [&](flStreamingCallbackData data, void*) -> int {
+    auto* queue = reinterpret_cast<ItemQueue*>(data.item_queue);
+    auto item = queue->TryPop();
+    if (item && item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        delivered_text = static_cast<TextItem&>(*item).text;
+      }
+    }
+
+    return 0;
+  };
+
+  CallbackHandler handler(operation, callback, fl::test::NullLog());
+  handler.PushItem(std::make_unique<TextItem>("dropped"));
+  handler.PushFinalItem(std::make_unique<TextItem>("cancelled-terminal"));
+  handler.Quiesce();
+
+  std::lock_guard<std::mutex> lock(mutex);
+  EXPECT_EQ(delivered_text, "cancelled-terminal");
 }

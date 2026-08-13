@@ -22,25 +22,40 @@
 
 namespace fl {
 
-EmbeddingsSession::EmbeddingsSession(const fl::Model& catalog_model, GenAIModelInstance& model,
-                                     ILogger& logger, ITelemetry& telemetry)
-    : Session(catalog_model, logger, telemetry, /*allow_concurrent_requests=*/true),
-      logger_(logger),
-      model_(model) {
-  logger_.Log(LogLevel::Debug, fmt::format("Creating EmbeddingsSession for model: {}", model.ModelId()));
-  // Last so a throw above does not leak a refcount; nothing below can throw.
-  model_.AcquireSession();
+namespace {
+
+void SealAndPublishEmbeddingsResponse(const OperationContext& operation, Response& pending_response,
+                                      Response& response) {
+  if (!operation.TrySeal()) {
+    Response stopped_response;
+    response.Swap(stopped_response);
+    return;
+  }
+
+  response.Swap(pending_response);
 }
 
-EmbeddingsSession::~EmbeddingsSession() {
-  model_.ReleaseSession();
+}  // namespace
+
+EmbeddingsRuntime::EmbeddingsRuntime(const fl::Model& catalog_model, ModelSessionLease lease, ILogger& logger,
+                                     ITelemetry& telemetry)
+    : SessionRuntime(catalog_model, logger, telemetry, std::move(lease), /*allow_concurrent_requests=*/true),
+      logger_(logger) {
+  logger_.Log(LogLevel::Debug, fmt::format("Creating EmbeddingsSession for model: {}", Model().ModelId()));
 }
 
-SessionType EmbeddingsSession::Type() const {
+EmbeddingsRuntime::~EmbeddingsRuntime() noexcept {
+  // Embeddings run concurrently, so several operations can share this runtime. There is nothing to wait for
+  // here: every one of them holds a strong reference, so this destructor only runs once they are all gone,
+  // and the base releases the model lease afterwards.
+}
+
+SessionType EmbeddingsRuntime::Type() const {
   return SessionType::kEmbeddings;
 }
 
-void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& response) {
+void EmbeddingsRuntime::ProcessRequestImpl(const OperationContext& operation, const Request& request,
+                                          Response& response) {
   // OpenAI embeddings JSON pass-through: a TEXT item tagged OPENAI_JSON. Routes to a
   // separate handler that produces an OPENAI_JSON response, parity with chat and audio.
   for (const auto* item : request.items) {
@@ -48,7 +63,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
       const auto& text_item = static_cast<const TextItem&>(*item);
 
       if (text_item.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
-        ProcessEmbeddingsJson(text_item.text, request, response);
+        ProcessEmbeddingsJson(operation, text_item.text, response);
         return;
       }
     }
@@ -68,22 +83,21 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
     inputs.push_back(static_cast<const TextItem&>(*item).text);
   }
 
+  // A validation-only success still commits an outcome, so it seals like any other path.
   if (inputs.empty()) {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+    Response pending_response;
+    pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+    SealAndPublishEmbeddingsResponse(operation, pending_response, response);
     return;
   }
 
-  // Single batched forward pass for all inputs.
-  auto embeddings = GenerateEmbeddingsBatch(inputs, request);
+  // Single batched forward pass for all inputs. Every ActiveGenerator guard is scoped inside
+  // GenerateSingleEmbedding, so no generator is published by the time this returns.
+  auto embeddings = GenerateEmbeddingsBatch(operation, inputs);
 
-  // A cancelled or timed-out batch is incomplete — emit no partial items and let the
-  // caller see it stopped early, rather than silently returning fewer vectors than inputs.
-  if (request.canceled) {
-    response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
-    return;
-  }
+  Response pending_response;
 
-  // Wrap each embedding as a TensorItem in the response. The vector is heap-allocated
+  // Wrap each embedding as a TensorItem before sealing. The vector is heap-allocated
   // and ownership is transferred to the TensorItem deleter via deleter_user_data_, so
   // the buffer is freed correctly without raw new[]/delete[].
   for (auto& embedding : embeddings) {
@@ -96,14 +110,17 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
     tensor->deleter_ = [](const flTensorData*, void* ud) {
       delete static_cast<std::vector<float>*>(ud);
     };
-    response.items.push_back(std::move(tensor));
+    pending_response.items.push_back(std::move(tensor));
   }
 
-  response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+
+  // A cancelled or timed-out batch is incomplete, so the publisher emits an empty response rather than a
+  // complete-looking short batch.
+  SealAndPublishEmbeddingsResponse(operation, pending_response, response);
 }
 
-void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
-                                              const Request& original_request,
+void EmbeddingsRuntime::ProcessEmbeddingsJson(const OperationContext& operation, const std::string& request_json,
                                               Response& response) {
   // Parse the OpenAI embeddings request. Let nlohmann::json::parse_error propagate —
   // matches AudioSession::ProcessAudioTranscriptionJson behavior.
@@ -125,14 +142,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   // Reuse GenerateEmbeddingsBatch so the typed and JSON paths stay bit-for-bit equal
   // under future refactors (parity test relies on this).
   if (!inputs.empty()) {
-    auto embeddings = GenerateEmbeddingsBatch(inputs, original_request);
-
-    // Cancelled or timed out mid-batch: report the stop instead of returning a
-    // short data array that a client would read as a complete result.
-    if (original_request.canceled) {
-      response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
-      return;
-    }
+    auto embeddings = GenerateEmbeddingsBatch(operation, inputs);
 
     output.data.reserve(embeddings.size());
     for (size_t i = 0; i < embeddings.size(); ++i) {
@@ -151,13 +161,16 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   // encoding_format = "base64" is parsed but intentionally not honored here, matching
   // the existing handler behavior. Follow-up task.
 
-  response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
-                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
-  response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  Response pending_response;
+  pending_response.items.push_back(std::make_unique<TextItem>(nlohmann::json(output).dump(),
+                                                              FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  pending_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+
+  SealAndPublishEmbeddingsResponse(operation, pending_response, response);
 }
 
-std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
-    const std::vector<std::string>& inputs, const Request& request) {
+std::vector<std::vector<float>> EmbeddingsRuntime::GenerateEmbeddingsBatch(
+    const OperationContext& operation, const std::vector<std::string>& inputs) {
   // Process each input independently (batch_size=1 per forward pass).
   //
   // Embedding models like Qwen3-Embedding use bidirectional attention —
@@ -174,11 +187,11 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   for (const auto& input : inputs) {
     // Check between inputs: a large batch is otherwise uninterruptible, which is what
     // lets a runaway embeddings request pin the session refcount through shutdown.
-    if (request.ShouldStop()) {
+    if (operation.ShouldStop()) {
       break;
     }
 
-    results.push_back(GenerateSingleEmbedding(input, request));
+    results.push_back(GenerateSingleEmbedding(operation, input));
   }
 
   logger_.Log(LogLevel::Verbose,
@@ -187,14 +200,23 @@ std::vector<std::vector<float>> EmbeddingsSession::GenerateEmbeddingsBatch(
   return results;
 }
 
-std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string& input, const Request& request) {
-  auto& oga_model = model_.GetOgaModel();
+std::vector<float> EmbeddingsRuntime::GenerateSingleEmbedding(const OperationContext& operation,
+                                                              const std::string& input) {
+  if (operation.ShouldStop()) {
+    return {};
+  }
+
+  auto& oga_model = Model().GetOgaModel();
 
   // 1. Tokenize and append EOS. Encode is serialized on the model's shared tokenizer.
-  const auto& eos_ids = model_.GetEosTokenIds();
-  auto sequences = model_.Tokenizer().Encode(input.c_str());
+  const auto& eos_ids = Model().GetEosTokenIds();
+  auto sequences = Model().Tokenizer().Encode(input.c_str());
   if (!eos_ids.empty()) {
     sequences->Append(eos_ids[0], 0);
+  }
+
+  if (operation.ShouldStop()) {
+    return {};
   }
 
   const size_t token_count = sequences->SequenceCount(0);
@@ -204,22 +226,32 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   gen_params->SetSearchOption("batch_size", 1.0);
   gen_params->SetSearchOption("max_length", static_cast<double>(token_count + 1));
 
-  auto generator = OgaGenerator::Create(oga_model, *gen_params);
-  generator->AppendTokenSequences(*sequences);
-
-  // Publish the generator so cancellation or an expired deadline interrupts this forward
-  // pass. A single long input can exceed the budget without ever reaching the loop check
-  // in GenerateEmbeddingsBatch.
-  OgaGeneratorCancellable cancellable(*generator);
-  ActiveGenerator active(*this, cancellable);
-
-  // 3. Single forward pass.
-  if (!TryGenerateNextToken(*generator, request)) {
+  if (operation.ShouldStop()) {
     return {};
   }
 
+  auto generator = OgaGenerator::Create(oga_model, *gen_params);
+
+  if (operation.ShouldStop()) {
+    return {};
+  }
+
+  generator->AppendTokenSequences(*sequences);
+
+  {
+    // Publish only for the interruptible forward pass. Withdrawing the slot drains any cancel lease, after
+    // which a later stop can still defeat the seal but cannot terminate the generator during output reads.
+    OgaGeneratorCancellable cancellable(*generator);
+    ActiveGenerator active(operation, cancellable);
+
+    // 3. Single forward pass.
+    if (!TryGenerateNextToken(*generator, operation)) {
+      return {};
+    }
+  }
+
   // The pass may have been terminated mid-compute, leaving hidden_states unusable.
-  if (request.ShouldStop()) {
+  if (operation.ShouldStop()) {
     return {};
   }
 
@@ -233,7 +265,7 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   }
 
   // 5. Determine hidden_size.
-  const auto& config = model_.GetGenAIConfig();
+  const auto& config = Model().GetGenAIConfig();
   int hidden_size = config.hidden_size.value_or(0);
   if (hidden_size <= 0) {
     int64_t denom = static_cast<int64_t>(token_count);

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -28,6 +29,17 @@ struct Response {
   // arbitrary response metadata (e.g. completion_id, created, model).
   // internal usage only currently but can be surfaced if needed.
   KeyValuePairs metadata;
+
+  /// Exchange complete response ownership without allocating. Modality code uses this as its only
+  /// post-seal publication step, and Operation uses it to clear stale or faulted output safely.
+  void Swap(Response& other) noexcept {
+    using std::swap;
+
+    items.swap(other.items);
+    swap(finish_reason, other.finish_reason);
+    swap(usage, other.usage);
+    swap(metadata, other.metadata);
+  }
 };
 
 }  // namespace fl

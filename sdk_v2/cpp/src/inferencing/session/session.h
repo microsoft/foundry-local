@@ -1,238 +1,154 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #pragma once
 
-#include <algorithm>
-#include <chrono>
-#include <condition_variable>
-#include <functional>
+#include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
 
-#include "inferencing/session/callback_handler.h"
-#include "inferencing/session/cancellable.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
+#include "inferencing/session/session_runtime.h"
 #include "inferencing/session/types.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
 
-class ILogger;     // forward declaration
-class ITelemetry;  // forward declaration
-class Model;       // forward declaration
+class Model;      // forward declaration
+class Operation;  // forward declaration — per-invocation unit of work created by CreateOperation
 
-/// Base class for model inference sessions.
-/// Manages lifecycle, request dispatch, streaming callbacks, and tool definitions.
-/// Derived classes hold a reference to their specific loaded model type.
+/// Defined in operation.h. Controls whether a stopped run's partially-built response is cleared
+/// (kExplicitAtomic, the deferred Operation API) or preserved (kLegacyPartial, ProcessRequest).
+enum class ResponseVisibility : uint8_t;
+
+/// Handle to a model inference session.
 ///
-/// Derived classes specialize for different inference patterns:
-///   - ChatSession: conversational text generation with message history
-///   - Future: predictive inference, realtime audio, multi-modal
+/// A Session is a **facade**: it owns nothing but a `shared_ptr<SessionRuntime>` and forwards. All
+/// executable state — model lease, modality state, options, tool definitions, callback, terminal flag,
+/// admission gate, live operations — lives in the runtime, which is separately allocated and shared.
+///
+/// What that buys, and why the previous design could not:
+///   - **Moves are trivial and safe.** Moving a Session moves a shared_ptr. There is no half-moved object to
+///     protect, so PrepareMove/FinishMove, the executor gate and the `owns_session_` refcount-ownership
+///     flags are all gone.
+///   - **Destruction never waits.** `~Session` signals CancelAll() and drops its reference. It does not
+///     block on in-flight work, which is what makes it safe to release a Session from inside its own
+///     streaming callback — the previous destructor-owner-lock scheme deadlocked there, and was undefined
+///     behaviour anyway because the wait started after destruction had begun.
+///   - **Execution never dereferences a Session.** An Operation captures the runtime strongly at
+///     CreateOperation, so the runtime (and the model lease inside it) outlives the facade exactly as long
+///     as some operation or callback still needs it, and is destroyed immediately afterwards.
+///
+/// Derived facades (ChatSession, AudioSession, EmbeddingsSession) add construction and typed accessors only;
+/// they hold no state of their own and need no destructor or move-constructor ceremony.
 class Session {
  public:
-  virtual ~Session();
+  using StreamingCallbackFn = SessionRuntime::StreamingCallbackFn;
 
-  Session(Session&&) noexcept;
+  explicit Session(std::shared_ptr<SessionRuntime> runtime) : runtime_(std::move(runtime)) {}
+
+  /// Signal-only: cancels every operation of this session and drops the owner reference. Never waits.
+  virtual ~Session() noexcept;
+
+  Session(Session&&) noexcept = default;
   Session& operator=(Session&&) = delete;
 
   Session(const Session&) = delete;
   Session& operator=(const Session&) = delete;
 
-  /// Factory: creates the correct derived Session for the model's task type.
+  /// Factory: creates the correct derived Session for the model's task type, holding a model lease acquired
+  /// atomically against unload.
   static std::unique_ptr<Session> Create(const Model& model);
 
   /// Returns the concrete session type (no RTTI needed).
-  virtual SessionType Type() const = 0;
+  SessionType Type() const { return CheckedRuntime().Type(); }
 
-  /// Process a request: overlays session parameters, delegates to the derived
-  /// class, then waits for all async streaming callbacks to complete.
-  /// Waiting here keeps the Request reference valid for the lifetime of any
-  /// in-flight callbacks and ensures the Response is fully populated on return.
+  /// Create a single-use operation for `request`, synchronously and before any worker scheduling.
   ///
-  /// Cancellation applies to every path, streaming or not:
-  ///   - `Session::Cancel()` from another thread stops the run promptly.
-  ///   - `Request::SetTimeout()` bounds the run with a wall-clock deadline.
-  /// Both work by flagging the Request and calling Cancel() on the active generator,
-  /// so an in-flight ORT GenAI compute is interrupted rather than waited out.
+  /// Snapshots the request's timeout into an absolute steady-clock deadline immediately (so the budget
+  /// includes any serialized queue wait), claims the Request (rejecting concurrent use of the same Request
+  /// with FOUNDRY_LOCAL_ERROR_INVALID_USAGE), captures an immutable RequestSnapshot of the execution data,
+  /// rejects a terminal or moved-from session with the same error, and registers a strong per-operation
+  /// state with the runtime. A failure anywhere after the claim rolls the claim and the registration back.
+  ///
+  /// @throws fl::Exception (FOUNDRY_LOCAL_ERROR_INVALID_USAGE) if the session is terminal or moved-from, or
+  ///         the Request is already in use by another operation.
+  std::unique_ptr<Operation> CreateOperation(const Request& request);
+
+  /// Convenience create -> process. Overlays session parameters (in the runtime), runs the operation, and
+  /// waits for all async streaming callbacks to complete before returning.
+  ///
+  /// Outcome contract (unchanged legacy behaviour):
+  ///   - Natural stop -> returns normally.
+  ///   - Any cancellation that is not a deadline — an explicit Session/Operation/Request cancel, or a
+  ///     streaming callback asking to stop -> returns normally with
+  ///     response.finish_reason == FOUNDRY_LOCAL_FINISH_NONE.
+  ///   - A deadline expiry -> fl::Exception(FOUNDRY_LOCAL_ERROR_TIMEOUT).
+  ///   - Submitting on an already-terminal session -> fl::Exception(FOUNDRY_LOCAL_ERROR_INVALID_USAGE).
+  ///   - A genuine inference error -> the original exception, unchanged.
+  ///
+  /// Note the deliberate asymmetry with Operation::Process(), which reports kCancelled so the explicit
+  /// operation API can map it to FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED.
   void ProcessRequest(const Request& request, Response& response);
 
-  /// Signal every in-flight request on this session to stop, and cause the next ProcessRequest
-  /// on this session to abort immediately. Safe to call from any thread; idempotent.
-  ///
-  /// This is the teardown hook: it guarantees a runaway non-streaming generation
-  /// releases the session's model refcount instead of pinning the model loaded.
+  /// Terminal, irreversible session cancel. Signals every created/running operation to stop and rejects
+  /// future CreateOperation calls. Safe to call from any thread; idempotent; signal-only.
   void Cancel();
 
   /// Add a tool definition to this session.
   /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
-  void AddToolDefinition(ToolDefinition tool_def);
+  void AddToolDefinition(ToolDefinition tool_def) { CheckedRuntime().AddToolDefinition(std::move(tool_def)); }
 
-  /// Remove a previously-added tool definition by name.
-  /// Returns true if a matching tool was found and removed, false otherwise.
+  /// Remove a previously-added tool definition by name. Returns true if one was found and removed.
   bool RemoveToolDefinition(const std::string& tool_name) {
-    auto it = std::find_if(tool_definitions_.begin(), tool_definitions_.end(),
-                           [&](const ToolDefinition& td) { return td.name == tool_name; });
-    if (it == tool_definitions_.end()) {
-      return false;
-    }
-
-    tool_definitions_.erase(it);
-    return true;
+    return CheckedRuntime().RemoveToolDefinition(tool_name);
   }
 
   /// Get the tool definitions added to this session.
-  const std::vector<ToolDefinition>& ToolDefinitions() const {
-    return tool_definitions_;
-  }
+  const std::vector<ToolDefinition>& ToolDefinitions() const { return CheckedRuntime().ToolDefinitions(); }
 
-  /// Remove all tool definitions from this session. Needed when a session is reused across
-  /// requests (e.g. via Responses API `previous_response_id`) and the new request brings its
-  /// own tools — the request-is-self-contained model means stale tools must not leak across turns.
-  void ClearToolDefinitions() {
-    tool_definitions_.clear();
-  }
+  /// Remove all tool definitions from this session. Needed when a session is reused across requests (e.g.
+  /// via Responses API `previous_response_id`) and the new request brings its own tools — the
+  /// request-is-self-contained model means stale tools must not leak across turns.
+  void ClearToolDefinitions() { CheckedRuntime().ClearToolDefinitions(); }
 
   /// Get the number of completed turns. Only meaningful for chat sessions.
-  virtual size_t TurnCount() const { return 0; }
+  size_t TurnCount() const { return CheckedRuntime().TurnCount(); }
 
   /// Undo the last `count` turns. Only meaningful for chat sessions.
   /// @throws fl::Exception if the session type does not support turn management or count > TurnCount().
-  virtual void UndoTurns(size_t count);
+  void UndoTurns(size_t count) { CheckedRuntime().UndoTurns(count); }
 
   /// Session-level parameters overlaid onto each request.
-  void SetSessionOptions(const KeyValuePairs& options) {
-    session_options_ = options;
-    SetSessionOptionsImpl(session_options_);
+  void SetSessionOptions(const KeyValuePairs& options) { CheckedRuntime().SetSessionOptions(options); }
+
+  void SetStreamingCallback(StreamingCallbackFn callback, void* user_data = nullptr) {
+    CheckedRuntime().SetStreamingCallback(std::move(callback), user_data);
   }
 
-  using StreamingCallbackFn = std::function<int(flStreamingCallbackData, void*)>;
-  void SetStreamingCallback(StreamingCallbackFn callback, void* user_data = nullptr) {
-    callback_fn_ = std::move(callback);
-    callback_user_data_ = user_data;
-  }
+  /// The stable, shared runtime. Exposed for the ABI layer and for SessionManager, which keys registration
+  /// on runtime identity rather than on a facade address that can move. Returned by value so the caller
+  /// immediately owns a lifetime pin; null on a moved-from Session.
+  std::shared_ptr<SessionRuntime> Runtime() const { return runtime_; }
 
  protected:
-  Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
-          bool allow_concurrent_requests = false);
-
-  const fl::Model& CatalogModel() const { return catalog_model_; }
-
-  ILogger& Logger() { return logger_; }
-
-  virtual void SetSessionOptionsImpl(const KeyValuePairs& /*options*/) {}
-
-  /// Merge session-level options with per-request options.
-  /// Returns a copy of session options with request options overlaid (request wins on conflict).
-  /// Derived classes call this when they want a single resolved option set.
-  KeyValuePairs MergedOptions(const KeyValuePairs& request_options) const {
-    if (request_options.empty()) {
-      return session_options_;
-    }
-
-    KeyValuePairs merged = session_options_;
-    for (const auto& [key, value] : request_options) {
-      merged.Add(key, value);
-    }
-
-    return merged;
-  }
-
-  /// Derived classes implement the actual generation logic.
-  /// `on_token` is the resolved streaming callback (may be empty).
-  /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
-  virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
-
-  /// Create a per-request callback handler. Returns nullptr if no callback is set.
-  /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
-  std::unique_ptr<CallbackHandler> CreateCallbackHandler(const Request& request) {
-    if (!callback_fn_) {
-      return nullptr;
-    }
-
-    return std::make_unique<CallbackHandler>(request, callback_fn_, logger_, callback_user_data_);
-  }
-
-  /// Called once the request has finished and its deadline watchdog has joined. Derived classes use it to drop
-  /// state a timeout invalidated after the deadline cancellation callback can no longer reach the generator.
-  virtual void OnRequestFinished(const Request& /*request*/) noexcept {}
-
-  const KeyValuePairs& SessionOptions() const { return session_options_; }
-
-  /// RAII guard publishing the generator currently driving a request so that
-  /// Session::Cancel() and the deadline watchdog can interrupt it mid-compute.
-  ///
-  /// Derived classes create one for the scope in which a generator is live. If
-  /// cancellation was already requested when the guard is constructed, the
-  /// generator is cancelled immediately — this closes the race where Cancel()
-  /// lands between the pre-flight check and the generator becoming visible.
-  ///
-  /// Multiple guards may be live at once: sessions that opt into concurrency
-  /// (embeddings) run several requests in parallel, and a nested scope can publish
-  /// a second generator. All registered generators are cancelled together.
-  class ActiveGenerator {
-   public:
-    ActiveGenerator(Session& session, ICancellable& generator)
-        : session_(session), generator_(generator) {
-      session_.AddActiveGenerator(&generator_);
-    }
-
-    ~ActiveGenerator() { session_.RemoveActiveGenerator(&generator_); }
-
-    ActiveGenerator(const ActiveGenerator&) = delete;
-    ActiveGenerator& operator=(const ActiveGenerator&) = delete;
-
-   private:
-    Session& session_;
-    ICancellable& generator_;
-  };
+  /// The runtime, validated to be non-null. Used by the typed facades for their static_cast.
+  SessionRuntime& RuntimeRef() const { return CheckedRuntime(); }
 
  private:
-  /// Publish a generator driving a request. Cancels it inline if a stop was already
-  /// requested, so a generator created after Cancel() cannot run unbounded.
-  void AddActiveGenerator(ICancellable* generator);
+  /// Shared implementation for the explicit deferred API and the synchronous convenience path.
+  /// Deferred operations reject non-clonable borrowed items; ProcessRequest may retain them because it does
+  /// not return until processing and callback drain have completed.
+  std::unique_ptr<Operation> CreateOperationImpl(const Request& request, bool allow_borrowed_items,
+                                                 ResponseVisibility visibility);
 
-  /// Withdraw a generator once its scope ends.
-  void RemoveActiveGenerator(ICancellable* generator);
+  /// Access the runtime or reject use of a moved-from facade without dereferencing a null shared_ptr.
+  SessionRuntime& CheckedRuntime() const;
 
-  /// Body of the deadline watchdog thread. Sleeps until the request's deadline and
-  /// then interrupts the run, unless woken earlier because the request completed.
-  void WatchDeadline(const Request& request);
-
-  const fl::Model& catalog_model_;
-  ILogger& logger_;
-  ITelemetry& telemetry_;
-  std::vector<ToolDefinition> tool_definitions_;
-  KeyValuePairs session_options_;
-  StreamingCallbackFn callback_fn_;
-  void* callback_user_data_ = nullptr;
-  const bool allow_concurrent_requests_;
-  mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
-
-  /// Guards active_generator_/cancel_requested_ and pairs with the condition variable for
-  /// the watchdog. Held behind a unique_ptr because Session must remain movable (the
-  /// Responses API caches ChatSessions by move) and mutex/condition_variable are not.
-  /// Separate from request_mutex_: Cancel() must be serviceable while a request holds that lock.
-  struct CancelState {
-    std::mutex mutex;
-    std::condition_variable cv;
-    std::vector<ICancellable*> active_generators;
-    /// In-flight requests, so Cancel() can latch the flag that drives finish_reason and
-    /// history rollback. Tracked alongside generators because a request may be cancelled
-    /// before it publishes one (e.g. during prefill).
-    std::vector<const Request*> active_requests_list;
-    bool cancel_requested = false;
-    /// Number of requests currently running, so the watchdog knows when to stop waiting.
-    /// A count rather than a flag because concurrent sessions overlap requests.
-    int active_requests = 0;
-  };
-
-  std::unique_ptr<CancelState> cancel_state_ = std::make_unique<CancelState>();
+  std::shared_ptr<SessionRuntime> runtime_;
 };
 
 }  // namespace fl

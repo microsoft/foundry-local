@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,8 +23,13 @@ namespace fl {
 
 /// A model that has been loaded into the ORT GenAI runtime.
 /// Owns the OgaModel, OgaTokenizer, and optional OgaMultiModalProcessor.
-/// Non-copyable, non-movable. Owned by ModelLoadManager via std::unique_ptr.
-class GenAIModelInstance {
+/// Non-copyable, non-movable. Owned by ModelLoadManager via std::shared_ptr.
+///
+/// The instance doubles as the *shared lease entry*: it carries the live-session count together with the
+/// mutex and condition variable that signal its release. A ModelSessionLease holds a strong shared_ptr to
+/// it, so a lease that outlives the ModelLoadManager still releases correctly against storage it owns a
+/// reference to, with no manager back-pointer involved.
+class GenAIModelInstance : public std::enable_shared_from_this<GenAIModelInstance> {
  public:
   ~GenAIModelInstance();
   GenAIModelInstance(const GenAIModelInstance&) = delete;
@@ -39,7 +45,9 @@ class GenAIModelInstance {
 
   /// Access the underlying OGA objects (for future chat generation work).
   OgaModel& GetOgaModel();
-  OgaTokenizer& GetOgaTokenizerWithSpecial();  // For tool calling, we need a tokenizer that does not skip special tokens.
+
+  /// Tool calling needs a tokenizer that does not skip special tokens.
+  OgaTokenizer& GetOgaTokenizerWithSpecial();
 
   /// The model's tokenizer, shared across all concurrent sessions of this model. Encode operations are
   /// synchronized internally; callers use it without needing to know it is shared. See fl::Tokenizer.
@@ -54,12 +62,40 @@ class GenAIModelInstance {
   /// Get the last-activity timestamp.
   std::chrono::steady_clock::time_point LastActivity() const { return last_activity_; }
 
-  /// Live-session reference counting. Sessions call AcquireSession() on construction and
-  /// ReleaseSession() on destruction; ModelLoadManager::UnloadModel refuses to unload
-  /// while the count is > 0 to prevent use-after-free of the OGA objects.
-  void AcquireSession() { session_ref_count_.fetch_add(1, std::memory_order_acq_rel); }
-  void ReleaseSession() { session_ref_count_.fetch_sub(1, std::memory_order_acq_rel); }
-  int SessionRefCount() const { return session_ref_count_.load(std::memory_order_acquire); }
+  /// Live-session reference counting. Taken and released exclusively through ModelSessionLease;
+  /// ModelLoadManager::UnloadModel refuses to unload while the count is > 0 to prevent use-after-free of the
+  /// OGA objects.
+  ///
+  /// Guarded by this instance's own mutex rather than being a bare atomic, so a release can wake
+  /// WaitForNoSessions() with no lost-wakeup window and the shutdown drain can block on a condition variable
+  /// instead of polling. The mutex and CV live here, on the shared entry, precisely so a lease that outlives
+  /// the ModelLoadManager never has to reach back through a manager pointer.
+  void AcquireSession() {
+    std::lock_guard<std::mutex> lock(session_mu_);
+    ++session_ref_count_;
+  }
+
+  void ReleaseSession() {
+    {
+      std::lock_guard<std::mutex> lock(session_mu_);
+      if (session_ref_count_ > 0) {
+        --session_ref_count_;
+      }
+    }
+
+    session_idle_cv_.notify_all();
+  }
+
+  int SessionRefCount() const {
+    std::lock_guard<std::mutex> lock(session_mu_);
+    return session_ref_count_;
+  }
+
+  /// Block until no lease references this model, or `deadline` passes. Returns true if it drained.
+  bool WaitForNoSessions(std::chrono::steady_clock::time_point deadline) const {
+    std::unique_lock<std::mutex> lock(session_mu_);
+    return session_idle_cv_.wait_until(lock, deadline, [this] { return session_ref_count_ == 0; });
+  }
 
  private:
   friend class ModelLoadManager;
@@ -81,7 +117,9 @@ class GenAIModelInstance {
   std::vector<int32_t> eos_token_ids_;                 // cached; populated on first GetEosTokenIds() call
   std::once_flag eos_token_ids_init_flag_;
   std::chrono::steady_clock::time_point last_activity_;
-  mutable std::atomic<int> session_ref_count_{0};
+  mutable std::mutex session_mu_;
+  mutable std::condition_variable session_idle_cv_;
+  int session_ref_count_ = 0;
 };
 
 }  // namespace fl

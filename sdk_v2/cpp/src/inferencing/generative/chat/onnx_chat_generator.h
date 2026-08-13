@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #pragma once
 
@@ -39,7 +39,14 @@ class OnnxChatGenerator : public ChatGenerator {
   std::string Decode() override;
   int TokenCount() const override;
   int PromptTokenCount() const override;
-  void Cancel() override;
+  bool Cancel() noexcept override;
+
+  /// True once cancellation was attempted against this generator, regardless of whether SetRuntimeOption
+  /// reported successful delivery. A failed signal can still poison a pinned OGA session, so such a generator
+  /// must never be rewound or reused.
+  [[nodiscard]] bool WasCancellationAttempted() const noexcept {
+    return cancelled_.load(std::memory_order_acquire);
+  }
 
   /// Encode new messages and append their tokens to the generator's sequence.
   /// Used for continuous decoding — only the new turn's messages are encoded and appended.
@@ -134,7 +141,16 @@ class OnnxChatGenerator : public ChatGenerator {
   std::unique_ptr<OgaNamedTensors> named_tensors_;
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
+  /// Numeric accounting only; generator publication and operation sealing provide lifecycle synchronization.
+  std::atomic<int> token_count_{0};
+  /// Monotonic cancellation-attempt marker for this generator. It also stops local token/decode work promptly,
+  /// but is not by itself evidence that the OGA session terminated.
   std::atomic<bool> cancelled_{false};
+
+  /// Set only after SetRuntimeOption("terminate_session", ...) actually *succeeds* in Cancel(). Distinct from
+  /// cancelled_: a throwing call may still have terminated the pinned OGA session, while a later unrelated
+  /// runtime_error must not be suppressed without either this bit or IsSessionTerminated().
+  std::atomic<bool> engine_termination_delivered_{false};
 };
 
 }  // namespace fl

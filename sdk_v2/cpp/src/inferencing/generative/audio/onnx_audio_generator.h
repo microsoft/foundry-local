@@ -36,7 +36,7 @@ class OnnxAudioGenerator : public AudioGenerator {
   std::string Decode() override;
   int TokenCount() const override;
   int PromptTokenCount() const override;
-  void Cancel() override;
+  bool Cancel() noexcept override;
 
   /// Factory: create a fully configured generator for audio transcription from a file.
   ///
@@ -66,7 +66,15 @@ class OnnxAudioGenerator : public AudioGenerator {
   std::unique_ptr<OgaGenerator> generator_;
   std::unique_ptr<OgaTokenizerStream> stream_;
   int prompt_token_count_ = 0;
+  /// Numeric accounting only; generator publication and operation sealing provide lifecycle synchronization.
+  std::atomic<int> token_count_{0};
+  /// Local cancellation intent; not by itself evidence that the OGA session terminated.
   std::atomic<bool> cancelled_{false};
+
+  /// Set only after SetRuntimeOption("terminate_session", ...) actually *succeeds* in Cancel(). Distinct from
+  /// cancelled_: a throwing call may still have terminated the pinned OGA session, while a later unrelated
+  /// runtime_error must not be suppressed without either this bit or IsSessionTerminated().
+  std::atomic<bool> engine_termination_delivered_{false};
 };
 
 }  // namespace fl

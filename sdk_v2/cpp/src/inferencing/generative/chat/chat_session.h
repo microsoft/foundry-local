@@ -1,16 +1,21 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #pragma once
 
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "inferencing/model_session_lease.h"
 #include "inferencing/session/session.h"
+#include "inferencing/session/session_runtime.h"
 #include "items/message_item.h"
 #include "logger.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fl {
@@ -18,33 +23,39 @@ namespace fl {
 class GenAIModelInstance;
 class OnnxChatGenerator;
 
-/// A chat session that maintains conversation history across turns.
-/// Designed for multi-turn conversations where message history accumulates
-/// and is sent with each generation request (for use with the OpenAI
-/// Responses API pattern).
+/// Executable body of a chat session: conversation history, cached generator and tool context.
 ///
-/// Generator caching: after the first non-JSON request, the ORT GenAI generator is cached.
-/// Subsequent turns append only new messages to the cached generator, reusing the KV cache.
-/// OpenAI chat completions JSON requests (TextItem with text_type == OPENAI_JSON) always create a fresh
-/// generator and never use the cache.
-class ChatSession : public Session {
+/// Designed for multi-turn conversations where message history accumulates and is sent with each generation
+/// request (for use with the OpenAI Responses API pattern).
+///
+/// Generator caching: after the first non-JSON request, the ORT GenAI generator is cached. Subsequent turns
+/// append only new messages to the cached generator, reusing the KV cache. OpenAI chat completions JSON
+/// requests (TextItem with text_type == OPENAI_JSON) always create a fresh generator and never use the cache.
+///
+/// Commit discipline: history is committed only after OperationContext::TrySeal() succeeds — i.e. after the
+/// generator guard has ended, final engine reads have happened and the streaming callback has quiesced. A
+/// failed seal leaves logical history unchanged but exposes generated-so-far output with FINISH_NONE to the
+/// legacy ProcessRequest path; explicit operations clear that response centrally.
+class ChatRuntime : public SessionRuntime {
  public:
+  /// Exact state before a turn was appended to an already-existing cached generator. Absence means the turn
+  /// started from a fresh generator and therefore has no valid rewind target.
+  struct RewindBoundary {
+    uint64_t generator_generation;
+    int token_count;
+  };
+
   /// Tracks the token-level and history-level boundaries of a single conversation turn.
   /// Used for generator rewind and history rollback on error or undo.
   struct TurnRecord {
-    size_t history_start;       // index in history_ where this turn's input messages begin
-    size_t input_count;         // number of input messages (user + tool results) in this turn
-    int pre_turn_token_count;   // generator sequence length before this turn's input was appended
-    int post_turn_token_count;  // generator sequence length after generation completed
+    size_t history_start;                        // index in history_ where this turn's input messages begin
+    size_t input_count;                          // number of input messages (user + tool results) in this turn
+    std::optional<RewindBoundary> rewind_boundary;
     // The assistant reply is at history_[history_start + input_count]
   };
 
-  ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry);
-  ~ChatSession();
-
-  // Movable: transfers session refcount ownership to the moved-to instance.
-  ChatSession(ChatSession&& other) noexcept;
-  ChatSession& operator=(ChatSession&&) = delete;
+  ChatRuntime(const fl::Model& catalog_model, ModelSessionLease lease, ILogger& logger, ITelemetry& telemetry);
+  ~ChatRuntime() noexcept override;
 
   SessionType Type() const override;
 
@@ -57,14 +68,12 @@ class ChatSession : public Session {
   /// Get the number of completed turns.
   size_t TurnCount() const override;
 
-  /// Undo the last `count` completed turns: rewinds the cached generator and removes
-  /// each turn's input messages and assistant reply from history.
-  /// If all turns are undone, the cached generator is destroyed.
+  /// Undo the last `count` completed turns: rewinds the cached generator and removes each turn's input
+  /// messages and assistant reply from history. If all turns are undone, the cached generator is destroyed.
   ///
-  /// Vision turns: image input is only allowed on the first turn of a
-  /// session. UndoTurns rolls back history but does not undo this
-  /// constraint — once a session has started, no later turn may include
-  /// images. Start a new ChatSession to send images.
+  /// Vision turns: image input is only allowed on the first turn of a session. UndoTurns rolls back history
+  /// but does not undo this constraint — once a session has started, no later turn may include images. Start
+  /// a new chat session to send images.
   ///
   /// @param count  Number of turns to undo. Must be <= TurnCount().
   void UndoTurns(size_t count) override;
@@ -74,11 +83,16 @@ class ChatSession : public Session {
   void SetSessionOptionsImpl(const KeyValuePairs& options) override;
 
   /// Process a request: extracts MESSAGE items and parameters from the generic request,
-  /// generates a response, and on success commits messages to conversation history.
-  void ProcessRequestImpl(const Request& request, Response& response) override;
+  /// generates a response, and on a successful seal commits messages to conversation history.
+  void ProcessRequestImpl(const OperationContext& operation, const Request& request, Response& response) override;
 
-  /// Discard generator state invalidated by a timeout after the watchdog can no longer access it.
-  void OnRequestFinished(const Request& request) noexcept override;
+  /// Discard generator state after an exact engine cancellation delivery or a fault, once the watchdog can no
+  /// longer reach it. A stop after generator withdrawal is handled by the exact rewind-boundary path instead.
+  void OnRequestFinished(const OperationContext& operation, const Request& request) noexcept override;
+
+  /// Drop the generator and the tool state baked into it. Generator destruction and ToolCallContext moves are
+  /// noexcept, so this is safe on both sides of the completion seal.
+  void ResetGeneratorCache() noexcept;
 
   /// Build tool calling context from request parameters and session tool definitions.
   ToolCallContext BuildToolCallContext(const Request& request) const;
@@ -101,21 +115,10 @@ class ChatSession : public Session {
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged
   /// TextItem response with the OpenAI ChatCompletionResponse.
   /// Does not use or update history_ or the cached generator.
-  void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
-                                  Response& response);
-
-  /// Commit input messages and assistant reply to history after a successful turn.
-  void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                  int pre_turn_token_count, int post_turn_token_count);
-
-  GenAIModelInstance& Model() { return model_; }
-  const GenAIModelInstance& Model() const { return model_; }
+  void ProcessChatCompletionsJson(const OperationContext& operation, const std::string& request_json,
+                                  const Request& original_request, Response& response);
 
   ILogger& logger_;
-  GenAIModelInstance& model_;
-  // Tracks who is responsible for calling model_.ReleaseSession(). Set to false on the
-  // moved-from instance so the refcount transfers cleanly across moves.
-  bool owns_session_ = true;
   std::vector<MessageItem> history_;
   std::vector<TurnRecord> turns_;
   SearchOptions session_options_;
@@ -124,9 +127,41 @@ class ChatSession : public Session {
   // Null until first non-JSON ProcessRequestImpl call.
   std::unique_ptr<OnnxChatGenerator> cached_generator_;
 
+  // Monotonic identity for cached_generator_, bumped every time a *new* generator is built. A rewind boundary
+  // stores the generation it belongs to, so rollback can reject a token count from any rebuilt generator.
+  uint64_t generator_generation_ = 0;
+
   // Tool context used when creating the cached generator.
   // Reused for subsequent turns to maintain tool definition consistency.
   ToolCallContext cached_tool_ctx_;
+};
+
+/// A chat session that maintains conversation history across turns.
+///
+/// Stateless facade over a shared ChatRuntime — see Session. Movable (it moves a shared_ptr), destroyed
+/// without waiting, and it owns no model reference of its own: the runtime holds the ModelSessionLease.
+class ChatSession : public Session {
+ public:
+  /// Compatibility construction against an already-pinned model. The caller must exclude a concurrent
+  /// unload until construction returns; production paths should pass a manager-acquired ModelSessionLease.
+  ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry)
+      : ChatSession(catalog_model, ModelSessionLease::Adopt(model), logger, telemetry) {}
+
+  /// Construction from a lease acquired atomically against unload (Session::Create).
+  ChatSession(const fl::Model& catalog_model, ModelSessionLease lease, ILogger& logger, ITelemetry& telemetry)
+      : Session(MakeSessionRuntime<ChatRuntime>(catalog_model, std::move(lease), logger, telemetry)) {}
+
+  ChatSession(ChatSession&&) noexcept = default;
+  ChatSession& operator=(ChatSession&&) = delete;
+
+  /// Get the full conversation history.
+  const std::vector<MessageItem>& GetHistory() const { return Typed().GetHistory(); }
+
+  /// Get the number of messages in the history.
+  size_t MessageCount() const { return Typed().MessageCount(); }
+
+ private:
+  ChatRuntime& Typed() const { return static_cast<ChatRuntime&>(RuntimeRef()); }
 };
 
 }  // namespace fl

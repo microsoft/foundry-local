@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/live_session_registry.h"
 #include "logger.h"
 
 #include <atomic>
@@ -18,6 +19,7 @@ namespace fl {
 
 class ChatSession;
 class Session;
+class SessionRuntime;
 
 /// Interface for session lifecycle tracking.
 /// Session depends on this — not the concrete SessionManager.
@@ -108,9 +110,20 @@ class SessionManager : public ISessionManager {
   ILogger& logger_;
   size_t cache_capacity_;
   std::atomic<bool> shutting_down_{false};
+
+  /// Held from this manager's CancelAll() until this manager is destroyed, so a session created in the
+  /// shutdown race window is rejected. Ownership (rather than a global open/close flag) is what stops one
+  /// manager's teardown from reopening another manager's in-progress shutdown; releasing it on destruction
+  /// is what lets a sequentially recreated Manager admit sessions again.
+  LiveSessionRegistry::AdmissionClosure admission_closure_;
   mutable std::mutex mutex_;
   std::condition_variable drain_cv_;
-  std::unordered_set<Session*> sessions_;
+
+  /// Keyed on the *runtime*, not on the Session facade address. A facade is a movable shared_ptr wrapper, so
+  /// its address is not stable identity; the runtime is allocated once and never moves. Storing raw runtime
+  /// pointers is safe because a registration is strictly bracketed by SessionRegistration, which is itself
+  /// scoped inside the facade's lifetime, and because nothing here ever dereferences the pointer.
+  std::unordered_set<SessionRuntime*> sessions_;
 
   // LRU cache: front of lru_order_ = most recently used
   std::list<std::string> lru_order_;

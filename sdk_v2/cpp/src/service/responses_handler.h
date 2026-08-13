@@ -4,9 +4,11 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "inferencing/model_session_lease.h"
 #include "service/handler_utils.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace fl {
@@ -15,7 +17,6 @@ struct ServiceContext;
 struct Request;
 class ChatSession;
 class Model;
-class GenAIModelInstance;
 
 namespace responses {
 struct ResponseCreateParams;
@@ -40,10 +41,10 @@ class ResponsesHandler : public HttpRequestHandler {
                                                             nlohmann::json& req_json,
                                                             responses::ResponseCreateParams& params);
 
-  /// Look up model in catalog and verify it's loaded. Sets output pointers.
+  /// Look up the catalog model and atomically lease its loaded runtime.
   /// Returns an error response on failure, nullptr on success.
   std::shared_ptr<OutgoingResponse> ResolveModel(const std::string& model_name,
-                                                 Model*& model, GenAIModelInstance*& loaded);
+                                                 Model*& model, std::optional<ModelSessionLease>& lease);
 
   /// Load previous response context when chaining via previous_response_id.
   /// The json storage objects are passed by reference because the output pointers alias into them.

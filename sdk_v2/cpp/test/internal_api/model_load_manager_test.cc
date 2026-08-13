@@ -11,9 +11,15 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <condition_variable>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -41,6 +47,61 @@ class CpuOnlyDetector : public fl::IEpDetector {
   std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
     return {{"CPU", {"CPUExecutionProvider"}}};
   }
+};
+
+class BlockingGpuEpDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      availability_queried_ = true;
+    }
+    cv_.notify_all();
+
+    return {
+        {"CPU", {"CPUExecutionProvider"}},
+        {"GPU", {"CUDAExecutionProvider"}},
+    };
+  }
+
+  bool PrepareForModelLoad(std::string_view /*ep_name*/) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    entered_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [this] { return released_; });
+    return false;
+  }
+
+  bool WaitUntilEntered() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(5), [this] { return entered_; });
+  }
+
+  bool WaitUntilAvailabilityQueried() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(5), [this] { return availability_queried_; });
+  }
+
+  bool PreparationEnteredWithin(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, timeout, [this] { return entered_; });
+  }
+
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+
+    cv_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable cv_;
+  mutable bool availability_queried_ = false;
+  bool entered_ = false;
+  bool released_ = false;
 };
 
 /// Creates a minimal model directory with a dummy genai_config.json.
@@ -178,6 +239,104 @@ TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
 
   EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
+
+TEST(ModelLoadManagerTest, CloseLoadAdmissionReturnsBeforeAdmittedLoadDrains) {
+  BlockingGpuEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager manager(ep, logger);
+  TempModelDir dir("nonblocking-load-closure");
+
+  std::exception_ptr load_error;
+  std::thread loader([&] {
+    try {
+      static_cast<void>(manager.LoadModel(dir.path(), "nonblocking-load-closure",
+                                          fl::ExecutionProvider::kCUDA));
+    } catch (...) {
+      load_error = std::current_exception();
+    }
+  });
+
+  const bool load_entered = ep.WaitUntilEntered();
+  if (!load_entered) {
+    ep.Release();
+    loader.join();
+    FAIL() << "admitted load did not reach EP preparation";
+    return;
+  }
+
+  std::promise<void> close_returned;
+  auto close_future = close_returned.get_future();
+  std::thread closer([&] {
+    manager.CloseLoadAdmission();
+    close_returned.set_value();
+  });
+
+  const bool returned_without_drain =
+      close_future.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+
+  ep.Release();
+  closer.join();
+  loader.join();
+  manager.DrainModelLifecycleWork();
+
+  EXPECT_TRUE(returned_without_drain);
+  EXPECT_TRUE(load_error != nullptr);
+  EXPECT_THROW(
+      static_cast<void>(manager.LoadModel(dir.path(), "rejected-after-closure",
+                                          fl::ExecutionProvider::kCUDA)),
+      fl::Exception);
+}
+
+#ifdef _WIN32
+TEST(ModelLoadManagerTest, EpPreparationAndModelConstructionAreProcessSerializedOnWindows) {
+  BlockingGpuEpDetector first_ep;
+  BlockingGpuEpDetector second_ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager first_manager(first_ep, logger);
+  fl::ModelLoadManager second_manager(second_ep, logger);
+  TempModelDir first_dir("serialized-ep-first");
+  TempModelDir second_dir("serialized-ep-second");
+
+  std::thread first_loader([&] {
+    try {
+      static_cast<void>(first_manager.LoadModel(first_dir.path(), "serialized-ep-first",
+                                                fl::ExecutionProvider::kCUDA));
+    } catch (...) {
+    }
+  });
+
+  const bool first_entered = first_ep.WaitUntilEntered();
+  if (!first_entered) {
+    first_ep.Release();
+    first_loader.join();
+    FAIL() << "first load did not reach EP preparation";
+    return;
+  }
+
+  std::thread second_loader([&] {
+    try {
+      static_cast<void>(second_manager.LoadModel(second_dir.path(), "serialized-ep-second",
+                                                 fl::ExecutionProvider::kCUDA));
+    } catch (...) {
+    }
+  });
+
+  const bool second_reached_preparation_boundary = second_ep.WaitUntilAvailabilityQueried();
+  const bool second_entered_while_first_held_lock =
+      second_ep.PreparationEnteredWithin(std::chrono::milliseconds(250));
+
+  first_ep.Release();
+  first_loader.join();
+
+  const bool second_eventually_entered = second_ep.WaitUntilEntered();
+  second_ep.Release();
+  second_loader.join();
+
+  ASSERT_TRUE(second_reached_preparation_boundary);
+  EXPECT_FALSE(second_entered_while_first_held_lock);
+  EXPECT_TRUE(second_eventually_entered);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Unload-with-live-sessions tests (real model load)

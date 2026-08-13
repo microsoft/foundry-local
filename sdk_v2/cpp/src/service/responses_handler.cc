@@ -79,14 +79,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAnd
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+    const std::string& model_name, Model*& model, std::optional<ModelSessionLease>& lease) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
-  if (!loaded) {
+  lease = ctx_.model_load_manager.AcquireLoadedModel(model->Id());
+  if (!lease.has_value()) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
   }
@@ -155,8 +155,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   // 2. Resolve model
   std::string model_name = params.model;
   Model* model = nullptr;
-  GenAIModelInstance* loaded = nullptr;
-  if (auto err = ResolveModel(model_name, model, loaded)) {
+  std::optional<ModelSessionLease> lease;
+  if (auto err = ResolveModel(model_name, model, lease)) {
     tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
@@ -198,7 +198,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
   try {
     if (!session) {
-      session = std::make_unique<ChatSession>(*model, *loaded, ctx_.logger, ctx_.telemetry);
+      session = std::make_unique<ChatSession>(*model, std::move(*lease), ctx_.logger, ctx_.telemetry);
     }
 
     // Sessions can be reused via previous_response_id; clear any stale tool defs from the prior

@@ -6,6 +6,7 @@
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "inferencing/generative/toolcalling/grammar.h"
+#include "inferencing/session/oga_generator_cancellable.h"
 #include "utils.h"
 
 #include <nlohmann/json.hpp>
@@ -34,55 +35,54 @@ OnnxChatGenerator::OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_par
       stream_with_special_(std::move(stream_with_special)),
       named_tensors_(std::move(named_tensors)),
       model_(model),
-      prompt_token_count_(prompt_token_count) {}
+      prompt_token_count_(prompt_token_count),
+      token_count_(prompt_token_count) {}
 
 // ---------------------------------------------------------------------------
 // ChatGenerator interface
 // ---------------------------------------------------------------------------
 
 bool OnnxChatGenerator::IsDone() const {
-  if (cancelled_) {
+  if (cancelled_.load(std::memory_order_acquire)) {
     return true;
   }
 
   // OgaGenerator::IsDone() is non-const in the ORT GenAI API, so we need const_cast.
   // This is safe because IsDone only reads state.
   auto* gen = const_cast<OgaGenerator*>(generator_.get());
-  return gen->IsDone() || gen->IsSessionTerminated();
+  return IsGeneratorDoneCancellationSafe(*gen, engine_termination_delivered_);
 }
 
 void OnnxChatGenerator::GenerateNextToken() {
-  if (cancelled_) {
+  if (cancelled_.load(std::memory_order_acquire)) {
     return;
   }
 
   try {
-    generator_->GenerateNextToken();
-  } catch (const std::runtime_error& e) {
-    // If cancelled while generating, the OGA engine throws when the session is terminated.
-    // This is expected — not an error.
-    if (cancelled_) {
+    if (!TryGenerateNextToken(*generator_, engine_termination_delivered_)) {
       return;
     }
-
+  } catch (const std::runtime_error& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("token generation failed: ") + e.what());
   }
+
+  token_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::string OnnxChatGenerator::Decode() {
-  if (cancelled_) {
+  if (cancelled_.load(std::memory_order_acquire)) {
     return "";
   }
 
   // Get the most recently generated token ID.
   // GetNextTokens returns the batch of next tokens; we use index 0 (batch size = 1).
-  auto next_tokens = generator_->GetNextTokens();
+  const auto next_tokens = TryGetNextTokens(*generator_, engine_termination_delivered_);
 
-  if (next_tokens.empty()) {
+  if (!next_tokens || next_tokens->empty()) {
     return "";
   }
 
-  int32_t token_id = next_tokens[0];
+  int32_t token_id = (*next_tokens)[0];
 
   // Decode through the normal tokenizer stream
   const char* token_text = stream_->Decode(token_id);
@@ -112,22 +112,27 @@ std::string OnnxChatGenerator::Decode() {
 }
 
 int OnnxChatGenerator::TokenCount() const {
-  return static_cast<int>(generator_->GetSequenceCount(0));
+  return token_count_.load(std::memory_order_relaxed);
 }
 
 int OnnxChatGenerator::PromptTokenCount() const {
   return prompt_token_count_;
 }
 
-void OnnxChatGenerator::Cancel() {
-  cancelled_ = true;
+bool OnnxChatGenerator::Cancel() noexcept {
+  cancelled_.store(true, std::memory_order_release);
 
   // Use the ORT GenAI engine-level termination to interrupt mid-compute
-  // (e.g. during a long prefill), not just between token boundaries.
+  // (e.g. during a long prefill), not just between token boundaries. Record successful delivery only once the
+  // call returns. A throwing call can still leave the pinned OGA session terminated; IsSessionTerminated is
+  // kept as a separate source of exact evidence.
   try {
     generator_->SetRuntimeOption("terminate_session", "1");
+    engine_termination_delivered_.store(true, std::memory_order_release);
+    return true;
   } catch (...) {
     // SetRuntimeOption may not be supported by all ORT GenAI builds
+    return false;
   }
 }
 
@@ -143,7 +148,8 @@ int OnnxChatGenerator::AppendMessages(const std::vector<MessageItem>& new_messag
   }
 
   // Build prompt from only the new messages. ApplyChatTemplate with add_generation_prompt=true
-  // produces the correct continuation tokens (e.g. <|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n)
+  // produces the correct continuation tokens
+  // (e.g. <|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n).
   std::string prompt = BuildChatPrompt(new_messages, model, tools_json);
   auto sequences = EncodePrompt(prompt, model);
   int new_token_count = static_cast<int>(sequences->SequenceCount(0));
@@ -154,6 +160,7 @@ int OnnxChatGenerator::AppendMessages(const std::vector<MessageItem>& new_messag
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to append token sequences: ") + e.what());
   }
 
+  token_count_.fetch_add(new_token_count, std::memory_order_relaxed);
   return new_token_count;
 }
 
@@ -163,6 +170,8 @@ void OnnxChatGenerator::RewindTo(int token_count) {
   } catch (const std::runtime_error& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to rewind generator: ") + e.what());
   }
+
+  token_count_.store(token_count, std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "inferencing/generative/audio/onnx_audio_generator.h"
 #include "exception.h"
+#include "inferencing/session/oga_generator_cancellable.h"
 
 #include <ort_genai.h>
 #include <unordered_set>
@@ -51,75 +52,79 @@ OnnxAudioGenerator::OnnxAudioGenerator(std::unique_ptr<OgaAudios> audios,
       gen_params_(std::move(gen_params)),
       generator_(std::move(generator)),
       stream_(std::move(stream)),
-      prompt_token_count_(prompt_token_count) {}
+      prompt_token_count_(prompt_token_count),
+      token_count_(prompt_token_count) {}
 
 // ---------------------------------------------------------------------------
 // AudioGenerator interface
 // ---------------------------------------------------------------------------
 
 bool OnnxAudioGenerator::IsDone() const {
-  if (cancelled_) {
+  if (cancelled_.load(std::memory_order_acquire)) {
     return true;
   }
 
   // OgaGenerator::IsDone() is non-const in the ORT GenAI API, so we need const_cast.
   // This is safe because IsDone only reads state.
   auto* gen = const_cast<OgaGenerator*>(generator_.get());
-  return gen->IsDone() || gen->IsSessionTerminated();
+  return IsGeneratorDoneCancellationSafe(*gen, engine_termination_delivered_);
 }
 
 void OnnxAudioGenerator::GenerateNextToken() {
-  if (cancelled_) {
+  if (cancelled_.load(std::memory_order_acquire)) {
     return;
   }
 
   try {
-    generator_->GenerateNextToken();
-  } catch (const std::runtime_error& e) {
-    // If cancelled while generating, the OGA engine throws when the session is terminated.
-    // This is expected — not an error.
-    if (cancelled_) {
+    if (!TryGenerateNextToken(*generator_, engine_termination_delivered_)) {
       return;
     }
-
+  } catch (const std::runtime_error& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("audio token generation failed: ") + e.what());
   }
+
+  token_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::string OnnxAudioGenerator::Decode() {
-  if (cancelled_) {
+  if (cancelled_.load(std::memory_order_acquire)) {
     return "";
   }
 
-  auto next_tokens = generator_->GetNextTokens();
+  const auto next_tokens = TryGetNextTokens(*generator_, engine_termination_delivered_);
 
-  if (next_tokens.empty()) {
+  if (!next_tokens || next_tokens->empty()) {
     return "";
   }
 
-  int32_t token_id = next_tokens[0];
+  int32_t token_id = (*next_tokens)[0];
   const char* token_text = stream_->Decode(token_id);
 
   return token_text ? std::string(token_text) : "";
 }
 
 int OnnxAudioGenerator::TokenCount() const {
-  return static_cast<int>(generator_->GetSequenceCount(0));
+  return token_count_.load(std::memory_order_relaxed);
 }
 
 int OnnxAudioGenerator::PromptTokenCount() const {
   return prompt_token_count_;
 }
 
-void OnnxAudioGenerator::Cancel() {
-  cancelled_ = true;
+bool OnnxAudioGenerator::Cancel() noexcept {
+  cancelled_.store(true, std::memory_order_release);
 
   // Use the ORT GenAI engine-level termination to interrupt mid-compute
-  // (e.g. during a long prefill), not just between token boundaries.
+  // (e.g. during a long prefill), not just between token boundaries. Record successful delivery only once the
+  // call returns. A throwing call can still leave the pinned OGA session terminated; IsSessionTerminated is
+  // kept as a separate source of exact evidence.
   try {
     generator_->SetRuntimeOption("terminate_session", "1");
-  } catch (const std::exception&) {
+    engine_termination_delivered_.store(true, std::memory_order_release);
+    return true;
+  } catch (...) {
     // SetRuntimeOption may not be supported by all ORT GenAI builds.
+    return false;
   }
 }
 

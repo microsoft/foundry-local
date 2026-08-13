@@ -519,21 +519,21 @@ void Manager::Shutdown() {
   logger_->Log(LogLevel::Information, "Shutdown requested");
 
   // Order matters:
-  //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
-  //   2. Cancel in-flight generations BEFORE stopping the web service. StopWebService() hard-joins
-  //      streaming threads; a generation grinding in ORT GenAI only stops when request.canceled is
-  //      set, so cancelling first is what lets JoinAll() return promptly instead of deadlocking
-  //      process shutdown.
-  //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.
-  //   4. Unload all models, polling per-model session refcount for direct-API users who haven't
-  //      dropped their flSession* yet. Bounded by timeout so a stuck caller can't block shutdown.
-  model_load_manager_->RejectNewLoads();
+  //   1. Close load admission without waiting, so callers gated on IsShutdownRequested can stop early.
+  //   2. Cancel all live sessions so in-flight generation stops now.
+  //   3. Stop the web service. Stopping joins in-flight streaming responses, so it must follow cancellation:
+  //      stopping first would block for the full remaining duration of a stream nothing has interrupted yet.
+  //   4. Only after cancellation and service join, drain model loads/unloads admitted before closure.
+  //   5. Drain cancelled sessions, then unload models, polling per-model session refcount for direct-API users
+  //      who haven't dropped their flSession* yet. Bounded by timeout so a stuck caller cannot block forever.
+  model_load_manager_->CloseLoadAdmission();
   session_manager_->CancelAll();
 
   if (web_service_running_) {
     StopWebService();
   }
 
+  model_load_manager_->DrainModelLifecycleWork();
   session_manager_->WaitForDrain();
   model_load_manager_->UnloadAll();
 }

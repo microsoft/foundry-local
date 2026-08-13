@@ -216,6 +216,12 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/session/session_manager.cc
     src/inferencing/session/oga_generator_cancellable.cc
     src/inferencing/session/live_session_registry.cc
+    src/inferencing/session/session_runtime.cc
+    src/inferencing/session/operation_state.cc
+    src/inferencing/session/cancel_slot.cc
+    src/inferencing/session/request_control.cc
+    src/inferencing/session/request_snapshot.cc
+    src/inferencing/session/operation.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/configuration.cc

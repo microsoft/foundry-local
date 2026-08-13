@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #pragma once
 
@@ -38,9 +38,10 @@ class ChatGenerator : public ICancellable {
   /// Default implementation loops GenerateNextToken/Decode.
   virtual std::string GenerateAll();
 
-  /// Request cancellation of generation. Thread-safe — can be called from another thread.
+  /// Request cancellation of generation. Thread-safe — can be called from another thread, and noexcept:
+  /// it is invoked from teardown and watchdog paths that cannot handle a failure.
   /// After cancellation, IsDone() should return true on the next check.
-  void Cancel() override = 0;
+  bool Cancel() noexcept override = 0;
 
  protected:
   ChatGenerator() = default;
