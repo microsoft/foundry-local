@@ -424,6 +424,29 @@ const StaticIOCache& ChatCompletionIO() {
   return cache;
 }
 
+const StaticIOCache& VisionLanguageChatIO() {
+  static const StaticIOCache cache = [] {
+    StaticIOCache c;
+    c.input_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_MESSAGE));
+    c.input_items.push_back(std::make_unique<TextItem>("", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    c.input_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_IMAGE));
+    c.output_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_MESSAGE));
+    c.output_items.push_back(std::make_unique<TextItem>("", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+    for (const auto& item : c.input_items) {
+      c.input_ptrs.push_back(item.get());
+    }
+
+    for (const auto& item : c.output_items) {
+      c.output_ptrs.push_back(item.get());
+    }
+
+    return c;
+  }();
+
+  return cache;
+}
+
 const StaticIOCache& AutomaticSpeechRecognitionIO() {
   static const StaticIOCache cache = [] {
     StaticIOCache c;
@@ -462,6 +485,10 @@ Model::IOInfo Model::GetInputOutputInfo() const {
 
   if (task == "chat-completion") {
     return IOInfoFromCache(ChatCompletionIO());
+  }
+
+  if (task == "vision-language-chat") {
+    return IOInfoFromCache(VisionLanguageChatIO());
   }
 
   if (task == "automatic-speech-recognition") {

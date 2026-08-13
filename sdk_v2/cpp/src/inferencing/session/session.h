@@ -144,6 +144,10 @@ class Session {
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
  private:
+  /// Reject items (and message content parts) whose type the model's task does not advertise as an
+  /// input. Currently applies to chat tasks only.
+  void ValidateRequestItems(const Request& request) const;
+
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
