@@ -93,6 +93,9 @@ void ChatSession::UpdateToolContextForTurn(const Request& request, ToolCallConte
   // Re-derive tool_choice → text_output / tool_output for this turn.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
   auto tool_choice = SearchOptions::ParseToolChoice(request.options);
+  if (!tool_choice.has_value()) {
+    tool_choice = session_options_.tool_choice;
+  }
 
   if (tool_ctx.HasTools()) {
     ApplyToolChoiceToContext(tool_choice, tool_ctx);
@@ -201,6 +204,9 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
   auto tool_choice = SearchOptions::ParseToolChoice(request.options);
+  if (!tool_choice.has_value()) {
+    tool_choice = session_options_.tool_choice;
+  }
 
   if (tool_ctx.HasTools()) {
     ApplyToolChoiceToContext(tool_choice, tool_ctx);
