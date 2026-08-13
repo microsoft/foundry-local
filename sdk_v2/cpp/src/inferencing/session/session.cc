@@ -98,6 +98,13 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
 }
 
 void Session::ValidateRequestItems(const Request& request) const {
+  // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
+  // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
+  const auto& task = catalog_model_.Info().task;
+  if (task != "chat-completion" && task != "vision-language-chat") {
+    return;
+  }
+
   // The model's task metadata is the source of truth for which input modalities are accepted.
   const auto io_info = catalog_model_.GetInputOutputInfo();
 
