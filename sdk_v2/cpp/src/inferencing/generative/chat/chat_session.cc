@@ -413,28 +413,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
              "At least one MESSAGE item with non-empty content is required in the request");
   }
 
-  // Use the selected model's IO metadata as the source of truth for supported input modalities.
-  const auto io_info = CatalogModel().GetInputOutputInfo();
-
-  for (const auto& message : new_messages) {
-    for (const auto& part : message.content) {
-      if (!part.view) {
-        continue;
-      }
-
-      // Check whether any advertised model input has the same item type as this message part.
-      const bool supported = std::any_of(io_info.inputs, io_info.inputs + io_info.num_inputs,
-                                         [&part](const Item* input) {
-                                           return input->type == part.view->type;
-                                         });
-      if (!supported) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 fmt::format("{} input is not supported by model task '{}'",
-                             Item::TypeName(part.view->type), CatalogModel().Info().task));
-      }
-    }
-  }
-
   // Vision input detection.
   //
   // Image input is only allowed on the first turn of a session. After that:

@@ -8,14 +8,17 @@
 #include "inferencing/generative/embeddings/embeddings_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
+#include "items/message_item.h"
 #include "manager.h"
 #include "model.h"
 #include "telemetry/telemetry.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "utils.h"
 
+#include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <memory>
 
 namespace fl {
@@ -94,6 +97,47 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
   tool_definitions_.push_back(std::move(tool_def));
 }
 
+void Session::ValidateRequestItems(const Request& request) const {
+  // The model's task metadata is the source of truth for which input modalities are accepted.
+  const auto io_info = catalog_model_.GetInputOutputInfo();
+
+  // An item type is accepted only if it matches one of the advertised inputs.
+  auto check = [&](flItemType type) {
+    const bool supported = std::any_of(io_info.inputs, io_info.inputs + io_info.num_inputs,
+                                       [type](const Item* input) { return input->type == type; });
+    if (!supported) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               fmt::format("{} input is not supported by model task '{}'",
+                           Item::TypeName(type), catalog_model_.Info().task));
+    }
+  };
+
+  // Walk every request item, unwrapping containers so the check always lands on a modality item.
+  for (const auto* item : request.items) {
+    if (!item) {
+      continue;
+    }
+
+    switch (item->type) {
+      case FOUNDRY_LOCAL_ITEM_MESSAGE:
+        // The message wrapper itself is not a modality; validate the parts it carries.
+        for (const auto& part : static_cast<const MessageItem&>(*item).content) {
+          if (part.view) {
+            check(part.view->type);
+          }
+        }
+        break;
+      case FOUNDRY_LOCAL_ITEM_TOOL_CALL:
+      case FOUNDRY_LOCAL_ITEM_TOOL_RESULT:
+        // Tool plumbing, not model input.
+        break;
+      default:
+        check(item->type);
+        break;
+    }
+  }
+}
+
 void Session::ProcessRequest(const Request& request, Response& response) {
   // Serialize requests unless the derived class opted into concurrency.
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
@@ -105,6 +149,8 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   tracker.SetModelId(CatalogModel().Id());
 
   try {
+    ValidateRequestItems(request);
+
     ProcessRequestImpl(request, response);
 
     tracker.SetStatus(ActionStatus::kSuccess);
