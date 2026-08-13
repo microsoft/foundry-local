@@ -77,6 +77,9 @@ class ChatSession : public Session {
   /// generates a response, and on success commits messages to conversation history.
   void ProcessRequestImpl(const Request& request, Response& response) override;
 
+  /// Discard generator state invalidated by a timeout after the watchdog can no longer access it.
+  void OnRequestFinished(const Request& request) noexcept override;
+
   /// Build tool calling context from request parameters and session tool definitions.
   ToolCallContext BuildToolCallContext(const Request& request) const;
 

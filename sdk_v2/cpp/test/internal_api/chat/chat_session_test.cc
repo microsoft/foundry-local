@@ -418,6 +418,34 @@ TEST_F(ChatSessionTest, TimeoutIsRearmedPerRequest) {
   EXPECT_FALSE(request2.timed_out.load());
 }
 
+TEST_F(ChatSessionTest, RequestAfterTimeoutRebuildsGeneratorAndReturnsValidContent) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request timed_request;
+  timed_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
+  timed_request.options.Add("max_output_tokens", "4096");
+  timed_request.SetTimeout(std::chrono::milliseconds(500));
+
+  Response timed_response;
+  EXPECT_THROW(session.ProcessRequest(timed_request, timed_response), fl::Exception);
+  ASSERT_TRUE(timed_request.timed_out.load());
+
+  Request next_request;
+  next_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What is 2+2? Answer with just the number."));
+  next_request.options.Add("max_output_tokens", "128");
+  next_request.options.Add("temperature", "0");
+
+  Response next_response;
+  EXPECT_NO_THROW(session.ProcessRequest(next_request, next_response));
+
+  const auto text = GetAssistantText(next_response);
+  EXPECT_NE(text.find("4"), std::string::npos) << "Expected '4' in response. Got: " << text;
+  EXPECT_FALSE(next_request.timed_out.load());
+  EXPECT_EQ(next_response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(session.MessageCount(), 2u);
+  EXPECT_EQ(session.TurnCount(), 1u);
+}
+
 TEST_F(ChatSessionTest, CancelStopsInFlightNonStreamingRequest) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
 

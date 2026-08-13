@@ -257,6 +257,9 @@ void Session::ProcessRequest(const Request& request, Response& response) {
         watchdog.join();
       }
 
+      // The watchdog can no longer access this request's generator. Serialized sessions still hold request_mutex_
+      // because its lock outlives this scope; concurrent sessions must provide their own exclusion in this hook.
+      session.OnRequestFinished(request);
       request.DisarmDeadline();
     }
   } run_scope{*this, request, watchdog};

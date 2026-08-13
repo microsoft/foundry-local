@@ -158,6 +158,10 @@ class Session {
     return std::make_unique<CallbackHandler>(request, callback_fn_, logger_, callback_user_data_);
   }
 
+  /// Called once the request has finished and its deadline watchdog has joined. Derived classes use it to drop
+  /// state a timeout invalidated after the deadline cancellation callback can no longer reach the generator.
+  virtual void OnRequestFinished(const Request& /*request*/) noexcept {}
+
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
   /// RAII guard publishing the generator currently driving a request so that

@@ -43,6 +43,7 @@ add_executable(foundry_local_tests
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
+    internal_api/oga_generator_cancellable_test.cc
     internal_api/platform_path_test.cc
     internal_api/response_converter_test.cc
     internal_api/response_store_test.cc

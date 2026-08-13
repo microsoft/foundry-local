@@ -191,6 +191,37 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
+    "clears the native callback after a timed-out stream before reusing the session",
+    async () => {
+      if (session === undefined) {
+        throw new Error("fixture missing");
+      }
+
+      const timedOutRequest = new Request()
+        .addItem(Item.userMessage("Write a 1000-word essay about the history of bread."))
+        .setOptions({ search: { maxOutputTokens: 4096, temperature: 0 } })
+        .setTimeout(50);
+
+      const timedOutStream = session.processStreamingRequest(timedOutRequest);
+      await expect(timedOutStream.response).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.Timeout,
+      });
+
+      // A non-streaming follow-up does not replace the stale callback; before the fix it could call a finalized TSFN.
+      const response = await session.processRequest(
+        new Request()
+          .addItem(Item.userMessage("Reply with the single word 'ok'."))
+          .setOptions({ search: { maxOutputTokens: 4, temperature: 0 } }),
+      );
+      expect(response.finishReason).toBe("stop");
+      expect(response.usage.completionTokens).toBeGreaterThan(0);
+      expect(response.output.map(extractText).join("").toLowerCase()).toContain("ok");
+    },
+    3 * 60_000,
+  );
+
+  it(
     "a second stream on the same session works after the first completes",
     async () => {
       if (session === undefined) throw new Error("fixture missing");

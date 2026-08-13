@@ -82,6 +82,18 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
+void ChatSession::OnRequestFinished(const Request& request) noexcept {
+  if (!request.timed_out.load(std::memory_order_relaxed)) {
+    return;
+  }
+
+  // The watchdog cancelled the OGA session to enforce the deadline, which permanently terminates the generator: it can
+  // never be rewound or reused. Dropping it here is safe because Session::ProcessRequest has joined the watchdog, so
+  // its deadline cancellation callback can no longer be holding the generator.
+  cached_generator_.reset();
+  cached_tool_ctx_ = {};
+}
+
 void ChatSession::UpdateToolContextForTurn(const Request& request, ToolCallContext& tool_ctx) const {
   auto get_param = [&](const char* key) -> std::string {
     auto it = request.options.find(key);
@@ -609,7 +621,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (request.canceled) {
     // Rewind the generator to undo this turn's input. The generator remains valid
     // for the next attempt — the caller can re-send the same input.
-    cached_generator_->RewindTo(pre_turn_token_count);
+    //
+    // A timed-out turn is the exception: its generator is already terminated, so it is neither rewound nor reused.
+    // OnRequestFinished() discards it once the watchdog can no longer race that teardown.
+    if (!request.timed_out.load(std::memory_order_relaxed)) {
+      cached_generator_->RewindTo(pre_turn_token_count);
+    }
   }
 
   ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,

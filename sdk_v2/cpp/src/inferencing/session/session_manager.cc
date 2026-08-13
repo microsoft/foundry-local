@@ -135,6 +135,13 @@ void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession
   {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // A response handler may finish while shutdown is cancelling live work. Do not let it repopulate the cache after
+    // CancelAll() has cleared it; cached sessions are deregistered and therefore invisible to WaitForDrain().
+    if (shutting_down_.load()) {
+      logger_.Log(LogLevel::Debug, "SessionManager: discarding session checked in during shutdown");
+      return;
+    }
+
     // Replace existing entry for this key (if any)
     auto existing = cache_.find(key);
     if (existing != cache_.end()) {

@@ -13,6 +13,7 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <exception>
 #include <memory>
 #include <string>
 #include <utility>
@@ -177,6 +178,28 @@ void FinalizeStream(Napi::Env env, void* /*data*/, StreamCtx* ctx) {
   delete ctx;
 }
 
+// A ThreadSafeFunction copy does not acquire a thread reference. Clear the session-scoped callback on every exit before
+// OnOK/OnError releases the worker's reference; report cleanup failure only when there is no primary request failure.
+class ClearStreamingCallbackOnExit {
+ public:
+  ClearStreamingCallbackOnExit(foundry_local::Session& session, std::exception_ptr& cleanup_error)
+      : session_(session), cleanup_error_(cleanup_error) {}
+  ClearStreamingCallbackOnExit(const ClearStreamingCallbackOnExit&) = delete;
+  ClearStreamingCallbackOnExit& operator=(const ClearStreamingCallbackOnExit&) = delete;
+
+  ~ClearStreamingCallbackOnExit() noexcept {
+    try {
+      session_.SetStreamingCallback(nullptr);
+    } catch (...) {
+      cleanup_error_ = std::current_exception();
+    }
+  }
+
+ private:
+  foundry_local::Session& session_;
+  std::exception_ptr& cleanup_error_;
+};
+
 template <typename SessT>
 class StreamWorker : public Napi::AsyncWorker {
  public:
@@ -190,34 +213,45 @@ class StreamWorker : public Napi::AsyncWorker {
 
   void Execute() override {
     try {
-      auto tsfn = tsfn_;
-      auto* ctx = ctx_;
-      sess_->SetStreamingCallback([tsfn, ctx](flStreamingCallbackData data) -> int {
-        (void)ctx;
-        if (data.item_queue == nullptr) return 0;
-        flItem* raw = nullptr;
-        while (foundry_local::detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw)) {
-          if (raw == nullptr) break;
-          auto* item = new foundry_local::Item(*raw);
-          napi_status status = tsfn.BlockingCall(
-              item, [](Napi::Env env, Napi::Function jsCb, foundry_local::Item* it) {
-                Napi::HandleScope scope(env);
-                Napi::Value js_item = ItemToJs(env, *it);
-                delete it;
-                jsCb.Call({js_item});
-              });
-          if (status != napi_ok) {
-            delete item;
-            return 1;
+      std::exception_ptr cleanup_error;
+      {
+        ClearStreamingCallbackOnExit callback_scope(*sess_, cleanup_error);
+        auto tsfn = tsfn_;
+        auto* ctx = ctx_;
+        sess_->SetStreamingCallback([tsfn, ctx](flStreamingCallbackData data) -> int {
+          (void)ctx;
+          if (data.item_queue == nullptr) {
+            return 0;
           }
-          raw = nullptr;
-        }
-        return 0;
-      });
-      ctx_->response = std::make_shared<foundry_local::Response>(sess_->ProcessRequest(*req_));
-      // Drop the callback so any stale shared state in the lambda is released
-      // before the Session is re-used for a follow-up request.
-      sess_->SetStreamingCallback(nullptr);
+
+          flItem* raw = nullptr;
+          while (foundry_local::detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw)) {
+            if (raw == nullptr) {
+              break;
+            }
+
+            auto* item = new foundry_local::Item(*raw);
+            napi_status status = tsfn.BlockingCall(
+                item, [](Napi::Env env, Napi::Function jsCb, foundry_local::Item* it) {
+                  Napi::HandleScope scope(env);
+                  Napi::Value js_item = ItemToJs(env, *it);
+                  delete it;
+                  jsCb.Call({js_item});
+                });
+            if (status != napi_ok) {
+              delete item;
+              return 1;
+            }
+            raw = nullptr;
+          }
+          return 0;
+        });
+        ctx_->response = std::make_shared<foundry_local::Response>(sess_->ProcessRequest(*req_));
+      }
+
+      if (cleanup_error) {
+        std::rethrow_exception(cleanup_error);
+      }
     } catch (const foundry_local::Error& e) {
       ctx_->errored = true;
       ctx_->err_code = static_cast<int>(e.Code());

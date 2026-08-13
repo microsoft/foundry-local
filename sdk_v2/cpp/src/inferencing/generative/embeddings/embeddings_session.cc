@@ -214,7 +214,9 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   ActiveGenerator active(*this, cancellable);
 
   // 3. Single forward pass.
-  generator->GenerateNextToken();
+  if (!TryGenerateNextToken(*generator, request)) {
+    return {};
+  }
 
   // The pass may have been terminated mid-compute, leaving hidden_states unusable.
   if (request.ShouldStop()) {

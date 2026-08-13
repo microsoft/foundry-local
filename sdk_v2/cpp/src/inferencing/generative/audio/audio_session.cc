@@ -441,7 +441,10 @@ void AudioSession::DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tok
                                 const Request& request,
                                 int& completion_tokens) {
   while (!generator.IsDone() && !generator.IsSessionTerminated() && !request.ShouldStop()) {
-    generator.GenerateNextToken();
+    if (!TryGenerateNextToken(generator, request)) {
+      break;
+    }
+
     auto next_tokens = generator.GetNextTokens();
 
     if (next_tokens.empty()) {
@@ -602,7 +605,10 @@ void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStr
   const bool is_streaming = (streaming_callback != nullptr);
 
   while (!generator.IsDone() && !generator.IsSessionTerminated() && !original_request.ShouldStop()) {
-    generator.GenerateNextToken();
+    if (!TryGenerateNextToken(generator, original_request)) {
+      break;
+    }
+
     auto next_tokens = generator.GetNextTokens();
     if (next_tokens.empty()) {
       continue;
