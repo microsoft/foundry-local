@@ -41,19 +41,31 @@ class CpuOnlyDetector : public fl::IEpDetector {
   std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
     return {{"CPU", {"CPUExecutionProvider"}}};
   }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return true;
+  }
+
+  std::string prepared_ep;
 };
 
 /// Creates a minimal model directory with a dummy genai_config.json.
 /// Cleans up on destruction.
 class TempModelDir {
  public:
-  TempModelDir(const std::string& model_name) {
+  explicit TempModelDir(const std::string& model_name, const std::string& provider = "") {
     path_ = (std::filesystem::temp_directory_path() / ("fl_test_" + model_name)).string();
     std::filesystem::create_directories(path_);
 
     // Write a minimal genai_config.json
     std::ofstream config(std::filesystem::path(path_) / "genai_config.json");
-    config << R"({"model": {"type": "phi3"}})";
+    if (provider.empty()) {
+      config << R"({"model": {"type": "phi3"}})";
+    } else {
+      config << R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{")"
+             << provider << R"(":{}}]}}}})";
+    }
   }
 
   ~TempModelDir() {
@@ -130,6 +142,117 @@ TEST(ModelLoadManagerTest, LoadCudaGpuModel_CudaNotAvailable_ErrorMessage) {
     EXPECT_NE(msg.find("CUDAExecutionProvider"), std::string::npos);
     EXPECT_NE(msg.find("DownloadAndRegisterEps"), std::string::npos);
   }
+}
+
+TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaNotAvailable_Throws) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("alias-cuda-config", "cuda");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    FAIL() << "Expected exception";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("CUDAExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAliasWithWebGpuConfig_WebGpuNotAvailable_Throws) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("alias-webgpu-config", "WebGPU");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    FAIL() << "Expected exception";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("WebGpuExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaAvailable_PreparesCuda) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("alias-cuda-available", "cuda");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
+}
+
+TEST(ModelLoadManagerTest, LoadAliasWithCanonicalWinMlProvider_NotAvailable_Throws) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("alias-migraphx-config", "MIGraphXExecutionProvider");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    FAIL() << "Expected exception";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("MIGraphXExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadAliasWithDmlConfig_DoesNotRequireDownloadableEp) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("alias-dml-config", "dml");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+
+  EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("unknown-override");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0", fl::ExecutionProvider::kUnknown);
+    FAIL() << "Expected exception";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ModelLoadManagerTest, LoadWithCpuOverride_IgnoresCudaConfigAndModelId) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  fl::ModelLoadManager mgr(ep, logger);
+
+  TempModelDir dir("explicit-cpu", "cuda");
+
+  try {
+    mgr.LoadModel(dir.path(), "local/alias-cuda-gpu:0", fl::ExecutionProvider::kCPU);
+  } catch (const fl::Exception& e) {
+    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+
+  EXPECT_TRUE(ep.prepared_ep.empty());
 }
 
 TEST(ModelLoadManagerTest, LoadOpenVinoNpuModel_NotAvailable_Throws) {
