@@ -12,6 +12,7 @@ build inputs instead of a stale hardcoded literal.
 
 from __future__ import annotations
 
+import re
 from importlib.metadata import PackageNotFoundError, version as _dist_version
 from pathlib import Path
 
@@ -36,6 +37,10 @@ def _version_from_pyproject(pyproject: Path) -> str | None:
 
     project = data.get("project")
     if not isinstance(project, dict):
+        return None
+
+    project_name = project.get("name")
+    if not isinstance(project_name, str) or re.sub(r"[-_.]+", "-", project_name).lower() != _DISTRIBUTION_NAME:
         return None
 
     found = project.get("version")
