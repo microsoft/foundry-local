@@ -55,7 +55,10 @@ std::once_flag s_oga_shutdown_registration;
 
 void RegisterOgaShutdownAtProcessExit() {
   std::call_once(s_oga_shutdown_registration, [] {
-    std::atexit([] { OgaShutdown(); });
+    std::atexit([] {
+      Manager::Destroy();
+      OgaShutdown();
+    });
   });
 }
 

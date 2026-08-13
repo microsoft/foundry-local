@@ -34,7 +34,11 @@ def _version_from_pyproject(pyproject: Path) -> str | None:
     except (OSError, ValueError):
         return None
 
-    found = data.get("project", {}).get("version")
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+
+    found = project.get("version")
     return found if isinstance(found, str) and found else None
 
 
