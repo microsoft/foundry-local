@@ -204,6 +204,13 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
       content.push_back(nlohmann::json{{"type", "text"}, {"text", RenderMessageForPrompt(msg)}});
       entry["content"] = std::move(content);
     } else {
+      for (const auto& part : msg.content) {
+        if (part.view &&
+            (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE || part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO)) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "media input must belong to the final user message");
+        }
+      }
       // Non-final message: render visible text parts only via the canonical helper.
       entry["content"] = RenderMessageForPrompt(msg);
     }
@@ -329,7 +336,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
     }
 
     auto oga_images = images.empty() ? nullptr : OgaImages::Load(buffers.data(), sizes.data(), buffers.size());
-    auto oga_audios = audios.empty() ? nullptr : OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
+    auto oga_audios =
+        audios.empty() ? nullptr : OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
     if (oga_images && oga_audios) {
       named_tensors = model.GetProcessor()->ProcessImagesAndAudios(prompt.c_str(), oga_images.get(), oga_audios.get());
     } else if (oga_images) {

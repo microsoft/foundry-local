@@ -143,3 +143,11 @@ TEST(OnnxChatGeneratorMedia, TransformIncludesImageAndAudioMarkers) {
   EXPECT_EQ(json[0]["content"][1]["type"], "audio");
   EXPECT_EQ(json[0]["content"][2]["text"], "describe both");
 }
+
+TEST(OnnxChatGeneratorMedia, TransformRejectsMediaOutsideFinalUserMessage) {
+  std::vector<MessageItem> messages;
+  messages.push_back(MakeAudioMessage(FOUNDRY_LOCAL_ROLE_USER, "transcribe this"));
+  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "then summarize it"));
+
+  EXPECT_THROW(OnnxChatGenerator::TransformMessagesForMedia(messages), fl::Exception);
+}

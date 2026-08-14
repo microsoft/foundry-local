@@ -99,9 +99,9 @@ class OnnxChatGenerator : public ChatGenerator {
                     int prompt_token_count,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
 
-    // Shared implementation for text and media creation paths. Empty image and
-    // audio lists select text; either media list selects multimodal processing.
-  // both public entry points share search-options validation, guidance setup,
+  // Shared implementation for text and media creation paths. Empty image and
+  // audio lists select text; either media list selects multimodal processing.
+  // Both public entry points share search-options validation, guidance setup,
   // and generator construction.
   static std::unique_ptr<OnnxChatGenerator> CreateImpl(const std::vector<MessageItem>& messages,
                                                        const SearchOptions& options,

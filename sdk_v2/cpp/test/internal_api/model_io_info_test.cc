@@ -60,11 +60,12 @@ TEST(ModelIOInfoTest, VisionLanguageChat_ReturnsImageInput) {
   auto model = MakeModelWithTask("vision-language-chat");
   auto io = model.GetInputOutputInfo();
 
-  ASSERT_EQ(io.num_inputs, 3u);
+  ASSERT_EQ(io.num_inputs, 4u);
   EXPECT_EQ(io.inputs[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
   EXPECT_EQ(io.inputs[1]->type, FOUNDRY_LOCAL_ITEM_TEXT);
   EXPECT_EQ(static_cast<const TextItem*>(io.inputs[1])->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON);
   EXPECT_EQ(io.inputs[2]->type, FOUNDRY_LOCAL_ITEM_IMAGE);
+  EXPECT_EQ(io.inputs[3]->type, FOUNDRY_LOCAL_ITEM_AUDIO);
 }
 
 TEST(ModelIOInfoTest, VisionLanguageChat_ReturnsChatOutputs) {

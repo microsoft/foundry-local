@@ -407,7 +407,50 @@ TEST(ResponseConverterTest, ToSessionRequest_InputAudio_RejectsInvalidBase64) {
   msg.content.push_back(audio_part);
   params.input = std::vector<InputItem>{msg};
 
-  EXPECT_THROW(ToSessionRequest(params), fl::Exception);
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected invalid base64 audio data to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputAudio_RejectsEmptyData) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputAudioContent audio_part;
+  audio_part.format = "wav";
+  msg.content.push_back(audio_part);
+  params.input = std::vector<InputItem>{msg};
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected empty audio data to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputAudio_RejectsEmptyFormat) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputAudioContent audio_part;
+  audio_part.data = "AQIDBA==";
+  msg.content.push_back(audio_part);
+  params.input = std::vector<InputItem>{msg};
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected empty audio format to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
 }
 
 TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageData_DecodesWithMediaType) {

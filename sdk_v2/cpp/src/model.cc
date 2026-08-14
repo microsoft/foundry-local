@@ -430,6 +430,7 @@ const StaticIOCache& VisionLanguageChatIO() {
     c.input_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_MESSAGE));
     c.input_items.push_back(std::make_unique<TextItem>("", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
     c.input_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_IMAGE));
+    c.input_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_AUDIO));
     c.output_items.push_back(Item::Create(FOUNDRY_LOCAL_ITEM_MESSAGE));
     c.output_items.push_back(std::make_unique<TextItem>("", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
 
