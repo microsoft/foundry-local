@@ -9,6 +9,7 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/live_session_registry.h"
 #include "inferencing/session/session_manager.h"
+#include "items/message_item.h"
 #include "manager.h"
 #include "model.h"
 #include "telemetry/telemetry.h"
@@ -16,8 +17,10 @@
 #include "utils.h"
 
 #include <nlohmann/json.hpp>
+#include <fmt/format.h>
 
 #include <chrono>
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -164,6 +167,54 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
   tool_definitions_.push_back(std::move(tool_def));
 }
 
+void Session::ValidateRequestItems(const Request& request) const {
+  // Only chat tasks are validated: other tasks either have no IO descriptor (embeddings) or accept
+  // transport items that the descriptor does not advertise (the ASR streaming QUEUE item).
+  const auto& task = catalog_model_.Info().task;
+  if (task != "chat-completion" && task != "vision-language-chat") {
+    return;
+  }
+
+  // The model's task metadata is the source of truth for which input modalities are accepted.
+  const auto io_info = catalog_model_.GetInputOutputInfo();
+
+  // An item type is accepted only if it matches one of the advertised inputs.
+  auto check = [&](flItemType type) {
+    const bool supported = std::any_of(io_info.inputs, io_info.inputs + io_info.num_inputs,
+                                      [type](const Item* input) { return input->type == type; });
+    if (!supported) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               fmt::format("{} input is not supported by model task '{}'",
+                          Item::TypeName(type), catalog_model_.Info().task));
+    }
+  };
+
+  // Walk every request item, unwrapping containers so the check always lands on a modality item.
+  for (const auto* item : request.items) {
+    if (!item) {
+      continue;
+    }
+
+    switch (item->type) {
+      case FOUNDRY_LOCAL_ITEM_MESSAGE:
+        // The message wrapper itself is not a modality; validate the parts it carries.
+        for (const auto& part : static_cast<const MessageItem&>(*item).content) {
+          if (part.view) {
+            check(part.view->type);
+          }
+        }
+        break;
+      case FOUNDRY_LOCAL_ITEM_TOOL_CALL:
+      case FOUNDRY_LOCAL_ITEM_TOOL_RESULT:
+        // Tool plumbing, not model input.
+        break;
+      default:
+        check(item->type);
+        break;
+    }
+  }
+}
+
 void Session::Cancel() {
   control_->Terminate();
 }
@@ -240,6 +291,8 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
   }
 
   try {
+    ValidateRequestItems(request);
+
     ProcessRequestImpl(request, response);
   } catch (const std::exception& ex) {
     state->Fail();

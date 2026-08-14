@@ -178,6 +178,10 @@ class Session {
   static void WatchDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
                             std::chrono::milliseconds timeout);
 
+  /// Reject items (and message content parts) whose type the model's task does not advertise as an
+  /// input. Currently applies to chat tasks only.
+  void ValidateRequestItems(const Request& request) const;
+
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
