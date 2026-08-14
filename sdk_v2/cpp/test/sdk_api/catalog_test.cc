@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 // Catalog-focused SDK integration tests using only the public C++ API.
 
-#include <gsl/span>
 #include <memory>
 #include <type_traits>
 
@@ -11,7 +10,7 @@
 namespace {
 
 const foundry_local::IModel* FindModelByAlias(
-    gsl::span<const std::unique_ptr<foundry_local::IModel>> models,
+    const foundry_local::ModelList& models,
     std::string_view alias) {
   for (const auto& model : models) {
     if (model->GetInfo().Alias() == alias) {
@@ -40,10 +39,10 @@ TEST_F(ModelFixture, CatalogGetModelByAliasReturnsExpectedModelAndVariants) {
   EXPECT_FALSE(info.Uri().empty());
 
   foundry_local::ModelList variants = model->GetVariants();
-  ASSERT_GE(variants.Models().size(), 1u);
+  ASSERT_GE(variants.size(), 1u);
 
   bool found_expected_variant = false;
-  for (const auto& variant : variants.Models()) {
+  for (const auto& variant : variants) {
     if (variant->GetInfo().Id() == model_id()) {
       found_expected_variant = true;
       break;
@@ -65,8 +64,7 @@ TEST_F(ModelFixture, CatalogGetModelReturnsNulloptForUnknownAlias) {
 // — the GTEST output captures the catalog snapshot the test run was working
 // against. Always passes; assertions are sanity checks only.
 TEST_F(ModelFixture, CatalogDumpAllModelsAndVariants) {
-  foundry_local::ModelList all_models = catalog().GetModels();
-  const auto& models = all_models.Models();
+  foundry_local::ModelList models = catalog().GetModels();
 
   ASSERT_GE(models.size(), 1u) << "Catalog should expose at least one model";
 
@@ -77,7 +75,7 @@ TEST_F(ModelFixture, CatalogDumpAllModelsAndVariants) {
     std::cout << "  alias: " << info.Alias() << "\tTask:" << info.Task().value_or("not set") << "\n";
 
     foundry_local::ModelList variants = model->GetVariants();
-    for (const auto& variant : variants.Models()) {
+    for (const auto& variant : variants) {
       std::cout << "    - " << variant->GetInfo().Id() << "\n";
     }
   }
@@ -98,9 +96,9 @@ TEST_F(ModelFixture, CatalogGetModelVariantByIdReturnsExpectedVariant) {
   EXPECT_TRUE(fs::exists(local_path)) << "Expected cached variant path to exist: " << local_path;
 
   foundry_local::ModelList variants = variant->GetVariants();
-  ASSERT_EQ(variants.Models().size(), 1u)
+  ASSERT_EQ(variants.size(), 1u)
       << "A model returned by GetModelVariant(id) should only expose that single variant";
-  EXPECT_EQ(variants.Models().front()->GetInfo().Id(), model_id());
+  EXPECT_EQ(variants.front()->GetInfo().Id(), model_id());
 }
 
 TEST_F(ModelFixture, CatalogGetModelVariantReturnsNulloptForUnknownId) {
@@ -110,8 +108,7 @@ TEST_F(ModelFixture, CatalogGetModelVariantReturnsNulloptForUnknownId) {
 }
 
 TEST_F(ModelFixture, CatalogGetCachedModelsIncludesDownloadedModel) {
-  foundry_local::ModelList cached_models = catalog().GetCachedModels();
-  const auto& cached = cached_models.Models();
+  foundry_local::ModelList cached = catalog().GetCachedModels();
 
   ASSERT_GE(cached.size(), 1u) << "Expected at least one cached model after fixture download";
 

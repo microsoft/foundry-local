@@ -94,7 +94,6 @@ include(cmake/Sanitizers.cmake)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(Microsoft.GSL CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
 
 if(FOUNDRY_LOCAL_BUILD_SERVICE)
@@ -231,6 +230,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/exception.cc
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
+    src/http/curl_transport.cc
     src/inferencing/generative/genai_model_instance.cc
     src/inferencing/generative/tokenizer.cc
     src/logger.cc
@@ -278,9 +278,6 @@ set(FOUNDRY_LOCAL_SOURCES
 
 # 1DS bridge — always compiled for Foundry Local Core.
 list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
-if(ANDROID)
-    list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/android_telemetry_bridge.cc)
-endif()
 
 # Organize headers into filters matching the directory structure in Visual Studio
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source" FILES ${FOUNDRY_LOCAL_SOURCES})
@@ -561,7 +558,7 @@ target_include_directories(foundry_local_cpp
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(foundry_local_cpp INTERFACE foundry_local Microsoft.GSL::GSL)
+target_link_libraries(foundry_local_cpp INTERFACE foundry_local)
 
 # --------------------------------------------------------------------------
 # Split debug symbols (Linux / macOS, RelWithDebInfo only)

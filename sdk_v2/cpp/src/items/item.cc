@@ -51,4 +51,35 @@ std::unique_ptr<Item> Item::Create(flItemType type) {
   }
 }
 
+std::string_view Item::TypeName(flItemType type) noexcept {
+  switch (type) {
+    case FOUNDRY_LOCAL_ITEM_UNKNOWN:
+      return "UNKNOWN";
+    case FOUNDRY_LOCAL_ITEM_BYTES:
+      return "BYTES";
+    case FOUNDRY_LOCAL_ITEM_TENSOR:
+      return "TENSOR";
+    case FOUNDRY_LOCAL_ITEM_TEXT:
+      return "TEXT";
+    case FOUNDRY_LOCAL_ITEM_MESSAGE:
+      return "MESSAGE";
+    case FOUNDRY_LOCAL_ITEM_IMAGE:
+      return "IMAGE";
+    case FOUNDRY_LOCAL_ITEM_AUDIO:
+      return "AUDIO";
+    case FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT:
+      return "SPEECH_SEGMENT";
+    case FOUNDRY_LOCAL_ITEM_SPEECH_RESULT:
+      return "SPEECH_RESULT";
+    case FOUNDRY_LOCAL_ITEM_TOOL_CALL:
+      return "TOOL_CALL";
+    case FOUNDRY_LOCAL_ITEM_TOOL_RESULT:
+      return "TOOL_RESULT";
+    case FOUNDRY_LOCAL_ITEM_QUEUE:
+      return "QUEUE";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 }  // namespace fl

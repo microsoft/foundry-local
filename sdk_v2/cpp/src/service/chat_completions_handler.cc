@@ -201,9 +201,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
                                 req = std::move(session_request),
                                 include_usage, &tracker,
                                 &session_manager = ctx_.session_manager]() mutable {
-    SessionRegistration reg(session_manager, bg_session);
-
     try {
+      // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
+      // instead of escaping this raw std::thread and calling std::terminate.
+      SessionRegistration reg(session_manager, bg_session);
+
       fl::Response bg_response;
 
       // Callback receives OPENAI_JSON-tagged TextItem chunks from ChatSession — just wrap in SSE framing.

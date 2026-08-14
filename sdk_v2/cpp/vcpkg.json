@@ -21,7 +21,6 @@
       "features": ["curl"],
       "platform": "!windows | uwp"
     },
-    "ms-gsl",
     "zlib",
     "nlohmann-json",
     "spdlog"

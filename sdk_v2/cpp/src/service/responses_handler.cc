@@ -330,8 +330,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                 req_copy = std::move(req_copy),
                                 params_copy = std::move(params_copy),
                                 &tracker]() mutable {
-    SessionRegistration reg(session_manager, *session);
-
     int seq = 2;
     std::string full_text;  // concatenation of all visible runs, used for output_text in completed_response
 
@@ -477,6 +475,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     };
 
     try {
+      // Register inside the try so a shutdown rejection (Register throws) is reported as a stream failure
+      // instead of escaping this raw std::thread and calling std::terminate.
+      SessionRegistration reg(session_manager, *session);
+
       fl::Response bg_response;
       fl::Session::StreamingCallbackFn callback_fn = [&](flStreamingCallbackData event, void* /*user_data*/) -> int {
         fl::ItemQueue* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);

@@ -1,0 +1,53 @@
+[package]
+name = "foundry-local-sdk"
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+readme = "README.md"
+description = "Local AI model inference powered by the Foundry Local Core engine"
+homepage = "https://www.foundrylocal.ai/"
+repository = "https://github.com/microsoft/Foundry-Local"
+documentation = "https://github.com/microsoft/Foundry-Local/blob/main/sdk_v2/rust/docs/api.md"
+include = ["src/**", "build.rs", "Cargo.toml", "README.md", "LICENSE.txt", "deps_versions.json"]
+
+[features]
+default = []
+nightly = []
+
+[dependencies]
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+futures-core = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+urlencoding = "2"
+async-openai = { version = "=0.33.1", default-features = false, features = ["chat-completion-types", "embedding-types"] }
+
+[build-dependencies]
+ureq = "3"
+zip = "2"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+
+[[example]]
+name = "chat_completion"
+path = "examples/chat_completion.rs"
+
+[[example]]
+name = "tool_calling"
+path = "examples/tool_calling.rs"
+
+[[example]]
+name = "interactive_chat"
+path = "examples/interactive_chat.rs"
+
+[[example]]
+name = "low_level_inference"
+path = "examples/low_level_inference.rs"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

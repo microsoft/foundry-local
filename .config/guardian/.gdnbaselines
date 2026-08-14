@@ -11,23 +11,113 @@
     }
   },
   "results": {
-    "69b647712f85ffe7b40ad90ffc86e9ff9fac0abb44d922c42bcecab81e4ccec2": {
-      "signature": "69b647712f85ffe7b40ad90ffc86e9ff9fac0abb44d922c42bcecab81e4ccec2",
+    "ca85aeda6fd3908528d12140bab63a850b7352543b73f1dff6e1e1ecbb8c33bd": {
+      "signature": "ca85aeda6fd3908528d12140bab63a850b7352543b73f1dff6e1e1ecbb8c33bd",
       "alternativeSignatures": [
-        "ebb5b86a3fed512da35d013ab87c994656fef3061f5b28396da9c0f8e8e1f513",
-        "54a3900e69221d9330006bc7a493a75b00e864d977cc5ec729d1d2efd836de02",
-        "468342a92ed62a2d43a75e78f8fe8b6683f9f8c1c289b1436043319a5f94d3ed"
+        "88e5a995efffc013aa884c8640523126cfac085d342a19e281b0dd1b20ca723f",
+        "265fd3530541f4c12fdb129dd534a941306bf8ac4b2866dd8f1c19c3cf98818c",
+        "b1f17b25405610553d284ce2790801ef7d8fc0ea8e3e6d1ae30e533fd412e853"
       ],
-      "target": "native/Microsoft.AI.Foundry.Local.Core.dll",
+      "target": "nuget/_staging/runtimes/win-arm64/native/foundry_local.dll",
       "uriBaseId": "file:///E:/_work/1/a/",
       "memberOf": [
         "default"
       ],
       "tool": "binskim",
       "ruleId": "BA2008",
-      "createdDate": "2026-04-21 05:29:03Z",
-      "expirationDate": "2026-10-08 06:22:33Z",
-      "justification": "This error is baselined with an expiration date of 180 days from 2026-04-21 06:22:33Z"
+      "createdDate": "2026-08-10 20:53:21Z",
+      "expirationDate": "2027-01-27 21:32:16Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-08-10 21:32:16Z"
+    },
+    "71f930efd19ce556019ccd1a1c8fe65d2f825b482d029700b95aab9d1b925686": {
+      "signature": "71f930efd19ce556019ccd1a1c8fe65d2f825b482d029700b95aab9d1b925686",
+      "alternativeSignatures": [
+        "e800d1ca33d42ec38d0e3a47eba831bbde32def0ad2aab2f5ecdf2ee1ff5ad95",
+        "9d378b2c896d7908371b9319e8d010c75514fdf77668d384e25352792ea0f167",
+        "e58c6b0a07f70a51c89b9790ac131f6ad323b9c20212b215c4f384cc76b0871f"
+      ],
+      "target": "nuget/_staging/runtimes/win-x64/native/foundry_local.dll",
+      "uriBaseId": "file:///E:/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2008",
+      "createdDate": "2026-08-10 20:53:21Z",
+      "expirationDate": "2027-01-27 21:32:16Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-08-10 21:32:16Z"
+    },
+    "a64213a3c7bda9c21ff6bd53afaf3f6a0a0510eaf3432ca44923eee352d74327": {
+      "signature": "a64213a3c7bda9c21ff6bd53afaf3f6a0a0510eaf3432ca44923eee352d74327",
+      "alternativeSignatures": [
+        "d146a3bd205b4cead1adec48027433851047634c9cb9fd71baf4169e6370d0d5",
+        "1d953101a9dadc2a74ca98ee553eb997bb665595ebf404c9af906353245df0a2",
+        "229112a79769fc38c85f38c6a988d1175909561c7e2463482482d7779f726225"
+      ],
+      "target": "js-prebuild/prebuilds/win32-x64/foundry_local.dll",
+      "uriBaseId": "file:///E:/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2008",
+      "createdDate": "2026-08-10 20:32:01Z",
+      "expirationDate": "2027-01-27 21:32:16Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-08-10 21:32:16Z"
+    },
+    "070550349c351cc919fc88198a79ef84ec49ba9f1517e9accd987cb252263cbc": {
+      "signature": "070550349c351cc919fc88198a79ef84ec49ba9f1517e9accd987cb252263cbc",
+      "alternativeSignatures": [
+        "c5260d835a1d7a80cfd8f949b66ae40cc5c8fcc57fce7aed25bb8709c4d21e16",
+        "5fcdffd41fe0b87f1ca3bb6b044aa0fd14606b348d7eb42cedb81b510519a5c3",
+        "bf6e4e8ff5f60731b847611de6ddc2c245d40b4f32ab026ad868c50a1f35f0ba"
+      ],
+      "target": "native/foundry_local.dll",
+      "uriBaseId": "file:///E:/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-08-10 20:19:15Z",
+      "expirationDate": "2027-01-27 21:32:16Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-08-10 21:32:16Z"
+    },
+    "9a9d3b570231469c643fd0c42d70519e674e699b75a59ae3c0312f7b211cca88": {
+      "signature": "9a9d3b570231469c643fd0c42d70519e674e699b75a59ae3c0312f7b211cca88",
+      "alternativeSignatures": [
+        "1eef51336460e15622f7950d599a92a6765d254352a05156577a1a9e1027ecf7",
+        "ea13f48d3665887376012d66a37d125e7a159287283af3885f6dba18a70646d1",
+        "51da84afec9cc18417e8674a7230358508a675d9e7ce120d31759b7265885671"
+      ],
+      "target": "native/foundry_local.dll",
+      "uriBaseId": "file:///E:/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2008",
+      "createdDate": "2026-08-10 20:19:15Z",
+      "expirationDate": "2027-01-27 21:32:16Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-08-10 21:32:16Z"
+    },
+    "327260e44e3e3cc901059767c6fd4f3799385bb4130d1e2cff1157b35ba2f223": {
+      "signature": "327260e44e3e3cc901059767c6fd4f3799385bb4130d1e2cff1157b35ba2f223",
+      "alternativeSignatures": [
+        "a76a2d5ed111b157d90b35b1dcc70343db88c836fdf59a1b1e3a6aade0a8027c",
+        "56c1305c347ee5ab5e30d4cc750a5f495ceec52918eb4dc6f629e024accc63f0",
+        "64d16f9783b869019896b57b4d5c167e748cb4923c1a9ae0ab3a6d2bfa134f60"
+      ],
+      "target": "js-prebuild/prebuilds/win32-arm64/foundry_local.dll",
+      "uriBaseId": "file:///C:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2008",
+      "createdDate": "2026-08-10 21:01:11Z",
+      "expirationDate": "2027-01-27 21:32:16Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-08-10 21:32:16Z"
     }
   }
 }

@@ -21,7 +21,7 @@ namespace {
 Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml,
                           Napi::ObjectReference manager) {
   auto list = std::make_shared<foundry_local::ModelList>(std::move(ml));
-  auto models = list->Models();
+  const auto& models = *list;
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
     ModelCtorToken token;

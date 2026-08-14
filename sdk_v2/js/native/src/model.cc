@@ -145,7 +145,7 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
 // whose keepalive holds the shared ModelList.
 Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelList> list,
                           Napi::ObjectReference manager) {
-  auto models = list->Models();
+  const auto& models = *list;
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
     ModelCtorToken token;

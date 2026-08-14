@@ -273,8 +273,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
     bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_root.string(), register_ep));
   }
 
-  // WebGPU EP — only on exact architectures for which a bundle is published.
-  if (WebGpuEpBootstrapper::IsSupportedPlatform()) {
+  // Avoid downloading WebGPU when ORT's pre-registration hardware inventory has no GPU.
+  if (WebGpuEpBootstrapper::IsSupportedPlatform() &&
+      Utils::HasGpuHardwareDevice(*ort_api_, *ort_env_, *logger_)) {
     const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
     bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
   }
@@ -553,18 +554,22 @@ void Manager::Shutdown() {
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
 
+  // Order matters:
+  //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
+  //   2. Cancel in-flight generations BEFORE stopping the web service. StopWebService() hard-joins
+  //      streaming threads; a generation grinding in ORT GenAI only stops when request.canceled is
+  //      set, so cancelling first is what lets JoinAll() return promptly instead of deadlocking
+  //      process shutdown.
+  //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.
+  //   4. Unload all models, polling per-model session refcount for direct-API users who haven't
+  //      dropped their flSession* yet. Bounded by timeout so a stuck caller can't block shutdown.
+  model_load_manager_->RejectNewLoads();
+  session_manager_->CancelAll();
+
   if (web_service_running_) {
     StopWebService();
   }
 
-  // Order matters:
-  //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
-  //   2. Cancel + drain HTTP-tracked sessions (web service path).
-  //   3. Unload all models, polling per-model session refcount for direct-API users
-  //      who haven't dropped their flSession* yet. Bounded by timeout so a stuck
-  //      caller can't block process shutdown indefinitely.
-  model_load_manager_->RejectNewLoads();
-  session_manager_->CancelAll();
   session_manager_->WaitForDrain();
   model_load_manager_->UnloadAll();
 }
@@ -603,10 +608,32 @@ EpDownloadResult Manager::DownloadAndRegisterEps(const std::vector<std::string>*
                                                  const IEpBootstrapper::ProgressCallback& progress_cb) {
   auto result = ep_detector_->DownloadAndRegisterEps(names, progress_cb);
 
-  // EP registration changes which device/EP filters the catalog uses.
-  // Invalidate so the next catalog query re-fetches with updated filters.
-  if (result.success && !result.registered_eps.empty()) {
+  // EP registration changes which device/EP filters the catalog uses. Invalidate whenever at
+  // least one EP registered — including partial success, where result.success is false because
+  // another EP failed — so the next catalog query re-fetches with the updated filters.
+  if (!result.registered_eps.empty()) {
     public_catalog_->InvalidateCache();
+  }
+
+  // Warn if any EPs failed to download or register, but keep going: CPU is always available and
+  // any EPs that did register remain usable. This is not treated as an error.
+  if (!result.cancelled && !result.failed_eps.empty()) {
+    const auto join = [](const std::vector<std::string>& eps) {
+      std::string joined;
+      for (size_t i = 0; i < eps.size(); ++i) {
+        joined += (i ? ", " : "") + eps[i];
+      }
+      return joined;
+    };
+
+    std::string message = "Failed to download or register EP(s) [" + join(result.failed_eps) +
+                          "]; continuing with the remaining execution providers (CPU is always "
+                          "available";
+    if (!result.registered_eps.empty()) {
+      message += "; also registered: [" + join(result.registered_eps) + "]";
+    }
+    message += "). See earlier logs for the underlying cause.";
+    logger_->Log(LogLevel::Warning, message);
   }
 
   return result;
