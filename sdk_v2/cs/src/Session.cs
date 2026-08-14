@@ -216,13 +216,11 @@ public abstract class Session : IDisposable
     }
 
     /// <summary>
-    /// Interrupt any request currently running on this session.
+    /// Permanently cancel this session.
     /// </summary>
     /// <remarks>
-    /// Thread-safe and intended to be called from a thread other than the one awaiting
-    /// <see cref="ProcessRequestAsync"/>. Interrupts inferencing mid-compute rather than only
-    /// between tokens, so the in-flight call returns promptly and releases its reference to the
-    /// model. Idempotent and safe to call when no request is running.
+    /// Active and queued requests are cancelled. Later requests fail with invalid usage.
+    /// Thread-safe and idempotent.
     /// </remarks>
     public void Cancel()
     {

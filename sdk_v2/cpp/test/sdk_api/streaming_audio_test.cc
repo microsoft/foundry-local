@@ -9,12 +9,14 @@
 #include "utils/string_utils.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using fl::test::ToLower;
@@ -220,6 +222,12 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
   for (size_t i = 0; i < half; ++i) {
     queue.Push(Item::Bytes(FOUNDRY_LOCAL_ITEM_BYTES, chunks[i].data(), chunks[i].size()));
   }
+
+  const auto start_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (queue.Size() == half && std::chrono::steady_clock::now() < start_deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_LT(queue.Size(), half) << "Audio processing did not start";
 
   request.Cancel();
   queue.MarkFinished();

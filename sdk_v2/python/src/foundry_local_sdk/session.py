@@ -473,16 +473,18 @@ class Session(abc.ABC):
             self._release_call()
 
     def cancel(self) -> None:
-        """Interrupt any request running on this session.
+        """Permanently cancel this session.
 
-        Call this from another thread while ``process_request`` is blocked. Cancellation
-        interrupts inference during computation, not only between tokens. This method is
-        thread-safe, idempotent, and safe when no request is running.
+        Active and queued requests are cancelled. Later request processing fails.
+        Thread-safe and idempotent.
         """
-        self._check_open()
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.inference.Session_Cancel(self._ptr))
+        session_ptr = self._acquire_call()
+        try:
+            api.check_status(api.inference.Session_Cancel(session_ptr))
+        finally:
+            self._release_call()
 
     def _close(self) -> None:
         # Subclasses may fail before super().__init__, leaving cleanup fields unset.

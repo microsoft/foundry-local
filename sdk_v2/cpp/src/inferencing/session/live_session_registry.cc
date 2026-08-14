@@ -26,7 +26,7 @@ void LiveSessionRegistry::Remove(const std::shared_ptr<SessionControl>& control)
   });
 }
 
-std::vector<std::shared_ptr<SessionControl>> LiveSessionRegistry::Snapshot() const {
+std::vector<std::shared_ptr<SessionControl>> LiveSessionRegistry::GetLiveControls() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<std::shared_ptr<SessionControl>> controls;

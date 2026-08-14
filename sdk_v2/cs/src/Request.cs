@@ -135,19 +135,22 @@ public sealed class Request : IDisposable
     }
 
     /// <summary>
-    /// Set a wall-clock deadline for this request. Pass <see cref="TimeSpan.Zero"/> (or a
-    /// negative value) to disable.
+    /// Set the timeout applied each time this request is processed. Zero or a negative value disables it.
     /// </summary>
     /// <remarks>
-    /// Each ProcessRequest call starts a new countdown using this duration. The countdown
-    /// includes time waiting for the session and streaming or non-streaming inference.
-    /// If it expires, ProcessRequest throws a timeout error.
+    /// The timeout includes waiting to begin inference and inference itself. Expiry raises a timeout error.
     /// </remarks>
     public Request SetTimeout(TimeSpan timeout)
     {
-        ulong timeoutMs = timeout > TimeSpan.Zero ? (ulong)timeout.TotalMilliseconds : 0UL;
-        Api.CheckStatus(Api.Inference.RequestSetTimeoutMs(Ptr, timeoutMs));
-        return this;
+        lock (_lifetimeGate)
+        {
+            Detail.Throw.IfDisposed(_disposeRequested, this);
+            ulong timeoutMs = timeout > TimeSpan.Zero
+                ? checked((ulong)Math.Ceiling(timeout.TotalMilliseconds))
+                : 0UL;
+            Api.CheckStatus(Api.Inference.RequestSetTimeoutMs(Ptr, timeoutMs));
+            return this;
+        }
     }
 
     public void Dispose()

@@ -299,12 +299,8 @@ export abstract class Session {
   }
 
   /**
-   * Interrupt any request currently running on this session.
-   *
-   * Unlike `request.cancel()`, this does not require a handle on the in-flight request,
-   * which makes it the right tool for teardown. It interrupts inferencing mid-compute so
-   * the pending `processRequest()` promise settles promptly and releases the session's
-   * reference to the model. Idempotent and safe to call when nothing is running.
+   * Permanently cancel this session. Active and queued requests are cancelled;
+   * later requests fail with `FlErrorCode.InvalidUsage`. Thread-safe and idempotent.
    */
   cancel(): void {
     this.native.cancel();

@@ -310,6 +310,7 @@ TEST(SessionCancellationTest, SessionCancelStopsAllInvocationsAndRejectsFutureCa
 
   ASSERT_TRUE(both_entered.Wait());
   session.Cancel();
+  EXPECT_NO_THROW(session.Cancel());
   EXPECT_EQ(first.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
   EXPECT_EQ(second.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
 

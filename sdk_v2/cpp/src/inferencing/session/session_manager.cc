@@ -68,7 +68,7 @@ void SessionManager::CancelAll() {
 
   // Direct API sessions do not use SessionRegistration, so cancel every live control.
   // Shared ownership keeps each control valid after the registry lock is released.
-  std::vector<std::shared_ptr<SessionControl>> to_cancel = LiveSessionRegistry::Instance().Snapshot();
+  std::vector<std::shared_ptr<SessionControl>> to_cancel = LiveSessionRegistry::Instance().GetLiveControls();
 
   logger_.Log(LogLevel::Information,
               fmt::format("SessionManager: cancelling all sessions ({} live)", to_cancel.size()));

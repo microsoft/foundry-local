@@ -23,7 +23,7 @@ class LiveSessionRegistry {
 
   /// Returns shared ownership of each live control. Returned controls remain valid after
   /// their Sessions are destroyed.
-  std::vector<std::shared_ptr<SessionControl>> Snapshot() const;
+  std::vector<std::shared_ptr<SessionControl>> GetLiveControls() const;
 
  private:
   LiveSessionRegistry() = default;

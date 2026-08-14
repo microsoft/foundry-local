@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from foundry_local_sdk.session_types import RequestOptions
 
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
-_MAX_TIMEOUT_MS = (1 << 64) - 1
+_MAX_TIMEOUT_MS = (1 << 63) - 1
 
 
 class Request:
@@ -108,14 +108,10 @@ class Request:
         api.check_status(api.inference.Request_Cancel(self._ptr))
 
     def set_timeout(self, timeout: "float | None") -> "Request":
-        """Set a wall-clock deadline for this request, in seconds.
-
-        Each ``process_request`` call starts a new countdown using this duration. The
-        countdown includes time waiting for the session and streaming or non-streaming
-        inference. If it expires, ``process_request`` raises a timeout error.
+        """Set the timeout for each execution of this request, in seconds.
 
         Args:
-            timeout: Deadline in seconds. ``None`` or a non-positive value disables it.
+            timeout: Seconds. ``None`` or a non-positive value disables the timeout.
         """
         self._check_open()
         from foundry_local_sdk._native.api import api
@@ -135,7 +131,7 @@ class Request:
                 milliseconds = timeout * 1000
                 if not math.isfinite(milliseconds) or milliseconds > _MAX_TIMEOUT_MS:
                     raise ValueError("timeout is too large")
-                timeout_ms = int(milliseconds)
+                timeout_ms = math.ceil(milliseconds)
         api.check_status(api.inference.Request_SetTimeoutMs(self._ptr, timeout_ms))
         return self
 

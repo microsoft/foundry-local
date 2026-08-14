@@ -389,7 +389,7 @@ TEST_F(ChatSessionTest, SearchOptionsFromEmptyParameters) {
 
 // Regression tests for cancellation and timeout during non-streaming generation.
 
-TEST_F(ChatSessionTest, NonStreamingRequestHonorsTimeout) {
+TEST_F(ChatSessionTest, NonStreamingRequestReturnsTimeoutPromptly) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
 
   Request request;
@@ -400,34 +400,18 @@ TEST_F(ChatSessionTest, NonStreamingRequestHonorsTimeout) {
   Response response;
   const auto start = std::chrono::steady_clock::now();
 
-  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "Expected a timeout";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_TIMEOUT);
+  }
 
   const auto elapsed = std::chrono::steady_clock::now() - start;
 
   EXPECT_TRUE(request.timed_out.load());
 
-  // Generous ceiling: this asserts the deadline is enforced at all, not its precision.
-  // The check that matters is that the call returns rather than running to 4096 tokens.
   EXPECT_LT(elapsed, std::chrono::seconds(30));
-}
-
-TEST_F(ChatSessionTest, TimeoutErrorCodeIsTimeout) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-
-  Request request;
-  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
-  request.options.Add("max_output_tokens", "4096");
-  request.SetTimeout(std::chrono::milliseconds(1));
-
-  Response response;
-
-  try {
-    session.ProcessRequest(request, response);
-    FAIL() << "Expected a timeout";
-  } catch (const fl::Exception& ex) {
-    // Timeouts use a distinct error code from explicit cancellation.
-    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_TIMEOUT);
-  }
 }
 
 TEST_F(ChatSessionTest, TimeoutIsRearmedPerRequest) {
@@ -511,26 +495,4 @@ TEST_F(ChatSessionTest, CancelStopsInFlightNonStreamingRequest) {
   EXPECT_EQ(code, FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
   EXPECT_LT(elapsed, std::chrono::seconds(60));
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-}
-
-TEST_F(ChatSessionTest, CancelBeforeRequestRejectsImmediately) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-  session.Cancel();
-
-  Request request;
-  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Hello"));
-  request.options.Add("max_output_tokens", "16");
-
-  Response response;
-
-  // A generation started after Cancel() must not run unbounded — otherwise a cancel that
-  // races with request submission is silently lost.
-  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
-}
-
-TEST_F(ChatSessionTest, CancelIsIdempotentAndSafeWhenIdle) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-
-  EXPECT_NO_THROW(session.Cancel());
-  EXPECT_NO_THROW(session.Cancel());
 }

@@ -325,12 +325,12 @@ def test_finalizer_releases_idle_session_without_native_import(
         float("nan"),
         float("inf"),
         float("-inf"),
-        (1 << 64) / 1000,
+        (1 << 63) / 1000,
         float.fromhex("0x1.fffffffffffffp+1023"),
         1 << 4096,
     ],
 )
-def test_request_timeout_rejects_nonfinite_or_uint64_overflow(
+def test_request_timeout_rejects_nonfinite_or_native_range_overflow(
     fake_native: types.SimpleNamespace,
     timeout: float,
 ) -> None:
@@ -349,7 +349,7 @@ def test_request_timeout_rejects_nonfinite_or_uint64_overflow(
 
 @pytest.mark.parametrize(
     ("timeout", "expected_ms"),
-    [(None, 0), (-1.0, 0), (0.0, 0), (0.001, 1), (1.25, 1250)],
+    [(None, 0), (-1.0, 0), (0.0, 0), (0.0001, 1), (0.001, 1), (1.25, 1250)],
 )
 def test_request_timeout_marshals_valid_values(
     fake_native: types.SimpleNamespace,

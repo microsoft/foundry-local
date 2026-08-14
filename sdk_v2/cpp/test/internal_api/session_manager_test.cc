@@ -457,43 +457,43 @@ TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceledAndRej
   EXPECT_TRUE(req.canceled.load(std::memory_order_relaxed));
 }
 
-TEST(SessionManagerCancelTest, RegistrySnapshotControlSurvivesSessionDestruction) {
+TEST(SessionManagerCancelTest, RegistryControlSurvivesSessionDestruction) {
   fl::test::FakeServiceBindings svc;
   Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
   TelemetryLogger telemetry{"test", fl::test::NullLog()};
 
-  const auto controls_before = LiveSessionRegistry::Instance().Snapshot();
+  const auto controls_before = LiveSessionRegistry::Instance().GetLiveControls();
   auto session = std::make_unique<MovableCancelSession>(catalog_model, fl::test::NullLog(), telemetry);
-  const auto retained_snapshot = LiveSessionRegistry::Instance().Snapshot();
-  const auto retained_control = FindAddedControl(controls_before, retained_snapshot);
+  const auto retained_controls = LiveSessionRegistry::Instance().GetLiveControls();
+  const auto retained_control = FindAddedControl(controls_before, retained_controls);
   ASSERT_NE(retained_control, nullptr);
 
   session.reset();
 
   EXPECT_NO_THROW(retained_control->Terminate());
-  EXPECT_FALSE(ContainsControl(LiveSessionRegistry::Instance().Snapshot(), retained_control));
+  EXPECT_FALSE(ContainsControl(LiveSessionRegistry::Instance().GetLiveControls(), retained_control));
 }
 
-TEST(SessionManagerCancelTest, RegistrySnapshotBeforeMoveCancelsDestinationAfterSourceDestruction) {
+TEST(SessionManagerCancelTest, RegistryControlFollowsMovedSession) {
   fl::test::FakeServiceBindings svc;
   Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
   TelemetryLogger telemetry{"test", fl::test::NullLog()};
 
-  const auto controls_before_source = LiveSessionRegistry::Instance().Snapshot();
+  const auto controls_before_source = LiveSessionRegistry::Instance().GetLiveControls();
   auto source = std::make_unique<MovableCancelSession>(catalog_model, fl::test::NullLog(), telemetry);
-  const auto controls_before_move = LiveSessionRegistry::Instance().Snapshot();
+  const auto controls_before_move = LiveSessionRegistry::Instance().GetLiveControls();
   const auto transferred_control = FindAddedControl(controls_before_source, controls_before_move);
   ASSERT_NE(transferred_control, nullptr);
 
   auto destination = std::make_unique<MovableCancelSession>(std::move(*source));
-  const auto controls_after_move = LiveSessionRegistry::Instance().Snapshot();
+  const auto controls_after_move = LiveSessionRegistry::Instance().GetLiveControls();
   const auto source_idle_control = FindAddedControl(controls_before_move, controls_after_move);
   ASSERT_NE(source_idle_control, nullptr);
   EXPECT_NE(source_idle_control, transferred_control);
   EXPECT_TRUE(ContainsControl(controls_after_move, transferred_control));
 
   source.reset();
-  const auto controls_after_source_destruction = LiveSessionRegistry::Instance().Snapshot();
+  const auto controls_after_source_destruction = LiveSessionRegistry::Instance().GetLiveControls();
   EXPECT_TRUE(ContainsControl(controls_after_source_destruction, transferred_control));
   EXPECT_FALSE(ContainsControl(controls_after_source_destruction, source_idle_control));
 
