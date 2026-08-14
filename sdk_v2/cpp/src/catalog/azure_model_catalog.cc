@@ -124,24 +124,26 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
 
 std::vector<Model> AzureModelCatalog::AddLocalModels(std::vector<ModelInfo>& model_infos,
                                                      const LocalModels& local_models) const {
+  std::vector<Model> models;
+  models.reserve(model_infos.size() + local_models.size());
+
   std::unordered_set<std::string> model_ids;
   model_ids.reserve(model_infos.size() + local_models.size());
   for (const auto& info : model_infos) {
     model_ids.insert(info.model_id);
-  }
 
-  for (const auto& local_model : local_models) {
-    if (model_ids.insert(local_model.first).second) {
-      model_infos.push_back(MakeByomModelInfo(local_model.first));
-    }
-  }
-
-  std::vector<Model> models;
-  models.reserve(model_infos.size());
-  for (const auto& info : model_infos) {
     auto local_model = local_models.find(info.model_id);
     auto local_path = local_model != local_models.end() ? local_model->second : std::string{};
     models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
+  }
+
+  for (const auto& [model_id, local_path] : local_models) {
+    if (!model_ids.insert(model_id).second) {
+      continue;
+    }
+
+    model_infos.push_back(MakeByomModelInfo(model_id));
+    models.push_back(model_factory_(ModelInfo(model_infos.back()), local_path));
   }
 
   return models;

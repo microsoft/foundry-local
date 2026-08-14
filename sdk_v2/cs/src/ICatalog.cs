@@ -43,7 +43,7 @@ public interface ICatalog
     /// Get a list of currently downloaded models from the model cache.
     /// </summary>
     /// <param name="ct">Optional CancellationToken.</param>
-    /// <returns>One leaf IModel instance per cached model variant.</returns>
+    /// <returns>One IModel instance per cached model variant.</returns>
     Task<List<IModel>> GetCachedModelsAsync(CancellationToken? ct = null);
 
     /// <summary>

@@ -51,7 +51,7 @@ class ICatalog {
                                                 const std::string& variant_name,
                                                 int max_versions = 0) = 0;
 
-  /// Lists every leaf model variant that is cached locally.
+  /// Lists every individual model variant that is cached locally.
   /// Results preserve catalog alias order and each alias's best-first variant order.
   virtual std::vector<Model*> GetCachedModels() const = 0;
 

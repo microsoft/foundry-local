@@ -129,7 +129,7 @@ class Catalog:
         """Get a list of currently downloaded models from the model cache.
 
         Returns:
-            List of ``IModel`` instances (leaf variants cached locally).
+            One ``IModel`` instance per cached model variant.
         """
         from foundry_local_sdk._native.api import api, ffi
 
