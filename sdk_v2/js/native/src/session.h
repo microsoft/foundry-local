@@ -52,7 +52,8 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
+  // Workers retain the session until native processing finishes.
+  std::shared_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
 };
 
@@ -84,7 +85,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
 };
 
@@ -114,7 +115,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
 };
 

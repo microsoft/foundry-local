@@ -6,7 +6,6 @@ import {
   type NativeSession,
   getAddon,
 } from "./detail/native.js";
-import type { Item } from "./items.js";
 // Public `Session` / `ChatSession` classes.
 //
 // Surface:
@@ -25,6 +24,7 @@ import type { Item } from "./items.js";
 //   * `ChatSession` adds turn tracking and tool definitions.
 //   * `setOptions(...)`, `dispose()`, `Symbol.dispose`.
 import type { IModel } from "./imodel.js";
+import type { Item } from "./items.js";
 import { Model, unwrapNativeModel } from "./model.js";
 import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
@@ -45,10 +45,8 @@ export interface StreamOptions {
  * once the native call completes — carrying stop reason, usage, and any
  * non-streamed items (e.g. the final aggregated text item).
  *
- * `response` settles after the iterator finishes draining. It rejects with
- * the same error the iterator would throw (including `AbortError` when the
- * stream is cancelled, and `OperationCancelled` when the consumer breaks
- * early without an `AbortSignal`).
+ * `response` settles after all native items reach JavaScript, even without iteration.
+ * It rejects with the same error as the iterator.
  */
 export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
@@ -100,10 +98,7 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  * caps producer-side queueing), abort signal wiring, error mapping, and
  * deterministic cleanup on early break.
  *
- * The native call starts eagerly so the returned `response` promise is
- * meaningful even if the caller never iterates (e.g. awaits `.response`
- * directly). The promise settles only after the consumer has fully drained
- * the iterator, mirroring native finalize-on-drain semantics.
+ * Native processing starts immediately, even if the iterator is never consumed.
  */
 function streamItems(
   native: NativeSession,
@@ -130,19 +125,8 @@ function streamItems(
       // Cancel is best-effort; the request may already be complete.
     }
   };
-  if (signal !== undefined) {
-    signal.addEventListener("abort", onAbort, { once: true });
-  }
-
-  const mapError = (err: unknown): unknown => {
-    if (
-      signal?.aborted === true &&
-      isFoundryLocalError(err) &&
-      err.code === FlErrorCode.OperationCancelled
-    ) {
-      (err as { name: string }).name = "AbortError";
-    }
-    return err;
+  const removeAbortListener = (): void => {
+    signal?.removeEventListener("abort", onAbort);
   };
 
   let responseResolve!: (resp: Response) => void;
@@ -156,13 +140,30 @@ function streamItems(
   // awaited.
   responsePromise.catch(() => {});
 
-  if (signal?.aborted === true) {
-    const err = makeAbortError("Stream aborted before start");
-    nativeError = err;
+  const rejectResponse = (error: unknown): void => {
+    removeAbortListener();
+    const mapped = mapSignalAbortError(error, signal);
+    nativeError = mapped;
     done = true;
-    responseReject(err);
+    responseReject(mapped);
+    wake();
+  };
+  const resolveResponse = (response: unknown): void => {
+    if (signal?.aborted === true) {
+      rejectResponse(makeAbortError("The operation was aborted"));
+      return;
+    }
+    removeAbortListener();
+    done = true;
+    responseResolve(response as Response);
+    wake();
+  };
+
+  if (signal?.aborted === true) {
+    rejectResponse(makeAbortError("Stream aborted before start"));
   } else {
     const nativeReq = unwrapNativeRequest(request);
+    signal?.addEventListener("abort", onAbort, { once: true });
     const onItem = (item: unknown): void => {
       // Native may deliver items synchronously during startup before the
       // iterator reaches its first await. That's safe: iterate() always
@@ -171,20 +172,12 @@ function streamItems(
       queue.push(item as Item);
       wake();
     };
-    native.processStreamingRequest(nativeReq, onItem).then(
-      (resp: unknown) => {
-        done = true;
-        responseResolve(resp as Response);
-        wake();
-      },
-      (err: unknown) => {
-        const mapped = mapError(err);
-        nativeError = mapped;
-        done = true;
-        responseReject(mapped);
-        wake();
-      },
-    );
+    try {
+      void native.processStreamingRequest(nativeReq, onItem).then(resolveResponse, rejectResponse);
+    } catch (error) {
+      removeAbortListener();
+      throw error;
+    }
   }
 
   async function* iterate(): AsyncGenerator<Item> {
@@ -206,9 +199,7 @@ function streamItems(
         });
       }
     } finally {
-      if (signal !== undefined) {
-        signal.removeEventListener("abort", onAbort);
-      }
+      removeAbortListener();
       if (!done) {
         // Consumer broke out early — cancel the request and let the native
         // call settle so the response promise observers don't hang. The
@@ -240,6 +231,21 @@ function makeAbortError(message: string): Error {
   return err;
 }
 
+function isSignalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+function mapSignalAbortError(error: unknown, signal: AbortSignal | undefined): unknown {
+  if (
+    isSignalAborted(signal) &&
+    isFoundryLocalError(error) &&
+    error.code === FlErrorCode.OperationCancelled
+  ) {
+    return makeAbortError("The operation was aborted");
+  }
+  return error;
+}
+
 export abstract class Session {
   // `protected` (not `#private`) so subclasses can downcast for
   // modality-specific native methods without a second field/storage slot.
@@ -250,26 +256,24 @@ export abstract class Session {
   }
 
   /**
-   * Run inference for `request`. Resolves with a `Response` snapshot when
-   * generation completes. The full output is materialised before resolution
-   * — use {@link processStreamingRequest} to consume items incrementally.
+   * Run inference for `request`. Resolves with the final `Response`.
+   * Use {@link processStreamingRequest} to consume items as they arrive.
    *
    * Rejects with a `FoundryLocalError` on native failure. Calling
    * `request.cancel()` from another async context causes this promise to
    * reject with `code === FlErrorCode.OperationCancelled`.
    *
-   * Cancellation: pass `{ signal }` to abort a generation that is already running.
-   * Aborting interrupts inferencing mid-compute, not merely between tokens, so a
-   * non-terminating generation cannot keep this session's reference to the model alive.
+   * Cancellation: pass `{ signal }` to abort a running generation.
+   * Aborting the signal rejects the operation with a new `AbortError`.
    */
   async processRequest(request: Request, options?: StreamOptions): Promise<Response> {
-    const nativeReq = unwrapNativeRequest(request);
     const signal = options?.signal;
 
-    if (signal?.aborted) {
-      request.cancel();
+    if (signal?.aborted === true) {
+      throw makeAbortError("Request aborted before start");
     }
 
+    const nativeReq = unwrapNativeRequest(request);
     const onAbort = (): void => {
       try {
         request.cancel();
@@ -281,10 +285,15 @@ export abstract class Session {
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      return (await this.native.processRequest(nativeReq)) as Response;
+      const response = (await this.native.processRequest(nativeReq)) as Response;
+      if (isSignalAborted(signal)) {
+        throw makeAbortError("The operation was aborted");
+      }
+      return response;
+    } catch (error) {
+      throw mapSignalAbortError(error, signal);
     } finally {
-      // Detach before returning so the signal cannot cancel a subsequent reuse of
-      // this request, and so an long-lived signal does not retain it.
+      // This listener belongs only to this request invocation.
       signal?.removeEventListener("abort", onAbort);
     }
   }
@@ -337,9 +346,6 @@ export abstract class Session {
    * with `FoundryLocalError` / `code === FlErrorCode.InvalidUsage`.
    */
   dispose(): void {
-    // Interrupt anything still running first. Releasing the native session while a worker
-    // thread is inside processRequest is a use-after-free, and a non-terminating
-    // generation would otherwise keep the model loaded past teardown.
     if (!this.native.isDisposed()) {
       try {
         this.native.cancel();

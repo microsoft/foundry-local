@@ -76,8 +76,7 @@ void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& res
   // Single batched forward pass for all inputs.
   auto embeddings = GenerateEmbeddingsBatch(inputs, request);
 
-  // A cancelled or timed-out batch is incomplete — emit no partial items and let the
-  // caller see it stopped early, rather than silently returning fewer vectors than inputs.
+  // Embeddings responses are all-or-nothing. Discard vectors computed before cancellation.
   if (request.canceled) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
     return;
@@ -127,8 +126,7 @@ void EmbeddingsSession::ProcessEmbeddingsJson(const std::string& request_json,
   if (!inputs.empty()) {
     auto embeddings = GenerateEmbeddingsBatch(inputs, original_request);
 
-    // Cancelled or timed out mid-batch: report the stop instead of returning a
-    // short data array that a client would read as a complete result.
+    // Embeddings responses are all-or-nothing. Do not serialize vectors computed before cancellation.
     if (original_request.canceled) {
       response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
       return;
@@ -207,9 +205,7 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
   generator->AppendTokenSequences(*sequences);
 
-  // Publish the generator so cancellation or an expired deadline interrupts this forward
-  // pass. A single long input can exceed the budget without ever reaching the loop check
-  // in GenerateEmbeddingsBatch.
+  // Adapt and register this raw OGA generator so cancellation can interrupt the forward pass.
   OgaGeneratorCancellable cancellable(*generator);
   ActiveGenerator active(request, cancellable);
 

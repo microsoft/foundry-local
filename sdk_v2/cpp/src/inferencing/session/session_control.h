@@ -23,9 +23,9 @@ class SessionControl {
   bool Register(const std::shared_ptr<CancellationState>& state);
   void Unregister(const CancellationState& state);
 
-  /// Wait for the single chat/audio permit. Cancellation and timeout wake this wait through NotifyAdmission().
-  Admission AcquirePermit(const CancellationState& state);
-  void ReleasePermit();
+  /// Wait until no other chat/audio invocation is running. Cancellation or timeout ends the wait.
+  Admission AcquireInferenceSlot(const CancellationState& state);
+  void ReleaseInferenceSlot();
 
   /// Terminally stop every active or queued invocation and reject future registrations.
   void Terminate();
@@ -36,7 +36,7 @@ class SessionControl {
   std::mutex mutex_;
   std::condition_variable cv_;
   bool terminal_ = false;
-  bool permit_taken_ = false;
+  bool inference_slot_in_use_ = false;
   std::vector<std::shared_ptr<CancellationState>> active_;
 };
 

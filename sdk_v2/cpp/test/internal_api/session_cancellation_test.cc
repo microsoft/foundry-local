@@ -176,7 +176,7 @@ TEST(SessionCancellationTest, QueuedRequestTimeoutIncludesAdmissionWait) {
   first.get();
 }
 
-TEST(SessionCancellationTest, QueuedRequestCancelWakesAdmissionWait) {
+TEST(SessionCancellationTest, QueuedRequestCancelReturnsBeforeInference) {
   Harness harness;
   Gate entered;
   Gate release;
@@ -319,7 +319,7 @@ TEST(SessionCancellationTest, SessionCancelStopsAllInvocationsAndRejectsFutureCa
             FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
 }
 
-TEST(SessionCancellationTest, GeneratorUnregisterWaitsForSynchronousCancel) {
+TEST(SessionCancellationTest, GeneratorLifetimeExtendsUntilCancelReturns) {
   Harness harness;
   Gate entered;
   Gate unregistered;
@@ -353,7 +353,7 @@ TEST(SessionCancellationTest, GeneratorUnregisterWaitsForSynchronousCancel) {
   EXPECT_TRUE(unregistered.Wait());
 }
 
-TEST(SessionCancellationTest, SequentialRequestReuseGetsFreshStateAndIdleCancelIsNoOp) {
+TEST(SessionCancellationTest, CanceledRequestCanBeReusedAndIdleCancelIsNoOp) {
   Harness harness;
   Gate first_entered;
   std::atomic<int> invocation{0};

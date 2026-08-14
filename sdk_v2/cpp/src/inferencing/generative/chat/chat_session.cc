@@ -583,9 +583,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     }
   };
 
-  // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
-  // it mid-compute, not just between tokens. Scoped to the generation loop: the cached
-  // generator may be reset below, and it must not stay published past this point.
+  // Register the cached generator only for this loop so cancellation can interrupt the current ORT call safely.
   {
     ActiveGenerator active(request, *cached_generator_);
 
@@ -622,28 +620,21 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, stopped,
                          response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
 
-  // A cancellation observed before this first-winner seal cannot commit history. Cancellation after the seal is the
-  // accepted late-completion race and leaves the successful turn intact.
+  // Do not commit history if cancellation or timeout stopped the request.
   if (stopped || !request.TryBeginCompletion()) {
     if (request.EngineInterruptionRequested()) {
       cached_generator_.reset();
       cached_tool_ctx_ = {};
     } else {
-      // Callback consumer-stop is cooperative, so its generator remains valid for a sequential retry.
+      // The callback stopped output without terminating the generator.
       cached_generator_->RewindTo(pre_turn_token_count);
     }
 
     return;
   }
 
-  // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
-  // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
-  // return true on the next turn. Invalidate after any grammar-guided generation so the next turn rebuilds.
-  //
-  // Reasoning models (qwen3, etc.) also need invalidation: continuous decoding leaves prior <think> tokens in the KV
-  // cache and the model fails to close subsequent reasoning blocks. The chat template strips prior </think> content
-  // when re-applied to history, so a rebuild restores correct behavior. This matches C#, which always applies the
-  // full template per turn.
+  // Rebuild after grammar-guided generation because a completed grammar is at EOS and an interrupted grammar is
+  // unusable. Rebuild after reasoning generation because history removes prior reasoning text but the KV cache does not.
   const bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
   const bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
 
@@ -819,8 +810,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // Generate token-by-token
   std::string text;
   {
-    // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
-    // an in-flight compute, not just the loop between tokens.
+    // Register this generator so cancellation can interrupt the current ORT call instead of waiting for the loop check.
     ActiveGenerator active(original_request, *generator);
 
     while (!generator->IsDone() && !original_request.ShouldStop()) {

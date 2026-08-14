@@ -11,6 +11,7 @@
 #include <foundry_local/foundry_local_cpp.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -108,8 +109,16 @@ Napi::Value Request::SetTimeout(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
   const double ms = info[0].As<Napi::Number>().DoubleValue();
+  constexpr double kMaxSafeInteger = 9007199254740991.0;
+  if (!std::isfinite(ms) || std::trunc(ms) != ms ||
+      ms < -kMaxSafeInteger || ms > kMaxSafeInteger) {
+    Napi::TypeError::New(env, "setTimeout: timeoutMs must be a finite safe integer")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  const int64_t timeout_ms = ms > 0 ? static_cast<int64_t>(ms) : 0;
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    impl_->SetTimeout(std::chrono::milliseconds(ms > 0 ? static_cast<int64_t>(ms) : 0));
+    impl_->SetTimeout(std::chrono::milliseconds(timeout_ms));
     return env.Undefined();
   });
 }

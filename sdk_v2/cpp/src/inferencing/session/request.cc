@@ -66,7 +66,7 @@ void Request::EndInvocation(CancellationState& state) const {
   }
 
   LatchOutcome(state);
-  state.DetachDiagnostics();
+  state.DetachRequestFlags();
   cancellation_link_->active.reset();
 }
 
@@ -81,11 +81,11 @@ void Request::Cancel() const {
     return;
   }
 
-  state->TryStop(CancellationOutcome::kRequestCanceled);
+  state->TryStop(CancellationOutcome::kCanceled);
   LatchOutcome(*state);
 }
 
-void Request::StopForConsumer() const {
+void Request::StopFromStreamingCallback() const {
   canceled.store(true, std::memory_order_relaxed);
 
   const auto state = ActiveCancellationState();

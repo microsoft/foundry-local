@@ -25,14 +25,14 @@ bool CancellationState::TryStop(CancellationOutcome reason) {
     }
 
     outcome_ = reason;
-    LatchDiagnosticsLocked();
+    UpdateRequestFlagsLocked();
     if (RequiresEngineInterruption(reason)) {
       engine_interruption_requested_ = true;
       InterruptGeneratorsLocked();
     }
   }
 
-  Publish();
+  NotifyWaiters();
   return true;
 }
 
@@ -50,14 +50,14 @@ bool CancellationState::ShouldStop() {
     }
 
     outcome_ = CancellationOutcome::kTimedOut;
-    LatchDiagnosticsLocked();
+    UpdateRequestFlagsLocked();
     engine_interruption_requested_ = true;
     InterruptGeneratorsLocked();
     timed_out = true;
   }
 
   if (timed_out) {
-    Publish();
+    NotifyWaiters();
   }
 
   return timed_out;
@@ -84,7 +84,7 @@ bool CancellationState::TryBeginCompletion() {
 
     if (DeadlineExpiredLocked()) {
       outcome_ = CancellationOutcome::kTimedOut;
-      LatchDiagnosticsLocked();
+      UpdateRequestFlagsLocked();
       engine_interruption_requested_ = true;
       InterruptGeneratorsLocked();
       timed_out = true;
@@ -93,7 +93,7 @@ bool CancellationState::TryBeginCompletion() {
     }
   }
 
-  Publish();
+  NotifyWaiters();
   return !timed_out;
 }
 
@@ -104,10 +104,10 @@ void CancellationState::Complete() {
       return;
     }
 
-    outcome_ = CancellationOutcome::kCompleted;
+    outcome_ = CancellationOutcome::kFinished;
   }
 
-  Publish();
+  NotifyWaiters();
 }
 
 void CancellationState::Fail() {
@@ -117,10 +117,10 @@ void CancellationState::Fail() {
       return;
     }
 
-    outcome_ = CancellationOutcome::kFaulted;
+    outcome_ = CancellationOutcome::kFinished;
   }
 
-  Publish();
+  NotifyWaiters();
 }
 
 bool CancellationState::WaitForDeadline() {
@@ -139,12 +139,12 @@ bool CancellationState::WaitForDeadline() {
     }
 
     outcome_ = CancellationOutcome::kTimedOut;
-    LatchDiagnosticsLocked();
+    UpdateRequestFlagsLocked();
     engine_interruption_requested_ = true;
     InterruptGeneratorsLocked();
   }
 
-  Publish();
+  NotifyWaiters();
   return true;
 }
 
@@ -186,7 +186,7 @@ bool CancellationState::EngineInterruptionRequested() const {
   return engine_interruption_requested_;
 }
 
-void CancellationState::DetachDiagnostics() noexcept {
+void CancellationState::DetachRequestFlags() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   canceled_ = nullptr;
   timed_out_ = nullptr;
@@ -206,7 +206,7 @@ void CancellationState::InterruptGeneratorsLocked() noexcept {
   }
 }
 
-void CancellationState::LatchDiagnosticsLocked() noexcept {
+void CancellationState::UpdateRequestFlagsLocked() noexcept {
   if (canceled_ && IsStopOutcome(outcome_)) {
     canceled_->store(true, std::memory_order_relaxed);
   }
@@ -216,7 +216,7 @@ void CancellationState::LatchDiagnosticsLocked() noexcept {
   }
 }
 
-void CancellationState::Publish() {
+void CancellationState::NotifyWaiters() {
   cv_.notify_all();
 
   if (const auto control = control_.lock()) {

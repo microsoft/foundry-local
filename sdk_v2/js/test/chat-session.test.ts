@@ -1,8 +1,9 @@
 // Non-streaming ChatSession tests against a real loaded chat model.
 // Gated by FOUNDRY_TEST_DATA_DIR. Streaming + AbortSignal coverage lives in
 // streaming.test.ts.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { FlErrorCode, isFoundryLocalError } from "../src/detail/errors.js";
 import { Item } from "../src/items.js";
 import { Request } from "../src/request.js";
 import { ChatSession, Session } from "../src/session.js";
@@ -93,6 +94,95 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
       expect(outputText(resp.output).toLowerCase()).toContain("ok");
     },
     2 * 60_000,
+  );
+
+  it(
+    "a pre-aborted signal rejects with a fresh AbortError before native work starts",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const req = new Request()
+        .addItem(Item.userMessage("Reply with the single word 'ok'."))
+        .setOptions({ search: { maxOutputTokens: 4, temperature: 0 } });
+      const controller = new AbortController();
+      const abortReason = new Error("caller reason");
+      controller.abort(abortReason);
+      const turnsBefore = session.turnCount;
+
+      let caught: unknown;
+      try {
+        await session.processRequest(req, { signal: controller.signal });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toMatchObject({ name: "AbortError" });
+      expect(caught).not.toBe(abortReason);
+      expect(isFoundryLocalError(caught)).toBe(false);
+      expect(session.turnCount).toBe(turnsBefore);
+
+      const response = await session.processRequest(req);
+      expect(outputText(response.output).toLowerCase()).toContain("ok");
+    },
+    2 * 60_000,
+  );
+
+  it(
+    "a mid-flight signal cancels the native request and rejects with a fresh AbortError",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const req = new Request()
+        .addItem(Item.userMessage("Write a 1000-word essay about the history of bread."))
+        .setOptions({ search: { maxOutputTokens: 4096, temperature: 0 } });
+      const controller = new AbortController();
+      const abortReason = new Error("caller reason");
+      const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+      const pending = session.processRequest(req, { signal: controller.signal });
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      controller.abort(abortReason);
+
+      let caught: unknown;
+      try {
+        await pending;
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toMatchObject({ name: "AbortError" });
+      expect(caught).not.toBe(abortReason);
+      expect(isFoundryLocalError(caught)).toBe(false);
+      expect((caught as { code?: unknown }).code).toBeUndefined();
+      expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
+      removeListener.mockRestore();
+
+      req.setOptions({ search: { maxOutputTokens: 4, temperature: 0 } });
+      const response = await session.processRequest(req);
+      expect(response.output.length).toBeGreaterThanOrEqual(1);
+    },
+    3 * 60_000,
+  );
+
+  it(
+    "dispose keeps an in-flight native session alive until its worker settles",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const activeSession = session;
+      const pending = activeSession.processRequest(
+        new Request()
+          .addItem(Item.userMessage("Write a 1000-word essay about the history of bread."))
+          .setOptions({ search: { maxOutputTokens: 4096, temperature: 0 } }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      activeSession.dispose();
+
+      expect(activeSession.disposed).toBe(true);
+      await expect(pending).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.OperationCancelled,
+      });
+    },
+    3 * 60_000,
   );
 
   it(

@@ -65,20 +65,20 @@ class RawGeneratorSession : public fl::Session {
 
   fl::SessionType Type() const override { return fl::SessionType::kChat; }
 
-  /// True once TryGenerateNextToken absorbed the engine's termination error instead of letting it escape.
-  bool StoppedWithoutThrowing() const { return stopped_without_throwing_; }
+  /// True when cancellation converted the generator's termination exception into a normal stop.
+  bool TerminationWasHandled() const { return termination_was_handled_; }
 
  private:
   void ProcessRequestImpl(const fl::Request& request, fl::Response& /*response*/) override {
     ActiveGenerator active(request, generator_);
-    stopped_without_throwing_ = !fl::TryGenerateNextToken(generator_, request);
+    termination_was_handled_ = !fl::TryGenerateNextToken(generator_, request);
   }
 
   BlockingGenerator generator_;
-  bool stopped_without_throwing_ = false;
+  bool termination_was_handled_ = false;
 };
 
-TEST(OgaGeneratorCancellationTest, RuntimeErrorAfterRequestCancellationStopsGeneration) {
+TEST(OgaGeneratorCancellationTest, TerminationErrorAfterCancellationReturnsStopped) {
   fl::Request request;
   request.canceled.store(true);
   ThrowingGenerator generator;
@@ -105,12 +105,12 @@ TEST(OgaGeneratorCancellationTest, DeadlineTerminationIsTranslatedToTimeoutBySes
     EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_TIMEOUT);
   }
 
-  EXPECT_TRUE(session.StoppedWithoutThrowing());
+  EXPECT_TRUE(session.TerminationWasHandled());
   EXPECT_TRUE(request.canceled.load());
   EXPECT_TRUE(request.timed_out.load());
 }
 
-TEST(OgaGeneratorCancellationTest, RuntimeErrorFromRunningRequestIsRethrownUnchanged) {
+TEST(OgaGeneratorCancellationTest, UnrelatedRuntimeErrorIsRethrown) {
   fl::Request request;
   ThrowingGenerator generator;
   generator.message = "unrelated engine failure";

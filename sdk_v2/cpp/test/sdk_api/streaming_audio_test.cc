@@ -224,10 +224,12 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
   request.Cancel();
   queue.MarkFinished();
 
-  Response response = future.get();
-
-  EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE)
-      << "Cancelled request should have NONE finish reason";
+  try {
+    static_cast<void>(future.get());
+    FAIL() << "Expected request cancellation";
+  } catch (const foundry_local::Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
 }
 
 TEST_F(StreamingAudioFixture, StreamingCallbackReceivesTokens) {

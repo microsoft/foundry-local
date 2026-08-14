@@ -124,11 +124,7 @@ void OnnxChatGenerator::Cancel() {
 
   // Use the ORT GenAI engine-level termination to interrupt mid-compute
   // (e.g. during a long prefill), not just between token boundaries.
-  try {
-    generator_->SetRuntimeOption("terminate_session", "1");
-  } catch (...) {
-    // SetRuntimeOption may not be supported by all ORT GenAI builds
-  }
+  generator_->SetRuntimeOption("terminate_session", "1");
 }
 
 // ---------------------------------------------------------------------------

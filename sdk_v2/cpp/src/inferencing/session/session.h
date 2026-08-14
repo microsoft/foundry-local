@@ -150,7 +150,7 @@ class Session {
 
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
-  /// RAII publication of a generator to the cancellation state attached to this request.
+  /// Registers a generator for cancellation until this guard is destroyed.
   class ActiveGenerator {
    public:
     ActiveGenerator(const Request& request, ICancellable& generator)
@@ -175,8 +175,8 @@ class Session {
   };
 
  private:
-  static void WatchDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
-                            std::chrono::milliseconds timeout);
+  static void MonitorDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
+                             std::chrono::milliseconds timeout);
 
   /// Reject items (and message content parts) whose type the model's task does not advertise as an
   /// input. Currently applies to chat tasks only.

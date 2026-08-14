@@ -2,25 +2,29 @@
 // Licensed under the MIT License.
 // Tests for SessionManager: tracking, shutdown rejection, and session cache.
 
-#include "inferencing/session/session_manager.h"
-#include "inferencing/session/session_registration.h"
-#include "inferencing/generative/chat/chat_session.h"
-#include "inferencing/model_load_manager.h"
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
-#include "logger.h"
-#include "model.h"
+#include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/model_load_manager.h"
+#include "inferencing/session/live_session_registry.h"
+#include "inferencing/session/session_control.h"
+#include "inferencing/session/session_manager.h"
+#include "inferencing/session/session_registration.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "logger.h"
+#include "model.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace fl;
 
@@ -323,10 +327,7 @@ TEST_F(SessionManagerTest, CheckedOutSessionNotAffectedByCheckIn) {
 
 namespace {
 
-/// Test-only Session that blocks inside ProcessRequestImpl until its request's cancel flag is
-/// observed. Lets a unit test verify SessionManager::CancelAll() propagates cancellation to every
-/// registered session without loading a model. Polls the atomic exactly like the real generation
-/// loop, with a safety deadline so a broken Cancel() fails the test instead of hanging the suite.
+/// Model-free Session that waits until its Request is canceled.
 class BlockingCancelSession : public Session {
  public:
   BlockingCancelSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
@@ -343,7 +344,7 @@ class BlockingCancelSession : public Session {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!request.canceled.load(std::memory_order_relaxed)) {
       if (std::chrono::steady_clock::now() >= deadline) {
-        return;  // safety net: a broken Cancel() must not hang the test suite
+        return;  // Prevent a failed test from hanging.
       }
 
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -354,7 +355,31 @@ class BlockingCancelSession : public Session {
   std::atomic<bool> in_flight_{false};
 };
 
-/// Spin until `pred` is true or the timeout elapses. Returns pred's final value.
+class MovableCancelSession : public Session {
+ public:
+  MovableCancelSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  MovableCancelSession(MovableCancelSession&&) noexcept = default;
+
+  SessionType Type() const override { return SessionType::kChat; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& /*response*/) override {}
+};
+
+using SessionControls = std::vector<std::shared_ptr<SessionControl>>;
+
+bool ContainsControl(const SessionControls& controls, const std::shared_ptr<SessionControl>& target) {
+  return std::find(controls.begin(), controls.end(), target) != controls.end();
+}
+
+std::shared_ptr<SessionControl> FindAddedControl(const SessionControls& before, const SessionControls& after) {
+  const auto added = std::find_if(after.begin(), after.end(),
+                                  [&](const auto& control) { return !ContainsControl(before, control); });
+  return added == after.end() ? nullptr : *added;
+}
+
 template <typename Pred>
 bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -385,8 +410,7 @@ TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
   Request req1;
   Request req2;
 
-  // Drive each session's blocking ProcessRequest on its own worker so both requests are in-flight
-  // (published in the cancellation state) at the same time — exercising "every registered session".
+  // Run both requests concurrently so CancelAll() must cancel both active calls.
   auto f1 = std::async(std::launch::async, [&] {
     Response resp;
     s1.ProcessRequest(req1, resp);
@@ -401,7 +425,7 @@ TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
 
   mgr.CancelAll();
 
-  // CancelAll set each request's flag; the blocked workers observe it and return promptly.
+  // Both calls must observe cancellation and return.
   EXPECT_EQ(f1.wait_for(std::chrono::seconds(2)), std::future_status::ready);
   EXPECT_EQ(f2.wait_for(std::chrono::seconds(2)), std::future_status::ready);
   EXPECT_TRUE(req1.canceled.load(std::memory_order_relaxed));
@@ -409,9 +433,7 @@ TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
 }
 
 TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceledAndRejected) {
-  // Models the late-admission window: a session is registered (its streaming thread exists) but the
-  // request hasn't reached ProcessRequest when the shutdown sweep runs. Cancel()'s per-request loop
-  // can't see this request yet, so the terminal latch must stamp and reject it at admission.
+  // Cancel before ProcessRequest() starts. The control must reject the later call.
   fl::test::FakeServiceBindings svc;
   Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
   TelemetryLogger telemetry{"test", fl::test::NullLog()};
@@ -420,12 +442,10 @@ TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceledAndRej
   BlockingCancelSession s(catalog_model, fl::test::NullLog(), telemetry);
   SessionRegistration r(mgr, s);
 
-  // Cancel while no request is in-flight; the per-request cancel loop has nothing to flip.
   mgr.CancelAll();
 
   Request req;
 
-  // ProcessRequest must stamp the late request before rejecting the terminal session.
   auto f = std::async(std::launch::async, [&] {
     Response resp;
     s.ProcessRequest(req, resp);
@@ -435,6 +455,59 @@ TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceledAndRej
       << "late-admitted request was not rejected promptly";
   EXPECT_THROW(f.get(), fl::Exception);
   EXPECT_TRUE(req.canceled.load(std::memory_order_relaxed));
+}
+
+TEST(SessionManagerCancelTest, RegistrySnapshotControlSurvivesSessionDestruction) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+
+  const auto controls_before = LiveSessionRegistry::Instance().Snapshot();
+  auto session = std::make_unique<MovableCancelSession>(catalog_model, fl::test::NullLog(), telemetry);
+  const auto retained_snapshot = LiveSessionRegistry::Instance().Snapshot();
+  const auto retained_control = FindAddedControl(controls_before, retained_snapshot);
+  ASSERT_NE(retained_control, nullptr);
+
+  session.reset();
+
+  EXPECT_NO_THROW(retained_control->Terminate());
+  EXPECT_FALSE(ContainsControl(LiveSessionRegistry::Instance().Snapshot(), retained_control));
+}
+
+TEST(SessionManagerCancelTest, RegistrySnapshotBeforeMoveCancelsDestinationAfterSourceDestruction) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+
+  const auto controls_before_source = LiveSessionRegistry::Instance().Snapshot();
+  auto source = std::make_unique<MovableCancelSession>(catalog_model, fl::test::NullLog(), telemetry);
+  const auto controls_before_move = LiveSessionRegistry::Instance().Snapshot();
+  const auto transferred_control = FindAddedControl(controls_before_source, controls_before_move);
+  ASSERT_NE(transferred_control, nullptr);
+
+  auto destination = std::make_unique<MovableCancelSession>(std::move(*source));
+  const auto controls_after_move = LiveSessionRegistry::Instance().Snapshot();
+  const auto source_idle_control = FindAddedControl(controls_before_move, controls_after_move);
+  ASSERT_NE(source_idle_control, nullptr);
+  EXPECT_NE(source_idle_control, transferred_control);
+  EXPECT_TRUE(ContainsControl(controls_after_move, transferred_control));
+
+  source.reset();
+  const auto controls_after_source_destruction = LiveSessionRegistry::Instance().Snapshot();
+  EXPECT_TRUE(ContainsControl(controls_after_source_destruction, transferred_control));
+  EXPECT_FALSE(ContainsControl(controls_after_source_destruction, source_idle_control));
+
+  transferred_control->Terminate();
+
+  Request request;
+  Response response;
+  try {
+    destination->ProcessRequest(request, response);
+    FAIL() << "expected destination to retain the terminal transferred control";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  }
+  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
 }
 
 TEST(SessionManagerNoModelTest, CheckInDuringShutdownDoesNotRepopulateCache) {

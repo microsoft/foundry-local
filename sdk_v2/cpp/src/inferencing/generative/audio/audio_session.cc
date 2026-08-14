@@ -249,8 +249,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   std::vector<std::unique_ptr<SpeechSegmentItem>> segments;
   segments.reserve(kInitialTokenCapacity);
 
-  // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
-  // an in-flight compute, not just the loop between tokens.
+  // Register this generator so cancellation can interrupt the current ORT call instead of waiting for the loop check.
   {
     ActiveGenerator active(request, *generator);
 
@@ -341,8 +340,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
   auto tokenizer_stream = OgaTokenizerStream::Create(Model().Tokenizer().Oga());
 
-  // Publish the raw generator so Session::Cancel() and the deadline watchdog can interrupt
-  // an in-flight encoder/decoder pass. Spans steps 3-5 below, which all drive this generator.
+  // Adapt and register this raw OGA generator so cancellation can interrupt the encoder and decoder calls below.
   OgaGeneratorCancellable cancellable(*generator);
   ActiveGenerator active(request, cancellable);
 
@@ -518,8 +516,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   // Generate token-by-token
   std::string text;
   {
-    // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
-    // an in-flight compute, not just the loop between tokens.
+    // Register this generator so cancellation can interrupt the current ORT call instead of waiting for the loop check.
     ActiveGenerator active(original_request, *generator);
 
     while (!generator->IsDone() && !original_request.ShouldStop()) {
@@ -683,8 +680,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   auto generator = OgaGenerator::Create(oga_model, *generator_params);
   TryNemotronLanguageId(*generator, language);
 
-  // Publish the raw generator so cancellation/deadline can interrupt an in-flight
-  // encoder or decode pass rather than only stopping between chunks.
+  // Adapt and register this raw OGA generator so cancellation can interrupt encoder and decoder calls.
   OgaGeneratorCancellable cancellable(*generator);
   ActiveGenerator active(original_request, cancellable);
 

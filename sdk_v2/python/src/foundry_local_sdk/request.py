@@ -4,6 +4,7 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from foundry_local_sdk.exception import FoundryLocalException
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from foundry_local_sdk.session_types import RequestOptions
 
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+_MAX_TIMEOUT_MS = (1 << 64) - 1
 
 
 class Request:
@@ -25,9 +27,7 @@ class Request:
     """
 
     def __init__(self) -> None:
-        # Initialise lifecycle flags FIRST so that if Request_Create raises,
-        # __del__ sees a fully-constructed (but already-closed) object and
-        # cleanly no-ops instead of AttributeError'ing inside the GC.
+        # Set cleanup fields before Request_Create can fail.
         self._closed = True
         self._ptr = None
         from foundry_local_sdk._native import ffi
@@ -57,9 +57,7 @@ class Request:
         self._check_open()
         from foundry_local_sdk._native.api import api
 
-        # Pass the raw native pointer first; ``_release_ownership`` only flips the Python-side ``_owns`` flag
-        # (it does NOT zero ``_ptr``), so calling it after the native call succeeds is safe and ensures we
-        # don't leak the native handle if ``check_status`` raises.
+        # Relinquish Python ownership only after the native call succeeds.
         api.check_status(
             api.inference.Request_AddItem(self._ptr, item._ptr, transfer_ownership)
         )
@@ -112,13 +110,9 @@ class Request:
     def set_timeout(self, timeout: "float | None") -> "Request":
         """Set a wall-clock deadline for this request, in seconds.
 
-        The deadline covers the entire ``process_request`` call, including prefill, and
-        applies to streaming and non-streaming generation alike. On expiry the run is
-        interrupted mid-compute and ``process_request`` raises
-        :class:`~foundry_local_sdk.exceptions.FoundryLocalError` with a timeout code.
-
-        The deadline is re-armed on each ``process_request`` call, so a request object may
-        be reused.
+        Each ``process_request`` call starts a new countdown using this duration. The
+        countdown includes time waiting for the session and streaming or non-streaming
+        inference. If it expires, ``process_request`` raises a timeout error.
 
         Args:
             timeout: Deadline in seconds. ``None`` or a non-positive value disables it.
@@ -126,7 +120,22 @@ class Request:
         self._check_open()
         from foundry_local_sdk._native.api import api
 
-        timeout_ms = 0 if timeout is None or timeout <= 0 else int(timeout * 1000)
+        if timeout is None:
+            timeout_ms = 0
+        else:
+            try:
+                is_finite = math.isfinite(timeout)
+            except OverflowError as exc:
+                raise ValueError("timeout is too large") from exc
+            if not is_finite:
+                raise ValueError("timeout must be finite")
+            if timeout <= 0:
+                timeout_ms = 0
+            else:
+                milliseconds = timeout * 1000
+                if not math.isfinite(milliseconds) or milliseconds > _MAX_TIMEOUT_MS:
+                    raise ValueError("timeout is too large")
+                timeout_ms = int(milliseconds)
         api.check_status(api.inference.Request_SetTimeoutMs(self._ptr, timeout_ms))
         return self
 

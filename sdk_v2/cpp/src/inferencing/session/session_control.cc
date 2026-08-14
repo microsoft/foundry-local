@@ -27,9 +27,9 @@ void SessionControl::Unregister(const CancellationState& state) {
   cv_.notify_all();
 }
 
-SessionControl::Admission SessionControl::AcquirePermit(const CancellationState& state) {
+SessionControl::Admission SessionControl::AcquireInferenceSlot(const CancellationState& state) {
   std::unique_lock<std::mutex> lock(mutex_);
-  cv_.wait(lock, [this, &state] { return terminal_ || state.StopRequested() || !permit_taken_; });
+  cv_.wait(lock, [this, &state] { return terminal_ || state.StopRequested() || !inference_slot_in_use_; });
 
   if (terminal_) {
     return Admission::kTerminal;
@@ -39,14 +39,14 @@ SessionControl::Admission SessionControl::AcquirePermit(const CancellationState&
     return Admission::kStopped;
   }
 
-  permit_taken_ = true;
+  inference_slot_in_use_ = true;
   return Admission::kAdmitted;
 }
 
-void SessionControl::ReleasePermit() {
+void SessionControl::ReleaseInferenceSlot() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    permit_taken_ = false;
+    inference_slot_in_use_ = false;
   }
 
   cv_.notify_all();
@@ -64,7 +64,7 @@ void SessionControl::Terminate() {
   cv_.notify_all();
 
   for (const auto& state : active) {
-    state->TryStop(CancellationOutcome::kSessionCanceled);
+    state->TryStop(CancellationOutcome::kCanceled);
   }
 }
 

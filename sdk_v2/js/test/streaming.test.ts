@@ -1,6 +1,6 @@
 // Streaming tests for Session.stream / ChatSession.stream.
 // Gated by FOUNDRY_TEST_DATA_DIR (real model required).
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FlErrorCode, isFoundryLocalError } from "../src/detail/errors.js";
 import { Item } from "../src/items.js";
@@ -70,7 +70,8 @@ function extractText(item: Item): string {
 
 describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real model)", () => {
   let fixture: RealModelManagerFixture | undefined;
-  let session: ChatSession | undefined;
+  let session: ChatSession;
+  let sessionForCleanup: ChatSession | undefined;
 
   beforeAll(async () => {
     fixture = await setupRealModelManager();
@@ -83,17 +84,17 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   beforeEach(() => {
     if (fixture === undefined) throw new Error("fixture missing");
     session = new ChatSession(fixture.model);
+    sessionForCleanup = session;
   });
 
   afterEach(() => {
-    session?.dispose();
-    session = undefined;
+    sessionForCleanup?.dispose();
+    sessionForCleanup = undefined;
   });
 
   it(
     "yields multiple Items before completion and the items carry deterministic content",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       const items: Item[] = [];
       for await (const item of session.processStreamingRequest(buildPrompt())) {
         items.push(item);
@@ -110,7 +111,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "concatenated streamed text contains the expected answer content",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       let text = "";
       for await (const item of session.processStreamingRequest(buildPrompt())) {
         text += extractText(item);
@@ -123,7 +123,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "early break cancels the stream cleanly and the session remains usable",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       let count = 0;
       for await (const _item of session.processStreamingRequest(buildPrompt())) {
         count++;
@@ -141,9 +140,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
     },
     3 * 60_000,
   );
-
   it("pre-aborted AbortSignal rejects iteration with name === 'AbortError'", async () => {
-    if (session === undefined) throw new Error("fixture missing");
     const ctrl = new AbortController();
     ctrl.abort();
     const iter = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
@@ -157,26 +154,25 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "mid-stream abort rejects with AbortError and the session remains usable",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       const ctrl = new AbortController();
+      const abortReason = new Error("caller reason");
+      const request = new Request()
+        .addItem(Item.userMessage("Write a 1000-word essay about the history of bread."))
+        .setOptions({ search: { maxOutputTokens: 4096, temperature: 0 } });
       let caught: unknown = null;
       try {
         let seen = 0;
-        for await (const _item of session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal })) {
+        for await (const _item of session.processStreamingRequest(request, { signal: ctrl.signal })) {
           seen++;
-          if (seen >= 1) ctrl.abort();
+          if (seen >= 1) ctrl.abort(abortReason);
         }
       } catch (e) {
         caught = e;
       }
-      // The abort may race the natural completion of a very short reply; if
-      // we never observed an abort, just skip the assertion on `caught`.
-      if (caught !== null) {
-        expect((caught as { name: string }).name).toBe("AbortError");
-        if (isFoundryLocalError(caught)) {
-          expect(caught.code).toBe(FlErrorCode.OperationCancelled);
-        }
-      }
+      expect(caught).toMatchObject({ name: "AbortError" });
+      expect(caught).not.toBe(abortReason);
+      expect(isFoundryLocalError(caught)).toBe(false);
+      expect((caught as { code?: unknown }).code).toBeUndefined();
       // Session must still accept a follow-up send regardless.
       const resp = await session.processRequest(
         new Request()
@@ -191,12 +187,53 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
+    "removes the abort listener when an unconsumed stream response settles",
+    async () => {
+      const ctrl = new AbortController();
+      const removeListener = vi.spyOn(ctrl.signal, "removeEventListener");
+      try {
+        const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
+        const response = await stream.response;
+        expect(["stop", "length", "toolCalls", "error", "none"]).toContain(response.finishReason);
+        expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
+      } finally {
+        removeListener.mockRestore();
+      }
+    },
+    3 * 60_000,
+  );
+
+  it(
+    "dispose keeps an in-flight streaming session alive until callback cleanup completes",
+    async () => {
+      const activeSession = session;
+      const stream = activeSession.processStreamingRequest(
+        new Request()
+          .addItem(Item.userMessage("Write a 1000-word essay about the history of bread."))
+          .setOptions({ search: { maxOutputTokens: 4096, temperature: 0 } }),
+      );
+      const iterator = stream[Symbol.asyncIterator]();
+      const first = await iterator.next();
+      expect(first.done).toBe(false);
+
+      activeSession.dispose();
+
+      expect(activeSession.disposed).toBe(true);
+      try {
+        await expect(stream.response).rejects.toMatchObject({
+          name: "FoundryLocalError",
+          code: FlErrorCode.OperationCancelled,
+        });
+      } finally {
+        await iterator.return?.();
+      }
+    },
+    3 * 60_000,
+  );
+
+  it(
     "clears the native callback after a timed-out stream before reusing the session",
     async () => {
-      if (session === undefined) {
-        throw new Error("fixture missing");
-      }
-
       const timedOutRequest = new Request()
         .addItem(Item.userMessage("Write a 1000-word essay about the history of bread."))
         .setOptions({ search: { maxOutputTokens: 4096, temperature: 0 } })
@@ -224,7 +261,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "a second stream on the same session works after the first completes",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       // Turn 1: deterministic content check on the UK-countries prompt.
       const firstItems: Item[] = [];
       let first = "";
@@ -258,7 +294,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "stream.response resolves with finishReason and usage after full iteration",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       const stream = session.processStreamingRequest(buildPrompt());
       let streamedText = "";
       for await (const item of stream) {
@@ -284,7 +319,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "stream.response resolves without iteration (eager native start)",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       const stream = session.processStreamingRequest(buildPrompt());
       // Deliberately do NOT iterate. The native call should still run to
       // completion and `.response` should settle.
@@ -298,7 +332,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "stream.response rejects with AbortError when pre-aborted",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
       const ctrl = new AbortController();
       ctrl.abort();
       const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
@@ -308,16 +341,8 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
-    "stream.response resolves with finishReason='none' when request.cancel() is called mid-stream",
+    "stream.response rejects with OperationCancelled when request.cancel() is called mid-stream",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
-      // Native ChatSession::ProcessRequestImpl treats Request::Cancel as a
-      // graceful early-exit: the generation loop breaks, the generator is
-      // rewound, and ProcessGeneratedOutput sets finish_reason=NONE. The
-      // call returns a normal Response — it does NOT throw OperationCancelled
-      // (that exception is only raised on the pre-call path). The JS layer
-      // must surface that same contract: `.response` resolves with a
-      // FinishReason of "none".
       const req = new Request()
         .addItem(Item.systemMessage("You are verbose."))
         .addItem(Item.userMessage("Write a 500-word essay about the history of bread."))
@@ -331,8 +356,10 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
           break;
         }
       }
-      const resp = await stream.response;
-      expect(resp.finishReason).toBe("none");
+      await expect(stream.response).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.OperationCancelled,
+      });
       // History must NOT be committed on cancel — CommitTurn is skipped
       // when request.canceled is true (see ChatSession::ProcessRequestImpl).
       expect(session.turnCount).toBe(0);
@@ -349,8 +376,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   it(
     "yields a fully-assembled tool call when toolChoice='required'",
     async () => {
-      if (session === undefined) throw new Error("fixture missing");
-
       session.addToolDefinition({
         name: "multiply_numbers",
         description: "A tool for multiplying two numbers.",
@@ -393,7 +418,8 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(itemCount).toBeGreaterThan(0);
       expect(streamedToolCalls.length).toBeGreaterThanOrEqual(1);
 
-      const streamed = streamedToolCalls[0]!;
+      const streamed = streamedToolCalls[0];
+      if (streamed === undefined) throw new Error("expected a streamed tool call");
       expect(streamed.name).toBe("multiply_numbers");
       expect(streamed.arguments.length).toBeGreaterThan(0);
       expect(streamed.callId.length).toBeGreaterThan(0);
@@ -407,10 +433,10 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> =>
         it.type === "toolCall",
       );
-      expect(finalToolCall).toBeDefined();
-      expect(finalToolCall!.name).toBe(streamed.name);
-      expect(finalToolCall!.arguments).toBe(streamed.arguments);
-      expect(finalToolCall!.callId).toBe(streamed.callId);
+      if (finalToolCall === undefined) throw new Error("expected a final tool call");
+      expect(finalToolCall.name).toBe(streamed.name);
+      expect(finalToolCall.arguments).toBe(streamed.arguments);
+      expect(finalToolCall.callId).toBe(streamed.callId);
     },
     3 * 60_000,
   );

@@ -21,31 +21,26 @@ class SessionControl;
 enum class CancellationOutcome {
   kRunning,
   kConsumerStopped,
-  kRequestCanceled,
-  kSessionCanceled,
+  kCanceled,
   kTimedOut,
   kCompleting,
-  kCompleted,
-  kFaulted,
+  kFinished,
 };
 
 constexpr bool IsStopOutcome(CancellationOutcome outcome) {
   return outcome == CancellationOutcome::kConsumerStopped ||
-         outcome == CancellationOutcome::kRequestCanceled ||
-         outcome == CancellationOutcome::kSessionCanceled ||
+         outcome == CancellationOutcome::kCanceled ||
          outcome == CancellationOutcome::kTimedOut;
 }
 
 constexpr bool RequiresEngineInterruption(CancellationOutcome outcome) {
-  return outcome == CancellationOutcome::kRequestCanceled ||
-         outcome == CancellationOutcome::kSessionCanceled ||
+  return outcome == CancellationOutcome::kCanceled ||
          outcome == CancellationOutcome::kTimedOut;
 }
 
 /// Cancellation and deadline state owned by one ProcessRequest invocation.
 ///
-/// Generator cancellation is deliberately synchronous. The registry mutex stays held while Cancel() runs, so a
-/// generator guard cannot unregister and permit destruction until cancellation returns.
+/// Generator cancellation is synchronous. UnregisterGenerator() cannot complete until Cancel() returns.
 class CancellationState {
  public:
   using Clock = std::chrono::steady_clock;
@@ -61,12 +56,12 @@ class CancellationState {
   bool StopRequested() const;
   CancellationOutcome Outcome() const;
 
-  /// Seal successful completion against a cancellation or timeout that has already won.
+  /// Enter completion only if cancellation or timeout has not stopped this invocation.
   bool TryBeginCompletion();
   void Complete();
   void Fail();
 
-  /// Wait until the absolute deadline or another terminal outcome. Returns true when this call latched the timeout.
+  /// Wait until the deadline or another outcome. Return true only when this call records the timeout.
   bool WaitForDeadline();
 
   void RegisterGenerator(ICancellable& generator);
@@ -74,8 +69,8 @@ class CancellationState {
 
   bool EngineInterruptionRequested() const;
 
-  /// Stop mirroring diagnostics before the Request may be destroyed. A late session-cancel snapshot then stays safe.
-  void DetachDiagnostics() noexcept;
+  /// Clear pointers to Request-owned flags before this state can outlive the Request.
+  void DetachRequestFlags() noexcept;
 
  private:
   struct GeneratorEntry {
@@ -85,8 +80,8 @@ class CancellationState {
 
   bool DeadlineExpiredLocked() const;
   void InterruptGeneratorsLocked() noexcept;
-  void LatchDiagnosticsLocked() noexcept;
-  void Publish();
+  void UpdateRequestFlagsLocked() noexcept;
+  void NotifyWaiters();
 
   mutable std::mutex mutex_;
   std::condition_variable cv_;

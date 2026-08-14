@@ -86,15 +86,14 @@ export class Request {
    * Set a wall-clock deadline for this request, in milliseconds. Pass `0` (or a
    * negative value) to disable.
    *
-   * The deadline covers the whole `Session.processRequest()` call, including prefill,
-   * and applies to streaming and non-streaming generation alike. On expiry the run is
-   * interrupted mid-compute and the promise rejects with a `FoundryLocalError` whose
-   * `code === FlErrorCode.Timeout`, so a non-terminating model cannot pin the session
-   * and block model unload.
-   *
-   * The deadline is re-armed on each `processRequest()` call, so a request may be reused.
+   * Each `processRequest()` call starts a new countdown using this duration. The countdown
+   * includes time waiting for the session and streaming or non-streaming inference.
+   * If it expires, the promise rejects with `FlErrorCode.Timeout`.
    */
   setTimeout(timeoutMs: number): this {
+    if (!Number.isSafeInteger(timeoutMs)) {
+      throw new TypeError("Request.setTimeout: timeoutMs must be a finite safe integer");
+    }
     this.#native.setTimeout(timeoutMs > 0 ? timeoutMs : 0);
     return this;
   }

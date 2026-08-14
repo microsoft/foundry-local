@@ -8,7 +8,8 @@ import abc
 import enum
 import queue
 import threading
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Iterator, cast
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -38,6 +39,12 @@ class _State(enum.Enum):
     CANCELLED = "cancelled"
 
 
+class _SessionState(enum.Enum):
+    OPEN = "open"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
 class StreamingResponse:
     """Result of :meth:`Session.process_streaming_request`.
 
@@ -58,19 +65,17 @@ class StreamingResponse:
     The wrapper can be iterated at most once; a second ``iter()`` raises.
     """
 
-    def __init__(self, session: "Session", request: "Request") -> None:
+    def __init__(self, session: "Session", request: "Request", session_ptr: object) -> None:
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
         self._session = session
         self._request = request
         self._queue: queue.Queue = queue.Queue()
-        # Worker-thread results — visible to the consumer only after _DONE drains the queue.
+        # The consumer checks the final response and error after dequeuing _DONE.
         self._final_response: "Response | None" = None
         self._error: BaseException | None = None
-        # Iterator lifecycle.
         self._state: _State = _State.NEW
-        # Idempotence latches: caller took the final Response; __exit__ ran; lock released.
         self._final_consumed = False
         self._closed = False
         self._lock_released = False
@@ -82,24 +87,35 @@ class StreamingResponse:
             try:
                 out = ffi.new("flResponse**")
                 api.check_status(
-                    api.inference.Session_ProcessRequest(session._ptr, request._ptr, out)
+                    api.inference.Session_ProcessRequest(session_ptr, request._ptr, out)
                 )
                 from foundry_local_sdk.response import Response
 
-                # Response takes ownership of out[0]; wrapper releases it.
+                # Response takes ownership of out[0].
                 self._final_response = Response(out[0])
             except Exception as exc:
                 self._error = exc
                 self._queue.put(_StreamError(exc))
             finally:
                 session._stream_queue = None
-                self._queue.put(_DONE)
+                try:
+                    self._queue.put(_DONE)
+                finally:
+                    session._release_call()
 
         t = threading.Thread(target=_run, daemon=True)
         session._stream_thread = t
         session._stream_request = request
         self._thread = t
-        t.start()
+        try:
+            t.start()
+        except BaseException:
+            # No worker can enqueue _DONE if thread startup fails.
+            self._closed = True
+            session._stream_thread = None
+            session._stream_request = None
+            session._stream_queue = None
+            raise
 
     def _release_lock(self) -> None:
         if self._lock_released:
@@ -113,13 +129,12 @@ class StreamingResponse:
             pass
 
     def _drain_and_join(self) -> None:
-        # Drain any pending items (so their native handles are released) and
-        # wait for the worker to publish _DONE.
+        # Drain queued items before joining the worker.
         while True:
             msg = self._queue.get()
             if msg is _DONE:
                 break
-            # _StreamError / Item: drop reference; Item handles release via __del__.
+            # Dropping an Item releases its native handle.
             del msg
         if self._thread is not None:
             self._thread.join()
@@ -141,8 +156,7 @@ class StreamingResponse:
                     self._release_lock()
                     return
                 if isinstance(msg, _StreamError):
-                    # Worker has already posted _DONE (or is about to). Drain it
-                    # so the queue is empty and the worker is fully reaped.
+                    # Consume _DONE before joining the worker.
                     while self._queue.get() is not _DONE:
                         pass
                     self._state = _State.DONE
@@ -153,15 +167,14 @@ class StreamingResponse:
                 yield msg
         finally:
             if self._state is _State.ITERATING:
-                # Caller broke / errored out of the loop. Cancel the in-flight
-                # request, drain the queue, join the worker, and release the lock.
+                # Cancel and join when iteration stops early.
                 try:
                     self._request.cancel()
                 except Exception:
                     pass
                 self._drain_and_join()
                 self._state = _State.CANCELLED
-                # Cancelled streams produce an undefined final Response — discard it.
+                # A cancelled stream has no usable final response.
                 if self._final_response is not None:
                     try:
                         self._final_response._close()
@@ -192,7 +205,6 @@ class StreamingResponse:
         if self._state is _State.CANCELLED:
             raise FoundryLocalException("Stream was cancelled.")
         if self._final_response is None:
-            # Defensive — should not happen after a clean completion.
             raise FoundryLocalException("final_response is unavailable.")
         self._final_consumed = True
         return self._final_response
@@ -206,7 +218,7 @@ class StreamingResponse:
         self._closed = True
         try:
             if self._state in (_State.NEW, _State.ITERATING):
-                # Iterator was never run, or abandoned without entering its finally.
+                # Cancel if iteration never started or stopped early.
                 try:
                     self._request.cancel()
                 except Exception:
@@ -223,7 +235,7 @@ class StreamingResponse:
             self._release_lock()
 
     def __del__(self) -> None:
-        # Safety net only — callers should use `with`.
+        # Use a context manager for explicit cleanup.
         try:
             self.__exit__(None, None, None)
         except Exception:
@@ -238,13 +250,18 @@ class Session(abc.ABC):
     """
 
     def __init__(self, model: "IModel") -> None:
-        # Initialise lifecycle flags FIRST so that if anything below raises,
-        # __del__ sees a fully-constructed (but already-closed) object and
-        # cleanly no-ops instead of AttributeError'ing inside the GC.
+        # Set cleanup fields before session creation can fail.
         self._closed = True
         self._ptr = None
         self._stream_thread = None
         self._stream_request = None
+        self._state_condition = threading.Condition()
+        self._session_state = _SessionState.CLOSED
+        self._active_native_calls = 0
+        # Avoid imports from __del__ during interpreter shutdown.
+        self._release_session: Callable[[object], object] | None = None
+        self._cancel_session: Callable[[object], object] | None = None
+        self._check_status: Callable[[object], None] | None = None
 
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
@@ -256,25 +273,45 @@ class Session(abc.ABC):
         out = ffi.new("flSession**")
         api.check_status(api.inference.Session_Create(model._ptr, out))
         self._ptr = out[0]
+        self._release_session = cast(Callable[[object], object], api.inference.Session_Release)
+        self._cancel_session = cast(Callable[[object], object], api.inference.Session_Cancel)
+        self._check_status = cast(Callable[[object], None], api.check_status)
+        self._session_state = _SessionState.OPEN
         self._closed = False
 
-        # Streaming state — populated by set_streaming(True).
         self._streaming_enabled = False
-        self._streaming_callback = None  # cffi callback object; held to prevent GC
+        self._streaming_callback = None
         self._stream_queue: queue.Queue | None = None
 
-        # Non-blocking gate used to detect (not serialize) concurrent streaming requests on the same session.
-        # The native session has a single _stream_queue / callback path that cannot multiplex two in-flight streams;
-        # the second caller must fail fast rather than silently cross-pollinate items into the first caller's iterator.
+        # Reject concurrent streams because they share one callback and queue.
         self._streaming_in_flight = threading.Lock()
 
     def _check_open(self) -> None:
         from foundry_local_sdk.exception import FoundryLocalException
 
-        if self._closed:
+        with self._state_condition:
+            is_open = self._session_state is _SessionState.OPEN
+        if not is_open:
             raise FoundryLocalException(
                 f"{type(self).__name__} has been closed and can no longer be used."
             )
+
+    def _acquire_call(self) -> object:
+        from foundry_local_sdk.exception import FoundryLocalException
+
+        with self._state_condition:
+            if self._session_state is not _SessionState.OPEN or self._ptr is None:
+                raise FoundryLocalException(
+                    f"{type(self).__name__} has been closed and can no longer be used."
+                )
+            self._active_native_calls += 1
+            return self._ptr
+
+    def _release_call(self) -> None:
+        with self._state_condition:
+            self._active_native_calls -= 1
+            if self._active_native_calls == 0:
+                self._state_condition.notify_all()
 
     def set_options(self, options: "RequestOptions") -> "Session":
         """Set session-level inference options. Applies to all subsequent process_request calls."""
@@ -310,10 +347,6 @@ class Session(abc.ABC):
         from foundry_local_sdk.items import Item
 
         if enabled and not self._streaming_enabled:
-            # Build the cffi callback as a closure over self so it can reach
-            # _stream_queue without going through user_data.
-            # The object is stored on self to prevent the GC from collecting it
-            # while the native session still holds the C function pointer.
             def _cb(data, user_data):
                 q = self._stream_queue
                 if q is None:
@@ -323,7 +356,7 @@ class Session(abc.ABC):
                     if data.item_queue != ffi.NULL:
                         item_out = ffi.new("flItem**")
                         while api.item.ItemQueue_TryPop(data.item_queue, item_out):
-                            # Ownership transferred to the Python Item wrapper.
+                            # Item owns the popped native handle.
                             q.put(Item.from_native(item_out[0], owns=True))
                 except Exception as exc:
                     q.put(_StreamError(exc))
@@ -331,6 +364,7 @@ class Session(abc.ABC):
 
                 return 0
 
+            # Keep the callback alive while native code stores its function pointer.
             self._streaming_callback = ffi.callback("flStreamingCallback", _cb)
             self._streaming_enabled = True
             api.check_status(
@@ -340,7 +374,7 @@ class Session(abc.ABC):
             )
 
         elif not enabled and self._streaming_enabled:
-            # Passing a NULL function pointer uninstalls the callback.
+            # A null function pointer removes the callback.
             api.check_status(
                 api.inference.Session_SetStreamingCallback(
                     self._ptr, ffi.cast("flStreamingCallback", 0), ffi.NULL
@@ -386,28 +420,32 @@ class Session(abc.ABC):
                 streaming request is already in flight on this session,
                 or the worker encounters a native error.
         """
-        self._check_open()
         from foundry_local_sdk.exception import FoundryLocalException
 
-        if not self._streaming_enabled:
-            raise FoundryLocalException(
-                "Streaming not enabled. Call set_streaming(True) before process_streaming_request."
-            )
-
-        # Detect concurrent streaming on the same session — there is exactly one native callback / _stream_queue slot,
-        # so a second caller would have its items interleaved into the first caller's iterator.
-        # The lock is released by StreamingResponse's terminal cleanup (iterator drain, __exit__, or GC).
-        if not self._streaming_in_flight.acquire(blocking=False):
-            raise FoundryLocalException(
-                "Concurrent streaming requests on the same session are not supported. "
-                "Drain or cancel the in-flight stream before starting another."
-            )
-
+        session_ptr = self._acquire_call()
+        lease_transferred = False
         try:
-            return StreamingResponse(self, request)
-        except BaseException:
-            self._streaming_in_flight.release()
-            raise
+            if not self._streaming_enabled:
+                raise FoundryLocalException(
+                    "Streaming not enabled. Call set_streaming(True) before process_streaming_request."
+                )
+
+            if not self._streaming_in_flight.acquire(blocking=False):
+                raise FoundryLocalException(
+                    "Concurrent streaming requests on the same session are not supported. "
+                    "Drain or cancel the in-flight stream before starting another."
+                )
+
+            try:
+                response = StreamingResponse(self, request, session_ptr)
+            except BaseException:
+                self._streaming_in_flight.release()
+                raise
+            lease_transferred = True
+            return response
+        finally:
+            if not lease_transferred:
+                self._release_call()
 
     def process_request(self, request: "Request", timeout: "float | None" = None) -> "Response":
         """Run the request synchronously and return the complete response.
@@ -419,25 +457,27 @@ class Session(abc.ABC):
                 model cannot pin the session and block model unload. Overrides any deadline
                 previously set via :meth:`Request.set_timeout`.
         """
-        self._check_open()
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
-        if timeout is not None:
-            request.set_timeout(timeout)
+        session_ptr = self._acquire_call()
+        try:
+            if timeout is not None:
+                request.set_timeout(timeout)
 
-        out = ffi.new("flResponse**")
-        api.check_status(api.inference.Session_ProcessRequest(self._ptr, request._ptr, out))
-        return Response(out[0])
+            out = ffi.new("flResponse**")
+            api.check_status(api.inference.Session_ProcessRequest(session_ptr, request._ptr, out))
+            return Response(out[0])
+        finally:
+            self._release_call()
 
     def cancel(self) -> None:
-        """Interrupt any request currently running on this session.
+        """Interrupt any request running on this session.
 
-        Thread-safe and intended to be called from a thread other than the one blocked in
-        :meth:`process_request`. Interrupts inferencing mid-compute rather than only
-        between tokens, so the blocked call returns promptly and releases its reference to
-        the model. Idempotent and safe to call when nothing is running.
+        Call this from another thread while ``process_request`` is blocked. Cancellation
+        interrupts inference during computation, not only between tokens. This method is
+        thread-safe, idempotent, and safe when no request is running.
         """
         self._check_open()
         from foundry_local_sdk._native.api import api
@@ -445,44 +485,82 @@ class Session(abc.ABC):
         api.check_status(api.inference.Session_Cancel(self._ptr))
 
     def _close(self) -> None:
-        # Defensive: subclasses (ChatSession, AudioSession, EmbeddingsSession) validate
-        # the model task BEFORE calling super().__init__(), so a validation failure leaves
-        # a partially-constructed object that the GC will still try to finalise. Use
-        # getattr so __del__ -> _close() no-ops cleanly instead of AttributeError'ing.
-        if getattr(self, "_closed", True) or getattr(self, "_ptr", None) is None:
+        # Subclasses may fail before super().__init__, leaving cleanup fields unset.
+        condition = getattr(self, "_state_condition", None)
+        if condition is None:
             return
 
-        # Wind down anything still running before Session_Release — releasing while a
-        # thread is inside Session_ProcessRequest is a native use-after-free.
-        #
-        # Cancel at the session level rather than only cancelling the streaming request:
-        # a non-streaming generation on another thread is invisible to _stream_request,
-        # and it is exactly the case that otherwise pins the session and blocks unload.
+        with condition:
+            if self._session_state is _SessionState.CLOSED:
+                return
+            if self._session_state is _SessionState.CLOSING:
+                while self._session_state is _SessionState.CLOSING:
+                    condition.wait()
+                return
+
+            self._session_state = _SessionState.CLOSING
+            self._closed = True
+            ptr = self._ptr
+            cancel_session = self._cancel_session
+            check_status = self._check_status
+
+        # Session_Cancel may block, so call it without holding the condition.
         try:
-            self.cancel()
+            if ptr is not None and cancel_session is not None:
+                status = cancel_session(ptr)
+                if check_status is not None:
+                    check_status(status)
         except Exception:
             pass
 
-        t = getattr(self, "_stream_thread", None)
-        if t is not None and t.is_alive():
-            req = getattr(self, "_stream_request", None)
-            if req is not None:
-                try:
-                    req.cancel()
-                except Exception:
-                    pass
-            # Bounded wait — if the worker is wedged past this, releasing is still
-            # safer than blocking the caller indefinitely on what may be a runaway thread.
-            t.join(timeout=5.0)
+        with condition:
+            while self._active_native_calls:
+                condition.wait()
+            ptr = self._ptr
+            release_session = self._release_session
 
         try:
-            from foundry_local_sdk._native.api import api
-
-            api.inference.Session_Release(self._ptr)
+            if ptr is not None and release_session is not None:
+                release_session(ptr)
         except Exception:
             pass
-        self._ptr = None
-        self._closed = True
+        finally:
+            with condition:
+                self._ptr = None
+                self._session_state = _SessionState.CLOSED
+                condition.notify_all()
+
+    def _finalize(self) -> None:
+        """Release only if the condition is free and the session is open and idle."""
+        condition = getattr(self, "_state_condition", None)
+        if condition is None:
+            return
+
+        try:
+            if not condition.acquire(blocking=False):
+                return
+            try:
+                if (
+                    self._session_state is not _SessionState.OPEN
+                    or self._active_native_calls
+                ):
+                    return
+                self._closed = True
+                ptr = self._ptr
+                release_session = self._release_session
+                self._ptr = None
+                self._session_state = _SessionState.CLOSED
+                condition.notify_all()
+            finally:
+                condition.release()
+
+            try:
+                if ptr is not None and release_session is not None:
+                    release_session(ptr)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def __enter__(self) -> "Session":
         return self
@@ -491,7 +569,7 @@ class Session(abc.ABC):
         self._close()
 
     def __del__(self) -> None:
-        self._close()
+        self._finalize()
 
 
 class ChatSession(Session):

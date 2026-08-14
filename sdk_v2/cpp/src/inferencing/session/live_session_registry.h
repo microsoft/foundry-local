@@ -2,42 +2,34 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include <memory>
 #include <mutex>
-#include <unordered_set>
 #include <vector>
 
 namespace fl {
 
-class Session;
+class SessionControl;
 
-/// Process-wide set of every live Session, maintained by Session's constructor and
-/// destructor.
+/// Process-wide cancellation controls for live Sessions.
 ///
-/// SessionManager only knows about sessions that took a SessionRegistration, which the
-/// web-service handlers do but the direct API does not. Cancellation must reach *every*
-/// session: a non-terminating direct-API request is precisely the case that pins the
-/// model refcount and stalls manager teardown.
-///
-/// This tracks sessions for cancellation only. It deliberately has no bearing on
-/// SessionManager::WaitForDrain(), because an idle session the caller still owns must
-/// not block shutdown.
+/// Direct API sessions are not registered with SessionManager, so shutdown uses this
+/// registry to cancel every Session. It does not affect SessionManager::WaitForDrain().
 class LiveSessionRegistry {
  public:
   static LiveSessionRegistry& Instance();
 
-  void Add(Session& session);
-  void Remove(Session& session);
+  void Add(const std::shared_ptr<SessionControl>& control);
+  void Remove(const std::shared_ptr<SessionControl>& control);
 
-  /// Snapshot of the live sessions. Returned by value so callers can cancel without
-  /// holding the lock — Session::Cancel() reaches into the inference engine and would
-  /// otherwise deadlock against a session unwinding and calling Remove().
-  std::vector<Session*> Snapshot() const;
+  /// Returns shared ownership of each live control. Returned controls remain valid after
+  /// their Sessions are destroyed.
+  std::vector<std::shared_ptr<SessionControl>> Snapshot() const;
 
  private:
   LiveSessionRegistry() = default;
 
   mutable std::mutex mutex_;
-  std::unordered_set<Session*> sessions_;
+  std::vector<std::weak_ptr<SessionControl>> controls_;
 };
 
 }  // namespace fl

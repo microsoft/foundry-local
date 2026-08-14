@@ -4,6 +4,7 @@
 // `Item` factory helpers. Runs whenever the native addon is present.
 import { describe, expect, it } from "vitest";
 
+import { getAddon } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
 import { Request } from "../src/request.js";
 
@@ -141,6 +142,47 @@ describeIfBuilt("Request round-trip through the native layer", () => {
   it("cancel on an unattached request is a no-op", () => {
     const req = new Request();
     expect(() => req.cancel()).not.toThrow();
+  });
+
+  it("setTimeout rejects non-finite, fractional, and unsafe values", () => {
+    for (const timeoutMs of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.MIN_SAFE_INTEGER - 1,
+      Number.MAX_VALUE,
+      -Number.MAX_VALUE,
+    ]) {
+      expect(() => new Request().setTimeout(timeoutMs)).toThrowError(
+        new TypeError("Request.setTimeout: timeoutMs must be a finite safe integer"),
+      );
+    }
+  });
+
+  it("setTimeout accepts safe integral values and remains chainable", () => {
+    const req = new Request();
+    expect(req.setTimeout(0)).toBe(req);
+    expect(req.setTimeout(-1)).toBe(req);
+    expect(req.setTimeout(Number.MAX_SAFE_INTEGER)).toBe(req);
+  });
+
+  it("native setTimeout validates before converting to int64", () => {
+    const NativeRequest = getAddon().Request;
+    const req = new NativeRequest();
+    for (const invalid of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      0.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.MIN_SAFE_INTEGER - 1,
+      Number.MAX_VALUE,
+      -Number.MAX_VALUE,
+    ]) {
+      expect(() => req.setTimeout(invalid)).toThrow(/finite safe integer/);
+    }
   });
 });
 

@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "inferencing/session/live_session_registry.h"
 
+#include "inferencing/session/session_control.h"
+
 namespace fl {
 
 LiveSessionRegistry& LiveSessionRegistry::Instance() {
@@ -11,19 +13,32 @@ LiveSessionRegistry& LiveSessionRegistry::Instance() {
   return *instance;
 }
 
-void LiveSessionRegistry::Add(Session& session) {
+void LiveSessionRegistry::Add(const std::shared_ptr<SessionControl>& control) {
   std::lock_guard<std::mutex> lock(mutex_);
-  sessions_.insert(&session);
+  controls_.emplace_back(control);
 }
 
-void LiveSessionRegistry::Remove(Session& session) {
+void LiveSessionRegistry::Remove(const std::shared_ptr<SessionControl>& control) {
   std::lock_guard<std::mutex> lock(mutex_);
-  sessions_.erase(&session);
+  std::erase_if(controls_, [&](const std::weak_ptr<SessionControl>& candidate) {
+    const auto live_control = candidate.lock();
+    return !live_control || live_control == control;
+  });
 }
 
-std::vector<Session*> LiveSessionRegistry::Snapshot() const {
+std::vector<std::shared_ptr<SessionControl>> LiveSessionRegistry::Snapshot() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return {sessions_.begin(), sessions_.end()};
+
+  std::vector<std::shared_ptr<SessionControl>> controls;
+  controls.reserve(controls_.size());
+
+  for (const auto& weak_control : controls_) {
+    if (auto control = weak_control.lock()) {
+      controls.push_back(std::move(control));
+    }
+  }
+
+  return controls;
 }
 
 }  // namespace fl

@@ -55,15 +55,15 @@ struct Request {
   void Cancel() const;
 
   /// Record a streaming callback's successful cooperative stop.
-  void StopForConsumer() const;
+  void StopFromStreamingCallback() const;
 
   /// True once callback stop, API cancellation, session cancellation, or timeout requires generation to stop.
   bool ShouldStop() const;
 
-  /// First-winner success seam used before committing stateful results such as chat history.
+  /// Enter completion only if cancellation or timeout has not stopped this invocation.
   bool TryBeginCompletion() const;
 
-  /// True when API cancellation or timeout may have terminated the invocation's generator.
+  /// True when request cancellation, session cancellation, or timeout requested engine interruption.
   bool EngineInterruptionRequested() const;
 
   /// Add a pre-allocated owned item.

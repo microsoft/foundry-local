@@ -63,9 +63,8 @@ class SessionManager : public ISessionManager {
   /// Signal all sessions to stop and reject new registrations.
   /// Clears the cache (destroying idle cached sessions).
   ///
-  /// Cancellation targets every live Session in the process (see LiveSessionRegistry),
-  /// not just registered ones: a runaway request on a direct-API session never goes
-  /// through SessionRegistration, yet it is exactly what pins the model loaded.
+  /// SessionRegistration covers active HTTP requests. SDK callers can create Sessions directly,
+  /// so shutdown uses LiveSessionRegistry to cancel those Sessions before unloading models.
   void CancelAll();
 
   /// Block until all sessions have deregistered, with timeout.

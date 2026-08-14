@@ -79,11 +79,10 @@ Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& te
       telemetry_(telemetry),
       allow_concurrent_requests_(allow_concurrent_requests),
       control_(std::make_shared<SessionControl>()) {
-  LiveSessionRegistry::Instance().Add(*this);
+  LiveSessionRegistry::Instance().Add(control_);
 }
 
-// Moving relocates the session, so the registry must follow the object's address.
-// The moved-from shell stays registered until its own destructor runs and receives fresh idle control.
+// The destination keeps the existing control. The moved-from Session receives a new one.
 Session::Session(Session&& other) noexcept
     : catalog_model_(other.catalog_model_),
       logger_(other.logger_),
@@ -96,11 +95,11 @@ Session::Session(Session&& other) noexcept
       control_(std::move(other.control_)) {
   other.control_ = std::make_shared<SessionControl>();
 
-  LiveSessionRegistry::Instance().Add(*this);
+  LiveSessionRegistry::Instance().Add(other.control_);
 }
 
 Session::~Session() {
-  LiveSessionRegistry::Instance().Remove(*this);
+  LiveSessionRegistry::Instance().Remove(control_);
 }
 
 std::unique_ptr<Session> Session::Create(const fl::Model& model) {
@@ -219,8 +218,8 @@ void Session::Cancel() {
   control_->Terminate();
 }
 
-void Session::WatchDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
-                            std::chrono::milliseconds timeout) {
+void Session::MonitorDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
+                             std::chrono::milliseconds timeout) {
   if (state->WaitForDeadline()) {
     logger.Log(LogLevel::Warning, fmt::format("request exceeded its {}ms deadline; cancelling", timeout.count()));
   }
@@ -232,24 +231,24 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
       std::make_shared<CancellationState>(DeadlineFor(entry, timeout), control_, request.canceled, request.timed_out);
   request.BeginInvocation(state);
 
-  std::thread watchdog;
-  struct RunScope {
+  std::thread deadline_thread;
+  struct InvocationCleanup {
     Session& session;
     const Request& request;
     std::shared_ptr<CancellationState> state;
-    std::thread& watchdog;
+    std::thread& deadline_thread;
     bool registered = false;
-    bool holds_permit = false;
+    bool holds_inference_slot = false;
 
-    ~RunScope() {
+    ~InvocationCleanup() {
       state->Fail();
 
-      if (watchdog.joinable()) {
-        watchdog.join();
+      if (deadline_thread.joinable()) {
+        deadline_thread.join();
       }
 
-      if (holds_permit) {
-        session.control_->ReleasePermit();
+      if (holds_inference_slot) {
+        session.control_->ReleaseInferenceSlot();
       }
 
       if (registered) {
@@ -258,27 +257,27 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
 
       request.EndInvocation(*state);
     }
-  } run_scope{*this, request, state, watchdog};
+  } cleanup{*this, request, state, deadline_thread};
 
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
   tracker.SetModelId(CatalogModel().Id());
 
   if (!control_->Register(state)) {
-    state->TryStop(CancellationOutcome::kSessionCanceled);
+    state->TryStop(CancellationOutcome::kCanceled);
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session has been cancelled");
   }
-  run_scope.registered = true;
+  cleanup.registered = true;
 
   if (timeout.count() > 0) {
-    watchdog = std::thread(&Session::WatchDeadline, state, std::ref(logger_), timeout);
+    deadline_thread = std::thread(&Session::MonitorDeadline, state, std::ref(logger_), timeout);
   }
 
   if (!allow_concurrent_requests_) {
-    const auto admission = control_->AcquirePermit(*state);
+    const auto admission = control_->AcquireInferenceSlot(*state);
     if (admission == SessionControl::Admission::kTerminal) {
-      state->TryStop(CancellationOutcome::kSessionCanceled);
+      state->TryStop(CancellationOutcome::kCanceled);
     } else if (admission == SessionControl::Admission::kAdmitted) {
-      run_scope.holds_permit = true;
+      cleanup.holds_inference_slot = true;
     }
   }
 
