@@ -370,8 +370,6 @@ FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCat
     case FOUNDRY_LOCAL_CATALOG_LOCAL:
       *out_catalog = manager->local_catalog.get();
       return nullptr;
-    case FOUNDRY_LOCAL_CATALOG_PRIVATE:
-      return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "no private catalog has been configured");
     default:
       return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }

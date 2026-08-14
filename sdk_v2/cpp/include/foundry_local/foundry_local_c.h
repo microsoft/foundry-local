@@ -205,7 +205,6 @@ typedef enum flDeviceType {
 typedef enum flCatalogType {
   FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
   FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
-  FOUNDRY_LOCAL_CATALOG_PRIVATE = 2,
 } flCatalogType;
 
 /// Tensor element data types. Values match ONNX TensorProto.DataType.

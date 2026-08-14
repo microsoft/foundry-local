@@ -304,7 +304,6 @@ struct Runtime {
 enum class CatalogType {
   Public = FOUNDRY_LOCAL_CATALOG_PUBLIC,
   Local = FOUNDRY_LOCAL_CATALOG_LOCAL,
-  Private = FOUNDRY_LOCAL_CATALOG_PRIVATE,
 };
 
 // ===========================================================================

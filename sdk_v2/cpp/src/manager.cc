@@ -454,8 +454,6 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
       return *public_catalog_;
     case CatalogType::kLocal:
       return *local_catalog_;
-    case CatalogType::kPrivate:
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "no private catalog has been configured");
     default:
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
   }

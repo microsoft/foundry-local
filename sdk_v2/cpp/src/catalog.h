@@ -15,7 +15,6 @@ namespace fl {
 enum class CatalogType {
   kPublic,
   kLocal,
-  kPrivate,
 };
 
 /// Abstract catalog interface for querying available models.

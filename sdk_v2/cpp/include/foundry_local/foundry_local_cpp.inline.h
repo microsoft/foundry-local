@@ -214,11 +214,6 @@ inline ICatalog& Manager::GetCatalog(CatalogType type) const {
     return GetCatalog();
   }
 
-  if (type != CatalogType::Local) {
-    flCatalog* ignored = nullptr;
-    Check(detail::api()->Manager_GetCatalogByType(handle_.get(), static_cast<flCatalogType>(type), &ignored));
-  }
-
   std::call_once(*local_catalog_once_, [this, type]() {
     flCatalog* catalog = nullptr;
     Check(detail::api()->Manager_GetCatalogByType(handle_.get(), static_cast<flCatalogType>(type), &catalog));
