@@ -306,38 +306,45 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   // exact token expansion produced by the multimodal processor.
   std::unique_ptr<OgaNamedTensors> named_tensors;
   if (media_branch) {
-    std::vector<std::vector<std::uint8_t>> image_bytes;
-    image_bytes.reserve(images.size());
-    std::vector<const void*> buffers;
-    buffers.reserve(images.size());
-    std::vector<size_t> sizes;
-    sizes.reserve(images.size());
+    std::unique_ptr<OgaImages> oga_images;
+    if (!images.empty()) {
+      std::vector<std::vector<std::uint8_t>> image_bytes;
+      image_bytes.reserve(images.size());
+      std::vector<const void*> buffers;
+      buffers.reserve(images.size());
+      std::vector<size_t> sizes;
+      sizes.reserve(images.size());
 
-    for (const auto* img : images) {
-      if (img == nullptr) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image entry must not be null");
+      for (const auto* img : images) {
+        if (img == nullptr) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image entry must not be null");
+        }
+
+        image_bytes.push_back(img->ReadBytes());
+        buffers.push_back(image_bytes.back().data());
+        sizes.push_back(image_bytes.back().size());
       }
 
-      image_bytes.push_back(img->ReadBytes());
-      buffers.push_back(image_bytes.back().data());
-      sizes.push_back(image_bytes.back().size());
+      oga_images = OgaImages::Load(buffers.data(), sizes.data(), buffers.size());
     }
 
-    std::vector<const void*> audio_buffers;
-    audio_buffers.reserve(audios.size());
-    std::vector<size_t> audio_sizes;
-    audio_sizes.reserve(audios.size());
-    for (const auto* audio : audios) {
-      if (audio == nullptr || audio->data == nullptr || audio->data_size == 0) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "audio entry must contain bytes");
+    std::unique_ptr<OgaAudios> oga_audios;
+    if (!audios.empty()) {
+      std::vector<const void*> audio_buffers;
+      audio_buffers.reserve(audios.size());
+      std::vector<size_t> audio_sizes;
+      audio_sizes.reserve(audios.size());
+      for (const auto* audio : audios) {
+        if (audio == nullptr || audio->data == nullptr || audio->data_size == 0) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "audio entry must contain bytes");
+        }
+        audio_buffers.push_back(audio->data);
+        audio_sizes.push_back(audio->data_size);
       }
-      audio_buffers.push_back(audio->data);
-      audio_sizes.push_back(audio->data_size);
+
+      oga_audios = OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
     }
 
-    auto oga_images = images.empty() ? nullptr : OgaImages::Load(buffers.data(), sizes.data(), buffers.size());
-    auto oga_audios =
-        audios.empty() ? nullptr : OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
     if (oga_images && oga_audios) {
       named_tensors = model.GetProcessor()->ProcessImagesAndAudios(prompt.c_str(), oga_images.get(), oga_audios.get());
     } else if (oga_images) {
