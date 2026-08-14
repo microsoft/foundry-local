@@ -766,7 +766,10 @@ class ICatalog {
   virtual ~ICatalog() = default;
   virtual std::string_view GetName() const = 0;
   virtual ModelList GetModels() const = 0;
+
+  /// Get every leaf model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
+
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;

@@ -49,8 +49,7 @@ class ICatalogClient {
   }
 };
 
-/// Production helper that combines a catalog fetch with locally cached model
-/// resolution and BYO synthesis.
+/// Fetch the current catalog and resolve cached model IDs that are no longer in the latest response.
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,

@@ -7,12 +7,16 @@
 #include "logger.h"
 
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace fl {
+
+class ICatalogClient;
 
 /// Azure-specific catalog. Fetches from Azure Foundry catalog API,
 /// scans local cache, merges results.
@@ -36,10 +40,27 @@ class AzureModelCatalog : public BaseModelCatalog {
   std::vector<Model> FetchModelVersions(const std::string& model_alias,
                                         const std::string& model_name = "") const override;
   std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
+  virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
+                                                              const std::string& filter) const;
 
  private:
+  using LocalModels = std::map<std::string, std::string>;
+
+  enum class CatalogSource {
+    kLive,
+    kSnapshot,
+  };
+
+  struct CatalogResult {
+    std::vector<ModelInfo> model_infos;
+    CatalogSource source;
+  };
+
   static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
   static constexpr const char* kDefaultCatalogFilter = "''";
+
+  CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
+  std::vector<Model> AddLocalModels(std::vector<ModelInfo>& model_infos, const LocalModels& local_models) const;
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
