@@ -211,7 +211,7 @@ std::vector<float> EmbeddingsSession::GenerateSingleEmbedding(const std::string&
   // pass. A single long input can exceed the budget without ever reaching the loop check
   // in GenerateEmbeddingsBatch.
   OgaGeneratorCancellable cancellable(*generator);
-  ActiveGenerator active(*this, cancellable);
+  ActiveGenerator active(request, cancellable);
 
   // 3. Single forward pass.
   if (!TryGenerateNextToken(*generator, request)) {

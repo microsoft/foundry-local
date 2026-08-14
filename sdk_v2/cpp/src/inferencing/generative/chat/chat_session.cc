@@ -82,18 +82,6 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
-void ChatSession::OnRequestFinished(const Request& request) noexcept {
-  if (!request.timed_out.load(std::memory_order_relaxed)) {
-    return;
-  }
-
-  // The watchdog cancelled the OGA session to enforce the deadline, which permanently terminates the generator: it can
-  // never be rewound or reused. Dropping it here is safe because Session::ProcessRequest has joined the watchdog, so
-  // its deadline cancellation callback can no longer be holding the generator.
-  cached_generator_.reset();
-  cached_tool_ctx_ = {};
-}
-
 void ChatSession::UpdateToolContextForTurn(const Request& request, ToolCallContext& tool_ctx) const {
   auto get_param = [&](const char* key) -> std::string {
     auto it = request.options.find(key);
@@ -591,7 +579,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // it mid-compute, not just between tokens. Scoped to the generation loop: the cached
   // generator may be reset below, and it must not stay published past this point.
   {
-    ActiveGenerator active(*this, *cached_generator_);
+    ActiveGenerator active(request, *cached_generator_);
 
     while (!cached_generator_->IsDone() && !request.ShouldStop()) {
       cached_generator_->GenerateNextToken();
@@ -616,50 +604,52 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   emit_segments(splitter.Flush());
   flush_accumulator();
 
-  int total_tokens = cached_generator_->TokenCount();
-
-  if (request.canceled) {
-    // Rewind the generator to undo this turn's input. The generator remains valid
-    // for the next attempt — the caller can re-send the same input.
-    //
-    // A timed-out turn is the exception: its generator is already terminated, so it is neither rewound nor reused.
-    // OnRequestFinished() discards it once the watchdog can no longer race that teardown.
-    if (!request.timed_out.load(std::memory_order_relaxed)) {
-      cached_generator_->RewindTo(pre_turn_token_count);
-    }
+  if (streaming_callback) {
+    streaming_callback->Drain();
   }
 
-  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,
+  const int total_tokens = cached_generator_->TokenCount();
+  const bool stopped = request.ShouldStop();
+
+  ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, stopped,
                          response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
 
-  // Commit input messages + assistant reply to history only on success (not cancelled)
-  if (!request.canceled) {
-    // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
-    // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
-    // return true on the next turn. Invalidate after any grammar-guided generation so the next turn rebuilds.
-    //
-    // Reasoning models (qwen3, etc.) also need invalidation: continuous decoding leaves prior <think> tokens in the KV
-    // cache and the model fails to close subsequent reasoning blocks. The chat template strips prior </think> content
-    // when re-applied to history, so a rebuild restores correct behavior. This matches C#, which always applies the
-    // full template per turn.
-    bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
-    bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
-
-    if (grammar_was_active || reasoning_was_active) {
+  // A cancellation observed before this first-winner seal cannot commit history. Cancellation after the seal is the
+  // accepted late-completion race and leaves the successful turn intact.
+  if (stopped || !request.TryBeginCompletion()) {
+    if (request.EngineInterruptionRequested()) {
       cached_generator_.reset();
       cached_tool_ctx_ = {};
+    } else {
+      // Callback consumer-stop is cooperative, so its generator remains valid for a sequential retry.
+      cached_generator_->RewindTo(pre_turn_token_count);
     }
 
-    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
+    return;
+  }
 
-    // After a vision turn, drop the cached generator so any text follow-up
-    // rebuilds from history. AppendMessages cannot extend a vision-decoded
-    // sequence; trying to do so would silently feed text into a state that
-    // includes image-derived tokens.
-    if (vision_turn) {
-      cached_generator_.reset();
-      cached_tool_ctx_ = {};
-    }
+  // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
+  // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
+  // return true on the next turn. Invalidate after any grammar-guided generation so the next turn rebuilds.
+  //
+  // Reasoning models (qwen3, etc.) also need invalidation: continuous decoding leaves prior <think> tokens in the KV
+  // cache and the model fails to close subsequent reasoning blocks. The chat template strips prior </think> content
+  // when re-applied to history, so a rebuild restores correct behavior. This matches C#, which always applies the
+  // full template per turn.
+  const bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
+  const bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
+
+  if (grammar_was_active || reasoning_was_active) {
+    cached_generator_.reset();
+    cached_tool_ctx_ = {};
+  }
+
+  CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
+
+  // AppendMessages cannot extend a vision-decoded sequence, so a text follow-up must rebuild from history.
+  if (vision_turn) {
+    cached_generator_.reset();
+    cached_tool_ctx_ = {};
   }
 }
 
@@ -822,7 +812,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   {
     // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
     // an in-flight compute, not just the loop between tokens.
-    ActiveGenerator active(*this, *generator);
+    ActiveGenerator active(original_request, *generator);
 
     while (!generator->IsDone() && !original_request.ShouldStop()) {
       generator->GenerateNextToken();

@@ -1621,7 +1621,8 @@ FL_API_STATUS_IMPL(Request_CancelImpl, flRequest* request) {
   if (!request) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  AsImpl(request)->canceled = true;
+
+  AsImpl(request)->Cancel();
   return nullptr;
   API_IMPL_END
 }
@@ -1632,7 +1633,7 @@ FL_API_STATUS_IMPL(Request_SetTimeoutMsImpl, flRequest* request, uint64_t timeou
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  AsImpl(request)->SetTimeout(std::chrono::milliseconds(timeout_ms));
+  AsImpl(request)->SetTimeoutMs(timeout_ms);
   return nullptr;
   API_IMPL_END
 }
@@ -1770,10 +1771,13 @@ FL_API_STATUS_IMPL(Session_CancelImpl, flSession* session) {
 }
 
 FL_API_STATUS_IMPL(Session_ProcessRequestImpl, flSession* session, const flRequest* request,
-                   flResponse** response) {  API_IMPL_BEGIN
+                   flResponse** response) {
+  API_IMPL_BEGIN
   if (!session || !request || !response) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
+
+  const auto entry = fl::CancellationState::Clock::now();
 
   // Allocate response locally so a throw from ProcessRequest does not leak it.
   std::unique_ptr<fl::Response> owned;
@@ -1787,7 +1791,7 @@ FL_API_STATUS_IMPL(Session_ProcessRequestImpl, flSession* session, const flReque
   }
 
   // ProcessRequest handles session option overlay and streaming callback wiring.
-  AsImpl(session)->ProcessRequest(*AsImpl(request), *target);
+  AsImpl(session)->ProcessRequest(*AsImpl(request), *target, entry);
 
   if (owned) {
     *response = AsHandle<flResponse>(owned.release());

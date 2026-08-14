@@ -17,22 +17,70 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <memory>
+#include <optional>
+#include <thread>
 
 namespace fl {
+
+namespace {
+
+std::optional<CancellationState::Clock::time_point> DeadlineFor(
+    CancellationState::Clock::time_point entry, std::chrono::milliseconds timeout) {
+  if (timeout.count() <= 0) {
+    return std::nullopt;
+  }
+
+  const auto remaining =
+      std::chrono::duration_cast<std::chrono::milliseconds>(CancellationState::Clock::time_point::max() - entry);
+  if (timeout > remaining) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "request timeout would overflow the steady-clock deadline");
+  }
+
+  return entry + timeout;
+}
+
+[[noreturn]] void ThrowForOutcome(CancellationOutcome outcome, std::chrono::milliseconds timeout) {
+  if (outcome == CancellationOutcome::kTimedOut) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_TIMEOUT, "request timed out after ", timeout.count(), "ms");
+  }
+
+  FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request was cancelled");
+}
+
+ActionStatus StatusForOutcome(CancellationOutcome outcome) {
+  return outcome == CancellationOutcome::kTimedOut ? ActionStatus::kTimeout : ActionStatus::kCanceled;
+}
+
+bool FinishConsumerOrThrow(CancellationOutcome outcome, std::chrono::milliseconds timeout, ActionTracker& tracker) {
+  if (!IsStopOutcome(outcome)) {
+    return false;
+  }
+
+  if (outcome == CancellationOutcome::kConsumerStopped) {
+    tracker.SetStatus(ActionStatus::kSuccess);
+    return true;
+  }
+
+  tracker.SetStatus(StatusForOutcome(outcome));
+  ThrowForOutcome(outcome, timeout);
+}
+
+}  // namespace
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
     : catalog_model_(catalog_model),
       logger_(logger),
       telemetry_(telemetry),
-      allow_concurrent_requests_(allow_concurrent_requests) {
+      allow_concurrent_requests_(allow_concurrent_requests),
+      control_(std::make_shared<SessionControl>()) {
   LiveSessionRegistry::Instance().Add(*this);
 }
 
 // Moving relocates the session, so the registry must follow the object's address.
-// The moved-from shell stays registered until its own destructor runs; cancelling it is
-// harmless because its cancel state moved with it.
+// The moved-from shell stays registered until its own destructor runs and receives fresh idle control.
 Session::Session(Session&& other) noexcept
     : catalog_model_(other.catalog_model_),
       logger_(other.logger_),
@@ -42,12 +90,8 @@ Session::Session(Session&& other) noexcept
       callback_fn_(std::move(other.callback_fn_)),
       callback_user_data_(other.callback_user_data_),
       allow_concurrent_requests_(other.allow_concurrent_requests_),
-      request_mutex_(std::move(other.request_mutex_)),
-      cancel_state_(std::move(other.cancel_state_)) {
-  // Give the moved-from shell fresh state rather than null pointers: it stays live (and
-  // reachable from the registry) until its destructor runs, and Cancel() may race with it.
-  other.request_mutex_ = std::make_unique<std::mutex>();
-  other.cancel_state_ = std::make_unique<CancelState>();
+      control_(std::move(other.control_)) {
+  other.control_ = std::make_shared<SessionControl>();
 
   LiveSessionRegistry::Instance().Add(*this);
 }
@@ -121,167 +165,121 @@ void Session::AddToolDefinition(ToolDefinition tool_def) {
 }
 
 void Session::Cancel() {
-  std::vector<ICancellable*> generators;
-  std::vector<const Request*> requests;
+  control_->Terminate();
+}
 
-  {
-    std::lock_guard<std::mutex> lock(cancel_state_->mutex);
-    cancel_state_->cancel_requested = true;
-    generators = cancel_state_->active_generators;
-    requests = cancel_state_->active_requests_list;
-  }
-
-  // Latch the flag on every in-flight request, not just the generators. Interrupting the
-  // engine alone is not enough: the loops would exit but the run would still be reported
-  // as a natural stop, and cancelled turns would be committed to history. Cancellation
-  // during prefill is exactly this case — it produces no tokens, so nothing else marks it.
-  for (const auto* request : requests) {
-    request->canceled.store(true, std::memory_order_relaxed);
-  }
-
-  // Wake the deadline watchdog so it exits instead of sleeping out the full budget.
-  cancel_state_->cv.notify_all();
-
-  // Cancel outside the lock: each Cancel() reaches into ORT GenAI, and holding the
-  // mutex across that would block the request thread's generator bookkeeping.
-  for (auto* generator : generators) {
-    generator->Cancel();
+void Session::WatchDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
+                            std::chrono::milliseconds timeout) {
+  if (state->WaitForDeadline()) {
+    logger.Log(LogLevel::Warning, fmt::format("request exceeded its {}ms deadline; cancelling", timeout.count()));
   }
 }
 
-void Session::AddActiveGenerator(ICancellable* generator) {
-  bool cancel_now = false;
-
-  {
-    std::lock_guard<std::mutex> lock(cancel_state_->mutex);
-    cancel_state_->active_generators.push_back(generator);
-
-    // Cancel() may have landed between the caller's pre-flight check and this
-    // publication. Apply the pending stop to the newly-visible generator so the
-    // request cannot slip past an already-issued cancellation.
-    cancel_now = cancel_state_->cancel_requested;
-  }
-
-  if (cancel_now) {
-    generator->Cancel();
-  }
-}
-
-void Session::RemoveActiveGenerator(ICancellable* generator) {
-  std::lock_guard<std::mutex> lock(cancel_state_->mutex);
-  auto& generators = cancel_state_->active_generators;
-  generators.erase(std::remove(generators.begin(), generators.end(), generator), generators.end());
-}
-
-void Session::WatchDeadline(const Request& request) {
+void Session::ProcessRequest(const Request& request, Response& response, CancellationState::Clock::time_point entry) {
   const auto timeout = request.Timeout();
+  auto state =
+      std::make_shared<CancellationState>(DeadlineFor(entry, timeout), control_, request.canceled, request.timed_out);
+  request.BeginInvocation(state);
 
-  std::unique_lock<std::mutex> lock(cancel_state_->mutex);
-
-  // Wait out the budget, but wake early if the request finished or was cancelled —
-  // otherwise ProcessRequest would block on joining this thread for the full timeout.
-  const bool woken = cancel_state_->cv.wait_for(lock, timeout, [this] {
-    return cancel_state_->active_requests == 0 || cancel_state_->cancel_requested;
-  });
-
-  if (woken) {
-    return;
-  }
-
-  // Deadline expired. Latch the timeout on the request so generation loops stop at the
-  // next token boundary, and cancel the active generators to interrupt an in-flight
-  // compute (a long prefill can exceed the budget without ever reaching a boundary).
-  request.canceled.store(true, std::memory_order_relaxed);
-  request.timed_out.store(true, std::memory_order_relaxed);
-
-  auto generators = cancel_state_->active_generators;
-  lock.unlock();
-
-  logger_.Log(LogLevel::Warning,
-              fmt::format("request exceeded its {}ms deadline; cancelling", timeout.count()));
-
-  for (auto* generator : generators) {
-    generator->Cancel();
-  }
-}
-
-void Session::ProcessRequest(const Request& request, Response& response) {
-  // Serialize requests unless the derived class opted into concurrency.
-  std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
-  if (!allow_concurrent_requests_) {
-    lock.lock();
-  }
-
-  // A session cancelled during teardown must not start new work — otherwise a caller
-  // looping over requests could keep the model refcount pinned past Manager::Shutdown.
-  {
-    std::lock_guard<std::mutex> cancel_lock(cancel_state_->mutex);
-    if (cancel_state_->cancel_requested) {
-      request.canceled.store(true, std::memory_order_relaxed);
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session has been cancelled");
-    }
-
-    ++cancel_state_->active_requests;
-    cancel_state_->active_requests_list.push_back(&request);
-  }
-
-  // Start the wall-clock budget (if any) and clear stale stop state from a prior run.
-  request.ArmDeadline();
-
-  // Watchdog enforces the deadline for paths that would otherwise block indefinitely
-  // inside the engine. Only started when a timeout was requested — no cost otherwise.
   std::thread watchdog;
-  if (request.Timeout().count() > 0) {
-    watchdog = std::thread(&Session::WatchDeadline, this, std::cref(request));
-  }
-
-  // Guarantees the watchdog is woken and joined on every exit path, including throws.
-  // Declared after the thread so it runs first on unwind.
   struct RunScope {
     Session& session;
     const Request& request;
+    std::shared_ptr<CancellationState> state;
     std::thread& watchdog;
+    bool registered = false;
+    bool holds_permit = false;
 
     ~RunScope() {
-      {
-        std::lock_guard<std::mutex> lock(session.cancel_state_->mutex);
-        --session.cancel_state_->active_requests;
-
-        auto& list = session.cancel_state_->active_requests_list;
-        list.erase(std::remove(list.begin(), list.end(), &request), list.end());
-      }
-
-      session.cancel_state_->cv.notify_all();
+      state->Fail();
 
       if (watchdog.joinable()) {
         watchdog.join();
       }
 
-      // The watchdog can no longer access this request's generator. Serialized sessions still hold request_mutex_
-      // because its lock outlives this scope; concurrent sessions must provide their own exclusion in this hook.
-      session.OnRequestFinished(request);
-      request.DisarmDeadline();
+      if (holds_permit) {
+        session.control_->ReleasePermit();
+      }
+
+      if (registered) {
+        session.control_->Unregister(*state);
+      }
+
+      request.EndInvocation(*state);
     }
-  } run_scope{*this, request, watchdog};
+  } run_scope{*this, request, state, watchdog};
 
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
   tracker.SetModelId(CatalogModel().Id());
 
+  if (!control_->Register(state)) {
+    state->TryStop(CancellationOutcome::kSessionCanceled);
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session has been cancelled");
+  }
+  run_scope.registered = true;
+
+  if (timeout.count() > 0) {
+    watchdog = std::thread(&Session::WatchDeadline, state, std::ref(logger_), timeout);
+  }
+
+  if (!allow_concurrent_requests_) {
+    const auto admission = control_->AcquirePermit(*state);
+    if (admission == SessionControl::Admission::kTerminal) {
+      state->TryStop(CancellationOutcome::kSessionCanceled);
+    } else if (admission == SessionControl::Admission::kAdmitted) {
+      run_scope.holds_permit = true;
+    }
+  }
+
+  if (state->ShouldStop()) {
+    static_cast<void>(request.ShouldStop());
+    const auto outcome = state->Outcome();
+    if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
+      return;
+    }
+  }
+
   try {
     ProcessRequestImpl(request, response);
-
-    tracker.SetStatus(request.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
-                                                                      : ActionStatus::kSuccess);
   } catch (const std::exception& ex) {
+    state->Fail();
+    const auto outcome = state->Outcome();
+    if (IsStopOutcome(outcome)) {
+      static_cast<void>(request.ShouldStop());
+      if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
+        return;
+      }
+    }
+
     tracker.RecordException(ex);
+    throw;
+  } catch (...) {
+    state->Fail();
+    const auto outcome = state->Outcome();
+    if (IsStopOutcome(outcome)) {
+      static_cast<void>(request.ShouldStop());
+      if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
+        return;
+      }
+    }
+
     throw;
   }
 
-  // A timeout is a failure of the caller's contract, not a silent truncation: surface it
-  // so callers can distinguish "the model stopped early" from "we ran out of time".
-  if (request.timed_out.load(std::memory_order_relaxed)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_TIMEOUT, "request timed out after ", request.Timeout().count(), "ms");
+  if (state->Outcome() == CancellationOutcome::kRunning) {
+    static_cast<void>(state->TryBeginCompletion());
   }
+
+  const auto outcome = state->Outcome();
+  if (IsStopOutcome(outcome)) {
+    static_cast<void>(request.ShouldStop());
+    if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
+      return;
+    }
+  }
+
+  state->Complete();
+  tracker.SetStatus(ActionStatus::kSuccess);
 }
 
 }  // namespace fl

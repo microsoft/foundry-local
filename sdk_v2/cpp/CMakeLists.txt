@@ -212,7 +212,10 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/audio/pcm_utils.cc
     src/inferencing/generative/embeddings/embeddings_session.cc
     src/inferencing/generative/chat/chat_generator.cc
+    src/inferencing/session/cancellation_state.cc
+    src/inferencing/session/request.cc
     src/inferencing/session/session.cc
+    src/inferencing/session/session_control.cc
     src/inferencing/session/session_manager.cc
     src/inferencing/session/oga_generator_cancellable.cc
     src/inferencing/session/live_session_registry.cc

@@ -955,16 +955,18 @@ class Request {
   /// Options for this request. Overrides session options for the duration of this request.
   Request& SetOptions(const RequestOptions& options);
 
-  /// Cancel the current request. Inferencing will stop as soon as possible.
+  /// Cancel only the invocation currently attached to this Request. Idle cancellation is a no-op and future
+  /// invocations are unaffected. If cancellation wins before completion, queued admission wakes or active generation
+  /// is interrupted, and ProcessRequest throws FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED. A call already sealing
+  /// successful completion may finish normally.
   void Cancel();
 
-  /// Set a wall-clock deadline for the request, in milliseconds. Pass 0 to disable.
+  /// Set a wall-clock timeout for each native ProcessRequest invocation. Pass zero to disable.
   ///
-  /// The deadline covers the whole ProcessRequest call, including prefill, and applies to
-  /// streaming and non-streaming alike. On expiry the run is interrupted and
-  /// ProcessRequest throws with FOUNDRY_LOCAL_ERROR_TIMEOUT.
-  ///
-  /// The deadline is re-armed on each ProcessRequest call, so a Request may be reused.
+  /// One absolute deadline starts at native entry, covers chat/audio admission, and continues through streaming or
+  /// non-streaming generation. Expiry interrupts active generation and throws FOUNDRY_LOCAL_ERROR_TIMEOUT.
+  /// Sequential Request reuse receives fresh state; overlapping invocations with one Request are unsupported and not
+  /// runtime-enforced.
   Request& SetTimeout(std::chrono::milliseconds timeout);
 
   const flRequest* native_handle() const noexcept { return handle_.get(); }
@@ -1011,17 +1013,14 @@ class Session {
 
   /// Process the request.
   /// Populates the response with output items, finish reason, and usage.
+  /// Cancellation and timeout throw without publishing an auto-created response.
+  /// A nonzero streaming callback return remains a successful consumer stop with FOUNDRY_LOCAL_FINISH_NONE.
+  /// Distinct embeddings Requests may execute and cancel independently.
   Response ProcessRequest(const Request& request);
 
-  /// Interrupt any requests currently running on this session.
-  ///
-  /// Thread-safe and callable from any thread — this is the point: it is meant to be
-  /// invoked from a different thread than the one blocked in ProcessRequest. It
-  /// interrupts inferencing mid-compute rather than only between tokens, so a
-  /// non-terminating generation cannot keep the session's reference to the model alive.
-  ///
-  /// The interrupted ProcessRequest returns promptly with a canceled finish reason.
-  /// Idempotent; safe to call when no request is running.
+  /// Terminally cancel active and queued invocations. Calls for which cancellation wins throw
+  /// FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED; a call already sealing successful completion may finish normally.
+  /// Future calls throw FOUNDRY_LOCAL_ERROR_INVALID_USAGE. Thread-safe and idempotent, including while idle.
   void Cancel();
 
  protected:

@@ -70,7 +70,7 @@ class RawGeneratorSession : public fl::Session {
 
  private:
   void ProcessRequestImpl(const fl::Request& request, fl::Response& /*response*/) override {
-    ActiveGenerator active(*this, generator_);
+    ActiveGenerator active(request, generator_);
     stopped_without_throwing_ = !fl::TryGenerateNextToken(generator_, request);
   }
 

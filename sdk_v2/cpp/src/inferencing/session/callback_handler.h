@@ -81,7 +81,7 @@ struct CallbackHandler {
       while (queue_->Size() > 0) {
         try {
           if (fn_(data_, user_data_) != 0) {
-            request_.canceled = true;
+            request_.StopForConsumer();
           }
         } catch (const std::exception& e) {
           logger_.Log(LogLevel::Warning,
@@ -108,7 +108,7 @@ struct CallbackHandler {
   /// cancelled (so PushItem becomes a no-op and the generator loop stops feeding work)
   /// and drops any items still queued so the destructor can join cleanly.
   void DisableAfterException() {
-    request_.canceled = true;
+    request_.StopForConsumer();
     while (queue_->TryPop()) {
     }
   }

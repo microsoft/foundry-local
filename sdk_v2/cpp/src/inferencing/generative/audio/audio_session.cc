@@ -252,7 +252,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
   // an in-flight compute, not just the loop between tokens.
   {
-    ActiveGenerator active(*this, *generator);
+    ActiveGenerator active(request, *generator);
 
     while (!generator->IsDone() && !request.ShouldStop()) {
       generator->GenerateNextToken();
@@ -344,7 +344,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   // Publish the raw generator so Session::Cancel() and the deadline watchdog can interrupt
   // an in-flight encoder/decoder pass. Spans steps 3-5 below, which all drive this generator.
   OgaGeneratorCancellable cancellable(*generator);
-  ActiveGenerator active(*this, cancellable);
+  ActiveGenerator active(request, cancellable);
 
   auto streaming_callback = CreateCallbackHandler(request);
   std::vector<std::string> token_texts;
@@ -520,7 +520,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   {
     // Publish the generator so Session::Cancel() and the deadline watchdog can interrupt
     // an in-flight compute, not just the loop between tokens.
-    ActiveGenerator active(*this, *generator);
+    ActiveGenerator active(original_request, *generator);
 
     while (!generator->IsDone() && !original_request.ShouldStop()) {
       generator->GenerateNextToken();
@@ -686,7 +686,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   // Publish the raw generator so cancellation/deadline can interrupt an in-flight
   // encoder or decode pass rather than only stopping between chunks.
   OgaGeneratorCancellable cancellable(*generator);
-  ActiveGenerator active(*this, cancellable);
+  ActiveGenerator active(original_request, cancellable);
 
   auto streaming_callback = CreateCallbackHandler(original_request);
   std::string response_id = ResponseConverter::GenerateId("audio");

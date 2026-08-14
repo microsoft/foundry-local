@@ -839,7 +839,10 @@ struct flInferenceApi {
   /// Values are string representations; the implementation parses them for the appropriate type.
   /// The request copies the data — the caller may release the pairs after this call.
   FL_API_STATUS(Request_SetOptions, _In_ flRequest* request, _In_ const flKeyValuePairs* options);
-  /// Cancel an in-progress request.
+  /// Cancel only the invocation currently attached to this Request. Idle cancellation is a no-op; future invocations
+  /// are unaffected. If cancellation wins before completion, queued admission wakes or active generation is
+  /// interrupted, and Session_ProcessRequest returns FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED. A call already sealing
+  /// successful completion may finish normally.
   FL_API_STATUS(Request_Cancel, _In_ flRequest* request);
 
   /* Response */
@@ -871,7 +874,12 @@ struct flInferenceApi {
   /// Provide a pre-allocated response is optional. Use Response_Create.
   /// Intended usage is for pre-allocated on-device outputs.
   /// Response will be allocated otherwise. Caller owns and must call Response_Release.
+  /// No auto-allocated response is published on cancellation, timeout, or other error.
   /// For streaming, set the event callback on the session before calling this.
+  /// A nonzero callback return remains a successful consumer stop with FOUNDRY_LOCAL_FINISH_NONE.
+  /// Sequential Request reuse is supported; overlapping invocations with one Request are unsupported and not
+  /// runtime-enforced.
+  /// Distinct embeddings Requests may execute and cancel independently.
   FL_API_STATUS(Session_ProcessRequest, _In_ flSession* session, _In_ const flRequest* request,
                 _Inout_ flResponse** response);
 
@@ -895,21 +903,18 @@ struct flInferenceApi {
   /// If all turns are undone, the cached generator is destroyed.
   FL_API_STATUS(Session_UndoTurns, _In_ flSession* session, size_t count);
 
-  /// Set a wall-clock budget for the request, in milliseconds. 0 (the default) means no
-  /// deadline. The clock starts when Session_ProcessRequest is called and is re-armed on
-  /// every call, so a Request may be reused.
+  /// Set a wall-clock timeout for each native Session_ProcessRequest invocation, in milliseconds. 0 disables it.
+  /// One absolute deadline starts at native entry, covers chat/audio admission waiting, and continues through
+  /// streaming or non-streaming generation. Sequential Request reuse receives a fresh deadline.
   ///
-  /// On expiry the in-flight generation is interrupted — including mid-compute, not just
-  /// at token boundaries — the session's model reference is released, and
-  /// Session_ProcessRequest returns FOUNDRY_LOCAL_ERROR_TIMEOUT.
+  /// Expiry interrupts active generation and returns FOUNDRY_LOCAL_ERROR_TIMEOUT. Values outside the supported
+  /// std::chrono::milliseconds range are rejected with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
   FL_API_STATUS(Request_SetTimeoutMs, _In_ flRequest* request, uint64_t timeout_ms);
 
-  /// Cancel the request currently in flight on this session, and make subsequent
-  /// Session_ProcessRequest calls fail fast with FOUNDRY_LOCAL_ERROR_INVALID_USAGE.
-  ///
-  /// Unlike Request_Cancel — which only reaches generation loops that poll the request —
-  /// this interrupts the underlying engine, so it also stops a non-streaming request that
-  /// is blocked inside a long prefill or decode. Safe to call from any thread; idempotent.
+  /// Terminally cancel this Session. Active or queued invocations for which cancellation wins return
+  /// FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED; a call already sealing successful completion may finish normally.
+  /// Future invocations fail with FOUNDRY_LOCAL_ERROR_INVALID_USAGE. Active generators are interrupted. Safe from any
+  /// thread and idempotent, including while idle.
   /// This is the supported way to release a session that is pinning a model.
   FL_API_STATUS(Session_Cancel, _In_ flSession* session);
 

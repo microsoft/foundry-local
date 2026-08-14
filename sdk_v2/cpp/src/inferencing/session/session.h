@@ -4,10 +4,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <condition_variable>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,9 +13,11 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include "inferencing/session/callback_handler.h"
+#include "inferencing/session/cancellation_state.h"
 #include "inferencing/session/cancellable.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
+#include "inferencing/session/session_control.h"
 #include "inferencing/session/types.h"
 #include "util/key_value_pairs.h"
 
@@ -50,23 +50,13 @@ class Session {
   /// Returns the concrete session type (no RTTI needed).
   virtual SessionType Type() const = 0;
 
-  /// Process a request: overlays session parameters, delegates to the derived
-  /// class, then waits for all async streaming callbacks to complete.
-  /// Waiting here keeps the Request reference valid for the lifetime of any
-  /// in-flight callbacks and ensures the Response is fully populated on return.
-  ///
-  /// Cancellation applies to every path, streaming or not:
-  ///   - `Session::Cancel()` from another thread stops the run promptly.
-  ///   - `Request::SetTimeout()` bounds the run with a wall-clock deadline.
-  /// Both work by flagging the Request and calling Cancel() on the active generator,
-  /// so an in-flight ORT GenAI compute is interrupted rather than waited out.
-  void ProcessRequest(const Request& request, Response& response);
+  /// Process one invocation. Chat/audio admission is interruptible; embeddings invocations remain concurrent.
+  /// The request timeout is captured here as one absolute deadline covering admission and generation.
+  void ProcessRequest(const Request& request, Response& response,
+                      CancellationState::Clock::time_point entry = CancellationState::Clock::now());
 
-  /// Signal every in-flight request on this session to stop, and cause the next ProcessRequest
-  /// on this session to abort immediately. Safe to call from any thread; idempotent.
-  ///
-  /// This is the teardown hook: it guarantees a runaway non-streaming generation
-  /// releases the session's model refcount instead of pinning the model loaded.
+  /// Terminally stop all active and queued invocations. Future ProcessRequest calls fail with INVALID_USAGE.
+  /// Safe to call from any thread; idempotent.
   void Cancel();
 
   /// Add a tool definition to this session.
@@ -158,51 +148,35 @@ class Session {
     return std::make_unique<CallbackHandler>(request, callback_fn_, logger_, callback_user_data_);
   }
 
-  /// Called once the request has finished and its deadline watchdog has joined. Derived classes use it to drop
-  /// state a timeout invalidated after the deadline cancellation callback can no longer reach the generator.
-  virtual void OnRequestFinished(const Request& /*request*/) noexcept {}
-
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
-  /// RAII guard publishing the generator currently driving a request so that
-  /// Session::Cancel() and the deadline watchdog can interrupt it mid-compute.
-  ///
-  /// Derived classes create one for the scope in which a generator is live. If
-  /// cancellation was already requested when the guard is constructed, the
-  /// generator is cancelled immediately — this closes the race where Cancel()
-  /// lands between the pre-flight check and the generator becoming visible.
-  ///
-  /// Multiple guards may be live at once: sessions that opt into concurrency
-  /// (embeddings) run several requests in parallel, and a nested scope can publish
-  /// a second generator. All registered generators are cancelled together.
+  /// RAII publication of a generator to the cancellation state attached to this request.
   class ActiveGenerator {
    public:
-    ActiveGenerator(Session& session, ICancellable& generator)
-        : session_(session), generator_(generator) {
-      session_.AddActiveGenerator(&generator_);
+    ActiveGenerator(const Request& request, ICancellable& generator)
+        : state_(request.ActiveCancellationState()), generator_(generator) {
+      if (state_) {
+        state_->RegisterGenerator(generator_);
+      }
     }
 
-    ~ActiveGenerator() { session_.RemoveActiveGenerator(&generator_); }
+    ~ActiveGenerator() {
+      if (state_) {
+        state_->UnregisterGenerator(generator_);
+      }
+    }
 
     ActiveGenerator(const ActiveGenerator&) = delete;
     ActiveGenerator& operator=(const ActiveGenerator&) = delete;
 
    private:
-    Session& session_;
+    std::shared_ptr<CancellationState> state_;
     ICancellable& generator_;
   };
 
  private:
-  /// Publish a generator driving a request. Cancels it inline if a stop was already
-  /// requested, so a generator created after Cancel() cannot run unbounded.
-  void AddActiveGenerator(ICancellable* generator);
-
-  /// Withdraw a generator once its scope ends.
-  void RemoveActiveGenerator(ICancellable* generator);
-
-  /// Body of the deadline watchdog thread. Sleeps until the request's deadline and
-  /// then interrupts the run, unless woken earlier because the request completed.
-  void WatchDeadline(const Request& request);
+  static void WatchDeadline(const std::shared_ptr<CancellationState>& state, ILogger& logger,
+                            std::chrono::milliseconds timeout);
 
   const fl::Model& catalog_model_;
   ILogger& logger_;
@@ -212,27 +186,7 @@ class Session {
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
   const bool allow_concurrent_requests_;
-  mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
-
-  /// Guards active_generator_/cancel_requested_ and pairs with the condition variable for
-  /// the watchdog. Held behind a unique_ptr because Session must remain movable (the
-  /// Responses API caches ChatSessions by move) and mutex/condition_variable are not.
-  /// Separate from request_mutex_: Cancel() must be serviceable while a request holds that lock.
-  struct CancelState {
-    std::mutex mutex;
-    std::condition_variable cv;
-    std::vector<ICancellable*> active_generators;
-    /// In-flight requests, so Cancel() can latch the flag that drives finish_reason and
-    /// history rollback. Tracked alongside generators because a request may be cancelled
-    /// before it publishes one (e.g. during prefill).
-    std::vector<const Request*> active_requests_list;
-    bool cancel_requested = false;
-    /// Number of requests currently running, so the watchdog knows when to stop waiting.
-    /// A count rather than a flag because concurrent sessions overlap requests.
-    int active_requests = 0;
-  };
-
-  std::unique_ptr<CancelState> cancel_state_ = std::make_unique<CancelState>();
+  std::shared_ptr<SessionControl> control_;
 };
 
 }  // namespace fl

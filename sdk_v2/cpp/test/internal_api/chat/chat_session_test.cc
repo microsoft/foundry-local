@@ -466,12 +466,19 @@ TEST_F(ChatSessionTest, CancelStopsInFlightNonStreamingRequest) {
   });
 
   const auto start = std::chrono::steady_clock::now();
-  session.ProcessRequest(request, response);
+  flErrorCode code = FOUNDRY_LOCAL_OK;
+  try {
+    session.ProcessRequest(request, response);
+  } catch (const fl::Exception& ex) {
+    code = ex.code();
+  }
+
   const auto elapsed = std::chrono::steady_clock::now() - start;
 
   finished.store(true);
   canceller.join();
 
+  EXPECT_EQ(code, FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
   EXPECT_LT(elapsed, std::chrono::seconds(60));
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
 }
