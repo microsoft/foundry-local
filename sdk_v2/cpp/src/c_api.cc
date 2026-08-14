@@ -776,23 +776,6 @@ FL_API_STATUS_IMPL(Catalog_UnregisterModelImpl, flCatalog* catalog, const char* 
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Catalog_GetLocalModelsImpl, const flCatalog* catalog, flModelList** out_models) {
-  API_IMPL_BEGIN
-  if (!catalog || !out_models) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
-  }
-
-  auto models = catalog->impl.GetLocalModels();
-  auto list = std::make_unique<flModelList>();
-  list->items.reserve(models.size());
-  for (auto* model : models) {
-    list->items.push_back(AsHandle<flModel>(model));
-  }
-  *out_models = list.release();
-  return nullptr;
-  API_IMPL_END
-}
-
 static const flCatalogApi g_catalog_api_v1 = {
   Catalog_GetNameImpl,
   Catalog_GetModelsImpl,
@@ -815,7 +798,6 @@ static const flCatalogApi g_catalog_api = {
     Catalog_GetModelVersionsImpl,
     Catalog_RegisterModelImpl,
     Catalog_UnregisterModelImpl,
-    Catalog_GetLocalModelsImpl,
 };
 
 // ========================================================================

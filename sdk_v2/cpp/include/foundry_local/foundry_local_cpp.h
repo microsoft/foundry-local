@@ -812,9 +812,6 @@ class ICatalog {
   virtual void UnregisterModel(const std::string&) {
     throw Error("models can only be unregistered from a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
-  virtual ModelList GetLocalModels() const {
-    throw Error("local model listing is unsupported by this catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-  }
 };
 
 // ===========================================================================
@@ -842,7 +839,6 @@ class Catalog final : public ICatalog {
                              int max_versions = 50) override;
   std::unique_ptr<IModel> RegisterModel(const ModelInfo& model_info) override;
   void UnregisterModel(const std::string& alias_or_model_id) override;
-  ModelList GetLocalModels() const override;
 
  private:
   detail::Base<flCatalog> handle_;

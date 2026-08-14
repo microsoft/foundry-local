@@ -76,8 +76,6 @@ class ICatalog {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "models can only be unregistered from a local catalog");
   }
 
-  virtual std::vector<Model*> GetLocalModels() const { return {}; }
-
   /// Invalidate the cached model list so the next query re-fetches.
   /// Called after EP registration changes, since the available device filters
   /// may now include additional execution providers.

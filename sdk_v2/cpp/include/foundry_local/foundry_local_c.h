@@ -999,8 +999,6 @@ struct flCatalogApi {
                 _Outptr_ flModel** out_model);
   /// Unregister by alias or model ID without deleting model assets.
   FL_API_STATUS(UnregisterModel, _In_ flCatalog* catalog, _In_ const char* alias_or_model_id);
-  /// List models explicitly registered in this local catalog.
-  FL_API_STATUS(GetLocalModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
 
   // End V2
 };

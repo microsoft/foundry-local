@@ -21,7 +21,6 @@ class LocalModelCatalog final : public BaseModelCatalog {
 
   Model* RegisterModel(const ModelInfo& model_info) override;
   void UnregisterModel(const std::string& alias_or_model_id) override;
-  std::vector<Model*> GetLocalModels() const override;
 
   struct Registration {
     ModelInfo info;

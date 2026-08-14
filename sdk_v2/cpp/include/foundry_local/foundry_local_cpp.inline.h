@@ -714,12 +714,6 @@ inline void Catalog::UnregisterModel(const std::string& alias_or_model_id) {
   Check(detail::catalog_api()->UnregisterModel(handle_.get_mutable(), alias_or_model_id.c_str()));
 }
 
-inline ModelList Catalog::GetLocalModels() const {
-  flModelList* models = nullptr;
-  Check(detail::catalog_api()->GetLocalModels(handle_.get(), &models));
-  return ModelList(*models);
-}
-
 // ===========================================================================
 // Item
 // ===========================================================================

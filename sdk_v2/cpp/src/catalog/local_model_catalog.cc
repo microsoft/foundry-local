@@ -244,10 +244,6 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
   }
 }
 
-std::vector<Model*> LocalModelCatalog::GetLocalModels() const {
-  return ListModels();
-}
-
 ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const ModelInfo* previous,
                                              const std::string& model_path, const std::string& alias,
                                              bool* assets_inspected) const {

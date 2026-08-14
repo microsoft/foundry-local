@@ -56,7 +56,6 @@ TEST_F(LocalModelCatalogTest, RegisterResolvesMetadataListsAndWritesFiles) {
   EXPECT_TRUE(model->IsCached());
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1), 4096);
   EXPECT_EQ(catalog_.ListModels().size(), 1u);
-  EXPECT_EQ(catalog_.GetLocalModels().size(), 1u);
   EXPECT_TRUE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
   const auto index_path = root_.path() / "appdata" / "catalogs" / "local" / "local_models.json";
   ASSERT_TRUE(std::filesystem::exists(index_path));
