@@ -773,7 +773,21 @@ public sealed class Session : IDisposable
     internal IntPtr ProcessRequest(IntPtr requestPtr)
     {
         IntPtr responsePtr = IntPtr.Zero;
-        Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestPtr, ref responsePtr));
+
+        try
+        {
+            Api.CheckStatus(Api.Inference.SessionProcessRequest(Ptr, requestPtr, ref responsePtr));
+        }
+        catch
+        {
+            if (responsePtr != IntPtr.Zero)
+            {
+                Api.Inference.ResponseRelease(responsePtr);
+            }
+
+            throw;
+        }
+
         return responsePtr;
     }
 

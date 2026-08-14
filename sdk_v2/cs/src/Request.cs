@@ -10,6 +10,9 @@ using Microsoft.AI.Foundry.Local.Detail.Native;
 public sealed class Request : IDisposable
 {
     internal IntPtr Ptr { get; private set; }
+    private readonly object _lifetimeGate = new();
+    private int _activeProcesses;
+    private bool _disposeRequested;
     private bool _disposed;
 
     public Request()
@@ -92,9 +95,43 @@ public sealed class Request : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Interrupt the active native request. Does nothing after disposal.
+    /// </summary>
     public void Cancel()
     {
-        Api.CheckStatus(Api.Inference.RequestCancel(Ptr));
+        lock (_lifetimeGate)
+        {
+            if (Ptr == IntPtr.Zero)
+            {
+                return;
+            }
+
+            Api.CheckStatus(Api.Inference.RequestCancel(Ptr));
+        }
+    }
+
+    internal IntPtr AcquireForProcessing()
+    {
+        lock (_lifetimeGate)
+        {
+            Detail.Throw.IfDisposed(_disposeRequested, this);
+            _activeProcesses++;
+            return Ptr;
+        }
+    }
+
+    internal void ReleaseAfterProcessing()
+    {
+        lock (_lifetimeGate)
+        {
+            _activeProcesses--;
+
+            if (_activeProcesses == 0)
+            {
+                Monitor.PulseAll(_lifetimeGate);
+            }
+        }
     }
 
     /// <summary>
@@ -115,11 +152,35 @@ public sealed class Request : IDisposable
 
     public void Dispose()
     {
-        if (!_disposed && Ptr != IntPtr.Zero)
+        lock (_lifetimeGate)
         {
-            Api.Inference.RequestRelease(Ptr);
-            Ptr = IntPtr.Zero;
+            if (_disposeRequested)
+            {
+                while (!_disposed)
+                {
+                    Monitor.Wait(_lifetimeGate);
+                }
+
+                return;
+            }
+
+            _disposeRequested = true;
+
+            // Retry because native cancellation does nothing before processing starts.
+            while (_activeProcesses > 0)
+            {
+                try { Api.CheckStatus(Api.Inference.RequestCancel(Ptr)); } catch { }
+                Monitor.Wait(_lifetimeGate, millisecondsTimeout: 50);
+            }
+
+            if (Ptr != IntPtr.Zero)
+            {
+                Api.Inference.RequestRelease(Ptr);
+                Ptr = IntPtr.Zero;
+            }
+
             _disposed = true;
+            Monitor.PulseAll(_lifetimeGate);
         }
     }
 }

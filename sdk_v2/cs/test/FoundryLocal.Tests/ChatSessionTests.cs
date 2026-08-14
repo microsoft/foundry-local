@@ -59,6 +59,7 @@ internal sealed class ChatSessionTests
                     content = msg.GetSimpleText();
                 }
             }
+
         }
 
         await Assert.That(content).IsNotNull();
@@ -649,5 +650,35 @@ internal sealed class ChatSessionTests
         await Assert.That(finalContent).IsNotNull();
         await Assert.That(finalContent!).Contains("42");
         Console.WriteLine($"Final response: {finalContent}");
+    }
+
+    [Test]
+    public async Task Chat_NonStreaming_PreCancelledToken_ThrowsExactToken()
+    {
+        using var session = new ChatSession(model!);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Hello."));
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var task = session.ProcessRequestAsync(request, cts.Token);
+
+        OperationCanceledException? caught = null;
+
+        try
+        {
+            using var _ = await task;
+        }
+        catch (OperationCanceledException oce)
+        {
+            caught = oce;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.CancellationToken).IsEqualTo(cts.Token);
+        await Assert.That(task.IsCanceled).IsTrue();
+        await Assert.That(task.IsFaulted).IsFalse();
     }
 }
