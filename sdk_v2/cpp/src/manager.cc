@@ -356,12 +356,6 @@ Manager::~Manager() {
   catalog_.reset();
   telemetry_.reset();
 
-  // Every OgaModel/OgaGenerator/OgaTokenizer (and anything else backed by GenAI device memory)
-  // is owned transitively by the members reset above, so it is now safe to tear down GenAI's
-  // process-wide state. ORT GenAI 0.15.2 supports OgaShutdown() followed later by OgaCreateModel()
-  // in a freshly created Manager, so this is not process-exit-only cleanup. The GenAI log callback
-  // (and the logger_ it forwards to) must stay valid across this call, since OgaShutdown() may emit
-  // its own teardown logs; clear the callback only after it returns.
   OgaShutdown();
 
   if (ort_api_ != nullptr && ort_env_ != nullptr) {
@@ -389,9 +383,7 @@ Manager::~Manager() {
 
   safe_log(LogLevel::Information, "Manager is being disposed.");
 
-  // OgaShutdown() and ReleaseEnv() above may still emit late teardown logs synchronously, but
-  // neither keeps a callback registered past this point. Clear s_ort_logger so OrtLogCallback
-  // cannot dereference a dangling pointer once Manager (and its logger_) is destroyed.
+  // Prevent late ORT logs from dereferencing logger_ after Manager destruction.
   s_ort_logger.store(nullptr, std::memory_order_release);
 }
 

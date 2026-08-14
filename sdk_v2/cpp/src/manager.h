@@ -116,8 +116,7 @@ class Manager {
   //   config_                  — trivial data, no dependencies
   //   ort_api_, ort_env_,
   //     registered_ep_libraries_ — ORT environment & EP registrations;
-  //                                GenAI globals are released via OgaShutdown() during
-  //                                Manager destruction, before this EP/env cleanup runs.
+  //                                released manually in ~Manager() after GenAI shutdown.
   //   logger_                  — everything logs through this, destroyed last
   //   ep_detector_             — owns EP bootstrappers and dependency handles;
   //                              reset after provider unregistration and before OrtEnv release

@@ -132,6 +132,51 @@ gtest_discover_tests(foundry_local_tests
     DISCOVERY_TIMEOUT 60
 )
 
+# Isolate OgaShutdown() from the rest of the unit suite because it resets process-global GenAI state.
+add_executable(manager_reinit_tests
+    test_main.cc
+    internal_api/manager_reinit_test.cc
+)
+
+target_compile_options(manager_reinit_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_link_libraries(manager_reinit_tests
+    PRIVATE
+        foundry_local_static
+        GTest::gtest
+        httplib::httplib
+        ZLIB::ZLIB
+)
+target_include_directories(manager_reinit_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+add_dependencies(manager_reinit_tests foundry_local)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(manager_reinit_tests PRIVATE -Wl,--disable-new-dtags)
+endif()
+
+add_custom_command(TARGET manager_reinit_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/testdata
+            $<TARGET_FILE_DIR:manager_reinit_tests>/testdata
+)
+
+if(ANDROID)
+    target_compile_definitions(manager_reinit_tests PRIVATE FOUNDRY_LOCAL_TEST_DATA_DIR="testdata")
+else()
+    target_compile_definitions(manager_reinit_tests PRIVATE
+        FOUNDRY_LOCAL_TEST_DATA_DIR="$<TARGET_FILE_DIR:manager_reinit_tests>/testdata"
+    )
+endif()
+
+gtest_discover_tests(manager_reinit_tests
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:manager_reinit_tests>
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 60
+)
+
 # ==========================================================================
 # SDK API tests — test the public C++ API surface only
 # Links the shared library via foundry_local_cpp (the INTERFACE library for
