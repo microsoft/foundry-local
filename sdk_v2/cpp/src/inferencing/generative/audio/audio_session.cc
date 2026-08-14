@@ -267,10 +267,11 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
         token_texts.push_back(std::move(token));
       }
 
-      if (request.canceled) {
-        generator->Cancel();
-      }
     }
+  }
+
+  if (streaming_callback) {
+    streaming_callback->Drain();
   }
 
   int total_tokens = generator->TokenCount();
@@ -395,6 +396,10 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
       DecodeTokens(*generator, *tokenizer_stream, token_texts, segments, streaming_callback, request,
                    completion_tokens);
     }
+  }
+
+  if (streaming_callback) {
+    streaming_callback->Drain();
   }
 
   // 6. Produce response — SpeechResultItem carrying all per-token segments.
@@ -536,10 +541,11 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
         }
       }
 
-      if (original_request.canceled) {
-        generator->Cancel();
-      }
     }
+  }
+
+  if (streaming_callback) {
+    streaming_callback->Drain();
   }
 
   int total_tokens = generator->TokenCount();
@@ -701,6 +707,10 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   if (!original_request.canceled) {
     RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
                           original_request, completion_tokens);
+  }
+
+  if (streaming_callback) {
+    streaming_callback->Drain();
   }
 
   response.finish_reason = original_request.canceled ? FOUNDRY_LOCAL_FINISH_NONE : FOUNDRY_LOCAL_FINISH_STOP;

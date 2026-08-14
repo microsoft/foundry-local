@@ -65,7 +65,13 @@ class StreamingResponse:
     The wrapper can be iterated at most once; a second ``iter()`` raises.
     """
 
-    def __init__(self, session: "Session", request: "Request", session_ptr: object) -> None:
+    def __init__(
+        self,
+        session: "Session",
+        request: "Request",
+        session_ptr: object,
+        release_call: Callable[[], None],
+    ) -> None:
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
@@ -101,7 +107,7 @@ class StreamingResponse:
                 try:
                     self._queue.put(_DONE)
                 finally:
-                    session._release_call()
+                    release_call()
 
         t = threading.Thread(target=_run, daemon=True)
         session._stream_thread = t
@@ -110,11 +116,15 @@ class StreamingResponse:
         try:
             t.start()
         except BaseException:
-            # No worker can enqueue _DONE if thread startup fails.
             self._closed = True
             session._stream_thread = None
             session._stream_request = None
             session._stream_queue = None
+            if t.ident is not None:
+                try:
+                    request.cancel()
+                finally:
+                    t.join()
             raise
 
     def _release_lock(self) -> None:
@@ -423,6 +433,17 @@ class Session(abc.ABC):
         from foundry_local_sdk.exception import FoundryLocalException
 
         session_ptr = self._acquire_call()
+        release_lock = threading.Lock()
+        released = False
+
+        def release_call() -> None:
+            nonlocal released
+            with release_lock:
+                if released:
+                    return
+                released = True
+            self._release_call()
+
         lease_transferred = False
         try:
             if not self._streaming_enabled:
@@ -437,7 +458,7 @@ class Session(abc.ABC):
                 )
 
             try:
-                response = StreamingResponse(self, request, session_ptr)
+                response = StreamingResponse(self, request, session_ptr, release_call)
             except BaseException:
                 self._streaming_in_flight.release()
                 raise
@@ -445,17 +466,15 @@ class Session(abc.ABC):
             return response
         finally:
             if not lease_transferred:
-                self._release_call()
+                release_call()
 
     def process_request(self, request: "Request", timeout: "float | None" = None) -> "Response":
         """Run the request synchronously and return the complete response.
 
         Args:
             request: The request to run.
-            timeout: Optional wall-clock deadline in seconds. On expiry the generation is
-                interrupted mid-compute and a timeout error is raised, so a non-terminating
-                model cannot pin the session and block model unload. Overrides any deadline
-                previously set via :meth:`Request.set_timeout`.
+            timeout: If provided, set ``request``'s timeout in seconds before processing.
+                The setting remains on ``request``.
         """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api

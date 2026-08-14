@@ -82,6 +82,9 @@ struct CallbackHandler {
         try {
           if (fn_(data_, user_data_) != 0) {
             request_.StopFromStreamingCallback();
+            while (queue_->TryPop()) {
+            }
+            return;
           }
         } catch (const std::exception& e) {
           logger_.Log(LogLevel::Warning,

@@ -112,7 +112,9 @@ int OnnxAudioGenerator::PromptTokenCount() const {
 }
 
 void OnnxAudioGenerator::Cancel() {
-  cancelled_ = true;
+  if (cancelled_.exchange(true)) {
+    return;
+  }
 
   // Use the ORT GenAI engine-level termination to interrupt mid-compute
   // (e.g. during a long prefill), not just between token boundaries.

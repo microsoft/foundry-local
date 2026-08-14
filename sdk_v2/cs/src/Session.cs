@@ -346,6 +346,20 @@ public abstract class Session : IDisposable
                     Interlocked.Exchange(ref _activeChannel, null);
                     return;
                 }
+                catch (TimeoutException ex)
+                {
+                    channel.Writer.TryComplete(ex);
+                    tcs.TrySetException(ex);
+                    Interlocked.Exchange(ref _activeChannel, null);
+                    return;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    channel.Writer.TryComplete(ex);
+                    tcs.TrySetCanceled(ex.CancellationToken);
+                    Interlocked.Exchange(ref _activeChannel, null);
+                    return;
+                }
                 catch (Exception ex)
                 {
                     var wrapped = new FoundryLocalException("Error executing streaming request.", ex);

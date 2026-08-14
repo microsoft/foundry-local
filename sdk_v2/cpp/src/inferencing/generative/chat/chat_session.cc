@@ -57,6 +57,9 @@ ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& mod
 }
 
 ChatSession::~ChatSession() {
+  cached_generator_.reset();
+  cached_tool_ctx_ = {};
+
   if (owns_session_) {
     model_.ReleaseSession();
   }
@@ -847,6 +850,10 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
                                                                   model_name);
     streaming_callback->PushItem(std::make_unique<TextItem>(std::move(final_json),
                                                             FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    streaming_callback->Drain();
+    if (original_request.canceled) {
+      response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+    }
   }
 
   // Store completion envelope metadata so callers can access without parsing JSON
