@@ -42,18 +42,7 @@ public sealed class ChatSession : Session
     public ChatSession AddToolDefinition(string name, string description, string jsonSchema)
     {
         ThrowIfDisposed();
-
-        EnterActiveCall();
-
-        try
-        {
-            GetNativeSession().AddToolDefinition(name, description, jsonSchema);
-        }
-        finally
-        {
-            ExitActiveCall();
-        }
-
+        GetNativeSession().AddToolDefinition(name, description, jsonSchema);
         return this;
     }
 
@@ -65,17 +54,7 @@ public sealed class ChatSession : Session
     public bool RemoveToolDefinition(string toolName)
     {
         ThrowIfDisposed();
-
-        EnterActiveCall();
-
-        try
-        {
-            return GetNativeSession().RemoveToolDefinition(toolName);
-        }
-        finally
-        {
-            ExitActiveCall();
-        }
+        return GetNativeSession().RemoveToolDefinition(toolName);
     }
 
     /// <summary>
@@ -86,17 +65,7 @@ public sealed class ChatSession : Session
         get
         {
             ThrowIfDisposed();
-
-            EnterActiveCall();
-
-            try
-            {
-                return GetNativeSession().TurnCount;
-            }
-            finally
-            {
-                ExitActiveCall();
-            }
+            return GetNativeSession().TurnCount;
         }
     }
 
@@ -107,16 +76,6 @@ public sealed class ChatSession : Session
     public void UndoTurns(ulong count)
     {
         ThrowIfDisposed();
-
-        EnterActiveCall();
-
-        try
-        {
-            GetNativeSession().UndoTurns(count);
-        }
-        finally
-        {
-            ExitActiveCall();
-        }
+        GetNativeSession().UndoTurns(count);
     }
 }

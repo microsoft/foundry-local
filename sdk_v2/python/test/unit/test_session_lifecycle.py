@@ -12,32 +12,13 @@ import pytest
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.request import Request
 from foundry_local_sdk.response import Response
-from foundry_local_sdk.session import ChatSession, Session, _SessionState
+from foundry_local_sdk.session import Session, _SessionState
 
 
 class _FakeFfi:
-    NULL = None
-
-    def new(self, declaration: str, initializer: object = None) -> object:
-        match declaration:
-            case "flResponse**" | "flKeyValuePairs**":
-                return [None]
-            case "char[]":
-                return initializer
-            case "flToolDefinition*":
-                return types.SimpleNamespace()
-            case "bool*":
-                return [False]
-            case _:
-                raise AssertionError(f"Unexpected declaration: {declaration}")
-
-    def callback(self, declaration: str, callback: Callable[..., object]) -> Callable[..., object]:
-        assert declaration == "flStreamingCallback"
-        return callback
-
-    def cast(self, declaration: str, value: object) -> object:
-        assert declaration == "flStreamingCallback"
-        return value
+    def new(self, declaration: str) -> list[object | None]:
+        assert declaration == "flResponse**"
+        return [None]
 
 
 class _FakeRequest:
@@ -50,11 +31,6 @@ class _FakeRequest:
 
     def cancel(self) -> None:
         pass
-
-
-class _FakeOptions:
-    def to_native_options(self) -> dict[str, str]:
-        return {"key": "value"}
 
 
 class _RecordingCondition(threading.Condition):
@@ -77,24 +53,12 @@ class _NeverWaitCondition(threading.Condition):
 @pytest.fixture
 def fake_native(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
     inference = types.SimpleNamespace(
-        Session_AddToolDefinition=lambda *_: None,
-        Session_GetTurnCount=lambda *_: 0,
         Session_ProcessRequest=lambda *_: None,
-        Session_RemoveToolDefinition=lambda *_: None,
-        Session_SetOptions=lambda *_: None,
-        Session_SetStreamingCallback=lambda *_: None,
-        Session_UndoTurns=lambda *_: None,
         Response_Release=lambda *_: None,
         Request_SetTimeoutMs=lambda *_: None,
         Request_Release=lambda *_: None,
     )
-    root = types.SimpleNamespace(
-        AddKeyValuePair=lambda *_: None,
-        CreateKeyValuePairs=lambda out: out.__setitem__(0, object()),
-        KeyValuePairs_Release=lambda *_: None,
-    )
-    item = types.SimpleNamespace(ItemQueue_TryPop=lambda *_: False)
-    api = types.SimpleNamespace(inference=inference, item=item, root=root, check_status=lambda status: None)
+    api = types.SimpleNamespace(inference=inference, check_status=lambda status: None)
     native_module = types.ModuleType("foundry_local_sdk._native")
     ffi = _FakeFfi()
     setattr(native_module, "ffi", ffi)
@@ -104,7 +68,7 @@ def fake_native(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
     setattr(api_module, "ffi", ffi)
     monkeypatch.setitem(sys.modules, "foundry_local_sdk._native", native_module)
     monkeypatch.setitem(sys.modules, "foundry_local_sdk._native.api", api_module)
-    return types.SimpleNamespace(api=api, ffi=ffi, inference=inference)
+    return types.SimpleNamespace(api=api, inference=inference)
 
 
 def _make_session(
@@ -112,9 +76,8 @@ def _make_session(
     condition: threading.Condition | None = None,
     release: Callable[[object], None] | None = None,
     cancel: Callable[[object], object] | None = None,
-    session_type: type[Session] = Session,
 ) -> Session:
-    session = object.__new__(session_type)
+    session = object.__new__(Session)
     session._closed = False
     session._ptr = object()
     session._stream_thread = None
@@ -135,193 +98,6 @@ def _make_session(
 def _join(thread: threading.Thread) -> None:
     thread.join(timeout=2)
     assert not thread.is_alive()
-
-
-def _invoke_session_operation(session: ChatSession, operation: str) -> object:
-    match operation:
-        case "set_options":
-            return session.set_options(cast(Any, _FakeOptions()))
-        case "enable_streaming":
-            return session.set_streaming(True)
-        case "disable_streaming":
-            session._streaming_enabled = True
-            session._streaming_callback = object()
-            return session.set_streaming(False)
-        case "add_tool":
-            return session.add_tool_definition("tool", "description", "{}")
-        case "remove_tool":
-            return session.remove_tool_definition("tool")
-        case "turn_count":
-            return session.turn_count
-        case "undo_turns":
-            return session.undo_turns(1)
-        case _:
-            raise AssertionError(f"Unexpected operation: {operation}")
-
-
-@pytest.mark.parametrize(
-    ("operation", "native_name"),
-    [
-        ("set_options", "Session_SetOptions"),
-        ("enable_streaming", "Session_SetStreamingCallback"),
-        ("disable_streaming", "Session_SetStreamingCallback"),
-        ("add_tool", "Session_AddToolDefinition"),
-        ("remove_tool", "Session_RemoveToolDefinition"),
-        ("turn_count", "Session_GetTurnCount"),
-        ("undo_turns", "Session_UndoTurns"),
-    ],
-)
-def test_close_waits_for_leased_session_native_operations_and_releases_once(
-    fake_native: types.SimpleNamespace,
-    operation: str,
-    native_name: str,
-) -> None:
-    native_started = threading.Event()
-    allow_native_to_finish = threading.Event()
-    releases: list[object] = []
-    errors: list[BaseException] = []
-    condition = _RecordingCondition()
-
-    def blocking_native_call(*_: object) -> object:
-        native_started.set()
-        assert allow_native_to_finish.wait(timeout=2)
-        return 3 if native_name == "Session_GetTurnCount" else None
-
-    setattr(fake_native.inference, native_name, blocking_native_call)
-    session = cast(
-        ChatSession,
-        _make_session(
-            condition=condition,
-            release=releases.append,
-            session_type=ChatSession,
-        ),
-    )
-
-    def run_operation() -> None:
-        try:
-            _invoke_session_operation(session, operation)
-        except BaseException as exc:
-            errors.append(exc)
-
-    operation_thread = threading.Thread(target=run_operation)
-    operation_thread.start()
-    assert native_started.wait(timeout=2)
-
-    close_thread = threading.Thread(target=session._close)
-    close_thread.start()
-    assert condition.wait_started.wait(timeout=2)
-    assert close_thread.is_alive()
-    assert releases == []
-
-    allow_native_to_finish.set()
-    _join(operation_thread)
-    _join(close_thread)
-
-    session._close()
-    assert errors == []
-    assert len(releases) == 1
-
-
-def test_set_options_reentrant_close_during_conversion_does_not_deadlock(
-    fake_native: types.SimpleNamespace,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session_releases: list[object] = []
-    kvp_releases: list[object] = []
-    native_calls: list[object] = []
-    errors: list[BaseException] = []
-    session = _make_session(release=session_releases.append)
-
-    class _ReentrantOptions:
-        def to_native_options(self) -> dict[str, str]:
-            assert session._active_native_calls == 0
-            session._close()
-            return {"key": "value"}
-
-    monkeypatch.setattr(fake_native.api.root, "KeyValuePairs_Release", kvp_releases.append)
-    monkeypatch.setattr(fake_native.inference, "Session_SetOptions", lambda *_: native_calls.append(object()))
-
-    def set_options() -> None:
-        try:
-            session.set_options(cast(Any, _ReentrantOptions()))
-        except BaseException as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=set_options, daemon=True)
-    thread.start()
-    _join(thread)
-
-    assert len(errors) == 1
-    assert isinstance(errors[0], FoundryLocalException)
-    assert "closed" in str(errors[0])
-    assert native_calls == []
-    assert len(kvp_releases) == 1
-    assert len(session_releases) == 1
-
-
-def test_set_options_marshalling_failure_occurs_before_lease_and_releases_kvp(
-    fake_native: types.SimpleNamespace,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    kvp_releases: list[object] = []
-    session = _make_session()
-
-    def fail_add(*_: object) -> None:
-        raise RuntimeError("marshalling failed")
-
-    def fail_acquire() -> object:
-        raise AssertionError("lease must not be acquired")
-
-    monkeypatch.setattr(fake_native.api.root, "AddKeyValuePair", fail_add)
-    monkeypatch.setattr(fake_native.api.root, "KeyValuePairs_Release", kvp_releases.append)
-    monkeypatch.setattr(session, "_acquire_call", fail_acquire)
-
-    with pytest.raises(RuntimeError, match="marshalling failed"):
-        session.set_options(cast(Any, _FakeOptions()))
-
-    assert len(kvp_releases) == 1
-    assert session._active_native_calls == 0
-
-
-def test_set_options_native_failure_releases_call_lease_and_kvp(
-    fake_native: types.SimpleNamespace,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    kvp_releases: list[object] = []
-    session = _make_session()
-
-    def fail_set_options(*_: object) -> None:
-        assert session._active_native_calls == 1
-        raise RuntimeError("native call failed")
-
-    monkeypatch.setattr(fake_native.inference, "Session_SetOptions", fail_set_options)
-    monkeypatch.setattr(fake_native.api.root, "KeyValuePairs_Release", kvp_releases.append)
-
-    with pytest.raises(RuntimeError, match="native call failed"):
-        session.set_options(cast(Any, _FakeOptions()))
-
-    assert session._active_native_calls == 0
-    assert len(kvp_releases) == 1
-
-
-def test_process_request_timeout_failure_occurs_before_lease(
-    fake_native: types.SimpleNamespace,
-) -> None:
-    native_calls: list[object] = []
-    session = _make_session()
-
-    class _FailingTimeoutRequest(_FakeRequest):
-        def set_timeout(self, timeout: float | None) -> None:
-            assert session._active_native_calls == 0
-            raise RuntimeError("timeout conversion failed")
-
-    fake_native.inference.Session_ProcessRequest = lambda *_: native_calls.append(object())
-
-    with pytest.raises(RuntimeError, match="timeout conversion failed"):
-        session.process_request(cast(Request, _FailingTimeoutRequest()), timeout=1)
-
-    assert session._active_native_calls == 0
-    assert native_calls == []
 
 
 def test_close_waits_for_synchronous_request_without_timeout_and_rejects_new_calls(
