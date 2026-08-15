@@ -217,6 +217,55 @@ def test_streaming_thread_start_failure_releases_call_lease(
     session._close()
 
 
+def test_closing_unstarted_stream_retries_cancellation_until_worker_settles(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    native_entry_allowed = threading.Event()
+    native_entered = threading.Event()
+    cancellation_attempted = threading.Event()
+    cancellation_observed = threading.Event()
+    cancellation_after_native_return = threading.Event()
+    native_call_returned = threading.Event()
+    cancellation_calls = 0
+
+    class _PreEntryRequest(_FakeRequest):
+        def cancel(self) -> None:
+            nonlocal cancellation_calls
+            cancellation_calls += 1
+            cancellation_attempted.set()
+            if native_entered.is_set():
+                cancellation_observed.set()
+            if native_call_returned.is_set():
+                cancellation_after_native_return.set()
+
+    def process(_session_ptr: object, _request_ptr: object, out: list[object | None]) -> None:
+        assert native_entry_allowed.wait(timeout=2)
+        native_entered.set()
+        assert cancellation_observed.wait(timeout=2)
+        out[0] = object()
+        native_call_returned.set()
+
+    fake_native.inference.Session_ProcessRequest = process
+    session = _make_session()
+    session._streaming_enabled = True
+    request = cast(Request, _PreEntryRequest())
+    stream = session.process_streaming_request(request)
+
+    close_thread = threading.Thread(target=lambda: stream.__exit__(None, None, None))
+    close_thread.start()
+    assert cancellation_attempted.wait(timeout=2)
+    assert not native_entered.is_set()
+    assert not cancellation_observed.is_set()
+
+    native_entry_allowed.set()
+    _join(close_thread)
+
+    assert cancellation_observed.is_set()
+    assert cancellation_calls >= 2
+    assert native_call_returned.is_set()
+    assert not cancellation_after_native_return.is_set()
+
+
 def test_concurrent_and_repeated_close_releases_exactly_once() -> None:
     callers = 4
     start = threading.Barrier(callers + 1)

@@ -23,6 +23,10 @@ _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
 # Sentinel placed on the stream queue by the background thread when inference finishes.
 _DONE = object()
 
+# A Request_Cancel issued before ProcessRequest enters native code is an idle
+# no-op. Retrying at this cadence closes that scheduling window without spinning.
+_CANCEL_RETRY_INTERVAL_SECONDS = 0.05
+
 
 class _StreamError:
     """Wraps an exception propagated from the background inference thread."""
@@ -138,16 +142,24 @@ class StreamingResponse:
         except RuntimeError:
             pass
 
-    def _drain_and_join(self) -> None:
-        # Drain queued items before joining the worker.
+    def _cancel_and_drain_and_join(self) -> None:
+        """Cancel until the worker settles, then release its queued items."""
+        while self._thread is not None and self._thread.is_alive():
+            try:
+                self._request.cancel()
+            except Exception:
+                pass
+
+            # A timed join leaves cancellation opportunities after the worker
+            # crosses from Python scheduling into its native invocation.
+            self._thread.join(_CANCEL_RETRY_INTERVAL_SECONDS)
+
         while True:
             msg = self._queue.get()
             if msg is _DONE:
                 break
             # Dropping an Item releases its native handle.
             del msg
-        if self._thread is not None:
-            self._thread.join()
 
     def __iter__(self) -> Iterator["Item"]:
         from foundry_local_sdk.exception import FoundryLocalException
@@ -178,11 +190,7 @@ class StreamingResponse:
         finally:
             if self._state is _State.ITERATING:
                 # Cancel and join when iteration stops early.
-                try:
-                    self._request.cancel()
-                except Exception:
-                    pass
-                self._drain_and_join()
+                self._cancel_and_drain_and_join()
                 self._state = _State.CANCELLED
                 # A cancelled stream has no usable final response.
                 if self._final_response is not None:
@@ -229,11 +237,7 @@ class StreamingResponse:
         try:
             if self._state in (_State.NEW, _State.ITERATING):
                 # Cancel if iteration never started or stopped early.
-                try:
-                    self._request.cancel()
-                except Exception:
-                    pass
-                self._drain_and_join()
+                self._cancel_and_drain_and_join()
                 self._state = _State.CANCELLED
             if self._final_response is not None and not self._final_consumed:
                 try:

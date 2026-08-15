@@ -52,6 +52,67 @@ export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
 }
 
+// Request.cancel() is an idle no-op, so retry across the gap before the queued native worker begins its invocation.
+const CANCELLATION_RETRY_INTERVAL_MS = 50;
+
+interface RequestCancellation {
+  readonly aborted: boolean;
+  cancel(): void;
+  complete(): void;
+}
+
+function bindRequestCancellation(request: Request, signal: AbortSignal | undefined): RequestCancellation {
+  let activeRequest: Request | undefined = request;
+  let activeSignal: AbortSignal | undefined = signal;
+  let retryTimer: NodeJS.Timeout | undefined;
+  let aborted = signal?.aborted === true;
+  let cancellationStarted = false;
+
+  const tryCancel = (): void => {
+    try {
+      activeRequest?.cancel();
+    } catch {
+      // Cancellation is best-effort and retried until native processing settles.
+    }
+  };
+  const cancel = (): void => {
+    if (activeRequest === undefined || cancellationStarted) {
+      return;
+    }
+
+    cancellationStarted = true;
+    tryCancel();
+    retryTimer = setInterval(tryCancel, CANCELLATION_RETRY_INTERVAL_MS);
+    retryTimer.unref();
+  };
+  const onAbort = (): void => {
+    aborted = true;
+    cancel();
+  };
+
+  activeSignal?.addEventListener("abort", onAbort, { once: true });
+  if (activeSignal?.aborted === true) {
+    aborted = true;
+    cancel();
+  }
+
+  return {
+    get aborted(): boolean {
+      return aborted;
+    },
+    cancel,
+    complete(): void {
+      activeSignal?.removeEventListener("abort", onAbort);
+      if (retryTimer !== undefined) {
+        clearInterval(retryTimer);
+        retryTimer = undefined;
+      }
+      activeRequest = undefined;
+      activeSignal = undefined;
+    },
+  };
+}
+
 function modelToNativeChatSession(model: IModel): NativeChatSession {
   if (!(model instanceof Model)) {
     throw new TypeError("ChatSession: expected a Model as the first argument");
@@ -100,15 +161,13 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  *
  * Native processing starts immediately, even if the iterator is never consumed.
  */
-function streamItems(
-  native: NativeSession,
-  request: Request,
-  signal: AbortSignal | undefined,
-): StreamingResponse {
+function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
   const queue: Item[] = [];
   let waiter: (() => void) | null = null;
   let done = false;
   let nativeError: unknown = null;
+  let abortSignal: AbortSignal | undefined = signal;
+  let cancellation: RequestCancellation | undefined;
 
   const wake = (): void => {
     if (waiter !== null) {
@@ -118,15 +177,10 @@ function streamItems(
     }
   };
 
-  const onAbort = (): void => {
-    try {
-      request.cancel();
-    } catch {
-      // Cancel is best-effort; the request may already be complete.
-    }
-  };
-  const removeAbortListener = (): void => {
-    signal?.removeEventListener("abort", onAbort);
+  const completeCancellation = (): void => {
+    cancellation?.complete();
+    cancellation = undefined;
+    abortSignal = undefined;
   };
 
   let responseResolve!: (resp: Response) => void;
@@ -141,29 +195,29 @@ function streamItems(
   responsePromise.catch(() => {});
 
   const rejectResponse = (error: unknown): void => {
-    removeAbortListener();
-    const mapped = mapSignalAbortError(error, signal);
+    const mapped = mapSignalAbortError(error, cancellation?.aborted ?? abortSignal?.aborted === true);
+    completeCancellation();
     nativeError = mapped;
     done = true;
     responseReject(mapped);
     wake();
   };
   const resolveResponse = (response: unknown): void => {
-    if (signal?.aborted === true) {
+    if (cancellation?.aborted === true || abortSignal?.aborted === true) {
       rejectResponse(makeAbortError("The operation was aborted"));
       return;
     }
-    removeAbortListener();
+    completeCancellation();
     done = true;
     responseResolve(response as Response);
     wake();
   };
 
-  if (signal?.aborted === true) {
+  if (abortSignal?.aborted === true) {
     rejectResponse(makeAbortError("Stream aborted before start"));
   } else {
     const nativeReq = unwrapNativeRequest(request);
-    signal?.addEventListener("abort", onAbort, { once: true });
+    cancellation = bindRequestCancellation(request, abortSignal);
     const onItem = (item: unknown): void => {
       // Native may deliver items synchronously during startup before the
       // iterator reaches its first await. That's safe: iterate() always
@@ -175,7 +229,7 @@ function streamItems(
     try {
       void native.processStreamingRequest(nativeReq, onItem).then(resolveResponse, rejectResponse);
     } catch (error) {
-      removeAbortListener();
+      completeCancellation();
       throw error;
     }
   }
@@ -199,17 +253,12 @@ function streamItems(
         });
       }
     } finally {
-      removeAbortListener();
       if (!done) {
         // Consumer broke out early — cancel the request and let the native
         // call settle so the response promise observers don't hang. The
         // response promise will reject with the cancellation error via the
         // native `.then` error handler.
-        try {
-          request.cancel();
-        } catch {
-          // ignore
-        }
+        cancellation?.cancel();
         while (!done) {
           await new Promise<void>((resolve) => {
             waiter = resolve;
@@ -231,16 +280,8 @@ function makeAbortError(message: string): Error {
   return err;
 }
 
-function isSignalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-function mapSignalAbortError(error: unknown, signal: AbortSignal | undefined): unknown {
-  if (
-    isSignalAborted(signal) &&
-    isFoundryLocalError(error) &&
-    error.code === FlErrorCode.OperationCancelled
-  ) {
+function mapSignalAbortError(error: unknown, signalAborted: boolean): unknown {
+  if (signalAborted && isFoundryLocalError(error) && error.code === FlErrorCode.OperationCancelled) {
     return makeAbortError("The operation was aborted");
   }
   return error;
@@ -274,28 +315,19 @@ export abstract class Session {
     }
 
     const nativeReq = unwrapNativeRequest(request);
-    const onAbort = (): void => {
-      try {
-        request.cancel();
-      } catch {
-        // The request may already have completed; cancelling it then is a no-op.
-      }
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
+    const cancellation = bindRequestCancellation(request, signal);
 
     try {
       const response = (await this.native.processRequest(nativeReq)) as Response;
-      if (isSignalAborted(signal)) {
+      if (cancellation.aborted) {
         throw makeAbortError("The operation was aborted");
       }
       return response;
     } catch (error) {
-      throw mapSignalAbortError(error, signal);
+      throw mapSignalAbortError(error, cancellation.aborted);
     } finally {
-      // Remove this invocation's listener before the Request can be reused, so a later abort cannot cancel new work
-      // and a long-lived signal does not retain the Request.
-      signal?.removeEventListener("abort", onAbort);
+      // Stop this invocation's retries before the Request can be reused, so an old signal cannot cancel new work.
+      cancellation.complete();
     }
   }
 
