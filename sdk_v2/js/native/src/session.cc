@@ -385,11 +385,7 @@ bool ChatSession::ThrowIfDisposed(Napi::Env env) {
 // signals the engine and returns promptly, so it does not block the event loop.
 template <typename SessT>
 Napi::Value CancelOn(Napi::Env env, SessT* sess) {
-  try {
-    sess->Cancel();
-  } catch (const std::exception& ex) {
-    Napi::Error::New(env, ex.what()).ThrowAsJavaScriptException();
-  }
+  CallCheckedVoid(env, [sess]() { sess->Cancel(); });
   return env.Undefined();
 }
 
