@@ -11,7 +11,8 @@
 
 namespace fl {
 
-/// Non-owning ICancellable adapter for OgaGenerator. The generator must outlive this adapter.
+/// Some inference paths drive OgaGenerator directly and have no ICancellable implementation.
+/// This non-owning adapter exposes those engine calls to request cancellation; the generator must outlive it.
 class OgaGeneratorCancellable : public ICancellable {
  public:
   explicit OgaGeneratorCancellable(OgaGenerator& generator) : generator_(generator) {}

@@ -293,7 +293,8 @@ export abstract class Session {
     } catch (error) {
       throw mapSignalAbortError(error, signal);
     } finally {
-      // This listener belongs only to this request invocation.
+      // Remove this invocation's listener before the Request can be reused, so a later abort cannot cancel new work
+      // and a long-lived signal does not retain the Request.
       signal?.removeEventListener("abort", onAbort);
     }
   }

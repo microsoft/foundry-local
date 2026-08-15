@@ -838,9 +838,10 @@ struct flInferenceApi {
   /// Values are string representations; the implementation parses them for the appropriate type.
   /// The request copies the data — the caller may release the pairs after this call.
   FL_API_STATUS(Request_SetOptions, _In_ flRequest* request, _In_ const flKeyValuePairs* options);
-  /// Cancel the active invocation for this Request. A queued invocation stops before inference; a running invocation
-  /// interrupts its generator. The affected Session_ProcessRequest returns FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED.
-  /// Calling this while the Request is idle is a no-op.
+  /// Cancel only the active invocation for this Request. Idle cancellation is a no-op and future invocations are
+  /// unaffected. A queued invocation stops before inference; a running invocation interrupts its generator.
+  /// The affected Session_ProcessRequest returns FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED. An invocation already
+  /// completing may finish normally.
   FL_API_STATUS(Request_Cancel, _In_ flRequest* request);
 
   /* Response */

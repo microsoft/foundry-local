@@ -955,10 +955,10 @@ class Request {
   /// Options for this request. Overrides session options for the duration of this request.
   Request& SetOptions(const RequestOptions& options);
 
-  /// Cancel the active invocation for this Request. A queued invocation stops before inference; a running invocation
-  /// interrupts its generator. The affected ProcessRequest throws Error with
-  /// Code() == FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED.
-  /// Calling this while the Request is idle is a no-op.
+  /// Cancel only the active invocation for this Request. Idle cancellation is a no-op and future invocations are
+  /// unaffected. A queued invocation stops before inference; a running invocation interrupts its generator.
+  /// The affected ProcessRequest throws Error with Code() == FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED.
+  /// An invocation already completing may finish normally.
   void Cancel();
 
   /// Set the timeout duration used by ProcessRequest. Pass zero to disable.

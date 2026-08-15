@@ -525,7 +525,8 @@ class Session(abc.ABC):
             cancel_session = self._cancel_session
             check_status = self._check_status
 
-        # Session_Cancel may block, so call it without holding the condition.
+        # Cancel at Session scope so streaming and non-streaming calls can unwind.
+        # Do not hold the condition because Session_Cancel may block.
         try:
             if ptr is not None and cancel_session is not None:
                 status = cancel_session(ptr)
@@ -535,6 +536,7 @@ class Session(abc.ABC):
             pass
 
         with condition:
+            # The native Session must outlive every native call.
             while self._active_native_calls:
                 condition.wait()
             ptr = self._ptr

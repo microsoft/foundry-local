@@ -623,7 +623,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, stopped,
                          response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
 
-  // Do not commit history if cancellation or timeout stopped the request.
+  // Claim completion before changing history. Cancellation or timeout that wins first prevents the commit.
   if (stopped || !request.TryBeginCompletion()) {
     if (request.EngineInterruptionRequested()) {
       cached_generator_.reset();

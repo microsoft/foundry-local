@@ -60,7 +60,8 @@ struct Request {
   /// True once callback stop, API cancellation, session cancellation, or timeout requires generation to stop.
   bool ShouldStop() const;
 
-  /// Enter completion only if cancellation or timeout has not stopped this invocation.
+  /// Claim successful completion before committing state such as chat history.
+  /// Cancellation or timeout that wins first prevents the commit; later cancellation is ignored.
   bool TryBeginCompletion() const;
 
   /// True when request cancellation, session cancellation, or timeout requested engine interruption.

@@ -27,7 +27,7 @@ public abstract class Session : IDisposable
     private CancellationTokenSource? _activeStreamingCts;
     private bool _disposed;
 
-    // Counts native calls so Dispose can wait before releasing the session.
+    // The native Session must outlive every native call. Dispose cancels first, then waits before release.
     private readonly object _gate = new();
     private int _activeCalls;
     private bool _disposing;
@@ -448,6 +448,7 @@ public abstract class Session : IDisposable
             try { _activeStreamingCts?.Cancel(); } catch { }
             try { _session.Cancel(); } catch { }
 
+            // Releasing while Session_ProcessRequest is running would be a native use-after-free.
             lock (_gate)
             {
                 while (_activeCalls > 0)
@@ -530,6 +531,7 @@ public abstract class Session : IDisposable
         {
             lock (_gate)
             {
+                // Stop this token's callbacks before the Request can be reused by another invocation.
                 _completed = true;
             }
         }

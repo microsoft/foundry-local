@@ -14,6 +14,7 @@ class SessionControl;
 ///
 /// Direct API sessions are not registered with SessionManager, so shutdown uses this
 /// registry to cancel every Session. It does not affect SessionManager::WaitForDrain().
+/// This registry is cancellation-only: an idle Session still owned by a caller must not block shutdown.
 class LiveSessionRegistry {
  public:
   static LiveSessionRegistry& Instance();
