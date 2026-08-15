@@ -88,44 +88,53 @@ class StreamingResponse:
         self._error: BaseException | None = None
         self._state: _State = _State.NEW
         self._final_consumed = False
-        self._closed = False
+        # Failed construction must leave __del__ as a no-op.
+        self._closed = True
         self._lock_released = False
         self._thread: threading.Thread | None = None
 
-        session._stream_queue = self._queue
-
-        def _run() -> None:
-            try:
-                out = ffi.new("flResponse**")
-                api.check_status(
-                    api.inference.Session_ProcessRequest(session_ptr, request._ptr, out)
-                )
-                from foundry_local_sdk.response import Response
-
-                # Response takes ownership of out[0].
-                self._final_response = Response(out[0])
-            except Exception as exc:
-                self._error = exc
-                self._queue.put(_StreamError(exc))
-            finally:
-                session._stream_queue = None
-                try:
-                    self._queue.put(_DONE)
-                finally:
-                    release_call()
-
-        t = threading.Thread(target=_run, daemon=True)
-        session._stream_thread = t
-        session._stream_request = request
-        self._thread = t
+        request_ptr = request._acquire_for_processing()
+        t: threading.Thread | None = None
         try:
+            session._stream_queue = self._queue
+
+            def _run() -> None:
+                try:
+                    out = ffi.new("flResponse**")
+                    api.check_status(
+                        api.inference.Session_ProcessRequest(session_ptr, request_ptr, out)
+                    )
+                    from foundry_local_sdk.response import Response
+
+                    # Response takes ownership of out[0].
+                    self._final_response = Response(out[0])
+                except Exception as exc:
+                    self._error = exc
+                    self._queue.put(_StreamError(exc))
+                finally:
+                    session._stream_queue = None
+                    try:
+                        self._queue.put(_DONE)
+                    finally:
+                        try:
+                            request._release_after_processing()
+                        finally:
+                            release_call()
+
+            t = threading.Thread(target=_run, daemon=True)
+            session._stream_thread = t
+            session._stream_request = request
+            self._thread = t
             t.start()
+            self._closed = False
         except BaseException:
-            self._closed = True
             session._stream_thread = None
             session._stream_request = None
             session._stream_queue = None
-            if t.ident is not None:
+            if t is None or t.ident is None:
+                request._release_after_processing()
+            else:
+                # If start raised after launching, the worker still owns the lease.
                 try:
                     request.cancel()
                 finally:
@@ -488,12 +497,15 @@ class Session(abc.ABC):
         if timeout is not None:
             request.set_timeout(timeout)
 
-        request_ptr = request._ptr
-        out = ffi.new("flResponse**")
-        with self._call_lease() as session_ptr:
-            status = api.inference.Session_ProcessRequest(session_ptr, request_ptr, out)
-        api.check_status(status)
-        return Response(out[0])
+        request_ptr = request._acquire_for_processing()
+        try:
+            out = ffi.new("flResponse**")
+            with self._call_lease() as session_ptr:
+                status = api.inference.Session_ProcessRequest(session_ptr, request_ptr, out)
+            api.check_status(status)
+            return Response(out[0])
+        finally:
+            request._release_after_processing()
 
     def cancel(self) -> None:
         """Permanently cancel this session.

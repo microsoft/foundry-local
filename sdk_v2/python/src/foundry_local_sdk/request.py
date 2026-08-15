@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+import threading
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 from foundry_local_sdk.exception import FoundryLocalException
 
@@ -15,6 +17,9 @@ if TYPE_CHECKING:
 
 _API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
 _MAX_TIMEOUT_MS = (1 << 63) - 1
+
+# Matches the C# cancel-retry cadence while waiting for processing to drain.
+_CANCEL_RETRY_INTERVAL_SECONDS = 0.05
 
 
 class Request:
@@ -30,16 +35,24 @@ class Request:
         # Set cleanup fields before Request_Create can fail.
         self._closed = True
         self._ptr = None
+        self._lock = threading.Condition()
+        self._dispose_requested = False
+        self._active_processes = 0
+        # Avoid native API access from __del__ during interpreter shutdown.
+        self._release_request: Callable[[object], object] | None = None
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
         out = ffi.new("flRequest**")
         api.check_status(api.inference.Request_Create(out))
+        self._release_request = cast(
+            Callable[[object], object], getattr(api.inference, "Request_Release")
+        )
         self._ptr = out[0]
         self._closed = False
 
     def _check_open(self) -> None:
-        if self._closed:
+        if self._dispose_requested or self._closed:
             raise FoundryLocalException(
                 f"{type(self).__name__} has been closed and can no longer be used."
             )
@@ -102,10 +115,13 @@ class Request:
 
     def cancel(self) -> None:
         """Signal cancellation for an in-flight request."""
-        self._check_open()
-        from foundry_local_sdk._native.api import api
+        ptr = self._acquire_for_processing()
+        try:
+            from foundry_local_sdk._native.api import api
 
-        api.check_status(api.inference.Request_Cancel(self._ptr))
+            api.check_status(api.inference.Request_Cancel(ptr))
+        finally:
+            self._release_after_processing()
 
     def set_timeout(self, timeout: "float | None") -> "Request":
         """Set the timeout for each execution of this request, in seconds.
@@ -135,18 +151,64 @@ class Request:
         api.check_status(api.inference.Request_SetTimeoutMs(self._ptr, timeout_ms))
         return self
 
-    def _close(self) -> None:
-        if self._closed:
-            return
-        if self._ptr is not None:
-            try:
-                from foundry_local_sdk._native.api import api
+    def _acquire_for_processing(self) -> object:
+        """Keep the native pointer alive until processing leaves native code."""
+        with self._lock:
+            if self._dispose_requested or self._ptr is None:
+                raise FoundryLocalException(
+                    f"{type(self).__name__} has been closed and can no longer be used."
+                )
+            self._active_processes += 1
+            return self._ptr
 
-                api.inference.Request_Release(self._ptr)
+    def _release_after_processing(self) -> None:
+        with self._lock:
+            self._active_processes -= 1
+            if self._active_processes == 0:
+                self._lock.notify_all()
+
+    def _close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._dispose_requested:
+                # Another thread is already closing; wait for it to finish.
+                while not self._closed:
+                    self._lock.wait()
+                return
+            self._dispose_requested = True
+            ptr = self._ptr
+            release_request = self._release_request
+
+        while True:
+            with self._lock:
+                if self._active_processes == 0:
+                    self._ptr = None
+                    break
+
+            # Native cancellation may block; never hold the lifecycle condition.
+            if ptr is not None:
+                try:
+                    from foundry_local_sdk._native.api import api
+
+                    api.check_status(api.inference.Request_Cancel(ptr))
+                except Exception:
+                    pass
+
+            with self._lock:
+                if self._active_processes > 0:
+                    self._lock.wait(timeout=_CANCEL_RETRY_INTERVAL_SECONDS)
+
+        if ptr is not None:
+            try:
+                if release_request is not None:
+                    release_request(ptr)
             except Exception:
                 pass
-        self._ptr = None
-        self._closed = True
+
+        with self._lock:
+            self._closed = True
+            self._lock.notify_all()
 
     def __enter__(self) -> "Request":
         return self
@@ -154,5 +216,34 @@ class Request:
     def __exit__(self, *_) -> None:
         self._close()
 
+    def _finalize(self) -> None:
+        """Release only if the condition is free and the request is open and idle."""
+        condition = getattr(self, "_lock", None)
+        if condition is None:
+            return
+
+        try:
+            if not condition.acquire(blocking=False):
+                return
+            try:
+                if self._closed or self._dispose_requested or self._active_processes:
+                    return
+                self._dispose_requested = True
+                ptr = self._ptr
+                release_request = self._release_request
+                self._ptr = None
+                self._closed = True
+                condition.notify_all()
+            finally:
+                condition.release()
+
+            try:
+                if ptr is not None and release_request is not None:
+                    release_request(ptr)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def __del__(self) -> None:
-        self._close()
+        self._finalize()

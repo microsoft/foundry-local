@@ -29,6 +29,7 @@ namespace fl {
 
 namespace {
 
+// Defend the actual addition even though Request rejects durations beyond half the clock range.
 std::optional<CancellationState::Clock::time_point> DeadlineFor(
     CancellationState::Clock::time_point entry, std::chrono::milliseconds timeout) {
   if (timeout.count() <= 0) {
