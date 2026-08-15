@@ -376,20 +376,6 @@ FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCat
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Manager_GetCatalogByNameImpl, const flManager* manager, const char* catalog_name,
-                   flCatalog** out_catalog) {
-  API_IMPL_BEGIN
-  if (!manager || !catalog_name || !out_catalog) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
-  }
-
-  auto& catalog = manager->impl.GetCatalog(catalog_name);
-  *out_catalog = catalog.GetType() == fl::CatalogType::kLocal ? manager->local_catalog.get()
-                                                              : manager->public_catalog.get();
-  return nullptr;
-  API_IMPL_END
-}
-
 FL_API_STATUS_IMPL(Manager_WebServiceStartImpl, flManager* manager) {
   API_IMPL_BEGIN
   if (!manager) {
@@ -773,17 +759,6 @@ FL_API_STATUS_IMPL(Catalog_UnregisterModelImpl, flCatalog* catalog, const char* 
   API_IMPL_END
 }
 
-static const flCatalogApi g_catalog_api_v1 = {
-  Catalog_GetNameImpl,
-  Catalog_GetModelsImpl,
-  Catalog_GetModelImpl,
-  Catalog_GetModelVariantImpl,
-  Catalog_GetLatestVersionImpl,
-  Catalog_GetCachedModelsImpl,
-  Catalog_GetLoadedModelsImpl,
-  Catalog_GetModelVersionsImpl,
-};
-
 static const flCatalogApi g_catalog_api = {
     Catalog_GetNameImpl,
     Catalog_GetModelsImpl,
@@ -1066,68 +1041,6 @@ FL_API_STATUS_IMPL(Info_SetIntPropertyImpl, flModelInfo* info, const char* key, 
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Info_SerializeToFileImpl, const flModelInfo* info, const char* file_path) {
-  API_IMPL_BEGIN
-  if (!info || !file_path) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
-  }
-  fl::SerializeModelInfoToFile(*AsImpl(info), file_path);
-  return nullptr;
-  API_IMPL_END
-}
-
-FL_API_STATUS_IMPL(Info_DeserializeFromFileImpl, const char* file_path, flModelInfo** out_info) {
-  API_IMPL_BEGIN
-  if (!file_path || !out_info) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
-  }
-  *out_info = AsHandle<flModelInfo>(new fl::ModelInfo(fl::DeserializeModelInfoFromFile(file_path)));
-  return nullptr;
-  API_IMPL_END
-}
-
-FL_API_STATUS_IMPL(Info_CloneImpl, const flModelInfo* info, flModelInfo** out_info) {
-  API_IMPL_BEGIN
-  if (!out_info) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_info must not be null");
-  }
-
-  *out_info = nullptr;
-  if (!info) {
-    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "info must not be null");
-  }
-
-  *out_info = AsHandle<flModelInfo>(new fl::ModelInfo(*AsImpl(info)));
-  return nullptr;
-  API_IMPL_END
-}
-
-static const flModelApi g_model_api_v1 = {
-  Model_GetInfoImpl,
-  Model_GetInputOutputInfoImpl,
-  Model_IsCachedImpl,
-  Model_GetPathImpl,
-  Model_DownloadImpl,
-  Model_IsLoadedImpl,
-  Model_LoadImpl,
-  Model_UnloadImpl,
-  Model_RemoveFromCacheImpl,
-  Model_GetVariantsImpl,
-  Model_SelectVariantImpl,
-  Info_GetIdImpl,
-  Info_GetNameImpl,
-  Info_GetVersionImpl,
-  Info_GetAliasImpl,
-  Info_GetUriImpl,
-  Info_GetDeviceTypeImpl,
-  Info_GetExecutionProviderImpl,
-  Info_GetTaskImpl,
-  Info_GetPromptTemplatesImpl,
-  Info_GetModelSettingsImpl,
-  Info_GetStringPropertyImpl,
-  Info_GetIntPropertyImpl,
-};
-
 static const flModelApi g_model_api = {
     Model_GetInfoImpl,
     Model_GetInputOutputInfoImpl,
@@ -1156,9 +1069,6 @@ static const flModelApi g_model_api = {
     ModelInfo_ReleaseImpl,
     Info_SetStringPropertyImpl,
     Info_SetIntPropertyImpl,
-    Info_SerializeToFileImpl,
-    Info_DeserializeFromFileImpl,
-    Info_CloneImpl,
 };
 
 // ========================================================================
@@ -1992,10 +1902,6 @@ static const flCatalogApi* FL_API_CALL GetCatalogApiImpl() FL_NO_EXCEPTION {
   return &g_catalog_api;
 }
 
-static const flCatalogApi* FL_API_CALL GetCatalogApiV1Impl() FL_NO_EXCEPTION {
-  return &g_catalog_api_v1;
-}
-
 static const flConfigurationApi* FL_API_CALL GetConfigurationApiImpl() FL_NO_EXCEPTION {
   return &g_configuration_api;
 }
@@ -2012,58 +1918,7 @@ static const flModelApi* FL_API_CALL GetModelApiImpl() FL_NO_EXCEPTION {
   return &g_model_api;
 }
 
-static const flModelApi* FL_API_CALL GetModelApiV1Impl() FL_NO_EXCEPTION {
-  return &g_model_api_v1;
-}
-
-// ========================================================================
-// Root API function table (version 1)
-// ========================================================================
-
-static const flApi g_api_v1 = {
-    /* Status */
-    Status_CreateImpl,
-    Status_ReleaseImpl,
-    Status_GetErrorCodeImpl,
-    Status_GetErrorMessageImpl,
-
-    /* Manager lifecycle */
-    Manager_CreateImpl,
-    Manager_ReleaseImpl,
-    Manager_GetCatalogImpl,
-    Manager_WebServiceStartImpl,
-    Manager_WebServiceUrlsImpl,
-    Manager_WebServiceStopImpl,
-
-    /* Sub-API accessors */
-    GetCatalogApiV1Impl,
-    GetConfigurationApiImpl,
-    GetItemApiImpl,
-    GetInferenceApiImpl,
-    GetModelApiV1Impl,
-
-    /* KeyValuePairs */
-    CreateKeyValuePairsImpl,
-    AddKeyValuePairImpl,
-    GetKeyValueImpl,
-    GetKeyValuePairsImpl,
-    RemoveKeyValuePairImpl,
-    KeyValuePairs_ReleaseImpl,
-
-    /* ModelList */
-    ModelList_ReleaseImpl,
-    ModelList_SizeImpl,
-    ModelList_GetAtImpl,
-
-    /* EP detection */
-    Manager_GetDiscoverableEpsImpl,
-    Manager_DownloadAndRegisterEpsImpl,
-    Manager_IsEpDownloadInProgressImpl,
-    Manager_ShutdownImpl,
-    Manager_IsShutdownRequestedImpl,
-  };
-
-  static const flApi g_api_v2 = {
+static const flApi g_api = {
     Status_CreateImpl,
     Status_ReleaseImpl,
     Status_GetErrorCodeImpl,
@@ -2094,7 +1949,6 @@ static const flApi g_api_v1 = {
     Manager_ShutdownImpl,
     Manager_IsShutdownRequestedImpl,
     Manager_GetCatalogByTypeImpl,
-    Manager_GetCatalogByNameImpl,
 };
 
 // ========================================================================
@@ -2104,11 +1958,8 @@ static const flApi g_api_v1 = {
 extern "C" {
 
 FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EXCEPTION {
-  if (version == 1) {
-    return &g_api_v1;
-  }
-  if (version == 0 || version == 2) {
-    return &g_api_v2;
+  if (version <= FOUNDRY_LOCAL_API_VERSION) {
+    return &g_api;
   }
 
   return nullptr;

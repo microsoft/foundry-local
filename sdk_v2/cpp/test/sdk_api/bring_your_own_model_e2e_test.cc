@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-// End-to-end coverage for creating missing local-model metadata during registration and then running inference.
+// End-to-end coverage for registering existing local model assets and then running inference.
 
 #include "model_fixture.h"
 
@@ -56,7 +56,7 @@ std::optional<fs::path> GetByomSourceModelPath() {
   }
 }
 
-void StageModelWithoutMetadata(const fs::path& source, const fs::path& destination) {
+void StageModelAssets(const fs::path& source, const fs::path& destination) {
   for (const auto& entry : fs::recursive_directory_iterator(source)) {
     const auto relative_path = fs::relative(entry.path(), source);
     if (relative_path.filename() == "inference_model.json" || relative_path.filename() == "model_metadata.yml") {
@@ -112,7 +112,7 @@ class LocalRegistrationGuard {
 
 }  // namespace
 
-TEST(ByomE2eTest, RegisterModelCreatesMissingMetadataAndRunsChatInference) {
+TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
   using namespace foundry_local;
 
   const auto source_model_path = GetByomSourceModelPath();
@@ -124,7 +124,7 @@ TEST(ByomE2eTest, RegisterModelCreatesMissingMetadataAndRunsChatInference) {
   auto temp_root = fl::test::TempPath::CreateTempDir("fl_byom_e2e_");
   const auto staged_model_path = temp_root.path() / "model";
   fs::create_directories(staged_model_path);
-  StageModelWithoutMetadata(*source_model_path, staged_model_path);
+  StageModelAssets(*source_model_path, staged_model_path);
 
   ASSERT_TRUE(fs::exists(staged_model_path / "genai_config.json"));
   ASSERT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
@@ -135,6 +135,7 @@ TEST(ByomE2eTest, RegisterModelCreatesMissingMetadataAndRunsChatInference) {
   ModelInfo registration;
   registration.SetStringProperty(FOUNDRY_LOCAL_REG_MODEL_PATH, staged_model_path.string().c_str());
   registration.SetStringProperty(FOUNDRY_LOCAL_REG_ALIAS, registration_alias.c_str());
+  registration.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
 
   LocalRegistrationGuard registered(local_catalog, local_catalog.RegisterModel(registration), registration_alias);
   auto& model = registered.model();
@@ -143,7 +144,8 @@ TEST(ByomE2eTest, RegisterModelCreatesMissingMetadataAndRunsChatInference) {
   EXPECT_EQ(model.GetInfo().Task(), "chat-completion");
   EXPECT_TRUE(model.IsCached());
   EXPECT_FALSE(model.IsLoaded());
-  EXPECT_TRUE(fs::exists(staged_model_path / "model_metadata.yml"));
+  EXPECT_TRUE(fs::is_regular_file(staged_model_path / "genai_config.json"));
+  EXPECT_FALSE(fs::exists(staged_model_path / "model_metadata.yml"));
   EXPECT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
 
   model.Load();

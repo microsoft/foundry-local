@@ -7,11 +7,11 @@
 
 #include <foundry_local/foundry_local_c.h>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
-#include <nlohmann/json.hpp>
-#include <optional>
+#include <string>
 
 namespace fl::test {
 namespace {
@@ -21,22 +21,30 @@ class LocalModelCatalogTest : public ::testing::Test {
   LocalModelCatalogTest()
       : root_(TempPath::CreateTempDir("local_model_catalog")),
         model_dir_(root_.path() / "model"),
-        catalog_(root_.path() / "appdata",
-                 [this](ModelInfo info, std::string path, std::function<void(const std::string&)> unregister_callback,
-               std::function<std::optional<ModelInfo>()> prepare_callback) {
-                   return Model::FromLocalRegistration(std::move(info), std::move(path), bindings_.download_manager,
-                                                       bindings_.model_load_manager, std::move(unregister_callback),
-                                                       std::move(prepare_callback));
-                 },
-                 NullLog()) {
-    std::filesystem::create_directories(model_dir_);
-    std::ofstream(model_dir_ / "genai_config.json") << R"({"model":{"type":"phi3","context_length":4096}})";
+        catalog_(MakeCatalog()) {
+    WriteConfig(model_dir_);
   }
 
-  ModelInfo MakeInfo(std::string alias = "my-model") const {
+  LocalModelCatalog MakeCatalog() {
+    return LocalModelCatalog(
+        root_.path() / "appdata",
+        [this](ModelInfo info, std::string path, std::string runtime_model_id) {
+          return Model::FromLocalRegistration(std::move(info), std::move(path), bindings_.download_manager,
+                                              bindings_.model_load_manager, std::move(runtime_model_id));
+        },
+        NullLog());
+  }
+
+  static void WriteConfig(const std::filesystem::path& path) {
+    std::filesystem::create_directories(path);
+    std::ofstream(path / "genai_config.json") << R"({"model":{"type":"phi3","context_length":4096}})";
+  }
+
+  ModelInfo MakeInfo(std::string alias = "my-model", std::string task = "chat-completion") const {
     ModelInfo info;
     SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, model_dir_.string());
     SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, std::move(alias));
+    SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::move(task));
     return info;
   }
 
@@ -46,325 +54,112 @@ class LocalModelCatalogTest : public ::testing::Test {
   LocalModelCatalog catalog_;
 };
 
-TEST_F(LocalModelCatalogTest, RegisterResolvesMetadataListsAndWritesFiles) {
-  auto* model = catalog_.RegisterModel(MakeInfo());
+TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesOnlyAppDataIndex) {
+  auto info = MakeInfo();
+  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
+  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+  SetModelInfoIntProperty(info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 321);
+
+  auto* model = catalog_.RegisterModel(info);
 
   ASSERT_NE(model, nullptr);
   EXPECT_EQ(model->Id(), "my-model:0");
-  EXPECT_EQ(model->Alias(), "my-model");
-  EXPECT_EQ(model->GetPath(), std::filesystem::absolute(model_dir_).lexically_normal().string());
+  EXPECT_EQ(model->Info().task, "chat-completion");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text,image");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, int64_t{-1}), 321);
   EXPECT_TRUE(model->IsCached());
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1), 4096);
-  EXPECT_EQ(catalog_.ListModels().size(), 1u);
-  EXPECT_TRUE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
+  EXPECT_FALSE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
+
   const auto index_path = root_.path() / "appdata" / "catalogs" / "local" / "local_models.json";
   ASSERT_TRUE(std::filesystem::exists(index_path));
   nlohmann::json index;
   std::ifstream(index_path) >> index;
-  EXPECT_EQ(index["version"], 1);
   ASSERT_EQ(index["models"].size(), 1u);
-  EXPECT_TRUE(index["models"][0].contains("properties"));
-  EXPECT_FALSE(index["models"][0].contains("supplied_properties"));
-  EXPECT_TRUE(index["models"][0].contains("metadata_prepared"));
+  EXPECT_EQ(index["models"][0]["model_id"], "my-model:0");
+  EXPECT_FALSE(index["models"][0].contains("metadata_prepared"));
 }
 
-TEST_F(LocalModelCatalogTest, RejectsMissingInvalidAndDuplicateAliases) {
-  ModelInfo missing;
+TEST_F(LocalModelCatalogTest, RegistrationRequiresExistingDirectoryAndParseableConfig) {
+  auto missing = MakeInfo();
+  SetModelInfoStringProperty(missing, FOUNDRY_LOCAL_REG_MODEL_PATH, (root_.path() / "missing").string());
   EXPECT_THROW(catalog_.RegisterModel(missing), Exception);
-  EXPECT_THROW(catalog_.RegisterModel(MakeInfo("bad alias")), Exception);
 
-  catalog_.RegisterModel(MakeInfo());
-  EXPECT_THROW(catalog_.RegisterModel(MakeInfo()), Exception);
+  const auto no_config_path = root_.path() / "no-config";
+  std::filesystem::create_directories(no_config_path);
+  auto no_config = MakeInfo("no-config");
+  SetModelInfoStringProperty(no_config, FOUNDRY_LOCAL_REG_MODEL_PATH, no_config_path.string());
+  EXPECT_THROW(catalog_.RegisterModel(no_config), Exception);
+
+  const auto malformed_path = root_.path() / "malformed";
+  std::filesystem::create_directories(malformed_path);
+  std::ofstream(malformed_path / "genai_config.json") << R"({"model":)";
+  auto malformed = MakeInfo("malformed");
+  SetModelInfoStringProperty(malformed, FOUNDRY_LOCAL_REG_MODEL_PATH, malformed_path.string());
+  EXPECT_THROW(catalog_.RegisterModel(malformed), Exception);
 }
 
-TEST_F(LocalModelCatalogTest, PersistsAndUnregistersWithoutDeletingAssets) {
-  catalog_.RegisterModel(MakeInfo());
-  {
-    LocalModelCatalog restored(
-        root_.path() / "appdata",
-        [this](ModelInfo info, std::string path, std::function<void(const std::string&)> unregister_callback,
-            std::function<std::optional<ModelInfo>()> prepare_callback) {
-          return Model::FromLocalRegistration(std::move(info), std::move(path), bindings_.download_manager,
-                                              bindings_.model_load_manager, std::move(unregister_callback),
-                                              std::move(prepare_callback));
-        },
-        NullLog());
-    ASSERT_EQ(restored.ListModels().size(), 1u);
-    restored.UnregisterModel("my-model");
-    EXPECT_TRUE(restored.ListModels().empty());
-  }
+TEST_F(LocalModelCatalogTest, RegistrationRequiresSupportedTask) {
+  ModelInfo missing_task;
+  SetModelInfoStringProperty(missing_task, FOUNDRY_LOCAL_REG_MODEL_PATH, model_dir_.string());
+  SetModelInfoStringProperty(missing_task, FOUNDRY_LOCAL_REG_ALIAS, "missing-task");
+  EXPECT_THROW(catalog_.RegisterModel(missing_task), Exception);
+  EXPECT_THROW(catalog_.RegisterModel(MakeInfo("invalid-task", "text-generation")), Exception);
+}
 
+TEST_F(LocalModelCatalogTest, UnregisterPersistsAndPreservesAssets) {
+  auto* stale = catalog_.RegisterModel(MakeInfo());
+  catalog_.UnregisterModel("my-model:0");
+
+  EXPECT_TRUE(catalog_.ListModels().empty());
   EXPECT_TRUE(std::filesystem::exists(model_dir_ / "genai_config.json"));
-  LocalModelCatalog reloaded(
-      root_.path() / "appdata",
-      [this](ModelInfo info, std::string path, std::function<void(const std::string&)> unregister_callback,
-              std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return Model::FromLocalRegistration(std::move(info), std::move(path), bindings_.download_manager,
-                                            bindings_.model_load_manager, std::move(unregister_callback),
-                                            std::move(prepare_callback));
-      },
-      NullLog());
-  EXPECT_TRUE(reloaded.ListModels().empty());
+  EXPECT_THROW(stale->Load(), Exception);
+  EXPECT_NO_THROW(stale->Unload());
+  auto restored = MakeCatalog();
+  EXPECT_TRUE(restored.ListModels().empty());
 }
 
-TEST_F(LocalModelCatalogTest, MissingDirectoryRemainsListedButIsNotCached) {
-  catalog_.RegisterModel(MakeInfo());
-  std::filesystem::remove_all(model_dir_);
-
-  ASSERT_EQ(catalog_.ListModels().size(), 1u);
-  EXPECT_TRUE(catalog_.GetCachedModels().empty());
-}
-
-TEST_F(LocalModelCatalogTest, RegistrationDoesNotValidateMissingModelDirectory) {
-  const auto missing_path = root_.path() / "not-yet-provisioned";
-  ModelInfo info;
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, missing_path.string());
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "deferred-model");
-
-  auto* model = catalog_.RegisterModel(info);
-
+TEST_F(LocalModelCatalogTest, UnregisterWriteFailureLeavesModelActiveAndUsable) {
+  auto* model = catalog_.RegisterModel(MakeInfo());
   ASSERT_NE(model, nullptr);
-  EXPECT_EQ(model->Id(), "deferred-model:0");
-  EXPECT_FALSE(model->IsCached());
-  EXPECT_EQ(catalog_.ListModels().size(), 1u);
-  EXPECT_TRUE(catalog_.GetCachedModels().empty());
-  EXPECT_FALSE(std::filesystem::exists(missing_path));
 
-  std::filesystem::create_directories(missing_path);
-  std::ofstream(missing_path / "genai_config.json") << R"({"model":{"type":"phi3"}})";
-  EXPECT_TRUE(model->IsCached());
-  EXPECT_TRUE(std::filesystem::exists(missing_path / "model_metadata.yml"));
+  const auto temp_index_path = root_.path() / "appdata" / "catalogs" / "local" / "local_models.json.tmp";
+  std::filesystem::create_directory(temp_index_path);
+
+  EXPECT_THROW(catalog_.UnregisterModel("my-model"), Exception);
+  EXPECT_TRUE(model->IsActive());
+  EXPECT_EQ(catalog_.GetModelVariant("my-model:0"), model);
+
+  float progress = 0.0f;
+  EXPECT_NO_THROW(model->Download([&progress](float value) {
+    progress = value;
+    return 0;
+  }));
+  EXPECT_EQ(progress, 100.0f);
 }
 
-TEST_F(LocalModelCatalogTest, DeferredWhisperAssetsRefreshLiveAndPersistedMetadata) {
-  const auto deferred_path = root_.path() / "deferred-whisper";
-  ModelInfo info;
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, deferred_path.string());
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "deferred-whisper");
-  auto* model = catalog_.RegisterModel(info);
-  const auto* original_info = &model->Info();
-  EXPECT_EQ(original_info->task, "chat-completion");
+TEST_F(LocalModelCatalogTest, TwoCatalogsReconcileRegisterUnregisterAndReregister) {
+  auto second = MakeCatalog();
+  EXPECT_TRUE(second.ListModels().empty());
 
-  std::filesystem::create_directories(deferred_path);
-  std::ofstream(deferred_path / "genai_config.json")
-      << R"({"model":{"type":"whisper","context_length":448}})";
+  auto* stale = catalog_.RegisterModel(MakeInfo());
+  ASSERT_NE(stale, nullptr);
+  ASSERT_EQ(second.ListModels().size(), 1u);
 
-  EXPECT_TRUE(model->IsCached());
-  EXPECT_EQ(model->Info().task, "automatic-speech-recognition");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
-            "audio");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 448);
-  EXPECT_EQ(original_info->task, "chat-completion");
+  second.UnregisterModel("my-model");
+  EXPECT_TRUE(catalog_.ListModels().empty());
+  EXPECT_FALSE(stale->IsActive());
+  EXPECT_THROW(stale->Download(), Exception);
+  EXPECT_THROW(stale->Load(), Exception);
+  EXPECT_THROW(stale->RemoveFromCache(), Exception);
 
-  LocalModelCatalog restored(
-      root_.path() / "appdata",
-      [this](ModelInfo restored_info, std::string path,
-             std::function<void(const std::string&)> unregister_callback,
-              std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return Model::FromLocalRegistration(std::move(restored_info), std::move(path), bindings_.download_manager,
-                                            bindings_.model_load_manager, std::move(unregister_callback),
-                                            std::move(prepare_callback));
-      },
-      NullLog());
-  auto restored_models = restored.ListModels();
-  ASSERT_EQ(restored_models.size(), 1u);
-  EXPECT_EQ(restored_models.front()->Info().task, "automatic-speech-recognition");
-}
-
-TEST_F(LocalModelCatalogTest, ExistingEmptyDirectoryStillRefreshesWhenAssetsAppear) {
-  const auto deferred_path = root_.path() / "existing-deferred-whisper";
-  std::filesystem::create_directories(deferred_path);
-  ModelInfo info;
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, deferred_path.string());
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "existing-deferred-whisper");
-  auto* model = catalog_.RegisterModel(info);
-  EXPECT_TRUE(std::filesystem::exists(deferred_path / "model_metadata.yml"));
-  EXPECT_EQ(model->Info().task, "chat-completion");
-
-  std::ofstream(deferred_path / "genai_config.json")
-    << R"({"model":{"type":"whisper","context_length":448}})";
-
-  EXPECT_TRUE(model->IsCached());
-  EXPECT_EQ(model->Info().task, "automatic-speech-recognition");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
-      "audio");
-}
-
-TEST_F(LocalModelCatalogTest, DeferredAssetsAddedWhileStoppedRefreshAfterRestore) {
-  const auto deferred_path = root_.path() / "stopped-deferred-whisper";
-  ModelInfo info;
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, deferred_path.string());
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "stopped-deferred-whisper");
-  catalog_.RegisterModel(info);
-
-  std::filesystem::create_directories(deferred_path);
-  std::ofstream(deferred_path / "genai_config.json")
-      << R"({"model":{"type":"whisper","context_length":448}})";
-
-  LocalModelCatalog restored(
-      root_.path() / "appdata",
-      [this](ModelInfo restored_info, std::string path,
-             std::function<void(const std::string&)> unregister_callback,
-             std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return Model::FromLocalRegistration(std::move(restored_info), std::move(path), bindings_.download_manager,
-                                            bindings_.model_load_manager, std::move(unregister_callback),
-                                            std::move(prepare_callback));
-      },
-      NullLog());
-  auto models = restored.ListModels();
-  ASSERT_EQ(models.size(), 1u);
-
-  EXPECT_TRUE(models.front()->IsCached());
-  EXPECT_EQ(models.front()->Info().task, "automatic-speech-recognition");
-  EXPECT_EQ(models.front()->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}),
-            448);
-}
-
-TEST_F(LocalModelCatalogTest, RestoreRepairsMissingMetadataSidecar) {
-  catalog_.RegisterModel(MakeInfo());
-  ASSERT_TRUE(std::filesystem::remove(model_dir_ / "model_metadata.yml"));
-
-  LocalModelCatalog restored(
-      root_.path() / "appdata",
-      [this](ModelInfo restored_info, std::string path,
-             std::function<void(const std::string&)> unregister_callback,
-             std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return Model::FromLocalRegistration(std::move(restored_info), std::move(path), bindings_.download_manager,
-                                            bindings_.model_load_manager, std::move(unregister_callback),
-                                            std::move(prepare_callback));
-      },
-      NullLog());
-  auto models = restored.ListModels();
-  ASSERT_EQ(models.size(), 1u);
-
-  EXPECT_TRUE(models.front()->IsCached());
-  EXPECT_TRUE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
-  EXPECT_TRUE(models.front()->IsCached());
-}
-
-TEST_F(LocalModelCatalogTest, MalformedDeferredConfigRetriesAfterCorrection) {
-  const auto deferred_path = root_.path() / "malformed-deferred-whisper";
-  ModelInfo info;
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, deferred_path.string());
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "malformed-deferred-whisper");
-  SetModelInfoIntProperty(info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT, 1234);
-  auto* model = catalog_.RegisterModel(info);
-
-  std::filesystem::create_directories(deferred_path);
-  std::ofstream(deferred_path / "genai_config.json") << R"({"model":)";
-  EXPECT_TRUE(model->IsCached());
-  EXPECT_EQ(model->Info().task, "chat-completion");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT, int64_t{-1}), 1234);
-
-  std::ofstream(deferred_path / "genai_config.json", std::ios::trunc)
-      << R"({"model":{"type":"whisper","context_length":448}})";
-  EXPECT_TRUE(model->IsCached());
-  EXPECT_EQ(model->Info().task, "automatic-speech-recognition");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 448);
-  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT, int64_t{-1}), 1234);
-}
-
-TEST_F(LocalModelCatalogTest, RegistrationWithoutPreparationStateRefreshesFromAssets) {
-  const auto model_path = root_.path() / "old-model";
-  const auto catalog_dir = root_.path() / "old-appdata" / "catalogs" / "local";
-  std::filesystem::create_directories(catalog_dir);
-  nlohmann::json properties = {
-    {FOUNDRY_LOCAL_REG_MODEL_PATH, model_path.string()},
-    {FOUNDRY_LOCAL_REG_ALIAS, "old-model"},
-    {FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion"},
-    {"_local_registration_id", "old-model-registration"},
-  };
-  nlohmann::json index = {
-    {"version", 1},
-    {"catalog_name", "local"},
-    {"models", {{{"alias", "old-model"}, {"model_path", model_path.string()}, {"properties", properties}}}},
-  };
-  std::ofstream(catalog_dir / "local_models.json") << index.dump(2);
-
-  LocalModelCatalog restored(
-      root_.path() / "old-appdata",
-      [this](ModelInfo restored_info, std::string path,
-             std::function<void(const std::string&)> unregister_callback,
-             std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return Model::FromLocalRegistration(std::move(restored_info), std::move(path), bindings_.download_manager,
-                                            bindings_.model_load_manager, std::move(unregister_callback),
-                                            std::move(prepare_callback));
-      },
-        NullLog());
-      auto models = restored.ListModels();
-      ASSERT_EQ(models.size(), 1u);
-
-      std::filesystem::create_directories(model_path);
-      std::ofstream(model_path / "genai_config.json")
-        << R"({"model":{"type":"whisper","context_length":448}})";
-      EXPECT_TRUE(models.front()->IsCached());
-      EXPECT_EQ(models.front()->Info().task, "automatic-speech-recognition");
-      EXPECT_EQ(models.front()->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}),
-          448);
-}
-
-TEST_F(LocalModelCatalogTest, IgnoresRestoredRegistrationWithDuplicateStableId) {
-  const auto catalog_dir = root_.path() / "duplicate-id-appdata" / "catalogs" / "local";
-  std::filesystem::create_directories(catalog_dir);
-  const auto make_properties = [&](const std::string& alias) {
-    return nlohmann::json{
-        {FOUNDRY_LOCAL_REG_MODEL_PATH, (root_.path() / alias).string()},
-        {FOUNDRY_LOCAL_REG_ALIAS, alias},
-        {FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion"},
-        {"_local_registration_id", "duplicate-registration-id"},
-    };
-  };
-  nlohmann::json index = {
-      {"version", 1},
-      {"catalog_name", "local"},
-      {"models",
-       {{{"alias", "first"}, {"model_path", (root_.path() / "first").string()}, {"properties", make_properties("first")}},
-        {{"alias", "second"},
-         {"model_path", (root_.path() / "second").string()},
-         {"properties", make_properties("second")}}}},
-  };
-  std::ofstream(catalog_dir / "local_models.json") << index.dump(2);
-
-  LocalModelCatalog restored(
-      root_.path() / "duplicate-id-appdata",
-      [this](ModelInfo restored_info, std::string path,
-             std::function<void(const std::string&)> unregister_callback,
-             std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return Model::FromLocalRegistration(std::move(restored_info), std::move(path), bindings_.download_manager,
-                                            bindings_.model_load_manager, std::move(unregister_callback),
-                                            std::move(prepare_callback));
-      },
-      NullLog());
-
-  auto models = restored.ListModels();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front()->Alias(), "first");
-}
-
-    TEST_F(LocalModelCatalogTest, DeferredEmbeddingsAssetsOverrideRuntimeMetadataAndPreserveDescription) {
-  const auto deferred_path = root_.path() / "deferred-embeddings";
-  ModelInfo info;
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, deferred_path.string());
-  SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, "deferred-embeddings");
-  SetModelInfoIntProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 1234);
-      SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "automatic-speech-recognition");
-      SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "audio");
-      SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, "My Embeddings Model");
-      SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR, "MIT");
-  auto* model = catalog_.RegisterModel(info);
-
-  std::filesystem::create_directories(deferred_path);
-  std::ofstream(deferred_path / "genai_config.json")
-      << R"({"model":{"type":"bert","hidden_size":384,"context_length":512}})";
-
-  EXPECT_TRUE(model->IsCached());
-  EXPECT_EQ(model->Info().task, "embeddings");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 512);
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
-            "language");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
-            "My Embeddings Model");
-  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR, std::string{}), "MIT");
+  auto* replacement = second.RegisterModel(MakeInfo());
+  ASSERT_NE(replacement, nullptr);
+  EXPECT_NE(replacement->RuntimeId(), stale->RuntimeId());
+  ASSERT_EQ(catalog_.ListModels().size(), 1u);
+  EXPECT_NE(catalog_.GetModelVariant("my-model:0"), stale);
 }
 
 TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsRegistration) {

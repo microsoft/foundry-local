@@ -222,16 +222,6 @@ inline ICatalog& Manager::GetCatalog(CatalogType type) const {
   return *local_catalog_;
 }
 
-inline ICatalog& Manager::GetCatalog(const std::string& catalog_name) const {
-  if (catalog_name == "local") {
-    return GetCatalog(CatalogType::Local);
-  }
-
-  flCatalog* catalog = nullptr;
-  Check(detail::api()->Manager_GetCatalogByName(handle_.get(), catalog_name.c_str(), &catalog));
-  return GetCatalog();
-}
-
 inline void Manager::StartWebService() {
   Check(detail::api()->Manager_WebServiceStart(handle_.get_mutable()));
 }
@@ -323,26 +313,8 @@ inline ModelInfo::ModelInfo()
         flModelInfo* info = nullptr;
         Check(detail::model_api()->CreateModelInfo(&info));
         return info;
-      }(), detail::model_api()->ReleaseModelInfo) {}
-
-inline ModelInfo::ModelInfo(flModelInfo& info)
-    : handle_(&info, detail::model_api()->ReleaseModelInfo) {}
-
-inline ModelInfo::ModelInfo(const ModelInfo& other)
-    : handle_([&other] {
-        flModelInfo* info = nullptr;
-        Check(detail::model_api()->Info_Clone(other.handle_.get(), &info));
-        return info;
-      }(), detail::model_api()->ReleaseModelInfo) {}
-
-inline ModelInfo& ModelInfo::operator=(const ModelInfo& other) {
-  if (this != &other) {
-    ModelInfo clone(other);
-    *this = std::move(clone);
-  }
-
-  return *this;
-}
+      }(),
+              detail::model_api()->ReleaseModelInfo) {}
 
 inline ModelInfo& ModelInfo::SetStringProperty(const char* key, const char* value) {
   Check(detail::model_api()->Info_SetStringProperty(handle_.get_mutable(), key, value));
@@ -352,16 +324,6 @@ inline ModelInfo& ModelInfo::SetStringProperty(const char* key, const char* valu
 inline ModelInfo& ModelInfo::SetIntProperty(const char* key, int64_t value) {
   Check(detail::model_api()->Info_SetIntProperty(handle_.get_mutable(), key, value));
   return *this;
-}
-
-inline void ModelInfo::SerializeToFile(const std::string& file_path) const {
-  Check(detail::model_api()->Info_SerializeToFile(handle_.get(), file_path.c_str()));
-}
-
-inline ModelInfo ModelInfo::DeserializeFromFile(const std::string& file_path) {
-  flModelInfo* info = nullptr;
-  Check(detail::model_api()->Info_DeserializeFromFile(file_path.c_str(), &info));
-  return ModelInfo(*info);
 }
 
 inline std::string_view ModelInfo::Id() const noexcept {
@@ -697,7 +659,7 @@ inline ModelList Catalog::GetModelVersions(const std::string& model_alias,
 
 inline std::unique_ptr<IModel> Catalog::RegisterModel(const ModelInfo& model_info) {
   flModel* model = nullptr;
-  Check(detail::catalog_api()->RegisterModel(handle_.get_mutable(), model_info.handle_.get(), &model));
+  Check(detail::catalog_api()->RegisterModel(handle_.get_mutable(), model_info.native_handle(), &model));
   return std::make_unique<Model>(*model);
 }
 

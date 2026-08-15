@@ -729,8 +729,6 @@ typedef struct flApi {
   // End V1
   FL_API_STATUS(Manager_GetCatalogByType, _In_ const flManager* manager, flCatalogType catalog_type,
                 _Outptr_ flCatalog** out_catalog);
-  FL_API_STATUS(Manager_GetCatalogByName, _In_ const flManager* manager, _In_ const char* catalog_name,
-                _Outptr_ flCatalog** out_catalog);
 
   // End V2
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
@@ -1077,10 +1075,6 @@ struct flModelApi {
   void FL_API_T(ReleaseModelInfo, _Frees_ptr_opt_ flModelInfo* info);
   FL_API_STATUS(Info_SetStringProperty, _In_ flModelInfo* info, _In_ const char* key, _In_ const char* value);
   FL_API_STATUS(Info_SetIntProperty, _In_ flModelInfo* info, _In_ const char* key, int64_t value);
-  FL_API_STATUS(Info_SerializeToFile, _In_ const flModelInfo* info, _In_ const char* file_path);
-  FL_API_STATUS(Info_DeserializeFromFile, _In_ const char* file_path, _Outptr_ flModelInfo** out_info);
-  /// Create a caller-owned deep copy. Release it with ReleaseModelInfo.
-  FL_API_STATUS(Info_Clone, _In_ const flModelInfo* info, _Outptr_ flModelInfo** out_info);
 
   // End V2
 };

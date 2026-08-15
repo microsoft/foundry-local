@@ -16,9 +16,9 @@
 namespace fl {
 
 BaseModelCatalog::BaseModelCatalog(std::string name, ILogger& logger)
-  : BaseModelCatalog(std::move(name), CatalogType::kPublic, logger) {}
+    : BaseModelCatalog(std::move(name), CatalogType::kPublic, logger) {}
 BaseModelCatalog::BaseModelCatalog(std::string name, CatalogType type, ILogger& logger)
-  : name_(std::move(name)), type_(type), logger_(logger) {}
+    : name_(std::move(name)), type_(type), logger_(logger) {}
 BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
@@ -50,13 +50,26 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
   }
 
   // On refresh: merge new models into stable storage. Existing models keep their addresses.
-  // New aliases are appended. Existing aliases are left unchanged (their Model* stays valid).
   if (populated_) {
-    // Build a set of existing aliases for fast lookup.
     std::unordered_map<std::string, Model*> existing_aliases;
     for (auto& stored : models_) {
       if (stored.active) {
         existing_aliases[stored.model->Alias()] = stored.model.get();
+      }
+    }
+
+    if (IsAuthoritativeSnapshot()) {
+      for (auto& stored : models_) {
+        if (!stored.active) {
+          continue;
+        }
+
+        const auto incoming = alias_to_model.find(stored.model->Alias());
+        if (incoming == alias_to_model.end() || incoming->second.RuntimeId() != stored.model->RuntimeId()) {
+          stored.active = false;
+          stored.model->Deactivate();
+          existing_aliases.erase(stored.model->Alias());
+        }
       }
     }
 
@@ -238,8 +251,8 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  bool needs_refresh = allow_refresh &&
-                       std::chrono::steady_clock::now() >= next_refresh_at_;
+  const bool needs_refresh = IsAuthoritativeSnapshot() ||
+                             (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
 
   if (populated_ && !needs_refresh) {
     return;

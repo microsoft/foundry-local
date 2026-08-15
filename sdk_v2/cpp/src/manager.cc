@@ -328,13 +328,10 @@ Manager::Manager(const Configuration& config) : config_(config) {
       disable_region_fallback);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       *config_.app_data_dir,
-      [this](ModelInfo info, std::string local_path, std::function<void(const std::string&)> unregister_callback,
-              std::function<std::optional<ModelInfo>()> prepare_callback) {
-        return CreateLocalModel(std::move(info), std::move(local_path), std::move(unregister_callback),
-                                std::move(prepare_callback));
+      [this](ModelInfo info, std::string local_path, std::string runtime_model_id) {
+        return CreateLocalModel(std::move(info), std::move(local_path), std::move(runtime_model_id));
       },
       *logger_);
-  local_catalog_->ListModels();
 }
 
 Manager::~Manager() {
@@ -459,16 +456,6 @@ ICatalog& Manager::GetCatalog(CatalogType type) {
   }
 }
 
-ICatalog& Manager::GetCatalog(const std::string& catalog_name) {
-  if (catalog_name == "local") {
-    return *local_catalog_;
-  }
-  if (catalog_name == "public" || catalog_name == public_catalog_->GetName()) {
-    return *public_catalog_;
-  }
-  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "catalog not found: " + catalog_name);
-}
-
 void Manager::StartWebService() {
   if (web_service_running_) {
     FL_LOG_AND_THROW(*logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "web service is already running");
@@ -580,12 +567,9 @@ Model Manager::CreateModel(ModelInfo info, std::string local_path) {
   return Model::FromModelInfo(std::move(info), std::move(local_path), *download_manager_, *model_load_manager_);
 }
 
-Model Manager::CreateLocalModel(ModelInfo info, std::string local_path,
-            std::function<void(const std::string&)> unregister_callback,
-                                std::function<std::optional<ModelInfo>()> prepare_callback) {
+Model Manager::CreateLocalModel(ModelInfo info, std::string local_path, std::string runtime_model_id) {
   return Model::FromLocalRegistration(std::move(info), std::move(local_path), *download_manager_,
-              *model_load_manager_, std::move(unregister_callback),
-              std::move(prepare_callback));
+                                      *model_load_manager_, std::move(runtime_model_id));
 }
 
 DownloadManager& Manager::GetDownloadManager() { return *download_manager_; }

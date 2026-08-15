@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "internal_api/c_api_test_helpers.h"
+#include "utils/temp_path.h"
 
 #include <cstring>
 #include <filesystem>
@@ -33,18 +34,20 @@ TEST(CApiTest, GetApiReturnsNullForFutureVersion) {
   EXPECT_EQ(api, nullptr);
 }
 
-TEST(CApiTest, ModelInfoCloneIsAvailableInV2) {
+TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
+  const flApi* v0 = FoundryLocalGetApi(0);
   const flApi* v1 = FoundryLocalGetApi(1);
   const flApi* v2 = FoundryLocalGetApi(2);
+  ASSERT_NE(v0, nullptr);
   ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
 
-  const flModelApi* model_v1 = v1->GetModelApi();
-  const flModelApi* model_v2 = v2->GetModelApi();
-  ASSERT_NE(model_v1, nullptr);
-  ASSERT_NE(model_v2, nullptr);
-  EXPECT_EQ(model_v1->Info_Clone, nullptr);
-  EXPECT_NE(model_v2->Info_Clone, nullptr);
+  EXPECT_EQ(v0, v2);
+  EXPECT_EQ(v1, v2);
+  EXPECT_EQ(v1->GetCatalogApi(), v2->GetCatalogApi());
+  EXPECT_EQ(v1->GetModelApi(), v2->GetModelApi());
+  EXPECT_NE(v1->GetCatalogApi()->RegisterModel, nullptr);
+  EXPECT_NE(v1->GetModelApi()->CreateModelInfo, nullptr);
 }
 
 TEST(CApiTest, VersionReturnsNonNull) {
@@ -109,53 +112,6 @@ TEST(CApiTest, SubApiAccessorsReturnNonNull) {
   EXPECT_NE(api->GetItemApi(), nullptr);
   EXPECT_NE(api->GetInferenceApi(), nullptr);
   EXPECT_NE(api->GetModelApi(), nullptr);
-}
-
-TEST(CApiTest, ModelInfoCloneCreatesIndependentDeepCopy) {
-  const flApi* api = GetApi();
-  ASSERT_NE(api, nullptr);
-  const flModelApi* model_api = api->GetModelApi();
-  ASSERT_NE(model_api, nullptr);
-  ASSERT_NE(model_api->Info_Clone, nullptr);
-
-  flModelInfo* source = nullptr;
-  ASSERT_TRUE(IsOk(model_api->CreateModelInfo(&source)));
-  ASSERT_NE(source, nullptr);
-  ASSERT_TRUE(IsOk(model_api->Info_SetStringProperty(source, "custom_string", "source")));
-  ASSERT_TRUE(IsOk(model_api->Info_SetIntProperty(source, "custom_int", 42)));
-
-  flModelInfo* clone = nullptr;
-  ASSERT_TRUE(IsOk(model_api->Info_Clone(source, &clone)));
-  ASSERT_NE(clone, nullptr);
-  EXPECT_NE(clone, source);
-  EXPECT_STREQ(model_api->Info_GetStringProperty(clone, "custom_string"), "source");
-  EXPECT_EQ(model_api->Info_GetIntProperty(clone, "custom_int", -1), 42);
-
-  ASSERT_TRUE(IsOk(model_api->Info_SetStringProperty(clone, "custom_string", "clone")));
-  ASSERT_TRUE(IsOk(model_api->Info_SetIntProperty(clone, "custom_int", 99)));
-  EXPECT_STREQ(model_api->Info_GetStringProperty(source, "custom_string"), "source");
-  EXPECT_EQ(model_api->Info_GetIntProperty(source, "custom_int", -1), 42);
-
-  model_api->ReleaseModelInfo(clone);
-  model_api->ReleaseModelInfo(source);
-}
-
-TEST(CApiTest, ModelInfoCloneValidatesArguments) {
-  const flApi* api = GetApi();
-  const flModelApi* model_api = api->GetModelApi();
-
-  flModelInfo* clone = reinterpret_cast<flModelInfo*>(1);
-  StatusGuard null_source{model_api->Info_Clone(nullptr, &clone), api};
-  ASSERT_NE(null_source.s, nullptr);
-  EXPECT_EQ(api->Status_GetErrorCode(null_source.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-  EXPECT_EQ(clone, nullptr);
-
-  flModelInfo* source = nullptr;
-  ASSERT_TRUE(IsOk(model_api->CreateModelInfo(&source)));
-  StatusGuard null_output{model_api->Info_Clone(source, nullptr), api};
-  ASSERT_NE(null_output.s, nullptr);
-  EXPECT_EQ(api->Status_GetErrorCode(null_output.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-  model_api->ReleaseModelInfo(source);
 }
 
 // ========================================================================
@@ -286,6 +242,68 @@ TEST(CApiTest, GetCatalogFromManager) {
 
   api->GetConfigurationApi()->Configuration_Release(config);
   api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
+  auto root = fl::test::TempPath::CreateTempDir("c_api_local_catalog");
+  const auto model_path = root.path() / "model";
+  const auto app_data_path = root.path() / "appdata";
+  std::filesystem::create_directories(model_path);
+  std::ofstream(model_path / "genai_config.json") << R"({"model":{"type":"phi3"}})";
+
+  const flApi* api = GetApi();
+  const flConfigurationApi* config_api = api->GetConfigurationApi();
+  const flCatalogApi* catalog_api = api->GetCatalogApi();
+  const flModelApi* model_api = api->GetModelApi();
+  flConfiguration* config = nullptr;
+  ASSERT_FL_OK(api, config_api->Create("c-api-local-catalog", &config));
+  ASSERT_FL_OK(api, config_api->SetAppDataDir(config, app_data_path.string().c_str()));
+
+  flManager* manager = nullptr;
+  ASSERT_FL_OK(api, api->Manager_Create(config, &manager));
+  flCatalog* catalog = nullptr;
+  ASSERT_FL_OK(api, api->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_LOCAL, &catalog));
+  ASSERT_NE(catalog, nullptr);
+
+  flModelInfo* registration = nullptr;
+  ASSERT_FL_OK(api, model_api->CreateModelInfo(&registration));
+  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(registration, FOUNDRY_LOCAL_REG_MODEL_PATH,
+                                                      model_path.string().c_str()));
+  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(registration, FOUNDRY_LOCAL_REG_ALIAS, "c-api-model"));
+  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(registration, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
+                                                      "chat-completion"));
+  ASSERT_FL_OK(api, model_api->Info_SetIntProperty(registration, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 17));
+
+  flModel* registered = nullptr;
+  ASSERT_FL_OK(api, catalog_api->RegisterModel(catalog, registration, &registered));
+  model_api->ReleaseModelInfo(registration);
+  ASSERT_NE(registered, nullptr);
+
+  const flModelInfo* registered_info = nullptr;
+  ASSERT_FL_OK(api, model_api->GetInfo(registered, &registered_info));
+  EXPECT_STREQ(model_api->Info_GetId(registered_info), "c-api-model:0");
+  EXPECT_STREQ(model_api->Info_GetTask(registered_info), "chat-completion");
+  EXPECT_EQ(model_api->Info_GetIntProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, -1), 17);
+
+  flModelList* models = nullptr;
+  ASSERT_FL_OK(api, catalog_api->GetModels(catalog, &models));
+  ASSERT_EQ(api->ModelList_Size(models), 1u);
+  EXPECT_NE(api->ModelList_GetAt(models, 0), nullptr);
+  api->ModelList_Release(models);
+
+  StatusGuard remove_status{model_api->RemoveFromCache(registered), api};
+  ASSERT_NE(remove_status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(remove_status.s), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+
+  ASSERT_FL_OK(api, catalog_api->UnregisterModel(catalog, "c-api-model"));
+  EXPECT_TRUE(std::filesystem::exists(model_path / "genai_config.json"));
+  EXPECT_FALSE(std::filesystem::exists(model_path / "model_metadata.yml"));
+  ASSERT_FL_OK(api, catalog_api->GetModels(catalog, &models));
+  EXPECT_EQ(api->ModelList_Size(models), 0u);
+  api->ModelList_Release(models);
+
+  config_api->Configuration_Release(config);
+  api->Manager_Release(manager);
 }
 
 TEST(CApiTest, GetCatalogNameReturnsNonEmptyString) {

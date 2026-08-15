@@ -311,22 +311,21 @@ enum class CatalogType {
 // ===========================================================================
 
 /// Opaque model metadata. Default construction creates an owning mutable value for registration.
-/// Construction from `const flModelInfo&` creates a non-owning read-only view tied to its Model/Catalog.
+/// Construction from `const flModelInfo&` creates a non-owning read-only view tied to its Model.
 class ModelInfo {
  public:
   ModelInfo();
   explicit ModelInfo(const flModelInfo& info) noexcept : handle_(&info) {}
 
-  /// Create an independent, owning, mutable deep copy, including when the source is a borrowed view.
-  ModelInfo(const ModelInfo& other);
-  ModelInfo& operator=(const ModelInfo& other);
+  ModelInfo(const ModelInfo&) = delete;
+  ModelInfo& operator=(const ModelInfo&) = delete;
   ModelInfo(ModelInfo&&) noexcept = default;
   ModelInfo& operator=(ModelInfo&&) noexcept = default;
 
   ModelInfo& SetStringProperty(const char* key, const char* value);
   ModelInfo& SetIntProperty(const char* key, int64_t value);
-  void SerializeToFile(const std::string& file_path) const;
-  static ModelInfo DeserializeFromFile(const std::string& file_path);
+
+  const flModelInfo* native_handle() const noexcept { return handle_.get(); }
 
   // Core identity.
   std::string_view Id() const noexcept;
@@ -396,11 +395,8 @@ class ModelInfo {
   std::optional<std::string_view> Capabilities() const noexcept;
 
  private:
-  explicit ModelInfo(flModelInfo& info);
   static std::string_view safe(const char* s) noexcept { return s ? s : ""; }
   detail::Base<flModelInfo> handle_;
-
-  friend class Catalog;
 };
 
 // ===========================================================================
@@ -870,7 +866,6 @@ class Manager {
   /// Get the catalog for querying models. Creates on first call, caches internally.
   ICatalog& GetCatalog() const;
   ICatalog& GetCatalog(CatalogType type) const;
-  ICatalog& GetCatalog(const std::string& catalog_name) const;
 
   /// Start the embedded web service.
   void StartWebService();

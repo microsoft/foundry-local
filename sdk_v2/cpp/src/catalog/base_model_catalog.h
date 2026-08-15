@@ -82,6 +82,9 @@ class BaseModelCatalog : public ICatalog {
     return {};
   }
 
+  /// Authoritative catalogs reconcile removals and replacements from every fetched snapshot.
+  virtual bool IsAuthoritativeSnapshot() const { return false; }
+
  private:
   /// Lookup indices into the stable models_ storage.
   /// Rebuilt on refresh. Does not own any Model instances.

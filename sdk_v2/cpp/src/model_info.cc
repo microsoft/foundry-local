@@ -7,8 +7,6 @@
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 
-#include <filesystem>
-#include <fstream>
 #include <string>
 
 namespace fl {
@@ -426,41 +424,6 @@ ModelInfo ModelInfoFromPropertyBagJson(const nlohmann::json& json) {
   }
 
   return info;
-}
-
-void SerializeModelInfoToFile(const ModelInfo& info, const std::filesystem::path& file_path) {
-  if (file_path.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info file path must not be empty");
-  }
-
-  std::ofstream stream(file_path, std::ios::binary | std::ios::trunc);
-  if (!stream) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to open model info file for writing: " + file_path.string());
-  }
-
-  stream << ModelInfoToPropertyBagJson(info).dump(2) << '\n';
-  if (!stream) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write model info file: " + file_path.string());
-  }
-}
-
-ModelInfo DeserializeModelInfoFromFile(const std::filesystem::path& file_path) {
-  if (file_path.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info file path must not be empty");
-  }
-
-  std::ifstream stream(file_path, std::ios::binary);
-  if (!stream) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "failed to open model info file: " + file_path.string());
-  }
-
-  try {
-    nlohmann::json json;
-    stream >> json;
-    return ModelInfoFromPropertyBagJson(json);
-  } catch (const nlohmann::json::exception& ex) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string("failed to parse model info file: ") + ex.what());
-  }
 }
 
 }  // namespace fl

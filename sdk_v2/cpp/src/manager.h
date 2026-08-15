@@ -53,7 +53,6 @@ class Manager {
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
   ICatalog& GetCatalog(CatalogType type);
-  ICatalog& GetCatalog(const std::string& catalog_name);
 
   /// Get the configuration used to create this manager.
   const Configuration& GetConfiguration() const;
@@ -157,9 +156,7 @@ class Manager {
 
  private:
   Model CreateModel(ModelInfo info, std::string local_path);
-  Model CreateLocalModel(ModelInfo info, std::string local_path,
-                         std::function<void(const std::string&)> unregister_callback,
-                         std::function<std::optional<ModelInfo>()> prepare_callback);
+  Model CreateLocalModel(ModelInfo info, std::string local_path, std::string runtime_model_id);
 
   static std::mutex s_mutex_;
   static std::unique_ptr<Manager> s_instance_;
