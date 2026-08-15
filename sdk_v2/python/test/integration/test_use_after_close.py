@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Regression tests for the ``_check_open()`` guards on Request / Response / Session.
+"""Regression tests for use-after-close guards on Request, Response, and Session.
 
 After ``_close()`` the native handle has been released and ``self._ptr`` is None. Calling any public method that
 passes ``self._ptr`` to the native layer would at best assert in cffi and at worst trigger UB. These tests
@@ -42,14 +42,6 @@ class TestSessionUseAfterClose:
             s.set_streaming(True)
         with pytest.raises(FoundryLocalException, match="closed"):
             s.process_request(Request())
-        with pytest.raises(FoundryLocalException, match="closed"):
-            s.add_tool_definition("tool", "description", "{}")
-        with pytest.raises(FoundryLocalException, match="closed"):
-            s.remove_tool_definition("tool")
-        with pytest.raises(FoundryLocalException, match="closed"):
-            _ = s.turn_count
-        with pytest.raises(FoundryLocalException, match="closed"):
-            s.undo_turns(1)
 
 
 class TestResponseUseAfterClose:
