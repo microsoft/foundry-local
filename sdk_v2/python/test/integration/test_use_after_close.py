@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-"""Regression tests for the ``_check_open()`` guards on Request / Response / Session.
+"""Regression tests for use-after-close guards on Request, Response, and Session.
 
 After ``_close()`` the native handle has been released and ``self._ptr`` is None. Calling any public method that
 passes ``self._ptr`` to the native layer would at best assert in cffi and at worst trigger UB. These tests

@@ -52,16 +52,26 @@ public abstract class Session : IDisposable
 
         Detail.Throw.IfNull(options);
 
+        var optionValues = options.ToDictionary();
         Api.Root.CreateKeyValuePairs(out var kvpPtr);
 
         try
         {
-            foreach (var kvp in options.ToDictionary())
+            foreach (var kvp in optionValues)
             {
                 Api.Root.AddKeyValuePair(kvpPtr, kvp.Key, kvp.Value);
             }
 
-            _session.SetOptions(kvpPtr);
+            EnterActiveCall();
+
+            try
+            {
+                _session.SetOptions(kvpPtr);
+            }
+            finally
+            {
+                ExitActiveCall();
+            }
         }
         finally
         {
@@ -81,51 +91,60 @@ public abstract class Session : IDisposable
     {
         ThrowIfDisposed();
 
-        if (enabled && _nativeStreamingCallback == null)
+        EnterActiveCall();
+
+        try
         {
-            _nativeStreamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
+            if (enabled && _nativeStreamingCallback == null)
             {
-                var channel = _activeChannel;
-                if (channel == null)
+                _nativeStreamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
                 {
-                    return 0;
-                }
-
-                bool errored = false;
-
-                try
-                {
-                    if (data.ItemQueue != IntPtr.Zero)
+                    var channel = _activeChannel;
+                    if (channel == null)
                     {
-                        while (Api.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
+                        return 0;
+                    }
+
+                    bool errored = false;
+
+                    try
+                    {
+                        if (data.ItemQueue != IntPtr.Zero)
                         {
-                            // Ownership transfers to the channel consumer who disposes it
-#pragma warning disable IDISP001
-                            var item = Item.FromNative(itemPtr, ownsHandle: true);
-#pragma warning restore IDISP001
-                            if (!channel.Writer.TryWrite(item))
+                            while (Api.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
                             {
-                                item.Dispose();
+                                // Ownership transfers to the channel consumer who disposes it
+#pragma warning disable IDISP001
+                                var item = Item.FromNative(itemPtr, ownsHandle: true);
+#pragma warning restore IDISP001
+                                if (!channel.Writer.TryWrite(item))
+                                {
+                                    item.Dispose();
+                                }
                             }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    errored = true;
-                    channel.Writer.TryComplete(
-                        new FoundryLocalException("Error processing streaming callback data.", ex));
-                }
+                    catch (Exception ex)
+                    {
+                        errored = true;
+                        channel.Writer.TryComplete(
+                            new FoundryLocalException("Error processing streaming callback data.", ex));
+                    }
 
-                return errored || _streamingCt.IsCancellationRequested ? 1 : 0;
-            };
+                    return errored || _streamingCt.IsCancellationRequested ? 1 : 0;
+                };
 
-            _session.SetStreamingCallback(_nativeStreamingCallback);
+                _session.SetStreamingCallback(_nativeStreamingCallback);
+            }
+            else if (!enabled && _nativeStreamingCallback != null)
+            {
+                _session.SetStreamingCallback(null);
+                _nativeStreamingCallback = null;
+            }
         }
-        else if (!enabled && _nativeStreamingCallback != null)
+        finally
         {
-            _session.SetStreamingCallback(null);
-            _nativeStreamingCallback = null;
+            ExitActiveCall();
         }
 
         return this;
@@ -446,6 +465,9 @@ public abstract class Session : IDisposable
         try
         {
             try { _activeStreamingCts?.Cancel(); } catch { }
+
+            // Disposal owns the session lifetime here: _disposing rejects new calls, and release
+            // remains below the active-call drain, so cancellation does not need its own lease.
             try { _session.Cancel(); } catch { }
 
             // Releasing while Session_ProcessRequest is running would be a native use-after-free.
@@ -469,7 +491,7 @@ public abstract class Session : IDisposable
         }
     }
 
-    private void EnterActiveCall()
+    private protected void EnterActiveCall()
     {
         lock (_gate)
         {
@@ -478,7 +500,7 @@ public abstract class Session : IDisposable
         }
     }
 
-    private void ExitActiveCall()
+    private protected void ExitActiveCall()
     {
         lock (_gate)
         {

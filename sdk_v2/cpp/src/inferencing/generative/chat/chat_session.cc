@@ -636,8 +636,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     return;
   }
 
-  // Rebuild after grammar-guided generation because a completed grammar is at EOS and an interrupted grammar is
-  // unusable. Rebuild after reasoning generation because history removes prior reasoning text but the KV cache does not.
+  // Rebuild after grammar-guided generation: a completed grammar is at EOS, while an interrupted grammar is unusable.
+  // Rebuild after reasoning generation because history removes prior reasoning text but the KV cache does not.
   const bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
   const bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
 
