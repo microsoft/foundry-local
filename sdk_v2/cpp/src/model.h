@@ -42,12 +42,12 @@ class Model {
   Model& operator=(const Model&) = delete;
 
   /// Create a leaf Model from a ModelInfo (used when populating the catalog).
-  /// If local_path is non-empty the model is marked as cached at that location.
+  /// If `info.local_path` is non-empty the model is marked as cached at that location —
+  /// ModelInfo is the single owner of the cache path (see model_info.h).
   /// The managers are non-owning bindings used by Download/Load/Unload. In production
   /// Manager owns both via unique_ptr. Tests can use `fl::test::FakeServiceBindings`
   /// (test_helpers.h) for a one-line construction with cheap fakes.
   static Model FromModelInfo(ModelInfo info,
-                             std::string local_path,
                              DownloadManager& download_manager,
                              ModelLoadManager& model_load_manager);
 
@@ -97,6 +97,13 @@ class Model {
   /// `std::unique_ptr<T>::get() const → T*` idiom.
   std::vector<Model*> Variants() const;
 
+  /// Like Variants() but filtered to one leaf per model_id — the visible, de-duplicated view
+  /// used by the public surfaces (C API GetVariants, REST GET /v1/models). Walks the container's
+  /// best-first variant order under a single lock and keeps the first occurrence of each model_id,
+  /// which (per CompareBestFirst's source-priority tiebreak) is the preferred-source copy; later
+  /// same-model_id shadows are skipped. For a leaf, returns {this}.
+  std::vector<Model*> UniqueVariants() const;
+
   // --- Query methods ---
 
   bool IsCached() const;
@@ -118,6 +125,10 @@ class Model {
   /// True if this is a multi-variant container.
   bool IsContainer() const { return selected_variant_.load(std::memory_order_acquire) != nullptr; }
 
+  /// Number of variants held by a container. Returns 0 for a leaf (or an emptied container).
+  /// Used by the store to detect a container that became empty after RemoveVariant.
+  size_t VariantCount() const;
+
   // --- Mutation methods ---
 
   /// Download the model to local cache.
@@ -138,6 +149,19 @@ class Model {
   /// mutated by this call.
   void SelectVariant(const Model& variant);
 
+  /// Remove a variant from this container (used by the local-BYO Unregister path).
+  /// Finds the matching variant by address, erases and compacts it (no null holes;
+  /// best-first order preserved), and if the removed leaf was the current selection re-runs
+  /// default selection (cached-first, then preferred source) over the survivors — or clears
+  /// the selection if the container is now empty. Throws if this is a leaf or the variant is
+  /// not part of this container.
+  ///
+  /// This is the one place the otherwise append-only variants_ invariant is relaxed. It is a
+  /// rare, explicit, user-initiated admin op: it frees the erased leaf (invalidating any
+  /// outstanding Model* to it) and is NOT safe to call concurrently with enumeration or model
+  /// ops on this container — quiesce first.
+  void RemoveVariant(const Model& variant);
+
   // --- Non-delegating accessors ---
 
   /// Get the local path if cached, or empty string if not.
@@ -146,7 +170,7 @@ class Model {
   /// is invoked on this Model. In practice these mutations are user-initiated
   /// one-shot operations, so callers reading the path concurrently with download
   /// or removal of the same Model are out of contract.
-  const std::string& LocalPath() const { return local_path_; }
+  const std::string& LocalPath() const { return info_.local_path; }
 
  private:
   // Leaf data (default/empty for containers).
@@ -154,13 +178,13 @@ class Model {
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
   // manager remains the single source of truth (Manager::Shutdown clears its map without
   // having to walk every Model and reset a local flag).
-  // local_path_ is set during Download() (or at construction for already-cached models) and
-  // cleared by RemoveFromCache(). Its mutation is guarded by state_mutex_; the reader-safety
-  // contract is that the path is published before cached_ flips true (and cleared after cached_
-  // flips false), so any reader that gates on IsCached() observes a complete path.
+  // The cache path lives in info_.local_path (ModelInfo is its single owner): set during
+  // Download() (or at construction for already-cached models) and cleared by RemoveFromCache().
+  // Its mutation is guarded by state_mutex_; the reader-safety contract is that the path is
+  // published before cached_ flips true (and cleared after cached_ flips false), so any reader
+  // that gates on IsCached() observes a complete path.
   ModelInfo info_;
   std::atomic<bool> cached_{false};
-  std::string local_path_;
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
   // reassigned; guaranteed non-null because FromModelInfo takes them by reference.

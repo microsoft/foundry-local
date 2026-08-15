@@ -1,11 +1,15 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+//
+// Tests for AzureModelSource — the Public (Azure) catalog source (fetch guts ported from the
+// former AzureModelCatalog). A source returns ModelInfo only: it stamps catalog_source, attaches
+// each cached entry's transient local_path, synthesizes kLocal stubs for disk-only models, falls
+// back to the on-disk snapshot when every live URL fails, and saves the live snapshot.
 
-#include "catalog/azure_model_catalog.h"
+#include "catalog/azure_model_source.h"
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "internal_api/test_helpers.h"
-#include "model.h"
 #include "model_info.h"
 #include "utils/temp_path.h"
 
@@ -16,6 +20,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -72,20 +77,18 @@ class FakeCatalogClient final : public ICatalogClient {
   std::shared_ptr<CatalogBehavior> behavior_;
 };
 
-class TestAzureModelCatalog final : public AzureModelCatalog {
+class TestAzureModelSource final : public AzureModelSource {
  public:
   using ClientFactory =
       std::function<std::unique_ptr<ICatalogClient>(const std::string& url, const std::string& filter)>;
 
-  TestAzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
-                        std::string cache_dir,
-                        ModelFactory model_factory,
-                        const IEpDetector& ep_detector,
-                        ILogger& logger,
-                        bool cache_only,
-                        ClientFactory client_factory)
-      : AzureModelCatalog(std::move(catalog_urls), std::move(cache_dir), std::move(model_factory), ep_detector, logger,
-                          cache_only),
+  TestAzureModelSource(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
+                       std::string cache_dir,
+                       const IEpDetector& ep_detector,
+                       ILogger& logger,
+                       bool cache_only,
+                       ClientFactory client_factory)
+      : AzureModelSource(std::move(catalog_urls), std::move(cache_dir), ep_detector, logger, cache_only),
         client_factory_(std::move(client_factory)) {}
 
  protected:
@@ -114,12 +117,10 @@ ModelInfo MakeModelInfo(const std::string& model_id,
   return info;
 }
 
-Model* FindVariant(const std::vector<Model*>& models, const std::string& model_id) {
-  for (auto* model : models) {
-    for (auto* variant : model->Variants()) {
-      if (variant->Info().model_id == model_id) {
-        return variant;
-      }
+const ModelInfo* FindInfo(const std::vector<ModelInfo>& infos, const std::string& model_id) {
+  for (const auto& info : infos) {
+    if (info.model_id == model_id) {
+      return &info;
     }
   }
 
@@ -128,7 +129,7 @@ Model* FindVariant(const std::vector<Model*>& models, const std::string& model_i
 
 }  // namespace
 
-class AzureModelCatalogTest : public ::testing::Test {
+class AzureModelSourceTest : public ::testing::Test {
  protected:
   std::shared_ptr<CatalogBehavior> AddBehavior(const std::string& url, bool fail_fetch_all = false) {
     auto behavior = std::make_shared<CatalogBehavior>();
@@ -171,15 +172,11 @@ class AzureModelCatalogTest : public ::testing::Test {
     file << snapshot.dump(2);
   }
 
-  std::unique_ptr<AzureModelCatalog> CreateCatalog(
+  std::unique_ptr<AzureModelSource> CreateSource(
       std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
       bool cache_only = false) {
-    auto model_factory = [this](ModelInfo info, std::string local_path) {
-      return Model::FromModelInfo(std::move(info), std::move(local_path), services_.download_manager,
-                                  services_.model_load_manager);
-    };
     auto client_factory = [this](const std::string& url, const std::string&) {
-      ++factory_calls_;
+      ++client_creations_;
       auto behavior = behaviors_.find(url);
       if (behavior == behaviors_.end()) {
         throw std::runtime_error("missing fake behavior for " + url);
@@ -188,22 +185,20 @@ class AzureModelCatalogTest : public ::testing::Test {
       return std::make_unique<FakeCatalogClient>(behavior->second);
     };
 
-    return std::make_unique<TestAzureModelCatalog>(std::move(catalog_urls), cache_directory_.string(),
-                                                   std::move(model_factory), services_.ep_detector, services_.logger,
-                                                   cache_only, std::move(client_factory));
+    return std::make_unique<TestAzureModelSource>(std::move(catalog_urls), cache_directory_.string(),
+                                                  services_.ep_detector, services_.logger, cache_only,
+                                                  std::move(client_factory));
   }
 
-  fl::test::TempPath cache_directory_ = fl::test::TempPath::CreateTempDir("fl_azure_model_catalog_");
+  fl::test::TempPath cache_directory_ = fl::test::TempPath::CreateTempDir("fl_azure_model_source_");
   fl::test::FakeServiceBindings services_;
   std::unordered_map<std::string, std::shared_ptr<CatalogBehavior>> behaviors_;
-  int factory_calls_ = 0;
+  int client_creations_ = 0;
 };
 
-TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWithoutRewritingSnapshot) {
-  const auto gpu_info =
-      MakeModelInfo("snapshot-gpu:2", "snapshot-gpu", 2, "snapshot-alias", "SnapshotProvider");
-  const auto cpu_info =
-      MakeModelInfo("snapshot-cpu:2", "snapshot-cpu", 2, "snapshot-alias", "SnapshotProvider");
+TEST_F(AzureModelSourceTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWithoutRewritingSnapshot) {
+  const auto gpu_info = MakeModelInfo("snapshot-gpu:2", "snapshot-gpu", 2, "snapshot-alias", "SnapshotProvider");
+  const auto cpu_info = MakeModelInfo("snapshot-cpu:2", "snapshot-cpu", 2, "snapshot-alias", "SnapshotProvider");
   WriteSnapshot({gpu_info, cpu_info});
   const auto gpu_path = AddLocalModel("snapshot-gpu:2", "snapshot-gpu");
   const auto cpu_path = AddLocalModel("snapshot-cpu:2", "snapshot-cpu");
@@ -211,30 +206,31 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
 
   AddBehavior("https://catalog-one.test", true);
   AddBehavior("https://catalog-two.test", true);
-  auto catalog = CreateCatalog({
+  auto source = CreateSource({
       {"https://catalog-one.test", std::nullopt},
       {"https://catalog-two.test", std::nullopt},
   });
 
-  const auto cached_models = catalog->GetCachedModels();
+  const auto infos = source->FetchModels();
 
-  ASSERT_EQ(cached_models.size(), 3u);
-  auto* gpu_model = FindVariant(cached_models, "snapshot-gpu:2");
-  ASSERT_NE(gpu_model, nullptr);
-  EXPECT_EQ(gpu_model->Info().alias, "snapshot-alias");
-  const auto* provider = gpu_model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+  ASSERT_EQ(infos.size(), 3u);
+  const auto* gpu = FindInfo(infos, "snapshot-gpu:2");
+  ASSERT_NE(gpu, nullptr);
+  EXPECT_EQ(gpu->alias, "snapshot-alias");
+  EXPECT_EQ(gpu->catalog_source, CatalogSource::kPublic);
+  const auto* provider = gpu->GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
   ASSERT_NE(provider, nullptr);
   EXPECT_EQ(*provider, "SnapshotProvider");
-  EXPECT_EQ(gpu_model->LocalPath(), gpu_path.string());
+  EXPECT_EQ(gpu->local_path, gpu_path.string());
 
-  auto* cpu_model = FindVariant(cached_models, "snapshot-cpu:2");
-  ASSERT_NE(cpu_model, nullptr);
-  EXPECT_EQ(cpu_model->Info().alias, "snapshot-alias");
-  EXPECT_EQ(cpu_model->LocalPath(), cpu_path.string());
+  const auto* cpu = FindInfo(infos, "snapshot-cpu:2");
+  ASSERT_NE(cpu, nullptr);
+  EXPECT_EQ(cpu->local_path, cpu_path.string());
 
-  auto* byom_model = FindVariant(cached_models, "offline-byom:4");
-  ASSERT_NE(byom_model, nullptr);
-  EXPECT_EQ(byom_model->LocalPath(), byom_path.string());
+  const auto* byom = FindInfo(infos, "offline-byom:4");
+  ASSERT_NE(byom, nullptr);
+  EXPECT_EQ(byom->catalog_source, CatalogSource::kLocal);
+  EXPECT_EQ(byom->local_path, byom_path.string());
 
   CatalogCache persisted_cache(cache_directory_.string(), services_.logger);
   persisted_cache.Load();
@@ -243,68 +239,69 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
   ASSERT_EQ(persisted_models->size(), 2u);
   EXPECT_EQ((*persisted_models)[0].model_id, "snapshot-gpu:2");
   EXPECT_EQ((*persisted_models)[1].model_id, "snapshot-cpu:2");
-  EXPECT_EQ(factory_calls_, 2);
+  EXPECT_EQ(client_creations_, 2);
 }
 
-TEST_F(AzureModelCatalogTest, AllUrlsFailWithoutSnapshotSurfacesScannedModelAsByom) {
+TEST_F(AzureModelSourceTest, AllUrlsFailWithoutSnapshotSurfacesScannedModelAsByom) {
   const auto local_path = AddLocalModel("custom-model:0", "custom-model");
   AddBehavior("https://catalog-one.test", true);
   AddBehavior("https://catalog-two.test", true);
-  auto catalog = CreateCatalog({
+  auto source = CreateSource({
       {"https://catalog-one.test", std::nullopt},
       {"https://catalog-two.test", std::nullopt},
   });
 
-  const auto cached_models = catalog->GetCachedModels();
+  const auto infos = source->FetchModels();
 
-  ASSERT_EQ(cached_models.size(), 1u);
-  auto* byom_model = FindVariant(cached_models, "custom-model:0");
-  ASSERT_NE(byom_model, nullptr);
-  EXPECT_EQ(byom_model->Info().name, "custom-model");
-  EXPECT_EQ(byom_model->Info().alias, "custom-model");
-  EXPECT_EQ(byom_model->Info().version, 0);
-  EXPECT_EQ(byom_model->Info().uri, "local://custom-model");
-  const auto* provider = byom_model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
-  const auto* model_type = byom_model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
+  ASSERT_EQ(infos.size(), 1u);
+  const auto* byom = FindInfo(infos, "custom-model:0");
+  ASSERT_NE(byom, nullptr);
+  EXPECT_EQ(byom->name, "custom-model");
+  EXPECT_EQ(byom->alias, "custom-model");
+  EXPECT_EQ(byom->version, 0);
+  EXPECT_EQ(byom->uri, "local://custom-model");
+  EXPECT_EQ(byom->catalog_source, CatalogSource::kLocal);
+  const auto* provider = byom->GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+  const auto* model_type = byom->GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
   ASSERT_NE(provider, nullptr);
   ASSERT_NE(model_type, nullptr);
   EXPECT_EQ(*provider, "Local");
   EXPECT_EQ(*model_type, "ONNX");
-  EXPECT_EQ(byom_model->LocalPath(), local_path.string());
+  EXPECT_EQ(byom->local_path, local_path.string());
   EXPECT_FALSE(fs::exists(cache_directory_.path() / "foundry.modelinfo.json"));
 }
 
-TEST_F(AzureModelCatalogTest, EmptySuccessfulUrlPreventsSnapshotFallbackWhenAnotherUrlFails) {
+TEST_F(AzureModelSourceTest, EmptySuccessfulUrlPreventsSnapshotFallbackWhenAnotherUrlFails) {
   WriteSnapshot({MakeModelInfo("snapshot-only:1", "snapshot-only", 1, "snapshot-only", "SnapshotProvider")});
   AddBehavior("https://failed-catalog.test", true);
   const auto successful_behavior = AddBehavior("https://empty-catalog.test");
-  auto catalog = CreateCatalog({
+  auto source = CreateSource({
       {"https://failed-catalog.test", std::nullopt},
       {"https://empty-catalog.test", std::nullopt},
   });
 
-  const auto models = catalog->ListModels();
+  const auto infos = source->FetchModels();
 
-  EXPECT_TRUE(models.empty());
+  EXPECT_TRUE(infos.empty());
   EXPECT_EQ(successful_behavior->fetch_all_calls, 1);
-  EXPECT_EQ(factory_calls_, 2);
+  EXPECT_EQ(client_creations_, 2);
 }
 
-TEST_F(AzureModelCatalogTest, CacheOnlyUsesSnapshotAndScannedByomWithoutCreatingLiveClient) {
+TEST_F(AzureModelSourceTest, CacheOnlyUsesSnapshotAndScannedByomWithoutCreatingLiveClient) {
   WriteSnapshot({MakeModelInfo("snapshot-model:3", "snapshot-model", 3, "snapshot-alias", "SnapshotProvider")});
   AddLocalModel("snapshot-model:3", "snapshot-model");
   AddLocalModel("cache-only-byom:5", "cache-only-byom");
-  auto catalog = CreateCatalog({{"https://must-not-be-called.test", std::nullopt}}, true);
+  auto source = CreateSource({{"https://must-not-be-called.test", std::nullopt}}, true);
 
-  const auto cached_models = catalog->GetCachedModels();
+  const auto infos = source->FetchModels();
 
-  ASSERT_EQ(cached_models.size(), 2u);
-  EXPECT_NE(FindVariant(cached_models, "snapshot-model:3"), nullptr);
-  EXPECT_NE(FindVariant(cached_models, "cache-only-byom:5"), nullptr);
-  EXPECT_EQ(factory_calls_, 0);
+  ASSERT_EQ(infos.size(), 2u);
+  EXPECT_NE(FindInfo(infos, "snapshot-model:3"), nullptr);
+  EXPECT_NE(FindInfo(infos, "cache-only-byom:5"), nullptr);
+  EXPECT_EQ(client_creations_, 0);
 }
 
-TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesResolvedAndByomMetadata) {
+TEST_F(AzureModelSourceTest, LiveAggregationDeduplicatesAndSavesResolvedAndByomMetadata) {
   AddLocalModel("old-model:1", "old-model");
   AddLocalModel("custom-model:0", "custom-model");
 
@@ -317,16 +314,22 @@ TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesResolvedAndByom
   const auto second_behavior = AddBehavior("https://catalog-two.test");
   second_behavior->all_models = {latest_info};
 
-  auto catalog = CreateCatalog({
+  auto source = CreateSource({
       {"https://catalog-one.test", std::nullopt},
       {"https://catalog-two.test", std::nullopt},
   });
 
-  const auto models = catalog->ListModels();
+  const auto infos = source->FetchModels();
 
-  ASSERT_EQ(models.size(), 3u);
+  ASSERT_EQ(infos.size(), 3u);
   EXPECT_EQ(first_behavior->fetch_by_id_calls, 1);
   EXPECT_EQ(second_behavior->fetch_by_id_calls, 1);
+  EXPECT_NE(FindInfo(infos, "latest-model:2"), nullptr);
+  EXPECT_NE(FindInfo(infos, "old-model:1"), nullptr);
+
+  const auto* byom = FindInfo(infos, "custom-model:0");
+  ASSERT_NE(byom, nullptr);
+  EXPECT_EQ(byom->catalog_source, CatalogSource::kLocal);
 
   CatalogCache persisted_cache(cache_directory_.string(), services_.logger);
   persisted_cache.Load();

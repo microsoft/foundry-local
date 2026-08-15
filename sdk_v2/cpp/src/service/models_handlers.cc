@@ -161,8 +161,9 @@ class OpenAIListModelsHandler : public HttpRequestHandler {
     nlohmann::json data = nlohmann::json::array();
 
     // List individual variants so the client knows exactly which model_id to use.
+    // UniqueVariants() de-duplicates shadow model_ids to the preferred-source copy.
     for (const auto* model : models) {
-      for (const auto* variant : model->Variants()) {
+      for (const auto* variant : model->UniqueVariants()) {
         const auto& info = variant->Info();
         int64_t created = 0;
         auto it = info.int_properties.find(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT);

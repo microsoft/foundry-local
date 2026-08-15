@@ -10,7 +10,8 @@
 #include <string_view>
 
 #include "catalog.h"
-#include "catalog/azure_model_catalog.h"
+#include "catalog/azure_model_source.h"
+#include "catalog/model_catalog.h"
 #include "download/download_manager.h"
 #if FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS
 #include "ep_detection/cuda_ep_bootstrapper.h"
@@ -322,11 +323,22 @@ Manager::Manager(const Configuration& config) : config_(config) {
   } catch (...) {
     logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
   }
-  catalog_ = std::make_unique<AzureModelCatalog>(
-      config_.catalog_urls, download_manager_->GetCacheDirectory(),
-      [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
-      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
+  // Build the source list (initial scope: Public/Azure only) and the aggregating store.
+  // The Azure source also performs today's inline local-cache resolution. The list is
+  // source-agnostic, so future Private / BYOM sources slot in without store changes.
+  auto azure_source = std::make_unique<AzureModelSource>(
+      config_.catalog_urls, download_manager_->GetCacheDirectory(), *ep_detector_, *logger_,
+      config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
       disable_region_fallback);
+  std::string catalog_name = azure_source->Name();
+
+  std::vector<std::unique_ptr<IModelSource>> sources;
+  sources.push_back(std::move(azure_source));
+
+  catalog_ = std::make_unique<ModelCatalog>(
+      std::move(catalog_name), std::move(sources),
+      [this](ModelInfo info) { return CreateModel(std::move(info)); },
+      *logger_);
 }
 
 Manager::~Manager() {
@@ -542,8 +554,8 @@ bool Manager::IsShutdownRequested() const { return shutdown_requested_.load(); }
 
 const Configuration& Manager::GetConfiguration() const { return config_; }
 
-Model Manager::CreateModel(ModelInfo info, std::string local_path) {
-  return Model::FromModelInfo(std::move(info), std::move(local_path), *download_manager_, *model_load_manager_);
+Model Manager::CreateModel(ModelInfo info) {
+  return Model::FromModelInfo(std::move(info), *download_manager_, *model_load_manager_);
 }
 
 DownloadManager& Manager::GetDownloadManager() { return *download_manager_; }

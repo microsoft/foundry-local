@@ -857,7 +857,9 @@ FL_API_STATUS_IMPL(Model_GetVariantsImpl, const flModel* model, flModelList** ou
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  auto variants = AsImpl(model)->Variants();
+  // Public list is de-duplicated to one leaf per model_id (preferred-source copy); internal
+  // storage keeps all shadow variants. See MultiCatalogSupportPlan.md.
+  auto variants = AsImpl(model)->UniqueVariants();
   auto list = std::make_unique<flModelList>();
   list->items.reserve(variants.size());
 
@@ -969,6 +971,10 @@ static int64_t FL_API_CALL Info_GetIntPropertyImpl(const flModelInfo* info,
   return AsImpl(info)->GetPropertyWithDefault(key, default_value);
 }
 
+static int FL_API_CALL Info_GetCatalogSourceImpl(const flModelInfo* info) FL_NO_EXCEPTION {
+  return info ? static_cast<int>(AsImpl(info)->catalog_source) : 0;
+}
+
 static const flModelApi g_model_api = {
     Model_GetInfoImpl,
     Model_GetInputOutputInfoImpl,
@@ -993,6 +999,7 @@ static const flModelApi g_model_api = {
     Info_GetModelSettingsImpl,
     Info_GetStringPropertyImpl,
     Info_GetIntPropertyImpl,
+    Info_GetCatalogSourceImpl,
 };
 
 // ========================================================================

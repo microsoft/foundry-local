@@ -75,18 +75,19 @@ class WebServiceTest : public ::testing::Test {
 
     // Populate with test models
     catalog_->AddModel(Model::FromModelInfo(
-        test::MakeTestModelInfo("alpha-model", "acme-corp"), "",
+        test::MakeTestModelInfo("alpha-model", "acme-corp"),
         svc_.download_manager, svc_.model_load_manager));
     catalog_->AddModel(Model::FromModelInfo(
-        test::MakeTestModelInfo("beta-model", "contoso"), "",
+        test::MakeTestModelInfo("beta-model", "contoso"),
         svc_.download_manager, svc_.model_load_manager));
 
     const auto loadable_model_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
     ASSERT_TRUE(std::filesystem::exists(loadable_model_path))
         << "Expected loadable test model at " << loadable_model_path;
+    ModelInfo loadable_info = test::MakeTestModelInfo(test::kLoadableTestModelAlias, "microsoft");
+    loadable_info.local_path = loadable_model_path;
     catalog_->AddModel(Model::FromModelInfo(
-        test::MakeTestModelInfo(test::kLoadableTestModelAlias, "microsoft"),
-        loadable_model_path,
+        std::move(loadable_info),
         svc_.download_manager,
         *model_load_manager_));
 

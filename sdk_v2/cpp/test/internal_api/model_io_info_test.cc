@@ -24,7 +24,7 @@ static Model MakeModelWithTask(const std::string& task) {
   info.version = 1;
   info.alias = "test-alias";
   info.task = task;
-  return Model::FromModelInfo(std::move(info), "",
+  return Model::FromModelInfo(std::move(info),
                               svc.download_manager, svc.model_load_manager);
 }
 

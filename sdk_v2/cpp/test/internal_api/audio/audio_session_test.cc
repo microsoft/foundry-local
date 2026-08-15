@@ -257,7 +257,7 @@ class AudioSessionTest : public ::testing::Test {
   static inline GenAIModelInstance* model_ = nullptr;
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
-      ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
+      ModelInfo{}, svc_.download_manager, svc_.model_load_manager);
   TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };
@@ -309,7 +309,7 @@ class AudioSessionInferenceTest : public ::testing::Test {
   static inline GenAIModelInstance* model_ = nullptr;
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
-      ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
+      ModelInfo{}, svc_.download_manager, svc_.model_load_manager);
   TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };
@@ -377,7 +377,7 @@ class AudioSessionNemotronInferenceTest : public ::testing::Test {
   static inline std::string nemotron_alias_;
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
-      ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
+      ModelInfo{}, svc_.download_manager, svc_.model_load_manager);
   TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };

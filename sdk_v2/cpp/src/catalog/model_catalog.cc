@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-#include "catalog/base_model_catalog.h"
+#include "catalog/model_catalog.h"
 
 #include <foundry_local/foundry_local_c.h>
 
@@ -12,17 +12,114 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace fl {
 
-BaseModelCatalog::BaseModelCatalog(std::string name, ILogger& logger)
-    : name_(std::move(name)), logger_(logger) {}
-BaseModelCatalog::~BaseModelCatalog() = default;
+namespace {
 
-void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
-  // Group variants by alias into Model containers.
-  // Matches C# Catalog.UpdateModels() pattern:
-  //   foreach (modelInfo) { find or create Model by alias, add variant }
+/// Dedup key for shadow variants: same model_id from different catalog sources is kept.
+std::string VariantKey(const ModelInfo& info) {
+  return info.model_id + '\x1f' + std::to_string(static_cast<int>(info.catalog_source));
+}
+
+}  // namespace
+
+ModelCatalog::ModelCatalog(std::string name,
+                           std::vector<std::unique_ptr<IModelSource>> sources,
+                           ModelFactory model_factory,
+                           ILogger& logger)
+    : name_(std::move(name)),
+      sources_(std::move(sources)),
+      model_factory_(std::move(model_factory)),
+      logger_(logger) {}
+
+ModelCatalog::~ModelCatalog() = default;
+
+Model ModelCatalog::BuildLeaf(ModelInfo info) const {
+  // ModelInfo carries local_path when the model is cached locally; the factory reads it to
+  // mark the constructed leaf cached.
+  return model_factory_(std::move(info));
+}
+
+std::vector<Model> ModelCatalog::FetchModels() const {
+  std::vector<Model> models;
+
+  for (const auto& source : sources_) {
+    std::vector<ModelInfo> infos;
+    try {
+      infos = source->FetchModels();
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Error,
+                  fmt::format("FetchModels: source '{}' failed — {}", source->Name(), ex.what()));
+      continue;
+    } catch (...) {
+      logger_.Log(LogLevel::Error,
+                  fmt::format("FetchModels: source '{}' failed — unknown error", source->Name()));
+      continue;
+    }
+
+    models.reserve(models.size() + infos.size());
+    for (auto& info : infos) {
+      models.push_back(BuildLeaf(std::move(info)));
+    }
+  }
+
+  return models;
+}
+
+std::vector<Model> ModelCatalog::FetchModelVersions(const std::string& model_alias,
+                                                    const std::string& model_name) const {
+  std::vector<Model> out;
+
+  for (const auto& source : sources_) {
+    std::vector<ModelInfo> infos;
+    try {
+      infos = source->FetchModelVersions(model_alias, model_name);
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Error,
+                  fmt::format("FetchModelVersions: source '{}' failed — {}", source->Name(), ex.what()));
+      continue;
+    }
+
+    out.reserve(out.size() + infos.size());
+    for (auto& info : infos) {
+      out.push_back(BuildLeaf(std::move(info)));
+    }
+  }
+
+  return out;
+}
+
+std::vector<Model> ModelCatalog::FetchModelsByIds(const std::vector<std::string>& model_ids) const {
+  if (model_ids.empty()) {
+    return {};
+  }
+
+  std::vector<Model> out;
+
+  for (const auto& source : sources_) {
+    std::vector<ModelInfo> infos;
+    try {
+      infos = source->FetchModelsByIds(model_ids);
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Error,
+                  fmt::format("FetchModelsByIds: source '{}' failed — {}", source->Name(), ex.what()));
+      continue;
+    }
+
+    out.reserve(out.size() + infos.size());
+    for (auto& info : infos) {
+      out.push_back(BuildLeaf(std::move(info)));
+    }
+  }
+
+  return out;
+}
+
+void ModelCatalog::PopulateModels(std::vector<Model> variants) const {
+  // Group variants by alias into Model containers. Same-model_id shadows from different
+  // sources are all added as variants; AddVariant keeps them preferred-source first.
   std::map<std::string, Model> alias_to_model;
 
   for (auto& v : variants) {
@@ -88,7 +185,7 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
   populated_ = true;
 }
 
-void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
+void ModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (variants.empty()) {
@@ -102,12 +199,12 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
     alias_to_existing[m->Alias()] = m.get();
   }
 
-  // Track existing model_ids in a single set so the dedup check is O(1) and
-  // doesn't require walking each container's variants per incoming variant.
-  std::unordered_set<std::string> existing_ids;
+  // Track existing (model_id, catalog_source) keys so a same-model_id shadow from a different
+  // source is still admitted, while an exact duplicate is skipped.
+  std::unordered_set<std::string> existing_keys;
   for (auto& m : models_) {
     for (auto* v : m->Variants()) {
-      existing_ids.insert(v->Info().model_id);
+      existing_keys.insert(VariantKey(v->Info()));
     }
   }
 
@@ -126,11 +223,12 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
       continue;
     }
 
-    if (existing_ids.count(info.model_id) > 0) {
+    auto key = VariantKey(info);
+    if (existing_keys.count(key) > 0) {
       continue;
     }
 
-    existing_ids.insert(info.model_id);
+    existing_keys.insert(std::move(key));
     new_by_alias[info.alias].push_back(std::move(v));
   }
 
@@ -166,12 +264,14 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
   }
 }
 
-void BaseModelCatalog::RebuildIndex() const {
+void ModelCatalog::RebuildIndex() const {
   auto new_index = std::make_shared<ModelIndex>();
 
   for (auto& m : models_) {
     new_index->alias_index[m->Alias()] = m.get();
 
+    // Variants() is preferred-first, so first-wins on id_index resolves each model_id to its
+    // preferred-source leaf and shadows never overwrite it.
     for (auto* variant : m->Variants()) {
       const auto& info = variant->Info();
 
@@ -198,7 +298,7 @@ void BaseModelCatalog::RebuildIndex() const {
 #endif
 }
 
-std::shared_ptr<const BaseModelCatalog::ModelIndex> BaseModelCatalog::GetIndex() const {
+std::shared_ptr<const ModelCatalog::ModelIndex> ModelCatalog::GetIndex() const {
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
@@ -209,7 +309,7 @@ std::shared_ptr<const BaseModelCatalog::ModelIndex> BaseModelCatalog::GetIndex()
 #endif
 }
 
-void BaseModelCatalog::InvalidateCache() {
+void ModelCatalog::InvalidateCache() {
   // Reset the refresh timer so the next query triggers a re-fetch.
   // This is called after EP registration changes — the catalog needs to
   // re-query with updated device/EP filters.
@@ -217,7 +317,7 @@ void BaseModelCatalog::InvalidateCache() {
   next_refresh_at_ = std::chrono::steady_clock::time_point{};
 }
 
-void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
+void ModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // Catalog access is never performance-critical: always take the lock so the
   // populated_/next_refresh_at_ check and the populate/refresh below are a single
   // critical section. (No fast path — races on next_refresh_at_ and populated_ are
@@ -241,7 +341,7 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   next_refresh_at_ = std::chrono::steady_clock::now() + kCacheDuration;
 }
 
-std::vector<Model*> BaseModelCatalog::ListModels() const {
+std::vector<Model*> ModelCatalog::ListModels() const {
   EnsurePopulated(/*allow_refresh=*/true);
 
   // PopulateModels appends to models_ under mutex_; iterate under the same lock so a
@@ -256,7 +356,7 @@ std::vector<Model*> BaseModelCatalog::ListModels() const {
   return result;
 }
 
-Model* BaseModelCatalog::GetModel(const std::string& alias) const {
+Model* ModelCatalog::GetModel(const std::string& alias) const {
   EnsurePopulated();
 
   auto idx = GetIndex();
@@ -271,7 +371,7 @@ Model* BaseModelCatalog::GetModel(const std::string& alias) const {
   return nullptr;
 }
 
-Model* BaseModelCatalog::GetModelVariant(const std::string& model_id) const {
+Model* ModelCatalog::GetModelVariant(const std::string& model_id) const {
   EnsurePopulated();
 
   auto idx = GetIndex();
@@ -322,7 +422,7 @@ Model* BaseModelCatalog::GetModelVariant(const std::string& model_id) const {
   return nullptr;
 }
 
-Model* BaseModelCatalog::GetLatestVersion(const Model* model) const {
+Model* ModelCatalog::GetLatestVersion(const Model* model) const {
   if (!model) {
     return nullptr;
   }
@@ -341,7 +441,7 @@ Model* BaseModelCatalog::GetLatestVersion(const Model* model) const {
   return nullptr;
 }
 
-std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
+std::vector<Model*> ModelCatalog::GetCachedModels() const {
   EnsurePopulated();
 
   std::lock_guard<std::mutex> lock(mutex_);
@@ -357,7 +457,7 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
   return result;
 }
 
-std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
+std::vector<Model*> ModelCatalog::GetLoadedModels() const {
   EnsurePopulated();
 
   std::lock_guard<std::mutex> lock(mutex_);
@@ -371,9 +471,9 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
   return result;
 }
 
-std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_alias,
-                                                       const std::string& variant_name,
-                                                       int max_versions) {
+std::vector<Model*> ModelCatalog::GetModelVersions(const std::string& model_alias,
+                                                   const std::string& variant_name,
+                                                   int max_versions) {
   if (model_alias.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "GetModelVersions requires a non-empty model_alias.");
   }
@@ -459,6 +559,42 @@ std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_
   }
 
   return result;
+}
+
+void ModelCatalog::Unregister(const std::string& model_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Locate the container holding this model_id and the preferred variant with that id.
+  // Variants() is preferred-first, so the first match is the most-preferred (e.g. the local
+  // BYO copy that shadows a cloud id).
+  Model* container = nullptr;
+  Model* target = nullptr;
+  size_t container_index = 0;
+  for (size_t i = 0; i < models_.size() && target == nullptr; ++i) {
+    for (auto* v : models_[i]->Variants()) {
+      if (v->Info().model_id == model_id) {
+        container = models_[i].get();
+        target = v;
+        container_index = i;
+        break;
+      }
+    }
+  }
+
+  if (target == nullptr) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             fmt::format("Unregister: model_id '{}' not found in the catalog.", model_id));
+  }
+
+  container->RemoveVariant(*target);
+
+  // If the container became empty, drop it from stable storage. RemoveVariant clears the
+  // container's selection when its last variant is removed, so VariantCount() == 0 marks it.
+  if (container->VariantCount() == 0) {
+    models_.erase(models_.begin() + static_cast<std::ptrdiff_t>(container_index));
+  }
+
+  RebuildIndex();
 }
 
 }  // namespace fl

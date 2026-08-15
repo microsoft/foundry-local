@@ -11,7 +11,7 @@ add_executable(foundry_local_tests
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
-    internal_api/base_model_catalog_test.cc
+    internal_api/model_catalog_test.cc
     internal_api/blob_download_state_test.cc
     internal_api/c_api_test.cc
     internal_api/callback_handler_test.cc
@@ -52,7 +52,7 @@ add_executable(foundry_local_tests
     internal_api/region_fallback_test.cc
     internal_api/sse_stream_body_test.cc
     internal_api/azure_catalog_test.cc
-    internal_api/azure_model_catalog_test.cc
+    internal_api/azure_model_source_test.cc
     internal_api/telemetry_test.cc
     internal_api/tensor_test.cc
     internal_api/chat/search_options_test.cc
