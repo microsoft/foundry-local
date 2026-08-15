@@ -21,11 +21,9 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 using namespace fl;
@@ -460,39 +458,4 @@ TEST_F(ChatSessionTest, RequestAfterTimeoutRebuildsGeneratorAndReturnsValidConte
   EXPECT_EQ(next_response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
   EXPECT_EQ(session.MessageCount(), 2u);
   EXPECT_EQ(session.TurnCount(), 1u);
-}
-
-TEST_F(ChatSessionTest, CancelStopsInFlightNonStreamingRequest) {
-  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
-
-  Request request;
-  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Write an extremely long story."));
-  request.options.Add("max_output_tokens", "4096");
-
-  Response response;
-  std::atomic<bool> finished{false};
-
-  std::thread canceller([&]() {
-    while (!finished.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
-      session.Cancel();
-    }
-  });
-
-  const auto start = std::chrono::steady_clock::now();
-  flErrorCode code = FOUNDRY_LOCAL_OK;
-  try {
-    session.ProcessRequest(request, response);
-  } catch (const fl::Exception& ex) {
-    code = ex.code();
-  }
-
-  const auto elapsed = std::chrono::steady_clock::now() - start;
-
-  finished.store(true);
-  canceller.join();
-
-  EXPECT_EQ(code, FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
-  EXPECT_LT(elapsed, std::chrono::seconds(60));
-  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
 }

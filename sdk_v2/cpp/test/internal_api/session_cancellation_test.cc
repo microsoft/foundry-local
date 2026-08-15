@@ -81,6 +81,11 @@ flErrorCode TakeCode(const flApi& api, flStatus* status) {
 
 class GateGenerator : public fl::ICancellable {
  public:
+  void GenerateUntilCanceled() {
+    generation_started.Open();
+    static_cast<void>(released.Wait());
+  }
+
   void Cancel() override {
     cancel_count_.fetch_add(1, std::memory_order_relaxed);
     released.Open();
@@ -88,6 +93,7 @@ class GateGenerator : public fl::ICancellable {
 
   int CancelCount() const { return cancel_count_.load(std::memory_order_relaxed); }
 
+  Gate generation_started;
   Gate released;
 
  private:
@@ -237,6 +243,38 @@ TEST(SessionCancellationTest, RequestCancelInterruptsActiveGeneratorWithoutPubli
   EXPECT_EQ(generator.CancelCount(), 1);
   EXPECT_FALSE(committed.load(std::memory_order_relaxed));
   EXPECT_EQ(response, nullptr);
+}
+
+TEST(SessionCancellationTest, SessionCancelInterruptsBlockedNonStreamingRequest) {
+  Harness harness;
+  GateGenerator generator;
+  std::atomic<bool> committed{false};
+  ScriptedSession session(harness.model, harness.services.logger, harness.telemetry,
+                          [&](const fl::Request& request, fl::Response& response) {
+                            ScriptedSession::PublishedGenerator published(request, generator);
+                            generator.GenerateUntilCanceled();
+
+                            const bool can_commit = request.TryBeginCompletion();
+                            committed.store(can_commit, std::memory_order_relaxed);
+                            if (can_commit) {
+                              response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+                            }
+                          });
+
+  fl::Request request;
+  fl::Response response;
+  auto run = std::async(std::launch::async, [&] {
+    return CodeOf([&] { session.ProcessRequest(request, response); });
+  });
+
+  ASSERT_TRUE(generator.generation_started.Wait());
+  session.Cancel();
+
+  ASSERT_EQ(run.wait_for(kWait), std::future_status::ready);
+  EXPECT_EQ(run.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_EQ(generator.CancelCount(), 1);
+  EXPECT_FALSE(committed.load(std::memory_order_relaxed));
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
 }
 
 TEST(SessionCancellationTest, DistinctEmbeddingsRequestsCancelIndependently) {
