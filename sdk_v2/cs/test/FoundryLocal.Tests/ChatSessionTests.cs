@@ -681,4 +681,28 @@ internal sealed class ChatSessionTests
         await Assert.That(task.IsCanceled).IsTrue();
         await Assert.That(task.IsFaulted).IsFalse();
     }
+
+    [Test]
+    public async Task Chat_RequestTimeout_RoundsSubMillisecondAndZeroDisables()
+    {
+        using var session = new ChatSession(model!);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+        request.SetOptions(new RequestOptions
+        {
+            Search = new SearchOptions { MaxOutputTokens = 1 },
+        });
+        request.SetTimeout(TimeSpan.FromTicks(1));
+
+        await Assert.That(async () =>
+        {
+            using var _ = await session.ProcessRequestAsync(request).ConfigureAwait(false);
+        }).Throws<TimeoutException>();
+
+        request.SetTimeout(TimeSpan.Zero);
+        using var response = await session.ProcessRequestAsync(request).ConfigureAwait(false);
+
+        await Assert.That(response.ItemCount).IsGreaterThan(0);
+    }
 }

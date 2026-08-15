@@ -198,7 +198,7 @@ public abstract class Session : IDisposable
                 {
                     responsePtr = _session.ProcessRequest(requestPtr);
                 }
-                catch (Exception ex) when (ct.IsCancellationRequested)
+                catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
                 {
                     throw new OperationCanceledException("The request was cancelled.", ex, ct);
                 }
@@ -358,7 +358,7 @@ public abstract class Session : IDisposable
                     // Read cancellation before the consumer handles completion and cancels cts.
                     wasCancelledBeforeReturn = cts.IsCancellationRequested;
                 }
-                catch (Exception) when (cts.IsCancellationRequested)
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
                 {
                     channel.Writer.TryComplete();
                     tcs.TrySetCanceled(cts.Token);
