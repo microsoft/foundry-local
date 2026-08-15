@@ -54,6 +54,9 @@ export interface StreamingResponse extends AsyncIterable<Item> {
 
 // Request.cancel() is an idle no-op, so retry across the gap before the queued native worker begins its invocation.
 const CANCELLATION_RETRY_INTERVAL_MS = 50;
+const CONCURRENT_STREAM_ERROR =
+  "Concurrent streaming requests on the same session are not supported. " +
+  "Drain or cancel the in-flight stream before starting another.";
 
 interface RequestCancellation {
   readonly aborted: boolean;
@@ -161,13 +164,19 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  *
  * Native processing starts immediately, even if the iterator is never consumed.
  */
-function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
+function streamItems(
+  native: NativeSession,
+  request: Request,
+  signal: AbortSignal | undefined,
+  onSettled: () => void,
+): StreamingResponse {
   const queue: Item[] = [];
   let waiter: (() => void) | null = null;
   let done = false;
   let nativeError: unknown = null;
   let abortSignal: AbortSignal | undefined = signal;
   let cancellation: RequestCancellation | undefined;
+  let invocationSettled = false;
 
   const wake = (): void => {
     if (waiter !== null) {
@@ -177,10 +186,15 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
     }
   };
 
-  const completeCancellation = (): void => {
+  const completeInvocation = (): void => {
+    if (invocationSettled) {
+      return;
+    }
+    invocationSettled = true;
     cancellation?.complete();
     cancellation = undefined;
     abortSignal = undefined;
+    onSettled();
   };
 
   let responseResolve!: (resp: Response) => void;
@@ -196,7 +210,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
 
   const rejectResponse = (error: unknown): void => {
     const mapped = mapSignalAbortError(error, cancellation?.aborted ?? abortSignal?.aborted === true);
-    completeCancellation();
+    completeInvocation();
     nativeError = mapped;
     done = true;
     responseReject(mapped);
@@ -207,7 +221,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
       rejectResponse(makeAbortError("The operation was aborted"));
       return;
     }
-    completeCancellation();
+    completeInvocation();
     done = true;
     responseResolve(response as Response);
     wake();
@@ -229,7 +243,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
     try {
       void native.processStreamingRequest(nativeReq, onItem).then(resolveResponse, rejectResponse);
     } catch (error) {
-      completeCancellation();
+      completeInvocation();
       throw error;
     }
   }
@@ -291,6 +305,7 @@ export abstract class Session {
   // `protected` (not `#private`) so subclasses can downcast for
   // modality-specific native methods without a second field/storage slot.
   protected readonly native: NativeSession;
+  #streamingInFlight = false;
 
   protected constructor(native: NativeSession) {
     this.native = native;
@@ -352,10 +367,32 @@ export abstract class Session {
    * `name === "AbortError"`. Breaking out of the `for await` loop also
    * cancels the underlying request.
    *
+   * Concurrent streaming requests on the same session are not supported. Starting another before the native
+   * invocation settles throws an `Error`; drain or cancel the in-flight stream first.
+   *
    * Non-cancellation failures throw a `FoundryLocalError`.
    */
   processStreamingRequest(request: Request, options?: StreamOptions): StreamingResponse {
-    return streamItems(this.native, request, options?.signal);
+    if (this.#streamingInFlight) {
+      throw new Error(CONCURRENT_STREAM_ERROR);
+    }
+
+    this.#streamingInFlight = true;
+    let released = false;
+    const release = (): void => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.#streamingInFlight = false;
+    };
+
+    try {
+      return streamItems(this.native, request, options?.signal, release);
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
 
   /** Apply session-level options that persist across `processRequest()` calls. */

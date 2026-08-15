@@ -4,6 +4,7 @@
 // `Item` factory helpers. Runs whenever the native addon is present.
 import { describe, expect, it } from "vitest";
 
+import { FlErrorCode } from "../src/detail/errors.js";
 import { getAddon } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
 import { Request } from "../src/request.js";
@@ -165,7 +166,23 @@ describeIfBuilt("Request round-trip through the native layer", () => {
     const req = new Request();
     expect(req.setTimeout(0)).toBe(req);
     expect(req.setTimeout(-1)).toBe(req);
-    expect(req.setTimeout(Number.MAX_SAFE_INTEGER)).toBe(req);
+    // A large but safe integer that still fits the native steady_clock-derived deadline range
+    // (unlike Number.MAX_SAFE_INTEGER below, which the native layer now rejects).
+    const oneHundredYearsMs = 100 * 365 * 24 * 60 * 60 * 1000;
+    expect(req.setTimeout(oneHundredYearsMs)).toBe(req);
+  });
+
+  it("setTimeout rejects Number.MAX_SAFE_INTEGER as beyond the native deadline range", () => {
+    // Number.MAX_SAFE_INTEGER milliseconds (~285,616 years) passes the JS-level finite/safe-integer
+    // check, but exceeds the range the native steady_clock-backed deadline can represent, so the
+    // native layer rejects it with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
+    expect(() => new Request().setTimeout(Number.MAX_SAFE_INTEGER)).toThrowError(
+      expect.objectContaining({
+        name: "FoundryLocalError",
+        code: FlErrorCode.InvalidArgument,
+        message: expect.stringMatching(/supported range/i),
+      }),
+    );
   });
 
   it("native setTimeout validates before converting to int64", () => {

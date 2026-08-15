@@ -12,7 +12,7 @@ import pytest
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.request import Request
 from foundry_local_sdk.response import Response
-from foundry_local_sdk.session import Session, _SessionState
+from foundry_local_sdk.session import Session, StreamingResponse, _SessionState
 
 
 class _FakeFfi:
@@ -25,12 +25,33 @@ class _FakeRequest:
     def __init__(self) -> None:
         self._ptr = object()
         self.timeouts: list[float | None] = []
+        self._active_processes = 0
 
     def set_timeout(self, timeout: float | None) -> None:
         self.timeouts.append(timeout)
 
     def cancel(self) -> None:
         pass
+
+    def _acquire_for_processing(self) -> object:
+        self._active_processes += 1
+        return self._ptr
+
+    def _release_after_processing(self) -> None:
+        self._active_processes -= 1
+
+
+def _make_request(
+    *, release: Callable[[object], object] | None = None
+) -> Request:
+    request = object.__new__(Request)
+    request._closed = False
+    request._ptr = object()
+    request._lock = threading.Condition()
+    request._dispose_requested = False
+    request._active_processes = 0
+    request._release_request = release or (lambda _: None)
+    return request
 
 
 class _RecordingCondition(threading.Condition):
@@ -55,6 +76,7 @@ def fake_native(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
     inference = types.SimpleNamespace(
         Session_ProcessRequest=lambda *_: None,
         Response_Release=lambda *_: None,
+        Request_Cancel=lambda *_: None,
         Request_SetTimeoutMs=lambda *_: None,
         Request_Release=lambda *_: None,
     )
@@ -212,9 +234,194 @@ def test_streaming_thread_start_failure_releases_call_lease(
     assert session._stream_thread is None
     assert session._stream_request is None
     assert session._stream_queue is None
+    assert request._active_processes == 0
     assert session._streaming_in_flight.acquire(blocking=False)
     session._streaming_in_flight.release()
     session._close()
+
+
+def test_streaming_thread_setup_failure_releases_request_lease(
+    fake_native: types.SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _make_session()
+    session._streaming_enabled = True
+    request = cast(Request, _FakeRequest())
+
+    def fail_thread(*_args: object, **_kwargs: object) -> threading.Thread:
+        raise RuntimeError("thread setup failed")
+
+    monkeypatch.setattr(threading, "Thread", fail_thread)
+
+    with pytest.raises(RuntimeError, match="thread setup failed"):
+        session.process_streaming_request(request)
+
+    assert request._active_processes == 0
+    assert session._active_native_calls == 0
+    assert session._stream_thread is None
+    assert session._stream_request is None
+    assert session._stream_queue is None
+    assert session._streaming_in_flight.acquire(blocking=False)
+    session._streaming_in_flight.release()
+    session._close()
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["synchronous", "streaming"])
+def test_request_close_waits_for_processing_before_release(
+    fake_native: types.SimpleNamespace,
+    streaming: bool,
+) -> None:
+    process_started = threading.Event()
+    allow_process_to_finish = threading.Event()
+    cancel_called = threading.Event()
+    releases: list[object] = []
+    errors: list[BaseException] = []
+
+    def process(_session_ptr: object, _request_ptr: object, out: list[object | None]) -> None:
+        process_started.set()
+        assert allow_process_to_finish.wait(timeout=2)
+        out[0] = object()
+
+    fake_native.inference.Session_ProcessRequest = process
+    fake_native.inference.Request_Cancel = lambda _ptr: cancel_called.set()
+    session = _make_session()
+    request = _make_request(release=releases.append)
+
+    if streaming:
+        session._streaming_enabled = True
+        result: StreamingResponse | list[Response] = session.process_streaming_request(request)
+        request_thread = None
+    else:
+        responses: list[Response] = []
+        result = responses
+
+        def run_request() -> None:
+            try:
+                responses.append(session.process_request(request))
+            except BaseException as exc:
+                errors.append(exc)
+
+        request_thread = threading.Thread(target=run_request)
+        request_thread.start()
+
+    assert process_started.wait(timeout=2)
+    close_thread = threading.Thread(target=request._close)
+    close_thread.start()
+    assert cancel_called.wait(timeout=2)
+    assert releases == []
+    assert close_thread.is_alive()
+
+    allow_process_to_finish.set()
+    if request_thread is not None:
+        _join(request_thread)
+    else:
+        assert list(cast(StreamingResponse, result)) == []
+        cast(StreamingResponse, result).final_response._close()
+    _join(close_thread)
+
+    assert errors == []
+    assert len(releases) == 1
+    assert request._active_processes == 0
+    assert request._closed
+    if not streaming:
+        assert len(cast(list[Response], result)) == 1
+        cast(list[Response], result)[0]._close()
+    session._close()
+
+
+def test_request_concurrent_and_repeated_close_releases_exactly_once(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    callers = 4
+    start = threading.Barrier(callers + 1)
+    release_started = threading.Event()
+    allow_release_to_finish = threading.Event()
+    releases: list[object] = []
+
+    def release(ptr: object) -> None:
+        releases.append(ptr)
+        release_started.set()
+        assert allow_release_to_finish.wait(timeout=2)
+
+    request = _make_request(release=release)
+
+    def close_request() -> None:
+        start.wait()
+        request._close()
+
+    threads = [threading.Thread(target=close_request) for _ in range(callers)]
+    for thread in threads:
+        thread.start()
+    start.wait()
+
+    assert release_started.wait(timeout=2)
+    assert len(releases) == 1
+    allow_release_to_finish.set()
+    for thread in threads:
+        _join(thread)
+
+    request._close()
+    assert len(releases) == 1
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["synchronous", "streaming"])
+def test_processing_rejects_request_after_close(
+    fake_native: types.SimpleNamespace,
+    streaming: bool,
+) -> None:
+    request = _make_request()
+    request._close()
+    session = _make_session()
+    session._streaming_enabled = streaming
+
+    with pytest.raises(FoundryLocalException, match="closed"):
+        if streaming:
+            session.process_streaming_request(request)
+        else:
+            session.process_request(request)
+
+    assert session._active_native_calls == 0
+    assert request._active_processes == 0
+    assert session._stream_queue is None
+    assert session._streaming_in_flight.acquire(blocking=False)
+    session._streaming_in_flight.release()
+    session._close()
+
+
+def test_request_lease_allows_sequential_reuse(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    request = _make_request()
+    session = _make_session()
+    processed: list[object] = []
+
+    def process(_session_ptr: object, request_ptr: object, out: list[object | None]) -> None:
+        processed.append(request_ptr)
+        out[0] = object()
+
+    fake_native.inference.Session_ProcessRequest = process
+
+    for _ in range(2):
+        session.process_request(request)._close()
+
+    assert processed == [request._ptr, request._ptr]
+    assert request._active_processes == 0
+    request._close()
+    session._close()
+
+
+def test_idle_request_cancel_does_not_retain_processing_lease(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    request = _make_request()
+    cancellations: list[object] = []
+    fake_native.inference.Request_Cancel = cancellations.append
+
+    request.cancel()
+
+    assert cancellations == [request._ptr]
+    assert request._active_processes == 0
+    request._close()
 
 
 def test_closing_unstarted_stream_retries_cancellation_until_worker_settles(
@@ -387,6 +594,7 @@ def test_request_timeout_rejects_nonfinite_or_native_range_overflow(
     fake_native.inference.Request_SetTimeoutMs = lambda _ptr, value: calls.append(value)
     request = object.__new__(Request)
     request._closed = False
+    request._dispose_requested = False
     request._ptr = object()
 
     with pytest.raises(ValueError, match="timeout"):
@@ -409,6 +617,7 @@ def test_request_timeout_marshals_valid_values(
     fake_native.inference.Request_SetTimeoutMs = lambda _ptr, value: calls.append(value)
     request = object.__new__(Request)
     request._closed = False
+    request._dispose_requested = False
     request._ptr = object()
 
     request.set_timeout(timeout)

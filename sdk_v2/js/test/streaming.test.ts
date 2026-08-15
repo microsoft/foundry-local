@@ -71,7 +71,6 @@ function extractText(item: Item): string {
 describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real model)", () => {
   let fixture: RealModelManagerFixture | undefined;
   let session: ChatSession;
-  let sessionForCleanup: ChatSession | undefined;
 
   beforeAll(async () => {
     fixture = await setupRealModelManager();
@@ -84,12 +83,10 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   beforeEach(() => {
     if (fixture === undefined) throw new Error("fixture missing");
     session = new ChatSession(fixture.model);
-    sessionForCleanup = session;
   });
 
   afterEach(() => {
-    sessionForCleanup?.dispose();
-    sessionForCleanup = undefined;
+    session?.dispose();
   });
 
   it(

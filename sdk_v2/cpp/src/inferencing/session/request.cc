@@ -4,6 +4,7 @@
 
 #include "exception.h"
 #include "inferencing/session/cancellation_state.h"
+#include "inferencing/session/timeout_limits.h"
 
 #include <limits>
 #include <utility>
@@ -33,14 +34,19 @@ Request& Request::operator=(Request&& other) noexcept {
 }
 
 void Request::SetTimeout(std::chrono::milliseconds timeout) {
+  // Enforce the steady-clock range for both C++ and C API callers.
+  if (timeout.count() > kMaxSupportedRequestTimeout.count()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "request timeout is outside the supported range");
+  }
+
   timeout_ms_.store(timeout.count() > 0 ? static_cast<uint64_t>(timeout.count()) : uint64_t{0},
                     std::memory_order_relaxed);
 }
 
 void Request::SetTimeoutMs(uint64_t timeout_ms) {
+  // Reject values that cannot be narrowed before applying the tighter clock-derived bound.
   using Rep = std::chrono::milliseconds::rep;
-  const auto max_timeout = static_cast<uint64_t>((std::numeric_limits<Rep>::max)());
-  if (timeout_ms > max_timeout) {
+  if (timeout_ms > static_cast<uint64_t>((std::numeric_limits<Rep>::max)())) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "request timeout is outside the supported range");
   }
 
