@@ -262,6 +262,10 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
   tracker.SetModelId(CatalogModel().Id());
 
+  const auto finish_if_stopped = [&] {
+    return FinishConsumerOrThrow(state->Outcome(), timeout, tracker);
+  };
+
   if (!control_->Register(state)) {
     state->TryStop(CancellationOutcome::kCanceled);
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session has been cancelled");
@@ -281,12 +285,8 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
     }
   }
 
-  if (state->ShouldStop()) {
-    static_cast<void>(request.ShouldStop());
-    const auto outcome = state->Outcome();
-    if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
-      return;
-    }
+  if (state->ShouldStop() && finish_if_stopped()) {
+    return;
   }
 
   try {
@@ -295,24 +295,16 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
     ProcessRequestImpl(request, response);
   } catch (const std::exception& ex) {
     state->Fail();
-    const auto outcome = state->Outcome();
-    if (IsStopOutcome(outcome)) {
-      static_cast<void>(request.ShouldStop());
-      if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
-        return;
-      }
+    if (finish_if_stopped()) {
+      return;
     }
 
     tracker.RecordException(ex);
     throw;
   } catch (...) {
     state->Fail();
-    const auto outcome = state->Outcome();
-    if (IsStopOutcome(outcome)) {
-      static_cast<void>(request.ShouldStop());
-      if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
-        return;
-      }
+    if (finish_if_stopped()) {
+      return;
     }
 
     throw;
@@ -322,12 +314,8 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
     static_cast<void>(state->TryBeginCompletion());
   }
 
-  const auto outcome = state->Outcome();
-  if (IsStopOutcome(outcome)) {
-    static_cast<void>(request.ShouldStop());
-    if (FinishConsumerOrThrow(outcome, timeout, tracker)) {
-      return;
-    }
+  if (finish_if_stopped()) {
+    return;
   }
 
   state->Complete();

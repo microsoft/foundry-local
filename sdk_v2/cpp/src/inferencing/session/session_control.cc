@@ -17,14 +17,10 @@ bool SessionControl::Register(const std::shared_ptr<CancellationState>& state) {
 }
 
 void SessionControl::Unregister(const CancellationState& state) {
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    active_.erase(std::remove_if(active_.begin(), active_.end(),
-                                 [&state](const auto& entry) { return entry.get() == &state; }),
-                  active_.end());
-  }
-
-  cv_.notify_all();
+  std::lock_guard<std::mutex> lock(mutex_);
+  active_.erase(std::remove_if(active_.begin(), active_.end(),
+                               [&state](const auto& entry) { return entry.get() == &state; }),
+                active_.end());
 }
 
 SessionControl::Admission SessionControl::AcquireInferenceSlot(const CancellationState& state) {
