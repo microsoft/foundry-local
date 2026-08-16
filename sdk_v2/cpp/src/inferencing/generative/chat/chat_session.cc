@@ -513,9 +513,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   int max_output = effective_options.max_output_tokens.value_or(0);
 
-  // Generate token-by-token with optional streaming.
-  // Check request.canceled each iteration — a streaming callback returning
-  // non-zero sets this flag asynchronously via CallbackHandler.
+  // ShouldStop observes callback stop, API/session cancellation, and timeout. ActiveGenerator also lets cancellation
+  // and timeout interrupt an in-flight ORT call rather than waiting for the next loop check.
   std::string text;
   auto streaming_callback = CreateCallbackHandler(request);
   int output_tokens = 0;
@@ -629,15 +628,19 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_generator_.reset();
       cached_tool_ctx_ = {};
     } else {
-      // The callback stopped output without terminating the generator.
+      // Consumer stop is cooperative, so the generator remains valid. Rewind to remove this uncommitted turn; the
+      // caller may retry the same input.
       cached_generator_->RewindTo(pre_turn_token_count);
     }
 
     return;
   }
 
-  // Rebuild after grammar-guided generation: a completed grammar is at EOS, while an interrupted grammar is unusable.
-  // Rebuild after reasoning generation because history removes prior reasoning text but the KV cache does not.
+  // LARK grammar is a single-shot finite parse. Completion leaves the generator at EOS, while max-token truncation
+  // leaves parser state that cannot begin another turn. Rebuild after every committed grammar-guided turn.
+  //
+  // Reasoning models also require rebuilding: continuous decoding keeps prior <think> tokens in the KV cache, while
+  // RenderContent skips REASONING parts when reapplying history. Rebuilding realigns the prompt and cache.
   const bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
   const bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
 
