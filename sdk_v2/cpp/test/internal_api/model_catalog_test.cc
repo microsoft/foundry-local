@@ -89,15 +89,6 @@ class FakeModelSource : public IModelSource {
   std::vector<ModelInfo> id_results_;
 };
 
-Model* FindVariant(const std::vector<Model*>& variants, const std::string& model_id) {
-  for (auto* v : variants) {
-    if (v->Info().model_id == model_id) {
-      return v;
-    }
-  }
-  return nullptr;
-}
-
 }  // namespace
 
 // ========================================================================
