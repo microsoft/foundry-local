@@ -49,7 +49,8 @@ void ApplyToolChoiceToContext(std::optional<flToolChoice> tool_choice, ToolCallC
 
 }  // namespace
 
-ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry)
+ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger,
+                         ITelemetry& telemetry)
     : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating ChatSession for model: {}", model.ModelId()));
   // Last so a throw above does not leak a refcount; nothing below can throw.
@@ -522,12 +523,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // Splitter: only active for reasoning models. For non-reasoning models start_marker is empty and the splitter
   // degrades to a passthrough (every token becomes one DEFAULT segment), so the streaming path stays uniform.
   ReasoningStreamSplitter splitter(
-      cached_tool_ctx_.supports_reasoning ? (cached_tool_ctx_.reasoning_start.empty() ? std::string("<think>")
-                                                                                      : cached_tool_ctx_.reasoning_start)
-                                          : std::string(),
-      cached_tool_ctx_.supports_reasoning ? (cached_tool_ctx_.reasoning_end.empty() ? std::string("</think>")
-                                                                                    : cached_tool_ctx_.reasoning_end)
-                                          : std::string());
+      cached_tool_ctx_.supports_reasoning
+          ? (cached_tool_ctx_.reasoning_start.empty() ? std::string("<think>") : cached_tool_ctx_.reasoning_start)
+          : std::string(),
+      cached_tool_ctx_.supports_reasoning
+          ? (cached_tool_ctx_.reasoning_end.empty() ? std::string("</think>") : cached_tool_ctx_.reasoning_end)
+          : std::string());
 
   // Accumulator: separates visible text from tool-call blocks in the DEFAULT-segment stream. For models without
   // tool-call markers configured, both marker strings are empty and the accumulator degrades to passthrough.
