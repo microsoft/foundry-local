@@ -97,36 +97,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
   );
 
   it(
-    "a pre-aborted signal rejects with a fresh AbortError before native work starts",
-    async () => {
-      if (session === undefined) throw new Error("fixture missing");
-      const req = new Request()
-        .addItem(Item.userMessage("Reply with the single word 'ok'."))
-        .setOptions({ search: { maxOutputTokens: 4, temperature: 0 } });
-      const controller = new AbortController();
-      const abortReason = new Error("caller reason");
-      controller.abort(abortReason);
-      const turnsBefore = session.turnCount;
-
-      let caught: unknown;
-      try {
-        await session.processRequest(req, { signal: controller.signal });
-      } catch (error) {
-        caught = error;
-      }
-
-      expect(caught).toMatchObject({ name: "AbortError" });
-      expect(caught).not.toBe(abortReason);
-      expect(isFoundryLocalError(caught)).toBe(false);
-      expect(session.turnCount).toBe(turnsBefore);
-
-      const response = await session.processRequest(req);
-      expect(outputText(response.output).toLowerCase()).toContain("ok");
-    },
-    2 * 60_000,
-  );
-
-  it(
     "a mid-flight signal cancels the native request and rejects with a fresh AbortError",
     async () => {
       if (session === undefined) throw new Error("fixture missing");

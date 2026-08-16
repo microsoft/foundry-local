@@ -55,8 +55,7 @@ export interface StreamingResponse extends AsyncIterable<Item> {
 // Request.cancel() is an idle no-op, so retry across the gap before the queued native worker begins its invocation.
 const CANCELLATION_RETRY_INTERVAL_MS = 50;
 const CONCURRENT_STREAM_ERROR =
-  "Concurrent streaming requests on the same session are not supported. " +
-  "Drain or cancel the in-flight stream before starting another.";
+  "Streaming cannot overlap another request on the same session. Wait for the active request to settle.";
 
 interface RequestCancellation {
   readonly aborted: boolean;
@@ -305,6 +304,7 @@ export abstract class Session {
   // `protected` (not `#private`) so subclasses can downcast for
   // modality-specific native methods without a second field/storage slot.
   protected readonly native: NativeSession;
+  #nonStreamingInFlight = 0;
   #streamingInFlight = false;
 
   protected constructor(native: NativeSession) {
@@ -323,26 +323,36 @@ export abstract class Session {
    * Aborting the signal rejects the operation with a new `AbortError`.
    */
   async processRequest(request: Request, options?: StreamOptions): Promise<Response> {
-    const signal = options?.signal;
-
-    if (signal?.aborted === true) {
-      throw makeAbortError("Request aborted before start");
+    if (this.#streamingInFlight) {
+      throw new Error(CONCURRENT_STREAM_ERROR);
     }
 
-    const nativeReq = unwrapNativeRequest(request);
-    const cancellation = bindRequestCancellation(request, signal);
+    this.#nonStreamingInFlight++;
+    let cancellation: RequestCancellation | undefined;
 
     try {
-      const response = (await this.native.processRequest(nativeReq)) as Response;
-      if (cancellation.aborted) {
-        throw makeAbortError("The operation was aborted");
+      const signal = options?.signal;
+
+      if (signal?.aborted === true) {
+        throw makeAbortError("Request aborted before start");
       }
-      return response;
-    } catch (error) {
-      throw mapSignalAbortError(error, cancellation.aborted);
+
+      const nativeReq = unwrapNativeRequest(request);
+      cancellation = bindRequestCancellation(request, signal);
+
+      try {
+        const response = (await this.native.processRequest(nativeReq)) as Response;
+        if (cancellation.aborted) {
+          throw makeAbortError("The operation was aborted");
+        }
+        return response;
+      } catch (error) {
+        throw mapSignalAbortError(error, cancellation.aborted);
+      }
     } finally {
       // Stop this invocation's retries before the Request can be reused, so an old signal cannot cancel new work.
-      cancellation.complete();
+      cancellation?.complete();
+      this.#nonStreamingInFlight--;
     }
   }
 
@@ -367,13 +377,13 @@ export abstract class Session {
    * `name === "AbortError"`. Breaking out of the `for await` loop also
    * cancels the underlying request.
    *
-   * Concurrent streaming requests on the same session are not supported. Starting another before the native
-   * invocation settles throws an `Error`; drain or cancel the in-flight stream first.
+   * Streaming cannot overlap another invocation on the same session. Starting a stream while any invocation is
+   * unsettled, or starting a non-streaming request while a stream is unsettled, fails with an `Error`.
    *
    * Non-cancellation failures throw a `FoundryLocalError`.
    */
   processStreamingRequest(request: Request, options?: StreamOptions): StreamingResponse {
-    if (this.#streamingInFlight) {
+    if (this.#streamingInFlight || this.#nonStreamingInFlight > 0) {
       throw new Error(CONCURRENT_STREAM_ERROR);
     }
 

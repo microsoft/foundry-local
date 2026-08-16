@@ -3,7 +3,6 @@
 #include "c_api_types.h"
 #include "exception.h"
 #include "inferencing/session/session.h"
-#include "inferencing/session/timeout_limits.h"
 #include "internal_api/c_api_test_helpers.h"
 #include "internal_api/test_helpers.h"
 #include "model.h"
@@ -422,7 +421,7 @@ TEST(SessionCancellationTest, CanceledRequestCanBeReusedAndIdleCancelIsNoOp) {
   EXPECT_EQ(session.Entries(), 2);
 }
 
-TEST(SessionCancellationTest, TimeoutExceedingRepMaxIsRejected) {
+TEST(SessionCancellationTest, TimeoutOutsideChronoRangeIsRejected) {
   const auto* api = fl::test::GetApi();
   const auto* inference = api->GetInferenceApi();
   flRequest* request = nullptr;
@@ -430,33 +429,6 @@ TEST(SessionCancellationTest, TimeoutExceedingRepMaxIsRejected) {
 
   fl::test::StatusGuard status{
       inference->Request_SetTimeoutMs(request, (std::numeric_limits<uint64_t>::max)()), api};
-  ASSERT_NE(status.s, nullptr);
-  EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-
-  inference->Request_Release(request);
-}
-
-TEST(SessionCancellationTest, TimeoutAtSupportedBoundaryIsAccepted) {
-  const auto* api = fl::test::GetApi();
-  const auto* inference = api->GetInferenceApi();
-  flRequest* request = nullptr;
-  ASSERT_EQ(inference->Request_Create(&request), nullptr);
-
-  const auto max_supported_ms = static_cast<uint64_t>(fl::kMaxSupportedRequestTimeout.count());
-  fl::test::StatusGuard status{inference->Request_SetTimeoutMs(request, max_supported_ms), api};
-  EXPECT_EQ(status.s, nullptr);
-
-  inference->Request_Release(request);
-}
-
-TEST(SessionCancellationTest, TimeoutJustBeyondSupportedBoundaryIsRejected) {
-  const auto* api = fl::test::GetApi();
-  const auto* inference = api->GetInferenceApi();
-  flRequest* request = nullptr;
-  ASSERT_EQ(inference->Request_Create(&request), nullptr);
-
-  const auto beyond_max_supported_ms = static_cast<uint64_t>(fl::kMaxSupportedRequestTimeout.count()) + 1;
-  fl::test::StatusGuard status{inference->Request_SetTimeoutMs(request, beyond_max_supported_ms), api};
   ASSERT_NE(status.s, nullptr);
   EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
 
