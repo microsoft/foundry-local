@@ -37,8 +37,6 @@ bool CancellationState::TryStop(CancellationOutcome reason) {
 }
 
 bool CancellationState::ShouldStop() {
-  bool timed_out = false;
-
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (IsStopOutcome(outcome_)) {
@@ -49,18 +47,11 @@ bool CancellationState::ShouldStop() {
       return false;
     }
 
-    outcome_ = CancellationOutcome::kTimedOut;
-    UpdateRequestFlagsLocked();
-    engine_interruption_requested_ = true;
-    InterruptGeneratorsLocked();
-    timed_out = true;
+    RecordTimeoutLocked();
   }
 
-  if (timed_out) {
-    NotifyWaiters();
-  }
-
-  return timed_out;
+  NotifyWaiters();
+  return true;
 }
 
 bool CancellationState::StopRequested() const {
@@ -83,10 +74,7 @@ bool CancellationState::TryBeginCompletion() {
     }
 
     if (DeadlineExpiredLocked()) {
-      outcome_ = CancellationOutcome::kTimedOut;
-      UpdateRequestFlagsLocked();
-      engine_interruption_requested_ = true;
-      InterruptGeneratorsLocked();
+      RecordTimeoutLocked();
       timed_out = true;
     } else {
       outcome_ = CancellationOutcome::kCompleting;
@@ -134,14 +122,7 @@ bool CancellationState::WaitForDeadline() {
       return false;
     }
 
-    if (outcome_ != CancellationOutcome::kRunning) {
-      return false;
-    }
-
-    outcome_ = CancellationOutcome::kTimedOut;
-    UpdateRequestFlagsLocked();
-    engine_interruption_requested_ = true;
-    InterruptGeneratorsLocked();
+    RecordTimeoutLocked();
   }
 
   NotifyWaiters();
@@ -194,6 +175,13 @@ void CancellationState::DetachRequestFlags() noexcept {
 
 bool CancellationState::DeadlineExpiredLocked() const {
   return deadline_ && Clock::now() >= *deadline_;
+}
+
+void CancellationState::RecordTimeoutLocked() noexcept {
+  outcome_ = CancellationOutcome::kTimedOut;
+  UpdateRequestFlagsLocked();
+  engine_interruption_requested_ = true;
+  InterruptGeneratorsLocked();
 }
 
 void CancellationState::InterruptGeneratorsLocked() noexcept {
