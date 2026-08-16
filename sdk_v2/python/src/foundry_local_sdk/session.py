@@ -27,6 +27,7 @@ _DONE = object()
 # A Request_Cancel issued before ProcessRequest enters native code is an idle
 # no-op. Retrying at this cadence closes that scheduling window without spinning.
 _CANCEL_RETRY_INTERVAL_SECONDS = 0.05
+_PROCESSING_OVERLAP_MESSAGE = "A streaming request cannot overlap another processing request on the same session."
 
 
 class _StreamError:
@@ -90,7 +91,6 @@ class StreamingResponse:
         self._final_consumed = False
         # Failed construction must leave __del__ as a no-op.
         self._closed = True
-        self._lock_released = False
         self._thread: threading.Thread | None = None
 
         request_ptr = request._acquire_for_processing()
@@ -101,9 +101,7 @@ class StreamingResponse:
             def _run() -> None:
                 try:
                     out = ffi.new("flResponse**")
-                    api.check_status(
-                        api.inference.Session_ProcessRequest(session_ptr, request_ptr, out)
-                    )
+                    api.check_status(api.inference.Session_ProcessRequest(session_ptr, request_ptr, out))
                     from foundry_local_sdk.response import Response
 
                     # Response takes ownership of out[0].
@@ -113,6 +111,8 @@ class StreamingResponse:
                     self._queue.put(_StreamError(exc))
                 finally:
                     session._stream_queue = None
+                    session._stream_thread = None
+                    session._stream_request = None
                     try:
                         self._queue.put(_DONE)
                     finally:
@@ -140,17 +140,6 @@ class StreamingResponse:
                 finally:
                     t.join()
             raise
-
-    def _release_lock(self) -> None:
-        if self._lock_released:
-            return
-        self._lock_released = True
-        self._session._stream_thread = None
-        self._session._stream_request = None
-        try:
-            self._session._streaming_in_flight.release()
-        except RuntimeError:
-            pass
 
     def _cancel_and_drain_and_join(self) -> None:
         """Cancel until the worker settles, then release its queued items."""
@@ -185,7 +174,6 @@ class StreamingResponse:
                     self._state = _State.DONE
                     if self._thread is not None:
                         self._thread.join()
-                    self._release_lock()
                     return
                 if isinstance(msg, _StreamError):
                     # Consume _DONE before joining the worker.
@@ -194,7 +182,6 @@ class StreamingResponse:
                     self._state = _State.DONE
                     if self._thread is not None:
                         self._thread.join()
-                    self._release_lock()
                     raise msg.exc
                 yield msg
         finally:
@@ -209,7 +196,6 @@ class StreamingResponse:
                     except Exception:
                         pass
                     self._final_response = None
-                self._release_lock()
 
     @property
     def final_response(self) -> "Response":
@@ -225,9 +211,7 @@ class StreamingResponse:
         from foundry_local_sdk.exception import FoundryLocalException
 
         if self._state in (_State.NEW, _State.ITERATING):
-            raise FoundryLocalException(
-                "final_response is not available until the stream has been fully consumed."
-            )
+            raise FoundryLocalException("final_response is not available until the stream has been fully consumed.")
         if self._error is not None:
             raise self._error
         if self._state is _State.CANCELLED:
@@ -244,19 +228,16 @@ class StreamingResponse:
         if self._closed:
             return
         self._closed = True
-        try:
-            if self._state in (_State.NEW, _State.ITERATING):
-                # Cancel if iteration never started or stopped early.
-                self._cancel_and_drain_and_join()
-                self._state = _State.CANCELLED
-            if self._final_response is not None and not self._final_consumed:
-                try:
-                    self._final_response._close()
-                except Exception:
-                    pass
-                self._final_response = None
-        finally:
-            self._release_lock()
+        if self._state in (_State.NEW, _State.ITERATING):
+            # Cancel if iteration never started or stopped early.
+            self._cancel_and_drain_and_join()
+            self._state = _State.CANCELLED
+        if self._final_response is not None and not self._final_consumed:
+            try:
+                self._final_response._close()
+            except Exception:
+                pass
+            self._final_response = None
 
     def __del__(self) -> None:
         # Use a context manager for explicit cleanup.
@@ -282,6 +263,8 @@ class Session(abc.ABC):
         self._state_condition = threading.Condition()
         self._session_state = _SessionState.CLOSED
         self._active_native_calls = 0
+        self._active_nonstream_requests = 0
+        self._streaming_request_active = False
         # Avoid imports from __del__ during interpreter shutdown.
         self._release_session: Callable[[object], object] | None = None
         self._cancel_session: Callable[[object], object] | None = None
@@ -307,17 +290,19 @@ class Session(abc.ABC):
         self._streaming_callback = None
         self._stream_queue: queue.Queue | None = None
 
-        # Reject concurrent streams because they share one callback and queue.
-        self._streaming_in_flight = threading.Lock()
-
-    def _acquire_call(self) -> object:
+    def _acquire_call(self, *, streaming: bool | None = None) -> object:
         from foundry_local_sdk.exception import FoundryLocalException
 
         with self._state_condition:
             if self._session_state is not _SessionState.OPEN or self._ptr is None:
-                raise FoundryLocalException(
-                    f"{type(self).__name__} has been closed and can no longer be used."
-                )
+                raise FoundryLocalException(f"{type(self).__name__} has been closed and can no longer be used.")
+            if streaming is not None:
+                if self._streaming_request_active or (streaming and self._active_nonstream_requests):
+                    raise FoundryLocalException(_PROCESSING_OVERLAP_MESSAGE)
+                if streaming:
+                    self._streaming_request_active = True
+                else:
+                    self._active_nonstream_requests += 1
             self._active_native_calls += 1
             return self._ptr
 
@@ -329,8 +314,13 @@ class Session(abc.ABC):
         finally:
             self._release_call()
 
-    def _release_call(self) -> None:
+    def _release_call(self, *, streaming: bool | None = None) -> None:
         with self._state_condition:
+            if streaming is not None:
+                if streaming:
+                    self._streaming_request_active = False
+                else:
+                    self._active_nonstream_requests -= 1
             self._active_native_calls -= 1
             if self._active_native_calls == 0:
                 self._state_condition.notify_all()
@@ -374,17 +364,21 @@ class Session(abc.ABC):
 
                 def _cb(data, user_data):
                     q = self._stream_queue
-                    if q is None:
-                        return 0
 
                     try:
                         if data.item_queue != ffi.NULL:
                             item_out = ffi.new("flItem**")
                             while api.item.ItemQueue_TryPop(data.item_queue, item_out):
+                                if q is None:
+                                    # TryPop transfers ownership even when a non-streaming request
+                                    # invokes the installed callback.
+                                    api.item.Item_Release(item_out[0])
+                                    continue
                                 # Item owns the popped native handle.
                                 q.put(Item.from_native(item_out[0], owns=True))
                     except Exception as exc:
-                        q.put(_StreamError(exc))
+                        if q is not None:
+                            q.put(_StreamError(exc))
                         return 1
 
                     return 0
@@ -393,9 +387,7 @@ class Session(abc.ABC):
                 self._streaming_callback = ffi.callback("flStreamingCallback", _cb)
                 self._streaming_enabled = True
                 api.check_status(
-                    api.inference.Session_SetStreamingCallback(
-                        session_ptr, self._streaming_callback, ffi.NULL
-                    )
+                    api.inference.Session_SetStreamingCallback(session_ptr, self._streaming_callback, ffi.NULL)
                 )
             elif not enabled and self._streaming_enabled:
                 # A null function pointer removes the callback.
@@ -441,12 +433,12 @@ class Session(abc.ABC):
 
         Raises:
             FoundryLocalException: If streaming was not enabled, another
-                streaming request is already in flight on this session,
+                processing request is already in flight on this session,
                 or the worker encounters a native error.
         """
         from foundry_local_sdk.exception import FoundryLocalException
 
-        session_ptr = self._acquire_call()
+        session_ptr = self._acquire_call(streaming=True)
         release_lock = threading.Lock()
         released = False
 
@@ -456,7 +448,7 @@ class Session(abc.ABC):
                 if released:
                     return
                 released = True
-            self._release_call()
+            self._release_call(streaming=True)
 
         lease_transferred = False
         try:
@@ -465,17 +457,7 @@ class Session(abc.ABC):
                     "Streaming not enabled. Call set_streaming(True) before process_streaming_request."
                 )
 
-            if not self._streaming_in_flight.acquire(blocking=False):
-                raise FoundryLocalException(
-                    "Concurrent streaming requests on the same session are not supported. "
-                    "Drain or cancel the in-flight stream before starting another."
-                )
-
-            try:
-                response = StreamingResponse(self, request, session_ptr, release_call)
-            except BaseException:
-                self._streaming_in_flight.release()
-                raise
+            response = StreamingResponse(self, request, session_ptr, release_call)
             lease_transferred = True
             return response
         finally:
@@ -494,18 +476,21 @@ class Session(abc.ABC):
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
-        if timeout is not None:
-            request.set_timeout(timeout)
-
-        request_ptr = request._acquire_for_processing()
+        session_ptr = self._acquire_call(streaming=False)
         try:
-            out = ffi.new("flResponse**")
-            with self._call_lease() as session_ptr:
+            if timeout is not None:
+                request.set_timeout(timeout)
+
+            request_ptr = request._acquire_for_processing()
+            try:
+                out = ffi.new("flResponse**")
                 status = api.inference.Session_ProcessRequest(session_ptr, request_ptr, out)
-            api.check_status(status)
-            return Response(out[0])
+                api.check_status(status)
+                return Response(out[0])
+            finally:
+                request._release_after_processing()
         finally:
-            request._release_after_processing()
+            self._release_call(streaming=False)
 
     def cancel(self) -> None:
         """Permanently cancel this session.
@@ -577,10 +562,7 @@ class Session(abc.ABC):
             if not condition.acquire(blocking=False):
                 return
             try:
-                if (
-                    self._session_state is not _SessionState.OPEN
-                    or self._active_native_calls
-                ):
+                if self._session_state is not _SessionState.OPEN or self._active_native_calls:
                     return
                 self._closed = True
                 ptr = self._ptr
@@ -623,8 +605,7 @@ class ChatSession(Session):
         task = model.info.task
         if task not in self._SUPPORTED_TASKS:
             raise ValueError(
-                f"ChatSession requires a model with task 'chat-completion' or "
-                f"'vision-language-chat', but got {task!r}."
+                f"ChatSession requires a model with task 'chat-completion' or 'vision-language-chat', but got {task!r}."
             )
         super().__init__(model)
 
@@ -695,8 +676,7 @@ class AudioSession(Session):
         task = model.info.task
         if task != "automatic-speech-recognition":
             raise ValueError(
-                f"AudioSession requires a model with task 'automatic-speech-recognition', "
-                f"but got {task!r}."
+                f"AudioSession requires a model with task 'automatic-speech-recognition', but got {task!r}."
             )
         super().__init__(model)
 
@@ -713,8 +693,5 @@ class EmbeddingsSession(Session):
     def __init__(self, model: "IModel") -> None:
         task = model.info.task
         if task != "embeddings":
-            raise ValueError(
-                f"EmbeddingsSession requires a model with task 'embeddings', "
-                f"but got {task!r}."
-            )
+            raise ValueError(f"EmbeddingsSession requires a model with task 'embeddings', but got {task!r}.")
         super().__init__(model)

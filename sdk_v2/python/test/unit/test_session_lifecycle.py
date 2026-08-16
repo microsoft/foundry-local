@@ -20,7 +20,7 @@ class _FakeFfi:
 
     def new(self, declaration: str, initializer: object = None) -> object:
         match declaration:
-            case "flResponse**" | "flKeyValuePairs**":
+            case "flResponse**" | "flKeyValuePairs**" | "flItem**":
                 return [None]
             case "char[]":
                 return initializer
@@ -60,9 +60,7 @@ class _FakeRequest:
         self._active_processes -= 1
 
 
-def _make_request(
-    *, release: Callable[[object], object] | None = None
-) -> Request:
+def _make_request(*, release: Callable[[object], object] | None = None) -> Request:
     request = object.__new__(Request)
     request._closed = False
     request._ptr = object()
@@ -115,7 +113,7 @@ def fake_native(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
         CreateKeyValuePairs=lambda out: out.__setitem__(0, object()),
         KeyValuePairs_Release=lambda *_: None,
     )
-    item = types.SimpleNamespace(ItemQueue_TryPop=lambda *_: False)
+    item = types.SimpleNamespace(Item_Release=lambda *_: None, ItemQueue_TryPop=lambda *_: False)
     api = types.SimpleNamespace(inference=inference, item=item, root=root, check_status=lambda status: None)
     native_module = types.ModuleType("foundry_local_sdk._native")
     ffi = _FakeFfi()
@@ -144,19 +142,26 @@ def _make_session(
     session._state_condition = condition or threading.Condition()
     session._session_state = _SessionState.OPEN
     session._active_native_calls = 0
+    session._active_nonstream_requests = 0
+    session._streaming_request_active = False
     session._release_session = release or (lambda _: None)
     session._cancel_session = cancel or (lambda _: None)
     session._check_status = lambda status: None
     session._streaming_enabled = False
     session._streaming_callback = None
     session._stream_queue = None
-    session._streaming_in_flight = threading.Lock()
     return session
 
 
 def _join(thread: threading.Thread) -> None:
     thread.join(timeout=2)
     assert not thread.is_alive()
+
+
+def _assert_processing_idle(session: Session) -> None:
+    assert session._active_native_calls == 0
+    assert session._active_nonstream_requests == 0
+    assert not session._streaming_request_active
 
 
 def _invoke_session_operation(session: ChatSession, operation: str) -> object:
@@ -167,7 +172,7 @@ def _invoke_session_operation(session: ChatSession, operation: str) -> object:
             return session.set_streaming(True)
         case "disable_streaming":
             session._streaming_enabled = True
-            session._streaming_callback = object()
+            session._streaming_callback = cast(Any, object())
             return session.set_streaming(False)
         case "add_tool":
             return session.add_tool_definition("tool", "description", "{}")
@@ -176,7 +181,8 @@ def _invoke_session_operation(session: ChatSession, operation: str) -> object:
         case "turn_count":
             return session.turn_count
         case "undo_turns":
-            return session.undo_turns(1)
+            session.undo_turns(1)
+            return None
         case _:
             raise AssertionError(f"Unexpected operation: {operation}")
 
@@ -242,6 +248,37 @@ def test_close_waits_for_leased_session_native_operations_and_releases_once(
     session._close()
     assert errors == []
     assert len(releases) == 1
+
+
+def test_streaming_callback_without_active_stream_drains_and_releases_items(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    item_queue = object()
+    native_items = [object(), object(), object()]
+    queued_items = list(native_items)
+    released_items: list[object] = []
+
+    def try_pop(queue_ptr: object, out: list[object | None]) -> bool:
+        assert queue_ptr is item_queue
+        if not queued_items:
+            return False
+        out[0] = queued_items.pop(0)
+        return True
+
+    fake_native.api.item.ItemQueue_TryPop = try_pop
+    fake_native.api.item.Item_Release = released_items.append
+    session = _make_session()
+    session.set_streaming(True)
+
+    assert session._stream_queue is None
+    callback = session._streaming_callback
+    assert callback is not None
+    result = callback(types.SimpleNamespace(item_queue=item_queue), None)
+
+    assert result == 0
+    assert queued_items == []
+    assert released_items == native_items
+    session._close()
 
 
 def test_set_options_reentrant_close_during_conversion_does_not_deadlock(
@@ -326,7 +363,7 @@ def test_set_options_native_failure_releases_call_lease_and_kvp(
     assert len(kvp_releases) == 1
 
 
-def test_process_request_timeout_failure_occurs_before_lease(
+def test_process_request_timeout_failure_releases_processing_lease(
     fake_native: types.SimpleNamespace,
 ) -> None:
     native_calls: list[object] = []
@@ -334,7 +371,8 @@ def test_process_request_timeout_failure_occurs_before_lease(
 
     class _FailingTimeoutRequest(_FakeRequest):
         def set_timeout(self, timeout: float | None) -> None:
-            assert session._active_native_calls == 0
+            assert session._active_native_calls == 1
+            assert session._active_nonstream_requests == 1
             raise RuntimeError("timeout conversion failed")
 
     fake_native.inference.Session_ProcessRequest = lambda *_: native_calls.append(object())
@@ -342,8 +380,161 @@ def test_process_request_timeout_failure_occurs_before_lease(
     with pytest.raises(RuntimeError, match="timeout conversion failed"):
         session.process_request(cast(Request, _FailingTimeoutRequest()), timeout=1)
 
-    assert session._active_native_calls == 0
+    _assert_processing_idle(session)
     assert native_calls == []
+
+
+def test_active_nonstreaming_request_blocks_streaming_and_allows_another_nonstreaming_request(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    first_process_started = threading.Event()
+    both_processes_started = threading.Event()
+    allow_process_to_finish = threading.Event()
+    count_lock = threading.Lock()
+    started = 0
+    errors: list[BaseException] = []
+    responses: list[Response] = []
+
+    def process(_session_ptr: object, _request_ptr: object, out: list[object | None]) -> None:
+        nonlocal started
+        with count_lock:
+            started += 1
+            if started == 1:
+                first_process_started.set()
+            elif started == 2:
+                both_processes_started.set()
+        assert allow_process_to_finish.wait(timeout=2)
+        out[0] = object()
+
+    fake_native.inference.Session_ProcessRequest = process
+    session = _make_session()
+    session._streaming_enabled = True
+    active_request = cast(Request, _FakeRequest())
+    rejected_request = cast(Request, _FakeRequest())
+    second_request = cast(Request, _FakeRequest())
+
+    def run_request(request: Request) -> None:
+        try:
+            responses.append(session.process_request(request))
+        except BaseException as exc:
+            errors.append(exc)
+
+    request_threads = [
+        threading.Thread(target=run_request, args=(active_request,)),
+        threading.Thread(target=run_request, args=(second_request,)),
+    ]
+    request_threads[0].start()
+    assert first_process_started.wait(timeout=2)
+
+    with pytest.raises(FoundryLocalException, match="cannot overlap"):
+        session.process_streaming_request(rejected_request)
+
+    assert rejected_request._active_processes == 0
+    assert session._active_nonstream_requests == 1
+    assert not session._streaming_request_active
+
+    request_threads[1].start()
+    assert both_processes_started.wait(timeout=2)
+    assert session._active_nonstream_requests == 2
+
+    allow_process_to_finish.set()
+    for thread in request_threads:
+        _join(thread)
+    assert errors == []
+    assert len(responses) == 2
+    _assert_processing_idle(session)
+    for response in responses:
+        response._close()
+    session._close()
+
+
+@pytest.mark.parametrize("rejected_mode", ["nonstreaming", "streaming"])
+def test_streaming_request_rejects_other_processing_requests_while_native_work_is_active(
+    fake_native: types.SimpleNamespace,
+    rejected_mode: str,
+) -> None:
+    process_started = threading.Event()
+    allow_process_to_finish = threading.Event()
+
+    def process(_session_ptr: object, _request_ptr: object, out: list[object | None]) -> None:
+        process_started.set()
+        assert allow_process_to_finish.wait(timeout=2)
+        out[0] = object()
+
+    fake_native.inference.Session_ProcessRequest = process
+    session = _make_session()
+    session._streaming_enabled = True
+    stream_request = cast(Request, _FakeRequest())
+    rejected_request = cast(Request, _FakeRequest())
+
+    stream = session.process_streaming_request(stream_request)
+    assert process_started.wait(timeout=2)
+
+    with pytest.raises(FoundryLocalException, match="cannot overlap"):
+        if rejected_mode == "streaming":
+            session.process_streaming_request(rejected_request)
+        else:
+            session.process_request(rejected_request)
+
+    assert rejected_request._active_processes == 0
+    assert session._active_nonstream_requests == 0
+    assert session._streaming_request_active
+
+    allow_process_to_finish.set()
+    assert list(stream) == []
+    stream.final_response._close()
+    _assert_processing_idle(session)
+    session._close()
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstreaming", "streaming"])
+def test_processing_mode_releases_after_native_error(
+    fake_native: types.SimpleNamespace,
+    streaming: bool,
+) -> None:
+    session = _make_session()
+    request = cast(Request, _FakeRequest())
+    error_status = object()
+
+    def fail_process(
+        _session_ptr: object,
+        _request_ptr: object,
+        out: list[object | None],
+    ) -> object:
+        out[0] = object()
+        return error_status
+
+    def check_status(status: object) -> None:
+        if status is error_status:
+            raise RuntimeError("native process failed")
+
+    fake_native.inference.Session_ProcessRequest = fail_process
+    fake_native.api.check_status = check_status
+
+    with pytest.raises(RuntimeError, match="native process failed"):
+        if streaming:
+            session._streaming_enabled = True
+            list(session.process_streaming_request(request))
+        else:
+            session.process_request(request)
+
+    _assert_processing_idle(session)
+    assert request._active_processes == 0
+    session._close()
+
+
+def test_streaming_validation_failure_releases_processing_mode(
+    fake_native: types.SimpleNamespace,
+) -> None:
+    session = _make_session()
+    request = cast(Request, _FakeRequest())
+
+    with pytest.raises(FoundryLocalException, match="Streaming not enabled"):
+        session.process_streaming_request(request)
+
+    _assert_processing_idle(session)
+    assert request._active_processes == 0
+    session._close()
 
 
 def test_close_waits_for_synchronous_request_without_timeout_and_rejects_new_calls(
@@ -454,14 +645,16 @@ def test_streaming_thread_start_failure_releases_call_lease(
     with pytest.raises(RuntimeError, match="thread start failed"):
         session.process_streaming_request(request)
 
-    assert session._active_native_calls == 0
+    _assert_failed_stream_setup_is_clean(session, request)
+    session._close()
+
+
+def _assert_failed_stream_setup_is_clean(session: Session, request: Request) -> None:
+    _assert_processing_idle(session)
     assert session._stream_thread is None
     assert session._stream_request is None
     assert session._stream_queue is None
     assert request._active_processes == 0
-    assert session._streaming_in_flight.acquire(blocking=False)
-    session._streaming_in_flight.release()
-    session._close()
 
 
 def test_streaming_thread_setup_failure_releases_request_lease(
@@ -480,13 +673,7 @@ def test_streaming_thread_setup_failure_releases_request_lease(
     with pytest.raises(RuntimeError, match="thread setup failed"):
         session.process_streaming_request(request)
 
-    assert request._active_processes == 0
-    assert session._active_native_calls == 0
-    assert session._stream_thread is None
-    assert session._stream_request is None
-    assert session._stream_queue is None
-    assert session._streaming_in_flight.acquire(blocking=False)
-    session._streaming_in_flight.release()
+    _assert_failed_stream_setup_is_clean(session, request)
     session._close()
 
 
@@ -604,11 +791,9 @@ def test_processing_rejects_request_after_close(
         else:
             session.process_request(request)
 
-    assert session._active_native_calls == 0
+    _assert_processing_idle(session)
     assert request._active_processes == 0
     assert session._stream_queue is None
-    assert session._streaming_in_flight.acquire(blocking=False)
-    session._streaming_in_flight.release()
     session._close()
 
 
@@ -695,6 +880,9 @@ def test_closing_unstarted_stream_retries_cancellation_until_worker_settles(
     assert cancellation_calls >= 2
     assert native_call_returned.is_set()
     assert not cancellation_after_native_return.is_set()
+    _assert_processing_idle(session)
+    assert request._active_processes == 0
+    session._close()
 
 
 def test_concurrent_and_repeated_close_releases_exactly_once() -> None:

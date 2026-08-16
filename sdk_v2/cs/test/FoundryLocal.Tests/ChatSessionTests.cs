@@ -34,9 +34,10 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
-    public async Task Chat_NoStreaming_Succeeds()
+    public async Task Chat_NonStreaming_WithStreamingEnabled_Succeeds()
     {
         using var session = new ChatSession(model!);
+        session.SetStreaming(true);
 
         using var request = new Request();
         request.AddItem(MessageItem.User("You are a calculator. Be precise. What is the answer to 7 multiplied by 6?"));
@@ -380,7 +381,7 @@ internal sealed class ChatSessionTests
         }
 
         await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.Message).Contains("Concurrent streaming");
+        await Assert.That(caught!.Message).Contains("A streaming request cannot overlap another request");
 
         // Drain the first stream so the session is clean for any later tests.
         await using (stream1)

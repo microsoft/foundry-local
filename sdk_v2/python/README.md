@@ -356,7 +356,7 @@ manager.stop_web_service()
 
 ### Sessions
 
-All sessions wrap a native `flSession*` and are context managers. Closing a session releases the native handle and aborts any in-flight streaming request.
+All sessions wrap a native `flSession*` and are context managers. Closing a session releases the native handle and aborts any in-flight streaming request. Multiple non-streaming requests may run concurrently on one session (for example, embedding requests). A streaming request is exclusive with all other processing on that session because the native callback and stream queue are session-scoped; overlapping processing calls raise `FoundryLocalException`.
 
 | Class | Description |
 |---|---|
@@ -367,8 +367,8 @@ All sessions wrap a native `flSession*` and are context managers. Closing a sess
 
 Common session methods:
 
-- `process_request(request) -> Response` — run synchronously, return the full response.
-- `process_streaming_request(request) -> Iterator[Item]` — yield items as the model produces them. Requires `set_streaming(True)` first. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
+- `process_request(request) -> Response` — run synchronously and return the full response. Concurrent non-streaming calls are allowed unless a streaming request is active.
+- `process_streaming_request(request) -> Iterator[Item]` — yield items as the model produces them. Requires `set_streaming(True)` first and exclusive processing access to the session. Abandoning the iterator (`break`, exception, `gen.close()`) automatically cancels the request and joins the worker thread.
 - `set_options(RequestOptions)` — apply session-level inference parameters (typed `SearchOptions` for sampling, optional `tool_choice`, and `additional_options` for passthrough).
 - `set_streaming(enabled)` — install or remove the native streaming callback.
 

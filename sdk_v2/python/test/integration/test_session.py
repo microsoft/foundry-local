@@ -203,18 +203,6 @@ class TestStreaming:
         items = list(chat_session.process_streaming_request(_short_request()))
         assert len(items) >= 1
 
-    def test_concurrent_streaming_guard_still_trips(self, chat_session):
-        from foundry_local_sdk.exception import FoundryLocalException
-
-        chat_session.set_streaming(True)
-        with chat_session.process_streaming_request(_short_request()) as stream1:
-            # Don't drain stream1 — it holds the in-flight lock.
-            with pytest.raises(FoundryLocalException, match="Concurrent streaming"):
-                chat_session.process_streaming_request(_short_request())
-            # Drain so cleanup is clean.
-            for _item in stream1:
-                pass
-
     def test_second_iteration_raises(self, chat_session):
         from foundry_local_sdk.exception import FoundryLocalException
 

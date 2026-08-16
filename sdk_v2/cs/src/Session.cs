@@ -30,6 +30,8 @@ public abstract class Session : IDisposable
     // The native Session must outlive every native call. Dispose cancels first, then waits before release.
     private readonly object _gate = new();
     private int _activeCalls;
+    private int _activeNonStreamingCalls;
+    private bool _streamingActive;
     private bool _disposing;
 
     /// <summary>
@@ -99,12 +101,7 @@ public abstract class Session : IDisposable
             {
                 _nativeStreamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
                 {
-                    var channel = _activeChannel;
-                    if (channel == null)
-                    {
-                        return 0;
-                    }
-
+                    var channel = Volatile.Read(ref _activeChannel);
                     bool errored = false;
 
                     try
@@ -113,6 +110,14 @@ public abstract class Session : IDisposable
                         {
                             while (Api.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
                             {
+                                if (channel == null)
+                                {
+                                    // QueueTryPop transfers ownership. A non-streaming request can
+                                    // still invoke the installed callback, so release its items here.
+                                    Api.Item.Release(itemPtr);
+                                    continue;
+                                }
+
                                 // Ownership transfers to the channel consumer who disposes it
 #pragma warning disable IDISP001
                                 var item = Item.FromNative(itemPtr, ownsHandle: true);
@@ -127,11 +132,11 @@ public abstract class Session : IDisposable
                     catch (Exception ex)
                     {
                         errored = true;
-                        channel.Writer.TryComplete(
+                        channel?.Writer.TryComplete(
                             new FoundryLocalException("Error processing streaming callback data.", ex));
                     }
 
-                    return errored || _streamingCt.IsCancellationRequested ? 1 : 0;
+                    return errored || (channel != null && _streamingCt.IsCancellationRequested) ? 1 : 0;
                 };
 
                 _session.SetStreamingCallback(_nativeStreamingCallback);
@@ -156,14 +161,18 @@ public abstract class Session : IDisposable
     /// <remarks>
     /// <paramref name="ct"/> cancels the active native request. Cancellation is retried because
     /// native cancellation does nothing before processing starts.
+    /// Non-streaming requests cannot overlap a streaming request on the same session.
     /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown if a streaming request is active on this session.
+    /// </exception>
     public async Task<Response> ProcessRequestAsync(Request request, CancellationToken ct = default)
     {
         ThrowIfDisposed();
         Detail.Throw.IfNull(request);
         ct.ThrowIfCancellationRequested();
 
-        EnterActiveCall();
+        EnterProcessingCall(streaming: false);
 
         IntPtr requestPtr;
 
@@ -173,7 +182,7 @@ public abstract class Session : IDisposable
         }
         catch
         {
-            ExitActiveCall();
+            ExitProcessingCall(streaming: false);
             throw;
         }
 
@@ -225,7 +234,7 @@ public abstract class Session : IDisposable
                 }
                 finally
                 {
-                    ExitActiveCall();
+                    ExitProcessingCall(streaming: false);
 
                     // Decrement active counts before waiting for callbacks that may call Dispose.
                     registration.Dispose();
@@ -263,16 +272,16 @@ public abstract class Session : IDisposable
     /// items) after the iterator drains.
     ///
     /// Requires <see cref="SetStreaming"/> to have been called with <c>true</c>.
-    /// Concurrent streaming requests on the same session are not supported.
+    /// Streaming cannot overlap any other processing invocation on the same session. Multiple
+    /// non-streaming invocations remain supported when no stream is active.
     ///
     /// The caller MUST either await <see cref="StreamingResponse.FinalResponse"/> (and dispose the
     /// returned <see cref="Response"/>) or <c>await using</c> the <see cref="StreamingResponse"/>
     /// to avoid leaking the native response handle.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// Thrown if streaming has not been enabled via <see cref="SetStreaming"/>, or if another
-    /// streaming request is already in flight on this session (concurrent streaming requests
-    /// on the same session are not supported).
+    /// Thrown if streaming has not been enabled via <see cref="SetStreaming"/>, or if any request
+    /// is already in flight on this session.
     /// </exception>
     public StreamingResponse ProcessStreamingRequestAsync(Request request, CancellationToken ct = default)
     {
@@ -286,7 +295,7 @@ public abstract class Session : IDisposable
                 "Streaming not enabled. Call SetStreaming(true) before ProcessStreamingRequestAsync.");
         }
 
-        EnterActiveCall();
+        EnterProcessingCall(streaming: true);
 
         IntPtr requestPtr;
 
@@ -296,7 +305,7 @@ public abstract class Session : IDisposable
         }
         catch
         {
-            ExitActiveCall();
+            ExitProcessingCall(streaming: true);
             throw;
         }
 
@@ -321,8 +330,15 @@ public abstract class Session : IDisposable
         }
         catch
         {
-            request.ReleaseAfterProcessing();
-            ExitActiveCall();
+            try
+            {
+                request.ReleaseAfterProcessing();
+            }
+            finally
+            {
+                ExitProcessingCall(streaming: true);
+            }
+
             throw;
         }
 
@@ -418,7 +434,7 @@ public abstract class Session : IDisposable
                 }
                 finally
                 {
-                    ExitActiveCall();
+                    ExitProcessingCall(streaming: true);
                     registration.Dispose();
                 }
             }
@@ -427,10 +443,10 @@ public abstract class Session : IDisposable
         return new StreamingResponse(this, channel, cts, task, tcs);
     }
 
-    internal void ClearStreamingState()
+    internal void ClearStreamingState(CancellationTokenSource cts)
     {
 #pragma warning disable IDISP003 // cts is disposed by the owning StreamingResponse; we just clear the field reference.
-        _activeStreamingCts = null;
+        Interlocked.CompareExchange(ref _activeStreamingCts, null, cts);
 #pragma warning restore IDISP003
     }
 
@@ -504,12 +520,59 @@ public abstract class Session : IDisposable
     {
         lock (_gate)
         {
-            _activeCalls--;
+            ExitActiveCallUnderLock();
+        }
+    }
 
-            if (_activeCalls == 0)
+    private void EnterProcessingCall(bool streaming)
+    {
+        lock (_gate)
+        {
+            Detail.Throw.IfDisposed(_disposing || _disposed, this);
+
+            if (_streamingActive || (streaming && _activeNonStreamingCalls > 0))
             {
-                Monitor.PulseAll(_gate);
+                throw new InvalidOperationException(
+                    "A streaming request cannot overlap another request on the same session.");
             }
+
+            if (streaming)
+            {
+                _streamingActive = true;
+            }
+            else
+            {
+                _activeNonStreamingCalls++;
+            }
+
+            _activeCalls++;
+        }
+    }
+
+    private void ExitProcessingCall(bool streaming)
+    {
+        lock (_gate)
+        {
+            if (streaming)
+            {
+                _streamingActive = false;
+            }
+            else
+            {
+                _activeNonStreamingCalls--;
+            }
+
+            ExitActiveCallUnderLock();
+        }
+    }
+
+    private void ExitActiveCallUnderLock()
+    {
+        _activeCalls--;
+
+        if (_activeCalls == 0)
+        {
+            Monitor.PulseAll(_gate);
         }
     }
 

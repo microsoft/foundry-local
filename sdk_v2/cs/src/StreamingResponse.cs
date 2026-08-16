@@ -192,6 +192,6 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
             leftover.Dispose();
         }
 
-        _session.ClearStreamingState();
+        _session.ClearStreamingState(_cts);
     }
 }
