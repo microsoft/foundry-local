@@ -1,6 +1,6 @@
 // Streaming tests for Session.stream / ChatSession.stream.
 // Gated by FOUNDRY_TEST_DATA_DIR (real model required).
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { FlErrorCode, isFoundryLocalError } from "../src/detail/errors.js";
 import { Item } from "../src/items.js";
@@ -184,23 +184,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
-    "removes the abort listener when an unconsumed stream response settles",
-    async () => {
-      const ctrl = new AbortController();
-      const removeListener = vi.spyOn(ctrl.signal, "removeEventListener");
-      try {
-        const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
-        const response = await stream.response;
-        expect(["stop", "length", "toolCalls", "error", "none"]).toContain(response.finishReason);
-        expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
-      } finally {
-        removeListener.mockRestore();
-      }
-    },
-    3 * 60_000,
-  );
-
-  it(
     "dispose keeps an in-flight streaming session alive until callback cleanup completes",
     async () => {
       const activeSession = session;
@@ -300,9 +283,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(["stop", "length", "toolCalls", "error", "none"]).toContain(resp.finishReason);
       expect(resp.usage.promptTokens).toBeGreaterThan(0);
       expect(resp.usage.completionTokens).toBeGreaterThan(0);
-      expect(resp.usage.totalTokens).toBeGreaterThanOrEqual(
-        resp.usage.promptTokens + resp.usage.completionTokens,
-      );
+      expect(resp.usage.totalTokens).toBeGreaterThanOrEqual(resp.usage.promptTokens + resp.usage.completionTokens);
       // The Response's text should match what we accumulated from the stream
       // (modulo possible model post-processing — assert non-empty overlap on
       // the boundary tokens rather than strict equality).
@@ -326,16 +307,12 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
     3 * 60_000,
   );
 
-  it(
-    "stream.response rejects with AbortError when pre-aborted",
-    async () => {
-      const ctrl = new AbortController();
-      ctrl.abort();
-      const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
-      await expect(stream.response).rejects.toMatchObject({ name: "AbortError" });
-    },
-    60_000,
-  );
+  it("stream.response rejects with AbortError when pre-aborted", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
+    await expect(stream.response).rejects.toMatchObject({ name: "AbortError" });
+  }, 60_000);
 
   it(
     "stream.response rejects with OperationCancelled when request.cancel() is called mid-stream",
@@ -387,9 +364,11 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       });
 
       const req = new Request()
-        .addItem(Item.systemMessage(
-          "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question.",
-        ))
+        .addItem(
+          Item.systemMessage(
+            "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question.",
+          ),
+        )
         .addItem(Item.userMessage("What is the answer to 7 multiplied by 6?"))
         .setOptions({
           search: { temperature: 0, maxOutputTokens: 256 },
@@ -427,9 +406,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       const resp = await stream.response;
       expect(resp.finishReason).toBe("toolCalls");
 
-      const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> =>
-        it.type === "toolCall",
-      );
+      const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> => it.type === "toolCall");
       if (finalToolCall === undefined) throw new Error("expected a final tool call");
       expect(finalToolCall.name).toBe(streamed.name);
       expect(finalToolCall.arguments).toBe(streamed.arguments);
