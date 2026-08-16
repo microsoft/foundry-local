@@ -79,6 +79,7 @@ class CancellationState {
   };
 
   bool DeadlineExpiredLocked() const;
+  void RecordTimeoutLocked() noexcept;
   void InterruptGeneratorsLocked() noexcept;
   void UpdateRequestFlagsLocked() noexcept;
   void NotifyWaiters();

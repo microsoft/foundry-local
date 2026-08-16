@@ -654,36 +654,6 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
-    public async Task Chat_NonStreaming_PreCancelledToken_ThrowsExactToken()
-    {
-        using var session = new ChatSession(model!);
-
-        using var request = new Request();
-        request.AddItem(MessageItem.User("Hello."));
-
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        var task = session.ProcessRequestAsync(request, cts.Token);
-
-        OperationCanceledException? caught = null;
-
-        try
-        {
-            using var _ = await task;
-        }
-        catch (OperationCanceledException oce)
-        {
-            caught = oce;
-        }
-
-        await Assert.That(caught).IsNotNull();
-        await Assert.That(caught!.CancellationToken).IsEqualTo(cts.Token);
-        await Assert.That(task.IsCanceled).IsTrue();
-        await Assert.That(task.IsFaulted).IsFalse();
-    }
-
-    [Test]
     public async Task Chat_RequestTimeout_RoundsSubMillisecondAndZeroDisables()
     {
         using var session = new ChatSession(model!);

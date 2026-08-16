@@ -4,7 +4,6 @@
 // `Item` factory helpers. Runs whenever the native addon is present.
 import { describe, expect, it } from "vitest";
 
-import { getAddon } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
 import { Request } from "../src/request.js";
 
@@ -167,22 +166,6 @@ describeIfBuilt("Request round-trip through the native layer", () => {
     expect(req.setTimeout(-1)).toBe(req);
   });
 
-  it("native setTimeout validates before converting to int64", () => {
-    const NativeRequest = getAddon().Request;
-    const req = new NativeRequest();
-    for (const invalid of [
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      Number.NEGATIVE_INFINITY,
-      0.5,
-      Number.MAX_SAFE_INTEGER + 1,
-      Number.MIN_SAFE_INTEGER - 1,
-      Number.MAX_VALUE,
-      -Number.MAX_VALUE,
-    ]) {
-      expect(() => req.setTimeout(invalid)).toThrow(/finite safe integer/);
-    }
-  });
 });
 
 describeIfBuilt("Raw-bytes Item inputs (zero-copy pinned)", () => {

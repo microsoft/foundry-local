@@ -310,9 +310,7 @@ void Session::ProcessRequest(const Request& request, Response& response, Cancell
     throw;
   }
 
-  if (state->Outcome() == CancellationOutcome::kRunning) {
-    static_cast<void>(state->TryBeginCompletion());
-  }
+  static_cast<void>(state->TryBeginCompletion());
 
   if (finish_if_stopped()) {
     return;
