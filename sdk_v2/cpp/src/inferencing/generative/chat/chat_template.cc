@@ -43,7 +43,8 @@ std::string RenderMessageForPrompt(const MessageItem& msg) {
 
 std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
                             GenAIModelInstance& model,
-                            const std::string& tools_json) {
+                            const std::string& tools_json,
+                            const std::string& template_kwargs_json) {
   if (messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
@@ -57,10 +58,12 @@ std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
 
   std::string messages_str = messages_json.dump();
   const char* tools_ptr = tools_json.empty() ? nullptr : tools_json.c_str();
+  const char* template_kwargs_ptr = template_kwargs_json.empty() ? nullptr : template_kwargs_json.c_str();
 
   // ApplyChatTemplate uses the model's built-in template (template_str=nullptr) and appends the assistant
   // turn prefix (add_generation_prompt=true).
-  return model.GetPreprocessor().ApplyChatTemplate(messages_str.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+  return model.GetPreprocessor().ApplyChatTemplateWithOptions(
+      messages_str.c_str(), tools_ptr, template_kwargs_ptr, /*add_generation_prompt=*/true);
 }
 
 std::unique_ptr<OgaSequences> EncodePrompt(const std::string& prompt,

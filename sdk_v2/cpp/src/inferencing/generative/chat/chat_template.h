@@ -34,10 +34,12 @@ std::string RenderMessageForPrompt(const MessageItem& msg);
 /// @param messages       Ordered list of chat messages (system, user, assistant, tool, etc.)
 /// @param model          Model instance whose shared tokenizer renders the template (thread-safe)
 /// @param tools_json     Optional JSON string describing available tools. Pass empty string for none.
+/// @param template_kwargs_json Optional JSON object containing additional typed template context values.
 /// @returns The formatted prompt string ready for tokenization
 std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
                             GenAIModelInstance& model,
-                            const std::string& tools_json = "");
+                            const std::string& tools_json = "",
+                            const std::string& template_kwargs_json = "");
 
 /// Encode a prompt string into token sequences using the model's shared tokenizer (thread-safe).
 /// Returns a unique_ptr to OgaSequences. Caller takes ownership.

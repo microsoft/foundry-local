@@ -45,6 +45,9 @@ struct ToolCallContext {
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
 
+  /// Additional typed context values for the model's chat template, serialized as a JSON object.
+  std::string template_kwargs_json;
+
   /// User-specified guidance type from response_format (e.g., "lark_grammar", "json_schema").
   /// Empty means no explicit guidance — the generator may still apply auto-generated tool guidance.
   std::string guidance_type;

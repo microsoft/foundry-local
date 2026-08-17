@@ -199,6 +199,7 @@ TEST(ChatCompletionRequestTest, MinimalRequest) {
   EXPECT_FALSE(req.stream.has_value());
   EXPECT_FALSE(req.tools.has_value());
   EXPECT_FALSE(req.metadata.has_value());
+  EXPECT_FALSE(req.chat_template_kwargs.has_value());
 }
 
 TEST(ChatCompletionRequestTest, AllOptionalScalars) {
@@ -311,6 +312,36 @@ TEST(ChatCompletionRequestTest, MetadataMap) {
   EXPECT_EQ(req.metadata->size(), 2);
   EXPECT_EQ((*req.metadata)["session"], "abc");
   EXPECT_EQ((*req.metadata)["source"], "test");
+}
+
+TEST(ChatCompletionRequestTest, ChatTemplateKwargsPreserveTypedValues) {
+  auto j = json::parse(R"({
+    "model": "m",
+    "messages": [{"role": "user", "content": "x"}],
+    "chat_template_kwargs": {
+      "enable_thinking": false,
+      "reasoning_effort": "low",
+      "level": 2,
+      "nested": {"enabled": true}
+    }
+  })");
+  auto req = j.get<ChatCompletionRequest>();
+
+  ASSERT_TRUE(req.chat_template_kwargs.has_value());
+  EXPECT_EQ((*req.chat_template_kwargs)["enable_thinking"], false);
+  EXPECT_EQ((*req.chat_template_kwargs)["reasoning_effort"], "low");
+  EXPECT_EQ((*req.chat_template_kwargs)["level"], 2);
+  EXPECT_EQ((*req.chat_template_kwargs)["nested"]["enabled"], true);
+}
+
+TEST(ChatCompletionRequestTest, ChatTemplateKwargsRejectNonObject) {
+  auto j = json::parse(R"({
+    "model": "m",
+    "messages": [{"role": "user", "content": "x"}],
+    "chat_template_kwargs": []
+  })");
+
+  EXPECT_THROW(j.get<ChatCompletionRequest>(), json::type_error);
 }
 
 // ========================================================================

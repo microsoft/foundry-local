@@ -47,7 +47,8 @@ class OnnxChatGenerator : public ChatGenerator {
   /// Returns the number of new prompt tokens appended.
   int AppendMessages(const std::vector<MessageItem>& new_messages,
                      GenAIModelInstance& model,
-                     const std::string& tools_json);
+                     const std::string& tools_json,
+                     const std::string& template_kwargs_json);
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
