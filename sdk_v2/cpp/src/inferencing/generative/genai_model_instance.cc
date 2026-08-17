@@ -45,7 +45,8 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
 
   // Package variant selection consumes the EP while creating the config. Mutating providers afterward would not
   // reselect the package variant and could run a compiled graph with the wrong EP.
-  if (!is_model_package_ && ep_ != ExecutionProvider::kDefault) {
+  // kCPU is excluded because EPtoGenAI returns "" for it; an empty provider list already means CPU.
+  if (!is_model_package_ && ep_ != ExecutionProvider::kDefault && ep_ != ExecutionProvider::kCPU) {
     try {
       oga_config->ClearProviders();
       std::string_view provider_str = EPUtils::EPtoGenAI(ep_);

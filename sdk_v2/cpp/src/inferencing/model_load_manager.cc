@@ -236,8 +236,11 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
         (std::filesystem::path(path_str) / kGenAIConfigFileName).string());
   }
 
-  const bool is_multimodal =
-      package_is_multimodal || (genai_config.model && genai_config.model->IsMultiModal()) || IsTaskMultiModal(task);
+  // Task fallback is package-only: package merging can drop the model type, while flat models keep theirs.
+  // Some flat ASR models (e.g. nemotron_speech) use OgaStreamingProcessor, not OgaMultiModalProcessor.
+  const bool is_multimodal = package_is_multimodal ||
+                             (genai_config.model && genai_config.model->IsMultiModal()) ||
+                             (is_model_package && IsTaskMultiModal(task));
 
   // Determine execution provider
   auto resolved_ep = ep_override;

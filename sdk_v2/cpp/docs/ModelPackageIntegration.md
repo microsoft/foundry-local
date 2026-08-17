@@ -1,6 +1,8 @@
 # Model Package Integration into Foundry Local — Scope & Plan
 
-**Status:** Design / scoping (pre-implementation)
+**Status:** Stage 1 implemented. Sections 1–5 describe shipped behavior; Section 6 lists
+deferred follow-ups that are still planned, and Section 7 is retained as the historical
+work breakdown.
 **Audience:** Engineer picking up the Foundry Local model-package integration work.
 
 This document is self-contained. It captures what a model package is, what we are
