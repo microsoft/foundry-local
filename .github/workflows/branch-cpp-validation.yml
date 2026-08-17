@@ -60,7 +60,9 @@ jobs:
             --skip_examples
       - name: Set up vcpkg
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
           ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
       - name: Build Foundry Local tests
         run: |
