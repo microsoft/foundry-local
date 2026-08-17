@@ -197,7 +197,7 @@ Please report issues or suggest improvements in the [GitHub Issues](https://gith
 
 ### Can inference be cancelled?
 
-Streaming inference supports cooperative cancellation. Non-streaming inference cannot currently be cancelled after processing starts and runs to completion.
+Inference cancellation is cooperative. Low-level requests can be cancelled with `Request.Cancel()`, while streaming APIs provide language-specific cancellation mechanisms. Cancellation may not take effect until the current generation step completes, and inference requests do not currently have a built-in timeout.
 
 ### Is Foundry Local a web server and CLI tool?
 
