@@ -300,9 +300,14 @@ CompiledModelCompatibility EpDetector::GetModelCompatibilityForEpDevices(
     return CompiledModelCompatibility::kUnknown;
   }
 
-  if (device_type.has_value() && *device_type == DeviceType::kNotSet) {
-    device_type.reset();
+  // Collapse the optional into plain locals up front. Dereferencing it inside the device loop below trips a
+  // -Wmaybe-uninitialized false positive on GCC.
+  DeviceType required_device_type = DeviceType::kNotSet;
+  if (device_type.has_value()) {
+    required_device_type = *device_type;
   }
+
+  const bool filter_by_device = required_device_type != DeviceType::kNotSet;
 
   const auto snapshot = TryGetEpDeviceSnapshot(ort_api_, ort_env_, logger_);
   if (!snapshot.has_value()) {
@@ -320,11 +325,11 @@ CompiledModelCompatibility EpDetector::GetModelCompatibilityForEpDevices(
       continue;
     }
 
-    if (device_type.has_value()) {
+    if (filter_by_device) {
       const OrtHardwareDevice* hw_device = ort_api_.EpDevice_Device(ep_device);
       const auto hw_type = hw_device != nullptr ? ort_api_.HardwareDevice_Type(hw_device)
                                                 : OrtHardwareDeviceType_CPU;
-      if (ToDeviceType(hw_type) != *device_type) {
+      if (ToDeviceType(hw_type) != required_device_type) {
         continue;
       }
     }
