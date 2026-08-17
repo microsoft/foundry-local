@@ -82,6 +82,11 @@ struct ModelInfo {
   std::map<std::string, std::string, std::less<>> string_properties;
   std::map<std::string, int64_t, std::less<>> int_properties;
 
+  /// Whether this entry describes an ORT model package rather than a flat model directory.
+  bool IsModelPackage() const {
+    return variant_metadata.has_value() && variant_metadata->model_package.has_value();
+  }
+
   /// Look up a string property by key, returning nullptr if missing.
   const std::string* GetPropertyStr(std::string_view key) const {
     auto it = string_properties.find(key);

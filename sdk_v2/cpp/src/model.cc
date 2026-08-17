@@ -320,7 +320,11 @@ void Model::Load(ExecutionProvider ep) {
     return;
   }
 
-  if (ep == ExecutionProvider::kDefault && !info_.execution_provider.empty()) {
+  // Only model packages need the catalog EP: it selects the package variant via
+  // OgaConfig::CreateFromPackageEp. Flat models keep kDefault so the load manager's own
+  // resolution still runs — notably the generic-gpu CUDA/WebGPU preference, which is skipped
+  // once the EP is no longer kDefault.
+  if (ep == ExecutionProvider::kDefault && info_.IsModelPackage() && !info_.execution_provider.empty()) {
     const auto catalog_ep = EPUtils::StringtoEP(info_.execution_provider);
     if (catalog_ep != ExecutionProvider::kUnknown) {
       ep = catalog_ep;
