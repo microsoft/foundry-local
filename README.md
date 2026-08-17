@@ -195,6 +195,11 @@ Please report issues or suggest improvements in the [GitHub Issues](https://gith
 
 ## ❔ Frequently asked questions
 
+### Can inference be cancelled?
+
+Streaming inference supports cooperative cancellation. Non-streaming inference cannot currently be cancelled after
+processing starts and runs to completion.
+
 ### Is Foundry Local a web server and CLI tool?
 
 No. Foundry Local is an **end-to-end local AI solution** that your application ships with. It handles model acquisition, hardware acceleration, and inference inside your app process through the SDK. The optional web server and CLI are available for development workflows, but the core product is the local AI runtime and SDK that you integrate directly into your application.

@@ -181,7 +181,8 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
 
     // Single shared Azure context for the whole blob; calling Cancel() on it
     // propagates into every in-flight chunk read.
-    Azure::Core::Context azure_ctx;
+    auto azure_ctx = Azure::Core::Context{}.WithDeadline(
+        Azure::DateTime(std::chrono::system_clock::now() + std::chrono::hours{3}));
     // Internal cancel flag flipped by the orchestrator on first chunk failure
     // or by external cancellation; checked by workers between iterations.
     std::atomic<bool> internal_cancel{false};
@@ -409,7 +410,11 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
     // All chunks done — sidecar is no longer needed.
     BlobDownloadState::DeleteState(local_path, logger_);
   } catch (const Azure::Core::OperationCancelledException&) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled");
+    if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled");
+    }
+
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "model download timed out after 3 hours");
   } catch (const Azure::Core::RequestFailedException& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
              std::string("failed to download blob '") + blob_name + "': " + e.what());
