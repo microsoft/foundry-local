@@ -17,9 +17,8 @@ namespace fl {
 
 class ILogger;
 
-#if defined(__linux__)
-using CudaGenAiDependencyLoader =
-    std::function<std::shared_ptr<void>(const std::filesystem::path&, ILogger&)>;
+#if defined(__linux__) || defined(_WIN32)
+using GenAiCudaLibraryLoader = std::function<std::shared_ptr<void>(const std::filesystem::path&, ILogger&)>;
 #endif
 
 /// Bootstrapper for the CUDA execution provider.
@@ -32,9 +31,9 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   CudaEpBootstrapper(std::string root_dir, EpRegistrationCallback register_ep,
                      EpBundleManifestFactory manifest_factory = nullptr,
                      EpArtifactDownloadFn download_fn = nullptr
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
                      ,
-                     CudaGenAiDependencyLoader genai_cuda_loader = nullptr
+                     GenAiCudaLibraryLoader genai_cuda_library_loader = nullptr
 #endif
   );
   ~CudaEpBootstrapper() override;
@@ -62,9 +61,14 @@ class CudaEpBootstrapper : public IEpBootstrapper {
   EpBundleManifestFactory manifest_factory_;
   EpBundleInstaller installer_;
   std::filesystem::path bundle_dir_;
+#if defined(_WIN32)
+  std::shared_ptr<void> genai_cuda_library_;
+#endif
 #if defined(__linux__)
   std::vector<std::pair<std::filesystem::path, std::shared_ptr<void>>> genai_cuda_libraries_;
-  CudaGenAiDependencyLoader genai_cuda_loader_;
+#endif
+#if defined(__linux__) || defined(_WIN32)
+  GenAiCudaLibraryLoader genai_cuda_library_loader_;
 #endif
 };
 

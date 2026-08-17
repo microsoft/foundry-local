@@ -171,7 +171,7 @@ int main(int argc, char* argv[]) {
     if (!model) {
       std::cerr << "Audio model not found. Available models:\n";
       ModelList all = catalog.GetModels();
-      for (const auto& m : all.Models()) {
+      for (const auto& m : all) {
         std::cout << "  " << m->GetInfo().Alias() << "\n";
       }
       return 1;

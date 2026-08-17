@@ -159,18 +159,29 @@ class FakeCatalogClient : public ICatalogClient {
   std::shared_ptr<FakeCatalogClientState> state_;
 };
 
-AzureModelCatalog::CatalogClientFactory MakeFakeCatalogClientFactory(
-    const std::shared_ptr<FakeCatalogClientState>& state) {
-  return [state](const std::string& /*base_url*/,
-                 const std::string& /*filter_override*/,
-                 const IEpDetector& /*ep_detector*/,
-                 ILogger& /*logger*/,
-                 const std::string& /*cache_directory*/,
-                 const std::string& /*catalog_region*/,
-                 bool /*disable_region_fallback*/) {
-    return std::make_unique<FakeCatalogClient>(state);
-  };
-}
+/// Catalog that serves every request from an in-memory FakeCatalogClient.
+class FakeClientAzureModelCatalog final : public AzureModelCatalog {
+ public:
+  FakeClientAzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
+                              std::string cache_dir,
+                              ModelFactory model_factory,
+                              const IEpDetector& ep_detector,
+                              ILogger& logger,
+                              bool cache_only,
+                              std::shared_ptr<FakeCatalogClientState> state)
+      : AzureModelCatalog(std::move(catalog_urls), std::move(cache_dir), std::move(model_factory), ep_detector, logger,
+                          cache_only, "eastus", false),
+        state_(std::move(state)) {}
+
+ protected:
+  std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& /*url*/,
+                                                      const std::string& /*filter*/) const override {
+    return std::make_unique<FakeCatalogClient>(state_);
+  }
+
+ private:
+  std::shared_ptr<FakeCatalogClientState> state_;
+};
 
 class CompatibilityEpDetector : public IEpDetector {
  public:
@@ -233,7 +244,7 @@ class AzureModelCatalogCompatibilityTest : public ::testing::Test {
       const IEpDetector& detector,
       bool cache_only,
       std::shared_ptr<FakeCatalogClientState> state = std::make_shared<FakeCatalogClientState>()) {
-    return std::make_unique<AzureModelCatalog>(
+    return std::make_unique<FakeClientAzureModelCatalog>(
         std::vector<std::pair<std::string, std::optional<std::string>>>{
             {"https://test.com", std::nullopt},
         },
@@ -242,9 +253,7 @@ class AzureModelCatalogCompatibilityTest : public ::testing::Test {
         detector,
         logger_,
         cache_only,
-        "eastus",
-        false,
-        MakeFakeCatalogClientFactory(std::move(state)));
+        std::move(state));
   }
 
   void SaveCache(const std::vector<ModelInfo>& models) {
@@ -917,7 +926,7 @@ TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) 
   EXPECT_TRUE(found_old);
 }
 
-TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_CreatesBYOEntry) {
+TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DefersBYOEntryToCatalogMerge) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   int http_call_count = 0;
@@ -938,22 +947,8 @@ TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_CreatesBYOEntry) {
   auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger);
 
   EXPECT_EQ(http_call_count, 2);
-
-  // Find the BYO entry.
-  const ModelInfo* byo = nullptr;
-  for (const auto& info : result) {
-    if (info.model_id == "custom-model:0") {
-      byo = &info;
-    }
-  }
-
-  ASSERT_NE(byo, nullptr);
-  EXPECT_EQ(byo->name, "custom-model");
-  EXPECT_EQ(byo->alias, "custom-model");
-  EXPECT_EQ(byo->uri, "local://custom-model");
-  EXPECT_EQ(byo->version, 0);
-  EXPECT_EQ(byo->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "Local");
-  EXPECT_EQ(byo->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR), "ONNX");
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].model_id, "phi-4-mini:3");
 }
 
 // ========================================================================

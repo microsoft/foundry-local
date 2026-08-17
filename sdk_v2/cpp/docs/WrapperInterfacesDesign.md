@@ -153,24 +153,14 @@ Driven by the interface decisions:
   `std::unique_ptr<IModel>`. Null = not found.
 - `Catalog::GetLatestVersion(const IModel&)` returns `std::unique_ptr<IModel>`.
 - `Catalog::GetModels()` / `GetCachedModels()` / `GetLoadedModels()` return
-  `ModelList`. `ModelList::Models()` returns `gsl::span<const std::unique_ptr<IModel>>`.
+  an iterable `ModelList`.
 - `Session`, `ChatSession`, `AudioSession` constructors take `IModel&`.
 - `IModel::SelectVariant(const IModel&)` and `Catalog::GetLatestVersion(const IModel&)`
   internally use `static_cast<const Model&>(arg).native_handle()`. RTTI is not used;
   the downcast is sound because `Model` is the only concrete `IModel` produced by
   the SDK.
 
-### 6. GSL dependency
-
-`microsoft-gsl` is added as a vcpkg dependency.
-
-- `gsl::span` is used in public API where a non-owning view of a contiguous range is
-  returned (e.g. `ModelList::Models()`, `InputOutputInfo::inputs`/`outputs`).
-- `gsl::not_null` is allowed for internal class members. It is **not** used in public
-  API parameters or return types — references convey the same non-null contract more
-  idiomatically.
-
-### 7. Removed types
+### 6. Removed types
 
 - `BasicModel<T>`, `ConstModel`
 - `BasicItem<T>`, `ConstItem`
@@ -229,7 +219,7 @@ ChatSession session(*model);                         // takes IModel&
 
 ```cpp
 ModelList models = catalog.GetModels();
-for (const std::unique_ptr<IModel>& m : models.Models()) {
+for (const std::unique_ptr<IModel>& m : models) {
   std::cout << m->GetAlias() << "\n";
 }
 ```

@@ -21,7 +21,7 @@ Google style from <https://google.github.io/styleguide/cppguide.html> with the f
 * Use a non-const reference for arguments that are modifiable but cannot be `nullptr` so the API clearly advertises the intent.
 * Const correctness and usage of smart pointers (`shared_ptr` and `unique_ptr`) is expected. A non-const reference equates to *"this is a non-null object that you can change but are not being given ownership of."*
 
-### `std::span` / `gsl::span`
+### `std::span`
 
 * Prefer passing `std::span<const T>` by value as input arguments when passing const references to containers with contiguous storage (like `std::vector`). This allows the function to be container-independent and the argument to represent arbitrary memory spans or sub-spans.
 
@@ -270,4 +270,3 @@ Each item type has a corresponding plain data struct returned by getter methods:
 * `Request::AddItem(Item&&)` transfers ownership — the item must not be used after this call.
 * `Configuration` uses a builder pattern with chained setters returning `Configuration&`.
 * Classes are move-only (no copy) to preserve handle ownership semantics.
-

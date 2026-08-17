@@ -3,8 +3,6 @@
 # The caller is responsible for:
 #   * placing the platform-native foundry_local binaries (.dll/.lib on
 #     Windows, .so on Linux, .dylib on macOS) under `nativeArtifactDir`
-#   * placing the public + gsl headers (cpp-native-include artifact)
-#     under `includeArtifactDir`
 #
 # Each invocation produces a populated prebuilds/<plat>-<arch>/ directory
 # under `outputDir` containing the two .node addons and the matching
@@ -23,9 +21,6 @@ parameters:
 - name: nativeArtifactDir
   type: string
   displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
-- name: includeArtifactDir
-  type: string
-  displayName: 'Path to the downloaded cpp-native-include artifact directory'
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/js-prebuild'
@@ -144,11 +139,8 @@ steps:
     workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
     customCommand: 'ci --no-audit --no-fund --ignore-scripts'
 
-# binding.gyp resolves the foundry_local lib + gsl/public include dirs
-# via FOUNDRY_LOCAL_LIB_DIR and FOUNDRY_LOCAL_INCLUDE_DIR when set. The
-# include artifact ships both `foundry_local/` and `gsl/` subdirectories;
-# we point INCLUDE_DIR at that artifact root, and the public include path
-# is added separately in binding.gyp via `../cpp/include`.
+# binding.gyp resolves the foundry_local lib via FOUNDRY_LOCAL_LIB_DIR.
+# Public headers come from the source tree via `../cpp/include`.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - powershell: |
       python --version
@@ -169,7 +161,6 @@ steps:
       PYTHON: '$(pythonLocation)\python.exe'
       npm_config_python: '$(pythonLocation)\python.exe'
       FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
-      FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
       # Force the copy_addon_to_prebuilds destination to the target-arch dir.
       # Without this, print-prebuild-dir.mjs uses the host Node.js process.arch
       # (x64) and the addon lands in prebuilds/win32-x64/ even when we are
@@ -184,7 +175,6 @@ steps:
     displayName: 'Build Node-API addon'
     env:
       FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
-      FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
       FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
 
 # Stage prebuilds/<plat>-<arch>/ with the two .node addons + foundry_local

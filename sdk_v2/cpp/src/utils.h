@@ -11,6 +11,9 @@
 #include <string>
 #include <utility>
 
+struct OrtApi;
+struct OrtEnv;
+
 namespace fl {
 
 class ILogger;
@@ -44,6 +47,10 @@ struct Utils {
   /// Split a model ID like "model-name:3" into name and version.
   /// Returns {name, version}. If no version suffix, returns {model_id, 0}.
   static std::pair<std::string, int> SplitModelNameAndVersion(const std::string& model_id);
+
+  /// Whether ORT's hardware inventory contains at least one GPU device.
+  /// Returns false and logs a warning if hardware enumeration fails.
+  static bool HasGpuHardwareDevice(const OrtApi& ort_api, const OrtEnv& ort_env, ILogger& logger);
 
   /// Log an error message and throw fl::Exception.
   /// Use with fmt::format at the call site:

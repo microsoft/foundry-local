@@ -21,6 +21,15 @@
 
 using namespace fl;
 
+TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
+  for (const char* temperature : {"-1", "2.1", "nan"}) {
+    KeyValuePairs params;
+    params.Add(FOUNDRY_LOCAL_PARAM_TEMPERATURE, temperature);
+
+    EXPECT_THROW(SearchOptions::FromParameters(params), fl::Exception);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test fixture: loads the shared test model once per suite
 // ---------------------------------------------------------------------------
@@ -115,6 +124,27 @@ TEST_F(SearchOptionsTest, TemperaturePositiveEnablesSampling) {
   auto params = MakeParams();
 
   EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
+}
+
+TEST_F(SearchOptionsTest, TemperatureOutsideSupportedRangeThrows) {
+  for (float temperature : {-1.0f, 2.1f, std::stof("nan")}) {
+    SearchOptions opts;
+    opts.temperature = temperature;
+    auto params = MakeParams();
+
+    EXPECT_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault),
+                 fl::Exception);
+  }
+}
+
+TEST_F(SearchOptionsTest, TemperatureRangeBoundariesApplySuccessfully) {
+  for (float temperature : {0.0f, 2.0f}) {
+    SearchOptions opts;
+    opts.temperature = temperature;
+    auto params = MakeParams();
+
+    EXPECT_NO_THROW(ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault));
+  }
 }
 
 TEST_F(SearchOptionsTest, AllOptionsSetSimultaneously) {

@@ -346,38 +346,40 @@ def stop_emulator(emulator_proc: subprocess.Popen) -> None:
 
 def run_tests_on_device(
     sdk_tool_paths: SdkToolPaths,
-    test_binary: Path,
+    test_binaries: list[Path],
     shared_libs: list[Path],
     device_dir: str = "/data/local/tmp/foundry_tests",
     test_data_dir: Path | None = None,
     model_cache_dir: Path | None = None,
 ) -> int:
-    """Push a native test binary and its shared library dependencies to the device and run it.
+    """Push native test binaries and their shared library dependencies to the device and run them.
 
     Args:
         sdk_tool_paths: Resolved SDK tool paths.
-        test_binary: Path to the host test executable (e.g. foundry_local_tests).
-        shared_libs: Shared libraries (.so) to push alongside the binary.
+        test_binaries: Host test executables to push and run (e.g. foundry_local_tests,
+            sdk_integration_tests).
+        shared_libs: Shared libraries (.so) to push alongside the binaries.
         device_dir: Target directory on the device.
         test_data_dir: Optional host directory with test data to push.
         model_cache_dir: Optional host directory with test models (e.g. test-data-shared).
             Only subdirectories with "cpu" in their name are pushed (the emulator has no GPU).
 
     Returns:
-        The test process exit code.
+        The first non-zero test exit code, or 0 if every binary passed.
     """
     adb = sdk_tool_paths.adb
 
     # Create target directory on device
     subprocess.run([adb, "shell", "mkdir", "-p", device_dir], check=True)
 
-    # Push the test binary
-    log.info("Pushing test binary: %s", test_binary.name)
-    subprocess.run([adb, "push", str(test_binary), f"{device_dir}/"], check=True)
-    subprocess.run(
-        [adb, "shell", "chmod", "755", f"{device_dir}/{test_binary.name}"],
-        check=True,
-    )
+    # Push the test binaries
+    for test_binary in test_binaries:
+        log.info("Pushing test binary: %s", test_binary.name)
+        subprocess.run([adb, "push", str(test_binary), f"{device_dir}/"], check=True)
+        subprocess.run(
+            [adb, "shell", "chmod", "755", f"{device_dir}/{test_binary.name}"],
+            check=True,
+        )
 
     # Push shared libraries
     for lib in shared_libs:
@@ -411,8 +413,8 @@ def run_tests_on_device(
                 check=True,
             )
 
-    # Build environment variables for the test process.
-    env_vars = f"LD_LIBRARY_PATH={device_dir}"
+    # Build environment variables for the test process. HOME must point at a writable location
+    env_vars = f"HOME={device_dir} LD_LIBRARY_PATH={device_dir}"
     if pushed_models:
         env_vars += f" FOUNDRY_TEST_DATA_DIR={device_model_cache}"
 
@@ -444,17 +446,13 @@ def run_tests_on_device(
     # Clear logcat before running tests so we only capture relevant output.
     subprocess.run([adb, "logcat", "-c"], check=False)
 
-    # Run the test binary
-    cmd = (
-        f"cd {device_dir} && "
-        f"{env_vars} "
-        f"./{test_binary.name} --gtest_color=yes"
-    )
-    log.info("Running tests on device: %s", cmd)
-    result = subprocess.run(
-        [adb, "shell", cmd],
-        # adb shell returns the exit code of the remote command
-    )
+    # Run each test binary in turn, run them all and fail the run if any binary fails.
+    returncode = 0
+    for test_binary in test_binaries:
+        cmd = f"cd {device_dir} && {env_vars} ./{test_binary.name} --gtest_color=yes"
+        log.info("Running tests on device: %s", cmd)
+        result = subprocess.run([adb, "shell", cmd])
+        returncode = returncode or result.returncode
 
     # Capture logcat output from the SDK (tag: foundry_local) and any crash/abort diagnostics.
     log.info("Capturing logcat output...")
@@ -468,4 +466,4 @@ def run_tests_on_device(
     else:
         log.info("No logcat output from foundry_local tag.")
 
-    return result.returncode
+    return returncode

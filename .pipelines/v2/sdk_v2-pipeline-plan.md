@@ -1,20 +1,21 @@
 # sdk_v2 pipeline reference
 
 Reference for the CI/CD pipeline that builds, tests, and packs the
-`sdk_v2/` C++ runtime, C# SDK, and Python SDK. Documents the as-built
-shape of the pipeline, the architectural decisions behind it, and the
+`sdk_v2/` C++ runtime, C# SDK, Python SDK, and Rust SDK. Documents the
+as-built shape of the pipeline, the architectural decisions behind it, and the
 operational details (artifact names, version contracts, pinned dependency
 versions) needed to maintain it.
 
 ## Scope
 
 In scope: `sdk_v2/cpp` (native runtime), `sdk_v2/cs/src` (C# SDK),
-`sdk_v2/python` (Python SDK). The C++ SDK is the native runtime dependency
-for both C# (via NuGet) and Python (bundled in the wheel), replacing the
-legacy `foundry-local-core` from neutron-server.
+`sdk_v2/python` (Python SDK), `sdk_v2/rust` (Rust SDK). The C++ SDK is the
+native runtime dependency for C# (via NuGet), Python (bundled in the wheel),
+and Rust (assembled by the crate build script), replacing the legacy
+`foundry-local-core` from neutron-server.
 
-JS is documented separately in `sdk_v2-js-pipeline-plan.md`. Rust and a standalone
-`foundry-local-runtime` Python wheel remain out of scope.
+JS is documented separately in `sdk_v2-js-pipeline-plan.md`. A standalone
+`foundry-local-runtime` Python wheel remains out of scope.
 
 ## Top-level pipelines
 
@@ -130,11 +131,12 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 ```
 .pipelines/v2/
 └── templates/
-    ├── stages-sdk-v2.yml             # Coordinator: native + C# + Python + JS
+    ├── stages-sdk-v2.yml             # Coordinator: native + C# + Python + JS + Rust
     ├── stages-build-native.yml       # 5 native build stages + C++/NuGet pack stages
     ├── stages-cs.yml                 # C# build + test
     ├── stages-python.yml             # Python build + test
     ├── stages-js.yml                 # JS build + test + combined npm pack
+    ├── stages-rust.yml               # Rust build+test (5 platforms) + crate pack
     ├── steps-prefetch-nuget.yml      # ORT/GenAI/WinML NuGet pre-fetch (pwsh + bash)
     ├── steps-build-windows.yml       # arch: x64 | arm64 (always bundles WinML)
     ├── steps-build-linux.yml
@@ -143,6 +145,7 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
     ├── steps-test-cs.yml             # restore + build + run tests
     ├── steps-build-python.yml        # pass-through copy + python -m build --wheel
     ├── steps-test-python.yml         # install wheel + pytest
+    ├── steps-build-rust.yml          # toolchain + native assembly + fmt/clippy/build/test
     └── steps-pack-nuget.yml          # Runs sdk_v2/cpp/nuget/pack.py
 ```
 
@@ -168,6 +171,12 @@ compute_version
    |-- python_build_linux_x64 ----> python_test_linux_x64
    |-- python_build_linux_arm64 --> python_test_linux_arm64
    +-- python_build_osx_arm64 ----> python_test_osx_arm64
+   |
+   |-- rust_build_win_x64 ---------+  (build + unit + integration)
+   |-- rust_build_win_arm64 -------|  (cross build-only)
+   |-- rust_build_linux_x64 -------+--> rust_pack_crate
+   |-- rust_build_linux_arm64 -----|
+   +-- rust_build_osx_arm64 -------+
 ```
 
 * All build stages are independent (`dependsOn: [compute_version]`) and run
@@ -194,6 +203,36 @@ Published via 1ES `templateContext.outputs` (no manual `PublishPipelineArtifact`
 | `cpp_build_linux_arm64`     | `cpp-native-linux-arm64`       | `libfoundry_local.so` (CPU-only)                           |
 | `cpp_build_osx_arm64`       | `cpp-native-osx-arm64`         | Developer ID-signed `libfoundry_local.dylib`               |
 | `cpp_pack_nuget`            | `cpp-nuget`                    | `Microsoft.AI.Foundry.Local.Runtime.<version>.nupkg` (bundles WinML on Windows) |
+| `rust_pack_crate`           | `rust-sdk-v2`                  | `foundry-local-sdk-<version>.crate` (platform-independent source crate) |
+
+## Rust SDK
+
+The Rust SDK (`foundry-local` crate) is a **source package**, unlike the
+per-platform wheel / npm tarball / NuGet. There is no per-platform binary to
+hand off, so:
+
+* Each platform stage (`rust_build_<rid>`) rebuilds from source, running
+  `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, then the unit
+  (`cargo test --lib`) and integration (`cargo test --tests`) suites. A single,
+  platform-independent `.crate` is produced once by `rust_pack_crate`.
+* **Native for tests.** The `cpp-native-<rid>` artifact carries only
+  `foundry_local` (plus the WinML DLL on Windows). ORT/GenAI are *not*
+  vcpkg-static (only azure/spdlog/fmt/openssl/curl/zlib/brotli are absorbed into
+  `foundry_local`), so `steps-build-rust.yml` extracts `onnxruntime` +
+  `onnxruntime-genai` from the pinned `Microsoft.ML.OnnxRuntime.Foundry` /
+  `Microsoft.ML.OnnxRuntimeGenAI.Foundry` NuGet packages (`runtimes/<rid>/native/`)
+  into one directory alongside `foundry_local`, handed to `build.rs` via
+  `FOUNDRY_LOCAL_NATIVE_BIN_DIR`. build.rs copies every platform library into
+  `OUT_DIR` and bakes that path, so unit and integration tests resolve the native
+  by the baked path. The pinned versions match the C++ native build inputs
+  (`cppOrtVersion` / `cppGenaiVersion`).
+* **win-arm64** is cross-compiled (`cargo clippy --target aarch64-pc-windows-msvc`,
+  check-only), matching the build-only treatment it gets in the C# / Python
+  matrices.
+* Integration tests run with `--test-threads=1`: the native core enforces a
+  single `FoundryLocalManager` per process, so tests that each create one must
+  not run concurrently. They consume the same `test-data-shared` models as the
+  C# / Python suites (`FOUNDRY_TEST_DATA_DIR`).
 
 ## Versioning
 
@@ -203,8 +242,9 @@ The `compute_version` stage emits three flavors of the same base version:
 * `pyVersion`  — PEP 440 for Python           (e.g. `0.1.0.dev202605111234`)
 * `flcVersion` — Core/native-style            (e.g. `0.1.0-dev-202605111234-abc12345`)
 
-The C++ pack stage consumes `sdkVersion.txt`; the Python build stage
-consumes `pyVersion.txt`; `flcVersion.txt` exists for Core publishing.
+The C++ pack stage and the Rust build/pack stages consume `sdkVersion.txt`;
+the Python build stage consumes `pyVersion.txt`; `flcVersion.txt` exists for
+Core publishing.
 
 `sdkVersion` is baked into the native binary via the cmake cache variable
 `FOUNDRY_LOCAL_VERSION_STRING`, so `FoundryLocalGetVersionString()` returns
@@ -316,7 +356,6 @@ Build output directories follow `build.py`'s convention:
 ## Things explicitly out of scope
 
 - No `foundry-local-runtime` standalone wheel.
-- No Rust sdk_v2 stages.
 - No multi-repo `Foundry-Local`/`test-data-shared` path-juggling logic in
   the sdk_v2 templates — sdk_v2 paths are repo-relative.
 - No private Azure DevOps feed dependency for the Python wheel install
@@ -343,6 +382,7 @@ Build output directories follow `build.py`'s convention:
 * Native build/pack: [templates/stages-build-native.yml](templates/stages-build-native.yml)
 * C# stages: [templates/stages-cs.yml](templates/stages-cs.yml)
 * Python stages: [templates/stages-python.yml](templates/stages-python.yml)
+* Rust stages: [templates/stages-rust.yml](templates/stages-rust.yml), [templates/steps-build-rust.yml](templates/steps-build-rust.yml)
 * Pre-fetch: [templates/steps-prefetch-nuget.yml](templates/steps-prefetch-nuget.yml)
 * Pack tool: [sdk_v2/cpp/nuget/pack.py](../../sdk_v2/cpp/nuget/pack.py)
 * Top-level pipeline: [foundry-local-packaging.yml](../foundry-local-packaging.yml)

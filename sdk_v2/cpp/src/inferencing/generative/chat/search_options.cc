@@ -27,7 +27,10 @@ int ApplySearchOptions(const SearchOptions& options,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
   }
 
-  // Determine max output tokens
+  // genai_config.json's search.max_length (read above) is the source of truth for the total input+output budget.
+  // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
+  // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
+  // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
   int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
   if (max_output < 1) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
@@ -53,7 +56,12 @@ int ApplySearchOptions(const SearchOptions& options,
 
   // Temperature
   if (options.temperature.has_value()) {
-    gen_params.SetSearchOption("temperature", static_cast<double>(*options.temperature));
+    const float temperature = *options.temperature;
+    if (!(temperature >= 0.0f && temperature <= 2.0f)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "temperature must be in the range [0.0, 2.0]");
+    }
+
+    gen_params.SetSearchOption("temperature", static_cast<double>(temperature));
   }
 
   // top_p
@@ -146,6 +154,10 @@ SearchOptions SearchOptions::FromParameters(const KeyValuePairs& params) {
   };
 
   opts.temperature = try_float(FOUNDRY_LOCAL_PARAM_TEMPERATURE);
+  if (opts.temperature.has_value() && !(*opts.temperature >= 0.0f && *opts.temperature <= 2.0f)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "temperature must be in the range [0.0, 2.0]");
+  }
+
   opts.top_p = try_float(FOUNDRY_LOCAL_PARAM_TOP_P);
   opts.top_k = try_int(FOUNDRY_LOCAL_PARAM_TOP_K);
   opts.max_output_tokens = try_int(FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS);

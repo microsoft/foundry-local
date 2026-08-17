@@ -272,8 +272,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
     bootstrappers.push_back(std::make_unique<CudaEpBootstrapper>(cuda_ep_root.string(), register_ep));
   }
 
-  // WebGPU EP — only on exact architectures for which a bundle is published.
-  if (WebGpuEpBootstrapper::IsSupportedPlatform()) {
+  // Avoid downloading WebGPU when ORT's pre-registration hardware inventory has no GPU.
+  if (WebGpuEpBootstrapper::IsSupportedPlatform() &&
+      Utils::HasGpuHardwareDevice(*ort_api_, *ort_env_, *logger_)) {
     const auto webgpu_ep_root = std::filesystem::path(*config_.app_data_dir) / "ep" / "webgpu-ep";
     bootstrappers.push_back(std::make_unique<WebGpuEpBootstrapper>(webgpu_ep_root.string(), register_ep));
   }
@@ -517,18 +518,22 @@ void Manager::Shutdown() {
 
   logger_->Log(LogLevel::Information, "Shutdown requested");
 
+  // Order matters:
+  //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
+  //   2. Cancel in-flight generations BEFORE stopping the web service. StopWebService() hard-joins
+  //      streaming threads; a generation grinding in ORT GenAI only stops when request.canceled is
+  //      set, so cancelling first is what lets JoinAll() return promptly instead of deadlocking
+  //      process shutdown.
+  //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.
+  //   4. Unload all models, polling per-model session refcount for direct-API users who haven't
+  //      dropped their flSession* yet. Bounded by timeout so a stuck caller can't block shutdown.
+  model_load_manager_->RejectNewLoads();
+  session_manager_->CancelAll();
+
   if (web_service_running_) {
     StopWebService();
   }
 
-  // Order matters:
-  //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
-  //   2. Cancel + drain HTTP-tracked sessions (web service path).
-  //   3. Unload all models, polling per-model session refcount for direct-API users
-  //      who haven't dropped their flSession* yet. Bounded by timeout so a stuck
-  //      caller can't block process shutdown indefinitely.
-  model_load_manager_->RejectNewLoads();
-  session_manager_->CancelAll();
   session_manager_->WaitForDrain();
   model_load_manager_->UnloadAll();
 }

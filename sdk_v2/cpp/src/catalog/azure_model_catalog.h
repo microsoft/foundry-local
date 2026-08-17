@@ -3,18 +3,21 @@
 #pragma once
 
 #include "catalog/base_model_catalog.h"
-#include "catalog/catalog_client.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace fl {
+
+class ICatalogClient;
 
 /// Azure-specific catalog. Fetches from Azure Foundry catalog API,
 /// scans local cache, merges results.
@@ -22,14 +25,6 @@ namespace fl {
 class AzureModelCatalog : public BaseModelCatalog {
  public:
   using ModelFactory = std::function<Model(ModelInfo info, std::string local_path)>;
-  using CatalogClientFactory = std::function<std::unique_ptr<ICatalogClient>(
-      const std::string& base_url,
-      const std::string& filter_override,
-      const IEpDetector& ep_detector,
-      ILogger& logger,
-      const std::string& cache_directory,
-      const std::string& catalog_region,
-      bool disable_region_fallback)>;
 
   AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
                     std::string cache_dir,
@@ -38,8 +33,7 @@ class AzureModelCatalog : public BaseModelCatalog {
                     ILogger& logger,
                     bool cache_only = false,
                     std::string catalog_region = "",
-                    bool disable_region_fallback = false,
-                    CatalogClientFactory catalog_client_factory = {});
+                    bool disable_region_fallback = false);
   ~AzureModelCatalog() override;
 
  protected:
@@ -47,10 +41,29 @@ class AzureModelCatalog : public BaseModelCatalog {
   std::vector<Model> FetchModelVersions(const std::string& model_alias,
                                         const std::string& model_name = "") const override;
   std::vector<Model> FetchModelsByIds(const std::vector<std::string>& model_ids) const override;
+  virtual std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& url,
+                                                              const std::string& filter) const;
 
  private:
+  using LocalModels = std::map<std::string, std::string>;
+
+  enum class CatalogSource {
+    kLive,
+    kSnapshot,
+  };
+
+  struct CatalogResult {
+    std::vector<ModelInfo> model_infos;
+    CatalogSource source;
+  };
+
   static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
   static constexpr const char* kDefaultCatalogFilter = "''";
+
+  CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
+  std::vector<Model> AddLocalModels(std::vector<ModelInfo>& model_infos,
+                                    const LocalModels& local_models,
+                                    const std::unordered_set<std::string>& hidden_model_ids) const;
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;
@@ -58,7 +71,6 @@ class AzureModelCatalog : public BaseModelCatalog {
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   bool cache_only_;
-  CatalogClientFactory catalog_client_factory_;
   // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
   std::string catalog_region_;
   bool disable_region_fallback_;
