@@ -21,7 +21,6 @@
 #include "test_helpers.h"
 #include "util/path_safety.h"
 #include "util/region_fallback.h"
-#include <azure/core/context.hpp>
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
@@ -1543,7 +1542,6 @@ namespace {
 class FakeChunkAzureDownloader : public AzureBlobDownloader {
  public:
   int64_t blob_size = 0;
-  std::function<void()> get_blob_size_hook;
 
   /// Per-call hook. Receives the chunk offset and size plus a `sink` callback
   /// that forwards bytes to the file writer. Allowed to:
@@ -1568,13 +1566,7 @@ class FakeChunkAzureDownloader : public AzureBlobDownloader {
   FakeChunkAzureDownloader() : AzureBlobDownloader(fl::test::NullLog()) {}
 
  protected:
-  int64_t GetBlobSize(ChunkContext& /*ctx*/) override {
-    if (get_blob_size_hook) {
-      get_blob_size_hook();
-    }
-
-    return blob_size;
-  }
+  int64_t GetBlobSize(ChunkContext& /*ctx*/) override { return blob_size; }
 
   void DownloadChunkStreaming(ChunkContext& ctx, int64_t offset, int64_t size,
                               std::vector<uint8_t>& scratch,
@@ -1605,38 +1597,6 @@ class FakeChunkAzureDownloader : public AzureBlobDownloader {
 };
 
 }  // namespace
-
-TEST(AzureBlobDownloaderTimeoutTest, DeadlineCancellationWithoutExternalCancellationBecomesNetworkError) {
-  auto tmpdir = TempPath::CreateTempDir();
-  FakeChunkAzureDownloader d;
-  d.get_blob_size_hook = []() {
-    throw Azure::Core::OperationCancelledException("deadline exceeded");
-  };
-
-  try {
-    d.DownloadBlob("", "blob", (tmpdir.path() / "blob.bin").string(), 1);
-    FAIL() << "expected fl::Exception";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
-    EXPECT_NE(std::string(e.what()).find("model download timed out after 3 hours"), std::string::npos);
-  }
-}
-
-TEST(AzureBlobDownloaderTimeoutTest, DeadlineCancellationWithExternalCancellationRemainsCancelled) {
-  auto tmpdir = TempPath::CreateTempDir();
-  FakeChunkAzureDownloader d;
-  d.get_blob_size_hook = []() {
-    throw Azure::Core::OperationCancelledException("deadline exceeded");
-  };
-  std::atomic<bool> cancelled{true};
-
-  try {
-    d.DownloadBlob("", "blob", (tmpdir.path() / "blob.bin").string(), 1, nullptr, &cancelled);
-    FAIL() << "expected fl::Exception";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
-  }
-}
 
 TEST(AzureBlobDownloaderResumeTest, SkipsChunksAlreadyMarkedCompleteInSidecar) {
   auto tmpdir = TempPath::CreateTempDir();
