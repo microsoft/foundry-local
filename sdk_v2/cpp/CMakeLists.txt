@@ -271,6 +271,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/util/path_safety.cc
     src/util/region_fallback.cc
     src/util/sha256.cc
+    src/util/time_utils.cc
     src/util/zip_extract.cc
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}

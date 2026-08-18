@@ -5,6 +5,7 @@
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
 #include "util/file_lock.h"
+#include "util/time_utils.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
@@ -12,11 +13,8 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
-#include <ctime>
 #include <fstream>
-#include <iomanip>
 #include <regex>
-#include <sstream>
 #include <unordered_set>
 
 #ifdef _WIN32
@@ -40,20 +38,6 @@ const std::unordered_set<std::string> kSupportedTasks = {
     "embeddings",
     "vision-language-chat",
 };
-
-std::string UtcTimestamp(int64_t unix_time) {
-  const auto value = static_cast<std::time_t>(unix_time);
-  std::tm utc{};
-#ifdef _WIN32
-  gmtime_s(&utc, &value);
-#else
-  gmtime_r(&value, &utc);
-#endif
-
-  std::ostringstream stream;
-  stream << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
-  return stream.str();
-}
 
 bool HasParentTraversal(const std::filesystem::path& path) {
   return std::any_of(path.begin(), path.end(), [](const auto& component) { return component == ".."; });
@@ -290,7 +274,7 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
 
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, UtcTimestamp(now));
+  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, FormatUtcTimestamp(now));
 
   return resolved;
 }
