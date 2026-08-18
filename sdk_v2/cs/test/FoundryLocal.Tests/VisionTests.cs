@@ -7,6 +7,7 @@
 namespace Microsoft.AI.Foundry.Local.Tests;
 
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 using TUnit.Core.Exceptions;
@@ -17,6 +18,7 @@ using TUnit.Core.Exceptions;
 internal sealed class VisionTests
 {
     private static IModel? model;
+    private static readonly SemaphoreSlim sessionGate = new(1, 1);
 
     private static string TestImagePath => Utils.TestDataPath("Taittinger.jpg");
 
@@ -80,105 +82,123 @@ internal sealed class VisionTests
     [Test]
     public async Task Vision_ImageBytesInput_ProducesResponse()
     {
-        if (model == null)
+        await sessionGate.WaitAsync().ConfigureAwait(false);
+
+        try
         {
-            throw new SkipTestException("Vision model not available");
-        }
-
-        // Use the sync overload so the same source compiles on net462, which does not have
-        // File.ReadAllBytesAsync. The test image is a few KB — blocking briefly is fine.
-        var imageBytes = File.ReadAllBytes(TestImagePath);
-
-        using var session = new ChatSession(model!);
-        session.SetOptions(new RequestOptions
-        {
-            Search = new SearchOptions { MaxOutputTokens = 512, Temperature = 0f },
-        });
-
-        using var request = new Request();
-
-        var parts = new Item[]
-        {
-            new TextItem("Describe this image in one short sentence."),
-            new ImageItem("jpeg", new ReadOnlyMemory<byte>(imageBytes)),
-        };
-
-        request.AddItem(new MessageItem(MessageRole.User, parts));
-
-        using var response = await session.ProcessRequestAsync(request).ConfigureAwait(false);
-
-        await Assert.That(response).IsNotNull();
-        await Assert.That(response.ItemCount).IsGreaterThan(0);
-
-        string? content = null;
-
-        foreach (var item in response)
-        {
-            using (item)
+            if (model == null)
             {
-                if (item is MessageItem msg)
+                throw new SkipTestException("Vision model not available");
+            }
+
+            // Use the sync overload so the same source compiles on net462, which does not have
+            // File.ReadAllBytesAsync. The test image is a few KB — blocking briefly is fine.
+            var imageBytes = File.ReadAllBytes(TestImagePath);
+
+            using var session = new ChatSession(model);
+            session.SetOptions(new RequestOptions
+            {
+                Search = new SearchOptions { MaxOutputTokens = 512, Temperature = 0f },
+            });
+
+            using var request = new Request();
+
+            var parts = new Item[]
+            {
+                new TextItem("Describe this image in one short sentence."),
+                new ImageItem("jpeg", new ReadOnlyMemory<byte>(imageBytes)),
+            };
+
+            request.AddItem(new MessageItem(MessageRole.User, parts));
+
+            using var response = await session.ProcessRequestAsync(request).ConfigureAwait(false);
+
+            await Assert.That(response).IsNotNull();
+            await Assert.That(response.ItemCount).IsGreaterThan(0);
+
+            string? content = null;
+
+            foreach (var item in response)
+            {
+                using (item)
                 {
-                    content = msg.GetSimpleText();
+                    if (item is MessageItem msg)
+                    {
+                        content = msg.GetSimpleText();
+                    }
                 }
             }
-        }
 
-        await Assert.That(content).IsNotNull().And.IsNotEmpty();
-        // IndexOf with StringComparison is available on netstandard2.0; the
-        // string.Contains(string, StringComparison) overload is net8+ only.
+            await Assert.That(content).IsNotNull().And.IsNotEmpty();
+            // IndexOf with StringComparison is available on netstandard2.0; the
+            // string.Contains(string, StringComparison) overload is net8+ only.
 #pragma warning disable CA2249 // Use string.Contains — intentional for net462 source compat
-        await Assert.That(content!.IndexOf("bottle", StringComparison.OrdinalIgnoreCase) >= 0).IsTrue();
+            await Assert.That(content!.IndexOf("bottle", StringComparison.OrdinalIgnoreCase) >= 0).IsTrue();
 #pragma warning restore CA2249
-        Console.WriteLine($"Vision response: {content}");
+            Console.WriteLine($"Vision response: {content}");
+        }
+        finally
+        {
+            sessionGate.Release();
+        }
     }
 
     [Test]
     public async Task Vision_ImageBytesInput_Streaming_ProducesTokens()
     {
-        if (model == null)
+        await sessionGate.WaitAsync().ConfigureAwait(false);
+
+        try
         {
-            throw new SkipTestException("Vision model not available");
-        }
-
-        // Use the sync overload so the same source compiles on net462, which does not have
-        // File.ReadAllBytesAsync. The test image is a few KB — blocking briefly is fine.
-        var imageBytes = File.ReadAllBytes(TestImagePath);
-
-        using var session = new ChatSession(model!);
-        session.SetOptions(new RequestOptions
-        {
-            Search = new SearchOptions { MaxOutputTokens = 512, Temperature = 0f },
-        });
-        session.SetStreaming(true);
-
-        using var request = new Request();
-
-        var parts = new Item[]
-        {
-            new TextItem("Describe this image in one short sentence."),
-            new ImageItem("jpeg", new ReadOnlyMemory<byte>(imageBytes)),
-        };
-
-        request.AddItem(new MessageItem(MessageRole.User, parts));
-
-        var sb = new StringBuilder();
-
-        await foreach (var item in session.ProcessStreamingRequestAsync(request).ConfigureAwait(false))
-        {
-            using (item)
+            if (model == null)
             {
-                if (item is TextItem txt)
+                throw new SkipTestException("Vision model not available");
+            }
+
+            // Use the sync overload so the same source compiles on net462, which does not have
+            // File.ReadAllBytesAsync. The test image is a few KB — blocking briefly is fine.
+            var imageBytes = File.ReadAllBytes(TestImagePath);
+
+            using var session = new ChatSession(model);
+            session.SetOptions(new RequestOptions
+            {
+                Search = new SearchOptions { MaxOutputTokens = 512, Temperature = 0f },
+            });
+            session.SetStreaming(true);
+
+            using var request = new Request();
+
+            var parts = new Item[]
+            {
+                new TextItem("Describe this image in one short sentence."),
+                new ImageItem("jpeg", new ReadOnlyMemory<byte>(imageBytes)),
+            };
+
+            request.AddItem(new MessageItem(MessageRole.User, parts));
+
+            var sb = new StringBuilder();
+
+            await foreach (var item in session.ProcessStreamingRequestAsync(request).ConfigureAwait(false))
+            {
+                using (item)
                 {
-                    sb.Append(txt.Text);
+                    if (item is TextItem txt)
+                    {
+                        sb.Append(txt.Text);
+                    }
                 }
             }
-        }
 
-        var fullResponse = sb.ToString();
-        Console.WriteLine($"Vision streaming response: {fullResponse}");
-        await Assert.That(fullResponse).IsNotEmpty();
+            var fullResponse = sb.ToString();
+            Console.WriteLine($"Vision streaming response: {fullResponse}");
+            await Assert.That(fullResponse).IsNotEmpty();
 #pragma warning disable CA2249 // Use string.Contains — intentional for net462 source compat
-        await Assert.That(fullResponse.IndexOf("bottle", StringComparison.OrdinalIgnoreCase) >= 0).IsTrue();
+            await Assert.That(fullResponse.IndexOf("bottle", StringComparison.OrdinalIgnoreCase) >= 0).IsTrue();
 #pragma warning restore CA2249
+        }
+        finally
+        {
+            sessionGate.Release();
+        }
     }
 }
