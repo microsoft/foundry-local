@@ -803,7 +803,10 @@ class ICatalog {
   virtual ModelList GetModelVersions(const std::string& model_alias,
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
-  virtual std::unique_ptr<IModel> RegisterModel(const ModelInfo&) {
+
+  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// The catalog does not take ownership of `model_path` and never deletes its contents.
+  virtual std::unique_ptr<IModel> RegisterModel(const std::string&, const std::string&, const ModelInfo&) {
     throw Error("models can only be registered in a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
   virtual void UnregisterModel(const std::string&) {
@@ -834,7 +837,8 @@ class Catalog final : public ICatalog {
   ModelList GetModelVersions(const std::string& model_alias,
                              const std::string& variant_name = {},
                              int max_versions = 50) override;
-  std::unique_ptr<IModel> RegisterModel(const ModelInfo& model_info) override;
+  std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
+                                        const ModelInfo& metadata) override;
   void UnregisterModel(const std::string& alias_or_model_id) override;
 
  private:

@@ -56,6 +56,9 @@ class BaseModelCatalog : public ICatalog {
   /// Remove a model from catalog lookup while retaining its storage for pointer safety.
   bool RetireModel(const std::string& alias_or_model_id);
 
+  /// Commit an unregister operation against the exact container whose lifecycle lock is held.
+  bool CommitUnregister(Model* model, const std::string& alias_or_model_id);
+
   /// Derived classes implement this to fetch model variants from their source.
   /// Returns the full variant list. Base class handles caching and indexing.
   /// Maps to C# FetchModelInfoAsync.

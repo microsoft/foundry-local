@@ -657,9 +657,11 @@ inline ModelList Catalog::GetModelVersions(const std::string& model_alias,
   return ModelList(*models);
 }
 
-inline std::unique_ptr<IModel> Catalog::RegisterModel(const ModelInfo& model_info) {
+inline std::unique_ptr<IModel> Catalog::RegisterModel(const std::string& model_path, const std::string& model_id,
+                                                      const ModelInfo& metadata) {
   flModel* model = nullptr;
-  Check(detail::catalog_api()->RegisterModel(handle_.get_mutable(), model_info.native_handle(), &model));
+  Check(detail::catalog_api()->RegisterModel(handle_.get_mutable(), model_path.c_str(), model_id.c_str(),
+                                             metadata.native_handle(), &model));
   return std::make_unique<Model>(*model);
 }
 

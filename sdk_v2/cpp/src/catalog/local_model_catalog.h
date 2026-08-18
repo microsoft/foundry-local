@@ -17,12 +17,14 @@ class LocalModelCatalog final : public BaseModelCatalog {
 
   LocalModelCatalog(std::filesystem::path app_data_dir, ModelFactory model_factory, ILogger& logger);
 
-  Model* RegisterModel(const ModelInfo& model_info) override;
+  Model* RegisterModel(const std::string& model_path, const std::string& model_id,
+                       const ModelInfo& metadata) override;
   void UnregisterModel(const std::string& alias_or_model_id) override;
 
   struct Registration {
     ModelInfo info;
     std::string model_path;
+    std::string registration_id;
   };
 
  protected:
@@ -30,8 +32,8 @@ class LocalModelCatalog final : public BaseModelCatalog {
   bool IsAuthoritativeSnapshot() const override { return true; }
 
  private:
-  ModelInfo ResolveMetadata(const ModelInfo& metadata, const std::string& model_path,
-                            const std::string& alias) const;
+  ModelInfo ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
+                            const std::string& name, int version) const;
   std::vector<Registration> LoadRegistrations() const;
   void SaveRegistrations(const std::vector<Registration>& registrations) const;
   Model CreateModel(const Registration& registration) const;

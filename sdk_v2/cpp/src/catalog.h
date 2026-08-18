@@ -67,7 +67,8 @@ class ICatalog {
   /// Lists only models that are currently loaded into a runtime.
   virtual std::vector<Model*> GetLoadedModels() const = 0;
 
-  virtual Model* RegisterModel(const ModelInfo& /*model_info*/) {
+  virtual Model* RegisterModel(const std::string& /*model_path*/, const std::string& /*model_id*/,
+                               const ModelInfo& /*metadata*/) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "models can only be registered in a local catalog");
   }
 

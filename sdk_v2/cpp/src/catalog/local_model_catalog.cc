@@ -10,11 +10,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
-#include <limits>
 #include <regex>
 #include <sstream>
 #include <unordered_set>
@@ -29,7 +29,11 @@ namespace fl {
 namespace {
 
 constexpr const char* kRegistrationIdProperty = "_local_registration_id";
-const std::regex kAliasPattern("[A-Za-z0-9][A-Za-z0-9._-]*");
+constexpr const char* kLegacyModelPathProperty = "model_path";
+constexpr const char* kLegacyAliasProperty = "alias";
+constexpr const char* kLegacyVersionProperty = "version";
+const std::regex kModelNamePattern("[A-Za-z0-9][A-Za-z0-9._-]*");
+std::mutex kLocalCatalogMutationMutex;
 const std::unordered_set<std::string> kSupportedTasks = {
     "automatic-speech-recognition",
     "chat-completion",
@@ -55,11 +59,54 @@ bool HasParentTraversal(const std::filesystem::path& path) {
   return std::any_of(path.begin(), path.end(), [](const auto& component) { return component == ".."; });
 }
 
+struct ParsedModelId {
+  std::string name;
+  int version;
+};
+
+ParsedModelId ParseModelId(const std::string& model_id) {
+  const auto separator = model_id.find(':');
+  if (separator == std::string::npos || separator == 0 || separator + 1 == model_id.size() ||
+      model_id.find(':', separator + 1) != std::string::npos) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id must have format <name>:<version>");
+  }
+
+  auto name = model_id.substr(0, separator);
+  if (!std::regex_match(name, kModelNamePattern)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id name must match [a-zA-Z0-9][a-zA-Z0-9._-]*");
+  }
+
+  const auto version_text = model_id.substr(separator + 1);
+  if ((version_text.size() > 1 && version_text.front() == '0') ||
+      !std::all_of(version_text.begin(), version_text.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id version must be a canonical non-negative integer");
+  }
+
+  int version = 0;
+  const auto [end, error] = std::from_chars(version_text.data(), version_text.data() + version_text.size(), version);
+  if (error != std::errc{} || end != version_text.data() + version_text.size()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id version is out of range");
+  }
+
+  return {std::move(name), version};
+}
+
+void RemoveLegacyRegistrationProperties(ModelInfo& info) {
+  info.string_properties.erase(kLegacyModelPathProperty);
+  info.string_properties.erase(kLegacyAliasProperty);
+  info.string_properties.erase(kRegistrationIdProperty);
+  info.string_properties.erase(kLegacyVersionProperty);
+  info.int_properties.erase(kLegacyModelPathProperty);
+  info.int_properties.erase(kLegacyAliasProperty);
+  info.int_properties.erase(kRegistrationIdProperty);
+  info.int_properties.erase(kLegacyVersionProperty);
+}
+
 nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registration) {
   return {
-      {"alias", registration.info.alias},
       {"model_id", registration.info.model_id},
       {"model_path", registration.model_path},
+      {"registration_id", registration.registration_id},
       {"registered_at",
        registration.info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{})},
       {"properties", ModelInfoToPropertyBagJson(registration.info)},
@@ -90,22 +137,17 @@ std::vector<Model> LocalModelCatalog::FetchModels() const {
   return models;
 }
 
-Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
-  const auto* model_path_value = model_info.GetPropertyStr(FOUNDRY_LOCAL_REG_MODEL_PATH);
-  if (!model_path_value || model_path_value->empty()) {
+Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, const std::string& model_id,
+                                        const ModelInfo& metadata) {
+  std::lock_guard<std::mutex> mutation_guard(kLocalCatalogMutationMutex);
+
+  if (model_path_value.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path is required");
   }
 
-  const auto* alias_value = model_info.GetPropertyStr(FOUNDRY_LOCAL_REG_ALIAS);
-  if (!alias_value || alias_value->empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "alias is required");
-  }
+  const auto parsed_id = ParseModelId(model_id);
 
-  if (!std::regex_match(*alias_value, kAliasPattern)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "alias must match [a-zA-Z0-9][a-zA-Z0-9._-]*");
-  }
-
-  const std::filesystem::path supplied_path(*model_path_value);
+  const std::filesystem::path supplied_path(model_path_value);
   if (HasParentTraversal(supplied_path)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must not contain '..' path components");
   }
@@ -123,7 +165,7 @@ Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
 
   GenAIConfig::LoadFromFile(config_path.string());
 
-  const auto* task = model_info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+  const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
   if (!task || task->empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "task is required");
   }
@@ -138,21 +180,19 @@ Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
     FileLock file_lock(lock_path_);
     auto registrations = LoadRegistrations();
     const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
-      return existing.info.alias == *alias_value;
+      return existing.info.model_id == model_id;
     });
     if (duplicate != registrations.end()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "a model with alias '" + *alias_value + "' is already registered");
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id is already registered: " + model_id);
     }
 
-    registration = {ResolveMetadata(model_info, model_path.string(), *alias_value), model_path.string()};
-    auto registration_id = registration.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{});
+    registration = {ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version), model_path.string(),
+                    std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count())};
     while (std::any_of(registrations.begin(), registrations.end(), [&](const auto& existing) {
-      return existing.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{}) == registration_id;
+      return existing.registration_id == registration.registration_id;
     })) {
-      registration_id += "-1";
+      registration.registration_id += "-1";
     }
-    SetModelInfoStringProperty(registration.info, kRegistrationIdProperty, std::move(registration_id));
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -160,8 +200,7 @@ Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
 
   ListModels();
   auto* model = GetModelVariant(registration.info.model_id);
-  const auto runtime_id =
-      "local/" + registration.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{});
+  const auto runtime_id = "local/" + registration.registration_id;
   if (!model || model->RuntimeId() != runtime_id) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "registered model was not available after catalog refresh");
   }
@@ -170,6 +209,8 @@ Model* LocalModelCatalog::RegisterModel(const ModelInfo& model_info) {
 }
 
 void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
+  std::lock_guard<std::mutex> mutation_guard(kLocalCatalogMutationMutex);
+
   if (alias_or_model_id.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "alias_or_model_id must not be empty");
   }
@@ -177,16 +218,27 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
   ListModels();
   auto* model = GetModel(alias_or_model_id);
   if (!model) {
-    model = GetModelVariant(alias_or_model_id);
+    auto* variant = GetModelVariant(alias_or_model_id);
+    if (variant) {
+      model = GetModel(variant->Alias());
+    }
   }
   if (!model) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model not found: " + alias_or_model_id);
   }
 
   model->BeginUnregister();
+  bool unregister_in_progress = true;
   try {
-    if (model->IsLoaded()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot unregister a loaded model; unload it first");
+    for (const auto* variant : model->Variants()) {
+      if (variant->IsLoaded()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot unregister a loaded model; unload it first");
+      }
+    }
+
+    const bool unregister_alias = model->Alias() == alias_or_model_id;
+    if (!unregister_alias && !model->PrepareRetireVariant(alias_or_model_id)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model not found: " + alias_or_model_id);
     }
 
     {
@@ -204,30 +256,31 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
       SaveRegistrations(registrations);
     }
 
+    if (!CommitUnregister(model, alias_or_model_id)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "unregistered model was not present in the in-memory catalog");
+    }
+
+    model->CancelUnregister();
+    unregister_in_progress = false;
     ListModels();
-    model->CancelUnregister();
   } catch (...) {
-    model->CancelUnregister();
+    if (unregister_in_progress) {
+      model->CancelUnregister();
+    }
     throw;
   }
 }
 
-ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_path,
-                                             const std::string& alias) const {
+ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
+                                             const std::string& name, int version) const {
   auto resolved = metadata;
-  const auto version = resolved.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT, int64_t{0});
-  if (version < 0 || version > std::numeric_limits<int>::max()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "version must be a non-negative integer");
-  }
+  RemoveLegacyRegistrationProperties(resolved);
 
-  resolved.alias = alias;
-  resolved.name = alias;
-  resolved.version = static_cast<int>(version);
-  resolved.model_id = alias + ":" + std::to_string(version);
+  resolved.alias = name;
+  resolved.name = name;
+  resolved.version = version;
+  resolved.model_id = model_id;
   resolved.uri.clear();
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_REG_MODEL_PATH, model_path);
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_REG_ALIAS, alias);
-  SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT, version);
   if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR)) {
     SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
   }
@@ -238,8 +291,6 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
   SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, UtcTimestamp(now));
-  const auto registration_id = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-  SetModelInfoStringProperty(resolved, kRegistrationIdProperty, std::to_string(registration_id));
 
   return resolved;
 }
@@ -254,50 +305,51 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
   try {
     nlohmann::json root;
     stream >> root;
-    if (!root.is_object() || root.value("version", 0) != 1 || !root.contains("models") ||
-        !root["models"].is_array()) {
+    const auto schema_version = root.value("version", 0);
+    if (!root.is_object() || (schema_version != 1 && schema_version != 2) || !root.contains("models") ||
+      !root["models"].is_array()) {
       logger_.Log(LogLevel::Warning, "Ignoring malformed local model registration index: " + index_path_.string());
       return {};
     }
 
     for (const auto& item : root["models"]) {
       try {
-        if (!item.is_object() || !item.contains("model_path") || !item["model_path"].is_string() ||
-            !item.contains("properties")) {
+        if (!item.is_object() || !item.contains("model_id") || !item["model_id"].is_string() ||
+            !item.contains("model_path") || !item["model_path"].is_string() || !item.contains("properties")) {
           continue;
         }
 
         auto info = ModelInfoFromPropertyBagJson(item["properties"]);
-        const auto* registration_id = info.GetPropertyStr(kRegistrationIdProperty);
-        const auto* alias = info.GetPropertyStr(FOUNDRY_LOCAL_REG_ALIAS);
-        if (!registration_id || registration_id->empty() || !alias || !std::regex_match(*alias, kAliasPattern)) {
+        std::string registration_id;
+        if (item.contains("registration_id") && item["registration_id"].is_string()) {
+          registration_id = item["registration_id"].get<std::string>();
+        } else if (const auto* legacy_registration_id = info.GetPropertyStr(kRegistrationIdProperty)) {
+          registration_id = *legacy_registration_id;
+        }
+        if (registration_id.empty()) {
           continue;
         }
 
-        const auto version = info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT, int64_t{0});
-        if (version < 0 || version > std::numeric_limits<int>::max()) {
-          continue;
-        }
-
+        const auto model_id = item["model_id"].get<std::string>();
+        const auto parsed_id = ParseModelId(model_id);
         std::filesystem::path model_path = item["model_path"].get<std::string>();
         if (model_path.empty() || HasParentTraversal(model_path)) {
           continue;
         }
         model_path = std::filesystem::absolute(model_path).lexically_normal();
 
-        info.alias = *alias;
-        info.name = *alias;
-        info.version = static_cast<int>(version);
-        info.model_id = info.alias + ":" + std::to_string(info.version);
+        RemoveLegacyRegistrationProperties(info);
+        info.alias = parsed_id.name;
+        info.name = parsed_id.name;
+        info.version = parsed_id.version;
+        info.model_id = model_id;
         info.uri.clear();
-        SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, model_path.string());
 
         const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
-          return existing.info.alias == info.alias || existing.info.model_id == info.model_id ||
-                 existing.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{}) == *registration_id;
+          return existing.info.model_id == info.model_id || existing.registration_id == registration_id;
         });
         if (duplicate == registrations.end()) {
-          registrations.push_back({std::move(info), model_path.string()});
+          registrations.push_back({std::move(info), model_path.string(), std::move(registration_id)});
         }
       } catch (const std::exception& ex) {
         logger_.Log(LogLevel::Warning, std::string("Ignoring malformed local model registration: ") + ex.what());
@@ -317,7 +369,7 @@ void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& regis
     models.push_back(RegistrationToJson(registration));
   }
 
-  const nlohmann::json root = {{"version", 1}, {"catalog_name", "local"}, {"models", std::move(models)}};
+  const nlohmann::json root = {{"version", 2}, {"catalog_name", "local"}, {"models", std::move(models)}};
   const auto temp_path = index_path_.string() + ".tmp";
   {
     std::ofstream stream(temp_path, std::ios::binary | std::ios::trunc);
@@ -348,8 +400,7 @@ void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& regis
 }
 
 Model LocalModelCatalog::CreateModel(const Registration& registration) const {
-  const auto registration_id = registration.info.GetPropertyWithDefault(kRegistrationIdProperty, std::string{});
-  return model_factory_(registration.info, registration.model_path, "local/" + registration_id);
+  return model_factory_(registration.info, registration.model_path, "local/" + registration.registration_id);
 }
 
 }  // namespace fl

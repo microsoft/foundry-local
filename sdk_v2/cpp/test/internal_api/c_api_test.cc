@@ -265,23 +265,24 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   ASSERT_FL_OK(api, api->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_LOCAL, &catalog));
   ASSERT_NE(catalog, nullptr);
 
-  flModelInfo* registration = nullptr;
-  ASSERT_FL_OK(api, model_api->CreateModelInfo(&registration));
-  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(registration, FOUNDRY_LOCAL_REG_MODEL_PATH,
-                                                      model_path.string().c_str()));
-  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(registration, FOUNDRY_LOCAL_REG_ALIAS, "c-api-model"));
-  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(registration, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
+  flModelInfo* metadata = nullptr;
+  ASSERT_FL_OK(api, model_api->CreateModelInfo(&metadata));
+  ASSERT_FL_OK(api, model_api->Info_SetStringProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                                       "chat-completion"));
-  ASSERT_FL_OK(api, model_api->Info_SetIntProperty(registration, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 17));
+  ASSERT_FL_OK(api, model_api->Info_SetIntProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 17));
 
   flModel* registered = nullptr;
-  ASSERT_FL_OK(api, catalog_api->RegisterModel(catalog, registration, &registered));
-  model_api->ReleaseModelInfo(registration);
+  ASSERT_FL_OK(api, catalog_api->RegisterModel(catalog, model_path.string().c_str(), "c-api-model:3", metadata,
+                                               &registered));
+  model_api->ReleaseModelInfo(metadata);
   ASSERT_NE(registered, nullptr);
 
   const flModelInfo* registered_info = nullptr;
   ASSERT_FL_OK(api, model_api->GetInfo(registered, &registered_info));
-  EXPECT_STREQ(model_api->Info_GetId(registered_info), "c-api-model:0");
+  EXPECT_STREQ(model_api->Info_GetId(registered_info), "c-api-model:3");
+  EXPECT_STREQ(model_api->Info_GetName(registered_info), "c-api-model");
+  EXPECT_STREQ(model_api->Info_GetAlias(registered_info), "c-api-model");
+  EXPECT_EQ(model_api->Info_GetVersion(registered_info), 3);
   EXPECT_STREQ(model_api->Info_GetTask(registered_info), "chat-completion");
   EXPECT_EQ(model_api->Info_GetIntProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, -1), 17);
 

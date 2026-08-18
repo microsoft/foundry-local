@@ -59,7 +59,7 @@ std::optional<fs::path> GetByomSourceModelPath() {
 void StageModelAssets(const fs::path& source, const fs::path& destination) {
   for (const auto& entry : fs::recursive_directory_iterator(source)) {
     const auto relative_path = fs::relative(entry.path(), source);
-    if (relative_path.filename() == "inference_model.json" || relative_path.filename() == "model_metadata.yml") {
+    if (relative_path.filename() == "inference_model.json") {
       continue;
     }
 
@@ -83,9 +83,10 @@ void StageModelAssets(const fs::path& source, const fs::path& destination) {
 
 class LocalRegistrationGuard {
  public:
-  LocalRegistrationGuard(foundry_local::ICatalog& catalog, std::unique_ptr<foundry_local::IModel> model,
-                         std::string alias)
-      : catalog_(catalog), model_(std::move(model)), alias_(std::move(alias)) {}
+  LocalRegistrationGuard(foundry_local::ICatalog& catalog,
+          std::unique_ptr<foundry_local::IModel> model,
+          std::string model_id)
+      : catalog_(catalog), model_(std::move(model)), model_id_(std::move(model_id)) {}
 
   ~LocalRegistrationGuard() {
     try {
@@ -97,7 +98,7 @@ class LocalRegistrationGuard {
 
     model_.reset();
     try {
-      catalog_.UnregisterModel(alias_);
+      catalog_.UnregisterModel(model_id_);
     } catch (...) {
     }
   }
@@ -107,7 +108,7 @@ class LocalRegistrationGuard {
  private:
   foundry_local::ICatalog& catalog_;
   std::unique_ptr<foundry_local::IModel> model_;
-  std::string alias_;
+  std::string model_id_;
 };
 
 }  // namespace
@@ -128,28 +129,35 @@ TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
 
   ASSERT_TRUE(fs::exists(staged_model_path / "genai_config.json"));
   ASSERT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
-  ASSERT_FALSE(fs::exists(staged_model_path / "model_metadata.yml"));
 
   auto& local_catalog = SharedTestEnv::Get().manager()->GetCatalog(CatalogType::Local);
   const auto registration_alias = temp_root.path().filename().string();
-  ModelInfo registration;
-  registration.SetStringProperty(FOUNDRY_LOCAL_REG_MODEL_PATH, staged_model_path.string().c_str());
-  registration.SetStringProperty(FOUNDRY_LOCAL_REG_ALIAS, registration_alias.c_str());
-  registration.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+  const auto registration_id = registration_alias + ":1";
+  ModelInfo metadata;
+  metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
 
-  LocalRegistrationGuard registered(local_catalog, local_catalog.RegisterModel(registration), registration_alias);
+  LocalRegistrationGuard registered(
+      local_catalog, local_catalog.RegisterModel(staged_model_path.string(), registration_id, metadata),
+      registration_id);
+  const auto sibling_id = registration_alias + ":2";
+  ModelInfo sibling_metadata;
+  sibling_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+  LocalRegistrationGuard registered_sibling(
+      local_catalog, local_catalog.RegisterModel(staged_model_path.string(), sibling_id, sibling_metadata), sibling_id);
   auto& model = registered.model();
 
+  EXPECT_EQ(model.GetInfo().Id(), registration_id);
   EXPECT_EQ(model.GetInfo().Alias(), registration_alias);
+  EXPECT_EQ(model.GetInfo().Version(), 1);
   EXPECT_EQ(model.GetInfo().Task(), "chat-completion");
   EXPECT_TRUE(model.IsCached());
   EXPECT_FALSE(model.IsLoaded());
   EXPECT_TRUE(fs::is_regular_file(staged_model_path / "genai_config.json"));
-  EXPECT_FALSE(fs::exists(staged_model_path / "model_metadata.yml"));
   EXPECT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
 
   model.Load();
   ASSERT_TRUE(model.IsLoaded());
+  EXPECT_THROW(local_catalog.UnregisterModel(registration_alias), Error);
 
   ChatSession session(model);
   Request request{

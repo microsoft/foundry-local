@@ -346,9 +346,7 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
 }
 
 void SetModelInfoStringProperty(ModelInfo& info, std::string key, std::string value) {
-  if (key == FOUNDRY_LOCAL_REG_ALIAS) {
-    info.alias = value;
-  } else if (key == FOUNDRY_LOCAL_MODEL_PROP_TASK_STR) {
+  if (key == FOUNDRY_LOCAL_MODEL_PROP_TASK_STR) {
     info.task = value;
   } else if (key == FOUNDRY_LOCAL_MODEL_PROP_EP_STR) {
     info.execution_provider = value;
@@ -360,10 +358,6 @@ void SetModelInfoStringProperty(ModelInfo& info, std::string key, std::string va
 }
 
 void SetModelInfoIntProperty(ModelInfo& info, std::string key, int64_t value) {
-  if (key == FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT) {
-    info.version = static_cast<int>(value);
-  }
-
   info.int_properties[std::move(key)] = value;
 }
 
@@ -397,12 +391,10 @@ ModelInfo ModelInfoFromPropertyBagJson(const nlohmann::json& json) {
     }
 
     const auto text = value.get<std::string>();
-    const bool known_int = key == FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT ||
+    const bool known_int = key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT ||
                            key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT ||
                            key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT ||
                            key == FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT ||
                            key == FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT ||
                            key == FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT ||
                            key == FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT ||

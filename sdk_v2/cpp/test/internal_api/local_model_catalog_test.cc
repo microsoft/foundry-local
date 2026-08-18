@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace fl::test {
 namespace {
@@ -40,12 +41,14 @@ class LocalModelCatalogTest : public ::testing::Test {
     std::ofstream(path / "genai_config.json") << R"({"model":{"type":"phi3","context_length":4096}})";
   }
 
-  ModelInfo MakeInfo(std::string alias = "my-model", std::string task = "chat-completion") const {
+  ModelInfo MakeMetadata(std::string task = "chat-completion") const {
     ModelInfo info;
-    SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_MODEL_PATH, model_dir_.string());
-    SetModelInfoStringProperty(info, FOUNDRY_LOCAL_REG_ALIAS, std::move(alias));
     SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::move(task));
     return info;
+  }
+
+  Model* Register(std::string model_id = "my-model:1") {
+    return catalog_.RegisterModel(model_dir_.string(), model_id, MakeMetadata());
   }
 
   TempPath root_;
@@ -55,21 +58,38 @@ class LocalModelCatalogTest : public ::testing::Test {
 };
 
 TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesOnlyAppDataIndex) {
-  auto info = MakeInfo();
+  auto info = MakeMetadata();
   SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
   SetModelInfoStringProperty(info, FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
   SetModelInfoIntProperty(info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 321);
+  SetModelInfoStringProperty(info, "model_path", "ignored");
+  SetModelInfoStringProperty(info, "alias", "ignored");
+  SetModelInfoStringProperty(info, "version", "ignored");
+  SetModelInfoIntProperty(info, "model_path", 99);
+  SetModelInfoIntProperty(info, "alias", 99);
+  SetModelInfoIntProperty(info, "_local_registration_id", 99);
+  SetModelInfoIntProperty(info, "version", 99);
 
-  auto* model = catalog_.RegisterModel(info);
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "my-model:7", info);
 
   ASSERT_NE(model, nullptr);
-  EXPECT_EQ(model->Id(), "my-model:0");
+  EXPECT_EQ(model->Id(), "my-model:7");
+  EXPECT_EQ(model->Info().name, "my-model");
+  EXPECT_EQ(model->Info().alias, "my-model");
+  EXPECT_EQ(model->Info().version, 7);
   EXPECT_EQ(model->Info().task, "chat-completion");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
             "text,image");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
             "text");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, int64_t{-1}), 321);
+  EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyStr("alias"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyStr("version"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt("model_path"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt("alias"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt("_local_registration_id"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt("version"), nullptr);
   EXPECT_TRUE(model->IsCached());
   EXPECT_FALSE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
 
@@ -77,41 +97,109 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesOnlyAppDat
   ASSERT_TRUE(std::filesystem::exists(index_path));
   nlohmann::json index;
   std::ifstream(index_path) >> index;
+  EXPECT_EQ(index["version"], 2);
   ASSERT_EQ(index["models"].size(), 1u);
-  EXPECT_EQ(index["models"][0]["model_id"], "my-model:0");
+  EXPECT_EQ(index["models"][0]["model_id"], "my-model:7");
+  EXPECT_TRUE(index["models"][0].contains("registration_id"));
+  EXPECT_FALSE(index["models"][0].contains("alias"));
+  EXPECT_FALSE(index["models"][0]["properties"].contains("model_path"));
+  EXPECT_FALSE(index["models"][0]["properties"].contains("alias"));
+  EXPECT_FALSE(index["models"][0]["properties"].contains("version"));
   EXPECT_FALSE(index["models"][0].contains("metadata_prepared"));
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationRequiresExistingDirectoryAndParseableConfig) {
-  auto missing = MakeInfo();
-  SetModelInfoStringProperty(missing, FOUNDRY_LOCAL_REG_MODEL_PATH, (root_.path() / "missing").string());
-  EXPECT_THROW(catalog_.RegisterModel(missing), Exception);
+  EXPECT_THROW(catalog_.RegisterModel((root_.path() / "missing").string(), "missing:1", MakeMetadata()), Exception);
 
   const auto no_config_path = root_.path() / "no-config";
   std::filesystem::create_directories(no_config_path);
-  auto no_config = MakeInfo("no-config");
-  SetModelInfoStringProperty(no_config, FOUNDRY_LOCAL_REG_MODEL_PATH, no_config_path.string());
-  EXPECT_THROW(catalog_.RegisterModel(no_config), Exception);
+  EXPECT_THROW(catalog_.RegisterModel(no_config_path.string(), "no-config:1", MakeMetadata()), Exception);
 
   const auto malformed_path = root_.path() / "malformed";
   std::filesystem::create_directories(malformed_path);
   std::ofstream(malformed_path / "genai_config.json") << R"({"model":)";
-  auto malformed = MakeInfo("malformed");
-  SetModelInfoStringProperty(malformed, FOUNDRY_LOCAL_REG_MODEL_PATH, malformed_path.string());
-  EXPECT_THROW(catalog_.RegisterModel(malformed), Exception);
+  EXPECT_THROW(catalog_.RegisterModel(malformed_path.string(), "malformed:1", MakeMetadata()), Exception);
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationRequiresSupportedTask) {
   ModelInfo missing_task;
-  SetModelInfoStringProperty(missing_task, FOUNDRY_LOCAL_REG_MODEL_PATH, model_dir_.string());
-  SetModelInfoStringProperty(missing_task, FOUNDRY_LOCAL_REG_ALIAS, "missing-task");
-  EXPECT_THROW(catalog_.RegisterModel(missing_task), Exception);
-  EXPECT_THROW(catalog_.RegisterModel(MakeInfo("invalid-task", "text-generation")), Exception);
+  EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "missing-task:1", missing_task), Exception);
+  EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "invalid-task:1", MakeMetadata("text-generation")),
+               Exception);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationRequiresCanonicalModelId) {
+  const std::vector<std::string> invalid_ids = {
+      "",             "missing-version", ":1",          "model:",   "model:1:2",
+      "model:-1",     "model:+1",       "model:01",    "model:2147483648",
+      "model/path:1", "model name:1",
+  };
+
+  for (const auto& model_id : invalid_ids) {
+    EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), model_id, MakeMetadata()), Exception) << model_id;
+  }
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationUsesUniqueIdsAndGroupsVersionsByDerivedAlias) {
+  auto* first = Register("my-model:1");
+  ASSERT_NE(first, nullptr);
+  EXPECT_THROW(Register("my-model:1"), Exception);
+
+  auto* second = Register("my-model:2");
+  ASSERT_NE(second, nullptr);
+  EXPECT_EQ(second->Info().version, 2);
+  EXPECT_TRUE(first->IsActive());
+  EXPECT_NO_THROW(first->Download());
+
+  auto* grouped = catalog_.GetModel("my-model");
+  ASSERT_NE(grouped, nullptr);
+  EXPECT_EQ(grouped->Variants().size(), 2u);
+  EXPECT_EQ(grouped->Id(), "my-model:2");
+  EXPECT_NE(catalog_.GetModelVariant("my-model:1"), nullptr);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model:2"), second);
+
+  grouped->SelectVariant(*first);
+  EXPECT_EQ(grouped->Id(), "my-model:1");
+  auto other = MakeCatalog();
+  ASSERT_NE(other.RegisterModel(model_dir_.string(), "my-model:3", MakeMetadata()), nullptr);
+  ASSERT_EQ(catalog_.ListModels().size(), 1u);
+  EXPECT_EQ(grouped->Variants().size(), 3u);
+  EXPECT_EQ(grouped->Id(), "my-model:1");
+  EXPECT_TRUE(first->IsActive());
+
+  catalog_.UnregisterModel("my-model:1");
+  EXPECT_FALSE(first->IsActive());
+  EXPECT_EQ(catalog_.GetModelVariant("my-model:1"), nullptr);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model:2"), second);
+  EXPECT_TRUE(second->IsActive());
+  EXPECT_NO_THROW(second->Download());
+}
+
+TEST_F(LocalModelCatalogTest, RefreshDefersVariantReconciliationDuringUnregister) {
+  Register("my-model:1");
+  auto* grouped = catalog_.GetModel("my-model");
+  ASSERT_NE(grouped, nullptr);
+
+  auto other = MakeCatalog();
+  grouped->BeginUnregister();
+  size_t variants_during_unregister = 0;
+  try {
+    EXPECT_NE(other.RegisterModel(model_dir_.string(), "my-model:2", MakeMetadata()), nullptr);
+    variants_during_unregister = catalog_.ListModels().front()->Variants().size();
+  } catch (...) {
+    grouped->CancelUnregister();
+    throw;
+  }
+  grouped->CancelUnregister();
+
+  EXPECT_EQ(variants_during_unregister, 1u);
+  ASSERT_EQ(catalog_.ListModels().size(), 1u);
+  EXPECT_EQ(grouped->Variants().size(), 2u);
 }
 
 TEST_F(LocalModelCatalogTest, UnregisterPersistsAndPreservesAssets) {
-  auto* stale = catalog_.RegisterModel(MakeInfo());
-  catalog_.UnregisterModel("my-model:0");
+  auto* stale = Register();
+  catalog_.UnregisterModel("my-model:1");
 
   EXPECT_TRUE(catalog_.ListModels().empty());
   EXPECT_TRUE(std::filesystem::exists(model_dir_ / "genai_config.json"));
@@ -121,8 +209,22 @@ TEST_F(LocalModelCatalogTest, UnregisterPersistsAndPreservesAssets) {
   EXPECT_TRUE(restored.ListModels().empty());
 }
 
+TEST_F(LocalModelCatalogTest, AliasHandleRemainsSafeAfterItsFinalVariantIsUnregisteredById) {
+  Register();
+  auto* alias_handle = catalog_.GetModel("my-model");
+  ASSERT_NE(alias_handle, nullptr);
+
+  catalog_.UnregisterModel("my-model:1");
+
+  EXPECT_FALSE(alias_handle->IsActive());
+  EXPECT_FALSE(alias_handle->IsLoaded());
+  EXPECT_EQ(alias_handle->Info().model_id, "my-model:1");
+  EXPECT_TRUE(alias_handle->Variants().empty());
+  EXPECT_NO_THROW(alias_handle->Unload());
+}
+
 TEST_F(LocalModelCatalogTest, UnregisterWriteFailureLeavesModelActiveAndUsable) {
-  auto* model = catalog_.RegisterModel(MakeInfo());
+  auto* model = Register();
   ASSERT_NE(model, nullptr);
 
   const auto temp_index_path = root_.path() / "appdata" / "catalogs" / "local" / "local_models.json.tmp";
@@ -130,7 +232,7 @@ TEST_F(LocalModelCatalogTest, UnregisterWriteFailureLeavesModelActiveAndUsable) 
 
   EXPECT_THROW(catalog_.UnregisterModel("my-model"), Exception);
   EXPECT_TRUE(model->IsActive());
-  EXPECT_EQ(catalog_.GetModelVariant("my-model:0"), model);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model:1"), model);
 
   float progress = 0.0f;
   EXPECT_NO_THROW(model->Download([&progress](float value) {
@@ -144,7 +246,7 @@ TEST_F(LocalModelCatalogTest, TwoCatalogsReconcileRegisterUnregisterAndReregiste
   auto second = MakeCatalog();
   EXPECT_TRUE(second.ListModels().empty());
 
-  auto* stale = catalog_.RegisterModel(MakeInfo());
+  auto* stale = Register();
   ASSERT_NE(stale, nullptr);
   ASSERT_EQ(second.ListModels().size(), 1u);
 
@@ -155,11 +257,47 @@ TEST_F(LocalModelCatalogTest, TwoCatalogsReconcileRegisterUnregisterAndReregiste
   EXPECT_THROW(stale->Load(), Exception);
   EXPECT_THROW(stale->RemoveFromCache(), Exception);
 
-  auto* replacement = second.RegisterModel(MakeInfo());
+  auto* replacement = second.RegisterModel(model_dir_.string(), "my-model:1", MakeMetadata());
   ASSERT_NE(replacement, nullptr);
   EXPECT_NE(replacement->RuntimeId(), stale->RuntimeId());
   ASSERT_EQ(catalog_.ListModels().size(), 1u);
-  EXPECT_NE(catalog_.GetModelVariant("my-model:0"), stale);
+  EXPECT_NE(catalog_.GetModelVariant("my-model:1"), stale);
+}
+
+TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedModelId) {
+  const auto catalog_dir = root_.path() / "appdata" / "catalogs" / "local";
+  std::filesystem::create_directories(catalog_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 1},
+      {"catalog_name", "local"},
+      {"models",
+       {{{"alias", "legacy-wrong-alias"},
+         {"model_id", "legacy-model:4"},
+         {"model_path", model_dir_.string()},
+         {"properties",
+          {{"_local_registration_id", "legacy-registration"},
+           {"alias", "legacy-wrong-alias"},
+           {"model_path", model_dir_.string()},
+           {"version", 99},
+           {FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion"}}}}}},
+  };
+  std::ofstream(catalog_dir / "local_models.json") << legacy_index.dump(2);
+
+  auto restored = MakeCatalog();
+  auto* model = restored.GetModelVariant("legacy-model:4");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().alias, "legacy-model");
+  EXPECT_EQ(model->Info().version, 4);
+  EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyStr("alias"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt("version"), nullptr);
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "new-model:1", MakeMetadata()), nullptr);
+  nlohmann::json migrated_index;
+  std::ifstream(catalog_dir / "local_models.json") >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 2);
+  ASSERT_EQ(migrated_index["models"].size(), 2u);
+  EXPECT_NE(restored.GetModelVariant("legacy-model:4"), nullptr);
 }
 
 TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsRegistration) {
@@ -178,7 +316,7 @@ TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsRegistration) {
     std::string name_ = "public";
   } catalog;
 
-  EXPECT_THROW(catalog.RegisterModel(MakeInfo()), Exception);
+  EXPECT_THROW(catalog.RegisterModel(model_dir_.string(), "my-model:1", MakeMetadata()), Exception);
 }
 
 }  // namespace

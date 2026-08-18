@@ -65,11 +65,20 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
         }
 
         const auto incoming = alias_to_model.find(stored.model->Alias());
-        if (incoming == alias_to_model.end() || incoming->second.RuntimeId() != stored.model->RuntimeId()) {
+        if (incoming == alias_to_model.end()) {
+          if (!stored.model->TryDeactivateForRefresh()) {
+            continue;
+          }
           stored.active = false;
-          stored.model->Deactivate();
           existing_aliases.erase(stored.model->Alias());
+          continue;
         }
+
+        if (!stored.model->TryReconcileVariants(incoming->second)) {
+          alias_to_model.erase(incoming);
+          continue;
+        }
+        alias_to_model.erase(incoming);
       }
     }
 
@@ -428,6 +437,27 @@ bool BaseModelCatalog::RetireModel(const std::string& alias_or_model_id) {
       RebuildIndex();
       return true;
     }
+  }
+
+  return false;
+}
+
+bool BaseModelCatalog::CommitUnregister(Model* model, const std::string& alias_or_model_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& stored : models_) {
+    if (!stored.active || stored.model.get() != model) {
+      continue;
+    }
+
+    if (stored.model->Alias() == alias_or_model_id) {
+      stored.active = false;
+      stored.model->Deactivate();
+    } else if (!stored.model->RetireVariant(alias_or_model_id)) {
+      stored.active = false;
+    }
+
+    RebuildIndex();
+    return true;
   }
 
   return false;

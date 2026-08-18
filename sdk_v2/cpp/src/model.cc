@@ -115,7 +115,9 @@ Model::Model(Model&& other) noexcept
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
-      selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)) {
+      retired_variants_(std::move(other.retired_variants_)),
+      selected_variant_(other.selected_variant_.load(std::memory_order_relaxed)),
+      selection_is_explicit_(other.selection_is_explicit_) {
   // The mutex and unregistering state are intentionally not moved; moving while unregistering is invalid.
   // After vector move, selected_variant_ still points into the transferred buffer.
   other.download_manager_ = nullptr;
@@ -134,7 +136,9 @@ Model& Model::operator=(Model&& other) noexcept {
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
+    retired_variants_ = std::move(other.retired_variants_);
     selected_variant_.store(other.selected_variant_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    selection_is_explicit_ = other.selection_is_explicit_;
     unregistering_ = false;
     other.download_manager_ = nullptr;
     other.model_load_manager_ = nullptr;
@@ -203,6 +207,121 @@ void Model::AddVariant(Model variant) {
   variants_.insert(pos, std::make_unique<Model>(std::move(variant)));
 }
 
+bool Model::TryReconcileVariants(Model& incoming) {
+  if (!IsContainer() || !incoming.IsContainer() || Alias() != incoming.Alias()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "TryReconcileVariants requires containers with the same alias");
+  }
+
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
+  if (!lifecycle_lock.owns_lock()) {
+    return false;
+  }
+
+  std::scoped_lock lock(state_mutex_, incoming.state_mutex_);
+  variants_.reserve(variants_.size() + incoming.variants_.size());
+  retired_variants_.reserve(retired_variants_.size() + variants_.size());
+
+  auto* previous_selection = selected_variant_.load(std::memory_order_acquire);
+  const auto preserve_selection = selection_is_explicit_;
+
+  for (auto current = variants_.begin(); current != variants_.end();) {
+    const auto match = std::find_if(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
+      return (*current)->Info().model_id == candidate->Info().model_id &&
+             (*current)->RuntimeId() == candidate->RuntimeId();
+    });
+    if (match != incoming.variants_.end()) {
+      incoming.variants_.erase(match);
+      ++current;
+      continue;
+    }
+
+    (*current)->Deactivate();
+    retired_variants_.push_back(std::move(*current));
+    current = variants_.erase(current);
+  }
+
+  for (auto& variant : incoming.variants_) {
+    variants_.push_back(std::move(variant));
+  }
+  incoming.variants_.clear();
+
+  std::sort(variants_.begin(), variants_.end(), [](const auto& left, const auto& right) {
+    return CompareModelsForSort(*left, *right);
+  });
+
+  const auto retained_selection = std::find_if(variants_.begin(), variants_.end(), [&](const auto& variant) {
+    return variant.get() == previous_selection;
+  });
+  const auto cached_selection = std::find_if(variants_.begin(), variants_.end(), [](const auto& variant) {
+    return variant->IsCached();
+  });
+  const auto selected = preserve_selection && retained_selection != variants_.end()
+                            ? retained_selection
+                            : (cached_selection != variants_.end() ? cached_selection : variants_.begin());
+  selection_is_explicit_ = preserve_selection && retained_selection != variants_.end();
+  selected_variant_.store(selected->get(), std::memory_order_release);
+  return true;
+}
+
+bool Model::TryDeactivateForRefresh() {
+  std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::try_to_lock);
+  if (!lifecycle_lock.owns_lock()) {
+    return false;
+  }
+
+  Deactivate();
+  return true;
+}
+
+bool Model::PrepareRetireVariant(const std::string& model_id) {
+  if (!IsContainer()) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  const auto variant = std::find_if(variants_.begin(), variants_.end(), [&](const auto& candidate) {
+    return candidate->Info().model_id == model_id;
+  });
+  if (variant == variants_.end()) {
+    return false;
+  }
+
+  retired_variants_.reserve(retired_variants_.size() + 1);
+  return true;
+}
+
+bool Model::RetireVariant(const std::string& model_id) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  const auto variant = std::find_if(variants_.begin(), variants_.end(), [&](const auto& candidate) {
+    return candidate->Info().model_id == model_id;
+  });
+  if (variant == variants_.end()) {
+    return !variants_.empty();
+  }
+
+  auto* retired = variant->get();
+  retired->Deactivate();
+  retired_variants_.push_back(std::move(*variant));
+  variants_.erase(variant);
+
+  if (variants_.empty()) {
+    selection_is_explicit_ = false;
+    selected_variant_.store(retired, std::memory_order_release);
+    return false;
+  }
+
+  if (selected_variant_.load(std::memory_order_acquire) == retired) {
+    const auto cached = std::find_if(variants_.begin(), variants_.end(), [](const auto& candidate) {
+      return candidate->IsCached();
+    });
+    const auto selected = cached != variants_.end() ? cached : variants_.begin();
+    selection_is_explicit_ = false;
+    selected_variant_.store(selected->get(), std::memory_order_release);
+  }
+
+  return true;
+}
+
 bool Model::CompareBestFirst(const Model& a, const Model& b) {
   return CompareModelsForSort(a, b);
 }
@@ -217,11 +336,13 @@ void Model::SelectDefaultVariant() {
 
   for (auto& v : variants_) {
     if (v->IsCached()) {
+      selection_is_explicit_ = false;
       selected_variant_.store(v.get(), std::memory_order_release);
       return;
     }
   }
 
+  selection_is_explicit_ = false;
   selected_variant_.store(variants_.front().get(), std::memory_order_release);
 }
 
@@ -443,16 +564,38 @@ void Model::Deactivate() {
 
 void Model::BeginUnregister() {
   if (IsContainer()) {
-    auto variants = Variants();
+    lifecycle_mutex_.lock();
+    if (!active_ || unregistering_) {
+      lifecycle_mutex_.unlock();
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
+    }
+    unregistering_ = true;
+
+    try {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      unregistering_variants_.clear();
+      unregistering_variants_.reserve(variants_.size());
+      for (const auto& variant : variants_) {
+        unregistering_variants_.push_back(variant.get());
+      }
+    } catch (...) {
+      unregistering_ = false;
+      lifecycle_mutex_.unlock();
+      throw;
+    }
+
     size_t locked_count = 0;
     try {
-      for (; locked_count < variants.size(); ++locked_count) {
-        variants[locked_count]->BeginUnregister();
+      for (; locked_count < unregistering_variants_.size(); ++locked_count) {
+        unregistering_variants_[locked_count]->BeginUnregister();
       }
     } catch (...) {
       while (locked_count > 0) {
-        variants[--locked_count]->CancelUnregister();
+        unregistering_variants_[--locked_count]->CancelUnregister();
       }
+      unregistering_variants_.clear();
+      unregistering_ = false;
+      lifecycle_mutex_.unlock();
       throw;
     }
     return;
@@ -468,10 +611,13 @@ void Model::BeginUnregister() {
 }
 
 void Model::CancelUnregister() {
-  if (IsContainer()) {
-    for (auto* variant : Variants()) {
+  if (!unregistering_variants_.empty()) {
+    for (auto* variant : unregistering_variants_) {
       variant->CancelUnregister();
     }
+    unregistering_variants_.clear();
+    unregistering_ = false;
+    lifecycle_mutex_.unlock();
     return;
   }
 
@@ -490,8 +636,10 @@ void Model::SelectVariant(const Model& variant) {
              "with all variants available.");
   }
 
+  std::lock_guard<std::mutex> lock(state_mutex_);
   for (auto& v : variants_) {
     if (v.get() == &variant) {
+      selection_is_explicit_ = true;
       selected_variant_.store(v.get(), std::memory_order_release);
       return;
     }

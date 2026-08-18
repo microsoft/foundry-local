@@ -268,10 +268,6 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR "quantization"                ///< optional
 #define FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR "creation_time"              ///< ISO-8601 UTC timestamp
 
-/* flModelInfo registration properties */
-#define FOUNDRY_LOCAL_REG_MODEL_PATH "model_path"
-#define FOUNDRY_LOCAL_REG_ALIAS "alias"
-
 /* flModelInfo Int properties. Comments provide details on the type and expected values. */
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"  ///< optional bool (not set or -1=unknown, 0=false, 1=true)
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT "supports_reasoning"        ///< optional bool (not set or -1=unknown, 0=false, 1=true)
@@ -280,8 +276,6 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"              ///< Unix timestamp. default=0
 #define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                  ///< bool (0=false, 1=true)
 #define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                ///< optional int64_t
-#define FOUNDRY_LOCAL_MODEL_PROP_VERSION_INT "version"                              ///< optional non-negative integer
-#define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_BYTES_INT "file_size_bytes"                ///< optional int64_t
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT "supports_hybrid_reasoning"  ///< optional bool
 
 #define FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR "input_modalities"    ///< optional, comma-separated
@@ -994,8 +988,12 @@ struct flCatalogApi {
                 _In_opt_ const char* model_name, int32_t max_versions, _Outptr_ flModelList** out_models);
 
   // End V1
-  /// Register a model in a local catalog. The input ModelInfo is copied.
-  FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const flModelInfo* model_info,
+  /// Register a model in a local catalog without taking ownership of its assets.
+  /// `model_path` must identify a model directory containing genai_config.json.
+  /// `model_id` must use the canonical `<name>:<version>` format and be unique in the local catalog.
+  /// The metadata is copied; model identity and location are taken only from the explicit arguments.
+  FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const char* model_path,
+                _In_ const char* model_id, _In_ const flModelInfo* metadata,
                 _Outptr_ flModel** out_model);
   /// Unregister by alias or model ID without deleting model assets.
   FL_API_STATUS(UnregisterModel, _In_ flCatalog* catalog, _In_ const char* alias_or_model_id);

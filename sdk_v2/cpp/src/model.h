@@ -73,6 +73,21 @@ class Model {
   /// container has its full variant set.
   void AddVariant(Model variant);
 
+  /// Reconcile this container with a fresh authoritative container while preserving leaves whose model ID and
+  /// private runtime ID are unchanged. Returns false without changing either container when unregister is in progress.
+  /// Removed/replaced leaves are deactivated but retained in container-owned storage for outstanding handle safety.
+  bool TryReconcileVariants(Model& incoming);
+
+  /// Deactivate this container for an authoritative refresh unless unregister currently owns its lifecycle lock.
+  bool TryDeactivateForRefresh();
+
+  /// Reserve storage for retiring one variant. Call before persisting an unregister operation so the later
+  /// in-memory commit cannot fail while transferring ownership of an outstanding model handle.
+  bool PrepareRetireVariant(const std::string& model_id);
+
+  /// Retire one variant after PrepareRetireVariant succeeds. Returns true when active variants remain.
+  bool RetireVariant(const std::string& model_id);
+
   /// Choose the default selected variant from the current sorted variant list:
   /// first cached variant if any, else the best variant.
   /// Requires IsContainer() to be true.
@@ -197,7 +212,9 @@ class Model {
   // Container data (empty/null for leaves). unique_ptr keeps Model addresses
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
+  std::vector<std::unique_ptr<Model>> retired_variants_;
   std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
+  bool selection_is_explicit_ = false;              // guarded by state_mutex_
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
@@ -206,6 +223,7 @@ class Model {
   // Leaf lifecycle state. A Model must not be moved while an unregister operation holds this lock.
   mutable std::mutex lifecycle_mutex_;
   bool unregistering_ = false;
+  std::vector<Model*> unregistering_variants_;  // exact container snapshot locked by BeginUnregister
 };
 
 }  // namespace fl

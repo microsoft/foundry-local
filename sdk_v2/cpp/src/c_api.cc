@@ -736,14 +736,14 @@ FL_API_STATUS_IMPL(Catalog_GetModelVersionsImpl, const flCatalog* catalog,
   API_IMPL_END
 }
 
-FL_API_STATUS_IMPL(Catalog_RegisterModelImpl, flCatalog* catalog, const flModelInfo* model_info,
-                   flModel** out_model) {
+FL_API_STATUS_IMPL(Catalog_RegisterModelImpl, flCatalog* catalog, const char* model_path,
+                   const char* model_id, const flModelInfo* metadata, flModel** out_model) {
   API_IMPL_BEGIN
-  if (!catalog || !model_info || !out_model) {
+  if (!catalog || !model_path || !model_id || !metadata || !out_model) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  *out_model = AsHandle<flModel>(catalog->impl.RegisterModel(*AsImpl(model_info)));
+  *out_model = AsHandle<flModel>(catalog->impl.RegisterModel(model_path, model_id, *AsImpl(metadata)));
   return nullptr;
   API_IMPL_END
 }
