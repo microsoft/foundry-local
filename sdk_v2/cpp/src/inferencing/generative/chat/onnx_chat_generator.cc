@@ -85,7 +85,33 @@ std::string OnnxChatGenerator::Decode() {
 
   int32_t token_id = next_tokens[0];
 
-  // Decode through the normal tokenizer stream
+  // Fast path: if this token matches a known tag ID, return the pre-decoded string.
+  // Both streams are kept in sync so we can always fall through to the slow path for
+  // tokens that don't match any known tag.
+  const auto& tag_info = model_.GetTagInfo();
+
+  if (tag_info.bot_id.has_value() && token_id == *tag_info.bot_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.bot_str;
+  }
+  if (tag_info.eot_id.has_value() && token_id == *tag_info.eot_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.eot_str;
+  }
+  if (tag_info.bor_id.has_value() && token_id == *tag_info.bor_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.bor_str;
+  }
+  if (tag_info.eor_id.has_value() && token_id == *tag_info.eor_id) {
+    stream_->Decode(token_id);
+    stream_with_special_->Decode(token_id);
+    return tag_info.eor_str;
+  }
+
+  // Standard path: double-decode to detect special tokens not covered by tag IDs.
   const char* token_text = stream_->Decode(token_id);
 
   // Also decode through the special-token stream to detect tool call and think tokens.

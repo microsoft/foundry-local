@@ -140,4 +140,37 @@ const std::vector<int32_t>& GenAIModelInstance::GetEosTokenIds() {
   return eos_token_ids_;
 }
 
+const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
+  std::call_once(tag_info_init_flag_, [this]() {
+    if (!tokenizer_) return;
+
+    // Get tag IDs from the tokenizer (reads from config, with fallback vocab lookup).
+    // These throw if the model doesn't define the token, so we catch and leave as nullopt.
+    auto try_get_id = [](auto&& getter) -> std::optional<int32_t> {
+      try { return getter(); } catch (...) { return std::nullopt; }
+    };
+    tag_info_.bot_id = try_get_id([&] { return tokenizer_->Oga().GetBotTokenId(); });
+    tag_info_.eot_id = try_get_id([&] { return tokenizer_->Oga().GetEotTokenId(); });
+    tag_info_.bor_id = try_get_id([&] { return tokenizer_->Oga().GetBorTokenId(); });
+    tag_info_.eor_id = try_get_id([&] { return tokenizer_->Oga().GetEorTokenId(); });
+
+    // Decode each valid ID once through the special tokenizer to get the string.
+    // Uses tokenizer_with_special_ so that special token text (e.g., "<tool_call>") is produced.
+    auto decode_id = [this](std::optional<int32_t> id) -> std::string {
+      if (!id.has_value() || !tokenizer_with_special_) return {};
+      int32_t val = *id;
+      OgaString text = tokenizer_with_special_->Decode(&val, 1);
+      const char* p = text;
+      return p ? std::string(p) : std::string();
+    };
+
+    tag_info_.bot_str = decode_id(tag_info_.bot_id);
+    tag_info_.eot_str = decode_id(tag_info_.eot_id);
+    tag_info_.bor_str = decode_id(tag_info_.bor_id);
+    tag_info_.eor_str = decode_id(tag_info_.eor_id);
+  });
+
+  return tag_info_;
+}
+
 }  // namespace fl

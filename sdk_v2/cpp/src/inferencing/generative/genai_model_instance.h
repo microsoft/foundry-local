@@ -11,6 +11,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
@@ -36,6 +37,25 @@ class GenAIModelInstance {
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ExecutionProvider EP() const { return ep_; }
   bool IsMultiModal() const;
+
+  /// Cached tag token IDs and their decoded strings for efficient detection.
+  /// IDs are used for integer comparison in the decode loop (fast path).
+  /// Strings are used by ToolCallContext/Accumulator for text-based processing.
+  /// Populated once at first access via OgaTokenizer getters + tokenizer decode.
+  /// Naming follows bos/eos/pad convention:
+  ///   bot = beginning of tool (call), eot = end of tool (call)
+  ///   bor = beginning of reasoning,   eor = end of reasoning
+  struct TagInfo {
+    std::optional<int32_t> bot_id;
+    std::optional<int32_t> eot_id;
+    std::optional<int32_t> bor_id;
+    std::optional<int32_t> eor_id;
+    std::string bot_str;
+    std::string eot_str;
+    std::string bor_str;
+    std::string eor_str;
+  };
+  const TagInfo& GetTagInfo();
 
   /// Access the underlying OGA objects (for future chat generation work).
   OgaModel& GetOgaModel();
@@ -80,6 +100,8 @@ class GenAIModelInstance {
   std::unique_ptr<OgaMultiModalProcessor> processor_;  // nullptr if not multimodal
   std::vector<int32_t> eos_token_ids_;                 // cached; populated on first GetEosTokenIds() call
   std::once_flag eos_token_ids_init_flag_;
+  TagInfo tag_info_;                                    // cached; populated on first GetTagInfo() call
+  std::once_flag tag_info_init_flag_;
   std::chrono::steady_clock::time_point last_activity_;
   mutable std::atomic<int> session_ref_count_{0};
 };

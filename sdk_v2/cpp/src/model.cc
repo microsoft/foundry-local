@@ -327,6 +327,33 @@ void Model::Load(ExecutionProvider ep) {
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
   }
+
+  // Enrich ModelInfo with metadata from the loaded GenAI model (genai_config.json + fallback map).
+  // This makes tool/reasoning tags available via ModelInfo regardless of whether they came from
+  // catalog metadata, so downstream code doesn't need to know about multiple metadata sources.
+  // Runs on both kSuccess (fresh load) and kModelAlreadyLoaded (model already in memory from
+  // another code path) to ensure this Model's info_ is always enriched.
+  if (result.model && (result.status == ModelLoadManager::LoadStatus::kSuccess ||
+                       result.status == ModelLoadManager::LoadStatus::kModelAlreadyLoaded)) {
+    const auto& tag_info = result.model->GetTagInfo();
+
+    auto enrich = [&](const std::string& val, const char* prop_key) {
+      if (!val.empty() && !info_.GetPropertyStr(prop_key)) {
+        info_.string_properties[prop_key] = val;
+      }
+    };
+
+    enrich(tag_info.bot_str, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
+    enrich(tag_info.eot_str, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+    enrich(tag_info.bor_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
+    enrich(tag_info.eor_str, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
+
+    // Note: we intentionally do NOT infer SUPPORTS_TOOL_CALLING or SUPPORTS_REASONING
+    // from the mere presence of tag token IDs.  The GenAI fallback map defines bor/eor
+    // tokens for entire model families (e.g. all qwen2), but that doesn't mean every
+    // variant actually supports reasoning (qwen2.5-0.5b is not a thinking model).
+    // The catalog is the authority for support flags; tag IDs only provide marker strings.
+  }
 }
 
 void Model::Unload() {
