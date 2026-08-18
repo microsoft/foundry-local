@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 #pragma once
 
-#include "inferencing/generative/tokenizer.h"
-
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -53,7 +51,7 @@ class Preprocessor {
                std::unique_ptr<OgaMultiModalProcessor> multimodal_processor);
 
   std::mutex mutex_;
-  Tokenizer tokenizer_;
+  std::unique_ptr<OgaTokenizer> tokenizer_;
   std::unique_ptr<OgaTokenizer> tokenizer_with_special_;
   std::unique_ptr<OgaMultiModalProcessor> multimodal_processor_;
   std::vector<int32_t> eos_token_ids_;
