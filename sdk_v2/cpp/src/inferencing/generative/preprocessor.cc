@@ -13,7 +13,7 @@ std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_
   try {
     tokenizer = OgaTokenizer::Create(model);
   } catch (const std::runtime_error& e) {
-    throw std::runtime_error(std::string("failed to create tokenizer: ") + e.what());
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to create tokenizer: ", e.what());
   }
 
   std::unique_ptr<OgaTokenizer> tokenizer_with_special;
@@ -23,7 +23,7 @@ std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_
     options.Add("skip_special_tokens", "0");
     tokenizer_with_special->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
   } catch (const std::runtime_error& e) {
-    throw std::runtime_error(std::string("failed to create special-token tokenizer: ") + e.what());
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to create special-token tokenizer: ", e.what());
   }
 
   std::unique_ptr<OgaMultiModalProcessor> multimodal_processor;
@@ -31,7 +31,7 @@ std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_
     try {
       multimodal_processor = OgaMultiModalProcessor::Create(model);
     } catch (const std::runtime_error& e) {
-      throw std::runtime_error(std::string("failed to create multimodal processor: ") + e.what());
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to create multimodal processor: ", e.what());
     }
   }
 
