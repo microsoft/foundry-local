@@ -332,7 +332,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   }
 
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
-  auto tokenizer_stream = OgaTokenizerStream::Create(Model().Tokenizer().Oga());
+  auto tokenizer_stream = Model().GetPreprocessor().CreateTokenizerStream();
 
   auto streaming_callback = CreateCallbackHandler(request);
   std::vector<std::string> token_texts;
