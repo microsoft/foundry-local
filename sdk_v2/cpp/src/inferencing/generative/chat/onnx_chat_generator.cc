@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "exception.h"
+#include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -166,12 +167,12 @@ void OnnxChatGenerator::RewindTo(int token_count) {
 }
 
 // ---------------------------------------------------------------------------
-// Vision helpers (mirror upstream C# OnnxChatGenerator)
+// Media helpers
 // ---------------------------------------------------------------------------
 
-std::string OnnxChatGenerator::TransformMessagesForVision(const std::vector<MessageItem>& messages) {
+std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<MessageItem>& messages) {
   // Find the index of the last user message so we can rewrite only that one
-  // into the structured `[{"type":"image"},{"type":"text","text":...}]` form.
+  // into structured media markers followed by its text content.
   // Other messages are emitted in plain `{"role","content"}` form so the chat
   // template renders them the same way it does for text-only requests.
   size_t last_user_idx = messages.size();
@@ -189,13 +190,27 @@ std::string OnnxChatGenerator::TransformMessagesForVision(const std::vector<Mess
     entry["role"] = Utils::RoleToString(msg.role);
 
     if (i == last_user_idx) {
-      // Concatenate the message's text parts (REASONING parts and non-text parts skipped by the helper); image
-      // bytes are processed separately by OgaMultiModalProcessor::ProcessImages.
-      entry["content"] = nlohmann::json::array({
-          nlohmann::json{{"type", "image"}},
-          nlohmann::json{{"type", "text"}, {"text", RenderMessageForPrompt(msg)}},
-      });
+      auto content = nlohmann::json::array();
+      for (const auto& part : msg.content) {
+        if (!part.view) {
+          continue;
+        }
+        if (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE) {
+          content.push_back(nlohmann::json{{"type", "image"}});
+        } else if (part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
+          content.push_back(nlohmann::json{{"type", "audio"}});
+        }
+      }
+      content.push_back(nlohmann::json{{"type", "text"}, {"text", RenderMessageForPrompt(msg)}});
+      entry["content"] = std::move(content);
     } else {
+      for (const auto& part : msg.content) {
+        if (part.view &&
+            (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE || part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO)) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "media input must belong to the final user message");
+        }
+      }
       // Non-final message: render visible text parts only via the canonical helper.
       entry["content"] = RenderMessageForPrompt(msg);
     }
@@ -215,22 +230,22 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(const std::vector<M
                                                              GenAIModelInstance& model,
                                                              const ToolCallContext& tool_ctx,
                                                              bool use_full_context) {
-  return CreateImpl(messages, options, model, tool_ctx, use_full_context, /*images=*/{});
+  return CreateImpl(messages, options, model, tool_ctx, use_full_context, /*images=*/{}, /*audios=*/{});
 }
 
-std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithImages(
+std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
     const std::vector<MessageItem>& messages,
     const SearchOptions& options,
     GenAIModelInstance& model,
     const std::vector<const ImageItem*>& images,
+    const std::vector<const AudioItem*>& audios,
     const ToolCallContext& tool_ctx,
     bool use_full_context) {
-  if (images.empty()) {
+  if (images.empty() && audios.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "CreateWithImages requires at least one image; use Create for text-only requests");
+             "CreateWithMedia requires at least one image or audio input");
   }
-
-  return CreateImpl(messages, options, model, tool_ctx, use_full_context, images);
+  return CreateImpl(messages, options, model, tool_ctx, use_full_context, images, audios);
 }
 
 std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vector<MessageItem>& messages,
@@ -238,22 +253,23 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
                                                                  GenAIModelInstance& model,
                                                                  const ToolCallContext& tool_ctx,
                                                                  bool use_full_context,
-                                                                 const std::vector<const ImageItem*>& images) {
+                                                                 const std::vector<const ImageItem*>& images,
+                                                                 const std::vector<const AudioItem*>& audios) {
   if (messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
-  const bool vision_branch = !images.empty();
+  const bool media_branch = !images.empty() || !audios.empty();
 
-  if (vision_branch) {
+  if (media_branch) {
     if (!model.IsMultiModal()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "image input requires a multimodal model");
+               "image or audio input requires a multimodal model");
     }
 
     if (model.GetProcessor() == nullptr) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "model has no multimodal processor available for image input");
+               "model has no multimodal processor available for media input");
     }
 
     // Match upstream's single-image limit. Easy to relax once the wider
@@ -265,11 +281,10 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   }
 
   // 1. Build the chat prompt using the model's template.
-  //    Vision: rewrite the last user message to insert the model's image
-  //    sentinel before the user text.
+  //    Media: rewrite the last user message to insert media sentinels.
   std::string prompt;
-  if (vision_branch) {
-    std::string messages_json = TransformMessagesForVision(messages);
+  if (media_branch) {
+    std::string messages_json = TransformMessagesForMedia(messages);
     const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
     prompt = model.Tokenizer().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
   } else {
@@ -278,32 +293,79 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
 
   // 2. Token budgeting.
   //    Text path: encode the prompt up front so we know its token count.
-  //    Vision path: defer; OgaGenerator::SetInputs will derive input_ids from
-  //    the named tensors, and we read TokenCount() back after the call.
+  //    Media path: process inputs first and read the expanded input_ids shape.
   std::unique_ptr<OgaSequences> sequences;
   int input_token_count = 0;
 
-  if (!vision_branch) {
+  if (!media_branch) {
     sequences = EncodePrompt(prompt, model);
     input_token_count = static_cast<int>(sequences->SequenceCount(0));
-  } else {
-    // Approximate budget for ApplySearchOptions: encode the prompt once with
-    // the text tokenizer to get a token count. The actual prompt fed to the
-    // generator comes from ProcessImages and may be slightly longer due to
-    // image-token expansion, but this is the best estimate we have for
-    // max_length budgeting and matches upstream's pattern of reading
-    // TokenCount() after SetInputs for the authoritative count.
-    auto approx = EncodePrompt(prompt, model);
-    input_token_count = static_cast<int>(approx->SequenceCount(0));
+  }
+
+  // Process media before sizing the generator so max_length includes the
+  // exact token expansion produced by the multimodal processor.
+  std::unique_ptr<OgaNamedTensors> named_tensors;
+  if (media_branch) {
+    std::unique_ptr<OgaImages> oga_images;
+    if (!images.empty()) {
+      std::vector<std::vector<std::uint8_t>> image_bytes;
+      image_bytes.reserve(images.size());
+      std::vector<const void*> buffers;
+      buffers.reserve(images.size());
+      std::vector<size_t> sizes;
+      sizes.reserve(images.size());
+
+      for (const auto* img : images) {
+        if (img == nullptr) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image entry must not be null");
+        }
+
+        image_bytes.push_back(img->ReadBytes());
+        buffers.push_back(image_bytes.back().data());
+        sizes.push_back(image_bytes.back().size());
+      }
+
+      oga_images = OgaImages::Load(buffers.data(), sizes.data(), buffers.size());
+    }
+
+    std::unique_ptr<OgaAudios> oga_audios;
+    if (!audios.empty()) {
+      std::vector<const void*> audio_buffers;
+      audio_buffers.reserve(audios.size());
+      std::vector<size_t> audio_sizes;
+      audio_sizes.reserve(audios.size());
+      for (const auto* audio : audios) {
+        if (audio == nullptr || audio->data == nullptr || audio->data_size == 0) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "audio entry must contain bytes");
+        }
+        audio_buffers.push_back(audio->data);
+        audio_sizes.push_back(audio->data_size);
+      }
+
+      oga_audios = OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
+    }
+
+    if (oga_images && oga_audios) {
+      named_tensors = model.GetProcessor()->ProcessImagesAndAudios(prompt.c_str(), oga_images.get(), oga_audios.get());
+    } else if (oga_images) {
+      named_tensors = model.GetProcessor()->ProcessImages(prompt.c_str(), oga_images.get());
+    } else {
+      named_tensors = model.GetProcessor()->ProcessAudios(prompt.c_str(), oga_audios.get());
+    }
+    auto input_ids = named_tensors->Get("input_ids");
+    auto input_shape = input_ids->Shape();
+    if (input_shape.empty() || input_shape.back() <= 0) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "multimodal processor returned invalid input_ids");
+    }
+    input_token_count = static_cast<int>(input_shape.back());
   }
 
   // 3. Create GeneratorParams from the model
   auto gen_params = OgaGeneratorParams::Create(model.GetOgaModel());
 
   // 4. Apply search options (temperature, top_p, max_length, etc.) and validate token budget.
-  //    Default output budget mirrors C# OnnxChatGenerator: 3072 for vision requests
-  //    (image tokens push the prompt much higher), 2048 for text.
-  int default_max_output = vision_branch ? 3072 : 2048;
+  //    Media inputs use a larger default because preprocessing expands them into tokens.
+  int default_max_output = media_branch ? 3072 : 2048;
   ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
                      use_full_context, default_max_output);
 
@@ -348,39 +410,15 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
 
   // 6. Create the Generator and feed it the prompt.
   //    Text path: append the encoded token sequences.
-  //    Vision path: process images via OgaMultiModalProcessor and feed the
+  //    Media path: process inputs via OgaMultiModalProcessor and feed the
   //    resulting named tensors via SetInputs (which extracts input_ids and
   //    appends them internally — do NOT also call AppendTokenSequences).
   std::unique_ptr<OgaGenerator> generator;
-  std::unique_ptr<OgaNamedTensors> named_tensors;
   try {
     generator = OgaGenerator::Create(model.GetOgaModel(), *gen_params);
 
-    if (vision_branch) {
-      // Materialise raw image bytes and pointer/size arrays for OgaImages::Load.
-      std::vector<std::vector<std::uint8_t>> image_bytes;
-      image_bytes.reserve(images.size());
-      std::vector<const void*> buffers;
-      buffers.reserve(images.size());
-      std::vector<size_t> sizes;
-      sizes.reserve(images.size());
-
-      for (const auto* img : images) {
-        if (img == nullptr) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image entry must not be null");
-        }
-
-        image_bytes.push_back(img->ReadBytes());
-        buffers.push_back(image_bytes.back().data());
-        sizes.push_back(image_bytes.back().size());
-      }
-
-      auto oga_images = OgaImages::Load(buffers.data(), sizes.data(), buffers.size());
-      named_tensors = model.GetProcessor()->ProcessImages(prompt.c_str(), oga_images.get());
+    if (media_branch) {
       generator->SetInputs(*named_tensors);
-
-      // Authoritative prompt token count after image-token expansion.
-      input_token_count = static_cast<int>(generator->GetSequenceCount(0));
     } else {
       generator->AppendTokenSequences(*sequences);
     }
