@@ -3,7 +3,6 @@
 #pragma once
 
 #include <memory>
-#include <mutex>
 #include <string>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
@@ -14,13 +13,7 @@ namespace fl {
 
 /// Owns an ORT GenAI tokenizer and exposes its encode operations.
 ///
-/// A single tokenizer is created per model and shared across all concurrent sessions of that model
-/// (see ModelLoadManager). The underlying ort-extensions BPE encode path is not reentrant (it mutates
-/// shared pre-tokenizer state), so Encode/ApplyChatTemplate are serialized internally. Callers use this
-/// type exactly as they would a plain tokenizer and do not need to know that access is synchronized.
-///
-/// The decode path (OgaTokenizerStream) is unaffected: each session creates its own stream with its own
-/// detokenizer cache, so it operates on Oga() directly without locking.
+/// Synchronization is provided by Preprocessor, which owns this object.
 class Tokenizer {
  public:
   explicit Tokenizer(std::unique_ptr<OgaTokenizer> tokenizer);
@@ -43,7 +36,6 @@ class Tokenizer {
 
  private:
   std::unique_ptr<OgaTokenizer> tokenizer_;
-  std::mutex mutex_;
 };
 
 }  // namespace fl

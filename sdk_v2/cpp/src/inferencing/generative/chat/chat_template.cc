@@ -59,14 +59,13 @@ std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
   const char* tools_ptr = tools_json.empty() ? nullptr : tools_json.c_str();
 
   // ApplyChatTemplate uses the model's built-in template (template_str=nullptr) and appends the assistant
-  // turn prefix (add_generation_prompt=true). Routed through GenAIModelInstance so the shared, non-reentrant
-  // tokenizer is accessed under its mutex.
-  return model.Tokenizer().ApplyChatTemplate(messages_str.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+  // turn prefix (add_generation_prompt=true).
+  return model.GetPreprocessor().ApplyChatTemplate(messages_str.c_str(), tools_ptr, /*add_generation_prompt=*/true);
 }
 
 std::unique_ptr<OgaSequences> EncodePrompt(const std::string& prompt,
                                            GenAIModelInstance& model) {
-  return model.Tokenizer().Encode(prompt.c_str());
+  return model.GetPreprocessor().Encode(prompt.c_str());
 }
 
 }  // namespace fl
