@@ -62,8 +62,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build
-          git clone https://github.com/microsoft/vcpkg.git vcpkg
-          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+                # Foundry pins an older builtin-baseline; fetch only that commit.
+                # A full vcpkg clone is multi-GB and can hang GitHub-hosted runners for hours.
+                baseline="$(python -c "import json; print(json.load(open('sdk_v2/cpp/vcpkg.json'))['builtin-baseline'])")"
+                git init vcpkg
+                git -C vcpkg remote add origin https://github.com/microsoft/vcpkg.git
+                git -C vcpkg fetch --depth 1 origin "$baseline"
+                git -C vcpkg checkout --detach FETCH_HEAD
+                ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
       - name: Build Foundry Local tests
         run: |
           python sdk_v2/cpp/build.py \
