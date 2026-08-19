@@ -2,13 +2,20 @@
 // Licensed under the MIT License.
 #include "internal_api/c_api_test_helpers.h"
 
+#include "c_api_types.h"
+#include "catalog/model_catalog.h"
+#include "catalog/model_source.h"
+#include "internal_api/test_helpers.h"
+
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 // All tests go through the vtable obtained from FoundryLocalGetApi().
@@ -18,6 +25,25 @@ using fl::test::CreateTestConfig;
 using fl::test::GetApi;
 using fl::test::IsOk;
 using fl::test::StatusGuard;
+
+namespace {
+
+class FixedModelSource final : public fl::IModelSource {
+ public:
+  FixedModelSource(fl::CatalogSource source, fl::ModelInfo model) : source_(source), model_(std::move(model)) {
+    model_.catalog_source = source;
+  }
+
+  fl::CatalogSource Source() const override { return source_; }
+  std::string Name() const override { return "fixed-source"; }
+  std::vector<fl::ModelInfo> FetchModels() const override { return {model_}; }
+
+ private:
+  fl::CatalogSource source_;
+  fl::ModelInfo model_;
+};
+
+}  // namespace
 
 // ========================================================================
 // Exports & Version
@@ -318,6 +344,56 @@ TEST(CApiTest, GetModelsFromCatalog) {
 
   api->GetConfigurationApi()->Configuration_Release(config);
   api->Manager_Release(mgr);
+}
+
+TEST(CApiTest, ModelGetVariantsReturnsDuplicateIdsInSourceOrder) {
+  const flApi* api = GetApi();
+  ASSERT_NE(api, nullptr);
+  const flModelApi* model_api = api->GetModelApi();
+
+  fl::ModelInfo duplicate;
+  duplicate.model_id = "duplicate-model:1";
+  duplicate.name = "duplicate-model";
+  duplicate.version = 1;
+  duplicate.alias = "duplicate";
+
+  std::vector<std::unique_ptr<fl::IModelSource>> sources;
+  sources.push_back(std::make_unique<FixedModelSource>(fl::CatalogSource::kPublic, duplicate));
+  sources.push_back(std::make_unique<FixedModelSource>(fl::CatalogSource::kPrivate, duplicate));
+  sources.push_back(std::make_unique<FixedModelSource>(fl::CatalogSource::kLocal, duplicate));
+
+  fl::test::FakeServiceBindings services;
+  fl::ModelCatalog catalog(
+      "duplicate-source-catalog", std::move(sources),
+      [&services](fl::ModelInfo info) {
+        return fl::Model::FromModelInfo(std::move(info), services.download_manager, services.model_load_manager);
+      },
+      services.logger);
+
+  fl::Model* grouped_model = catalog.GetModel("duplicate");
+  ASSERT_NE(grouped_model, nullptr);
+
+  flModelList* variants = nullptr;
+  ASSERT_FL_OK(api, model_api->GetVariants(AsHandle<flModel>(grouped_model), &variants));
+  std::unique_ptr<flModelList, decltype(api->ModelList_Release)> variants_guard(variants, api->ModelList_Release);
+  ASSERT_NE(variants, nullptr);
+  ASSERT_EQ(api->ModelList_Size(variants), 3u);
+
+  const std::vector<fl::CatalogSource> expected_sources = {
+      fl::CatalogSource::kLocal,
+      fl::CatalogSource::kPrivate,
+      fl::CatalogSource::kPublic,
+  };
+  for (size_t i = 0; i < expected_sources.size(); ++i) {
+    flModel* variant = api->ModelList_GetAt(variants, i);
+    ASSERT_NE(variant, nullptr);
+
+    const flModelInfo* info = nullptr;
+    ASSERT_FL_OK(api, model_api->GetInfo(variant, &info));
+    ASSERT_NE(info, nullptr);
+    EXPECT_STREQ(model_api->Info_GetId(info), "duplicate-model:1");
+    EXPECT_EQ(model_api->Info_GetCatalogSource(info), static_cast<int>(expected_sources[i]));
+  }
 }
 
 TEST(CApiTest, GetModelVersionsNullCatalogFails) {

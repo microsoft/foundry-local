@@ -97,13 +97,6 @@ class Model {
   /// `std::unique_ptr<T>::get() const → T*` idiom.
   std::vector<Model*> Variants() const;
 
-  /// Like Variants() but filtered to one leaf per model_id — the visible, de-duplicated view
-  /// used by the public surfaces (C API GetVariants, REST GET /v1/models). Walks the container's
-  /// best-first variant order under a single lock and keeps the first occurrence of each model_id,
-  /// which (per CompareBestFirst's source-priority tiebreak) is the preferred-source copy; later
-  /// same-model_id shadows are skipped. For a leaf, returns {this}.
-  std::vector<Model*> UniqueVariants() const;
-
   // --- Query methods ---
 
   bool IsCached() const;

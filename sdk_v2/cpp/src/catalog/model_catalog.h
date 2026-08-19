@@ -21,7 +21,7 @@ namespace fl {
 /// Owns the ModelFactory and every Model instance, plus a list of fetch-only IModelSources
 /// (one per catalog type). It merges ModelInfo across sources into alias containers, keeps
 /// same-model_id copies from different sources as shadow variants (ordered preferred-source
-/// first), and serves a filtered preferred-only public API view. Fetch lives in the sources;
+/// first), and serves every stored variant in deterministic catalog order. Fetch lives in the sources;
 /// store / query / index / create / cache / refresh live here.
 ///
 /// Model ownership: the catalog owns all Model instances via unique_ptr in models_. These

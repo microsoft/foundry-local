@@ -2,8 +2,6 @@
 
 > Status: **Proposal for review**
 > Scope: `sdk_v2/cpp` catalog subsystem
-> Supersedes: `MultiCatalogAggregationPlan.md` and `MultiSourceCatalogDesign.md`
-> (kept for history; do not edit)
 
 ## Summary
 
@@ -26,14 +24,16 @@ Split the two responsibilities that `BaseModelCatalog` currently couples:
   **pure fetchers that return `ModelInfo`** — they do not create `Model` instances.
 - **Store / query / index / create** lives in a single `ModelCatalog : ICatalog` that owns the
   `ModelFactory` and all `Model` instances, merges across sources, keeps shadow duplicates, and
-  serves a filtered (preferred-only) public API view.
+  serves deterministic enumeration of all variants.
 
 On a duplicate (same `model_id` across catalog sources) we keep every copy internally as **shadow
-variants**; the **public API view** surfaces only the **preferred** one. Preference is by catalog
-source: `local > private > public`. Retaining the shadows enables **fallback** — e.g. unregistering
-a BYOM local model that shadows a cloud id re-selects the surviving cloud copy. (Genuine cross-source
-duplicates only arise once Private or BYOM lands — see *What "local" means* below — so this machinery
-is foundational in the initial scope.)
+variants**, and public/global enumeration surfaces every copy in deterministic catalog sort order,
+including duplicate `model_id`s. Preference is by catalog source: `local > private > public`, and
+governs direct `model_id` lookup and default selection rather than filtering enumeration. Retaining
+the shadows enables **fallback** — e.g. unregistering a BYOM local model that shadows a cloud id
+re-selects the surviving cloud copy. (Genuine cross-source duplicates only arise once Private or
+BYOM lands — see *What "local" means* below — so this machinery is foundational in the initial
+scope.)
 
 ## What "local" means here
 
@@ -57,24 +57,24 @@ while there are no genuine shadows.
 
 Consequence for the initial scope: public ids are unique and `kLocal` stubs are orphans (disjoint
 from public by construction), so **the single Public source produces no genuine cross-source
-duplicates**. The shadow-variant / source-preference / `UniqueVariants` machinery is therefore
-foundational — first exercised when Private or BYOM introduces a second source that can serve the same
-`model_id`.
+duplicates**. The shadow-variant / source-preference / duplicate-preserving enumeration machinery is
+therefore foundational — first exercised when Private or BYOM introduces a second source that can
+serve the same `model_id`.
 
 ## Why this shape
 
 - **Source/store split; sources return `ModelInfo`.** The store owns the `ModelFactory`, so sources
   stay pure fetchers and never touch `DownloadManager` / `ModelLoadManager`.
-- **Duplicates are shadow variants, filtered by the public view.** There is no internal
-  "no duplicates" rule — the user drives selection, so the visible `flModelList` is just a filtered
-  view, and same-`model_id` copies from different sources may carry different metadata.
+- **Duplicates are shadow variants and remain visible in enumeration.** There is no internal or
+  public "no duplicates" rule: same-`model_id` copies from different sources may carry different
+  metadata, and callers can inspect every copy in deterministic catalog sort order.
 
 Two behavior changes fall out of this:
 
-1. **Container `variants_` may hold same-`model_id` shadows** (today they're distinct). Filtering
-   moves to the visible view; the internal **`id_index`** (the `model_id → Model*` lookup that backs
-   by-id queries, built by `RebuildIndex`) resolves each `model_id` to its **preferred** leaf via
-   source-aware ordering.
+1. **Container `variants_` may hold same-`model_id` shadows** (today they're distinct). Public/global
+   enumeration returns those shadows in deterministic source-aware catalog order; the internal
+   **`id_index`** (the `model_id → Model*` lookup that backs by-id queries, built by `RebuildIndex`)
+   resolves each `model_id` to its **preferred** leaf.
 2. **`Model*` stays stable for cloud models** (append-only; `RemoveFromCache` only un-caches). The
    one exception is a **BYOM local `Unregister`** (future) — an explicit, user-initiated removal.
 
@@ -84,9 +84,9 @@ Two behavior changes fall out of this:
 |---|---|---|---|
 | D1 | Architecture | **Source/store split.** One owning store; sources are fetch-only. | Preserves `Model*` stability and single ownership; reuses existing index/refresh. |
 | D2 | Sources return | **`ModelInfo`, not `Model`.** The store owns the `ModelFactory`. | Keeps sources free of `DownloadManager` / `ModelLoadManager` coupling. |
-| D3 | Catalog source | **Explicit `CatalogSource` enum field on `ModelInfo`**, not a property-bag entry, and **not** an overload of `model_provider`. | It is correctness-critical (drives dedup/preference), sits on the compare hot path, and is a small closed set. `model_provider` describes *who publishes*; catalog source describes *which catalog served* it. |
-| D4 | Duplicate storage | **Shadow variants** inside the alias container; the public API view filters to the preferred copy. | Internal duplicates are harmless (the user controls model selection); the visible list is a filterable `flModelList` view. Keeps each source's full metadata for fallback. |
-| D5 | Preference | `local > private > public`, applied by **source-aware variant ordering** so both by-`model_id` lookup and the visible view resolve to the preferred copy. | Small, closed tiebreak; applies only when two sources serve the same `model_id` (the unique model identifier). |
+| D3 | Catalog source | **Explicit `CatalogSource` enum field on `ModelInfo`**, not a property-bag entry, and **not** an overload of `model_provider`. | It is correctness-critical (drives preference), sits on the compare hot path, and is a small closed set. `model_provider` describes *who publishes*; catalog source describes *which catalog served* it. |
+| D4 | Duplicate storage | **Shadow variants** inside the alias container; public/global enumeration returns every copy, including duplicate `model_id`s, in deterministic catalog sort order. | Keeps each source's full metadata visible and available for fallback without adding a separate deduplication projection. |
+| D5 | Preference | `local > private > public`, applied by **source-aware variant ordering** so by-`model_id` lookup resolves to the preferred copy and default selection uses it after the existing cached-first rule. | Small, closed tiebreak; applies only when two sources serve the same `model_id` (the unique model identifier), without hiding either copy from enumeration. |
 | D6 | Cached-state / non-latest metadata | The local scan attaches `local_path` + cached state to the matching catalog entry. For cached **non-latest** versions absent from the latest cloud fetch, resolve full metadata via the online source's `FetchModelsByIds`. | A downloaded cloud model is not a duplicate — it is the cloud entry with local state attached. Matches current behavior. |
 | D7 | Private catalog | A **future follow-up**; an additional online catalog source. Its shape, auth, and fetch implementation are **deferred** — the source/store split leaves room for it without a redesign. | Out of initial scope; captured only as a placeholder. |
 | D8 | Local models | **No separate source now.** The Azure source keeps today's flow — scan the cache (`ScanLocalModels`), fetch live metadata resolving cached ids by-id (`FetchAllModelInfosWithCachedModels`), then `AddLocalModels` attaches `local_path` and synthesizes stubs (`MakeByomModelInfo`) for disk-only models. The only change: **tag those synthesized stubs `kLocal`**. The dedicated **BYOM local catalog** replaces this stub path later. | Least risk; reuses working code. A separate `LocalModelSource` adds a merge/ownership split with no gain while there are no shadows. |
@@ -120,8 +120,8 @@ Two behavior changes fall out of this:
                     ┌──────────────────────────────┐
    public API  ───> │  ModelCatalog : ICatalog     │  owns ModelFactory, containers,
    / C ABI          │  - models_ / indices / cache │  indices, caching, refresh;
-                    │  - vector<unique_ptr<        │  shadow variants, view filters
-                    │        IModelSource>> sources│  to preferred
+                    │  - vector<unique_ptr<        │  shadow variants, deterministic
+                    │        IModelSource>> sources│  all-variant enumeration
                     └──────────────┬───────────────┘
                                    │ composes (fetch-only; return ModelInfo)
              ┌─────────────────────┼─────────────────────┐
@@ -142,7 +142,8 @@ Two behavior changes fall out of this:
   `kLocal` on the orphan stubs it synthesizes from the local cache scan.
 - The store creates a leaf via its owned `ModelFactory` for every `ModelInfo` (including
   same-`model_id` shadows), groups them by alias into containers, and orders variants source-aware
-  so the preferred copy wins in `id_index` and the visible view.
+  so the preferred copy wins in `id_index`, while cached-first default selection uses that order and
+  enumeration retains all copies.
 
 ## Design
 
@@ -174,14 +175,14 @@ Two behavior changes fall out of this:
 - **`ModelCatalog : ICatalog`** — evolves `BaseModelCatalog`. Holds
   `std::vector<std::unique_ptr<IModelSource>> sources_`, the `ModelFactory`, and the existing
   store/indices/refresh. Containers may hold same-`model_id` shadow variants; variant ordering is
-  **source-aware** (preferred first) so `id_index` first-wins and the visible view resolve to the
-  preferred copy. Adds a local-BYO `Unregister` path that removes a variant (see Removal & fallback).
+  **source-aware** (preferred first) so `id_index` first-wins, while cached-first default selection
+  falls back to the preferred copy. Adds a local-BYO `Unregister` path that removes a variant (see Removal & fallback).
 
-### Variant ordering, selection & visibility (shadow variants)
+### Variant ordering, selection & enumeration (shadow variants)
 
 Shadow variants (same `model_id` from different catalog sources) live inside the alias container's
-`variants_` alongside genuine distinct variants. Three mechanisms keep them internally complete while
-the public surface stays de-duplicated:
+`variants_` alongside genuine distinct variants. Their ordering keeps enumeration deterministic and
+preference-based operations unambiguous:
 
 - **Ordering — `CompareBestFirst` gains a final tiebreak.** The comparator keeps its existing keys
   (device priority asc, version desc, created-at desc, `model_id` asc) and appends
@@ -190,44 +191,23 @@ the public surface stays de-duplicated:
   non-duplicates differ earlier and are unaffected. `AddVariant`'s `upper_bound` insert therefore
   places every shadow in preferred-first order regardless of source insertion order.
 
-- **Internal enumeration — `Variants()` is unchanged and all-inclusive.** It returns every leaf,
-  including shadows, and remains the accessor used by internal machinery (`RebuildIndex`,
-  `GetCachedModels` / `GetLoadedModels`, merge/integration). Because `variants_` is preferred-first,
-  `RebuildIndex`'s first-wins `id_index[model_id]` resolves to the **preferred** leaf automatically.
+- **Enumeration — `Variants()` stays all-inclusive on every surface.** It returns every leaf,
+  including shadows, in the existing best-first catalog order. Internal machinery (`RebuildIndex`,
+  `GetCachedModels` / `GetLoadedModels`, merge/integration), the C API `Model_GetVariantsImpl`
+  (`c_api.cc`), and REST `GET /v1/models` `OpenAIListModelsHandler`
+  (`service/models_handlers.cc`) all continue to use `Variants()`. Consequently, `flModelList` and
+  `/v1/models` may contain duplicate `model_id`s when multiple sources serve the same model; their
+  deterministic source-aware order lets consumers distinguish and process every catalog entry.
 
-- **Public enumeration — new `Model::UniqueVariants()`.** Returns `std::vector<Model*>` filtered to
-  one leaf per `model_id`: it walks `variants_` in its existing best-first order (under a single lock)
-  and keeps the first occurrence of each `model_id` (which, per the tiebreak above, is the
-  preferred-source copy), skipping later shadows. This is the accessor **both public surfaces** use:
-  the C API `Model_GetVariantsImpl` (`c_api.cc`) and the REST `GET /v1/models`
-  `OpenAIListModelsHandler` (`service/models_handlers.cc`) switch from `Variants()` to
-  `UniqueVariants()`, so neither emits duplicate `model_id`s. The visible `flModelList` / model list is
-  thus a filtered projection; internal storage keeps the full shadow set for fallback.
+- **Direct lookup — preferred source wins for shadows.** Because `variants_` is preferred-first for
+  otherwise-identical copies, `RebuildIndex`'s first-wins `id_index[model_id]` resolves a shadowed
+  `model_id` to the highest-priority available source (`local > private > public`).
 
-  *Why a method, not inline filtering:* it has **two** public callers, so centralizing keeps the
-  shadow-dedup policy next to the ordering rules rather than duplicated across handlers. It is also
-  **allocation-neutral** — these sites already call `Variants()` (a heap snapshot vector) and copy
-  into their output; `UniqueVariants()` returns the same single snapshot under one lock. (A
-  zero-intermediate callback enumerator was rejected: catalog access is explicitly never
-  performance-critical.) Internal callers — `RebuildIndex`, `IntegrateVariants`, `GetCachedModels` /
-  `GetLoadedModels` — keep using the all-inclusive `Variants()`.
-
-**Default variant selection (`SelectDefaultVariant`) — cached wins.** The existing rule stands:
-select the first **cached** variant in best-first order, else `variants_.front()`. Precedence is
-therefore *cached-first, then source-preference among equals*:
-
-- Any **local** model (BYO or a downloaded copy) is locally available, so its leaf is constructed with
-  its **cached flag set by default**. A local shadow is thus cached and, being highest source
-  priority, is both first-in-order and cached → selected.
-- If a lower-priority source's copy is cached but the preferred-source copy is not (e.g. cached
-  `public` vs. uncached `private`), the **cached** copy is selected — cached beats source preference,
-  by design.
-
-Note a deliberate divergence for shadowed `model_id`s: `id_index[model_id]` (used by
-`GetModelVariant`) resolves to the *preferred-source* leaf via first-wins ordering, while the
-container's *default selection* may be a *cached* lower-priority leaf. These answer different
-questions ("give me the preferred copy of this id" vs. "what does this container act on by default")
-and are intentionally allowed to differ.
+- **Default selection — cached still wins.** `SelectDefaultVariant` keeps the existing rule: select
+  the first cached variant in best-first order, otherwise select `variants_.front()`. Source priority
+  therefore breaks ties between equally available shadows, but a cached lower-priority source may be
+  selected over an uncached preferred source. This deliberate distinction preserves direct-ID lookup
+  preference without changing the container's availability-oriented default behavior.
 
 ### Merge algorithm (`ModelCatalog::Populate`)
 
@@ -235,9 +215,9 @@ and are intentionally allowed to differ.
 alias (`PopulateModels`), and `RebuildIndex`. The **one change**: gather `ModelInfo` from all sources
 (each stamped by `Source()`) and allow same-`model_id` **shadows** — the dedup key in
 `IntegrateVariants` becomes `(model_id, catalog_source)` and variant ordering is source-aware
-(`local > private > public`) so `id_index` first-wins and the visible view resolve to the preferred
-copy. In the initial single-source scope no shadows arise (see *What "local" means*), so this is
-dormant foundation.
+(`local > private > public`) so `id_index` first-wins, while cached-first default selection uses
+that preferred order and enumeration retains all shadows. In the initial single-source scope no shadows arise (see
+*What "local" means*), so this is dormant foundation.
 
 ### Removal & fallback
 
@@ -274,52 +254,9 @@ carve out this exception.
   `ModelFactory`, and construct one `ModelCatalog`. `catalog_` stays `std::unique_ptr<ICatalog>`. The
   list is source-agnostic, so future Private / BYOM sources slot in without store changes.
 
-## Delivery phases
-
-Phase 0–3 are the **initial scope: the Public (Azure) source** (with inline local-cache resolution +
-the `kLocal` tag). The **Private catalog** and the dedicated **BYOM local catalog** are **future
-follow-ups** — each an independent source that needs no redesign of the store, sources, or public API.
-
-### Phase 0 — Types & metadata
-1. Add `CatalogSource` enum + `CatalogSourcePriority` helper.
-2. Add `CatalogSource catalog_source` to `ModelInfo`; round-trip in
-   `ModelInfoFromJson` / `ModelInfoToJson`.
-
-### Phase 1 — Source abstraction *(parallel after Phase 0)*
-3. New `IModelSource` interface (returns `ModelInfo`).
-4. `AzureModelSource` (fetch guts from `AzureModelCatalog`; serves Public and retains the inline
-   local-cache resolution — `ScanLocalModels` + `GetLiveCatalogOrLocalSnapshot` + `AddLocalModels`,
-   incl. the snapshot fallback and `CreateCatalogClient` seam).
-5. Tag the synthesized orphan stubs `kLocal` in `MakeByomModelInfo` (`azure_model_catalog.cc`) — the
-   only local-specific change.
-
-### Phase 2 — Aggregating store *(depends on Phase 1)*
-6. `ModelCatalog : ICatalog` — owns `ModelFactory`, `sources_`; reuse group/index/refresh with
-   source-aware variant ordering, `UniqueVariants()`-backed preferred-only public view, and the
-   `Unregister` / `RemoveVariant` removal path (foundation; dormant with one source).
-7. Implement the merge / leaf-build / shadow-duplicate algorithm above; preserve cache-only mode
-   and `CatalogCache` save.
-
-### Phase 3 — Wiring *(depends on Phase 2)*
-8. `Manager::Create` builds the `[Public]` source, constructs the factory and `ModelCatalog`.
-
-### Phase 4 — Tests *(parallel with Phases 2–3)*
-9. `FakeModelSource` helper (replaces the `TestCatalog` `FetchModels` override; returns `ModelInfo`).
-10. `model_catalog_test.cc`: **local classification** (scanned id matching public → `kPublic` cached
-    single leaf; orphan id → `kLocal` stub) / preference (`local > private > public`) / shadow-variant
-    visibility / preferred-only visible view (`UniqueVariants` de-dup) / `SelectDefaultVariant`
-    precedence (cached-beats-source; local-cached-by-default) / cached-state attachment /
-    cached-non-latest cloud resolution / fallback-on-unregister via `FakeModelSource` shadows
-    (`RemoveVariant` compaction + empty-container removal + surviving-shadow re-selection) /
-    `catalog_source` round-trips through the cache JSON / union-of-aliases across sources.
-11. Migrate the Azure catalog tests (`azure_catalog_test.cc` + `azure_model_catalog_test.cc`, incl. the
-    snapshot-fallback / BYOM-synthesis / dedup cases) → `azure_model_source_test.cc` (fetch guts
-    unchanged). Keep `catalog_cache_test`, `model_sorting_test`, and `sdk_api/catalog_test` (surface
-    unchanged).
-
 ## Future follow-ups *(out of initial scope; no redesign required)*
 
-Each is independent and depends only on Phase 3. All slot into the same source/store design.
+Each is independent and builds on the initial source/store refactor. All slot into the same design.
 
 ### Private catalog
 - An additional online catalog source (its own `IModelSource`, stamped `kPrivate`), plus any
@@ -331,52 +268,10 @@ Each is independent and depends only on Phase 3. All slot into the same source/s
   `Register` / `Unregister` API. It **replaces** the Azure source's short-term inline local-cache
   resolution and `kLocal` stubs; `Unregister` wires to the `ModelCatalog` variant-removal path.
 
-### Public visibility of duplicate sources
-- Once a real scenario needs it, add a public way for a consumer to enumerate all of a model's
-  duplicate catalog sources (the shadows the visible view hides). Not built now — the visible view
-  surfaces only the preferred copy, which is sufficient until a concrete need arises.
-
-## Affected files
-
-**New**
-- `catalog/model_source.h` (`IModelSource`)
-- `catalog/azure_model_source.{h,cc}`
-- `catalog/model_catalog.{h,cc}`
-
-**Modify**
-- [src/model_info.h](../src/model_info.h) / [src/model_info.cc](../src/model_info.cc) —
-  `CatalogSource` enum, `CatalogSourcePriority`, `catalog_source` field + JSON round-trip
-- [src/model.h](../src/model.h) / [src/model.cc](../src/model.cc) — source-aware **final tiebreak**
-  in `CompareBestFirst` (orders genuine duplicates preferred-first, non-duplicates unchanged); new
-  `UniqueVariants()` preferred-only view for the public list (leaving `Variants()` all-inclusive for
-  internal use); `RemoveVariant` for local-BYO `Unregister`; local leaves constructed cached-by-default
-- [src/catalog/azure_model_catalog.cc](../src/catalog/azure_model_catalog.cc) — `MakeByomModelInfo`
-  (the disk-only stub synthesizer) stamps `catalog_source = kLocal` on the stubs it
-  produces (the only local-specific change). `FetchAllModelInfosWithCachedModels`
-  ([catalog_client.cc](../src/catalog/catalog_client.cc)) — which now only fetches latest + resolves
-  cached ids by-id — is untouched.
-- [src/manager.cc](../src/manager.cc) / [src/manager.h](../src/manager.h) — build the `[Public]`
-  source (~L325), construct the factory + `ModelCatalog` (factory `CreateModel` at ~L545)
-- [src/catalog/catalog_cache.h](../src/catalog/catalog_cache.h) /
-  [src/catalog/catalog_cache.cc](../src/catalog/catalog_cache.cc) — round-trips `catalog_source`
-  via `ModelInfo` JSON
-- [include/foundry_local/foundry_local_c.h](../include/foundry_local/foundry_local_c.h) /
-  [src/c_api.cc](../src/c_api.cc) — read-only `catalog_source` (int) on `flModelInfo`;
-  `Model_GetVariantsImpl` switches from `Variants()` to `UniqueVariants()` so the public list is
-  de-duplicated. Any Private-catalog C-API surface stays **append-only** and is a future follow-up.
-- [src/service/models_handlers.cc](../src/service/models_handlers.cc) — `OpenAIListModelsHandler`
-  (`GET /v1/models`) switches from `Variants()` to `UniqueVariants()` so it never emits duplicate
-  `model_id`s across catalog sources
-- [CMakeLists.txt](../CMakeLists.txt) — add/remove sources
-
-**Remove / absorb**
-- `catalog/base_model_catalog.{h,cc}` → `catalog/model_catalog.{h,cc}`
-- `catalog/azure_model_catalog.{h,cc}` → `catalog/azure_model_source.{h,cc}` (keeps the inline
-  local-cache resolution: `ScanLocalModels` + `GetLiveCatalogOrLocalSnapshot` + `AddLocalModels` /
-  `MakeByomModelInfo`, incl. the snapshot fallback and `CreateCatalogClient` seam)
-- `FetchAllModelInfosWithCachedModels` ([catalog/catalog_client.cc](../src/catalog/catalog_client.cc))
-  **stays** — reused by `AzureModelSource`; unchanged (stub synthesis lives in `MakeByomModelInfo`).
-  `ICatalogClient` in `catalog_client.h` stays (used by `AzureModelSource`).
+### Public identification of duplicate sources
+- Enumeration already exposes all duplicate catalog entries. Once a real scenario needs it, add a
+  richer public source identifier beyond the read-only `catalog_source` value so consumers can
+  present or select duplicate sources more explicitly.
 
 ## Verification
 
@@ -390,8 +285,8 @@ Each is independent and depends only on Phase 3. All slot into the same source/s
 
 - **Included (initial scope)**: the Public (Azure) source with inline local-cache resolution (cached
   `kPublic` entries + short-term `kLocal` orphan stubs, per *What "local" means*); the
-  shadow / preference / `UniqueVariants` machinery and the `Unregister` / `RemoveVariant` path as
-  dormant foundation.
+  shadow / preference / duplicate-preserving enumeration machinery and the `Unregister` /
+  `RemoveVariant` path as dormant foundation.
 - **Excluded (future follow-ups)**: the **Private** catalog and the dedicated **BYOM local** catalog
   (which replaces the interim `kLocal` stubs and adds `Register` / `Unregister`). Both are new
   sources, not redesigns; details TBD.

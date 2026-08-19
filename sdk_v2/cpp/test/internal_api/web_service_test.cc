@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <httplib.h>
@@ -286,6 +287,38 @@ TEST_F(WebServiceTest, OpenAIListModelsPopulatesPublisher) {
   }
 
   EXPECT_TRUE(found) << "alpha-model:1 not found in response: " << j.dump(2);
+}
+
+TEST_F(WebServiceTest, OpenAIListModelsPreservesDuplicateIdsInCatalogSourceOrder) {
+  test::MockCatalog catalog;
+
+  for (const auto& [source, publisher] :
+       std::vector<std::pair<CatalogSource, std::string>>{
+           {CatalogSource::kPublic, "public-owner"},
+           {CatalogSource::kLocal, "local-owner"},
+           {CatalogSource::kPrivate, "private-owner"},
+       }) {
+    auto info = test::MakeTestModelInfo("duplicate-model", publisher);
+    info.catalog_source = source;
+    catalog.AddModel(Model::FromModelInfo(std::move(info), svc_.download_manager, svc_.model_load_manager));
+  }
+
+  WebService service(catalog, *logger_, "/tmp/test-cache", *model_load_manager_, *session_manager_, *null_telemetry_,
+                     []() {});
+  const auto urls = service.Start({"http://127.0.0.1:0"});
+  ASSERT_EQ(urls.size(), 1u);
+
+  const auto response = json::parse(TestHttpGet(urls[0] + "/v1/models"));
+  const auto& models = response["data"];
+  ASSERT_EQ(models.size(), 3u) << "Response: " << response.dump(2);
+
+  const std::vector<std::string> expected_owners = {"local-owner", "private-owner", "public-owner"};
+  for (size_t i = 0; i < expected_owners.size(); ++i) {
+    EXPECT_EQ(models[i]["id"], "duplicate-model:1") << "Response: " << response.dump(2);
+    EXPECT_EQ(models[i]["owned_by"], expected_owners[i]) << "Response: " << response.dump(2);
+  }
+
+  service.Stop();
 }
 
 // ========================================================================

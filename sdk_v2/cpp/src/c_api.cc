@@ -857,9 +857,7 @@ FL_API_STATUS_IMPL(Model_GetVariantsImpl, const flModel* model, flModelList** ou
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  // Public list is de-duplicated to one leaf per model_id (preferred-source copy); internal
-  // storage keeps all shadow variants. See MultiCatalogSupportPlan.md.
-  auto variants = AsImpl(model)->UniqueVariants();
+  auto variants = AsImpl(model)->Variants();
   auto list = std::make_unique<flModelList>();
   list->items.reserve(variants.size());
 

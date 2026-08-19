@@ -3,8 +3,8 @@
 //
 // Tests for ModelCatalog — the aggregating store behind ICatalog. Fetch lives in
 // IModelSources (here a FakeModelSource); the store owns the ModelFactory, groups variants
-// by alias, keeps same-model_id shadows from different sources, and serves a preferred-only
-// public view (UniqueVariants). Also covers source preference, SelectDefaultVariant
+// by alias, keeps same-model_id variants from different sources visible in deterministic order,
+// and resolves by-ID lookups to the preferred source. Also covers SelectDefaultVariant
 // precedence, the Unregister / RemoveVariant fallback path, and catalog_source JSON round-trip.
 //
 #include "catalog/model_catalog.h"
@@ -369,7 +369,7 @@ TEST_F(ModelCatalogTest, GetModelVariantIdIntegrationPreservesPriorityOrdering) 
 }
 
 // ========================================================================
-// Multi-source: union of aliases, shadow variants, preference, visibility
+// Multi-source: union of aliases, duplicate variants, preference, visibility
 // ========================================================================
 
 TEST_F(ModelCatalogTest, MultipleSourcesUnionAliases) {
@@ -381,22 +381,46 @@ TEST_F(ModelCatalogTest, MultipleSourcesUnionAliases) {
   EXPECT_EQ(list.size(), 2u);
 }
 
-TEST_F(ModelCatalogTest, ShadowVariantsKeptInternallyButHiddenFromUniqueView) {
-  // Same model_id served by public and local sources → shadow variants.
-  default_source_->AddModel(MakeInfo("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));
-  auto* local = AddSource(CatalogSource::kLocal, "local-source");
-  local->AddModel(MakeInfo("phi-3-mini:1", "phi-3-mini", 1, "phi-3", "/cache/phi", CatalogSource::kLocal));
+TEST_F(ModelCatalogTest, DuplicateModelIdsRemainVisibleInSortedSourceOrderAndByIdPrefersSource) {
+  default_source_->AddModel(
+      MakeInfo("phi-3-mini-gpu:2", "phi-3-mini", 2, "phi-3", "", CatalogSource::kPublic));
+  default_source_->AddModel(
+      MakeInfo("phi-3-mini-cpu:1", "phi-3-mini", 1, "phi-3", "", CatalogSource::kPublic));
+  default_source_->AddModel(
+      MakeInfo("phi-3-mini-gpu:1", "phi-3-mini", 1, "phi-3", "", CatalogSource::kPublic));
 
-  auto* container = Catalog().GetModel("phi-3");
+  auto* local = AddSource(CatalogSource::kLocal, "local-source");
+  local->AddModel(
+      MakeInfo("phi-3-mini-gpu:1", "phi-3-mini", 1, "phi-3", "", CatalogSource::kLocal));
+
+  auto* priv = AddSource(CatalogSource::kPrivate, "private-source");
+  priv->AddModel(
+      MakeInfo("phi-3-mini-gpu:1", "phi-3-mini", 1, "phi-3", "", CatalogSource::kPrivate));
+
+  auto& catalog = Catalog();
+  auto* container = catalog.GetModel("phi-3");
   ASSERT_NE(container, nullptr);
 
-  // Internal enumeration keeps both shadows.
-  EXPECT_EQ(container->Variants().size(), 2u);
-  // Public view collapses to one leaf per model_id.
-  auto unique = container->UniqueVariants();
-  ASSERT_EQ(unique.size(), 1u);
-  EXPECT_EQ(unique.front()->Info().catalog_source, CatalogSource::kLocal)
-      << "The preferred (local) shadow should be the visible copy.";
+  const std::vector<std::pair<std::string, CatalogSource>> expected = {
+      {"phi-3-mini-gpu:2", CatalogSource::kPublic},
+      {"phi-3-mini-gpu:1", CatalogSource::kLocal},
+      {"phi-3-mini-gpu:1", CatalogSource::kPrivate},
+      {"phi-3-mini-gpu:1", CatalogSource::kPublic},
+      {"phi-3-mini-cpu:1", CatalogSource::kPublic},
+  };
+
+  const auto variants = container->Variants();
+  ASSERT_EQ(variants.size(), expected.size());
+
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(variants[i]->Info().model_id, expected[i].first);
+    EXPECT_EQ(variants[i]->Info().catalog_source, expected[i].second);
+  }
+
+  auto* by_id = catalog.GetModelVariant("phi-3-mini-gpu:1");
+  ASSERT_NE(by_id, nullptr);
+  EXPECT_EQ(by_id->Info().catalog_source, CatalogSource::kLocal)
+      << "By-ID lookup should still resolve duplicate model IDs to the preferred source.";
 }
 
 TEST_F(ModelCatalogTest, IdIndexResolvesToPreferredSource) {

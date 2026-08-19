@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <unordered_set>
 
 namespace fl {
 
@@ -252,28 +251,6 @@ std::vector<Model*> Model::Variants() const {
     }
   } else {
     result.push_back(const_cast<Model*>(this));
-  }
-
-  return result;
-}
-
-std::vector<Model*> Model::UniqueVariants() const {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-
-  if (!IsContainer()) {
-    return {const_cast<Model*>(this)};
-  }
-
-  // variants_ is kept best-first (AddVariant's ordered insert), and same-model_id shadow
-  // variants are ordered preferred-source first by CompareBestFirst's final tiebreak. Keep
-  // the first occurrence of each model_id so the visible list is the preferred-source copy.
-  std::vector<Model*> result;
-  result.reserve(variants_.size());
-  std::unordered_set<std::string> seen_ids;
-  for (auto& v : variants_) {
-    if (seen_ids.insert(v->Info().model_id).second) {
-      result.push_back(const_cast<Model*>(v.get()));
-    }
   }
 
   return result;
