@@ -212,7 +212,12 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/audio/onnx_audio_generator.cc
     src/inferencing/generative/audio/pcm_utils.cc
     src/inferencing/generative/embeddings/embeddings_session.cc
+    src/inferencing/generative/engine/engine_backend.cc
+    src/inferencing/generative/engine/engine_host.cc
     src/inferencing/generative/chat/chat_generator.cc
+    src/inferencing/generative/chat/chat_token_decoder.cc
+    src/inferencing/generative/chat/engine_chat_generator.cc
+    src/inferencing/generative/chat/generator_guidance.cc
     src/inferencing/session/session.cc
     src/inferencing/session/session_manager.cc
     src/inferencing/generative/chat/chat_session.cc
@@ -501,6 +506,22 @@ if(TARGET OnnxRuntime::OnnxRuntime)
             )
         endif()
 
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+
+        if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_cuda.dll")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_DLL_DIR}/onnxruntime_providers_cuda.dll"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+
         # Copy WinML EP Catalog DLL for runtime EP discovery
         if(WinMLEpCatalog_FOUND AND EXISTS "${WINML_EP_CATALOG_DLL_DIR}/Microsoft.Windows.AI.MachineLearning.dll")
             add_custom_command(TARGET foundry_local POST_BUILD
@@ -544,6 +565,22 @@ if(TARGET OnnxRuntime::OnnxRuntime)
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${ORT_LIB_DIR}/libonnxruntime_providers_shared.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/libonnxruntime-genai-cuda.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so"
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()

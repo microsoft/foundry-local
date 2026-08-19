@@ -5,6 +5,7 @@
 
 #include "contracts/chat_completions.h"
 #include "contracts/chat_completions_converter.h"
+#include "inferencing/generative/chat/engine_chat_generator.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/genai_model_instance.h"
@@ -46,6 +47,19 @@ void ApplyToolChoiceToContext(std::optional<flToolChoice> tool_choice, ToolCallC
       tool_ctx.tool_output = true;
       break;
   }
+}
+
+bool HasMedia(const std::vector<MessageItem>& messages) {
+  for (const auto& message : messages) {
+    for (const auto& part : message.content) {
+      if (part.view &&
+          (part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE || part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 }  // namespace
@@ -712,8 +726,19 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     }
   }
 
-  // Create generator
-  auto generator = OnnxChatGenerator::Create(messages, options, Model(), tool_ctx);
+  // Dynamic batching is intentionally limited to self-contained, text-only JSON requests. Stateful session turns,
+  // continuation, and multimodal requests remain on the existing OgaGenerator path.
+  std::unique_ptr<ChatGenerator> generator;
+  const bool request_has_media = HasMedia(messages);
+  if (Model().SupportsEngineChatCompletions() &&
+      ShouldUseEngineChatGenerator(Model().GetGenAIConfig(), Model().IsMultiModal(), request_has_media)) {
+    generator = EngineChatGenerator::Create(
+        messages, options, Model(), tool_ctx,
+        [&original_request] { return original_request.canceled.load(std::memory_order_relaxed); });
+  } else {
+    generator = OnnxChatGenerator::Create(messages, options, Model(), tool_ctx);
+  }
+
   int prompt_tokens = generator->PromptTokenCount();
 
   auto streaming_callback = CreateCallbackHandler(original_request);
@@ -807,14 +832,24 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Generate token-by-token
   std::string text;
-  while (!generator->IsDone() && !original_request.canceled) {
-    generator->GenerateNextToken();
-    std::string token = generator->Decode();
+  try {
+    while (!generator->IsDone() && !original_request.canceled) {
+      generator->GenerateNextToken();
+      std::string token = generator->Decode();
 
-    if (!token.empty()) {
-      text += token;
-      process_segments(splitter.Push(token));
+      if (!token.empty()) {
+        text += token;
+        process_segments(splitter.Push(token));
+      }
     }
+  } catch (...) {
+    generator->Cancel();
+    throw;
+  }
+
+  if (original_request.canceled) {
+    // Engine cancellation is cooperative: an in-flight serialized Step finishes, then Close prevents further work.
+    generator->Cancel();
   }
 
   // Drain any buffered partial-marker bytes at end-of-stream. Reasoning splitter first so any final DEFAULT bytes

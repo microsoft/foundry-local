@@ -12,6 +12,16 @@ namespace fl {
 /// Represents the parsed contents of a genai_config.json file.
 /// Maps the C# GenAIConfig / OnnxModel / OnnxDecoder types.
 struct GenAIConfig {
+  struct Engine {
+    struct DynamicBatching {
+      std::optional<int> max_batch_size;
+      std::optional<int> block_size;
+      std::optional<float> gpu_utilization_factor;
+    };
+
+    std::optional<DynamicBatching> dynamic_batching;
+  };
+
   struct OnnxModel {
     int context_length = 0;
     std::string type;
@@ -38,7 +48,12 @@ struct GenAIConfig {
 
   std::optional<OnnxModel> model;
   std::optional<Search> search;
+  std::optional<Engine> engine;
   std::optional<int> hidden_size;  // embedding dimension from genai_config.json
+
+  bool SupportsDynamicBatching() const {
+    return engine.has_value() && engine->dynamic_batching.has_value();
+  }
 
   /// Returns the first provider key from decoder.session_options.provider_options,
   /// or empty string if not found.

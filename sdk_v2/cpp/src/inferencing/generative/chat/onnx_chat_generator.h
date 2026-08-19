@@ -19,11 +19,12 @@
 // Forward declarations — avoid pulling ort_genai.h into the header
 struct OgaGenerator;
 struct OgaGeneratorParams;
-struct OgaTokenizerStream;
 struct OgaSequences;
 struct OgaNamedTensors;
 
 namespace fl {
+
+class ChatTokenDecoder;
 
 /// ORT GenAI implementation of the ChatGenerator interface.
 /// Creates an OgaGenerator from a loaded model and a set of search options,
@@ -93,8 +94,7 @@ class OnnxChatGenerator : public ChatGenerator {
  private:
   OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_params,
                     std::unique_ptr<OgaGenerator> generator,
-                    std::unique_ptr<OgaTokenizerStream> stream,
-                    std::unique_ptr<OgaTokenizerStream> stream_with_special,
+                    std::unique_ptr<ChatTokenDecoder> token_decoder,
                     GenAIModelInstance& model,
                     int prompt_token_count,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
@@ -113,8 +113,7 @@ class OnnxChatGenerator : public ChatGenerator {
 
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;
-  std::unique_ptr<OgaTokenizerStream> stream_;
-  std::unique_ptr<OgaTokenizerStream> stream_with_special_;  // for tool call token detection
+  std::unique_ptr<ChatTokenDecoder> token_decoder_;
   // Holds the named tensors produced by OgaMultiModalProcessor media processing
   // for the lifetime of the generator. Generator retains shared_ptr<Tensor>
   // copies internally, but we keep the wrapper alive for symmetry with

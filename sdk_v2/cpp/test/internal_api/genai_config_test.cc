@@ -179,6 +179,56 @@ TEST_F(GenAIConfigTest, LoadMinimalConfig) {
   auto config = GenAIConfig::LoadFromFile(path);
   EXPECT_FALSE(config.model.has_value());
   EXPECT_FALSE(config.search.has_value());
+  EXPECT_FALSE(config.SupportsDynamicBatching());
+}
+
+TEST_F(GenAIConfigTest, LoadsDynamicBatchingCapabilityAndKnownSettings) {
+  auto path = WriteFile("genai_config.json", R"({
+    "engine": {
+      "dynamic_batching": {
+        "max_batch_size": 8,
+        "block_size": 256,
+        "gpu_utilization_factor": 0.75
+      }
+    }
+  })");
+
+  const auto config = GenAIConfig::LoadFromFile(path);
+
+  ASSERT_TRUE(config.SupportsDynamicBatching());
+  ASSERT_TRUE(config.engine->dynamic_batching->max_batch_size.has_value());
+  ASSERT_TRUE(config.engine->dynamic_batching->block_size.has_value());
+  ASSERT_TRUE(config.engine->dynamic_batching->gpu_utilization_factor.has_value());
+  EXPECT_EQ(*config.engine->dynamic_batching->max_batch_size, 8);
+  EXPECT_EQ(*config.engine->dynamic_batching->block_size, 256);
+  EXPECT_FLOAT_EQ(*config.engine->dynamic_batching->gpu_utilization_factor, 0.75f);
+}
+
+TEST_F(GenAIConfigTest, DynamicBatchingPresenceQualifiesWithoutOptionalSettings) {
+  auto path = WriteFile("genai_config.json", R"({
+    "engine": {
+      "dynamic_batching": {}
+    }
+  })");
+
+  const auto config = GenAIConfig::LoadFromFile(path);
+
+  ASSERT_TRUE(config.SupportsDynamicBatching());
+  EXPECT_FALSE(config.engine->dynamic_batching->max_batch_size.has_value());
+  EXPECT_FALSE(config.engine->dynamic_batching->block_size.has_value());
+  EXPECT_FALSE(config.engine->dynamic_batching->gpu_utilization_factor.has_value());
+}
+
+TEST_F(GenAIConfigTest, NonObjectDynamicBatchingDoesNotQualify) {
+  auto path = WriteFile("genai_config.json", R"({
+    "engine": {
+      "dynamic_batching": true
+    }
+  })");
+
+  const auto config = GenAIConfig::LoadFromFile(path);
+
+  EXPECT_FALSE(config.SupportsDynamicBatching());
 }
 
 TEST_F(GenAIConfigTest, LoadMissingOptionalFields) {

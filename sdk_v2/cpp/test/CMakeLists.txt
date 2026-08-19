@@ -34,6 +34,8 @@ add_executable(foundry_local_tests
     internal_api/download_test.cc
     internal_api/embeddings/contracts_embeddings_test.cc
     internal_api/embeddings/fp16_test.cc
+    internal_api/engine/engine_chat_generator_test.cc
+    internal_api/engine/engine_host_test.cc
     internal_api/ep_detector_test.cc
     internal_api/exception_test.cc
     internal_api/execution_provider_test.cc

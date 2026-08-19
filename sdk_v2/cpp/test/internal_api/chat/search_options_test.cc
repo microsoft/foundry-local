@@ -16,6 +16,7 @@
 #include <ort_genai.h>
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -106,6 +107,16 @@ TEST_F(SearchOptionsTest, TokenBudgetExceededThrows) {
   auto params = MakeParams();
 
   EXPECT_THROW(ApplySearchOptions(opts, 1000, GetConfig(), *params, ExecutionProvider::kDefault),
+               fl::Exception);
+}
+
+TEST_F(SearchOptionsTest, OverflowingCumulativeTokenBudgetThrows) {
+  SearchOptions opts;
+  opts.max_output_tokens = std::numeric_limits<int>::max();
+  auto params = MakeParams();
+
+  EXPECT_THROW(ApplySearchOptions(opts, std::numeric_limits<int>::max(), GetConfig(), *params,
+                                  ExecutionProvider::kDefault),
                fl::Exception);
 }
 

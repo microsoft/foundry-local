@@ -17,6 +17,8 @@ struct OgaModel;
 
 namespace fl {
 
+class EngineHost;
+
 /// A model that has been loaded into the ORT GenAI runtime.
 /// Owns the OgaModel and its preprocessing resources.
 /// Non-copyable, non-movable. Owned by ModelLoadManager via std::unique_ptr.
@@ -32,7 +34,12 @@ class GenAIModelInstance {
   const std::string& ModelPath() const { return model_path_; }
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ExecutionProvider EP() const { return ep_; }
-  bool IsMultiModal() const;
+  bool IsMultiModal() const noexcept;
+  bool SupportsEngineChatCompletions() const noexcept;
+  std::shared_ptr<EngineHost> GetEngineHost() const;
+
+  /// Deterministically releases the optional engine before the model. Shutdown failures are reported to the caller.
+  void Shutdown();
 
   /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();
@@ -62,6 +69,7 @@ class GenAIModelInstance {
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
+  std::shared_ptr<EngineHost> engine_host_;
   std::unique_ptr<Preprocessor> preprocessor_;
   std::chrono::steady_clock::time_point last_activity_;
   mutable std::atomic<int> session_ref_count_{0};

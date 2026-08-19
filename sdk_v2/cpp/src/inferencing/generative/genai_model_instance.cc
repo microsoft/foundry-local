@@ -3,6 +3,7 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "exception.h"
 #include "inferencing/execution_provider.h"
+#include "inferencing/generative/engine/engine_host.h"
 #include "utils.h"
 
 #include <ort_genai.h>
@@ -62,6 +63,15 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to load model ", model_id_, ": ", e.what());
   }
 
+  if (genai_config_.SupportsDynamicBatching()) {
+    try {
+      engine_host_ = EngineHost::Create(*oga_model_);
+    } catch (const std::runtime_error& e) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                       "failed to create engine host for model ", model_id_, ": ", e.what());
+    }
+  }
+
   try {
     preprocessor_ = Preprocessor::Create(*oga_model_, IsMultiModal());
   } catch (const std::runtime_error& e) {
@@ -72,15 +82,36 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
 
 // Destructor: unique_ptr members are destroyed in reverse declaration order.
 // OGA objects have custom operator delete that calls OgaDestroy* functions.
-// Destruction order: preprocessor → oga_model (correct: dependents first).
+// Destruction order: preprocessor → engine host → OGA model (correct: dependents first).
 GenAIModelInstance::~GenAIModelInstance() = default;
 
 // ---------------------------------------------------------------------------
 // Accessors
 // ---------------------------------------------------------------------------
 
-bool GenAIModelInstance::IsMultiModal() const {
+bool GenAIModelInstance::IsMultiModal() const noexcept {
   return genai_config_.model.has_value() && genai_config_.model->IsMultiModal();
+}
+
+bool GenAIModelInstance::SupportsEngineChatCompletions() const noexcept {
+  return engine_host_ != nullptr && !IsMultiModal();
+}
+
+std::shared_ptr<EngineHost> GenAIModelInstance::GetEngineHost() const {
+  if (!engine_host_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model does not support engine-backed chat completions");
+  }
+
+  return engine_host_;
+}
+
+void GenAIModelInstance::Shutdown() {
+  if (!engine_host_) {
+    return;
+  }
+
+  engine_host_->Shutdown();
+  engine_host_.reset();
 }
 
 OgaModel& GenAIModelInstance::GetOgaModel() {

@@ -7,6 +7,7 @@
 #include <ort_genai.h>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace fl {
 
@@ -37,7 +38,7 @@ int ApplySearchOptions(const SearchOptions& options,
   }
 
   // Validate token budget: input + output must not exceed model's max_length
-  int total_required = input_token_count + max_output;
+  const auto total_required = static_cast<int64_t>(input_token_count) + static_cast<int64_t>(max_output);
   if (total_required > model_max_length) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "request requires " + std::to_string(total_required) + " total tokens (" +
@@ -49,9 +50,8 @@ int ApplySearchOptions(const SearchOptions& options,
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window
   // so the sequence can grow across turns.
-  int effective_max_length = use_full_context
-                                 ? model_max_length
-                                 : std::min(model_max_length, total_required);
+  const auto effective_max_length =
+      use_full_context ? model_max_length : static_cast<int>(std::min<int64_t>(model_max_length, total_required));
   gen_params.SetSearchOption("max_length", static_cast<double>(effective_max_length));
 
   // Temperature

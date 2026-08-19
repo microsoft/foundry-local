@@ -8,6 +8,27 @@
 
 namespace fl {
 
+void from_json(const nlohmann::json& json, GenAIConfig::Engine::DynamicBatching& dynamic_batching) {
+  if (const auto it = json.find("max_batch_size"); it != json.end() && it->is_number_integer()) {
+    dynamic_batching.max_batch_size = it->get<int>();
+  }
+
+  if (const auto it = json.find("block_size"); it != json.end() && it->is_number_integer()) {
+    dynamic_batching.block_size = it->get<int>();
+  }
+
+  if (const auto it = json.find("gpu_utilization_factor"); it != json.end() && it->is_number()) {
+    dynamic_batching.gpu_utilization_factor = it->get<float>();
+  }
+}
+
+void from_json(const nlohmann::json& json, GenAIConfig::Engine& engine) {
+  const auto it = json.find("dynamic_batching");
+  if (it != json.end() && it->is_object()) {
+    engine.dynamic_batching = it->get<GenAIConfig::Engine::DynamicBatching>();
+  }
+}
+
 bool GenAIConfig::OnnxModel::IsMultiModal() const {
   return type == "phi3v" || type == "whisper" || type == "phi4mm" || type == "fara" ||
          type == "qwen2_5_vl" || type == "qwen3_vl" || type == "qwen3_5" || type == "gemma4";
@@ -110,6 +131,10 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
     }
 
     config.search = std::move(search);
+  }
+
+  if (j.contains("engine") && j["engine"].is_object()) {
+    config.engine = j["engine"].get<Engine>();
   }
 
   // hidden_size can appear at the top level or inside model

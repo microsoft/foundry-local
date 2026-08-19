@@ -277,7 +277,11 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
   logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id_str));
 
-  // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
+  // Engine shutdown can fail and must remain visible to this explicit lifecycle path. Keep the model loaded on
+  // failure so the caller can retry instead of hiding the error in a non-throwing destructor.
+  it->second->Shutdown();
+
+  // Erasing destroys the remaining OGA objects in reverse dependency order.
   loaded_models_.erase(it);
   return true;
 }
