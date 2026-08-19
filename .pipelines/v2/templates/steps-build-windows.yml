@@ -118,26 +118,12 @@ steps:
       PKG_CONFIG: $(Build.BinariesDirectory)\tools\pkg-config.bat
 
 - ${{ if eq(parameters.runTests, true) }}:
-  - ${{ if eq(parameters.arch, 'x64') }}:
-    - script: python build.py --test --config ${{ parameters.buildConfig }}
-      displayName: 'Run tests'
-      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-      env:
-        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
-        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
-
-  - ${{ if eq(parameters.arch, 'arm64') }}:
-    - script: >-
-        python build.py
-        --test
-        --config ${{ parameters.buildConfig }}
-        --cmake_path "$(cmakePath)"
-        --ctest_path "$(ctestPath)"
-      displayName: 'Run tests'
-      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-      env:
-        VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
-        FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
+  - script: python build.py --test --config ${{ parameters.buildConfig }}
+    displayName: 'Run tests'
+    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+    env:
+      VCPKG_ROOT: $(Build.BinariesDirectory)\vcpkg
+      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)\test-data-shared
 
 # Stage the native build artifacts. The C++ SDK bundle consumes the co-located
 # ORT/GenAI DLLs directly. Python wheel staging filters them out because its
