@@ -200,7 +200,7 @@ TEST(EngineHostTest, PopGeneratedTokenPreservesOrderAndReportsAvailability) {
   EXPECT_EQ(request->PopGeneratedToken(), std::nullopt);
 }
 
-TEST(EngineHostTest, ContinueRequiresCompletedTurnAndPreservesUnreadOutput) {
+TEST(EngineHostTest, ContinueRequiresCompletedDrainedTurnAndPreservesUnreadOutput) {
   HostFixture fixture;
   auto request = fixture.Submit({1}, EngineRequestMode::kResident);
   auto* backend_request = fixture.last_request;
@@ -208,13 +208,15 @@ TEST(EngineHostTest, ContinueRequiresCompletedTurnAndPreservesUnreadOutput) {
   fixture.backend->MakeReady(*backend_request, {10}, true);
   fixture.host->Step();
 
+  EXPECT_THROW(request->Continue(std::vector<int32_t>{2, 3}), Exception);
+  EXPECT_TRUE(backend_request->continuation_tokens.empty());
+  EXPECT_EQ(request->DrainGeneratedTokens(), (std::vector<int32_t>{10}));
   request->Continue(std::vector<int32_t>{2, 3});
 
   EXPECT_EQ(backend_request->continuation_tokens, (std::vector<int32_t>{2, 3}));
   EXPECT_FALSE(request->IsTurnComplete());
   EXPECT_FALSE(request->IsClosed());
   EXPECT_FALSE(backend_request->removed);
-  EXPECT_EQ(request->DrainGeneratedTokens(), (std::vector<int32_t>{10}));
 }
 
 TEST(EngineHostTest, EmptyContinuationIsRejectedWithoutCallingBackend) {

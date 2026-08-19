@@ -39,6 +39,7 @@ class EngineRequest final {
   std::optional<int32_t> PopGeneratedToken();
   bool IsTurnComplete() const;
   bool IsClosed() const noexcept;
+  /// Begin another turn after completion. All generated output must be drained first.
   void Continue(std::span<const int32_t> tokens);
   void Close();
 

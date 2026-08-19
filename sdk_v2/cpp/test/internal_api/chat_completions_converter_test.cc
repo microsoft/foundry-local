@@ -226,6 +226,45 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolRoleMissingCallId) {
   EXPECT_EQ(tr->call_id, "");
 }
 
+TEST(ChatCompletionsConverterTest, BuildPromptMessagesPreservesAssistantToolCallAndResult) {
+  ChatCompletionRequest req;
+  req.messages.push_back({"user", "Get the build number", {}, {}, {}});
+
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.tool_calls = nlohmann::json::array({
+      {
+          {"id", "call_1"},
+          {"type", "function"},
+          {"function", {{"name", "lookup_build_number"}, {"arguments", "{}"}}},
+      },
+  });
+  req.messages.push_back(std::move(assistant));
+  req.messages.push_back({"tool", "42", {}, "call_1", {}});
+
+  const auto messages = BuildPromptMessages(req, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(messages[1].GetSimpleText(),
+            "<tool_call>\n{\"arguments\":\"{}\",\"name\":\"lookup_build_number\"}\n</tool_call>");
+  EXPECT_EQ(messages[2].role, FOUNDRY_LOCAL_ROLE_TOOL);
+  EXPECT_EQ(messages[2].GetSimpleText(), "42");
+}
+
+TEST(ChatCompletionsConverterTest, BuildPromptMessagesRejectsToolCallsWithoutMarkers) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.tool_calls = nlohmann::json::array({
+      {{"function", {{"name", "lookup_build_number"}, {"arguments", "{}"}}}},
+  });
+  req.messages.push_back(std::move(assistant));
+
+  EXPECT_THROW(BuildPromptMessages(req, "", ""), fl::Exception);
+}
+
 // ========================================================================
 // ExtractToolDefinitions
 // ========================================================================

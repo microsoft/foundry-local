@@ -11,13 +11,10 @@
 
 namespace fl {
 
-int ApplySearchOptions(const SearchOptions& options,
-                       int input_token_count,
-                       const GenAIConfig& config,
-                       OgaGeneratorParams& gen_params,
-                       ExecutionProvider ep,
-                       bool use_full_context,
-                       int default_max_output_tokens) {
+int ResolveMaxOutputTokenLimit(const SearchOptions& options,
+                               int input_token_count,
+                               const GenAIConfig& config,
+                               int default_max_output_tokens) {
   // Determine model's max context length from genai_config.json search.max_length
   int model_max_length = 0;
   if (config.search.has_value()) {
@@ -46,6 +43,21 @@ int ApplySearchOptions(const SearchOptions& options,
                  " output), which exceeds the model's maximum context length of " +
                  std::to_string(model_max_length) + " tokens");
   }
+
+  return max_output;
+}
+
+int ApplySearchOptions(const SearchOptions& options,
+                       int input_token_count,
+                       const GenAIConfig& config,
+                       OgaGeneratorParams& gen_params,
+                       ExecutionProvider ep,
+                       bool use_full_context,
+                       int default_max_output_tokens) {
+  const auto max_output =
+      ResolveMaxOutputTokenLimit(options, input_token_count, config, default_max_output_tokens);
+  const auto model_max_length = config.search->max_length;
+  const auto total_required = static_cast<int64_t>(input_token_count) + static_cast<int64_t>(max_output);
 
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window

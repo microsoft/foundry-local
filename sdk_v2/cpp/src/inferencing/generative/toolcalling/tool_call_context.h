@@ -52,6 +52,8 @@ struct ToolCallContext {
   /// User-specified guidance data (the LARK grammar string, JSON schema, etc.).
   std::string guidance_data;
 
+  bool operator==(const ToolCallContext&) const = default;
+
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }
 

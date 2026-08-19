@@ -10,12 +10,14 @@
 #include "logger.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace fl {
 
 class GenAIModelInstance;
+class EngineChatGenerator;
 class OnnxChatGenerator;
 
 /// A chat session that maintains conversation history across turns.
@@ -23,19 +25,16 @@ class OnnxChatGenerator;
 /// and is sent with each generation request (for use with the OpenAI
 /// Responses API pattern).
 ///
-/// Generator caching: after the first non-JSON request, the ORT GenAI generator is cached.
-/// Subsequent turns append only new messages to the cached generator, reusing the KV cache.
+/// Generator caching: eligible dynamic-batching text models retain an Engine request between non-JSON turns.
+/// Other text models retain the existing OgaGenerator cache.
 /// OpenAI chat completions JSON requests (TextItem with text_type == OPENAI_JSON) always create a fresh
 /// generator and never use the cache.
 class ChatSession : public Session {
  public:
-  /// Tracks the token-level and history-level boundaries of a single conversation turn.
-  /// Used for generator rewind and history rollback on error or undo.
+  /// Tracks the history boundary of a committed conversation turn for UndoTurns.
   struct TurnRecord {
-    size_t history_start;       // index in history_ where this turn's input messages begin
-    size_t input_count;         // number of input messages (user + tool results) in this turn
-    int pre_turn_token_count;   // generator sequence length before this turn's input was appended
-    int post_turn_token_count;  // generator sequence length after generation completed
+    size_t history_start;  // index in history_ where this turn's input messages begin
+    size_t input_count;    // number of input messages (user + tool results) in this turn
     // The assistant reply is at history_[history_start + input_count]
   };
 
@@ -57,9 +56,8 @@ class ChatSession : public Session {
   /// Get the number of completed turns.
   size_t TurnCount() const override;
 
-  /// Undo the last `count` completed turns: rewinds the cached generator and removes
-  /// each turn's input messages and assistant reply from history.
-  /// If all turns are undone, the cached generator is destroyed.
+  /// Undo the last `count` completed turns and remove each turn's input messages and assistant reply from history.
+  /// Cached generation state is closed; the next turn safely replays the retained history.
   ///
   /// Vision turns: image input is only allowed on the first turn of a
   /// session. UndoTurns rolls back history but does not undo this
@@ -80,11 +78,6 @@ class ChatSession : public Session {
   /// Build tool calling context from request parameters and session tool definitions.
   ToolCallContext BuildToolCallContext(const Request& request) const;
 
-  /// Update per-turn fields (tool_choice, guidance) on an existing tool context.
-  /// Called on the cached-generator path so each turn gets fresh per-request settings
-  /// while keeping session-level tool definitions and marker tokens stable.
-  void UpdateToolContextForTurn(const Request& request, ToolCallContext& tool_ctx) const;
-
   /// Process generated output: parse tool calls (or reuse pre-parsed ones), set finish reason, usage, and response
   /// items. When `pre_parsed_calls` is non-empty, it is used as-is and no re-parse of `text` is performed — this is
   /// how the streaming path keeps `call_id`s stable: the calls parsed during streaming are also the calls returned
@@ -102,8 +95,16 @@ class ChatSession : public Session {
                                   Response& response);
 
   /// Commit input messages and assistant reply to history after a successful turn.
-  void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                  int pre_turn_token_count, int post_turn_token_count);
+  void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response);
+
+  /// Prepare an exact-prefix Engine continuation or replace it with a fresh resident request replayed from history.
+  EngineChatGenerator& PrepareResidentGenerator(const std::vector<MessageItem>& all_messages,
+                                                const SearchOptions& options,
+                                                const ToolCallContext& tool_ctx,
+                                                const Request& request);
+
+  /// Release every cached generation state. Destructors perform no-throw backend cleanup.
+  void ResetGeneratorCache() noexcept;
 
   GenAIModelInstance& Model() { return model_; }
   const GenAIModelInstance& Model() const { return model_; }
@@ -117,13 +118,15 @@ class ChatSession : public Session {
   std::vector<TurnRecord> turns_;
   SearchOptions session_options_;
 
-  // Cached generator for continuous decoding (non-JSON path only).
-  // Null until first non-JSON ProcessRequestImpl call.
+  // Fallback OgaGenerator cache for non-engine, non-JSON turns.
   std::unique_ptr<OnnxChatGenerator> cached_generator_;
 
-  // Tool context used when creating the cached generator.
-  // Reused for subsequent turns to maintain tool definition consistency.
+  // Resident Engine request for eligible text-only dynamic-batching models.
+  std::unique_ptr<EngineChatGenerator> resident_generator_;
+
+  // Configuration bound to the currently cached generator/request.
   ToolCallContext cached_tool_ctx_;
+  std::optional<SearchOptions> cached_options_;
 };
 
 }  // namespace fl

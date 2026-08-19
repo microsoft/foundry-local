@@ -38,6 +38,8 @@ struct SearchOptions {
   /// Additional options from extra_json or passthrough parameters.
   std::unordered_map<std::string, std::string> extra;
 
+  bool operator==(const SearchOptions&) const = default;
+
   /// Build SearchOptions from a string key-value parameter map.
   /// Keys match FOUNDRY_LOCAL_PARAM_* constants (e.g. "temperature", "max_output_tokens").
   /// Throws fl::Exception on invalid values (e.g. unknown tool_choice).
@@ -48,6 +50,15 @@ struct SearchOptions {
   /// with a value other than "auto", "none", or "required".
   static std::optional<flToolChoice> ParseToolChoice(const KeyValuePairs& params);
 };
+
+/// Resolve and validate the output-token limit for a prompt.
+///
+/// Returns the explicit max_output_tokens value or the supplied default. Throws when the limit is invalid or the
+/// combined prompt and output budget exceeds the model context window.
+int ResolveMaxOutputTokenLimit(const SearchOptions& options,
+                               int input_token_count,
+                               const GenAIConfig& config,
+                               int default_max_output_tokens = 2048);
 
 /// Apply search options to OgaGeneratorParams.
 /// Validates token budget (input + output vs model max_length from config).

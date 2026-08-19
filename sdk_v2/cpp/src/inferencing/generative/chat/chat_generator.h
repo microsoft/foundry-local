@@ -7,7 +7,8 @@
 namespace fl {
 
 /// Abstract interface for token-by-token text generation.
-/// One generator per request — not reusable, not thread-safe.
+/// Not thread-safe. Most implementations are one-shot; EngineChatGenerator can explicitly prepare another turn
+/// while retaining engine-owned state.
 /// Follows the classic pull-based iterator pattern:
 ///   while (!IsDone()) { GenerateNextToken(); text += Decode(); }
 class ChatGenerator {

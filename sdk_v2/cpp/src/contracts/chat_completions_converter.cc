@@ -102,6 +102,61 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
   }
 }
 
+std::vector<MessageItem> BuildPromptMessages(const ChatCompletionRequest& req,
+                                             const std::string& tool_call_start,
+                                             const std::string& tool_call_end) {
+  std::vector<MessageItem> messages;
+  messages.reserve(req.messages.size());
+
+  for (const auto& msg : req.messages) {
+    const auto role = Utils::StringToRole(msg.role);
+    std::string content = msg.content.value_or("");
+
+    if (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && msg.tool_calls.has_value() && !msg.tool_calls->empty()) {
+      if (tool_call_start.empty() || tool_call_end.empty()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                 "assistant tool_calls require model tool-call markers");
+      }
+      if (!msg.tool_calls->is_array()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "assistant tool_calls must be an array");
+      }
+
+      for (const auto& call : *msg.tool_calls) {
+        if (!call.is_object() || !call.contains("function") || !call["function"].is_object()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "assistant tool_calls entries must contain a function object");
+        }
+
+        const auto& function = call["function"];
+        if (!function.contains("name") || !function["name"].is_string()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "assistant tool_calls function must contain a name");
+        }
+
+        nlohmann::json rendered_call;
+        rendered_call["name"] = function["name"];
+        if (function.contains("arguments")) {
+          rendered_call["arguments"] =
+              function["arguments"].is_string() ? function["arguments"] : nlohmann::json(function["arguments"].dump());
+        } else {
+          rendered_call["arguments"] = "{}";
+        }
+
+        if (!content.empty() && content.back() != '\n') {
+          content.push_back('\n');
+        }
+        content += tool_call_start + "\n" + rendered_call.dump() + "\n" + tool_call_end;
+      }
+    }
+
+    if (!content.empty()) {
+      messages.emplace_back(role, std::move(content));
+    }
+  }
+
+  return messages;
+}
+
 std::string ExtractToolDefinitions(ChatCompletionRequest& req, Request& session_request) {
   std::string tools_json;
 

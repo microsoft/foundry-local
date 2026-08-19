@@ -5,12 +5,14 @@
 #include "contracts/chat_completions.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
+#include "items/message_item.h"
 #include "util/key_value_pairs.h"
 
 #include <foundry_local/foundry_local_c.h>
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace fl {
 namespace chat_completions {
@@ -27,6 +29,11 @@ std::string MapFinishReason(flFinishReason reason);
 
 /// Convert ChatCompletionRequest messages to internal MessageItem/ToolResultItem items.
 void BuildRequestItems(const ChatCompletionRequest& req, Request& session_request);
+
+/// Reconstruct the complete prompt transcript, including prior assistant tool calls and tool results.
+std::vector<MessageItem> BuildPromptMessages(const ChatCompletionRequest& req,
+                                             const std::string& tool_call_start,
+                                             const std::string& tool_call_end);
 
 /// Extract tool definitions from the request. Applies tool_choice filtering.
 /// Sets tool_choice, tool_call_start, tool_call_end in session_request.options.

@@ -108,6 +108,11 @@ class EngineHostState final : public std::enable_shared_from_this<EngineHostStat
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Engine request cannot continue before its turn completes");
     }
 
+    if (!request.unread_tokens_.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "Engine request output must be drained before continuing");
+    }
+
     backend_->Continue(*request.backend_request_, tokens);
     request.is_turn_complete_ = false;
   }
