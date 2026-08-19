@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,7 @@ class OnnxChatGenerator : public ChatGenerator {
   bool IsDone() const override;
   void GenerateNextToken() override;
   std::string Decode() override;
+  std::optional<int32_t> CurrentTokenId() const override;
   int TokenCount() const override;
   int PromptTokenCount() const override;
   void Cancel() override;
@@ -121,6 +123,7 @@ class OnnxChatGenerator : public ChatGenerator {
   std::unique_ptr<OgaNamedTensors> named_tensors_;
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
+  std::optional<int32_t> current_token_;
   std::atomic<bool> cancelled_{false};
 };
 

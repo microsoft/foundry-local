@@ -570,30 +570,11 @@ std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(cons
     } else if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       MessageItem& msg_item = static_cast<MessageItem&>(*item);
       if (msg_item.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-        if (msg_item.IsSimpleText()) {
-          // Single-text fast path: no reasoning possible, emit one message item.
-          std::string text = msg_item.GetSimpleText();
-
-          if (text.empty()) {
-            continue;
-          }
-
-          output_text += text;
-
-          ResponseOutputMessage msg;
-          msg.id = GenerateId(msg_id_prefix);
-          msg.role = "assistant";
-          msg.status = ResponseStatus::kCompleted;
-          msg.content.push_back(OutputTextContent{std::move(text)});
-          output.push_back(std::move(msg));
-          continue;
-        }
-
-        // Multi-part message (reasoning model, possibly interleaved). Walk the parts in stream order and start
+        // Walk the parts in stream order and start
         // a fresh output item on every type transition. This preserves the produced sequence — e.g. the model
         // can emit `reasoning -> answer -> reasoning -> answer` and each run becomes its own output item, which
-        // matches how the OpenAI Responses API surfaces interleaved reasoning (one `reasoning` item per
-        // contiguous reasoning run, one `message` item per contiguous visible run).
+        // matches how the OpenAI Responses API surfaces interleaved reasoning. Inspect the TextItem type even for a
+        // one-part message because a generation truncated inside a reasoning block is reasoning-only.
         std::optional<flTextItemType> current_type;
         std::string current_text;
 
@@ -703,6 +684,7 @@ ResponseObject BuildResponseObject(const std::string& response_id,
   r.usage.input_tokens = static_cast<int>(usage.prompt_tokens);
   r.usage.output_tokens = static_cast<int>(usage.completion_tokens);
   r.usage.total_tokens = static_cast<int>(usage.total_tokens);
+  r.usage.output_tokens_details.reasoning_tokens = static_cast<int>(usage.reasoning_tokens);
 
   EchoRequestParams(r, params);
 

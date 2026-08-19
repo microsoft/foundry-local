@@ -6,6 +6,8 @@
 
 #include <ort_genai.h>
 
+#include <span>
+
 namespace fl {
 
 std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_multimodal_processor) {
@@ -60,6 +62,13 @@ std::unique_ptr<OgaSequences> Preprocessor::Encode(const char* text) {
   std::lock_guard<std::mutex> lock(mutex_);
   tokenizer_->Encode(text, *sequences);
   return sequences;
+}
+
+std::vector<int32_t> Preprocessor::EncodeTokenIds(const std::string& text) {
+  const auto sequences = Encode(text.c_str());
+  const auto tokens =
+      std::span<const int32_t>(sequences->SequenceData(0), sequences->SequenceCount(0));
+  return {tokens.begin(), tokens.end()};
 }
 
 std::string Preprocessor::ApplyChatTemplate(const char* messages_json,

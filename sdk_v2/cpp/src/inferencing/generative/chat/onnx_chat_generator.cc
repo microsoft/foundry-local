@@ -56,6 +56,10 @@ void OnnxChatGenerator::GenerateNextToken() {
 
   try {
     generator_->GenerateNextToken();
+
+    // GetNextTokens returns the batch of next tokens; chat generation always uses batch size 1.
+    const auto next_tokens = generator_->GetNextTokens();
+    current_token_ = next_tokens.empty() ? std::nullopt : std::optional<int32_t>(next_tokens[0]);
   } catch (const std::runtime_error& e) {
     // If cancelled while generating, the OGA engine throws when the session is terminated.
     // This is expected — not an error.
@@ -68,19 +72,17 @@ void OnnxChatGenerator::GenerateNextToken() {
 }
 
 std::string OnnxChatGenerator::Decode() {
-  if (cancelled_) {
+  if (cancelled_ || !current_token_.has_value()) {
     return "";
   }
 
-  // Get the most recently generated token ID.
-  // GetNextTokens returns the batch of next tokens; we use index 0 (batch size = 1).
-  auto next_tokens = generator_->GetNextTokens();
+  const auto token_id = *current_token_;
+  current_token_.reset();
+  return token_decoder_->Decode(token_id);
+}
 
-  if (next_tokens.empty()) {
-    return "";
-  }
-
-  return token_decoder_->Decode(next_tokens[0]);
+std::optional<int32_t> OnnxChatGenerator::CurrentTokenId() const {
+  return current_token_;
 }
 
 int OnnxChatGenerator::TokenCount() const {

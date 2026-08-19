@@ -40,6 +40,21 @@ static ResponseCreateParams MakeTestParams() {
   return params;
 }
 
+TEST(ResponseConverterTest, FromSessionResponse_ReasoningOnlyMessageIsNotOutputText) {
+  Response response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+
+  auto [output, output_text] = FromSessionResponse(response, "msg");
+
+  ASSERT_EQ(output.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<ReasoningOutputItem>(output.front()));
+  EXPECT_EQ(std::get<ReasoningOutputItem>(output.front()).summary.front().text, "private scratchpad");
+  EXPECT_TRUE(output_text.empty());
+}
+
 // ========================================================================
 // BuildFailedResponseObject
 // ========================================================================

@@ -212,10 +212,7 @@ std::vector<int32_t> EngineChatGenerator::EncodeMessages(const std::vector<Messa
                                                          GenAIModelInstance& model,
                                                          const std::string& tools_json) {
   const auto prompt = BuildChatPrompt(messages, model, tools_json);
-  const auto sequences = EncodePrompt(prompt, model);
-  const auto tokens =
-      std::span<const int32_t>(sequences->SequenceData(0), sequences->SequenceCount(0));
-  return std::vector<int32_t>(tokens.begin(), tokens.end());
+  return model.GetPreprocessor().EncodeTokenIds(prompt);
 }
 
 std::unique_ptr<EngineChatGenerator> EngineChatGenerator::Create(const std::vector<MessageItem>& messages,

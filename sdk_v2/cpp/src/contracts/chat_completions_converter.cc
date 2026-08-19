@@ -290,19 +290,15 @@ ChatCompletionResponse BuildResponse(const Response& response,
     if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       auto& msg_item = static_cast<MessageItem&>(*item);
       if (msg_item.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-        if (msg_item.IsSimpleText()) {
-          response_text = msg_item.GetSimpleText();
-        } else {
-          // Reasoning model: assistant message has multiple typed parts. The OpenAI Chat Completions response shape
-          // exposes only visible (DEFAULT) text — REASONING parts are surfaced via the Responses API path.
-          for (const auto& part : msg_item.content) {
-            if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
-              continue;
-            }
-            const auto& ti = static_cast<const TextItem&>(*part.view);
-            if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
-              response_text += ti.text;
-            }
+        // Chat Completions exposes only visible text. Inspect the TextItem type even for a one-part message because a
+        // generation truncated inside a reasoning block produces exactly one REASONING part.
+        for (const auto& part : msg_item.content) {
+          if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
+            continue;
+          }
+          const auto& ti = static_cast<const TextItem&>(*part.view);
+          if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+            response_text += ti.text;
           }
         }
       }
@@ -337,6 +333,8 @@ ChatCompletionResponse BuildResponse(const Response& response,
   result.usage.prompt_tokens = static_cast<int>(response.usage.prompt_tokens);
   result.usage.completion_tokens = static_cast<int>(response.usage.completion_tokens);
   result.usage.total_tokens = static_cast<int>(response.usage.total_tokens);
+  result.usage.completion_tokens_details.reasoning_tokens =
+      static_cast<int>(response.usage.reasoning_tokens);
 
   return result;
 }

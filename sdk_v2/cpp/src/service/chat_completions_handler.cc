@@ -246,6 +246,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
         usage.prompt_tokens = static_cast<int>(bg_response.usage.prompt_tokens);
         usage.completion_tokens = static_cast<int>(bg_response.usage.completion_tokens);
         usage.total_tokens = static_cast<int>(bg_response.usage.total_tokens);
+        usage.completion_tokens_details.reasoning_tokens =
+            static_cast<int>(bg_response.usage.reasoning_tokens);
         usage_chunk.usage = std::move(usage);
 
         body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");

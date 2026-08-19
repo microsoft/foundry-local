@@ -32,6 +32,7 @@ class Preprocessor {
   Preprocessor& operator=(Preprocessor&&) = delete;
 
   std::unique_ptr<OgaSequences> Encode(const char* text);
+  std::vector<int32_t> EncodeTokenIds(const std::string& text);
   std::string ApplyChatTemplate(const char* messages_json, const char* tools_json, bool add_generation_prompt);
 
   std::unique_ptr<OgaTokenizerStream> CreateTokenizerStream();
