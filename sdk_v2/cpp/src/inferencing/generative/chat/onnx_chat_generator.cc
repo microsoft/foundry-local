@@ -101,7 +101,7 @@ std::string OnnxChatGenerator::Decode() {
     bool is_tool_call_token = special_str.find("tool_call") != std::string::npos;
     bool is_think_token = special_str.find("think") != std::string::npos;
 
-    const auto& eos_ids = model_.GetEosTokenIds();
+    const auto& eos_ids = model_.GetPreprocessor().GetEosTokenIds();
     bool is_eos = std::find(eos_ids.begin(), eos_ids.end(), token_id) != eos_ids.end();
 
     if (!is_eos && (is_tool_call_token || is_think_token)) {
@@ -267,7 +267,7 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
                "image or audio input requires a multimodal model");
     }
 
-    if (model.GetProcessor() == nullptr) {
+    if (!model.GetPreprocessor().HasMultiModalProcessor()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model has no multimodal processor available for media input");
     }
@@ -286,7 +286,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   if (media_branch) {
     std::string messages_json = TransformMessagesForMedia(messages);
     const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-    prompt = model.Tokenizer().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+    prompt =
+        model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
   } else {
     prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
   }
@@ -345,13 +346,7 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
       oga_audios = OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
     }
 
-    if (oga_images && oga_audios) {
-      named_tensors = model.GetProcessor()->ProcessImagesAndAudios(prompt.c_str(), oga_images.get(), oga_audios.get());
-    } else if (oga_images) {
-      named_tensors = model.GetProcessor()->ProcessImages(prompt.c_str(), oga_images.get());
-    } else {
-      named_tensors = model.GetProcessor()->ProcessAudios(prompt.c_str(), oga_audios.get());
-    }
+    named_tensors = model.GetPreprocessor().ProcessMedia(prompt.c_str(), oga_images.get(), oga_audios.get());
     auto input_ids = named_tensors->Get("input_ids");
     auto input_shape = input_ids->Shape();
     if (input_shape.empty() || input_shape.back() <= 0) {
@@ -430,8 +425,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   //    - Normal stream: standard decoding (special tokens filtered)
   //    - Special stream: includes special tokens (for tool call detection)
 
-  auto stream = OgaTokenizerStream::Create(model.Tokenizer().Oga());
-  auto stream_with_special = OgaTokenizerStream::Create(model.GetOgaTokenizerWithSpecial());
+  auto stream = model.GetPreprocessor().CreateTokenizerStream();
+  auto stream_with_special = model.GetPreprocessor().CreateSpecialTokenizerStream();
 
   // `std::make_unique` constructs inside the library helper, which does not have
   // access to this class's private constructor.
