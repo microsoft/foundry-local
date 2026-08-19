@@ -207,8 +207,12 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
 
   set_float_param(req.temperature, "temperature");
   set_float_param(req.top_p, "top_p");
-  set_float_param(req.frequency_penalty, "frequency_penalty");
-  set_float_param(req.presence_penalty, "presence_penalty");
+  if (req.frequency_penalty.value_or(0.0f) != 0.0f) {
+    set_float_param(req.frequency_penalty, "frequency_penalty");
+  }
+  if (req.presence_penalty.value_or(0.0f) != 0.0f) {
+    set_float_param(req.presence_penalty, "presence_penalty");
+  }
 
   if (req.seed.has_value()) {
     session_request.options["seed"] = std::to_string(*req.seed);

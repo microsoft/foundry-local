@@ -416,12 +416,12 @@ Request ToSessionRequest(const ResponseCreateParams& params,
         std::to_string(*params.max_output_tokens);
   }
 
-  if (params.presence_penalty.has_value()) {
+  if (params.presence_penalty.value_or(0.0f) != 0.0f) {
     request.options["presence_penalty"] =
         std::to_string(*params.presence_penalty);
   }
 
-  if (params.frequency_penalty.has_value()) {
+  if (params.frequency_penalty.value_or(0.0f) != 0.0f) {
     request.options["frequency_penalty"] =
         std::to_string(*params.frequency_penalty);
   }

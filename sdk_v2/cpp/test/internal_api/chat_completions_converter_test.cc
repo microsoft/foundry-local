@@ -397,6 +397,18 @@ TEST(ChatCompletionsConverterTest, MapRequestParameters_AllFloatParams) {
   EXPECT_NE(session_request.options.Find("presence_penalty"), nullptr);
 }
 
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ZeroPenaltiesAreNoOps) {
+  ChatCompletionRequest req;
+  req.frequency_penalty = 0.0f;
+  req.presence_penalty = 0.0f;
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  EXPECT_EQ(session_request.options.Find("frequency_penalty"), nullptr);
+  EXPECT_EQ(session_request.options.Find("presence_penalty"), nullptr);
+}
+
 TEST(ChatCompletionsConverterTest, MapRequestParameters_Seed) {
   ChatCompletionRequest req;
   req.seed = 42;

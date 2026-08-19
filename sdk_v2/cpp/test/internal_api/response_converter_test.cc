@@ -781,3 +781,16 @@ TEST(ResponseConverterTest, ToSessionRequest_AllRequestOptions_PropagatedToSessi
 
   EXPECT_FALSE(tools_json.empty());
 }
+
+TEST(ResponseConverterTest, ToSessionRequest_ZeroPenaltiesAreNoOps) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("hello");
+  params.presence_penalty = 0.0f;
+  params.frequency_penalty = 0.0f;
+
+  Request req = ToSessionRequest(params);
+
+  EXPECT_EQ(req.options.Find("presence_penalty"), nullptr);
+  EXPECT_EQ(req.options.Find("frequency_penalty"), nullptr);
+}
