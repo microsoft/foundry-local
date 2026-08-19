@@ -204,9 +204,9 @@ inline ICatalog& Manager::GetCatalog() const {
   std::call_once(*catalog_once_, [this]() {
     flCatalog* cat = nullptr;
     Check(detail::api()->Manager_GetCatalog(handle_.get(), &cat));
-    catalog_ = std::unique_ptr<Catalog>(new Catalog(*cat));
+    catalogs_.public_ = std::unique_ptr<Catalog>(new Catalog(*cat));
   });
-  return *catalog_;
+  return *catalogs_.public_;
 }
 
 inline ICatalog& Manager::GetCatalog(CatalogType type) const {
@@ -217,9 +217,9 @@ inline ICatalog& Manager::GetCatalog(CatalogType type) const {
   std::call_once(*local_catalog_once_, [this, type]() {
     flCatalog* catalog = nullptr;
     Check(detail::api()->Manager_GetCatalogByType(handle_.get(), static_cast<flCatalogType>(type), &catalog));
-    local_catalog_ = std::make_unique<Catalog>(*catalog);
+    catalogs_.local_ = std::make_unique<Catalog>(*catalog);
   });
-  return *local_catalog_;
+  return *catalogs_.local_;
 }
 
 inline void Manager::StartWebService() {

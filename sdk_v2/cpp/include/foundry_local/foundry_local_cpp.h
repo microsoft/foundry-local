@@ -908,10 +908,14 @@ class Manager {
   bool IsShutdownRequested() const;
 
  private:
+  struct CatalogCollection {
+    mutable std::unique_ptr<Catalog> public_;
+    mutable std::unique_ptr<Catalog> local_;
+  };
+
   detail::Base<flManager> handle_;
   Configuration config_;
-  mutable std::unique_ptr<Catalog> catalog_;
-  mutable std::unique_ptr<Catalog> local_catalog_;
+  CatalogCollection catalogs_;
   mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
   mutable std::unique_ptr<std::once_flag> local_catalog_once_{std::make_unique<std::once_flag>()};
 };

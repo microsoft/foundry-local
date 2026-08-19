@@ -144,7 +144,7 @@ TEST(ModelLoadManagerTest, LoadCudaGpuModel_CudaNotAvailable_ErrorMessage) {
   }
 }
 
-TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaNotAvailable_Throws) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaNotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
   fl::ModelLoadManager mgr(ep, logger);
@@ -152,7 +152,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaNotAvailable_Throws) {
   TempModelDir dir("alias-cuda-config", "cuda");
 
   try {
-    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    mgr.LoadModel(dir.path(), "local/test-registration");
     FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
     EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
@@ -160,7 +160,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaNotAvailable_Throws) {
   }
 }
 
-TEST(ModelLoadManagerTest, LoadAliasWithWebGpuConfig_WebGpuNotAvailable_Throws) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithWebGpuConfig_WebGpuNotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
   fl::ModelLoadManager mgr(ep, logger);
@@ -168,7 +168,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithWebGpuConfig_WebGpuNotAvailable_Throws) 
   TempModelDir dir("alias-webgpu-config", "WebGPU");
 
   try {
-    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    mgr.LoadModel(dir.path(), "local/test-registration");
     FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
     EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
@@ -176,7 +176,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithWebGpuConfig_WebGpuNotAvailable_Throws) 
   }
 }
 
-TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaAvailable_PreparesCuda) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCuda) {
   GpuEpDetector ep;
   fl::StderrLogger logger;
   fl::ModelLoadManager mgr(ep, logger);
@@ -184,7 +184,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaAvailable_PreparesCuda) {
   TempModelDir dir("alias-cuda-available", "cuda");
 
   try {
-    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    mgr.LoadModel(dir.path(), "local/test-registration");
   } catch (const fl::Exception& e) {
     EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
   }
@@ -192,7 +192,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithCudaConfig_CudaAvailable_PreparesCuda) {
   EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
 }
 
-TEST(ModelLoadManagerTest, LoadAliasWithCanonicalWinMlProvider_NotAvailable_Throws) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
   fl::ModelLoadManager mgr(ep, logger);
@@ -200,7 +200,7 @@ TEST(ModelLoadManagerTest, LoadAliasWithCanonicalWinMlProvider_NotAvailable_Thro
   TempModelDir dir("alias-migraphx-config", "MIGraphXExecutionProvider");
 
   try {
-    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    mgr.LoadModel(dir.path(), "local/test-registration");
     FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
     EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
@@ -208,15 +208,15 @@ TEST(ModelLoadManagerTest, LoadAliasWithCanonicalWinMlProvider_NotAvailable_Thro
   }
 }
 
-TEST(ModelLoadManagerTest, LoadAliasWithDmlConfig_DoesNotRequireDownloadableEp) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDownloadableEp) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
   fl::ModelLoadManager mgr(ep, logger);
 
-  TempModelDir dir("alias-dml-config", "dml");
+  TempModelDir dir("alias-dml-config", "DmlExecutionProvider");
 
   try {
-    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0");
+    mgr.LoadModel(dir.path(), "local/test-registration");
   } catch (const fl::Exception& e) {
     EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
   }
@@ -232,7 +232,7 @@ TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {
   TempModelDir dir("unknown-override");
 
   try {
-    mgr.LoadModel(dir.path(), "local/arbitrary-alias:0", fl::ExecutionProvider::kUnknown);
+    mgr.LoadModel(dir.path(), "local/test-registration", fl::ExecutionProvider::kUnknown);
     FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
     EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
