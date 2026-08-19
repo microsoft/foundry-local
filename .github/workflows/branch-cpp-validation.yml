@@ -59,16 +59,13 @@ jobs:
             --update --build \
             --skip_examples
       - name: Set up vcpkg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
-                # Foundry pins an older builtin-baseline; fetch only that commit.
-                # A full vcpkg clone is multi-GB and can hang GitHub-hosted runners for hours.
-                baseline="$(python -c "import json; print(json.load(open('sdk_v2/cpp/vcpkg.json'))['builtin-baseline'])")"
-                git init vcpkg
-                git -C vcpkg remote add origin https://github.com/microsoft/vcpkg.git
-                git -C vcpkg fetch --depth 1 origin "$baseline"
-                git -C vcpkg checkout --detach FETCH_HEAD
+              run: |
+                sudo apt-get update
+                sudo apt-get install -y ninja-build
+                # Need full commit/tree history for Foundry's older builtin-baseline +
+                # versioned port trees, but not every historical blob. blob:none keeps
+                # history while avoiding multi-GB full clones that hang runners.
+                git clone --filter=blob:none --single-branch https://github.com/microsoft/vcpkg.git vcpkg
                 ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
       - name: Build Foundry Local tests
         run: |
