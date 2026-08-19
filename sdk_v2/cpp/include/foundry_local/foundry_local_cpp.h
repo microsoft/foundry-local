@@ -715,6 +715,9 @@ class IModel {
 // Model — concrete IModel implementation using composition
 // ===========================================================================
 
+/// Non-owning wrapper over a catalog-owned model. The Manager that supplied the catalog must outlive this object and
+/// any ModelInfo view obtained from it. Unregistering a local model removes it from future catalog queries without
+/// invalidating existing wrappers; operations that require the retired registration, including Download and Load, fail.
 class Model final : public IModel {
  public:
   /// Mutable construction (from catalog lookups that return flModel*).
@@ -755,6 +758,8 @@ class Model final : public IModel {
 // ModelList
 // ===========================================================================
 
+/// Owning wrapper for a native model-list allocation. Its Model entries are non-owning views into catalog storage, so
+/// the Manager that supplied the catalog must outlive the list and any Model wrapper retained from it.
 class ModelList {
  public:
   ModelList(flModelList& model_list);
@@ -797,9 +802,8 @@ class ICatalog {
   /// returns every variant. `max_versions` selects the latest X versions per
   /// variant name (defaults to 50, matching the web service contract); pass 0
   /// or a negative value for no per-variant cap. Each call performs a fresh
-  /// query and the returned model handles remain valid until the next
-  /// GetModelVersions call for the same alias or until the catalog is destroyed.
-  /// Queries for different aliases do not invalidate each other's results.
+  /// query and the returned model handles remain valid until the owning Manager
+  /// is destroyed. Repeated queries do not invalidate earlier results.
   virtual ModelList GetModelVersions(const std::string& model_alias,
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
@@ -809,6 +813,8 @@ class ICatalog {
   virtual std::unique_ptr<IModel> RegisterModel(const std::string&, const std::string&, const ModelInfo&) {
     throw Error("models can only be registered in a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
+  /// Unregister without deleting model assets. Existing model wrappers and immutable metadata views remain valid, but
+  /// operations that require the retired registration, including Download and Load, fail with invalid usage.
   virtual void UnregisterModel(const std::string&) {
     throw Error("models can only be unregistered from a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
@@ -820,7 +826,7 @@ class ICatalog {
 
 class Catalog final : public ICatalog {
  public:
-  /// Adopt an already-created catalog handle (owning).
+  /// Wrap an already-created manager-owned catalog handle (non-owning).
   /// Most users should obtain a catalog via Manager::GetCatalog() rather than constructing one directly.
   explicit Catalog(flCatalog& catalog) : handle_(&catalog) {}
 

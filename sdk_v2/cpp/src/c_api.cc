@@ -1026,7 +1026,7 @@ FL_API_STATUS_IMPL(Info_SetStringPropertyImpl, flModelInfo* info, const char* ke
   if (!info || !key || !value) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  fl::SetModelInfoStringProperty(*AsImpl(info), key, value);
+  AsImpl(info)->SetPropertyStr(key, value);
   return nullptr;
   API_IMPL_END
 }
@@ -1036,7 +1036,7 @@ FL_API_STATUS_IMPL(Info_SetIntPropertyImpl, flModelInfo* info, const char* key, 
   if (!info || !key) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  fl::SetModelInfoIntProperty(*AsImpl(info), key, value);
+  AsImpl(info)->SetPropertyInt(key, value);
   return nullptr;
   API_IMPL_END
 }

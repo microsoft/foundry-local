@@ -957,8 +957,9 @@ struct flCatalogApi {
   /// Returned string is owned by the catalog and valid for the catalog's lifetime.
   FL_API_STATUS(GetName, _In_ const flCatalog* catalog, _Out_ const char** out_name);
 
-  // Catalog owns model list. Cached for efficiency.
-  // Models are mutable for load/unload/remove operations. Model info is immutable though.
+  /// The caller owns each returned model list and must release it with ModelList_Release. The model handles in a list
+  /// are borrowed from the catalog and remain address-valid until the owning manager is destroyed. Releasing a list
+  /// does not invalidate its model handles. Models are mutable for load/unload/remove operations; model info is immutable.
   FL_API_STATUS(GetModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
   FL_API_STATUS(GetModel, _In_ const flCatalog* catalog, _In_ const char* alias,
                 _Outptr_ flModel** out_model);
@@ -996,6 +997,9 @@ struct flCatalogApi {
                 _In_ const char* model_id, _In_ const flModelInfo* metadata,
                 _Outptr_ flModel** out_model);
   /// Unregister by alias or model ID without deleting model assets.
+  /// Future catalog queries exclude the registration, but outstanding model handles and their immutable metadata remain
+  /// valid until the owning manager is destroyed. Operations that require the retired registration, including Download
+  /// and Load, return FOUNDRY_LOCAL_ERROR_INVALID_USAGE; query and cleanup operations such as Unload remain valid.
   FL_API_STATUS(UnregisterModel, _In_ flCatalog* catalog, _In_ const char* alias_or_model_id);
 
   // End V2
@@ -1015,8 +1019,8 @@ struct flModelApi {
 
   /* Model handle operations. Catalog owns Model instances. */
   FL_API_STATUS(IsCached, _In_ const flModel* model, _Out_ int* out_cached);
-  /// Returned path string is owned by the model and valid until the model is released or its cache state
-  /// changes via RemoveFromCache.
+  /// Returned path string is owned by the model and valid until the owning manager is destroyed or the model's cache
+  /// state changes via Download or RemoveFromCache.
   FL_API_STATUS(GetPath, _In_ const flModel* model, _Out_ const char** out_path);
   FL_API_STATUS(Download, _In_ flModel* model, _In_opt_ flProgressCallback callback,
                 _In_opt_ void* user_data);

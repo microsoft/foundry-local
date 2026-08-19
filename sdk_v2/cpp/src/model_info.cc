@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "model_info.h"
-#include "exception.h"
 #include "util/string_utils.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -109,6 +108,24 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j) {
     info.detected_region = j["detectedRegion"].get<std::string>();
   }
 
+  // Preserve the complete extensible ModelInfo state in addition to the catalog-compatible named fields below.
+  // Keeping string and integer properties separate retains their types even when both maps contain the same key.
+  if (j.contains("stringProperties") && j["stringProperties"].is_object()) {
+    for (const auto& [key, value] : j["stringProperties"].items()) {
+      if (value.is_string()) {
+        info.SetPropertyStr(key, value.get<std::string>());
+      }
+    }
+  }
+
+  if (j.contains("intProperties") && j["intProperties"].is_object()) {
+    for (const auto& [key, value] : j["intProperties"].items()) {
+      if (value.is_number_integer()) {
+        info.SetPropertyInt(key, value.get<int64_t>());
+      }
+    }
+  }
+
   // String properties — named top-level fields → string_properties map
   ReadStringProp(j, "providerType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
   ReadStringProp(j, "modelType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
@@ -209,6 +226,22 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   // detectedRegion — only emit when set so BYO models and pre-region caches are unaffected.
   if (!info.detected_region.empty()) {
     j["detectedRegion"] = info.detected_region;
+  }
+
+  if (!info.string_properties.empty()) {
+    nlohmann::json properties = nlohmann::json::object();
+    for (const auto& [key, value] : info.string_properties) {
+      properties[key] = value;
+    }
+    j["stringProperties"] = std::move(properties);
+  }
+
+  if (!info.int_properties.empty()) {
+    nlohmann::json properties = nlohmann::json::object();
+    for (const auto& [key, value] : info.int_properties) {
+      properties[key] = value;
+    }
+    j["intProperties"] = std::move(properties);
   }
 
   // providerType — required in C#, defaults to empty
@@ -345,77 +378,20 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   return j;
 }
 
-void SetModelInfoStringProperty(ModelInfo& info, std::string key, std::string value) {
+void ModelInfo::SetPropertyStr(std::string key, std::string value) {
   if (key == FOUNDRY_LOCAL_MODEL_PROP_TASK_STR) {
-    info.task = value;
+    task = value;
   } else if (key == FOUNDRY_LOCAL_MODEL_PROP_EP_STR) {
-    info.execution_provider = value;
+    execution_provider = value;
   } else if (key == FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR) {
-    info.device_type = DeviceTypeFromString(value);
+    device_type = DeviceTypeFromString(value);
   }
 
-  info.string_properties[std::move(key)] = std::move(value);
+  string_properties[std::move(key)] = std::move(value);
 }
 
-void SetModelInfoIntProperty(ModelInfo& info, std::string key, int64_t value) {
-  info.int_properties[std::move(key)] = value;
-}
-
-nlohmann::json ModelInfoToPropertyBagJson(const ModelInfo& info) {
-  nlohmann::json json = nlohmann::json::object();
-  for (const auto& [key, value] : info.string_properties) {
-    json[key] = value;
-  }
-
-  for (const auto& [key, value] : info.int_properties) {
-    json[key] = value;
-  }
-
-  return json;
-}
-
-ModelInfo ModelInfoFromPropertyBagJson(const nlohmann::json& json) {
-  if (!json.is_object()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info JSON must contain an object");
-  }
-
-  ModelInfo info;
-  for (const auto& [key, value] : json.items()) {
-    if (value.is_number_integer()) {
-      SetModelInfoIntProperty(info, key, value.get<int64_t>());
-      continue;
-    }
-
-    if (!value.is_string()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model info property values must be strings or integers");
-    }
-
-    const auto text = value.get<std::string>();
-    const bool known_int = key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT ||
-                           key == FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT;
-    if (known_int) {
-      try {
-        size_t parsed = 0;
-        const auto integer = std::stoll(text, &parsed);
-        if (parsed != text.size()) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid integer model info property: " + key);
-        }
-        SetModelInfoIntProperty(info, key, integer);
-      } catch (const std::exception&) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid integer model info property: " + key);
-      }
-    } else {
-      SetModelInfoStringProperty(info, key, text);
-    }
-  }
-
-  return info;
+void ModelInfo::SetPropertyInt(std::string key, int64_t value) {
+  int_properties[std::move(key)] = value;
 }
 
 }  // namespace fl

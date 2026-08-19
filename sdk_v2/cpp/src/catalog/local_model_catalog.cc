@@ -86,14 +86,53 @@ void RemoveLegacyRegistrationProperties(ModelInfo& info) {
   info.int_properties.erase(kLegacyVersionProperty);
 }
 
+bool IsLegacyIntegerProperty(std::string_view key) {
+  return key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT ||
+         key == FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT;
+}
+
+ModelInfo ModelInfoFromLegacyPropertyBagJson(const nlohmann::json& json) {
+  if (!json.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "legacy model info properties must contain an object");
+  }
+
+  ModelInfo info;
+  for (const auto& [key, value] : json.items()) {
+    if (value.is_string()) {
+      auto text = value.get<std::string>();
+      if (IsLegacyIntegerProperty(key)) {
+        int64_t integer = 0;
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), integer);
+        if (error != std::errc{} || end != text.data() + text.size()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid legacy integer model info property: " + key);
+        }
+
+        info.SetPropertyInt(key, integer);
+      } else {
+        info.SetPropertyStr(key, std::move(text));
+      }
+    } else if (value.is_number_integer()) {
+      info.SetPropertyInt(key, value.get<int64_t>());
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "legacy model info property values must be strings or integers");
+    }
+  }
+
+  return info;
+}
+
 nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registration) {
   return {
-      {"model_id", registration.info.model_id},
+      {"model_info", ModelInfoToJson(registration.info)},
       {"model_path", registration.model_path},
       {"registration_id", registration.registration_id},
-      {"registered_at",
-       registration.info.GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{})},
-      {"properties", ModelInfoToPropertyBagJson(registration.info)},
   };
 }
 
@@ -244,12 +283,12 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "unregistered model was not present in the in-memory catalog");
     }
 
-    model->CancelUnregister();
+    model->EndUnregister();
     unregister_in_progress = false;
     ListModels();
   } catch (...) {
     if (unregister_in_progress) {
-      model->CancelUnregister();
+      model->EndUnregister();
     }
     throw;
   }
@@ -266,15 +305,15 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
   resolved.model_id = model_id;
   resolved.uri.clear();
   if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR)) {
-    SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
+    resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
   }
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "LocalRegistration");
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "Model");
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "ONNX");
+  resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "LocalRegistration");
+  resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "Model");
+  resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "ONNX");
 
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-  SetModelInfoIntProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
-  SetModelInfoStringProperty(resolved, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, FormatUtcTimestamp(now));
+  resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
+  resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, FormatUtcTimestamp(now));
 
   return resolved;
 }
@@ -291,19 +330,35 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
     stream >> root;
     const auto schema_version = root.value("version", 0);
     if (!root.is_object() || (schema_version != 1 && schema_version != 2) || !root.contains("models") ||
-      !root["models"].is_array()) {
+        !root["models"].is_array()) {
       logger_.Log(LogLevel::Warning, "Ignoring malformed local model registration index: " + index_path_.string());
       return {};
     }
 
     for (const auto& item : root["models"]) {
       try {
-        if (!item.is_object() || !item.contains("model_id") || !item["model_id"].is_string() ||
-            !item.contains("model_path") || !item["model_path"].is_string() || !item.contains("properties")) {
+        if (!item.is_object() || !item.contains("model_path") || !item["model_path"].is_string()) {
           continue;
         }
 
-        auto info = ModelInfoFromPropertyBagJson(item["properties"]);
+        ModelInfo info;
+        std::string model_id;
+        if (schema_version == 2) {
+          if (!item.contains("model_info") || !item["model_info"].is_object()) {
+            continue;
+          }
+
+          info = ModelInfoFromJson(item["model_info"]);
+          model_id = info.model_id;
+        } else {
+          if (!item.contains("model_id") || !item["model_id"].is_string() || !item.contains("properties")) {
+            continue;
+          }
+
+          info = ModelInfoFromLegacyPropertyBagJson(item["properties"]);
+          model_id = item["model_id"].get<std::string>();
+        }
+
         std::string registration_id;
         if (item.contains("registration_id") && item["registration_id"].is_string()) {
           registration_id = item["registration_id"].get<std::string>();
@@ -314,7 +369,6 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
           continue;
         }
 
-        const auto model_id = item["model_id"].get<std::string>();
         const auto parsed_id = ParseModelId(model_id);
         std::filesystem::path model_path = item["model_path"].get<std::string>();
         if (model_path.empty() || HasParentTraversal(model_path)) {

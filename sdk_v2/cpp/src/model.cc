@@ -591,7 +591,7 @@ void Model::BeginUnregister() {
       }
     } catch (...) {
       while (locked_count > 0) {
-        unregistering_variants_[--locked_count]->CancelUnregister();
+        unregistering_variants_[--locked_count]->EndUnregister();
       }
       unregistering_variants_.clear();
       unregistering_ = false;
@@ -610,10 +610,10 @@ void Model::BeginUnregister() {
   unregistering_ = true;
 }
 
-void Model::CancelUnregister() {
+void Model::EndUnregister() {
   if (!unregistering_variants_.empty()) {
     for (auto* variant : unregistering_variants_) {
-      variant->CancelUnregister();
+      variant->EndUnregister();
     }
     unregistering_variants_.clear();
     unregistering_ = false;

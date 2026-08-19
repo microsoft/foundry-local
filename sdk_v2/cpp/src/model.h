@@ -123,10 +123,6 @@ class Model {
 
   bool IsCached() const;
   bool IsLoaded() const;
-  bool IsActive() const {
-    Model* selected = selected_variant_.load(std::memory_order_acquire);
-    return selected ? selected->IsActive() : active_.load();
-  }
 
   /// Get the supported input and output item types for this model, based on its task.
   /// Returns arrays of Item pointers (type-tag-only descriptors) from static storage.
@@ -159,9 +155,9 @@ class Model {
   /// Mark this model and its variants inactive while retaining pointer validity.
   void Deactivate();
 
-  /// Serialize unregister with Load(); CancelUnregister releases the lock after success or rollback.
+  /// Serialize unregister with Load(); EndUnregister releases the lock after success or rollback.
   void BeginUnregister();
-  void CancelUnregister();
+  void EndUnregister();
 
   /// Select a specific variant within this container. Throws if the variant is
   /// not part of this model, or if this is a leaf.
@@ -199,6 +195,8 @@ class Model {
   // flips false), so any reader that gates on IsCached() observes a complete path.
   std::unique_ptr<const ModelInfo> info_;
   std::atomic<bool> cached_{false};
+  // Logical tombstone state. Retired models remain allocated so outstanding catalog-owned handles stay address-valid,
+  // but operations that would use the registration reject them.
   std::atomic<bool> active_{true};
   std::string local_path_;
   std::string runtime_model_id_;

@@ -289,8 +289,8 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   flModelList* models = nullptr;
   ASSERT_FL_OK(api, catalog_api->GetModels(catalog, &models));
   ASSERT_EQ(api->ModelList_Size(models), 1u);
-  EXPECT_NE(api->ModelList_GetAt(models, 0), nullptr);
-  api->ModelList_Release(models);
+  flModel* listed = api->ModelList_GetAt(models, 0);
+  ASSERT_NE(listed, nullptr);
 
   StatusGuard remove_status{model_api->RemoveFromCache(registered), api};
   ASSERT_NE(remove_status.s, nullptr);
@@ -299,6 +299,23 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   ASSERT_FL_OK(api, catalog_api->UnregisterModel(catalog, "c-api-model"));
   EXPECT_TRUE(std::filesystem::exists(model_path / "genai_config.json"));
   EXPECT_FALSE(std::filesystem::exists(model_path / "model_metadata.yml"));
+
+  ASSERT_FL_OK(api, model_api->GetInfo(registered, &registered_info));
+  EXPECT_STREQ(model_api->Info_GetId(registered_info), "c-api-model:3");
+  const flModelInfo* listed_info = nullptr;
+  ASSERT_FL_OK(api, model_api->GetInfo(listed, &listed_info));
+  EXPECT_STREQ(model_api->Info_GetId(listed_info), "c-api-model:3");
+
+  StatusGuard registered_load_status{model_api->Load(registered), api};
+  ASSERT_NE(registered_load_status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(registered_load_status.s), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  StatusGuard listed_load_status{model_api->Load(listed), api};
+  ASSERT_NE(listed_load_status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(listed_load_status.s), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  ASSERT_FL_OK(api, model_api->Unload(registered));
+  ASSERT_FL_OK(api, model_api->Unload(listed));
+  api->ModelList_Release(models);
+
   ASSERT_FL_OK(api, catalog_api->GetModels(catalog, &models));
   EXPECT_EQ(api->ModelList_Size(models), 0u);
   api->ModelList_Release(models);

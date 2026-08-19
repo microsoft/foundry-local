@@ -55,6 +55,12 @@ struct ModelInfo {
   std::map<std::string, std::string, std::less<>> string_properties;
   std::map<std::string, int64_t, std::less<>> int_properties;
 
+  /// Set a string property while keeping typed fields synchronized with well-known keys.
+  void SetPropertyStr(std::string key, std::string value);
+
+  /// Set an int property.
+  void SetPropertyInt(std::string key, int64_t value);
+
   /// Look up a string property by key, returning nullptr if missing.
   const std::string* GetPropertyStr(std::string_view key) const {
     auto it = string_properties.find(key);
@@ -86,13 +92,5 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j);
 
 /// Serialize a ModelInfo to JSON.
 nlohmann::json ModelInfoToJson(const ModelInfo& info);
-
-/// Set a property while keeping the typed ModelInfo fields synchronized with well-known keys.
-void SetModelInfoStringProperty(ModelInfo& info, std::string key, std::string value);
-void SetModelInfoIntProperty(ModelInfo& info, std::string key, int64_t value);
-
-/// Serialize the complete registration property bag. Unknown properties are preserved.
-nlohmann::json ModelInfoToPropertyBagJson(const ModelInfo& info);
-ModelInfo ModelInfoFromPropertyBagJson(const nlohmann::json& json);
 
 }  // namespace fl
