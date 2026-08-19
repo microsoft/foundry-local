@@ -588,7 +588,7 @@ TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) 
   EXPECT_TRUE(found_old);
 }
 
-TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_CreatesBYOEntry) {
+TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DefersBYOEntryToCatalogMerge) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   int http_call_count = 0;
@@ -609,22 +609,8 @@ TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_CreatesBYOEntry) {
   auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger);
 
   EXPECT_EQ(http_call_count, 2);
-
-  // Find the BYO entry.
-  const ModelInfo* byo = nullptr;
-  for (const auto& info : result) {
-    if (info.model_id == "custom-model:0") {
-      byo = &info;
-    }
-  }
-
-  ASSERT_NE(byo, nullptr);
-  EXPECT_EQ(byo->name, "custom-model");
-  EXPECT_EQ(byo->alias, "custom-model");
-  EXPECT_EQ(byo->uri, "local://custom-model");
-  EXPECT_EQ(byo->version, 0);
-  EXPECT_EQ(byo->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "Local");
-  EXPECT_EQ(byo->string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR), "ONNX");
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].model_id, "phi-4-mini:3");
 }
 
 // ========================================================================

@@ -41,7 +41,7 @@ int main() {
     ModelList all_models = catalog.GetModels();
 
     std::string embeddings_alias;
-    for (const auto& m : all_models.Models()) {
+    for (const auto& m : all_models) {
       if (m->GetInfo().Task() == "embeddings") {
         embeddings_alias = m->GetInfo().Alias();
         break;

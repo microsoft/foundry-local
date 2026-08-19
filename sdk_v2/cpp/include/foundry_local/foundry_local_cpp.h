@@ -24,7 +24,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
-#include <gsl/span>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -745,8 +744,11 @@ class ModelList {
   ModelList(const ModelList&) = delete;
   ModelList& operator=(const ModelList&) = delete;
 
-  gsl::span<const std::unique_ptr<IModel>> Models() const noexcept;
   size_t size() const noexcept;
+  bool empty() const noexcept { return models_.empty(); }
+  const std::unique_ptr<IModel>& operator[](size_t index) const noexcept { return models_[index]; }
+  const std::unique_ptr<IModel>& at(size_t index) const { return models_.at(index); }
+  const std::unique_ptr<IModel>& front() const noexcept { return models_.front(); }
   auto begin() const noexcept { return models_.begin(); }
   auto end() const noexcept { return models_.end(); }
 
@@ -764,7 +766,10 @@ class ICatalog {
   virtual ~ICatalog() = default;
   virtual std::string_view GetName() const = 0;
   virtual ModelList GetModels() const = 0;
+
+  /// Get every individual model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
+
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;

@@ -3,7 +3,6 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "exception.h"
 #include "inferencing/execution_provider.h"
-#include "util/key_value_pairs.h"
 #include "utils.h"
 
 #include <ort_genai.h>
@@ -60,39 +59,17 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                      "failed to load model ", model_id_, ": ", e.what());
   }
 
-  // Create Tokenizer
   try {
-    tokenizer_ = std::make_unique<fl::Tokenizer>(OgaTokenizer::Create(*oga_model_));
+    preprocessor_ = Preprocessor::Create(*oga_model_, IsMultiModal());
   } catch (const std::runtime_error& e) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "failed to create tokenizer for model ", model_id_, ": ", e.what());
-  }
-
-  // Create second Tokenizer for special token detection
-  try {
-    tokenizer_with_special_ = OgaTokenizer::Create(*oga_model_);
-    KeyValuePairs options;
-    options.Add("skip_special_tokens", "0");
-    tokenizer_with_special_->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
-  } catch (const std::runtime_error& e) {
-    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "failed to create special-token tokenizer for model ", model_id_, ": ", e.what());
-  }
-
-  // Create MultiModalProcessor if multimodal
-  if (genai_config_.model.has_value() && genai_config_.model->IsMultiModal()) {
-    try {
-      processor_ = OgaMultiModalProcessor::Create(*oga_model_);
-    } catch (const std::runtime_error& e) {
-      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                       "failed to create multimodal processor for model ", model_id_, ": ", e.what());
-    }
+                     "failed to create preprocessor for model ", model_id_, ": ", e.what());
   }
 }
 
 // Destructor: unique_ptr members are destroyed in reverse declaration order.
 // OGA objects have custom operator delete that calls OgaDestroy* functions.
-// Destruction order: processor → tokenizer → oga_model (correct: dependents first).
+// Destruction order: preprocessor → oga_model (correct: dependents first).
 GenAIModelInstance::~GenAIModelInstance() = default;
 
 // ---------------------------------------------------------------------------
@@ -111,33 +88,12 @@ OgaModel& GenAIModelInstance::GetOgaModel() {
   return *oga_model_;
 }
 
-OgaTokenizer& GenAIModelInstance::GetOgaTokenizerWithSpecial() {
-  if (!tokenizer_with_special_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "OGA tokenizer with special is null");
+Preprocessor& GenAIModelInstance::GetPreprocessor() {
+  if (!preprocessor_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "preprocessor is null");
   }
 
-  return *tokenizer_with_special_;
-}
-
-Tokenizer& GenAIModelInstance::Tokenizer() {
-  if (!tokenizer_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "OGA tokenizer is null");
-  }
-
-  return *tokenizer_;
-}
-
-OgaMultiModalProcessor* GenAIModelInstance::GetProcessor() {
-  return processor_.get();
-}
-
-const std::vector<int32_t>& GenAIModelInstance::GetEosTokenIds() {
-  std::call_once(eos_token_ids_init_flag_, [this]() {
-    auto ids = tokenizer_->Oga().GetEosTokenIds();
-    eos_token_ids_.assign(ids.begin(), ids.end());
-  });
-
-  return eos_token_ids_;
+  return *preprocessor_;
 }
 
 }  // namespace fl

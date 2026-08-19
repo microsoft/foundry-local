@@ -1,0 +1,2 @@
+# Clippy configuration for Foundry Local Rust SDK
+msrv = "1.70"

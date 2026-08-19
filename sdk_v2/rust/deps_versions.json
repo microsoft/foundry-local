@@ -1,0 +1,6 @@
+{
+  "_comment": "Synced copy of sdk_v2/deps_versions.json, committed here so the pinned native versions ship inside the published crate (Cargo cannot include files outside the package root). The canonical file at sdk_v2/deps_versions.json remains the single source of truth; build.rs fails the build if the version pins drift. When updating versions, edit the canonical file and re-copy it here.",
+  "onnxruntime":               { "version": "1.28.0" },
+  "onnxruntime-genai":         { "version": "0.15.2" },
+  "windows-ai-machinelearning": { "version": "2.1.70" }
+}

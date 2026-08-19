@@ -142,11 +142,11 @@ int main() {
     // 2. Get the catalog and list all available models.
     auto& catalog = manager.GetCatalog();
     ModelList all_models = catalog.GetModels();
-    std::cout << "Available models: " << all_models.Models().size() << "\n";
-    for (const auto& m : all_models.Models()) {
+    std::cout << "Available models: " << all_models.size() << "\n";
+    for (const auto& m : all_models) {
       std::cout << "  Alias:" << m->GetInfo().Alias() << "\n";
       ModelList variants = m->GetVariants();
-      for (const auto& variant : variants.Models()) {
+      for (const auto& variant : variants) {
         ModelInfo info = variant->GetInfo();
         std::cout << "    " << info.Id() << (variant->IsCached() ? " [cached]" : "") << "\n";
       }
@@ -163,7 +163,7 @@ int main() {
       }
 
       ModelList variants = candidate->GetVariants();
-      for (const auto& variant : variants.Models()) {
+      for (const auto& variant : variants) {
         ModelInfo variant_info = variant->GetInfo();
         if (variant_info.DeviceType() == FOUNDRY_LOCAL_DEVICE_CPU &&
             (variant_info.Task() == "chat-completion" || variant_info.Task() == "vision-language-chat")) {

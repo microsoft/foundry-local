@@ -347,8 +347,10 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
   for (auto& m : models_) {
-    if (m->IsCached()) {
-      result.push_back(m.get());
+    for (auto* variant : m->Variants()) {
+      if (variant->IsCached()) {
+        result.push_back(variant);
+      }
     }
   }
 
