@@ -3,13 +3,14 @@
 //
 // Unit tests for OnnxChatGenerator's vision-input message rewriting.
 //
-// Covers `TransformMessagesForVision` — the only static helper exposed for
+// Covers `TransformMessagesForMedia` — the only static helper exposed for
 // testability without loading a model. Image-byte extraction is covered by
 // ImageItemTest (item_test.cc); model-bound vision behaviour is exercised by
 // the integration tests.
 
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 
+#include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -42,10 +43,28 @@ MessageItem MakeImageMessage(flMessageRole role, std::string text) {
   return MessageItem(role, std::move(parts));
 }
 
+MessageItem MakeAudioMessage(flMessageRole role, std::string text) {
+  std::vector<std::unique_ptr<Item>> parts;
+  static const std::uint8_t kFakeAudio[] = {0x52, 0x49, 0x46, 0x46};
+  parts.emplace_back(std::make_unique<AudioItem>(kFakeAudio, sizeof(kFakeAudio), "wav"));
+  parts.emplace_back(std::make_unique<TextItem>(std::move(text)));
+  return MessageItem(role, std::move(parts));
+}
+
+MessageItem MakeImageAudioMessage(flMessageRole role, std::string text) {
+  std::vector<std::unique_ptr<Item>> parts;
+  static const std::uint8_t kFakeImage[] = {0x89};
+  static const std::uint8_t kFakeAudio[] = {0x52, 0x49, 0x46, 0x46};
+  parts.emplace_back(std::make_unique<ImageItem>(kFakeImage, sizeof(kFakeImage), "image/png"));
+  parts.emplace_back(std::make_unique<AudioItem>(kFakeAudio, sizeof(kFakeAudio), "wav"));
+  parts.emplace_back(std::make_unique<TextItem>(std::move(text)));
+  return MessageItem(role, std::move(parts));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// TransformMessagesForVision
+// TransformMessagesForMedia
 // ---------------------------------------------------------------------------
 
 TEST(OnnxChatGeneratorVision, TransformRewritesLastUserAsStructuredContent) {
@@ -53,7 +72,7 @@ TEST(OnnxChatGeneratorVision, TransformRewritesLastUserAsStructuredContent) {
   messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_SYSTEM, "you are helpful"));
   messages.push_back(MakeImageMessage(FOUNDRY_LOCAL_ROLE_USER, "describe the image"));
 
-  std::string json_str = OnnxChatGenerator::TransformMessagesForVision(messages);
+  std::string json_str = OnnxChatGenerator::TransformMessagesForMedia(messages);
   auto json = nlohmann::json::parse(json_str);
 
   ASSERT_TRUE(json.is_array());
@@ -78,7 +97,7 @@ TEST(OnnxChatGeneratorVision, TransformPreservesPriorTextOnlyMessages) {
   messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "hello"));
   messages.push_back(MakeImageMessage(FOUNDRY_LOCAL_ROLE_USER, "what is this"));
 
-  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForVision(messages));
+  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
 
   ASSERT_EQ(json.size(), 3u);
   EXPECT_EQ(json[0]["content"], "hi");
@@ -94,10 +113,41 @@ TEST(OnnxChatGeneratorVision, TransformOnlyRewritesFinalUserMessage) {
   messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "ok"));
   messages.push_back(MakeImageMessage(FOUNDRY_LOCAL_ROLE_USER, "second"));
 
-  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForVision(messages));
+  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
 
   ASSERT_EQ(json.size(), 3u);
   EXPECT_TRUE(json[0]["content"].is_string());
   EXPECT_EQ(json[0]["content"], "first");
   EXPECT_TRUE(json[2]["content"].is_array());
+}
+
+TEST(OnnxChatGeneratorMedia, TransformIncludesAudioMarker) {
+  std::vector<MessageItem> messages;
+  messages.push_back(MakeAudioMessage(FOUNDRY_LOCAL_ROLE_USER, "transcribe this"));
+
+  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
+
+  ASSERT_EQ(json[0]["content"].size(), 2u);
+  EXPECT_EQ(json[0]["content"][0]["type"], "audio");
+  EXPECT_EQ(json[0]["content"][1]["text"], "transcribe this");
+}
+
+TEST(OnnxChatGeneratorMedia, TransformIncludesImageAndAudioMarkers) {
+  std::vector<MessageItem> messages;
+  messages.push_back(MakeImageAudioMessage(FOUNDRY_LOCAL_ROLE_USER, "describe both"));
+
+  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
+
+  ASSERT_EQ(json[0]["content"].size(), 3u);
+  EXPECT_EQ(json[0]["content"][0]["type"], "image");
+  EXPECT_EQ(json[0]["content"][1]["type"], "audio");
+  EXPECT_EQ(json[0]["content"][2]["text"], "describe both");
+}
+
+TEST(OnnxChatGeneratorMedia, TransformRejectsMediaOutsideFinalUserMessage) {
+  std::vector<MessageItem> messages;
+  messages.push_back(MakeAudioMessage(FOUNDRY_LOCAL_ROLE_USER, "transcribe this"));
+  messages.push_back(MakeTextMessage(FOUNDRY_LOCAL_ROLE_USER, "then summarize it"));
+
+  EXPECT_THROW(OnnxChatGenerator::TransformMessagesForMedia(messages), fl::Exception);
 }

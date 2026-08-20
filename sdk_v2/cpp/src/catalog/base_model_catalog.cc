@@ -385,8 +385,14 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
   for (auto& stored : models_) {
-    if (stored.active && stored.model->IsCached()) {
-      result.push_back(stored.model.get());
+    if (!stored.active) {
+      continue;
+    }
+
+    for (auto* variant : stored.model->Variants()) {
+      if (variant->IsCached()) {
+        result.push_back(variant);
+      }
     }
   }
 

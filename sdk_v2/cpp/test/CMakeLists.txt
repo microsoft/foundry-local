@@ -54,6 +54,7 @@ add_executable(foundry_local_tests
     internal_api/region_fallback_test.cc
     internal_api/sse_stream_body_test.cc
     internal_api/azure_catalog_test.cc
+    internal_api/azure_model_catalog_test.cc
     internal_api/telemetry_test.cc
     internal_api/tensor_test.cc
     internal_api/time_utils_test.cc

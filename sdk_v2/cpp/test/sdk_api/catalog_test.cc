@@ -119,6 +119,10 @@ TEST_F(ModelFixture, CatalogGetCachedModelsIncludesDownloadedModel) {
   EXPECT_TRUE(cached_model->IsCached());
   EXPECT_EQ(cached_model->GetInfo().Id(), model_id());
 
+  foundry_local::ModelList variants = cached_model->GetVariants();
+  ASSERT_EQ(variants.size(), 1u) << "GetCachedModels should return leaf variants rather than alias containers";
+  EXPECT_EQ(variants.front()->GetInfo().Id(), model_id());
+
   std::string local_path(cached_model->GetPath());
   EXPECT_FALSE(local_path.empty());
   EXPECT_TRUE(fs::exists(local_path)) << "Expected cached model path to exist: " << local_path;

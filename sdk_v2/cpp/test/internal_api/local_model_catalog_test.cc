@@ -191,6 +191,24 @@ TEST_F(LocalModelCatalogTest, RegistrationUsesUniqueIdsAndGroupsVersionsByDerive
   EXPECT_NO_THROW(second->Download());
 }
 
+TEST_F(LocalModelCatalogTest, GetCachedModelsReturnsActiveRegisteredLeafVariants) {
+  Register("my-model:1");
+  Register("my-model:2");
+
+  auto cached = catalog_.GetCachedModels();
+  ASSERT_EQ(cached.size(), 2u);
+  EXPECT_EQ(cached[0]->Id(), "my-model:2");
+  EXPECT_EQ(cached[1]->Id(), "my-model:1");
+  EXPECT_FALSE(cached[0]->IsContainer());
+  EXPECT_FALSE(cached[1]->IsContainer());
+
+  catalog_.UnregisterModel("my-model:2");
+
+  cached = catalog_.GetCachedModels();
+  ASSERT_EQ(cached.size(), 1u);
+  EXPECT_EQ(cached.front()->Id(), "my-model:1");
+}
+
 TEST_F(LocalModelCatalogTest, RefreshDefersVariantReconciliationDuringUnregister) {
   Register("my-model:1");
   auto* grouped = catalog_.GetModel("my-model");

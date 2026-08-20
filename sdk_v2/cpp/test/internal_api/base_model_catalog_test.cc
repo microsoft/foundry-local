@@ -304,6 +304,28 @@ TEST_F(BaseModelCatalogTest, GroupedModel_PrefersCachedVariant) {
   EXPECT_EQ(m->Info().model_id, "phi-3:2");
 }
 
+TEST_F(BaseModelCatalogTest, GetCachedModelsReturnsEveryCachedLeafInCatalogVariantOrder) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("alpha:1", "alpha", 1, "alpha", "/cache/alpha-1"));
+  catalog.AddModel(MakeModel("alpha:3", "alpha", 3, "alpha"));
+  catalog.AddModel(MakeModel("alpha:2", "alpha", 2, "alpha", "/cache/alpha-2"));
+  catalog.AddModel(MakeModel("beta:1", "beta", 1, "beta", "/cache/beta-1"));
+
+  auto cached = catalog.GetCachedModels();
+
+  ASSERT_EQ(cached.size(), 3u);
+  EXPECT_EQ(cached[0]->Info().model_id, "alpha:2");
+  EXPECT_EQ(cached[1]->Info().model_id, "alpha:1");
+  EXPECT_EQ(cached[2]->Info().model_id, "beta:1");
+
+  for (auto* variant : cached) {
+    EXPECT_FALSE(variant->IsContainer());
+    EXPECT_TRUE(variant->IsCached());
+    EXPECT_EQ(variant->Variants().size(), 1u);
+    EXPECT_EQ(variant, catalog.GetModelVariant(variant->Info().model_id));
+  }
+}
+
 TEST_F(BaseModelCatalogTest, GetModelVariant_ById_ReturnsVariantNotContainer) {
   TestCatalog catalog(logger_);
   catalog.AddModel(MakeModel("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));

@@ -11,6 +11,7 @@
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/text_item.h"
 #include "items/tool_result_item.h"
@@ -420,31 +421,33 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
              "At least one MESSAGE item with non-empty content is required in the request");
   }
 
-  // Vision input detection.
+  // Media input detection.
   //
-  // Image input is only allowed on the first turn of a session. After that:
-  //   - AppendMessages (continuous decoding) has no image-aware path; image
+  // Media input is only allowed on the first turn of a session. After that:
+  //   - AppendMessages (continuous decoding) has no media-aware path; media
   //     parts in subsequent turns would be silently dropped.
   //   - Conversation history can't replay image bytes through the chat
   //     template, so we can't even rebuild from scratch with prior images.
   // The simplest correct behaviour is to require a fresh session for every
-  // vision request. Text follow-ups within the same session are fine — the
-  // model has already produced a textual description that lives in history.
+  // media request. Text follow-ups within the same session are fine.
   std::vector<const ImageItem*> images;
+  std::vector<const AudioItem*> audios;
   for (const auto& msg : new_messages) {
     for (const auto& part : msg.content) {
       if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_IMAGE) {
         images.push_back(static_cast<const ImageItem*>(part.view));
+      } else if (part.view && part.view->type == FOUNDRY_LOCAL_ITEM_AUDIO) {
+        audios.push_back(static_cast<const AudioItem*>(part.view));
       }
     }
   }
 
-  const bool vision_turn = !images.empty();
+  const bool media_turn = !images.empty() || !audios.empty();
 
-  if (vision_turn && !history_.empty()) {
+  if (media_turn && !history_.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-             "image input is only allowed on the first turn of a session; "
-             "create a new ChatSession to send images");
+             "image or audio input is only allowed on the first turn of a session; "
+             "create a new ChatSession to send media");
   }
 
   // Merge session-level and per-request options once for this turn.
@@ -489,15 +492,15 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     all_messages.insert(all_messages.end(), new_messages.begin(), new_messages.end());
 
     std::unique_ptr<OnnxChatGenerator> generator;
-    if (vision_turn) {
-      // Vision is single-shot: the generator is dropped after the turn (see
+    if (media_turn) {
+      // Media is single-shot: the generator is dropped after the turn (see
       // CommitTurn cleanup below) because AppendMessages can't extend a
       // sequence whose state includes image-derived tokens. Sizing the KV
       // cache to the model's full context window would needlessly allocate
       // gigabytes (262k tokens × 28 layers × 8 heads × 128 dims for
       // qwen3-vl-2b ≈ 120 GB). Bound it to prompt + max_output_tokens.
-      generator = OnnxChatGenerator::CreateWithImages(all_messages, effective_options, Model(), images, tool_ctx,
-                                                      /*use_full_context*/ false);
+      generator = OnnxChatGenerator::CreateWithMedia(all_messages, effective_options, Model(), images, audios,
+                         tool_ctx, /*use_full_context*/ false);
     } else {
       generator = OnnxChatGenerator::Create(all_messages, effective_options, Model(), tool_ctx,
                                             /*use_full_context*/ true);
@@ -636,11 +639,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
 
-    // After a vision turn, drop the cached generator so any text follow-up
-    // rebuilds from history. AppendMessages cannot extend a vision-decoded
+    // After a media turn, drop the cached generator so any text follow-up
+    // rebuilds from history. AppendMessages cannot extend a media-decoded
     // sequence; trying to do so would silently feed text into a state that
-    // includes image-derived tokens.
-    if (vision_turn) {
+    // includes media-derived tokens.
+    if (media_turn) {
       cached_generator_.reset();
       cached_tool_ctx_ = {};
     }

@@ -11,6 +11,8 @@
 
 #include "utils/string_utils.h"
 
+#include <future>
+
 using fl::test::ToLower;
 
 namespace {
@@ -110,4 +112,50 @@ TEST_F(VisionFixture, SessionBaseClassWithVisionModelWorks) {
   std::string output_text = CollectResponseText(response);
   EXPECT_FALSE(output_text.empty()) << "Session base class should produce output for vision model";
   std::cout << "Session-base vision output: " << output_text << "\n";
+}
+
+TEST_F(VisionFixture, ConcurrentSessionsSharingModelComplete) {
+  using namespace foundry_local;
+
+  auto image_path = GetImagePath();
+  if (!fs::exists(image_path)) {
+    GTEST_SKIP() << "testdata/Taittinger.jpg not found";
+  }
+  auto image_bytes = LoadFile(image_path);
+
+#ifdef _WIN32
+  constexpr int kIterations = 3;
+#else
+  constexpr int kIterations = 1;
+#endif
+
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    std::promise<void> start_promise;
+    auto start = start_promise.get_future().share();
+
+    auto run_request = [&]() {
+      ChatSession session(vision_model());
+      RequestOptions options;
+      options.search.temperature = 0.0f;
+      options.search.max_output_tokens = 64;
+      session.SetOptions(options);
+
+      std::vector<Item> parts;
+      parts.push_back(Item::Text("What is in this image? One word."));
+      parts.push_back(Item::ImageFromData("jpeg", image_bytes.data(), image_bytes.size()));
+      Request request{
+          MessageItem(FOUNDRY_LOCAL_ROLE_USER, std::move(parts)),
+      };
+
+      start.wait();
+      return CollectResponseText(session.ProcessRequest(request));
+    };
+
+    auto first = std::async(std::launch::async, run_request);
+    auto second = std::async(std::launch::async, run_request);
+    start_promise.set_value();
+
+    EXPECT_FALSE(first.get().empty());
+    EXPECT_FALSE(second.get().empty());
+  }
 }

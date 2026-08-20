@@ -32,7 +32,7 @@ export class Catalog {
     return wrapAll(this.#native.getModels());
   }
 
-  /** Models currently present in the local cache. */
+  /** Every individual model variant currently present in the local cache. */
   async getCachedModels(): Promise<IModel[]> {
     return wrapAll(this.#native.getCachedModels());
   }
