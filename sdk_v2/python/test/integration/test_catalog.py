@@ -58,6 +58,31 @@ class TestCatalogShape:
     def test_get_model_variant_unknown_id_returns_none(self, manager):
         assert manager.catalog.get_model_variant("not-a-real-id") is None
 
+    def test_get_model_versions_returns_versions_for_alias(self, manager):
+        models = manager.catalog.list_models()
+        if not models:
+            pytest.skip("Catalog is empty.")
+
+        alias = next((m.alias for m in models if len(m.variants) > 1), models[0].alias)
+        versions = manager.catalog.get_model_versions(alias)
+
+        assert versions
+        assert all(isinstance(v, IModel) for v in versions)
+        assert all(v.alias == alias for v in versions)
+
+    def test_get_model_versions_respects_max_versions_cap(self, manager):
+        models = manager.catalog.list_models()
+        if not models:
+            pytest.skip("Catalog is empty.")
+
+        alias = next((m.alias for m in models if len(m.variants) > 1), models[0].alias)
+        versions = manager.catalog.get_model_versions(alias)
+        capped = manager.catalog.get_model_versions(alias, max_versions=1)
+
+        assert len(versions) >= 1
+        assert len(capped) <= 1
+        assert len(capped) <= len(versions)
+
     def test_get_latest_version_returns_model_for_multi_variant_model(self, manager):
         models = manager.catalog.list_models()
         if not models:

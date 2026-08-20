@@ -60,6 +60,17 @@ internal sealed class Catalog : ICatalog
             "Error getting loaded models.", _logger, ct).ConfigureAwait(false);
     }
 
+    public async Task<List<IModel>> GetModelVersionsAsync(string modelAlias, string? modelName = null, int maxVersions = 50, CancellationToken? ct = null)
+    {
+        return await Utils.CallWithExceptionHandlingAsync(
+            () =>
+            {
+                using var list = _nativeCatalog.GetModelVersions(modelAlias, modelName, maxVersions);
+                return list.Models.Select(m => (IModel)new Model(m, _logger)).ToList();
+            },
+            $"Error getting model versions for alias '{modelAlias}'.", _logger, ct).ConfigureAwait(false);
+    }
+
     public async Task<IModel?> GetModelAsync(string modelAlias, CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(

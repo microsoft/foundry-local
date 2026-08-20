@@ -80,6 +80,17 @@ export class Catalog {
     }
     return wrapNativeModel(n);
   }
+
+  /**
+   * Get all versions of a model alias, optionally narrowed to a single variant name. `maxVersions`
+   * defaults to 50 and acts as a per-variant cap; pass 0 or a negative value for no cap.
+   */
+  async getModelVersions(modelAlias: string, modelName?: string, maxVersions = 50): Promise<IModel[]> {
+    if (typeof modelAlias !== "string" || modelAlias.trim() === "") {
+      throw new Error("Model alias must be a non-empty string.");
+    }
+    return wrapAll(this.#native.getModelVersions(modelAlias, modelName ?? null, maxVersions));
+  }
 }
 
 /** @internal — used by `FoundryLocalManager` to wrap a native catalog. */

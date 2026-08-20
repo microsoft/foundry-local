@@ -678,6 +678,13 @@ pub struct flCatalogApiVtable {
         catalog: *const flCatalog,
         out_models: *mut *mut flModelList,
     ) -> flStatusPtr,
+    pub GetModelVersions: unsafe extern "system" fn(
+        catalog: *const flCatalog,
+        model_alias: *const c_char,
+        model_name: *const c_char,
+        max_versions: i32,
+        out_models: *mut *mut flModelList,
+    ) -> flStatusPtr,
 }
 
 /// Model API table (`flModelApi`).

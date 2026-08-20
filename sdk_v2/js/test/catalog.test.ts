@@ -2,7 +2,9 @@
 // helper so this file constructs exactly one Manager + cache directory.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { NativeCatalog, NativeModel, NativeModelInfo } from "../src/detail/native.js";
 import type { Catalog } from "../src/catalog.js";
+import { wrapNativeCatalog } from "../src/catalog.js";
 import { Model } from "../src/model.js";
 
 import {
@@ -97,5 +99,59 @@ describeIfBuilt("Catalog (cache-only)", () => {
   it("getLoadedModels returns an empty array (nothing loaded)", async () => {
     const loaded = await catalog.getLoadedModels();
     expect(loaded).toEqual([]);
+  });
+
+  it("getModelVersions returns versions for a known alias and respects maxVersions", async () => {
+    const nativeModelInfo: NativeModelInfo = {
+      id: "phi-4-mini-instruct-generic-cpu:2",
+      name: "phi-4-mini-instruct-generic-cpu",
+      version: 2,
+      alias: "phi-4-mini-instruct",
+      uri: "azureml://registries/azureml/models/phi-4-mini-instruct-generic-cpu/versions/2",
+      deviceType: "CPU",
+      providerType: "FoundryLocal",
+      modelType: "ONNX",
+      task: "chat-completion",
+      publisher: "Microsoft",
+      displayName: "Phi-4 Mini Instruct",
+      createdAtUnix: 1713800000,
+      isTestModel: false,
+    };
+    const fakeNativeModel: NativeModel = {
+      getInfo: () => nativeModelInfo,
+      isCached: () => true,
+      isLoaded: () => false,
+      getPath: () => "",
+      getVariants: () => [],
+      selectVariant: () => {},
+      load: async () => {},
+      unload: async () => {},
+      download: async () => {},
+      removeFromCache: () => {},
+    };
+    const fakeNativeCatalog: NativeCatalog = {
+      getName: () => "TestCatalog",
+      getModels: () => [],
+      getCachedModels: () => [],
+      getLoadedModels: () => [],
+      getModel: () => undefined,
+      getModelVariant: () => undefined,
+      getLatestVersion: () => undefined,
+      getModelVersions: (modelAlias, modelName, maxVersions) => {
+        expect(modelAlias).toBe("phi-4-mini-instruct");
+        expect(modelName).toBeNull();
+        expect(maxVersions).toBe(1);
+        return [fakeNativeModel];
+      },
+    };
+
+    const localCatalog = wrapNativeCatalog(fakeNativeCatalog);
+    const versions = await localCatalog.getModelVersions("phi-4-mini-instruct", undefined, 1);
+    expect(versions).toHaveLength(1);
+    for (const model of versions) {
+      expect(model).toBeInstanceOf(Model);
+      expect(model.info.alias).toBe("phi-4-mini-instruct");
+    }
+    expect(versions[0]?.info.id).toBe("phi-4-mini-instruct-generic-cpu:2");
   });
 });

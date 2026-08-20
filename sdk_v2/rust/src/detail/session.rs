@@ -6,7 +6,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Arc;
 
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    oneshot,
+};
 
 use super::api::{Api, Kvps};
 use super::ffi::*;
@@ -132,26 +135,22 @@ impl NativeResponse {
     }
 
     /// Read the response item at `idx` into an owned [`Item`].
-    pub(crate) fn item(&self, idx: usize) -> Option<Item> {
+    pub(crate) fn item(&self, idx: usize) -> Result<Item> {
         let mut item: *const flItem = ptr::null();
         let status =
             unsafe { (self.api.inference_api().Response_GetItem)(self.ptr, idx, &mut item) };
-        if self.api.check(status).is_err() {
-            return None;
-        }
+        self.api.check(status)?;
         unsafe { item_from_native(&self.api, item) }
     }
 
     /// Collect all response items into owned [`Item`]s.
-    pub(crate) fn items(&self) -> Vec<Item> {
+    pub(crate) fn items(&self) -> Result<Vec<Item>> {
         let count = self.item_count();
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            if let Some(item) = self.item(i) {
-                out.push(item);
-            }
+            out.push(self.item(i)?);
         }
-        out
+        Ok(out)
     }
 
     /// The native finish-reason discriminant for the response.
@@ -159,8 +158,8 @@ impl NativeResponse {
         unsafe { (self.api.inference_api().Response_GetFinishReason)(self.ptr) }
     }
 
-    /// Token usage as `(prompt, completion, total)`; zeros if unavailable.
-    pub(crate) fn usage(&self) -> (i64, i64, i64) {
+    /// Token usage as `(prompt, completion, total)`.
+    pub(crate) fn usage(&self) -> Result<(i64, i64, i64)> {
         let mut usage = flUsage {
             version: FOUNDRY_LOCAL_API_VERSION,
             prompt_tokens: 0,
@@ -168,14 +167,12 @@ impl NativeResponse {
             total_tokens: 0,
         };
         let status = unsafe { (self.api.inference_api().Response_GetUsage)(self.ptr, &mut usage) };
-        if self.api.check(status).is_err() {
-            return (0, 0, 0);
-        }
-        (
+        self.api.check(status)?;
+        Ok((
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.total_tokens,
-        )
+        ))
     }
 }
 
@@ -247,15 +244,15 @@ impl NativeItemQueue {
     ///
     /// Returns `None` when the queue is currently empty. Ownership of the popped
     /// native item transfers to us, so it is released after decoding.
-    pub(crate) fn try_pop_value(&self) -> Option<Item> {
+    pub(crate) fn try_pop_value(&self) -> Result<Option<Item>> {
         let mut item: *mut flItem = ptr::null_mut();
         let popped = unsafe { (self.api.item_api().ItemQueue_TryPop)(self.ptr, &mut item) };
         if !popped || item.is_null() {
-            return None;
+            return Ok(None);
         }
         let decoded = unsafe { item_from_native(&self.api, item) };
         unsafe { (self.api.item_api().Item_Release)(item) };
-        decoded
+        decoded.map(Some)
     }
 
     /// The number of items currently buffered in the queue.
@@ -554,6 +551,18 @@ struct ItemStreamCtx {
     tx: UnboundedSender<Result<Item>>,
 }
 
+fn duplicate_stream_error(error: &FoundryLocalError) -> FoundryLocalError {
+    match error {
+        FoundryLocalError::Native { code, message } => FoundryLocalError::Native {
+            code: *code,
+            message: message.clone(),
+        },
+        _ => FoundryLocalError::Internal {
+            reason: error.to_string(),
+        },
+    }
+}
+
 unsafe extern "C" fn item_stream_trampoline(
     data: flStreamingCallbackData,
     user_data: *mut std::ffi::c_void,
@@ -580,9 +589,15 @@ unsafe extern "C" fn item_stream_trampoline(
             // Ownership of `item` transferred to us — decode then release.
             let decoded = item_from_native(&ctx.api, item);
             (item_api.Item_Release)(item);
-            if let Some(decoded) = decoded {
-                if ctx.tx.send(Ok(decoded)).is_err() {
-                    return 1; // receiver dropped — cancel generation
+            match decoded {
+                Ok(decoded) => {
+                    if ctx.tx.send(Ok(decoded)).is_err() {
+                        return 1; // receiver dropped — cancel generation
+                    }
+                }
+                Err(error) => {
+                    let _ = ctx.tx.send(Err(error));
+                    return 1;
                 }
             }
         }
@@ -602,8 +617,12 @@ pub(crate) fn run_item_streaming(
     items: Vec<Item>,
     input_queue: Option<Arc<NativeItemQueue>>,
     option_pairs: Vec<(String, String)>,
-) -> UnboundedReceiver<Result<Item>> {
+) -> (
+    UnboundedReceiver<Result<Item>>,
+    oneshot::Receiver<Result<crate::response::Response>>,
+) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Item>>();
+    let (response_tx, response_rx) = oneshot::channel();
 
     tokio::task::spawn_blocking(move || {
         let ctx = Box::new(ItemStreamCtx {
@@ -618,11 +637,12 @@ pub(crate) fn run_item_streaming(
         let guard = session.lock_ops();
 
         if let Err(e) = session.set_streaming_callback(Some(item_stream_trampoline), ctx_ptr) {
-            let _ = tx.send(Err(e));
+            let _ = tx.send(Err(duplicate_stream_error(&e)));
+            let _ = response_tx.send(Err(e));
             return;
         }
 
-        let run = (|| -> Result<()> {
+        let run = (|| -> Result<crate::response::Response> {
             let request = NativeRequest::new(Arc::clone(&session.api))?;
             for item in &items {
                 request.add_item_value(item)?;
@@ -637,12 +657,13 @@ pub(crate) fn run_item_streaming(
                 )?;
                 request.set_options(kvps.as_ptr())?;
             }
-            let _response = session.process_request(&request)?;
-            Ok(())
+            let response = session.process_request(&request)?;
+            crate::response::Response::from_native(&response)
         })();
-        if let Err(e) = run {
-            let _ = tx.send(Err(e));
+        if let Err(e) = &run {
+            let _ = tx.send(Err(duplicate_stream_error(e)));
         }
+        let _ = response_tx.send(run);
 
         // Uninstall the callback, then release the op-lock before dropping ctx.
         let _ = session.set_streaming_callback(None, ptr::null_mut());
@@ -651,5 +672,5 @@ pub(crate) fn run_item_streaming(
         drop(session);
     });
 
-    rx
+    (rx, response_rx)
 }

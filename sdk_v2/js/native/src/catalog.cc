@@ -81,6 +81,7 @@ Napi::Function Catalog::Init(Napi::Env env) {
           InstanceMethod("getModels", &Catalog::GetModels),
           InstanceMethod("getCachedModels", &Catalog::GetCachedModels),
           InstanceMethod("getLoadedModels", &Catalog::GetLoadedModels),
+          InstanceMethod("getModelVersions", &Catalog::GetModelVersions),
           InstanceMethod("getModel", &Catalog::GetModel),
           InstanceMethod("getModelVariant", &Catalog::GetModelVariant),
           InstanceMethod("getLatestVersion", &Catalog::GetLatestVersion),
@@ -141,6 +142,41 @@ Napi::Value Catalog::GetLoadedModels(const Napi::CallbackInfo& info) {
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     return WrapModelList(env, impl_->GetLoadedModels(), std::move(mgr));
+  });
+}
+
+Napi::Value Catalog::GetModelVersions(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "getModelVersions(modelAlias: string, modelName?: string | null, maxVersions?: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  std::string model_alias = info[0].As<Napi::String>();
+  std::string variant_name;
+  if (info.Length() >= 2 && !info[1].IsNull() && !info[1].IsUndefined()) {
+    if (!info[1].IsString()) {
+      Napi::TypeError::New(env, "getModelVersions: modelName must be a string, null, or undefined")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    variant_name = info[1].As<Napi::String>();
+  }
+
+  int max_versions = 50;
+  if (info.Length() >= 3 && !info[2].IsUndefined()) {
+    if (!info[2].IsNumber()) {
+      Napi::TypeError::New(env, "getModelVersions: maxVersions must be a number")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    max_versions = static_cast<int>(info[2].As<Napi::Number>().Int32Value());
+  }
+
+  Napi::ObjectReference mgr = CloneManager(manager_);
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    return WrapModelList(env, impl_->GetModelVersions(model_alias, variant_name, max_versions), std::move(mgr));
   });
 }
 

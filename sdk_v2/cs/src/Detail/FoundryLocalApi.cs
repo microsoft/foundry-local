@@ -469,6 +469,31 @@ public sealed class Catalog
         Api.CheckStatus(status);
         return new ModelList(ptr);
     }
+
+    public ModelList GetModelVersions(string modelAlias, string? modelName, int maxVersions)
+    {
+        var aliasPtr = Utf8.StringToCoTaskMem(modelAlias);
+        var modelNamePtr = Utf8.StringToCoTaskMem(modelName);
+
+        try
+        {
+            var status = Api.Catalog.GetModelVersions(Ptr, aliasPtr, modelNamePtr, maxVersions, out var ptr);
+            Api.CheckStatus(status);
+            return new ModelList(ptr);
+        }
+        finally
+        {
+            if (aliasPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(aliasPtr);
+            }
+
+            if (modelNamePtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(modelNamePtr);
+            }
+        }
+    }
 }
 
 // ===================================================================

@@ -56,6 +56,28 @@ internal sealed class CatalogTests
     }
 
     [Test]
+    public async Task GetModelVersionsAsync_ReturnsVersions_AndCapsResults()
+    {
+        var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();
+
+        var models = await catalog.ListModelsAsync();
+        var modelWithVariants = models.FirstOrDefault(m => m.Variants.Count > 1);
+
+        if (modelWithVariants == null)
+        {
+            Skip.Test("No multi-version model in the catalog.");
+            return;
+        }
+
+        var versions = await catalog.GetModelVersionsAsync(modelWithVariants.Alias);
+        await Assert.That(versions).IsNotNull();
+        await Assert.That(versions.Count).IsGreaterThanOrEqualTo(2);
+
+        var capped = await catalog.GetModelVersionsAsync(modelWithVariants.Alias, maxVersions: 1);
+        await Assert.That(capped.Count).IsLessThanOrEqualTo(1);
+    }
+
+    [Test]
     public async Task ListModelsAsync_HonorsCancelledToken()
     {
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();

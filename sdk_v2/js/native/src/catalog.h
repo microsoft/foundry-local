@@ -37,6 +37,7 @@ class Catalog : public Napi::ObjectWrap<Catalog> {
   Napi::Value GetModels(const Napi::CallbackInfo& info);
   Napi::Value GetCachedModels(const Napi::CallbackInfo& info);
   Napi::Value GetLoadedModels(const Napi::CallbackInfo& info);
+  Napi::Value GetModelVersions(const Napi::CallbackInfo& info);
   Napi::Value GetModel(const Napi::CallbackInfo& info);
   Napi::Value GetModelVariant(const Napi::CallbackInfo& info);
   Napi::Value GetLatestVersion(const Napi::CallbackInfo& info);
