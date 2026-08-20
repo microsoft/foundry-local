@@ -13,7 +13,8 @@ namespace fl {
 /// Mutable, persistent catalog for models registered from arbitrary local directories.
 class LocalModelCatalog final : public BaseModelCatalog {
  public:
-  using ModelFactory = std::function<Model(ModelInfo, std::string, std::string)>;
+  using ModelFactory =
+      std::function<Model(ModelInfo info, std::string local_path, std::string runtime_model_id)>;
 
   LocalModelCatalog(std::filesystem::path app_data_dir, ModelFactory model_factory, ILogger& logger);
 
