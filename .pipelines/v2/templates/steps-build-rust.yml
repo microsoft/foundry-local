@@ -16,7 +16,8 @@
 #      the crate, so both unit and integration tests resolve the native by that
 #      baked path.
 #   3. Stamp the crate version from the shared `version-info` artifact.
-#   4. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, and — when
+#   4. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`, a doc-lint
+#      (`RUSTDOCFLAGS=-D warnings cargo doc` + `cargo test --doc`), and — when
 #      `runTests` — `cargo test --lib` (unit) followed by the `tests/`
 #      integration suite (serialised: the native core enforces a single manager
 #      per process).
@@ -244,6 +245,26 @@ steps:
         $ErrorActionPreference = 'Stop'
         cargo build --all-targets
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    env:
+      FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+
+  - task: PowerShell@2
+    displayName: 'cargo doc (doc-lint, -D warnings)'
+    inputs:
+      targetType: inline
+      pwsh: true
+      workingDirectory: '$(Build.SourcesDirectory)/sdk_v2/rust'
+      script: |
+        $ErrorActionPreference = 'Stop'
+        # Fail on broken intra-doc links / doc warnings so the `///` comments
+        # (the source of truth behind docs/api.md and docs.rs) can't silently
+        # rot. Documentation-only; needs no native library.
+        $env:RUSTDOCFLAGS = '-D warnings'
+        cargo doc --no-deps
+        if ($LASTEXITCODE -ne 0) { throw "cargo doc (doc-lint) failed" }
+        # Compile-check the ```rust examples embedded in doc comments.
+        cargo test --doc
+        if ($LASTEXITCODE -ne 0) { throw "cargo test --doc failed" }
     env:
       FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
 
