@@ -444,14 +444,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_WINDOWS_AI_MACHINELEARNING_VERSION");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_WINML");
 
-    // docs.rs builds the documentation in an offline sandbox and only needs the
-    // crate to type-check — `cargo doc` never links or runs the native library.
-    // Skip native acquisition there; otherwise the unconditional NuGet download
-    // below fails with no network and the hosted docs build fails.
-    if env::var_os("DOCS_RS").is_some() {
-        return;
-    }
-
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
     let rid = match get_rid() {
