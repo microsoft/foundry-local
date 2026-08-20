@@ -47,6 +47,36 @@ std::string_view RequiredEpForModelId(std::string_view model_id) {
   return {};
 }
 
+/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
+bool IsDmlProvider(std::string_view provider) {
+  return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
+         provider == "DMLExecutionProvider";
+}
+
+/// Returns the required EP registration name for a provider declared in genai_config.json.
+std::string RequiredEpForConfigProvider(std::string_view provider) {
+  if (provider.empty() || IsDmlProvider(provider)) {
+    return {};
+  }
+
+  auto ep = EPUtils::StringtoEP(provider);
+  if (provider == "WebGpuExecutionProvider") {
+    ep = ExecutionProvider::kWebGPU;
+  }
+
+  if (ep == ExecutionProvider::kCPU) {
+    return {};
+  }
+  if (ep != ExecutionProvider::kUnknown) {
+    return std::string(EPUtils::EPtoRegistrationName(ep));
+  }
+
+  // Configs may name WinML/OGA providers that are intentionally outside the public override enum, such as
+  // MIGraphXExecutionProvider and RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
+  constexpr std::string_view suffix = "ExecutionProvider";
+  return provider.ends_with(suffix) ? std::string(provider) : std::string{};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -118,6 +148,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   // Determine execution provider
   auto resolved_ep = ep_override;
 
+  if (resolved_ep == ExecutionProvider::kUnknown) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown execution provider override");
+  }
+
   if (resolved_ep == ExecutionProvider::kDefault) {
     // Auto-select EP for generic-gpu models: DML models are compatible with
     // CUDA and WebGPU, so try those in order when available.
@@ -132,11 +166,15 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     }
   }
 
-  std::string_view required_ep;
-  if (resolved_ep != ExecutionProvider::kDefault && resolved_ep != ExecutionProvider::kCPU) {
+  std::string required_ep;
+  if (resolved_ep == ExecutionProvider::kCPU) {
+    // Explicit CPU overrides both the provider in genai_config.json and model-ID hints.
+  } else if (resolved_ep != ExecutionProvider::kDefault) {
     required_ep = EPUtils::EPtoRegistrationName(resolved_ep);
   } else {
-    required_ep = RequiredEpForModelId(id_str);
+    const auto config_provider = genai_config.DefaultProvider();
+    required_ep = config_provider.empty() ? std::string(RequiredEpForModelId(id_str))
+                                          : RequiredEpForConfigProvider(config_provider);
   }
 
   // OGA can crash or hang if a model is loaded with an unregistered EP.

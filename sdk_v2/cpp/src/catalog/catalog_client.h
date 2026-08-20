@@ -49,7 +49,8 @@ class ICatalogClient {
   }
 };
 
-/// Fetch the current catalog and resolve cached model IDs that are no longer in the latest response.
+/// Production helper that combines a catalog fetch with resolution of cached versions known to the public source.
+/// Unknown cache entries are omitted; BYOM models require explicit local-catalog registration.
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,

@@ -16,7 +16,9 @@
 namespace fl {
 
 BaseModelCatalog::BaseModelCatalog(std::string name, ILogger& logger)
-    : name_(std::move(name)), logger_(logger) {}
+    : BaseModelCatalog(std::move(name), CatalogType::kPublic, logger) {}
+BaseModelCatalog::BaseModelCatalog(std::string name, CatalogType type, ILogger& logger)
+    : name_(std::move(name)), type_(type), logger_(logger) {}
 BaseModelCatalog::~BaseModelCatalog() = default;
 
 void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
@@ -48,18 +50,42 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
   }
 
   // On refresh: merge new models into stable storage. Existing models keep their addresses.
-  // New aliases are appended. Existing aliases are left unchanged (their Model* stays valid).
   if (populated_) {
-    // Build a set of existing aliases for fast lookup.
     std::unordered_map<std::string, Model*> existing_aliases;
-    for (auto& m : models_) {
-      existing_aliases[m->Alias()] = m.get();
+    for (auto& stored : models_) {
+      if (stored.active) {
+        existing_aliases[stored.model->Alias()] = stored.model.get();
+      }
+    }
+
+    if (IsAuthoritativeSnapshot()) {
+      for (auto& stored : models_) {
+        if (!stored.active) {
+          continue;
+        }
+
+        const auto incoming = alias_to_model.find(stored.model->Alias());
+        if (incoming == alias_to_model.end()) {
+          if (!stored.model->TryDeactivateForRefresh()) {
+            continue;
+          }
+          stored.active = false;
+          existing_aliases.erase(stored.model->Alias());
+          continue;
+        }
+
+        if (!stored.model->TryReconcileVariants(incoming->second)) {
+          alias_to_model.erase(incoming);
+          continue;
+        }
+        alias_to_model.erase(incoming);
+      }
     }
 
     size_t new_count = 0;
     for (auto& [alias, model] : alias_to_model) {
       if (!existing_aliases.contains(alias)) {
-        models_.push_back(std::make_unique<Model>(std::move(model)));
+        models_.push_back({std::make_unique<Model>(std::move(model)), true});
         ++new_count;
       }
     }
@@ -77,7 +103,7 @@ void BaseModelCatalog::PopulateModels(std::vector<Model> variants) const {
     // Initial population: move all models into stable storage.
     models_.reserve(alias_to_model.size());
     for (auto& [alias, model] : alias_to_model) {
-      models_.push_back(std::make_unique<Model>(std::move(model)));
+      models_.push_back({std::make_unique<Model>(std::move(model)), true});
     }
 
     logger_.Log(LogLevel::Debug,
@@ -98,15 +124,20 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
   // Build a lookup of existing aliases -> containers so we can merge new
   // variants in O(1) per incoming variant.
   std::unordered_map<std::string, Model*> alias_to_existing;
-  for (auto& m : models_) {
-    alias_to_existing[m->Alias()] = m.get();
+  for (auto& stored : models_) {
+    if (stored.active) {
+      alias_to_existing[stored.model->Alias()] = stored.model.get();
+    }
   }
 
   // Track existing model_ids in a single set so the dedup check is O(1) and
   // doesn't require walking each container's variants per incoming variant.
   std::unordered_set<std::string> existing_ids;
-  for (auto& m : models_) {
-    for (auto* v : m->Variants()) {
+  for (auto& stored : models_) {
+    if (!stored.active) {
+      continue;
+    }
+    for (auto* v : stored.model->Variants()) {
       existing_ids.insert(v->Info().model_id);
     }
   }
@@ -151,7 +182,7 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
 
       container.SelectDefaultVariant();
 
-      models_.push_back(std::make_unique<Model>(std::move(container)));
+      models_.push_back({std::make_unique<Model>(std::move(container)), true});
       ++added_aliases;
       added_variants += alias_variants.size();
     }
@@ -169,7 +200,12 @@ void BaseModelCatalog::IntegrateVariants(std::vector<Model> variants) const {
 void BaseModelCatalog::RebuildIndex() const {
   auto new_index = std::make_shared<ModelIndex>();
 
-  for (auto& m : models_) {
+  for (auto& stored : models_) {
+    if (!stored.active) {
+      continue;
+    }
+
+    auto& m = stored.model;
     new_index->alias_index[m->Alias()] = m.get();
 
     for (auto* variant : m->Variants()) {
@@ -224,8 +260,8 @@ void BaseModelCatalog::EnsurePopulated(bool allow_refresh) const {
   // not worth the complexity to optimise.)
   std::lock_guard<std::mutex> lock(mutex_);
 
-  bool needs_refresh = allow_refresh &&
-                       std::chrono::steady_clock::now() >= next_refresh_at_;
+  const bool needs_refresh = IsAuthoritativeSnapshot() ||
+                             (allow_refresh && std::chrono::steady_clock::now() >= next_refresh_at_);
 
   if (populated_ && !needs_refresh) {
     return;
@@ -249,8 +285,10 @@ std::vector<Model*> BaseModelCatalog::ListModels() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
   result.reserve(models_.size());
-  for (auto& m : models_) {
-    result.push_back(m.get());
+  for (auto& stored : models_) {
+    if (stored.active) {
+      result.push_back(stored.model.get());
+    }
   }
 
   return result;
@@ -346,8 +384,12 @@ std::vector<Model*> BaseModelCatalog::GetCachedModels() const {
 
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
-  for (auto& m : models_) {
-    for (auto* variant : m->Variants()) {
+  for (auto& stored : models_) {
+    if (!stored.active) {
+      continue;
+    }
+
+    for (auto* variant : stored.model->Variants()) {
       if (variant->IsCached()) {
         result.push_back(variant);
       }
@@ -362,13 +404,69 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
 
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
-  for (auto& m : models_) {
-    if (m->IsLoaded()) {
-      result.push_back(m.get());
+  for (auto& stored : models_) {
+    if (stored.active && stored.model->IsLoaded()) {
+      result.push_back(stored.model.get());
     }
   }
 
   return result;
+}
+
+Model* BaseModelCatalog::AppendActiveModel(Model model) {
+  EnsurePopulated();
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto container = std::make_unique<Model>(Model::MakeContainer(std::move(model)));
+  container->SelectDefaultVariant();
+  auto* result = container.get();
+  models_.push_back({std::move(container), true});
+  RebuildIndex();
+  return result;
+}
+
+bool BaseModelCatalog::RetireModel(const std::string& alias_or_model_id) {
+  EnsurePopulated();
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& stored : models_) {
+    if (!stored.active) {
+      continue;
+    }
+
+    bool matches = stored.model->Alias() == alias_or_model_id;
+    for (auto* variant : stored.model->Variants()) {
+      matches = matches || variant->Id() == alias_or_model_id;
+    }
+
+    if (matches) {
+      stored.active = false;
+      stored.model->Deactivate();
+      RebuildIndex();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool BaseModelCatalog::CommitUnregister(Model* model, const std::string& alias_or_model_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& stored : models_) {
+    if (!stored.active || stored.model.get() != model) {
+      continue;
+    }
+
+    if (stored.model->Alias() == alias_or_model_id) {
+      stored.active = false;
+      stored.model->Deactivate();
+    } else if (!stored.model->RetireVariant(alias_or_model_id)) {
+      stored.active = false;
+    }
+
+    RebuildIndex();
+    return true;
+  }
+
+  return false;
 }
 
 std::vector<Model*> BaseModelCatalog::GetModelVersions(const std::string& model_alias,

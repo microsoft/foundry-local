@@ -46,6 +46,9 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     } catch (...) {
       logger.Log(LogLevel::Warning, "catalog: failed to fetch cached model IDs — unknown error");
     }
+
+    // IDs the public source does not recognize are intentionally omitted. Arbitrary models copied into the
+    // cache must be explicitly registered in the local catalog instead of appearing in the public catalog.
   }
 
   return result;

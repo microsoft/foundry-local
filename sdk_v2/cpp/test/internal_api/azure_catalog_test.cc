@@ -588,7 +588,7 @@ TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) 
   EXPECT_TRUE(found_old);
 }
 
-TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DefersBYOEntryToCatalogMerge) {
+TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DoesNotCreatePublicEntry) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   int http_call_count = 0;
@@ -609,8 +609,9 @@ TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DefersBYOEntryToCa
   auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger);
 
   EXPECT_EQ(http_call_count, 2);
+
   ASSERT_EQ(result.size(), 1u);
-  EXPECT_EQ(result[0].model_id, "phi-4-mini:3");
+  EXPECT_EQ(result.front().model_id, "phi-4-mini:3");
 }
 
 // ========================================================================

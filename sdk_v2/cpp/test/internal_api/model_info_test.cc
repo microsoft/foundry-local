@@ -4,7 +4,6 @@
 // Round-trip tests for ModelInfo JSON serialization/deserialization.
 //
 #include "model_info.h"
-
 #include <foundry_local/foundry_local_c.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -112,6 +111,9 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "0.5.0";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
+  original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR] = "text,image";
+  original.string_properties["custom_property"] = "custom value";
+  original.string_properties["shared_property"] = "string value";
 
   // Reasoning fields
   original.string_properties[FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR] = "<think>";
@@ -126,6 +128,9 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   // Int properties
   original.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = 4096;
   original.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT] = 8192;
+  original.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT] = 32768;
+  original.int_properties["custom_count"] = 42;
+  original.int_properties["shared_property"] = 7;
 
   // Prompt templates
   original.prompt_templates.Add("system", "<|system|>\n{Content}<|end|>");
@@ -137,6 +142,8 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
 
   // Round-trip
   nlohmann::json j = ModelInfoToJson(original);
+  EXPECT_EQ(j["stringProperties"]["custom_property"], "custom value");
+  EXPECT_EQ(j["intProperties"]["custom_count"], 42);
   ModelInfo restored = ModelInfoFromJson(j);
 
   // Core identity
@@ -158,6 +165,9 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.5.0");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "FoundryLocal");
   EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR), "ONNX");
+  EXPECT_EQ(restored.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR), "text,image");
+  EXPECT_EQ(restored.string_properties.at("custom_property"), "custom value");
+  EXPECT_EQ(restored.string_properties.at("shared_property"), "string value");
 
   // Reasoning fields
   EXPECT_EQ(restored.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
@@ -172,6 +182,9 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   // Int properties
   EXPECT_EQ(restored.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT), 4096);
   EXPECT_EQ(restored.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 8192);
+  EXPECT_EQ(restored.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 32768);
+  EXPECT_EQ(restored.int_properties.at("custom_count"), 42);
+  EXPECT_EQ(restored.int_properties.at("shared_property"), 7);
 
   // Prompt templates
   ASSERT_FALSE(restored.prompt_templates.empty());

@@ -6,7 +6,6 @@
 #include "catalog/local_model_scanner.h"
 #include "model.h"
 #include "model_info.h"
-#include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
@@ -20,20 +19,6 @@ namespace fl {
 
 namespace {
 
-ModelInfo MakeByomModelInfo(const std::string& model_id) {
-  auto [name, version] = Utils::SplitModelNameAndVersion(model_id);
-
-  ModelInfo info;
-  info.model_id = model_id;
-  info.name = name;
-  info.alias = name;
-  info.uri = "local://" + name;
-  info.version = version;
-  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "Local";
-  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
-  return info;
-}
-
 std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) {
   std::vector<ModelInfo> deduplicated;
   deduplicated.reserve(model_infos.size());
@@ -46,6 +31,13 @@ std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) 
   }
 
   return deduplicated;
+}
+
+void RemoveLegacyLocalEntries(std::vector<ModelInfo>& model_infos) {
+  std::erase_if(model_infos, [](const auto& info) {
+    const auto* provider = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+    return provider && *provider == "Local";
+  });
 }
 
 }  // namespace
@@ -115,35 +107,24 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
   CatalogCache cache(cache_dir_, logger_);
   cache.Load();
   auto cached = cache.GetCachedModels();
+  auto snapshot_model_infos = cached ? std::move(*cached) : std::vector<ModelInfo>{};
+  RemoveLegacyLocalEntries(snapshot_model_infos);
 
   return {
-      .model_infos = cached ? DeduplicateByModelId(std::move(*cached)) : std::vector<ModelInfo>{},
+      .model_infos = DeduplicateByModelId(std::move(snapshot_model_infos)),
       .source = CatalogSource::kSnapshot,
   };
 }
 
-std::vector<Model> AzureModelCatalog::AddLocalModels(std::vector<ModelInfo>& model_infos,
-                                                     const LocalModels& local_models) const {
+std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
+                                                                const LocalModels& local_models) const {
   std::vector<Model> models;
-  models.reserve(model_infos.size() + local_models.size());
+  models.reserve(model_infos.size());
 
-  std::unordered_set<std::string> model_ids;
-  model_ids.reserve(model_infos.size() + local_models.size());
   for (const auto& info : model_infos) {
-    model_ids.insert(info.model_id);
-
     auto local_model = local_models.find(info.model_id);
     auto local_path = local_model != local_models.end() ? local_model->second : std::string{};
     models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
-  }
-
-  for (const auto& [model_id, local_path] : local_models) {
-    if (!model_ids.insert(model_id).second) {
-      continue;
-    }
-
-    model_infos.push_back(MakeByomModelInfo(model_id));
-    models.push_back(model_factory_(ModelInfo(model_infos.back()), local_path));
   }
 
   return models;
@@ -162,7 +143,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
-  auto models = AddLocalModels(catalog_result.model_infos, local_models);
+  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
 
   logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 

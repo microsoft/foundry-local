@@ -60,7 +60,8 @@ class AzureModelCatalog : public BaseModelCatalog {
   static constexpr const char* kDefaultCatalogFilter = "''";
 
   CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
-  std::vector<Model> AddLocalModels(std::vector<ModelInfo>& model_infos, const LocalModels& local_models) const;
+  std::vector<Model> CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
+                                                const LocalModels& local_models) const;
 
   std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls_;
   std::string cache_dir_;

@@ -205,6 +205,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc
     src/catalog/catalog_client.cc
+    src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
@@ -270,6 +271,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/util/path_safety.cc
     src/util/region_fallback.cc
     src/util/sha256.cc
+    src/util/time_utils.cc
     src/util/zip_extract.cc
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
