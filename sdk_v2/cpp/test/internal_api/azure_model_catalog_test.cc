@@ -232,7 +232,7 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
   EXPECT_EQ(cpu_model->Info().alias, "snapshot-alias");
   EXPECT_EQ(cpu_model->LocalPath(), cpu_path.string());
 
-  EXPECT_EQ(catalog->GetModelVariant("offline-byom:4"), nullptr);
+  EXPECT_EQ(FindVariant(cached_models, "offline-byom:4"), nullptr);
 
   CatalogCache persisted_cache(cache_directory_.string(), services_.logger);
   persisted_cache.Load();
@@ -311,7 +311,7 @@ TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesOnlyResolvedPub
   const auto models = catalog->ListModels();
 
   ASSERT_EQ(models.size(), 2u);
-  EXPECT_EQ(catalog->GetModelVariant("custom-model:0"), nullptr);
+  EXPECT_EQ(FindVariant(models, "custom-model:0"), nullptr);
   EXPECT_EQ(first_behavior->fetch_by_id_calls, 1);
   EXPECT_EQ(second_behavior->fetch_by_id_calls, 1);
 
