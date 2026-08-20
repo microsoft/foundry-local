@@ -28,13 +28,15 @@ class ModelLoadManager;
 // Model leaves that share the same alias and delegates all operations
 // to a selected variant. Additional variants are added via AddVariant.
 //
-// The C API type (flModel) inherits from this with zero extra members,
-// following the same pattern as flItem : fl::Item.
+// The C API exposes this through the unrelated opaque flModel handle type;
+// c_api_types.h provides the internal pointer conversions.
 // -----------------------------------------------------------------------
 
 class Model {
  public:
-  Model() = default;
+  // Every successfully constructed Model is either a leaf with immutable metadata or a container with a selected,
+  // metadata-bearing leaf. A moved-from Model may only be destroyed or assigned a new value.
+  Model() = delete;
   ~Model();
   Model(Model&& other) noexcept;
   Model& operator=(Model&& other) noexcept;
@@ -182,9 +184,17 @@ class Model {
   }
 
  private:
-  void PublishInfo(ModelInfo info);
+  struct ContainerTag {};
 
-  // Leaf data (default/empty for containers).
+  Model(ModelInfo info,
+        std::string local_path,
+        DownloadManager& download_manager,
+        ModelLoadManager& model_load_manager,
+        std::string runtime_model_id,
+        bool external_registration);
+  Model(ContainerTag, Model first_variant);
+
+  // Leaf data (empty for containers). Construction guarantees this is non-null for every leaf.
   // cached_ is atomic — flipped concurrently by the download path.
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
   // manager remains the single source of truth (Manager::Shutdown clears its map without

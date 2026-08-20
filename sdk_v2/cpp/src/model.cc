@@ -105,6 +105,29 @@ bool CompareModelsForSort(const Model& m1, const Model& m2) {
 
 Model::~Model() = default;
 
+Model::Model(ModelInfo info,
+             std::string local_path,
+             DownloadManager& download_manager,
+             ModelLoadManager& model_load_manager,
+             std::string runtime_model_id,
+             bool external_registration)
+    : info_(std::make_unique<const ModelInfo>(std::move(info))),
+      cached_(!local_path.empty()),
+      local_path_(std::move(local_path)),
+      runtime_model_id_(std::move(runtime_model_id)),
+      external_registration_(external_registration),
+      download_manager_(&download_manager),
+      model_load_manager_(&model_load_manager) {}
+
+Model::Model(ContainerTag, Model first_variant) {
+  if (!first_variant.info_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "MakeContainer requires an initialized leaf Model");
+  }
+
+  variants_.push_back(std::make_unique<Model>(std::move(first_variant)));
+  selected_variant_.store(variants_.back().get(), std::memory_order_release);
+}
+
 Model::Model(Model&& other) noexcept
     : info_(std::move(other.info_)),
       cached_(other.cached_.load()),
@@ -156,18 +179,9 @@ Model Model::FromModelInfo(ModelInfo info,
                            std::string local_path,
                            DownloadManager& download_manager,
                            ModelLoadManager& model_load_manager) {
-  Model model;
-  model.runtime_model_id_ = info.model_id;
-  model.PublishInfo(std::move(info));
-  model.download_manager_ = &download_manager;
-  model.model_load_manager_ = &model_load_manager;
-
-  if (!local_path.empty()) {
-    model.cached_ = true;
-    model.local_path_ = std::move(local_path);
-  }
-
-  return model;
+  auto runtime_model_id = info.model_id;
+  return Model(std::move(info), std::move(local_path), download_manager, model_load_manager,
+               std::move(runtime_model_id), false);
 }
 
 Model Model::FromLocalRegistration(ModelInfo info,
@@ -175,10 +189,8 @@ Model Model::FromLocalRegistration(ModelInfo info,
                                    DownloadManager& download_manager,
                                    ModelLoadManager& model_load_manager,
                                    std::string runtime_model_id) {
-  auto model = FromModelInfo(std::move(info), std::move(local_path), download_manager, model_load_manager);
-  model.external_registration_ = true;
-  model.runtime_model_id_ = std::move(runtime_model_id);
-  return model;
+  return Model(std::move(info), std::move(local_path), download_manager, model_load_manager,
+               std::move(runtime_model_id), true);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,15 +198,15 @@ Model Model::FromLocalRegistration(ModelInfo info,
 // ---------------------------------------------------------------------------
 
 Model Model::MakeContainer(Model first_variant) {
-  Model container;
-  container.variants_.push_back(std::make_unique<Model>(std::move(first_variant)));
-  container.selected_variant_.store(container.variants_.back().get(), std::memory_order_release);
-  return container;
+  return Model(ContainerTag{}, std::move(first_variant));
 }
 
 void Model::AddVariant(Model variant) {
   if (!IsContainer()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "AddVariant called on a non-container Model; use MakeContainer first");
+  }
+  if (!variant.info_) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "AddVariant requires an initialized leaf Model");
   }
 
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -372,7 +384,7 @@ const ModelInfo& Model::Info() const {
   }
 
   if (!info_) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model metadata is not initialized");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "cannot access metadata on a moved-from Model");
   }
 
   return *info_;
@@ -623,10 +635,6 @@ void Model::EndUnregister() {
 
   unregistering_ = false;
   lifecycle_mutex_.unlock();
-}
-
-void Model::PublishInfo(ModelInfo info) {
-  info_ = std::make_unique<const ModelInfo>(std::move(info));
 }
 
 void Model::SelectVariant(const Model& variant) {
