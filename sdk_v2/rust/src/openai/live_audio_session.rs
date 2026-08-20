@@ -427,14 +427,23 @@ unsafe extern "C" fn live_trampoline(
             }
             // The native audio path now streams SPEECH_SEGMENT items; older cores
             // (and the OpenAI-JSON path) stream plain TEXT items. Handle both.
-            let response = if let Some(text) = read_text_item(&ctx.api, item) {
-                (!text.is_empty()).then(|| LiveAudioTranscriptionResponse::from_text(text, false))
-            } else {
-                read_speech_segment(&ctx.api, item)
+            let text = read_text_item(&ctx.api, item);
+
+            let response = match text {
+                Ok(Some(text)) => (!text.is_empty())
+                    .then(|| LiveAudioTranscriptionResponse::from_text(text, false)),
+                Ok(None) => read_speech_segment(&ctx.api, item)
                     .filter(|seg| !seg.text.is_empty())
-                    .map(LiveAudioTranscriptionResponse::from_segment)
+                    .map(LiveAudioTranscriptionResponse::from_segment),
+                Err(error) => {
+                    (item_api.Item_Release)(item);
+                    let _ = ctx.tx.send(Err(error));
+                    return 1; // read failure — stop streaming and surface the error
+                }
             };
+
             (item_api.Item_Release)(item);
+
             if let Some(response) = response {
                 if ctx.tx.send(Ok(response)).is_err() {
                     return 1; // receiver dropped — cancel
@@ -498,10 +507,12 @@ fn run_worker(
         // (and older cores) return TEXT items.
         let mut final_text = String::new();
         for i in 0..response.item_count() {
-            if let Some(text) = response
-                .item_text(i)
-                .or_else(|| response.item_speech_result_text(i))
-            {
+            let text = match response.item_text(i)? {
+                Some(text) => Some(text),
+                None => response.item_speech_result_text(i)?,
+            };
+
+            if let Some(text) = text {
                 final_text.push_str(&text);
             }
         }

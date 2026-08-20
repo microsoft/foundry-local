@@ -89,7 +89,19 @@ export class Catalog {
     if (typeof modelAlias !== "string" || modelAlias.trim() === "") {
       throw new Error("Model alias must be a non-empty string.");
     }
-    return wrapAll(this.#native.getModelVersions(modelAlias, modelName ?? null, maxVersions));
+    // The native parameter is int32_t; N-API's Int32Value() silently coerces
+    // fractions, NaN, Infinity, and out-of-range values into a different cap.
+    // Reject them here (matching Rust's i32::MAX rejection) so callers get a
+    // clear error rather than a surprising truncated result. Negatives/0 are
+    // valid ("no cap") but must still fit i32.
+    if (
+      !Number.isInteger(maxVersions) ||
+      maxVersions < -(2 ** 31) ||
+      maxVersions > 2 ** 31 - 1
+    ) {
+      throw new TypeError("maxVersions must be an integer within the 32-bit range.");
+    }
+    return wrapAll(await this.#native.getModelVersions(modelAlias, modelName ?? null, maxVersions));
   }
 }
 

@@ -80,8 +80,15 @@ class TestCatalogShape:
         capped = manager.catalog.get_model_versions(alias, max_versions=1)
 
         assert len(versions) >= 1
-        assert len(capped) <= 1
         assert len(capped) <= len(versions)
+
+        # max_versions caps versions *per model name*, not the total result count. An alias
+        # with several distinct model names can return one entry per name, so assert the cap
+        # per name rather than on the overall length.
+        counts_by_name: dict[str, int] = {}
+        for v in capped:
+            counts_by_name[v.info.name] = counts_by_name.get(v.info.name, 0) + 1
+        assert all(count <= 1 for count in counts_by_name.values())
 
     def test_get_latest_version_returns_model_for_multi_variant_model(self, manager):
         models = manager.catalog.list_models()

@@ -211,25 +211,23 @@ pub(crate) fn make_bytes_item(
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
-pub(crate) unsafe fn read_text_item(api: &Api, item: *const flItem) -> Option<String> {
+/// Returns `Ok(None)` for a null or non-TEXT item so callers can fall through to
+/// another item type, and `Err` when the native getter itself fails so a genuine
+/// read failure is propagated rather than silently dropped.
+pub(crate) unsafe fn read_text_item(api: &Api, item: *const flItem) -> Result<Option<String>> {
     if item.is_null() {
-        return None;
+        return Ok(None);
     }
     if (api.item_api().GetType)(item) != FOUNDRY_LOCAL_ITEM_TEXT {
-        return None;
+        return Ok(None);
     }
     let mut data = flTextData {
         version: FOUNDRY_LOCAL_API_VERSION,
         text: ptr::null::<c_char>(),
         r#type: FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT,
     };
-    if api
-        .check((api.item_api().GetText)(item, &mut data))
-        .is_err()
-    {
-        return None;
-    }
-    cstr_to_string(data.text)
+    api.check((api.item_api().GetText)(item, &mut data))?;
+    Ok(cstr_to_string(data.text))
 }
 
 /// Text + timing read from a SPEECH_SEGMENT item (output-only).
@@ -287,13 +285,19 @@ pub(crate) unsafe fn read_speech_segment(
 }
 
 /// Read the concatenated transcript of a SPEECH_RESULT item (output-only).
-/// Returns `None` for null/other items.
+///
+/// Returns `Ok(None)` for a null or non-SPEECH_RESULT item so callers can fall
+/// through to another item type, and `Err` when the native getter fails so a
+/// genuine read failure is propagated rather than silently dropped.
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
-pub(crate) unsafe fn read_speech_result_text(api: &Api, item: *const flItem) -> Option<String> {
+pub(crate) unsafe fn read_speech_result_text(
+    api: &Api,
+    item: *const flItem,
+) -> Result<Option<String>> {
     if item.is_null() || (api.item_api().GetType)(item) != FOUNDRY_LOCAL_ITEM_SPEECH_RESULT {
-        return None;
+        return Ok(None);
     }
     let mut data = flSpeechResultData {
         version: FOUNDRY_LOCAL_API_VERSION,
@@ -303,13 +307,8 @@ pub(crate) unsafe fn read_speech_result_text(api: &Api, item: *const flItem) -> 
         segments: ptr::null::<*const flItem>(),
         segments_count: 0,
     };
-    if api
-        .check((api.item_api().GetSpeechResult)(item, &mut data))
-        .is_err()
-    {
-        return None;
-    }
-    cstr_to_string(data.text)
+    api.check((api.item_api().GetSpeechResult)(item, &mut data))?;
+    Ok(cstr_to_string(data.text))
 }
 
 // ── Additional native item builders (image / tensor / message / tool) ─────────

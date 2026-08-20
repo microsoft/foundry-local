@@ -141,7 +141,8 @@ describeIfBuilt("Catalog (cache-only)", () => {
         expect(modelAlias).toBe("phi-4-mini-instruct");
         expect(modelName).toBeNull();
         expect(maxVersions).toBe(1);
-        return [fakeNativeModel];
+        // The real native path resolves a Promise; mirror that here.
+        return Promise.resolve([fakeNativeModel]);
       },
     };
 
@@ -154,4 +155,70 @@ describeIfBuilt("Catalog (cache-only)", () => {
     }
     expect(versions[0]?.info.id).toBe("phi-4-mini-instruct-generic-cpu:2");
   });
+});
+
+// Pure argument-validation: runs regardless of native build state because the
+// checks happen on the JS thread before the native call is ever queued.
+describe("Catalog.getModelVersions maxVersions validation", () => {
+  // A fake whose getModelVersions must never be reached for invalid inputs.
+  function makeGuardedCatalog(): Catalog {
+    const fakeNativeCatalog: NativeCatalog = {
+      getName: () => "TestCatalog",
+      getModels: () => [],
+      getCachedModels: () => [],
+      getLoadedModels: () => [],
+      getModel: () => undefined,
+      getModelVariant: () => undefined,
+      getLatestVersion: () => undefined,
+      getModelVersions: () => {
+        throw new Error("native getModelVersions must not be called for invalid maxVersions");
+      },
+    };
+    return wrapNativeCatalog(fakeNativeCatalog);
+  }
+
+  const invalidCases: ReadonlyArray<readonly [string, number]> = [
+    ["a fraction", 1.5],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["above int32 max", 2 ** 31],
+    ["below int32 min", -(2 ** 31) - 1],
+  ];
+
+  for (const [label, value] of invalidCases) {
+    it(`rejects ${label} (${value})`, async () => {
+      const catalog = makeGuardedCatalog();
+      await expect(catalog.getModelVersions("phi-4-mini-instruct", undefined, value)).rejects.toThrow(
+        /maxVersions must be an integer within the 32-bit range/,
+      );
+    });
+  }
+
+  const validCases: ReadonlyArray<readonly [string, number]> = [
+    ["int32 max", 2 ** 31 - 1],
+    ["int32 min", -(2 ** 31)],
+    ["zero (no cap)", 0],
+    ["negative (no cap)", -5],
+  ];
+
+  for (const [label, value] of validCases) {
+    it(`accepts ${label} (${value})`, async () => {
+      const fakeNativeCatalog: NativeCatalog = {
+        getName: () => "TestCatalog",
+        getModels: () => [],
+        getCachedModels: () => [],
+        getLoadedModels: () => [],
+        getModel: () => undefined,
+        getModelVariant: () => undefined,
+        getLatestVersion: () => undefined,
+        getModelVersions: (_alias, _name, maxVersions) => {
+          expect(maxVersions).toBe(value);
+          return Promise.resolve([]);
+        },
+      };
+      const catalog = wrapNativeCatalog(fakeNativeCatalog);
+      await expect(catalog.getModelVersions("phi-4-mini-instruct", undefined, value)).resolves.toEqual([]);
+    });
+  }
 });

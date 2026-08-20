@@ -5,6 +5,7 @@
 #include "addon_data.h"
 #include "errors.h"
 #include "model.h"
+#include "promise_worker.h"
 
 #include <foundry_local/foundry_local_cpp.h>
 
@@ -174,10 +175,23 @@ Napi::Value Catalog::GetModelVersions(const Napi::CallbackInfo& info) {
     max_versions = static_cast<int>(info[2].As<Napi::Number>().Int32Value());
   }
 
-  Napi::ObjectReference mgr = CloneManager(manager_);
-  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    return WrapModelList(env, impl_->GetModelVersions(model_alias, variant_name, max_versions), std::move(mgr));
-  });
+  // GetModelVersions performs a fresh network FetchModelVersions query on every
+  // call, so it must NOT run on the JS thread. Argument parsing/validation above
+  // stays on the JS thread; only the network fetch is dispatched to the libuv
+  // worker. The Manager is pinned two ways: `owner` keeps it (and the ICatalog*
+  // it owns) alive across the worker, and `manager_pin` is a JS-thread-only
+  // clone the resolver uses to build the Model handles.
+  auto* impl = impl_;
+  auto manager_pin = std::make_shared<Napi::ObjectReference>(CloneManager(manager_));
+  return PromiseWorker<foundry_local::ModelList>::Run(
+      env,
+      [impl, model_alias, variant_name, max_versions]() -> foundry_local::ModelList {
+        return impl->GetModelVersions(model_alias, variant_name, max_versions);
+      },
+      [manager_pin](Napi::Env env, foundry_local::ModelList& ml) -> Napi::Value {
+        return WrapModelList(env, std::move(ml), CloneManager(*manager_pin));
+      },
+      CloneManager(manager_));
 }
 
 // ── Single-model lookups ─────────────────────────────────────────────────────

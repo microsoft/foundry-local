@@ -109,7 +109,9 @@ internal static class Api
             throw new OperationCanceledException(msg);
         }
 
-        throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg);
+        // FoundryLocalErrorCode mirrors the native FlErrorCode ABI 1:1 (same names and values), so a direct
+        // cast is safe; an unknown/future numeric code still round-trips through the cast.
+        throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg, (FoundryLocalErrorCode)code);
     }
 
     /// <summary>

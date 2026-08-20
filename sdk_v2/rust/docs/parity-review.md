@@ -48,11 +48,17 @@ without matching error strings.
 This is a deliberate departure from the v1 Rust SDK, which had no native
 error-code concept and mapped native failures onto categorical variants
 (`CommandExecution`, `Validation`, `ModelOperation`, `Internal`) by inspecting
-message strings. The v2 variant is instead consistent with the other v2 bindings,
-which all surface a stable native error code (C# `FlErrorCode`, JavaScript
-`FlErrorCode`, Python's error code). The categorical variants remain in the enum
-for SDK-side (non-native) failures such as invalid configuration and input
-validation.
+message strings. The categorical variants remain in the v2 enum for SDK-side
+(non-native) failures such as invalid configuration and input validation.
+
+All v2 bindings surface the stable native code so callers can branch on it
+without string matching: Rust via `FoundryLocalError::Native { code, .. }`,
+JavaScript by tagging errors with a numeric `code` (and
+`name === "FoundryLocalError"`), Python via
+`FoundryLocalException(message, error_code=...)`, and C# via a nullable
+`FoundryLocalException.ErrorCode` (a public `FoundryLocalErrorCode` enum; `null`
+for SDK-side failures that have no native code). C# continues to translate the
+cancellation code to `OperationCanceledException` as is idiomatic on .NET.
 
 ## Conversion failures are propagated, not swallowed
 

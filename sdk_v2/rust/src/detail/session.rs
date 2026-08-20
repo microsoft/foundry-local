@@ -112,25 +112,27 @@ impl NativeResponse {
         unsafe { (self.api.inference_api().Response_GetItemCount)(self.ptr) }
     }
 
-    /// Read the text payload of the response item at `idx` (if it is a TEXT item).
-    pub(crate) fn item_text(&self, idx: usize) -> Option<String> {
+    /// Read the text payload of the response item at `idx`.
+    ///
+    /// Returns `Ok(None)` if the item is not a TEXT item, and `Err` if fetching
+    /// the item or reading its text fails, so conversion failures propagate.
+    pub(crate) fn item_text(&self, idx: usize) -> Result<Option<String>> {
         let mut item: *const flItem = ptr::null();
         let status =
             unsafe { (self.api.inference_api().Response_GetItem)(self.ptr, idx, &mut item) };
-        if self.api.check(status).is_err() {
-            return None;
-        }
+        self.api.check(status)?;
         unsafe { read_text_item(&self.api, item) }
     }
 
-    /// Read the transcript of the response item at `idx` (if it is a SPEECH_RESULT item).
-    pub(crate) fn item_speech_result_text(&self, idx: usize) -> Option<String> {
+    /// Read the transcript of the response item at `idx`.
+    ///
+    /// Returns `Ok(None)` if the item is not a SPEECH_RESULT item, and `Err` if
+    /// fetching the item or reading it fails, so conversion failures propagate.
+    pub(crate) fn item_speech_result_text(&self, idx: usize) -> Result<Option<String>> {
         let mut item: *const flItem = ptr::null();
         let status =
             unsafe { (self.api.inference_api().Response_GetItem)(self.ptr, idx, &mut item) };
-        if self.api.check(status).is_err() {
-            return None;
-        }
+        self.api.check(status)?;
         unsafe { read_speech_result_text(&self.api, item) }
     }
 
@@ -429,7 +431,7 @@ impl NativeSession {
             });
         }
         response
-            .item_text(0)
+            .item_text(0)?
             .ok_or_else(|| FoundryLocalError::CommandExecution {
                 reason: "Native response item was not readable text".into(),
             })
@@ -479,6 +481,15 @@ unsafe extern "C" fn stream_trampoline(
             // Ownership of `item` transferred to us — read then release.
             let text = read_text_item(&ctx.api, item);
             (item_api.Item_Release)(item);
+
+            let text = match text {
+                Ok(text) => text,
+                Err(error) => {
+                    let _ = ctx.tx.send(Err(error));
+                    return 1; // read failure — stop generation and surface the error
+                }
+            };
+
             if let Some(text) = text {
                 if let Some(transformed) = (ctx.transform)(text) {
                     if ctx.tx.send(Ok(transformed)).is_err() {
@@ -551,13 +562,48 @@ struct ItemStreamCtx {
     tx: UnboundedSender<Result<Item>>,
 }
 
+/// Clone a streaming error so the same failure can be delivered on both the item
+/// channel and the terminal-response channel.
+///
+/// `FoundryLocalError` is not `Clone` because a few variants wrap non-`Clone`
+/// external errors (`reqwest`, `serde_json`, `std::io`). Every string-backed
+/// variant is duplicated as its own variant so error identity is preserved —
+/// collapsing them into `Internal` would, for example, rewrite a `Validation`
+/// from `add_item_value` into `Internal` with a doubly-prefixed message. Only the
+/// non-clonable external-error variants (which do not arise on the streaming
+/// request path) degrade to `Internal` carrying the original message.
 fn duplicate_stream_error(error: &FoundryLocalError) -> FoundryLocalError {
     match error {
         FoundryLocalError::Native { code, message } => FoundryLocalError::Native {
             code: *code,
             message: message.clone(),
         },
-        _ => FoundryLocalError::Internal {
+        FoundryLocalError::LibraryLoad { reason } => FoundryLocalError::LibraryLoad {
+            reason: reason.clone(),
+        },
+        FoundryLocalError::CommandExecution { reason } => FoundryLocalError::CommandExecution {
+            reason: reason.clone(),
+        },
+        FoundryLocalError::InvalidConfiguration { reason } => {
+            FoundryLocalError::InvalidConfiguration {
+                reason: reason.clone(),
+            }
+        }
+        FoundryLocalError::ModelOperation { reason } => FoundryLocalError::ModelOperation {
+            reason: reason.clone(),
+        },
+        FoundryLocalError::Validation { reason } => FoundryLocalError::Validation {
+            reason: reason.clone(),
+        },
+        FoundryLocalError::Internal { reason } => FoundryLocalError::Internal {
+            reason: reason.clone(),
+        },
+        // Non-clonable external-error variants. These do not occur on the streaming
+        // request path; degrade to Internal with the original message rather than
+        // losing it entirely.
+        FoundryLocalError::HttpRequest(_)
+        | FoundryLocalError::Serialization(_)
+        | FoundryLocalError::Io(_) => FoundryLocalError::Internal {
             reason: error.to_string(),
         },
     }
