@@ -315,6 +315,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NATIVE_BIN_DIR");
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_RUNTIME_VERSION");
 
+    // docs.rs builds run in an offline sandbox and only need the crate to
+    // type-check — `cargo doc` never links or runs the native library. Skip all
+    // native acquisition there so documentation always builds regardless of the
+    // native-dependency env vars. (This crate's default path is already a no-op,
+    // but the guard makes docs builds robust and self-documenting.)
+    if env::var_os("DOCS_RS").is_some() {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 

@@ -10,6 +10,14 @@ repository = "https://github.com/microsoft/Foundry-Local"
 documentation = "https://github.com/microsoft/Foundry-Local/blob/main/sdk_v2/rust/docs/api.md"
 include = ["src/**", "build.rs", "Cargo.toml", "README.md", "LICENSE.txt", "deps_versions.json"]
 
+# docs.rs builds the documentation in an offline sandbox. The build script skips
+# native acquisition when DOCS_RS is set (see build.rs), so the hosted docs build
+# without the native library once the crate is published. Pin a deterministic
+# target. Until then, the hand-maintained docs/api.md is the reference (see
+# GENERATE-DOCS.md).
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+
 [features]
 default = []
 nightly = []
