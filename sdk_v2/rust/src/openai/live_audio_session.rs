@@ -426,23 +426,29 @@ unsafe extern "C" fn live_trampoline(
                 continue;
             }
             // The native audio path now streams SPEECH_SEGMENT items; older cores
-            // (and the OpenAI-JSON path) stream plain TEXT items. Handle both.
-            let text = read_text_item(&ctx.api, item);
+            // (and the OpenAI-JSON path) stream plain TEXT items. Handle both, and
+            // propagate a genuine read failure from either getter rather than
+            // silently dropping the item.
+            let response = (|| -> Result<Option<LiveAudioTranscriptionResponse>> {
+                if let Some(text) = read_text_item(&ctx.api, item)? {
+                    return Ok((!text.is_empty())
+                        .then(|| LiveAudioTranscriptionResponse::from_text(text, false)));
+                }
 
-            let response = match text {
-                Ok(Some(text)) => (!text.is_empty())
-                    .then(|| LiveAudioTranscriptionResponse::from_text(text, false)),
-                Ok(None) => read_speech_segment(&ctx.api, item)
+                Ok(read_speech_segment(&ctx.api, item)?
                     .filter(|seg| !seg.text.is_empty())
-                    .map(LiveAudioTranscriptionResponse::from_segment),
+                    .map(LiveAudioTranscriptionResponse::from_segment))
+            })();
+
+            (item_api.Item_Release)(item);
+
+            let response = match response {
+                Ok(response) => response,
                 Err(error) => {
-                    (item_api.Item_Release)(item);
                     let _ = ctx.tx.send(Err(error));
                     return 1; // read failure — stop streaming and surface the error
                 }
             };
-
-            (item_api.Item_Release)(item);
 
             if let Some(response) = response {
                 if ctx.tx.send(Ok(response)).is_err() {

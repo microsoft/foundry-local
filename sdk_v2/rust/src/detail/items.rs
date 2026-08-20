@@ -247,16 +247,20 @@ fn duration_ms_to_seconds(ms: i64) -> Option<f64> {
     }
 }
 
-/// Read a SPEECH_SEGMENT item (output-only). Returns `None` for null/other items.
+/// Read a SPEECH_SEGMENT item (output-only).
+///
+/// Returns `Ok(None)` for a null or non-SPEECH_SEGMENT item so callers can fall
+/// through to another item type, and `Err` when the native getter fails so a
+/// genuine read failure is propagated rather than silently dropped.
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
 pub(crate) unsafe fn read_speech_segment(
     api: &Api,
     item: *const flItem,
-) -> Option<SpeechSegmentText> {
+) -> Result<Option<SpeechSegmentText>> {
     if item.is_null() || (api.item_api().GetType)(item) != FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT {
-        return None;
+        return Ok(None);
     }
     let mut data = flSpeechSegmentData {
         version: FOUNDRY_LOCAL_API_VERSION,
@@ -269,19 +273,14 @@ pub(crate) unsafe fn read_speech_segment(
         words_count: 0,
         language: ptr::null::<c_char>(),
     };
-    if api
-        .check((api.item_api().GetSpeechSegment)(item, &mut data))
-        .is_err()
-    {
-        return None;
-    }
-    Some(SpeechSegmentText {
+    api.check((api.item_api().GetSpeechSegment)(item, &mut data))?;
+    Ok(Some(SpeechSegmentText {
         text: cstr_to_string(data.text).unwrap_or_default(),
         // PARTIAL is an interim hypothesis; FINAL (and NONE entries) are stable.
         is_final: data.kind == FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL,
         start_time_s: duration_ms_to_seconds(data.start_time_ms),
         end_time_s: duration_ms_to_seconds(data.end_time_ms),
-    })
+    }))
 }
 
 /// Read the concatenated transcript of a SPEECH_RESULT item (output-only).
