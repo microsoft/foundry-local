@@ -709,13 +709,22 @@ pub(crate) fn run_item_streaming(
         if let Err(e) = &run {
             let _ = tx.send(Err(duplicate_stream_error(e)));
         }
-        let _ = response_tx.send(run);
 
-        // Uninstall the callback, then release the op-lock before dropping ctx.
+        // Release the worker's hold on the native session BEFORE publishing the
+        // terminal response. A caller may await `response()` without draining the
+        // item stream, then drop its `Session` and unload the model as soon as the
+        // response resolves. If the worker still held a session reference at that
+        // point, `ModelLoadManager::UnloadModel` would reject the unload with
+        // "session(s) still using it". Uninstall the callback, release the op-lock,
+        // and drop the worker's ctx/channel/session references first so the caller
+        // observes a fully-released session once the response is published.
         let _ = session.set_streaming_callback(None, ptr::null_mut());
         drop(guard);
         drop(ctx);
+        drop(tx);
         drop(session);
+
+        let _ = response_tx.send(run);
     });
 
     (rx, response_rx)
