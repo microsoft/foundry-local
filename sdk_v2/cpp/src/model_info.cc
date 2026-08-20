@@ -5,6 +5,7 @@
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
 #include <string>
 
 namespace fl {
@@ -106,6 +107,21 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j) {
     info.detected_region = j["detectedRegion"].get<std::string>();
   }
 
+  // catalogSource — round-trips the serving catalog source. Absent → kPublic (default).
+  if (j.contains("catalogSource") && j["catalogSource"].is_number_integer()) {
+    switch (j["catalogSource"].get<int>()) {
+      case static_cast<int>(CatalogSource::kPrivate):
+        info.catalog_source = CatalogSource::kPrivate;
+        break;
+      case static_cast<int>(CatalogSource::kLocal):
+        info.catalog_source = CatalogSource::kLocal;
+        break;
+      default:
+        info.catalog_source = CatalogSource::kPublic;
+        break;
+    }
+  }
+
   // String properties — named top-level fields → string_properties map
   ReadStringProp(j, "providerType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
   ReadStringProp(j, "modelType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
@@ -185,6 +201,14 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j) {
 
   // "cached" is ignored on deserialize — Model tracks this separately.
 
+  // localPath — runtime cache location. Only present in the on-disk snapshot when it existed at
+  // save time (see ModelInfoToJson). A fresh disk scan (AddLocalModels) overrides this on every
+  // fetch, so a since-deleted path is corrected for models still present; treat as a best-effort
+  // hint only. Local cache support is intentionally lightweight (BYOM will supersede it).
+  if (j.contains("localPath") && j["localPath"].is_string()) {
+    info.local_path = j["localPath"].get<std::string>();
+  }
+
   return info;
 }
 
@@ -206,6 +230,12 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   // detectedRegion — only emit when set so BYO models and pre-region caches are unaffected.
   if (!info.detected_region.empty()) {
     j["detectedRegion"] = info.detected_region;
+  }
+
+  // catalogSource — emit as an int so the serving source survives the on-disk cache.
+  // Only emitted for non-public sources to keep public-catalog snapshots byte-stable.
+  if (info.catalog_source != CatalogSource::kPublic) {
+    j["catalogSource"] = static_cast<int>(info.catalog_source);
   }
 
   // providerType — required in C#, defaults to empty
@@ -337,6 +367,14 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   const auto* test_model = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT);
   if (test_model) {
     j["testModel"] = (*test_model != 0);
+  }
+
+  // localPath — runtime cache location. Validate it still exists on disk before persisting so a
+  // stale snapshot never advertises a since-deleted model as cached. This is best-effort: a path
+  // valid now can be deleted before the snapshot is next loaded, but AddLocalModels re-scans disk
+  // on every fetch and overrides this for models still present.
+  if (!info.local_path.empty() && std::filesystem::exists(info.local_path)) {
+    j["localPath"] = info.local_path;
   }
 
   return j;

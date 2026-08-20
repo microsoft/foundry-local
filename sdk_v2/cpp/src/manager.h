@@ -150,7 +150,7 @@ class Manager {
 #endif
 
  private:
-  Model CreateModel(ModelInfo info, std::string local_path);
+  Model CreateModel(ModelInfo info);
 
   static std::mutex s_mutex_;
   static std::unique_ptr<Manager> s_instance_;

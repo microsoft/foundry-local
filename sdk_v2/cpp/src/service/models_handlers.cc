@@ -160,7 +160,7 @@ class OpenAIListModelsHandler : public HttpRequestHandler {
     auto models = ctx_.catalog.ListModels();
     nlohmann::json data = nlohmann::json::array();
 
-    // List individual variants so the client knows exactly which model_id to use.
+    // List every stored variant in catalog order, including duplicate model_ids from different sources.
     for (const auto* model : models) {
       for (const auto* variant : model->Variants()) {
         const auto& info = variant->Info();

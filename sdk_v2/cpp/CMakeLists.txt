@@ -199,8 +199,8 @@ set(FOUNDRY_LOCAL_SOURCES
     src/items/image_item.cc
     src/items/message_item.cc
     src/items/speech_segment_item.cc
-    src/catalog/base_model_catalog.cc
-    src/catalog/azure_model_catalog.cc
+    src/catalog/model_catalog.cc
+    src/catalog/azure_model_source.cc
     src/catalog/azure_catalog_client.cc
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc

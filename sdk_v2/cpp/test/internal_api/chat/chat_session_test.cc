@@ -70,7 +70,7 @@ class ChatSessionTest : public ::testing::Test {
   static inline Model catalog_model_ = [] {
     ModelInfo info;
     info.task = "chat-completion";
-    return Model::FromModelInfo(std::move(info), "", svc_.download_manager, svc_.model_load_manager);
+    return Model::FromModelInfo(std::move(info), svc_.download_manager, svc_.model_load_manager);
   }();
   TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;

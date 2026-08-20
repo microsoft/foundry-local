@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-#include "catalog/azure_model_catalog.h"
+#include "catalog/azure_model_source.h"
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "catalog/local_model_scanner.h"
-#include "model.h"
 #include "model_info.h"
 #include "utils.h"
 
@@ -29,6 +28,9 @@ ModelInfo MakeByomModelInfo(const std::string& model_id) {
   info.alias = name;
   info.uri = "local://" + name;
   info.version = version;
+  // Short-term marker: a disk-only model that matches nothing in any online catalog.
+  // Replaced by first-class local models when the dedicated BYOM catalog lands.
+  info.catalog_source = CatalogSource::kLocal;
   info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "Local";
   info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
   return info;
@@ -50,18 +52,16 @@ std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) 
 
 }  // namespace
 
-AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
-                                     std::string cache_dir,
-                                     ModelFactory model_factory,
-                                     const IEpDetector& ep_detector,
-                                     ILogger& logger,
-                                     bool cache_only,
-                                     std::string catalog_region,
-                                     bool disable_region_fallback)
-    : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
+AzureModelSource::AzureModelSource(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
+                                   std::string cache_dir,
+                                   const IEpDetector& ep_detector,
+                                   ILogger& logger,
+                                   bool cache_only,
+                                   std::string catalog_region,
+                                   bool disable_region_fallback)
+    : name_(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
-      model_factory_(std::move(model_factory)),
       ep_detector_(ep_detector),
       logger_(logger),
       cache_only_(cache_only),
@@ -72,18 +72,17 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
   }
 
   logger_.Log(LogLevel::Information,
-              fmt::format("Created AzureModelCatalog. Cache directory: {}",
-                          cache_dir_));
+              fmt::format("Created AzureModelSource. Cache directory: {}", cache_dir_));
 }
 
-AzureModelCatalog::~AzureModelCatalog() = default;
+AzureModelSource::~AzureModelSource() = default;
 
-std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
-                                                                       const std::string& filter) const {
+std::unique_ptr<ICatalogClient> AzureModelSource::CreateCatalogClient(const std::string& url,
+                                                                      const std::string& filter) const {
   return MakeCatalogClient(url, filter, ep_detector_, logger_, cache_dir_, catalog_region_, disable_region_fallback_);
 }
 
-AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapshot(
+AzureModelSource::CatalogResult AzureModelSource::GetLiveCatalogOrLocalSnapshot(
     const std::vector<std::string>& cached_model_ids) const {
   if (!cache_only_) {
     std::vector<ModelInfo> live_model_infos;
@@ -107,7 +106,7 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
     if (any_url_succeeded) {
       return {
           .model_infos = DeduplicateByModelId(std::move(live_model_infos)),
-          .source = CatalogSource::kLive,
+          .origin = FetchOrigin::kLive,
       };
     }
   }
@@ -118,38 +117,39 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
 
   return {
       .model_infos = cached ? DeduplicateByModelId(std::move(*cached)) : std::vector<ModelInfo>{},
-      .source = CatalogSource::kSnapshot,
+      .origin = FetchOrigin::kSnapshot,
   };
 }
 
-std::vector<Model> AzureModelCatalog::AddLocalModels(std::vector<ModelInfo>& model_infos,
-                                                     const LocalModels& local_models) const {
-  std::vector<Model> models;
-  models.reserve(model_infos.size() + local_models.size());
-
+void AzureModelSource::AddLocalModels(std::vector<ModelInfo>& model_infos,
+                                      const LocalModels& local_models) const {
   std::unordered_set<std::string> model_ids;
   model_ids.reserve(model_infos.size() + local_models.size());
-  for (const auto& info : model_infos) {
+
+  // Attach local paths to matched catalog entries. Their catalog_source is left as-is
+  // (kPublic by default for live/legacy infos, or the round-tripped value from a snapshot).
+  for (auto& info : model_infos) {
     model_ids.insert(info.model_id);
 
     auto local_model = local_models.find(info.model_id);
-    auto local_path = local_model != local_models.end() ? local_model->second : std::string{};
-    models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
+    if (local_model != local_models.end()) {
+      info.local_path = local_model->second;
+    }
   }
 
+  // Synthesize kLocal stubs for disk-only models that match nothing in the catalog.
   for (const auto& [model_id, local_path] : local_models) {
     if (!model_ids.insert(model_id).second) {
       continue;
     }
 
-    model_infos.push_back(MakeByomModelInfo(model_id));
-    models.push_back(model_factory_(ModelInfo(model_infos.back()), local_path));
+    auto stub = MakeByomModelInfo(model_id);
+    stub.local_path = local_path;
+    model_infos.push_back(std::move(stub));
   }
-
-  return models;
 }
 
-std::vector<Model> AzureModelCatalog::FetchModels() const {
+std::vector<ModelInfo> AzureModelSource::FetchModels() const {
   logger_.Log(LogLevel::Information, "Getting catalog metadata and locally cached models.");
 
   auto local_models = ScanLocalModels(cache_dir_, logger_);
@@ -162,26 +162,31 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
-  auto models = AddLocalModels(catalog_result.model_infos, local_models);
 
-  logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
+  // Save the pristine catalog metadata (before local paths / stubs are folded in) so the
+  // snapshot stays a faithful record of the live catalog. Stubs still get persisted because
+  // AddLocalModels appended them to the same vector historically — preserve that by saving
+  // after AddLocalModels. local_path is persisted only when it still exists on disk at save
+  // time (ModelInfoToJson validates), and a fresh scan overrides it on every fetch.
+  AddLocalModels(catalog_result.model_infos, local_models);
 
-  if (catalog_result.source == CatalogSource::kLive && !catalog_result.model_infos.empty()) {
+  logger_.Log(LogLevel::Information,
+              fmt::format("Populated model info for {} models.", catalog_result.model_infos.size()));
+
+  if (catalog_result.origin == FetchOrigin::kLive && !catalog_result.model_infos.empty()) {
     CatalogCache cache(cache_dir_, logger_);
     cache.Save(catalog_result.model_infos);
   }
 
-  return models;
+  return std::move(catalog_result.model_infos);
 }
 
-std::vector<Model> AzureModelCatalog::FetchModelVersions(
-    const std::string& model_alias,
-    const std::string& model_name) const {
-  std::vector<Model> out;
+std::vector<ModelInfo> AzureModelSource::FetchModelVersions(const std::string& model_alias,
+                                                            const std::string& model_name) const {
+  std::vector<ModelInfo> out;
   if (cache_only_) {
     // In cache-only mode we have no remote source to query for older versions.
-    logger_.Log(LogLevel::Debug,
-                "FetchModelVersions skipped: catalog is in cache-only mode.");
+    logger_.Log(LogLevel::Debug, "FetchModelVersions skipped: catalog is in cache-only mode.");
     return out;
   }
 
@@ -192,7 +197,7 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
 
       out.reserve(out.size() + model_infos.size());
       for (auto& info : model_infos) {
-        out.push_back(model_factory_(std::move(info), /*local_path=*/""));
+        out.push_back(std::move(info));
       }
     } catch (const std::exception& ex) {
       logger_.Log(LogLevel::Error,
@@ -201,28 +206,26 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
   }
 
   logger_.Log(LogLevel::Information,
-              fmt::format("FetchModelVersions('{}') returned {} variant(s).",
-                          model_alias, out.size()));
+              fmt::format("FetchModelVersions('{}') returned {} variant(s).", model_alias, out.size()));
 
   return out;
 }
 
-std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::string>& model_ids) const {
+std::vector<ModelInfo> AzureModelSource::FetchModelsByIds(const std::vector<std::string>& model_ids) const {
   if (model_ids.empty()) {
     return {};
   }
 
   if (cache_only_) {
-    logger_.Log(LogLevel::Debug,
-                "FetchModelsByIds skipped: catalog is in cache-only mode.");
+    logger_.Log(LogLevel::Debug, "FetchModelsByIds skipped: catalog is in cache-only mode.");
     return {};
   }
 
   auto local_models = ScanLocalModels(cache_dir_, logger_);
 
-  std::vector<Model> models;
-  // Track which IDs are still unresolved so we can stop calling further
-  // endpoints once everything has been found.
+  std::vector<ModelInfo> out;
+  // Track which IDs are still unresolved so we can stop calling further endpoints once
+  // everything has been found.
   std::vector<std::string> remaining(model_ids);
 
   for (const auto& [url, filter] : catalog_urls_) {
@@ -235,10 +238,9 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
       auto model_infos = client->FetchModelsByIds(remaining);
 
       for (auto& info : model_infos) {
-        std::string local_path;
         auto it = local_models.find(info.model_id);
         if (it != local_models.end()) {
-          local_path = it->second;
+          info.local_path = it->second;
         }
 
         // Drop this id from the remaining list now that it's resolved.
@@ -247,7 +249,7 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
           remaining.erase(rit);
         }
 
-        models.push_back(model_factory_(std::move(info), std::move(local_path)));
+        out.push_back(std::move(info));
       }
     } catch (const std::exception& ex) {
       logger_.Log(LogLevel::Error,
@@ -255,7 +257,7 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
     }
   }
 
-  return models;
+  return out;
 }
 
 }  // namespace fl

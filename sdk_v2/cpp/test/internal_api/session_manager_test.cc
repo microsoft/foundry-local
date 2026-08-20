@@ -86,7 +86,7 @@ class SessionManagerTest : public ::testing::Test {
   static inline GenAIModelInstance* model_ = nullptr;
   static inline fl::test::FakeServiceBindings svc_;
   static inline Model catalog_model_ = Model::FromModelInfo(
-      ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
+      ModelInfo{}, svc_.download_manager, svc_.model_load_manager);
   TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
 };
 
@@ -373,7 +373,7 @@ bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
 
 TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
   fl::test::FakeServiceBindings svc;
-  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, svc.download_manager, svc.model_load_manager);
   TelemetryLogger telemetry{"test", fl::test::NullLog()};
   SessionManager mgr(fl::test::NullLog());
 
@@ -414,7 +414,7 @@ TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
   // can't see this request yet, so the latch must stamp it on insert — otherwise it would run a full
   // uncanceled turn and block JoinAll() until the 5s safety deadline.
   fl::test::FakeServiceBindings svc;
-  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, svc.download_manager, svc.model_load_manager);
   TelemetryLogger telemetry{"test", fl::test::NullLog()};
   SessionManager mgr(fl::test::NullLog());
 

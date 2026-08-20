@@ -45,7 +45,7 @@ inline ILogger& NullLog() {
 /// One-stop bag of cheap fakes for tests that need to construct a leaf `Model` via
 /// `FromModelInfo` but don't exercise Download/Load. Public fields by design — no invariants
 /// to protect, and the field names match the matching `FromModelInfo` parameter names so the
-/// call site reads as `FromModelInfo(info, "", svc.download_manager, svc.model_load_manager)`.
+/// call site reads as `FromModelInfo(info, svc.download_manager, svc.model_load_manager)`.
 struct FakeServiceBindings {
   CpuOnlyEpDetector ep_detector;
   NullLogger logger;

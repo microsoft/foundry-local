@@ -70,7 +70,11 @@ int GetModelDevicePriority(const std::string& model_id) {
 ///   1. Device-type priority (ascending — lower number = better)
 ///   2. Version number (descending — higher version first)
 ///   3. CreatedAtUnix timestamp (descending — newer first)
-///   4. model_id (ascending) as final tie-break
+///   4. model_id (ascending)
+///   5. Catalog-source priority (ascending — local > private > public) as the final tiebreak.
+///      Genuine same-model_id shadow variants match on all four prior keys, so this key alone
+///      decides their relative order (preferred source first). Non-duplicates differ earlier
+///      and are unaffected.
 bool CompareModelsForSort(const Model& m1, const Model& m2) {
   const auto& info1 = m1.Info();
   const auto& info2 = m2.Info();
@@ -93,7 +97,11 @@ bool CompareModelsForSort(const Model& m1, const Model& m2) {
     return created1 > created2;
   }
 
-  return info1.model_id < info2.model_id;
+  if (info1.model_id != info2.model_id) {
+    return info1.model_id < info2.model_id;
+  }
+
+  return CatalogSourcePriority(info1.catalog_source) < CatalogSourcePriority(info2.catalog_source);
 }
 
 }  // namespace
@@ -107,7 +115,6 @@ Model::~Model() = default;
 Model::Model(Model&& other) noexcept
     : info_(std::move(other.info_)),
       cached_(other.cached_.load()),
-      local_path_(std::move(other.local_path_)),
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
       variants_(std::move(other.variants_)),
@@ -122,7 +129,6 @@ Model& Model::operator=(Model&& other) noexcept {
   if (this != &other) {
     info_ = std::move(other.info_);
     cached_.store(other.cached_.load());
-    local_path_ = std::move(other.local_path_);
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
     variants_ = std::move(other.variants_);
@@ -140,18 +146,18 @@ Model& Model::operator=(Model&& other) noexcept {
 // ---------------------------------------------------------------------------
 
 Model Model::FromModelInfo(ModelInfo info,
-                           std::string local_path,
                            DownloadManager& download_manager,
                            ModelLoadManager& model_load_manager) {
   Model model;
-  model.info_ = std::move(info);
   model.download_manager_ = &download_manager;
   model.model_load_manager_ = &model_load_manager;
 
-  if (!local_path.empty()) {
+  // ModelInfo owns the cache path; a non-empty local_path means the model is already cached.
+  if (!info.local_path.empty()) {
     model.cached_ = true;
-    model.local_path_ = std::move(local_path);
   }
+
+  model.info_ = std::move(info);
 
   return model;
 }
@@ -250,6 +256,51 @@ std::vector<Model*> Model::Variants() const {
   return result;
 }
 
+size_t Model::VariantCount() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return variants_.size();
+}
+
+void Model::RemoveVariant(const Model& variant) {
+  if (!IsContainer()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "RemoveVariant called on a non-container Model");
+  }
+
+  std::lock_guard<std::mutex> lock(state_mutex_);
+
+  auto it = std::find_if(variants_.begin(), variants_.end(),
+                         [&variant](const std::unique_ptr<Model>& v) { return v.get() == &variant; });
+  if (it == variants_.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "RemoveVariant: variant not found in this model");
+  }
+
+  const bool removed_selected = selected_variant_.load(std::memory_order_acquire) == it->get();
+
+  // Erase-and-compact: every variants_ walker assumes dense, non-null entries, and erase
+  // preserves the remaining best-first order.
+  variants_.erase(it);
+
+  if (!removed_selected) {
+    return;
+  }
+
+  // The selected leaf was removed — re-run default selection (cached-first, then preferred
+  // source), or clear the selection if the container is now empty.
+  if (variants_.empty()) {
+    selected_variant_.store(nullptr, std::memory_order_release);
+    return;
+  }
+
+  for (auto& v : variants_) {
+    if (v->IsCached()) {
+      selected_variant_.store(v.get(), std::memory_order_release);
+      return;
+    }
+  }
+
+  selected_variant_.store(variants_.front().get(), std::memory_order_release);
+}
+
 bool Model::IsCached() const {
   if (Model* sv = selected_variant_.load(std::memory_order_acquire)) {
     return sv->IsCached();
@@ -280,11 +331,11 @@ void Model::Download(std::function<int(float)> progress_cb) {
   }
 
   // Already cached (scanner found the model on disk during catalog construction).
-  // No need to re-derive the path via DownloadManager — local_path_ is authoritative.
+  // No need to re-derive the path via DownloadManager — info_.local_path is authoritative.
   bool already_cached;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    already_cached = cached_.load() && !local_path_.empty();
+    already_cached = cached_.load() && !info_.local_path.empty();
   }
 
   if (already_cached) {
@@ -299,9 +350,9 @@ void Model::Download(std::function<int(float)> progress_cb) {
   auto path = download_manager_->DownloadModel(info_, std::move(progress_cb));
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    local_path_ = std::move(path);
+    info_.local_path = std::move(path);
   }
-  // local_path_ must be published before cached_ flips true: readers gate on IsCached()
+  // info_.local_path must be published before cached_ flips true: readers gate on IsCached()
   // and this release store guarantees they observe the completed path. Do not reorder.
   cached_.store(true);
 }
@@ -311,7 +362,7 @@ const std::string& Model::GetPath() const {
     return sv->GetPath();
   }
 
-  return local_path_;
+  return info_.local_path;
 }
 
 void Model::Load(ExecutionProvider ep) {
@@ -322,10 +373,10 @@ void Model::Load(ExecutionProvider ep) {
 
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, info_.model_id, ep);
+  auto result = model_load_manager_->LoadModel(info_.local_path, info_.model_id, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + info_.local_path);
   }
 }
 
@@ -348,10 +399,10 @@ void Model::RemoveFromCache() {
   std::string path;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!cached_ || local_path_.empty()) {
+    if (!cached_ || info_.local_path.empty()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is not cached locally");
     }
-    path = local_path_;
+    path = info_.local_path;
   }
 
   if (IsLoaded()) {
@@ -366,7 +417,7 @@ void Model::RemoveFromCache() {
   cached_.store(false);
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    local_path_.clear();
+    info_.local_path.clear();
   }
 }
 

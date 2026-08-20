@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 //
-// Tests for model variant sorting within BaseModelCatalog.
+// Tests for model variant sorting within ModelCatalog.
 // Verifies the C++ port of C# AzureFoundryService.SortModels /
 // CompareModelsForSort / GetModelPriority:
 //   - Device-type priority: NPU > vendor-GPU > CUDA-GPU > generic-GPU
@@ -9,7 +9,8 @@
 //   - Version descending (higher first)
 //   - CreatedAtUnix descending (newer first)
 //
-#include "catalog/base_model_catalog.h"
+#include "catalog/model_catalog.h"
+#include "catalog/model_source.h"
 #include "internal_api/test_helpers.h"
 #include "logger.h"
 #include "model.h"
@@ -18,38 +19,70 @@
 #include <foundry_local/foundry_local_c.h>
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace fl;
 
-// ========================================================================
-// Concrete test catalog — same pattern as base_model_catalog_test.cc
-// ========================================================================
+namespace {
 
-class SortTestCatalog : public BaseModelCatalog {
+// Minimal fetch-only source returning canned ModelInfo for the sort harness.
+class FakeSortSource : public IModelSource {
  public:
-  explicit SortTestCatalog(ILogger& logger) : BaseModelCatalog("sort-test-catalog", logger) {}
+  CatalogSource Source() const override { return CatalogSource::kPublic; }
+  std::string Name() const override { return "sort-fake-source"; }
+  std::vector<ModelInfo> FetchModels() const override { return models_; }
+  void AddModel(ModelInfo info) { models_.push_back(std::move(info)); }
 
-  void AddModel(Model model) {
-    models_.push_back(std::move(model));
+ private:
+  std::vector<ModelInfo> models_;
+};
+
+}  // namespace
+
+// ========================================================================
+// Thin wrapper around ModelCatalog preserving the old test ergonomics:
+// AddModel(ModelInfo) before querying, then GetModel(alias).
+// ========================================================================
+
+class SortTestCatalog {
+ public:
+  explicit SortTestCatalog(ILogger& logger) : logger_(logger) {
+    auto source = std::make_unique<FakeSortSource>();
+    source_ = source.get();
+    sources_.push_back(std::move(source));
   }
 
- protected:
-  std::vector<Model> FetchModels() const override {
-    return std::move(models_);
+  void AddModel(ModelInfo info) { source_->AddModel(std::move(info)); }
+
+  Model* GetModel(const std::string& alias) {
+    if (!catalog_) {
+      catalog_ = std::make_unique<ModelCatalog>(
+          "sort-test-catalog", std::move(sources_),
+          [this](ModelInfo info) {
+            return Model::FromModelInfo(std::move(info), svc_.download_manager, svc_.model_load_manager);
+          },
+          logger_);
+    }
+    return catalog_->GetModel(alias);
   }
 
  private:
-  mutable std::vector<Model> models_;
+  ILogger& logger_;
+  fl::test::FakeServiceBindings svc_;
+  std::vector<std::unique_ptr<IModelSource>> sources_;
+  FakeSortSource* source_ = nullptr;
+  std::unique_ptr<ModelCatalog> catalog_;
 };
 
-// Helper: create a Model with device suffix baked into model_id.
-static Model MakeModel(const std::string& base_name,
-                       const std::string& device_suffix,
-                       int version,
-                       const std::string& alias,
-                       int64_t created_at_unix = 0) {
+// Helper: create a ModelInfo with device suffix baked into model_id.
+static ModelInfo MakeModel(const std::string& base_name,
+                           const std::string& device_suffix,
+                           int version,
+                           const std::string& alias,
+                           int64_t created_at_unix = 0) {
   ModelInfo info;
   info.model_id = base_name + device_suffix + ":" + std::to_string(version);
   info.name = base_name;
@@ -60,9 +93,7 @@ static Model MakeModel(const std::string& base_name,
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT] = created_at_unix;
   }
 
-  static fl::test::FakeServiceBindings svc;
-  return Model::FromModelInfo(std::move(info), "",
-                              svc.download_manager, svc.model_load_manager);
+  return info;
 }
 
 // ========================================================================

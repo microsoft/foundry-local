@@ -1040,6 +1040,10 @@ struct flModelApi {
   /// Use FL_MODEL_PROP_* constants for well-known keys, or any arbitrary string key.
   int64_t FL_API_T(Info_GetIntProperty, _In_ const flModelInfo* info, _In_ const char* key, int64_t default_value);
 
+  /// Which catalog source served this model: 0 = public (Azure), 1 = private, 2 = local.
+  /// Read-only. Defaults to 0 (public) for models without an explicit source.
+  int FL_API_T(Info_GetCatalogSource, _In_ const flModelInfo* info);
+
   // End V1
 };
 

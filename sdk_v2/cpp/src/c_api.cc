@@ -969,6 +969,10 @@ static int64_t FL_API_CALL Info_GetIntPropertyImpl(const flModelInfo* info,
   return AsImpl(info)->GetPropertyWithDefault(key, default_value);
 }
 
+static int FL_API_CALL Info_GetCatalogSourceImpl(const flModelInfo* info) FL_NO_EXCEPTION {
+  return info ? static_cast<int>(AsImpl(info)->catalog_source) : 0;
+}
+
 static const flModelApi g_model_api = {
     Model_GetInfoImpl,
     Model_GetInputOutputInfoImpl,
@@ -993,6 +997,7 @@ static const flModelApi g_model_api = {
     Info_GetModelSettingsImpl,
     Info_GetStringPropertyImpl,
     Info_GetIntPropertyImpl,
+    Info_GetCatalogSourceImpl,
 };
 
 // ========================================================================
