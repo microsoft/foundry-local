@@ -5,13 +5,14 @@ pipelines:
     retail:
       binary:
         binskim:
-          lastModifiedDate: 2026-04-21
+          lastModifiedDate: 2026-08-10
         spotbugs:
-          lastModifiedDate: 2026-04-21
+          lastModifiedDate: 2026-08-10
       source:
         eslint:
-          lastModifiedDate: 2026-04-21
+          lastModifiedDate: 2026-08-10
         psscriptanalyzer:
-          lastModifiedDate: 2026-04-21
+          lastModifiedDate: 2026-08-10
         armory:
-          lastModifiedDate: 2026-04-21
+          lastModifiedDate: 2026-08-10
+    usedNonDefaultBranch: true

@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/catalog_client.h"
-#include "utils.h"
-
-#include <foundry_local/foundry_local_c.h>
 
 #include <fmt/format.h>
 
@@ -48,26 +45,6 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
                  fmt::format("catalog: failed to fetch cached model IDs — {}", ex.what()));
     } catch (...) {
       logger.Log(LogLevel::Warning, "catalog: failed to fetch cached model IDs — unknown error");
-    }
-
-    // Step 4: Create basic entries for any IDs still unresolved (BYO models).
-    for (const auto& id : unresolved_ids) {
-      if (resolved_ids.find(id) != resolved_ids.end()) {
-        continue;
-      }
-
-      auto [name, version] = Utils::SplitModelNameAndVersion(id);
-
-      ModelInfo info;
-      info.model_id = id;
-      info.name = name;
-      info.alias = name;
-      info.uri = "local://" + name;
-      info.version = version;
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "Local";
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
-
-      result.push_back(std::move(info));
     }
   }
 

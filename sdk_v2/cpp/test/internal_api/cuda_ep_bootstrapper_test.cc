@@ -79,6 +79,8 @@ constexpr const char* kProviderRelativePath = "libonnxruntime_providers_cuda.so"
 #endif
 #if defined(__linux__)
 constexpr const char* kGenAiCudaLibrary = "libonnxruntime-genai-cuda.so";
+#elif defined(_WIN32)
+constexpr const char* kGenAiCudaLibrary = "onnxruntime-genai-cuda.dll";
 #endif
 
 EpBundleManifest MakeRawManifest(FakeDownloads& downloads, const std::string& bundle_id) {
@@ -125,7 +127,7 @@ EpBundleManifest MakeRawManifest(FakeDownloads& downloads, const std::string& bu
 template <typename RegisterEp>
 CudaEpBootstrapper MakeInstalledBundleBootstrapper(std::string root_dir, RegisterEp register_ep,
                                                    const EpBundleManifest& manifest, EpArtifactDownloadFn download_fn) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
   auto loader = [](const std::filesystem::path&, ILogger&) -> std::shared_ptr<void> {
     return std::shared_ptr<void>(new int(0), [](void* token) {
       delete static_cast<int*>(token);
@@ -355,6 +357,39 @@ TEST(CudaEpBootstrapperTest, SuccessfulBundleRegistrationFinalizesPreviousGenera
   EXPECT_FALSE(std::filesystem::exists(root.path() / "bundles" / active_v1));
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v2));
 }
+
+#if defined(_WIN32)
+// On Windows the GenAI CUDA bridge is a hard dependency: if it cannot be loaded, CUDA registration
+// must fail (before calling register_ep) rather than report a ready EP that a dependent
+// NvTensorRTRTX model load would still find broken.
+TEST(CudaEpBootstrapperTest, InstalledBundleGenAiBridgeLoadFailureSkipsRegistration) {
+  auto root = test::TempPath::CreateTempDir("fl_cuda_bootstrapper_");
+  FakeDownloads downloads;
+  const auto manifest = MakeRawManifest(downloads, "bundle-v1");
+  NullLogger logger;
+
+  int registration_count = 0;
+  std::vector<std::filesystem::path> requested_paths;
+  auto loader = [&](const std::filesystem::path& path, ILogger&) -> std::shared_ptr<void> {
+    requested_paths.push_back(path);
+    return {};  // simulate a bridge that cannot be loaded (e.g. a missing sibling dependency)
+  };
+
+  CudaEpBootstrapper bootstrapper(
+      root.string(),
+      [&](const std::string&, const std::filesystem::path&) {
+        ++registration_count;
+        return true;
+      },
+      [manifest] { return std::optional<EpBundleManifest>(manifest); }, downloads.AsFn(), loader);
+
+  EXPECT_FALSE(bootstrapper.DownloadAndRegister(false, /*progress_cb=*/nullptr, logger));
+  EXPECT_EQ(registration_count, 0);  // bridge load precedes and gates ORT registration
+  EXPECT_FALSE(bootstrapper.IsRegistered());
+  ASSERT_EQ(requested_paths.size(), 1u);
+  EXPECT_EQ(requested_paths[0].filename().string(), kGenAiCudaLibrary);
+}
+#endif
 #endif
 
 #if defined(__linux__)

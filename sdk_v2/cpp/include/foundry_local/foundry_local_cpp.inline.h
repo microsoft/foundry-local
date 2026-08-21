@@ -553,10 +553,6 @@ inline ModelList::ModelList(flModelList& model_list)
   }
 }
 
-inline gsl::span<const std::unique_ptr<IModel>> ModelList::Models() const noexcept {
-  return {models_.data(), models_.size()};
-}
-
 inline size_t ModelList::size() const noexcept {
   return models_.size();
 }

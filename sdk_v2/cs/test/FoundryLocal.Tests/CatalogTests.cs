@@ -56,6 +56,36 @@ internal sealed class CatalogTests
     }
 
     [Test]
+    public async Task GetModelVersionsAsync_ReturnsVersions_AndCapsResults()
+    {
+        var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();
+
+        var models = await catalog.ListModelsAsync();
+        var modelWithVariants = models.FirstOrDefault(m => m.Variants.Count > 1);
+
+        if (modelWithVariants == null)
+        {
+            Skip.Test("No multi-version model in the catalog.");
+            return;
+        }
+
+        var versions = await catalog.GetModelVersionsAsync(modelWithVariants.Alias);
+        await Assert.That(versions).IsNotNull();
+        await Assert.That(versions.Count).IsGreaterThanOrEqualTo(2);
+
+        var capped = await catalog.GetModelVersionsAsync(modelWithVariants.Alias, maxVersions: 1);
+
+        // maxVersions caps the number of versions returned *per model name*, not the total
+        // result count. An alias with several distinct model names can therefore return one
+        // entry per name, so assert the cap per name rather than on the overall count.
+        var perName = capped.GroupBy(v => v.Info.Name);
+        foreach (var group in perName)
+        {
+            await Assert.That(group.Count()).IsLessThanOrEqualTo(1);
+        }
+    }
+
+    [Test]
     public async Task ListModelsAsync_HonorsCancelledToken()
     {
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();

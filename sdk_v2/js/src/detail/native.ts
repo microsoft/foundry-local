@@ -104,6 +104,7 @@ export interface NativeCatalog {
   getModel(alias: string): NativeModel | undefined;
   getModelVariant(modelId: string): NativeModel | undefined;
   getLatestVersion(model: NativeModel): NativeModel | undefined;
+  getModelVersions(modelAlias: string, modelName: string | null, maxVersions: number): Promise<NativeModel[]>;
 }
 
 // ── Inference surface ───────────────────────────────────────────────────────

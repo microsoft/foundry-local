@@ -7,6 +7,7 @@
     <authors>Microsoft</authors>
     <owners>Microsoft</owners>
     <license type="file">LICENSE.txt</license>
+    <readme>README.md</readme>
     <projectUrl>https://github.com/microsoft/Foundry-Local</projectUrl>
     <description>
       Native runtime libraries for the Microsoft AI Foundry Local SDK.
@@ -29,5 +30,8 @@
     <file src="buildTransitive\**" target="buildTransitive" />
     <file src="runtimes\**" target="runtimes" />
     <file src="LICENSE.txt" target="" />
+    <file src="README.md" target="" />
+    <file src="Privacy.md" target="" />
+    <file src="ThirdPartyNotices.txt" target="" />
   </files>
 </package>

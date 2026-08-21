@@ -82,13 +82,12 @@ TEST(CatalogLiveTest, DumpLiveCatalog) {
 
   foundry_local::Manager manager(MakeLiveConfig("catalog_live_dump", cache.path));
   foundry_local::ModelList models = manager.GetCatalog().GetModels();
-  auto list = models.Models();
 
-  ASSERT_FALSE(list.empty()) << "Live catalog returned no models.";
+  ASSERT_FALSE(models.empty()) << "Live catalog returned no models.";
 
-  std::cout << "\n=== Live model catalog (" << list.size() << " models, region=" << kLiveCatalogRegion
+  std::cout << "\n=== Live model catalog (" << models.size() << " models, region=" << kLiveCatalogRegion
             << ") ===\n";
-  for (const auto& model : list) {
+  for (const auto& model : models) {
     auto info = model->GetInfo();
     std::cout << "  - alias=" << info.Alias() << "  id=" << info.Id() << "  name=" << info.Name() << "\n";
     EXPECT_FALSE(info.Id().empty()) << "every catalog model must expose a non-empty id";
@@ -113,7 +112,7 @@ TEST(CatalogLiveTest, DISABLED_DownloadRealModel) {
     std::string smallest_id;
     int64_t smallest_mb = std::numeric_limits<int64_t>::max();
     foundry_local::ModelList variants = model->GetVariants();
-    for (const auto& variant : variants.Models()) {
+    for (const auto& variant : variants) {
       auto info = variant->GetInfo();
       if (info.DeviceType() != FOUNDRY_LOCAL_DEVICE_CPU) {
         continue;

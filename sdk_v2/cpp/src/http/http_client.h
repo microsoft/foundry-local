@@ -27,6 +27,12 @@ struct HttpRequestOptions {
   bool close_connection = false;
 };
 
+/// Returns the CA bundle path from `SSL_CERT_FILE` (read once, cached for the process lifetime), or
+/// empty when unset. The bundled libcurl does not consult `SSL_CERT_FILE` itself, so libcurl-based
+/// transports must pass this explicitly as `CAInfo`. Gated to Android; empty everywhere else, where
+/// the system default CA store (or WinHTTP on Windows) is used instead.
+const std::string& CABundleFilePath();
+
 /// Perform an HTTP POST and return status, headers, and body without throwing on non-2xx responses.
 /// Transport failures are returned as `status == 0` with the error message in `body`.
 HttpResponse HttpPostWithResponse(const std::string& url,

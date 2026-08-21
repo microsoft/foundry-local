@@ -3,8 +3,6 @@
 # The caller is responsible for:
 #   * placing the platform-native foundry_local binaries (.dll/.lib on
 #     Windows, .so on Linux, .dylib on macOS) under `nativeArtifactDir`
-#   * placing the public + gsl headers (cpp-native-include artifact)
-#     under `includeArtifactDir`
 #
 # Each invocation produces a populated prebuilds/<plat>-<arch>/ directory
 # under `outputDir` containing the two .node addons and the matching
@@ -23,9 +21,6 @@ parameters:
 - name: nativeArtifactDir
   type: string
   displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
-- name: includeArtifactDir
-  type: string
-  displayName: 'Path to the downloaded cpp-native-include artifact directory'
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/js-prebuild'
@@ -144,11 +139,8 @@ steps:
     workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
     customCommand: 'ci --no-audit --no-fund --ignore-scripts'
 
-# binding.gyp resolves the foundry_local lib + gsl/public include dirs
-# via FOUNDRY_LOCAL_LIB_DIR and FOUNDRY_LOCAL_INCLUDE_DIR when set. The
-# include artifact ships both `foundry_local/` and `gsl/` subdirectories;
-# we point INCLUDE_DIR at that artifact root, and the public include path
-# is added separately in binding.gyp via `../cpp/include`.
+# binding.gyp resolves the foundry_local lib via FOUNDRY_LOCAL_LIB_DIR.
+# Public headers come from the source tree via `../cpp/include`.
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - powershell: |
       python --version
@@ -169,7 +161,6 @@ steps:
       PYTHON: '$(pythonLocation)\python.exe'
       npm_config_python: '$(pythonLocation)\python.exe'
       FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
-      FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
       # Force the copy_addon_to_prebuilds destination to the target-arch dir.
       # Without this, print-prebuild-dir.mjs uses the host Node.js process.arch
       # (x64) and the addon lands in prebuilds/win32-x64/ even when we are
@@ -184,7 +175,6 @@ steps:
     displayName: 'Build Node-API addon'
     env:
       FOUNDRY_LOCAL_LIB_DIR: '${{ parameters.nativeArtifactDir }}'
-      FOUNDRY_LOCAL_INCLUDE_DIR: '${{ parameters.includeArtifactDir }}'
       FOUNDRY_LOCAL_PREBUILD_DIR: '$(Build.SourcesDirectory)/sdk_v2/js/prebuilds/$(prebuildDir)'
 
 # Stage prebuilds/<plat>-<arch>/ with the two .node addons + foundry_local
@@ -273,13 +263,19 @@ steps:
       inlineOperation: |
         [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
 
-# Apple codesign via ESRP for macOS .node + .dylib. The exact keyCode +
-# operationSetCode combination depends on the configured ESRP Mac signing
-# policy; this is a placeholder using a commonly-provisioned Mac policy.
-# Adjust during first pipeline run if the policy isn't provisioned.
+# ESRP requires a ZIP or DMG transport for macOS signing. libfoundry_local.dylib
+# is already signed in cpp_build_osx_arm64 before the shared native artifact is
+# published, so this archive contains only the two JS addons.
 - ${{ if eq(parameters.signMac, true) }}:
+  - bash: |
+      set -euo pipefail
+      rm -f foundry_local_node_addons.zip
+      zip foundry_local_node_addons.zip foundry_local_node.node foundry_local_preload.node
+    displayName: 'Zip macOS JS addons for signing'
+    workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
-    displayName: 'Sign macOS JS addon (.node) + libfoundry_local.dylib'
+    displayName: 'Sign macOS JS addon ZIP'
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
       UseMSIAuthentication: true
@@ -289,10 +285,30 @@ steps:
       AuthAKVName: '$(esrpAkvName)'
       AuthSignCertName: '$(esrpSignCertName)'
       FolderPath: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
-      Pattern: '*.node;libfoundry_local.dylib'
+      Pattern: 'foundry_local_node_addons.zip'
       SessionTimeout: 90
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
       MaxConcurrency: 25
       signConfigType: inlineSignParams
       inlineOperation: |
-        [{"keyCode":"CP-401337","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"1.0"}]
+        [{"keyCode":"CP-401337-Apple","operationSetCode":"MacAppDeveloperSign","parameters":[{"parameterName":"Hardening","parameterValue":"--options=runtime"}],"toolName":"sign","toolVersion":"6.2.9304.0"}]
+
+  - bash: |
+      set -euo pipefail
+      unzip -o foundry_local_node_addons.zip
+      rm -- foundry_local_node_addons.zip
+    displayName: 'Extract signed macOS JS addons'
+    workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
+
+  - bash: |
+      set -euo pipefail
+      for addon in foundry_local_node.node foundry_local_preload.node; do
+        path='${{ parameters.outputDir }}/prebuilds/$(prebuildDir)/'"$addon"
+        codesign --verify --strict --verbose=2 "$path"
+        signature=$(codesign --display --verbose=4 "$path" 2>&1)
+        echo "$signature"
+        grep -q '^Authority=Developer ID Application:' <<<"$signature"
+        grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$signature"
+        grep -q '^Timestamp=' <<<"$signature"
+      done
+    displayName: 'Verify macOS JS addon signatures'

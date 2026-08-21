@@ -357,9 +357,6 @@ void WebService::Stop() {
     return;
   }
 
-  // Join streaming threads first — they may still be pushing to SSE bodies.
-  impl_->thread_tracker.JoinAll();
-
   // Stop accepting new connections first, then stop server loops.
   for (auto& provider : impl_->providers) {
     provider->stop();
@@ -379,6 +376,14 @@ void WebService::Stop() {
   if (impl_->connection_handler) {
     impl_->connection_handler->stop();
   }
+
+  // Join streaming worker threads only after the acceptor and handler workers are fully stopped. A streaming
+  // handler spawns a std::thread and then calls tracker.Track() synchronously before returning its Response. If we
+  // joined while handlers were still live, a handler could reach Track() after JoinAll() took its snapshot, leaving
+  // a joinable thread in the tracker that nothing joins — its destruction would call std::terminate. Quiescing the
+  // handlers first makes the tracker contents final before we drain them. This can't deadlock: SseStreamBody::Push
+  // is non-blocking, and CancelAll() (run before Stop) unwinds in-flight generation so the workers finish promptly.
+  impl_->thread_tracker.JoinAll();
 
   for (auto& thread : impl_->listener_threads) {
     if (thread.joinable()) {

@@ -14,9 +14,9 @@ namespace fl::platform {
 #ifdef _WIN32
 /// Set the directory used for subsequent bare-name dynamic library loads.
 bool SetDynamicLibrarySearchDirectory(const std::filesystem::path& directory, ILogger& logger);
-#else
+#endif
+
 /// Load one shared library and keep it resident for the lifetime of the returned handle.
 std::shared_ptr<void> LoadSharedLibrary(const std::filesystem::path& path, fl::ILogger& logger);
-#endif
 
 }  // namespace fl::platform

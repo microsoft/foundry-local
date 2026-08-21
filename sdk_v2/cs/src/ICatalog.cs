@@ -43,7 +43,7 @@ public interface ICatalog
     /// Get a list of currently downloaded models from the model cache.
     /// </summary>
     /// <param name="ct">Optional CancellationToken.</param>
-    /// <returns>List of IModel instances.</returns>
+    /// <returns>One IModel instance per cached model variant.</returns>
     Task<List<IModel>> GetCachedModelsAsync(CancellationToken? ct = null);
 
     /// <summary>
@@ -52,6 +52,16 @@ public interface ICatalog
     /// <param name="ct">Optional CancellationToken.</param>
     /// <returns>List of IModel instances.</returns>
     Task<List<IModel>> GetLoadedModelsAsync(CancellationToken? ct = null);
+
+    /// <summary>
+    /// Get the set of available versions for a model alias, optionally filtered by variant name.
+    /// </summary>
+    /// <param name="modelAlias">Model alias.</param>
+    /// <param name="modelName">Optional exact variant name filter; null matches all variants.</param>
+    /// <param name="maxVersions">Maximum number of versions to return per variant name. Use 0 or a negative value to return all versions.</param>
+    /// <param name="ct">Optional CancellationToken.</param>
+    /// <returns>Available model versions matching the alias and variant filter.</returns>
+    Task<List<IModel>> GetModelVersionsAsync(string modelAlias, string? modelName = null, int maxVersions = 50, CancellationToken? ct = null);
 
     /// <summary>
     /// Get the latest version of a model.

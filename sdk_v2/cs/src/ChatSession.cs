@@ -25,14 +25,25 @@ public sealed class ChatSession : Session
     /// </summary>
     /// <param name="model">A loaded model whose task is "chat-completion" or "vision-language-chat".</param>
     /// <exception cref="ArgumentException">If the model's task is not a supported chat task.</exception>
-    public ChatSession(IModel model) : base(model)
+    public ChatSession(IModel model) : base(ValidateTask(model))
     {
+    }
+
+    // Validate the model's task BEFORE the base Session constructor runs. The base
+    // constructor calls into native to create the session; checking first surfaces a
+    // wrong-task model as an ArgumentException rather than a native error, and keeps
+    // validation consistent across the typed sessions.
+    private static IModel ValidateTask(IModel model)
+    {
+        Detail.Throw.IfNull(model);
         if (model.Info.Task != "chat-completion" && model.Info.Task != "vision-language-chat")
         {
             throw new ArgumentException(
                 $"ChatSession requires a model with task 'chat-completion' or 'vision-language-chat', but got '{model.Info.Task}'.",
                 nameof(model));
         }
+
+        return model;
     }
 
     /// <summary>

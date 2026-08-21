@@ -51,6 +51,7 @@ add_executable(foundry_local_tests
     internal_api/sha256_test.cc
     internal_api/sse_stream_body_test.cc
     internal_api/azure_catalog_test.cc
+    internal_api/azure_model_catalog_test.cc
     internal_api/telemetry_test.cc
     internal_api/tensor_test.cc
     internal_api/chat/search_options_test.cc
@@ -182,6 +183,13 @@ target_link_libraries(sdk_integration_tests
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sdk_integration_tests PRIVATE -Wl,--disable-new-dtags)
+endif()
+
+# On Android the ORT/GenAI prebuilts statically link libc++ but export its symbols WEAK.
+# Without this, the executable's own static libc++ symbols (e.g. std::locale::use_facet) are
+# exported GLOBAL and interpose the prebuilts' weak copies.
+if(ANDROID)
+    target_link_options(sdk_integration_tests PRIVATE -Wl,--exclude-libs,ALL)
 endif()
 
 add_custom_command(TARGET sdk_integration_tests POST_BUILD

@@ -59,6 +59,7 @@ static_assert(sizeof(ResponseObject) == 832,
 }  // namespace fl
 
 #include "exception.h"
+#include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -290,6 +291,29 @@ std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& 
            "input_image content requires a non-empty image_url, image_data, or file_id");
 }
 
+std::unique_ptr<AudioItem> MakeAudioItemFromInputAudio(const InputAudioContent& c) {
+  if (c.data.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "input_audio data must not be empty");
+  }
+  if (c.format.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "input_audio format must not be empty");
+  }
+
+  std::vector<std::uint8_t> bytes;
+  try {
+    bytes = Azure::Core::Convert::Base64Decode(c.data);
+  } catch (const std::exception& e) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             std::string("input_audio has invalid base64 payload: ") + e.what());
+  }
+
+  if (bytes.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "input_audio decoded to zero bytes");
+  }
+
+  return std::make_unique<AudioItem>(std::move(bytes), c.format);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -303,10 +327,7 @@ static void AddTypedInputItems(Request& request,
       auto i = std::make_unique<ToolResultItem>(fc_result->call_id, fc_result->output);
       request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
-      // Build typed parts from the message's content array. Text and image
-      // parts are forwarded; other content variants (file, audio) are
-      // rejected at the converter so we fail fast rather than silently
-      // dropping content.
+      // Build typed parts from the message's content array.
       std::vector<std::unique_ptr<Item>> parts;
       bool has_text = false;
       for (const auto& c : msg->content) {
@@ -317,9 +338,11 @@ static void AddTypedInputItems(Request& request,
           }
         } else if (auto* ic = std::get_if<InputImageContent>(&c)) {
           parts.push_back(MakeImageItemFromInputImage(*ic));
+        } else if (auto* ac = std::get_if<InputAudioContent>(&c)) {
+          parts.push_back(MakeAudioItemFromInputAudio(*ac));
         } else {
           FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-                   "input message content type not supported (only input_text and input_image)");
+                   "input message content type not supported (only input_text, input_image, and input_audio)");
         }
       }
 
