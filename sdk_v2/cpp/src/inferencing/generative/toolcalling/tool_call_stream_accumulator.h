@@ -2,9 +2,11 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/generative/toolcalling/tool_call_config.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 
 #include <algorithm>
+#include <regex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +50,13 @@ class ToolCallStreamAccumulator {
   ToolCallStreamAccumulator(std::string start_marker, std::string end_marker)
       : start_marker_(std::move(start_marker)), end_marker_(std::move(end_marker)) {}
 
+  /// Construct with a ToolCallConfig for header-inspection (Harmony) or simple (ChatML) mode.
+  /// In header-inspection mode, start_marker is the bot marker and end_tokens come from config.
+  ToolCallStreamAccumulator(std::string start_marker, std::string end_marker, ToolCallConfig config)
+      : start_marker_(std::move(start_marker)),
+        end_marker_(std::move(end_marker)),
+        config_(std::move(config)) {}
+
   /// Feed a chunk into the accumulator. Returns visible text and any tool calls completed by this chunk.
   Output Push(const std::string& chunk) {
     Output out;
@@ -63,7 +72,12 @@ class ToolCallStreamAccumulator {
     }
 
     buffer_ += chunk;
-    Drain(out, /*flushing=*/false);
+
+    if (config_.mode == ToolCallConfig::Mode::kHeaderInspection) {
+      DrainHeaderInspection(out, /*flushing=*/false);
+    } else {
+      Drain(out, /*flushing=*/false);
+    }
 
     return out;
   }
@@ -77,7 +91,11 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
-    Drain(out, /*flushing=*/true);
+    if (config_.mode == ToolCallConfig::Mode::kHeaderInspection) {
+      DrainHeaderInspection(out, /*flushing=*/true);
+    } else {
+      Drain(out, /*flushing=*/true);
+    }
 
     return out;
   }
@@ -180,6 +198,162 @@ class ToolCallStreamAccumulator {
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;
+
+  ToolCallConfig config_;  // default = Simple mode
+
+  // --- Header-inspection mode state ---
+  enum class HState { Idle, InHeader, InBody };
+  HState hstate_ = HState::Idle;
+  std::string header_buffer_;     // header text between bot marker and message_token
+  std::string body_buffer_;       // body text between message_token and end_token
+  std::string extracted_name_;    // function name extracted from header regex
+
+  /// Header-inspection state machine for Harmony-style models.
+  /// States: Idle → InHeader → InBody → (emit) → Idle
+  void DrainHeaderInspection(Output& out, bool flushing) {
+    while (true) {
+      switch (hstate_) {
+        case HState::Idle: {
+          // Look for the start marker (bot token)
+          size_t found = buffer_.find(start_marker_);
+          if (found != std::string::npos) {
+            // Emit everything before the marker as visible text
+            if (found > 0) {
+              out.visible_text.append(buffer_, 0, found);
+            }
+            buffer_.erase(0, found + start_marker_.size());
+            hstate_ = HState::InHeader;
+            header_buffer_.clear();
+            continue;
+          }
+
+          if (flushing) {
+            out.visible_text.append(buffer_);
+            buffer_.clear();
+            return;
+          }
+
+          // Hold back suffix that could grow into start_marker
+          size_t hold = LongestSuffixThatIsPrefixOf(buffer_, start_marker_);
+          size_t safe = buffer_.size() - hold;
+          if (safe > 0) {
+            out.visible_text.append(buffer_, 0, safe);
+            buffer_.erase(0, safe);
+          }
+          return;
+        }
+
+        case HState::InHeader: {
+          // Accumulate until we see the message_token
+          size_t msg_pos = buffer_.find(config_.message_token);
+          if (msg_pos != std::string::npos) {
+            header_buffer_.append(buffer_, 0, msg_pos);
+            buffer_.erase(0, msg_pos + config_.message_token.size());
+
+            // Trim header at channel_token if present (e.g., "assistant to=functions.foo<|channel|>default")
+            std::string header_to_match = header_buffer_;
+            if (!config_.channel_token.empty()) {
+              size_t ch_pos = header_to_match.find(config_.channel_token);
+              if (ch_pos != std::string::npos) {
+                header_to_match = header_to_match.substr(0, ch_pos);
+              }
+            }
+
+            // Try to extract function name from header
+            std::smatch match;
+            std::regex re(config_.header_regex);
+            if (std::regex_search(header_to_match, match, re) && match.size() > 1) {
+              // This is a tool call — extract name, transition to InBody
+              extracted_name_ = match[1].str();
+              body_buffer_.clear();
+              hstate_ = HState::InBody;
+            } else {
+              // Not a tool call — this is regular assistant text.
+              // Emit the header content as visible text and look for end token to return to Idle.
+              out.visible_text.append(header_buffer_);
+              out.visible_text.append(config_.message_token);
+              header_buffer_.clear();
+              hstate_ = HState::Idle;
+            }
+            continue;
+          }
+
+          if (flushing) {
+            // Unterminated header — emit as visible text
+            out.visible_text.append(start_marker_);
+            out.visible_text.append(header_buffer_);
+            out.visible_text.append(buffer_);
+            header_buffer_.clear();
+            buffer_.clear();
+            hstate_ = HState::Idle;
+            return;
+          }
+
+          // Buffer everything — header not complete yet
+          header_buffer_.append(buffer_);
+          buffer_.clear();
+          return;
+        }
+
+        case HState::InBody: {
+          // Accumulate until we see any end token
+          size_t best_pos = std::string::npos;
+          size_t best_len = 0;
+          for (const auto& end_tok : config_.end_tokens) {
+            size_t pos = buffer_.find(end_tok);
+            if (pos != std::string::npos && (best_pos == std::string::npos || pos < best_pos)) {
+              best_pos = pos;
+              best_len = end_tok.size();
+            }
+          }
+
+          if (best_pos != std::string::npos) {
+            // Found end token — finalize the tool call
+            body_buffer_.append(buffer_, 0, best_pos);
+            buffer_.erase(0, best_pos + best_len);
+
+            // Emit as a parsed tool call
+            ParsedToolCall call;
+            call.name = extracted_name_;
+            call.arguments = body_buffer_;
+            call.id = GenerateToolCallId();
+            out.ready_calls.push_back(std::move(call));
+
+            body_buffer_.clear();
+            extracted_name_.clear();
+            hstate_ = HState::Idle;
+            continue;
+          }
+
+          if (flushing) {
+            // Unterminated body — emit everything as visible text (not a valid tool call)
+            out.visible_text.append(start_marker_);
+            out.visible_text.append(header_buffer_);
+            out.visible_text.append(config_.message_token);
+            out.visible_text.append(body_buffer_);
+            out.visible_text.append(buffer_);
+            header_buffer_.clear();
+            body_buffer_.clear();
+            buffer_.clear();
+            hstate_ = HState::Idle;
+            return;
+          }
+
+          // Buffer body content, hold back suffix that could be an end token prefix
+          size_t hold = 0;
+          for (const auto& end_tok : config_.end_tokens) {
+            hold = std::max(hold, LongestSuffixThatIsPrefixOf(buffer_, end_tok));
+          }
+          size_t safe = buffer_.size() - hold;
+          if (safe > 0) {
+            body_buffer_.append(buffer_, 0, safe);
+            buffer_.erase(0, safe);
+          }
+          return;
+        }
+      }
+    }
+  }
 };
 
 }  // namespace fl
