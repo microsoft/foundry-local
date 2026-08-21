@@ -56,6 +56,15 @@ bool IsTruthyConfigValue(const std::string& value) {
   return lowered == "true" || lowered == "1" || lowered == "yes";
 }
 
+bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& key) {
+  const auto it = config.additional_options.find(key);
+  if (it == config.additional_options.end()) {
+    return false;
+  }
+
+  return IsTruthyConfigValue(it->second);
+}
+
 bool IsGenAIVerboseLoggingEnabled() {
   auto env = Utils::GetEnv("ORTGENAI_ORT_VERBOSE_LOGGING");
   if (!env.has_value()) {
@@ -63,11 +72,6 @@ bool IsGenAIVerboseLoggingEnabled() {
   }
 
   return IsTruthyConfigValue(*env);
-}
-
-bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& option_name) {
-  const auto it = config.additional_options.find(option_name);
-  return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
 }
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
