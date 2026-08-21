@@ -62,6 +62,8 @@ stages:
   - job: build
     pool:
       name: onnxruntime-native-arm64-16core
+      demands:
+        - ImageOverride -equals onnxruntime-Win2025-arm64
       os: windows
       hostArchitecture: arm64
     variables:
@@ -223,6 +225,8 @@ stages:
   - job: test
     pool:
       name: onnxruntime-native-arm64-16core
+      demands:
+        - ImageOverride -equals onnxruntime-Win2025-arm64
       os: windows
       hostArchitecture: arm64
     templateContext:
