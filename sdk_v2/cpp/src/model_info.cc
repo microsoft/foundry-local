@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "model_info.h"
 
+#include "util/string_utils.h"
+
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 
@@ -25,22 +27,32 @@ std::string DeviceTypeToString(DeviceType dt) {
   }
 }
 
-namespace {
+DeviceType DeviceTypeFromString(std::string_view device_type) {
+  const auto normalized = ToLower(std::string(device_type));
 
-DeviceType DeviceTypeFromString(const std::string& s) {
-  if (s == "CPU") {
+  if (normalized == "cpu") {
     return DeviceType::kCPU;
   }
 
-  if (s == "GPU") {
+  if (normalized == "gpu") {
     return DeviceType::kGPU;
   }
 
-  if (s == "NPU") {
+  if (normalized == "npu") {
     return DeviceType::kNPU;
   }
 
   return DeviceType::kNotSet;
+}
+
+namespace {
+
+std::string DeviceTypeToMetadataString(DeviceType device_type) {
+  return ToLower(DeviceTypeToString(device_type));
+}
+
+bool HasMeaningfulVariantMetadata(const ModelVariantMetadata& metadata) {
+  return metadata.model_format.has_value() || metadata.model_package.has_value();
 }
 
 /// Read a string field from JSON into a string_properties entry.
@@ -71,6 +83,78 @@ void ReadBoolProp(const nlohmann::json& j, const char* json_key,
 }
 
 }  // anonymous namespace
+
+void to_json(nlohmann::json& j, const ModelPackageVariant& variant) {
+  j = nlohmann::json{
+      {"name", variant.name},
+      {"executionProvider", variant.execution_provider},
+      {"compatibilityString", variant.compatibility_string},
+  };
+
+  if (variant.device_type != DeviceType::kNotSet) {
+    j["device"] = DeviceTypeToMetadataString(variant.device_type);
+  }
+}
+
+void from_json(const nlohmann::json& j, ModelPackageVariant& variant) {
+  if (j.contains("name") && j["name"].is_string()) {
+    variant.name = j["name"].get<std::string>();
+  }
+
+  if (j.contains("executionProvider") && j["executionProvider"].is_string()) {
+    variant.execution_provider = j["executionProvider"].get<std::string>();
+  }
+
+  if (j.contains("device") && j["device"].is_string()) {
+    variant.device_type = DeviceTypeFromString(j["device"].get<std::string>());
+  }
+
+  if (j.contains("compatibilityString") && j["compatibilityString"].is_string()) {
+    variant.compatibility_string = j["compatibilityString"].get<std::string>();
+  }
+}
+
+void to_json(nlohmann::json& j, const ModelPackageMetadata& metadata) {
+  j = nlohmann::json{
+      {"variants", metadata.variants},
+  };
+
+  if (metadata.schema_version.has_value()) {
+    j["schemaVersion"] = *metadata.schema_version;
+  }
+}
+
+void from_json(const nlohmann::json& j, ModelPackageMetadata& metadata) {
+  if (j.contains("schemaVersion") && j["schemaVersion"].is_number_integer()) {
+    metadata.schema_version = j["schemaVersion"].get<int>();
+  }
+
+  if (j.contains("variants") && j["variants"].is_array()) {
+    metadata.variants = j["variants"].get<std::vector<ModelPackageVariant>>();
+  }
+}
+
+void to_json(nlohmann::json& j, const ModelVariantMetadata& metadata) {
+  j = nlohmann::json::object();
+
+  if (metadata.model_format.has_value()) {
+    j["modelFormat"] = *metadata.model_format;
+  }
+
+  if (metadata.model_package.has_value()) {
+    j["modelPackage"] = *metadata.model_package;
+  }
+}
+
+void from_json(const nlohmann::json& j, ModelVariantMetadata& metadata) {
+  if (j.contains("modelFormat") && j["modelFormat"].is_string()) {
+    metadata.model_format = j["modelFormat"].get<std::string>();
+  }
+
+  if (j.contains("modelPackage") && j["modelPackage"].is_object()) {
+    metadata.model_package = j["modelPackage"].get<ModelPackageMetadata>();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // JSON deserialization for ModelInfo
@@ -104,6 +188,13 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j) {
 
   if (j.contains("detectedRegion") && j["detectedRegion"].is_string()) {
     info.detected_region = j["detectedRegion"].get<std::string>();
+  }
+
+  if (j.contains("variantMetadata") && j["variantMetadata"].is_object()) {
+    auto metadata = j["variantMetadata"].get<ModelVariantMetadata>();
+    if (HasMeaningfulVariantMetadata(metadata)) {
+      info.variant_metadata = std::move(metadata);
+    }
   }
 
   // String properties — named top-level fields → string_properties map
@@ -206,6 +297,10 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   // detectedRegion — only emit when set so BYO models and pre-region caches are unaffected.
   if (!info.detected_region.empty()) {
     j["detectedRegion"] = info.detected_region;
+  }
+
+  if (info.variant_metadata.has_value() && HasMeaningfulVariantMetadata(*info.variant_metadata)) {
+    j["variantMetadata"] = *info.variant_metadata;
   }
 
   // providerType — required in C#, defaults to empty

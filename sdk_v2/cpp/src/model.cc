@@ -320,9 +320,20 @@ void Model::Load(ExecutionProvider ep) {
     return;
   }
 
+  // Only model packages need the catalog EP: it selects the package variant via
+  // OgaConfig::CreateFromPackageEp. Flat models keep kDefault so the load manager's own
+  // resolution still runs — notably the generic-gpu CUDA/WebGPU preference, which is skipped
+  // once the EP is no longer kDefault.
+  if (ep == ExecutionProvider::kDefault && info_.IsModelPackage() && !info_.execution_provider.empty()) {
+    const auto catalog_ep = EPUtils::StringtoEP(info_.execution_provider);
+    if (catalog_ep != ExecutionProvider::kUnknown) {
+      ep = catalog_ep;
+    }
+  }
+
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, info_.model_id, ep);
+  auto result = model_load_manager_->LoadModel(local_path_, info_.model_id, ep, info_.task);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);

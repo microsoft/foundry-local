@@ -8,9 +8,12 @@
 //
 #include "catalog/azure_catalog_client.h"
 #include "catalog/azure_catalog_models.h"
+#include "catalog/azure_model_catalog.h"
+#include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
+#include "internal_api/test_helpers.h"
 #include "logger.h"
 #include "model_info.h"
 
@@ -18,9 +21,22 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
 using namespace fl;
 
 namespace {
+
+namespace fs = std::filesystem;
 
 http::HttpResponse MakeOkResponse(std::string body) {
   http::HttpResponse response;
@@ -28,6 +44,246 @@ http::HttpResponse MakeOkResponse(std::string body) {
   response.body = std::move(body);
   return response;
 }
+
+ModelPackageVariant MakePackageVariant(std::string name,
+                                       std::string execution_provider,
+                                       DeviceType device_type,
+                                       std::string compatibility_string) {
+  ModelPackageVariant variant;
+  variant.name = std::move(name);
+  variant.execution_provider = std::move(execution_provider);
+  variant.device_type = device_type;
+  variant.compatibility_string = std::move(compatibility_string);
+  return variant;
+}
+
+ModelVariantMetadata MakeModelPackageMetadata(std::initializer_list<ModelPackageVariant> variants,
+                                              std::string model_format = "ort-model-package",
+                                              std::optional<int> schema_version = 1) {
+  ModelVariantMetadata metadata;
+  metadata.model_format = std::move(model_format);
+
+  ModelPackageMetadata package;
+  package.schema_version = schema_version;
+  package.variants.assign(variants.begin(), variants.end());
+  metadata.model_package = std::move(package);
+
+  return metadata;
+}
+
+ModelInfo MakeCatalogModelInfo(std::string model_id,
+                               std::string name,
+                               int version,
+                               std::string alias,
+                               std::string execution_provider = "CPUExecutionProvider",
+                               DeviceType device_type = DeviceType::kCPU,
+                               std::optional<ModelVariantMetadata> variant_metadata = std::nullopt) {
+  ModelInfo info;
+  info.model_id = std::move(model_id);
+  info.name = std::move(name);
+  info.version = version;
+  info.alias = std::move(alias);
+  info.uri = "azureml://test/" + info.model_id;
+  info.execution_provider = std::move(execution_provider);
+  info.device_type = device_type;
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
+  info.variant_metadata = std::move(variant_metadata);
+  return info;
+}
+
+Model MakeTestModel(ModelInfo info, std::string local_path) {
+  static fl::test::FakeServiceBindings services;
+  return Model::FromModelInfo(std::move(info),
+                              std::move(local_path),
+                              services.download_manager,
+                              services.model_load_manager);
+}
+
+struct FakeCatalogClientState {
+  std::vector<ModelInfo> all_models;
+  std::vector<ModelInfo> id_models;
+  std::vector<ModelInfo> version_models;
+  int fetch_all_calls = 0;
+  int fetch_models_by_id_calls = 0;
+  int fetch_versions_calls = 0;
+  std::vector<std::vector<std::string>> requested_id_batches;
+};
+
+class FakeCatalogClient : public ICatalogClient {
+ public:
+  explicit FakeCatalogClient(std::shared_ptr<FakeCatalogClientState> state)
+      : state_(std::move(state)) {}
+
+  std::vector<ModelInfo> FetchAllModelInfos() override {
+    ++state_->fetch_all_calls;
+    return state_->all_models;
+  }
+
+  std::vector<ModelInfo> FetchModelsByIds(const std::vector<std::string>& model_ids) override {
+    ++state_->fetch_models_by_id_calls;
+    state_->requested_id_batches.push_back(model_ids);
+
+    std::vector<ModelInfo> result;
+    for (const auto& info : state_->id_models) {
+      if (std::find(model_ids.begin(), model_ids.end(), info.model_id) != model_ids.end()) {
+        result.push_back(info);
+      }
+    }
+
+    return result;
+  }
+
+  std::vector<ModelInfo> FetchAllVersionsByAlias(const std::string& model_alias,
+                                                 const std::string& model_name,
+                                                 int /*max_versions*/) override {
+    ++state_->fetch_versions_calls;
+
+    std::vector<ModelInfo> result;
+    for (const auto& info : state_->version_models) {
+      if (info.alias != model_alias) {
+        continue;
+      }
+
+      if (!model_name.empty() && info.name != model_name) {
+        continue;
+      }
+
+      result.push_back(info);
+    }
+
+    return result;
+  }
+
+ private:
+  std::shared_ptr<FakeCatalogClientState> state_;
+};
+
+/// Catalog that serves every request from an in-memory FakeCatalogClient.
+class FakeClientAzureModelCatalog final : public AzureModelCatalog {
+ public:
+  FakeClientAzureModelCatalog(std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
+                              std::string cache_dir,
+                              ModelFactory model_factory,
+                              const IEpDetector& ep_detector,
+                              ILogger& logger,
+                              bool cache_only,
+                              std::shared_ptr<FakeCatalogClientState> state)
+      : AzureModelCatalog(std::move(catalog_urls), std::move(cache_dir), std::move(model_factory), ep_detector, logger,
+                          cache_only, "eastus", false),
+        state_(std::move(state)) {}
+
+ protected:
+  std::unique_ptr<ICatalogClient> CreateCatalogClient(const std::string& /*url*/,
+                                                      const std::string& /*filter*/) const override {
+    return std::make_unique<FakeCatalogClient>(state_);
+  }
+
+ private:
+  std::shared_ptr<FakeCatalogClientState> state_;
+};
+
+class CompatibilityEpDetector : public IEpDetector {
+ public:
+  struct Call {
+    std::string execution_provider;
+    std::optional<DeviceType> device_type;
+    std::string compatibility_string;
+  };
+
+  explicit CompatibilityEpDetector(
+      std::map<std::string, CompiledModelCompatibility> compatibilities,
+      std::map<std::string, std::vector<std::string>> devices = {{"CPU", {"CPUExecutionProvider"}}})
+      : compatibilities_(std::move(compatibilities)),
+        devices_(std::move(devices)) {}
+
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return devices_;
+  }
+
+  CompiledModelCompatibility GetModelCompatibilityForEpDevices(
+      std::string_view execution_provider,
+      std::optional<DeviceType> device_type,
+      std::string_view compatibility_string) const override {
+    calls_.push_back(Call{
+        std::string(execution_provider),
+        device_type,
+        std::string(compatibility_string),
+    });
+
+    const auto it = compatibilities_.find(std::string(compatibility_string));
+    if (it != compatibilities_.end()) {
+      return it->second;
+    }
+
+    return CompiledModelCompatibility::kUnknown;
+  }
+
+  mutable std::vector<Call> calls_;
+
+ private:
+  std::map<std::string, CompiledModelCompatibility> compatibilities_;
+  std::map<std::string, std::vector<std::string>> devices_;
+};
+
+class AzureModelCatalogCompatibilityTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    const auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    test_dir_ = (fs::temp_directory_path() /
+                 ("fl_azure_model_catalog_" + std::to_string(unique_suffix))).string();
+    fs::create_directories(test_dir_);
+  }
+
+  void TearDown() override {
+    std::error_code ec;
+    fs::remove_all(test_dir_, ec);
+  }
+
+  std::unique_ptr<AzureModelCatalog> MakeCatalog(
+      const IEpDetector& detector,
+      bool cache_only,
+      std::shared_ptr<FakeCatalogClientState> state = std::make_shared<FakeCatalogClientState>()) {
+    return std::make_unique<FakeClientAzureModelCatalog>(
+        std::vector<std::pair<std::string, std::optional<std::string>>>{
+            {"https://test.com", std::nullopt},
+        },
+        test_dir_,
+        MakeTestModel,
+        detector,
+        logger_,
+        cache_only,
+        std::move(state));
+  }
+
+  void SaveCache(const std::vector<ModelInfo>& models) {
+    CatalogCache cache(test_dir_, logger_);
+    cache.Save(models);
+  }
+
+  void CreateScannedFlatModel(const std::string& model_id) {
+    const fs::path model_root = fs::path(test_dir_) / "publisher" / "model";
+    fs::create_directories(model_root);
+
+    {
+      std::ofstream genai_config(model_root / "genai_config.json", std::ios::trunc);
+      ASSERT_TRUE(genai_config.is_open());
+      genai_config << "{}";
+    }
+
+    {
+      nlohmann::json inference_model;
+      inference_model["Name"] = model_id;
+
+      std::ofstream file(model_root / "inference_model.json", std::ios::trunc);
+      ASSERT_TRUE(file.is_open());
+      file << inference_model.dump(2);
+    }
+  }
+
+  std::string test_dir_;
+  StderrLogger logger_;
+};
 
 }  // namespace
 
@@ -258,6 +514,88 @@ TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "FoundryLocal");
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 4096);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT), 4096);  // 4GB → 4096 MB
+}
+
+TEST(AzureCatalogClientTest, ParsesOrtModelPackageMetadataIntoTypedModelInfo) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+
+  const char* mock_response = R"({
+    "indexEntitiesResponse": {
+      "totalCount": 1,
+      "value": [{
+        "assetId": "azureml://registries/azureml/models/phi-4-mini-ort-package/versions/1",
+        "entityId": "phi-4-mini-ort-package:1",
+        "annotations": {
+          "tags": {
+            "alias": "phi-4-mini-ort-package"
+          }
+        },
+        "properties": {
+          "name": "phi-4-mini-ort-package",
+          "version": 1,
+          "variantInfo": {
+            "parents": [],
+            "variantMetadata": {
+              "modelType": "ONNX",
+              "device": "cpu",
+              "executionProvider": "CPUExecutionProvider",
+              "modelFormat": "ort-model-package",
+              "modelPackage": {
+                "schemaVersion": 7,
+                "variants": [
+                  {
+                    "name": "cpu-compiled",
+                    "executionProvider": "CPUExecutionProvider",
+                    "device": "cpu",
+                    "compatibilityString": "compat-a"
+                  },
+                  {
+                    "name": "gpu-compiled",
+                    "executionProvider": "CUDAExecutionProvider",
+                    "device": "gpu",
+                    "compatibilityString": "compat-b"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }],
+      "nextSkip": 0,
+      "continuationToken": ""
+    }
+  })";
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
+
+  auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 1u);
+
+  const auto& info = model_infos[0];
+  ASSERT_TRUE(info.variant_metadata.has_value());
+  ASSERT_TRUE(info.variant_metadata->model_format.has_value());
+  EXPECT_EQ(*info.variant_metadata->model_format, "ort-model-package");
+
+  ASSERT_TRUE(info.variant_metadata->model_package.has_value());
+  ASSERT_TRUE(info.variant_metadata->model_package->schema_version.has_value());
+  EXPECT_EQ(*info.variant_metadata->model_package->schema_version, 7);
+
+  const auto& variants = info.variant_metadata->model_package->variants;
+  ASSERT_EQ(variants.size(), 2u);
+
+  EXPECT_EQ(variants[0].name, "cpu-compiled");
+  EXPECT_EQ(variants[0].execution_provider, "CPUExecutionProvider");
+  EXPECT_EQ(variants[0].device_type, DeviceType::kCPU);
+  EXPECT_EQ(variants[0].compatibility_string, "compat-a");
+
+  EXPECT_EQ(variants[1].name, "gpu-compiled");
+  EXPECT_EQ(variants[1].execution_provider, "CUDAExecutionProvider");
+  EXPECT_EQ(variants[1].device_type, DeviceType::kGPU);
+  EXPECT_EQ(variants[1].compatibility_string, "compat-b");
 }
 
 // Verify that invalid models (missing required fields) are filtered out
@@ -1090,4 +1428,246 @@ TEST(AzureCatalogClientTest, Fallback_MidPaginationFailureDoesNotCommitPartialFi
   auto models = client.FetchAllModels();
   EXPECT_EQ(calls, 2);
   EXPECT_TRUE(models.empty());
+}
+
+// ========================================================================
+// AzureModelCatalog compatibility filtering tests
+// ========================================================================
+
+TEST_F(AzureModelCatalogCompatibilityTest, NormalListShowsModelWhenAnyRelevantPackageVariantIsCompatible) {
+  auto state = std::make_shared<FakeCatalogClientState>();
+  state->all_models.push_back(MakeCatalogModelInfo(
+      "compatible-model:1",
+      "compatible-model",
+      1,
+      "compatible-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "unsupported-cpu"),
+          MakePackageVariant("cpu-b", "CPUExecutionProvider", DeviceType::kCPU, "prefer-recompile"),
+      })));
+
+  CompatibilityEpDetector detector({
+      {"unsupported-cpu", CompiledModelCompatibility::kUnsupported},
+      {"prefer-recompile", CompiledModelCompatibility::kSupportedPreferRecompilation},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  auto models = catalog->ListModels();
+
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0]->Info().model_id, "compatible-model:1");
+  ASSERT_EQ(detector.calls_.size(), 2u);
+  EXPECT_EQ(detector.calls_[0].execution_provider, "CPUExecutionProvider");
+  ASSERT_TRUE(detector.calls_[0].device_type.has_value());
+  EXPECT_EQ(*detector.calls_[0].device_type, DeviceType::kCPU);
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, NormalListHidesModelWhenAllRelevantPackageVariantsUnsupported) {
+  auto state = std::make_shared<FakeCatalogClientState>();
+  state->all_models.push_back(MakeCatalogModelInfo(
+      "unsupported-model:1",
+      "unsupported-model",
+      1,
+      "unsupported-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "unsupported-a"),
+          MakePackageVariant("cpu-b", "CPUExecutionProvider", DeviceType::kCPU, "unsupported-b"),
+          MakePackageVariant("gpu-a", "CUDAExecutionProvider", DeviceType::kGPU, "supported-but-irrelevant"),
+      })));
+
+  CompatibilityEpDetector detector({
+      {"unsupported-a", CompiledModelCompatibility::kUnsupported},
+      {"unsupported-b", CompiledModelCompatibility::kUnsupported},
+      {"supported-but-irrelevant", CompiledModelCompatibility::kSupportedOptimal},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  auto models = catalog->ListModels();
+
+  EXPECT_TRUE(models.empty());
+  ASSERT_EQ(detector.calls_.size(), 2u);
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, NormalListFailsOpenForNotApplicableAndEmptyCompatibilityString) {
+  auto state = std::make_shared<FakeCatalogClientState>();
+  state->all_models.push_back(MakeCatalogModelInfo(
+      "not-applicable-model:1",
+      "not-applicable-model",
+      1,
+      "not-applicable-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "not-applicable"),
+      })));
+  state->all_models.push_back(MakeCatalogModelInfo(
+      "empty-compat-model:1",
+      "empty-compat-model",
+      1,
+      "empty-compat-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, ""),
+      })));
+
+  CompatibilityEpDetector detector({
+      {"not-applicable", CompiledModelCompatibility::kUnknown},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  auto models = catalog->ListModels();
+
+  ASSERT_EQ(models.size(), 2u);
+  ASSERT_EQ(detector.calls_.size(), 1u);
+  EXPECT_EQ(detector.calls_[0].compatibility_string, "not-applicable");
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, NormalListLeavesFlatModelsVisible) {
+  auto state = std::make_shared<FakeCatalogClientState>();
+
+  ModelVariantMetadata flat_metadata;
+  flat_metadata.model_format = "flat";
+
+  state->all_models.push_back(MakeCatalogModelInfo(
+      "flat-model:1",
+      "flat-model",
+      1,
+      "flat-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      flat_metadata));
+
+  CompatibilityEpDetector detector({
+      {"unused", CompiledModelCompatibility::kUnsupported},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  auto models = catalog->ListModels();
+
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0]->Info().model_id, "flat-model:1");
+  EXPECT_TRUE(detector.calls_.empty());
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, CacheOnlyModeRefiltersCachedMetadataOnEachRead) {
+  SaveCache({
+      MakeCatalogModelInfo(
+          "cached-package:1",
+          "cached-package",
+          1,
+          "cached-package",
+          "CPUExecutionProvider",
+          DeviceType::kCPU,
+          MakeModelPackageMetadata({
+              MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "cached-compat"),
+          })),
+  });
+
+  CompatibilityEpDetector unsupported_detector({
+      {"cached-compat", CompiledModelCompatibility::kUnsupported},
+  });
+  auto hidden_catalog = MakeCatalog(unsupported_detector, /*cache_only=*/true);
+  EXPECT_TRUE(hidden_catalog->ListModels().empty());
+
+  CompatibilityEpDetector supported_detector({
+      {"cached-compat", CompiledModelCompatibility::kSupportedOptimal},
+  });
+  auto visible_catalog = MakeCatalog(supported_detector, /*cache_only=*/true);
+  auto visible_models = visible_catalog->ListModels();
+
+  ASSERT_EQ(visible_models.size(), 1u);
+  EXPECT_EQ(visible_models[0]->Info().model_id, "cached-package:1");
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, FilteredCachedCatalogModelIsNotSynthesizedAsLocalByo) {
+  CreateScannedFlatModel("cached-package:1");
+
+  auto state = std::make_shared<FakeCatalogClientState>();
+  state->id_models.push_back(MakeCatalogModelInfo(
+      "cached-package:1",
+      "cached-package",
+      1,
+      "cached-package",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "cached-hidden"),
+      })));
+
+  CompatibilityEpDetector detector({
+      {"cached-hidden", CompiledModelCompatibility::kUnsupported},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  auto models = catalog->ListModels();
+
+  EXPECT_TRUE(models.empty());
+  EXPECT_EQ(state->fetch_all_calls, 1);
+  EXPECT_EQ(state->fetch_models_by_id_calls, 1);
+  ASSERT_EQ(state->requested_id_batches.size(), 1u);
+  ASSERT_EQ(state->requested_id_batches[0].size(), 1u);
+  EXPECT_EQ(state->requested_id_batches[0][0], "cached-package:1");
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, DirectIdLookupFiltersUnsupportedPackageModel) {
+  auto state = std::make_shared<FakeCatalogClientState>();
+  state->id_models.push_back(MakeCatalogModelInfo(
+      "lookup-model:1",
+      "lookup-model",
+      1,
+      "lookup-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "lookup-hidden"),
+      })));
+
+  CompatibilityEpDetector detector({
+      {"lookup-hidden", CompiledModelCompatibility::kUnsupported},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  EXPECT_EQ(catalog->GetModelVariant("lookup-model:1"), nullptr);
+  EXPECT_EQ(state->fetch_models_by_id_calls, 1);
+}
+
+TEST_F(AzureModelCatalogCompatibilityTest, VersionListingFiltersUnsupportedPackageVersions) {
+  auto state = std::make_shared<FakeCatalogClientState>();
+  state->version_models.push_back(MakeCatalogModelInfo(
+      "versioned-model:1",
+      "versioned-model",
+      1,
+      "versioned-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "version-hidden"),
+      })));
+  state->version_models.push_back(MakeCatalogModelInfo(
+      "versioned-model:2",
+      "versioned-model",
+      2,
+      "versioned-model",
+      "CPUExecutionProvider",
+      DeviceType::kCPU,
+      MakeModelPackageMetadata({
+          MakePackageVariant("cpu-a", "CPUExecutionProvider", DeviceType::kCPU, "version-visible"),
+      })));
+
+  CompatibilityEpDetector detector({
+      {"version-hidden", CompiledModelCompatibility::kUnsupported},
+      {"version-visible", CompiledModelCompatibility::kSupportedOptimal},
+  });
+
+  auto catalog = MakeCatalog(detector, /*cache_only=*/false, state);
+  auto versions = catalog->GetModelVersions("versioned-model", "", 0);
+
+  ASSERT_EQ(versions.size(), 1u);
+  EXPECT_EQ(versions[0]->Info().model_id, "versioned-model:2");
+  EXPECT_EQ(state->fetch_versions_calls, 1);
 }

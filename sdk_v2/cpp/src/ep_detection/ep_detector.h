@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,6 +23,15 @@ struct OrtApi;
 struct OrtEnv;
 
 namespace fl {
+
+enum class DeviceType : int;
+
+enum class CompiledModelCompatibility {
+  kUnknown = 0,
+  kSupportedOptimal,
+  kSupportedPreferRecompilation,
+  kUnsupported,
+};
 
 class ILogger;
 
@@ -59,6 +69,16 @@ class IEpDetector {
     return EpDownloadResult{false, false, "EP download not supported", {}, {}};
   }
 
+  /// Evaluate a precompiled model/package compatibility blob against the currently
+  /// registered OrtEpDevice instances for the requested EP and optional device class.
+  /// Default: unknown — callers must fail open on unknown results.
+  virtual CompiledModelCompatibility GetModelCompatibilityForEpDevices(
+      std::string_view /*execution_provider*/,
+      std::optional<DeviceType> /*device_type*/,
+      std::string_view /*compatibility_string*/) const {
+    return CompiledModelCompatibility::kUnknown;
+  }
+
   /// Whether an EP download/registration operation is currently in progress.
   /// Default: false.
   virtual bool IsDownloadInProgress() const { return false; }
@@ -89,6 +109,10 @@ class EpDetector : public IEpDetector {
   std::span<const flEpInfo> GetDiscoverableEpsCApi() const override;
   EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
                                           const IEpBootstrapper::ProgressCallback& progress_cb) override;
+  CompiledModelCompatibility GetModelCompatibilityForEpDevices(
+      std::string_view execution_provider,
+      std::optional<DeviceType> device_type,
+      std::string_view compatibility_string) const override;
   bool IsDownloadInProgress() const override;
   bool PrepareForModelLoad(std::string_view ep_name) override;
 

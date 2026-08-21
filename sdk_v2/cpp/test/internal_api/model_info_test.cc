@@ -42,6 +42,63 @@ TEST(ModelInfoRoundTrip, MissingDetectedRegionOmittedFromJsonAndParsesEmpty) {
   EXPECT_TRUE(restored.detected_region.empty());
 }
 
+TEST(ModelInfoRoundTrip, VariantMetadataSurvivesRoundTrip) {
+  ModelInfo original;
+  original.model_id = "package-model:1";
+  original.name = "package-model";
+  original.version = 1;
+  original.alias = "package-model";
+  original.uri = "azureml://test/package-model/1";
+
+  ModelPackageVariant cpu_variant;
+  cpu_variant.name = "cpu-compiled";
+  cpu_variant.execution_provider = "CPUExecutionProvider";
+  cpu_variant.device_type = DeviceType::kCPU;
+  cpu_variant.compatibility_string = "compat-a";
+
+  ModelPackageVariant gpu_variant;
+  gpu_variant.name = "gpu-compiled";
+  gpu_variant.execution_provider = "CUDAExecutionProvider";
+  gpu_variant.device_type = DeviceType::kGPU;
+  gpu_variant.compatibility_string = "compat-b";
+
+  ModelPackageMetadata package_metadata;
+  package_metadata.schema_version = 3;
+  package_metadata.variants = {cpu_variant, gpu_variant};
+
+  ModelVariantMetadata variant_metadata;
+  variant_metadata.model_format = "ort-model-package";
+  variant_metadata.model_package = package_metadata;
+  original.variant_metadata = variant_metadata;
+
+  nlohmann::json j = ModelInfoToJson(original);
+  ASSERT_TRUE(j.contains("variantMetadata"));
+  EXPECT_EQ(j["variantMetadata"]["modelFormat"], "ort-model-package");
+  EXPECT_EQ(j["variantMetadata"]["modelPackage"]["schemaVersion"], 3);
+  EXPECT_EQ(j["variantMetadata"]["modelPackage"]["variants"][0]["device"], "cpu");
+  EXPECT_EQ(j["variantMetadata"]["modelPackage"]["variants"][1]["device"], "gpu");
+
+  ModelInfo restored = ModelInfoFromJson(j);
+  ASSERT_TRUE(restored.variant_metadata.has_value());
+  ASSERT_TRUE(restored.variant_metadata->model_format.has_value());
+  EXPECT_EQ(*restored.variant_metadata->model_format, "ort-model-package");
+
+  ASSERT_TRUE(restored.variant_metadata->model_package.has_value());
+  ASSERT_TRUE(restored.variant_metadata->model_package->schema_version.has_value());
+  EXPECT_EQ(*restored.variant_metadata->model_package->schema_version, 3);
+
+  const auto& variants = restored.variant_metadata->model_package->variants;
+  ASSERT_EQ(variants.size(), 2u);
+  EXPECT_EQ(variants[0].name, "cpu-compiled");
+  EXPECT_EQ(variants[0].execution_provider, "CPUExecutionProvider");
+  EXPECT_EQ(variants[0].device_type, DeviceType::kCPU);
+  EXPECT_EQ(variants[0].compatibility_string, "compat-a");
+  EXPECT_EQ(variants[1].name, "gpu-compiled");
+  EXPECT_EQ(variants[1].execution_provider, "CUDAExecutionProvider");
+  EXPECT_EQ(variants[1].device_type, DeviceType::kGPU);
+  EXPECT_EQ(variants[1].compatibility_string, "compat-b");
+}
+
 TEST(ModelInfoRoundTrip, ReasoningFieldsSurviveRoundTrip) {
   ModelInfo original;
   original.model_id = "test-model:1";

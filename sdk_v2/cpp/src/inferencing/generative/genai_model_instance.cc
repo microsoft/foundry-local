@@ -19,35 +19,50 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
                                        std::string effective_model_path,
                                        GenAIConfig genai_config,
                                        ExecutionProvider resolved_ep,
+                                       bool is_model_package,
+                                       bool is_multimodal,
                                        ILogger& logger)
     : model_id_(std::move(model_id)),
       model_path_(std::move(effective_model_path)),
       genai_config_(std::move(genai_config)),
       ep_(resolved_ep),
+      is_model_package_(is_model_package),
+      is_multimodal_(is_multimodal),
       last_activity_(std::chrono::steady_clock::now()) {
-  // Create OGA Config from the effective model directory
   std::unique_ptr<OgaConfig> oga_config;
   try {
-    oga_config = OgaConfig::Create(model_path_.c_str());
+    if (is_model_package_) {
+      const auto provider = EPUtils::EPtoRegistrationName(ep_);
+      oga_config = OgaConfig::CreateFromPackageEp(model_path_.c_str(), provider.empty() ? nullptr : provider.data());
+    } else {
+      oga_config = OgaConfig::Create(model_path_.c_str());
+    }
   } catch (const std::runtime_error& e) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to create OGA config for model ", model_id_, ": ", e.what());
   }
 
-  // Apply EP override to the OGA config
-  if (ep_ != ExecutionProvider::kDefault) {
+  // Package variant selection consumes the EP while creating the config. Mutating providers afterward would not
+  // reselect the package variant and could run a compiled graph with the wrong EP.
+  // kCPU is excluded because EPtoGenAI returns "" for it; an empty provider list already means CPU.
+  if (!is_model_package_ && ep_ != ExecutionProvider::kDefault && ep_ != ExecutionProvider::kCPU) {
     try {
       oga_config->ClearProviders();
       std::string_view provider_str = EPUtils::EPtoGenAI(ep_);
       oga_config->AppendProvider(provider_str.data());
-
-      // Disable CUDA graph for CUDA EP (matches C# behavior)
-      if (ep_ == ExecutionProvider::kCUDA) {
-        oga_config->SetProviderOption("cuda", "enable_cuda_graph", "0");
-      }
     } catch (const std::runtime_error& e) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                        "failed to configure EP for model ", model_id_, ": ", e.what());
+    }
+  }
+
+  if (ep_ == ExecutionProvider::kCUDA) {
+    try {
+      // Provider options may be updated after package selection; only changing the provider list would invalidate it.
+      oga_config->SetProviderOption("cuda", "enable_cuda_graph", "0");
+    } catch (const std::runtime_error& e) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                       "failed to configure CUDA options for model ", model_id_, ": ", e.what());
     }
   }
 
@@ -77,7 +92,7 @@ GenAIModelInstance::~GenAIModelInstance() = default;
 // ---------------------------------------------------------------------------
 
 bool GenAIModelInstance::IsMultiModal() const {
-  return genai_config_.model.has_value() && genai_config_.model->IsMultiModal();
+  return is_multimodal_;
 }
 
 OgaModel& GenAIModelInstance::GetOgaModel() {
