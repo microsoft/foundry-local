@@ -19,7 +19,7 @@ pub mod openai;
 pub use self::catalog::Catalog;
 pub use self::configuration::{FoundryLocalConfig, LogLevel, Logger};
 pub use self::detail::model::{DownloadBuilder, Model};
-pub use self::error::FoundryLocalError;
+pub use self::error::{FoundryLocalError, NativeErrorCode};
 pub use self::foundry_local_manager::{EpDownloadBuilder, FoundryLocalManager};
 pub use self::item::{
     Audio, Image, Item, ItemType, MediaSource, Message, MessageRole, SpeechResult, SpeechSegment,

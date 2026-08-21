@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use crate::detail::api::{Api, Kvps};
 use crate::detail::model::Model;
@@ -81,7 +81,7 @@ impl Session {
             let _guard = inner.lock_ops();
             populate_native_request(&inner.api, &native_task, &request)?;
             let response = inner.process_request(&native_task)?;
-            Ok::<Response, FoundryLocalError>(Response::from_native(&response))
+            Response::from_native(&response)
         });
 
         // Cancel the in-flight request if this future is dropped before the
@@ -110,8 +110,12 @@ impl Session {
             .map(RequestOptions::to_pairs)
             .unwrap_or_default();
         let input_queue = input_queue.map(ItemQueue::into_native);
-        let rx = run_item_streaming(Arc::clone(&self.inner), items, input_queue, option_pairs);
-        ItemStream { rx }
+        let (rx, response_rx) =
+            run_item_streaming(Arc::clone(&self.inner), items, input_queue, option_pairs);
+        ItemStream {
+            rx,
+            response_rx: Some(response_rx),
+        }
     }
 
     /// Apply session-scoped options that persist across subsequent requests.
@@ -200,6 +204,13 @@ impl Drop for CancelGuard {
     }
 }
 
+/// The terminal-response oneshot was dropped before the worker sent a response.
+fn worker_ended_without_response() -> FoundryLocalError {
+    FoundryLocalError::Internal {
+        reason: "streaming response worker ended without a terminal response".into(),
+    }
+}
+
 /// An asynchronous stream of output [`Item`](crate::Item)s from
 /// [`Session::process_streaming_request`].
 ///
@@ -207,6 +218,58 @@ impl Drop for CancelGuard {
 /// combinators (e.g. `while let Some(item) = stream.next().await`).
 pub struct ItemStream {
     rx: UnboundedReceiver<Result<Item>>,
+    response_rx: Option<oneshot::Receiver<Result<Response>>>,
+}
+
+impl ItemStream {
+    /// Wait for and return the terminal response, including finish reason and
+    /// token usage.
+    ///
+    /// This may be called after draining the item stream or instead of draining
+    /// it. The terminal response can be taken only once.
+    pub async fn response(&mut self) -> Result<Response> {
+        if self.response_rx.is_none() {
+            return Err(FoundryLocalError::Validation {
+                reason: "the streaming response has already been taken".into(),
+            });
+        }
+
+        loop {
+            match self.rx.try_recv() {
+                Ok(Ok(_)) => continue,
+                Ok(Err(error)) => return Err(error),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            }
+
+            let response_rx = self.response_rx.as_mut().expect("checked above");
+            tokio::select! {
+                response = &mut *response_rx => {
+                    self.response_rx.take();
+                    while let Ok(item) = self.rx.try_recv() {
+                        item?;
+                    }
+                    return response.map_err(|_| worker_ended_without_response())?;
+                }
+                item = self.rx.recv() => {
+                    match item {
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(error),
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        let response = self
+            .response_rx
+            .as_mut()
+            .expect("checked above")
+            .await
+            .map_err(|_| worker_ended_without_response())?;
+        self.response_rx.take();
+        response
+    }
 }
 
 impl Unpin for ItemStream {}
@@ -247,6 +310,43 @@ impl ToolDefinition {
     }
 }
 
+/// Reject a model whose task is not one of `allowed` before a typed session is
+/// created.
+///
+/// The native session constructor requires the model to already be loaded and
+/// only rejects a wrong-task model *after* that load requirement is satisfied.
+/// The model's task, however, is catalog metadata available without loading, so
+/// validating it here surfaces a precise, task-specific error regardless of load
+/// state and keeps the error identical whether or not the model happens to be
+/// loaded. This mirrors the C#, JavaScript, and Python bindings, which validate
+/// the task the same way for the same reason.
+fn validate_session_task(model: &Model, session: &str, allowed: &[&str]) -> Result<()> {
+    let info = model.info()?;
+
+    check_task(info.task.as_deref(), session, allowed)
+}
+
+/// Pure task-compatibility check shared by [`validate_session_task`]; split out
+/// so the accept/reject logic and error message can be unit-tested without a
+/// native model.
+fn check_task(task: Option<&str>, session: &str, allowed: &[&str]) -> Result<()> {
+    let task = task.unwrap_or("");
+
+    if !allowed.contains(&task) {
+        let expected = allowed
+            .iter()
+            .map(|t| format!("'{t}'"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+
+        return Err(FoundryLocalError::Validation {
+            reason: format!("{session} requires a model with task {expected}, but got '{task}'."),
+        });
+    }
+
+    Ok(())
+}
+
 /// A chat-oriented [`Session`] with tool registration and turn management.
 ///
 /// Dereferences to [`Session`], so all base methods
@@ -260,7 +360,16 @@ pub struct ChatSession {
 
 impl ChatSession {
     /// Open a chat session on a loaded model.
+    ///
+    /// Returns [`FoundryLocalError::Validation`] if the model's task is not
+    /// `"chat-completion"` or `"vision-language-chat"`.
     pub async fn new(model: &Model) -> Result<ChatSession> {
+        validate_session_task(
+            model,
+            "ChatSession",
+            &["chat-completion", "vision-language-chat"],
+        )?;
+
         Ok(ChatSession {
             session: Session::new(model).await?,
         })
@@ -321,7 +430,12 @@ pub struct EmbeddingsSession {
 
 impl EmbeddingsSession {
     /// Open an embeddings session on a loaded model.
+    ///
+    /// Returns [`FoundryLocalError::Validation`] if the model's task is not
+    /// `"embeddings"`.
     pub async fn new(model: &Model) -> Result<EmbeddingsSession> {
+        validate_session_task(model, "EmbeddingsSession", &["embeddings"])?;
+
         Ok(EmbeddingsSession {
             session: Session::new(model).await?,
         })
@@ -399,7 +513,12 @@ pub struct AudioSession {
 
 impl AudioSession {
     /// Open an audio session on a loaded model.
+    ///
+    /// Returns [`FoundryLocalError::Validation`] if the model's task is not
+    /// `"automatic-speech-recognition"`.
     pub async fn new(model: &Model) -> Result<AudioSession> {
+        validate_session_task(model, "AudioSession", &["automatic-speech-recognition"])?;
+
         Ok(AudioSession {
             session: Session::new(model).await?,
         })
@@ -436,5 +555,126 @@ impl Deref for AudioSession {
 
     fn deref(&self) -> &Session {
         &self.session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::task::{Wake, Waker};
+
+    use super::*;
+
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[tokio::test]
+    async fn item_stream_returns_terminal_response_once() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let expected = Response {
+            items: vec![Item::text("complete")],
+            finish_reason: crate::FinishReason::Stop,
+            usage: crate::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 1,
+                total_tokens: 4,
+            },
+        };
+        tx.send(Ok(Item::text("chunk one"))).unwrap();
+        tx.send(Ok(Item::text("chunk two"))).unwrap();
+        drop(tx);
+        response_tx.send(Ok(expected.clone())).unwrap();
+
+        let mut stream = ItemStream {
+            rx,
+            response_rx: Some(response_rx),
+        };
+
+        assert_eq!(stream.response().await.unwrap(), expected);
+        assert!(stream.rx.is_empty());
+        assert!(matches!(
+            stream.response().await,
+            Err(FoundryLocalError::Validation { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_response_await_keeps_terminal_response_available() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let mut stream = ItemStream {
+            rx,
+            response_rx: Some(response_rx),
+        };
+
+        let mut response = Box::pin(stream.response());
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(
+            response.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        drop(response);
+
+        response_tx
+            .send(Ok(Response {
+                items: Vec::new(),
+                finish_reason: crate::FinishReason::Stop,
+                usage: crate::Usage::default(),
+            }))
+            .unwrap();
+        assert_eq!(
+            stream.response().await.unwrap().finish_reason,
+            crate::FinishReason::Stop
+        );
+    }
+
+    #[test]
+    fn check_task_accepts_allowed_tasks() {
+        assert!(check_task(
+            Some("chat-completion"),
+            "ChatSession",
+            &["chat-completion", "vision-language-chat"]
+        )
+        .is_ok());
+        assert!(check_task(
+            Some("vision-language-chat"),
+            "ChatSession",
+            &["chat-completion", "vision-language-chat"]
+        )
+        .is_ok());
+        assert!(check_task(Some("embeddings"), "EmbeddingsSession", &["embeddings"]).is_ok());
+    }
+
+    #[test]
+    fn check_task_rejects_wrong_task() {
+        let err = check_task(
+            Some("chat-completion"),
+            "EmbeddingsSession",
+            &["embeddings"],
+        )
+        .expect_err("wrong task should be rejected");
+
+        match err {
+            FoundryLocalError::Validation { reason } => {
+                assert!(reason.contains("EmbeddingsSession"), "reason: {reason}");
+                assert!(reason.contains("'embeddings'"), "reason: {reason}");
+                assert!(reason.contains("'chat-completion'"), "reason: {reason}");
+            }
+            other => panic!("expected Validation error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_task_treats_missing_task_as_mismatch() {
+        let err = check_task(None, "AudioSession", &["automatic-speech-recognition"])
+            .expect_err("missing task should be rejected");
+
+        assert!(matches!(err, FoundryLocalError::Validation { .. }));
     }
 }

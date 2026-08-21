@@ -145,6 +145,37 @@ impl Catalog {
         .await
     }
 
+    /// Return catalog versions for an alias, optionally narrowed to one model name.
+    ///
+    /// `max_versions` limits the results per model name; `0` returns all versions.
+    pub async fn get_model_versions(
+        &self,
+        model_alias: &str,
+        model_name: Option<&str>,
+        max_versions: u32,
+    ) -> Result<Vec<Arc<Model>>> {
+        if model_alias.trim().is_empty() {
+            return Err(FoundryLocalError::Validation {
+                reason: "Model alias must be a non-empty string".into(),
+            });
+        }
+        let max_versions =
+            i32::try_from(max_versions).map_err(|_| FoundryLocalError::Validation {
+                reason: "max_versions must not exceed i32::MAX".into(),
+            })?;
+        let native = self.native.clone();
+        let model_alias = model_alias.to_owned();
+        let model_name = model_name.map(str::to_owned);
+        spawn_blocking(move || {
+            native
+                .get_model_versions(&model_alias, model_name.as_deref(), max_versions)?
+                .into_iter()
+                .map(|m| Model::from_variant(&native.api, m).map(Arc::new))
+                .collect()
+        })
+        .await
+    }
+
     /// Resolve the latest catalog version for the provided model or variant.
     pub async fn get_latest_version(&self, model_or_model_variant: &Model) -> Result<Arc<Model>> {
         let native = self.native.clone();

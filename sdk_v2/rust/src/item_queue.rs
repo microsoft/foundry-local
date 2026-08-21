@@ -43,7 +43,7 @@ impl ItemQueue {
     }
 
     /// Pop the next available item, or `None` if the queue is currently empty.
-    pub fn try_pop(&self) -> Option<Item> {
+    pub fn try_pop(&self) -> Result<Option<Item>> {
         self.inner.try_pop_value()
     }
 

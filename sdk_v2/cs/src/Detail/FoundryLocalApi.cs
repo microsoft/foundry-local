@@ -109,7 +109,9 @@ internal static class Api
             throw new OperationCanceledException(msg);
         }
 
-        throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg);
+        // FoundryLocalErrorCode mirrors the native FlErrorCode ABI 1:1 (same names and values), so a direct
+        // cast is safe; an unknown/future numeric code still round-trips through the cast.
+        throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg, (FoundryLocalErrorCode)code);
     }
 
     /// <summary>
@@ -468,6 +470,31 @@ public sealed class Catalog
         var status = Api.Catalog.GetLoadedModels(Ptr, out var ptr);
         Api.CheckStatus(status);
         return new ModelList(ptr);
+    }
+
+    public ModelList GetModelVersions(string modelAlias, string? modelName, int maxVersions)
+    {
+        var aliasPtr = Utf8.StringToCoTaskMem(modelAlias);
+        var modelNamePtr = Utf8.StringToCoTaskMem(modelName);
+
+        try
+        {
+            var status = Api.Catalog.GetModelVersions(Ptr, aliasPtr, modelNamePtr, maxVersions, out var ptr);
+            Api.CheckStatus(status);
+            return new ModelList(ptr);
+        }
+        finally
+        {
+            if (aliasPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(aliasPtr);
+            }
+
+            if (modelNamePtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(modelNamePtr);
+            }
+        }
     }
 }
 
