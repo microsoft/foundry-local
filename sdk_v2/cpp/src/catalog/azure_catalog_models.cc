@@ -227,6 +227,7 @@ void from_json(const nlohmann::json& j, SystemCatalogData& s) {
   opt_str(j, "publisher", s.publisher);
   opt_str(j, "displayName", s.display_name);
   opt_int(j, "maxOutputTokens", s.max_output_tokens);
+  opt_str(j, "minFLVersion", s.min_fl_version);
 }
 
 void from_json(const nlohmann::json& j, CatalogAnnotations& a) {
@@ -570,6 +571,10 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.min_fl_version;
   } else if (cm.properties && cm.properties->min_fl_version) {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.properties->min_fl_version;
+  } else if (cm.annotations && cm.annotations->system_catalog_data &&
+             cm.annotations->system_catalog_data->min_fl_version) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] =
+        *cm.annotations->system_catalog_data->min_fl_version;
   }
 
   // File size in MB

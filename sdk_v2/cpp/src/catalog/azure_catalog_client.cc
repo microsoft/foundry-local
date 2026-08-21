@@ -4,6 +4,7 @@
 
 #include "http/http_client.h"
 #include "utils.h"
+#include "version.h"
 
 #include <nlohmann/json.hpp>
 
@@ -14,6 +15,7 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -141,9 +143,60 @@ std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
   return body.dump();
 }
 
+struct SemVer {
+  int major{0};
+  int minor{0};
+  int patch{0};
+};
+
+SemVer ParseSemVer(const std::string& version) {
+  SemVer out;
+  const auto first_dot = version.find('.');
+  const auto second_dot = version.find('.', first_dot + 1);
+  out.major = std::stoi(version.substr(0, first_dot));
+  out.minor = std::stoi(version.substr(first_dot + 1, second_dot - first_dot - 1));
+  out.patch = std::stoi(version.substr(second_dot + 1));
+
+  return out;
+}
+
+bool IsVersionLessThan(const SemVer& a, const SemVer& b) {
+  return std::tie(a.major, a.minor, a.patch) < std::tie(b.major, b.minor, b.patch);
+}
+
+std::string ResolveMinFlVersion(const CatalogLocalModel& model) {
+  // minFLVersion is expected on the top-level model payload.
+  if (model.min_fl_version && !model.min_fl_version->empty()) {
+    return *model.min_fl_version;
+  }
+
+  if (model.properties && model.properties->min_fl_version && !model.properties->min_fl_version->empty()) {
+    return *model.properties->min_fl_version;
+  }
+
+  if (model.annotations && model.annotations->system_catalog_data &&
+      model.annotations->system_catalog_data->min_fl_version &&
+      !model.annotations->system_catalog_data->min_fl_version->empty()) {
+    return *model.annotations->system_catalog_data->min_fl_version;
+  }
+
+  // Absent minFLVersion means the model is valid for all Foundry Local versions.
+  return "0.0.0";
+}
+
+bool minFLVersionCheck(const CatalogLocalModel& model) {
+  static const SemVer current = ParseSemVer(FOUNDRY_LOCAL_VERSION);
+  const SemVer minimum = ParseSemVer(ResolveMinFlVersion(model));
+  return !IsVersionLessThan(current, minimum);
+}
+
 std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_models, const std::string& region) {
   std::vector<ModelInfo> infos;
   for (const auto& model : raw_models) {
+    if (!minFLVersionCheck(model)) {
+      continue;
+    }
+
     if (auto info = CatalogModelToModelInfo(model)) {
       info->detected_region = region;
       infos.push_back(std::move(*info));

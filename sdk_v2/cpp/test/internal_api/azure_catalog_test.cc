@@ -267,6 +267,55 @@ TEST(AzureCatalogClientTest, SkipsInvalidModels) {
   EXPECT_EQ(infos[0].alias, "good");
 }
 
+TEST(AzureCatalogClientTest, FiltersByMinFlVersionAndDefaultsMissingToZero) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+
+  // One model is explicitly gated to an unreachable future FL version and should be filtered.
+  // One model omits minFLVersion and should be treated as 0.0.0 (compatible).
+  const char* mock_response = R"({
+    "totalCount": 2,
+    "summaries": [
+      {
+        "assetId": "azureml://registries/azureml/models/future-model/versions/1",
+        "name": "future-model",
+        "version": "1",
+        "alias": "future",
+        "variantInformation": {
+          "parents": [],
+          "variantMetadata": { "device": "cpu", "executionProvider": "CPUExecutionProvider" }
+        },
+        "annotations": {
+          "systemCatalogData": {
+            "minFLVersion": "999.0.0"
+          }
+        }
+      },
+      {
+        "assetId": "azureml://registries/azureml/models/defaulted-model/versions/1",
+        "name": "defaulted-model",
+        "version": "1",
+        "alias": "defaulted",
+        "variantInformation": {
+          "parents": [],
+          "variantMetadata": { "device": "cpu", "executionProvider": "CPUExecutionProvider" }
+        }
+      }
+    ],
+    "continuationToken": ""
+  })";
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
+
+  const auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 1u);
+  EXPECT_EQ(infos[0].name, "defaulted-model");
+  EXPECT_EQ(infos[0].alias, "defaulted");
+}
+
 // Verify pagination follows nextSkip and continuationToken
 TEST(AzureCatalogClientTest, FollowsPagination) {
   AllDevicesEpDetector ep;

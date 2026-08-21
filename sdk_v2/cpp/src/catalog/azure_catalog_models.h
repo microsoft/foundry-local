@@ -101,6 +101,7 @@ struct SystemCatalogData {
   std::optional<std::string> publisher;
   std::optional<std::string> display_name;
   std::optional<int> max_output_tokens;
+  std::optional<std::string> min_fl_version;
 };
 
 struct CatalogAnnotations {
