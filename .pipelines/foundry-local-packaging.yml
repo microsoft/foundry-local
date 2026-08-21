@@ -12,7 +12,7 @@
 # this expensive pipeline on every dev branch push.
 #
 # TODO: This prevents auto-run on all pushes but doesn't trigger commits to `main` and `release`
-#       branches. Re-enable when triggering is fixed. 
+#       branches. Re-enable when triggering is fixed.
 # trigger:
 #   branches:
 #     include:
@@ -188,6 +188,8 @@ extends:
             targetPath: '$(Build.ArtifactStagingDirectory)/version-info'
         steps:
         - checkout: none
+        - pwsh: |
+            Get-PSDrive -PSProvider FileSystem
         - task: PowerShell@2
           displayName: 'Compute and write version files'
           inputs:
