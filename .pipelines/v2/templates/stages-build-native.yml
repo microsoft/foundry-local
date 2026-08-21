@@ -67,6 +67,8 @@ stages:
     - job: build
       pool:
         name: onnxruntime-native-arm64-16core
+        demands:
+          - ImageOverride -equals onnxruntime-Win2025-arm64
         os: windows
         hostArchitecture: arm64
       templateContext:
@@ -89,7 +91,6 @@ stages:
           runTests: true
           stageHeaders: false
           pythonArchitecture: arm64
-          usePwsh: false
 
   # ====================================================================
   # Linux x64 — build + test

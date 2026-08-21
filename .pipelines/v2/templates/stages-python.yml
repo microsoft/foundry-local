@@ -56,6 +56,8 @@ stages:
   - job: build
     pool:
       name: onnxruntime-native-arm64-16core
+      demands:
+        - ImageOverride -equals onnxruntime-Win2025-arm64
       os: windows
       hostArchitecture: arm64
     templateContext:
@@ -214,6 +216,8 @@ stages:
   - job: test
     pool:
       name: onnxruntime-native-arm64-16core
+      demands:
+        - ImageOverride -equals onnxruntime-Win2025-arm64
       os: windows
       hostArchitecture: arm64
     templateContext:
@@ -227,13 +231,11 @@ stages:
     - template: ../../templates/fetch-test-data-from-blob.yml@self
       parameters:
         scriptType: ps
-        installAzCli: true
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         pythonArchitecture: 'arm64'
-        usePwsh: false
 
 - stage: python_test_linux_x64
   displayName: 'Python SDK: Test Linux x64'
