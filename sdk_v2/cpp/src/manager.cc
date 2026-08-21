@@ -56,6 +56,15 @@ bool IsTruthyConfigValue(const std::string& value) {
   return lowered == "true" || lowered == "1" || lowered == "yes";
 }
 
+bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& key) {
+  const auto it = config.additional_options.find(key);
+  if (it == config.additional_options.end()) {
+    return false;
+  }
+
+  return IsTruthyConfigValue(it->second);
+}
+
 bool IsGenAIVerboseLoggingEnabled() {
   auto env = Utils::GetEnv("ORTGENAI_ORT_VERBOSE_LOGGING");
   if (!env.has_value()) {

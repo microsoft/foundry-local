@@ -78,7 +78,7 @@ AzureModelCatalog::~AzureModelCatalog() = default;
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
                                                                        const std::string& filter) const {
-  return MakeCatalogClient(url, filter, ep_detector_, logger_, cache_dir_, catalog_region_, disable_region_fallback_);
+  return MakeCatalogClient(url, filter, ep_detector_, logger_, cache_dir_, catalog_region_);
 }
 
 AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapshot(
@@ -158,13 +158,6 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   }
 
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
-
-  auto fetch_from = [&](const std::string& url, const std::optional<std::string>& filter) {
-  // Preserve byte-identical behavior for the "no override" case (previously stored as ""),
-  // while letting callers explicitly request "" as a real filter override.
-  auto client = MakeCatalogClient(url, filter.value_or(""), ep_detector_, logger_, cache_dir,
-                                  catalog_region_);
-  auto model_infos = FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_);
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
   auto models = AddLocalModels(catalog_result.model_infos, local_models);
 
