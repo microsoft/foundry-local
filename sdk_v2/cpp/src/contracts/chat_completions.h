@@ -76,6 +76,7 @@ struct ChatCompletionRequest {
   std::optional<bool> parallel_tool_calls;                     // "parallel_tool_calls"
   std::optional<std::string> user;                             // "user"
   std::optional<std::map<std::string, std::string>> metadata;  // "metadata" — from ChatCompletionCreateRequestExtended
+  std::optional<nlohmann::json> chat_template_kwargs;          // "chat_template_kwargs" — typed template context
 };
 
 // --- Response types ---

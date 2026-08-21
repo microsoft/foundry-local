@@ -65,9 +65,16 @@ std::unique_ptr<OgaSequences> Preprocessor::Encode(const char* text) {
 std::string Preprocessor::ApplyChatTemplate(const char* messages_json,
                                             const char* tools_json,
                                             bool add_generation_prompt) {
+  return ApplyChatTemplateWithOptions(messages_json, tools_json, nullptr, add_generation_prompt);
+}
+
+std::string Preprocessor::ApplyChatTemplateWithOptions(const char* messages_json,
+                                                       const char* tools_json,
+                                                       const char* template_kwargs_json,
+                                                       bool add_generation_prompt) {
   std::lock_guard<std::mutex> lock(mutex_);
-  OgaString result = tokenizer_->ApplyChatTemplate(/*template_str=*/nullptr, messages_json, tools_json,
-                                                   add_generation_prompt);
+  OgaString result = tokenizer_->ApplyChatTemplateWithOptions(
+      /*template_str=*/nullptr, messages_json, tools_json, template_kwargs_json, add_generation_prompt);
   return std::string(static_cast<const char*>(result));
 }
 

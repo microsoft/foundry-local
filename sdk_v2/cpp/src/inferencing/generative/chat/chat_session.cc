@@ -106,6 +106,7 @@ void ChatSession::UpdateToolContextForTurn(const Request& request, ToolCallConte
   // Re-derive per-request guidance
   tool_ctx.guidance_type = get_param("guidance_type");
   tool_ctx.guidance_data = get_param("guidance_data");
+  tool_ctx.template_kwargs_json = get_param("chat_template_kwargs");
 }
 
 ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const {
@@ -121,6 +122,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
 
   tool_ctx.tool_call_start = get_param(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
   tool_ctx.tool_call_end = get_param(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.template_kwargs_json = get_param("chat_template_kwargs");
 
   // Fall back to model info properties if not specified in the request
   const auto& info = CatalogModel().Info();
@@ -466,15 +468,18 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     bool prev_needs_guidance = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
     bool curr_needs_guidance = turn_tool_ctx.tool_output && !turn_tool_ctx.text_output;
+    bool template_kwargs_changed =
+        cached_tool_ctx_.template_kwargs_json != turn_tool_ctx.template_kwargs_json;
 
-    if (prev_needs_guidance != curr_needs_guidance) {
-      // Guidance requirements changed — invalidate. The branch below will rebuild from full history.
+    if (prev_needs_guidance != curr_needs_guidance || template_kwargs_changed) {
+      // Guidance or template requirements changed — invalidate. The branch below will rebuild from full history.
       cached_generator_.reset();
       cached_tool_ctx_ = {};
     } else {
       // Continuous decoding: append only the new messages to the existing generator.
       pre_turn_token_count = cached_generator_->TokenCount();
-      prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json);
+      prompt_tokens = cached_generator_->AppendMessages(
+          new_messages, Model(), cached_tool_ctx_.tools_json, cached_tool_ctx_.template_kwargs_json);
 
       // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
       UpdateToolContextForTurn(request, cached_tool_ctx_);
@@ -500,7 +505,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       // gigabytes (262k tokens × 28 layers × 8 heads × 128 dims for
       // qwen3-vl-2b ≈ 120 GB). Bound it to prompt + max_output_tokens.
       generator = OnnxChatGenerator::CreateWithMedia(all_messages, effective_options, Model(), images, audios,
-                         tool_ctx, /*use_full_context*/ false);
+                                                     tool_ctx, /*use_full_context*/ false);
     } else {
       generator = OnnxChatGenerator::Create(all_messages, effective_options, Model(), tool_ctx,
                                             /*use_full_context*/ true);
