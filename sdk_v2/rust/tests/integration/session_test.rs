@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use foundry_local_sdk::{
-    ChatSession, EmbeddingsSession, Item, MessageRole, Model, Request, RequestOptions,
-    SearchOptions,
+    ChatSession, EmbeddingsSession, FinishReason, FoundryLocalError, Item, MessageRole, Model,
+    NativeErrorCode, Request, RequestOptions, SearchOptions,
 };
 use tokio_stream::StreamExt;
 
@@ -48,6 +48,28 @@ fn deterministic_options() -> RequestOptions {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn should_reject_wrong_task_at_construction() {
+    let manager = common::get_test_manager();
+    let model = manager
+        .catalog()
+        .get_model(common::TEST_MODEL_ALIAS)
+        .await
+        .expect("get_model failed");
+
+    // The chat model's task is not "embeddings". The typed constructor must
+    // reject it up front — before any load — with a Validation error, rather
+    // than deferring to a native "model must be loaded" / task failure. This is
+    // the construction-time contract shared by every binding.
+    match EmbeddingsSession::new(&model).await {
+        Ok(_) => panic!("EmbeddingsSession from a chat model should fail"),
+        Err(err) => assert!(
+            matches!(err, FoundryLocalError::Validation { .. }),
+            "expected a Validation error, got: {err:?}"
+        ),
     }
 }
 
@@ -106,6 +128,54 @@ async fn should_stream_items() {
     assert!(
         collected.contains("42"),
         "Expected streamed text to contain '42', got: {collected}"
+    );
+
+    let response = stream
+        .response()
+        .await
+        .expect("terminal streaming response failed");
+    assert!(
+        matches!(
+            response.finish_reason,
+            FinishReason::Stop | FinishReason::Length
+        ),
+        "unexpected finish reason: {:?}",
+        response.finish_reason
+    );
+    assert!(
+        response.usage.total_tokens > 0,
+        "terminal response should report token usage"
+    );
+    assert_eq!(
+        response.usage.total_tokens,
+        response.usage.prompt_tokens + response.usage.completion_tokens
+    );
+
+    drop(session); // release the session so the model can unload
+    model.unload().await.expect("unload should succeed");
+}
+
+#[tokio::test]
+async fn should_expose_native_error_code_on_failure() {
+    let (session, model) = setup_chat_session().await;
+
+    // Undoing more turns than exist is rejected by the native inference layer
+    // with a stable INVALID_USAGE code. Verify the native error identity
+    // (code + message) survives the FFI boundary rather than being flattened
+    // into an opaque string.
+    let err = session
+        .undo_turns(5)
+        .await
+        .expect_err("undo_turns beyond the turn count should fail");
+
+    assert_eq!(
+        err.native_code(),
+        Some(NativeErrorCode::InvalidUsage),
+        "expected a native InvalidUsage error, got: {err:?}"
+    );
+    assert!(
+        err.native_message().is_some_and(|m| !m.is_empty()),
+        "native error should carry a non-empty message: {err:?}"
     );
 
     drop(session); // release the session so the model can unload

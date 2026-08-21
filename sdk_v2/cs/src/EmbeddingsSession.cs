@@ -26,10 +26,9 @@ public sealed class EmbeddingsSession : Session
     }
 
     // Validate the model's task BEFORE the base Session constructor runs. The base
-    // constructor calls into native and requires the model to already be loaded; if
-    // a caller passes the wrong-task model (e.g. a chat model) we want to surface
-    // ArgumentException regardless of whether that model has been loaded yet, so
-    // the wrong-task contract isn't accidentally gated on load state.
+    // constructor calls into native to create the session; checking first surfaces a
+    // wrong-task model as an ArgumentException rather than a native error, and keeps
+    // validation consistent across the typed sessions.
     private static IModel ValidateTask(IModel model)
     {
         Detail.Throw.IfNull(model);

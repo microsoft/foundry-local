@@ -1,8 +1,28 @@
 use thiserror::Error;
 
+/// Stable error codes reported by the native Foundry Local library.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum NativeErrorCode {
+    Ok,
+    NotImplemented,
+    Internal,
+    InvalidArgument,
+    InvalidUsage,
+    OperationCancelled,
+    Network,
+    Unknown(i32),
+}
+
 /// Errors that can occur when using the Foundry Local SDK.
 #[derive(Debug, Error)]
 pub enum FoundryLocalError {
+    /// The native core library returned an error.
+    #[error("native error ({code:?}): {message}")]
+    Native {
+        code: NativeErrorCode,
+        message: String,
+    },
     /// The native core library could not be loaded.
     #[error("library load error: {reason}")]
     LibraryLoad { reason: String },
@@ -32,5 +52,49 @@ pub enum FoundryLocalError {
     Internal { reason: String },
 }
 
+impl FoundryLocalError {
+    /// Returns the native error code, if this error originated in the native library.
+    pub fn native_code(&self) -> Option<NativeErrorCode> {
+        match self {
+            Self::Native { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// Returns the native error message, if this error originated in the native library.
+    pub fn native_message(&self) -> Option<&str> {
+        match self {
+            Self::Native { message, .. } => Some(message),
+            _ => None,
+        }
+    }
+}
+
 /// Convenience alias used throughout the SDK.
 pub type Result<T> = std::result::Result<T, FoundryLocalError>;
+
+#[cfg(test)]
+mod tests {
+    use super::{FoundryLocalError, NativeErrorCode};
+
+    #[test]
+    fn native_error_exposes_code_and_message() {
+        let error = FoundryLocalError::Native {
+            code: NativeErrorCode::Network,
+            message: "connection failed".into(),
+        };
+
+        assert_eq!(error.native_code(), Some(NativeErrorCode::Network));
+        assert_eq!(error.native_message(), Some("connection failed"));
+    }
+
+    #[test]
+    fn non_native_error_has_no_native_details() {
+        let error = FoundryLocalError::Validation {
+            reason: "invalid".into(),
+        };
+
+        assert_eq!(error.native_code(), None);
+        assert_eq!(error.native_message(), None);
+    }
+}
