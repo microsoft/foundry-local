@@ -91,7 +91,6 @@ stages:
           runTests: true
           stageHeaders: false
           pythonArchitecture: arm64
-          usePwsh: true
 
   # ====================================================================
   # Linux x64 — build + test

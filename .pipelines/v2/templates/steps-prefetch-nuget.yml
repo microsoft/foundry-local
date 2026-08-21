@@ -10,7 +10,6 @@
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
 #   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
 #   shell          – 'pwsh' (Windows/macOS) or 'bash' (Linux)
-#   usePwsh        – Whether PowerShell tasks should use PowerShell Core
 
 parameters:
 - name: ortVersion
@@ -26,9 +25,6 @@ parameters:
 - name: shell
   type: string
   values: ['pwsh', 'bash']
-- name: usePwsh
-  type: boolean
-  default: true
 
 steps:
 
@@ -38,7 +34,7 @@ steps:
   displayName: 'Validate pinned versions match deps_versions.json'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $ErrorActionPreference = 'Stop'
       $depsFile = Join-Path "$(Build.SourcesDirectory)" "sdk_v2/deps_versions.json"
@@ -70,7 +66,7 @@ steps:
     displayName: 'Pre-download NuGet packages'
     inputs:
       targetType: inline
-      pwsh: ${{ parameters.usePwsh }}
+      pwsh: true
       script: |
         $ErrorActionPreference = 'Stop'
         $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"

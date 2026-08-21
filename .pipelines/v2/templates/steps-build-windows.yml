@@ -13,7 +13,6 @@
 #   runTests       – Whether to run tests
 #   stageHeaders   – Whether to stage public headers as a separate artifact
 #   pythonArchitecture – Python architecture installed by UsePythonVersion
-#   usePwsh        – Whether PowerShell tasks should use PowerShell Core
 
 parameters:
 - name: arch
@@ -37,9 +36,6 @@ parameters:
   type: string
   default: 'x64'
   values: ['x64', 'arm64']
-- name: usePwsh
-  type: boolean
-  default: true
 
 steps:
 
@@ -66,7 +62,6 @@ steps:
     winmlVersion: ${{ parameters.winmlVersion }}
     includeWinml: true
     shell: pwsh
-    usePwsh: ${{ parameters.usePwsh }}
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
 # matches the .nupkg version (e.g. 0.1.0-dev.202605111234) instead of the cmake default.
@@ -74,7 +69,7 @@ steps:
   displayName: 'Append version define'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
@@ -87,7 +82,6 @@ steps:
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
       scriptType: ps
-      installAzCli: true
 
 - ${{ if eq(parameters.arch, 'x64') }}:
   - script: >-
@@ -132,7 +126,7 @@ steps:
   displayName: 'Stage native artifacts'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $binDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/bin/${{ parameters.buildConfig }}'
       $linkDir = '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Windows/${{ parameters.buildConfig }}/${{ parameters.buildConfig }}'

@@ -236,13 +236,11 @@ stages:
     - template: ../../templates/fetch-test-data-from-blob.yml@self
       parameters:
         scriptType: ps
-        installAzCli: true
     - template: steps-test-js.yml
       parameters:
         rid: 'win-arm64'
         prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-win-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-        usePwsh: false
 
 - stage: js_test_linux_x64
   displayName: 'JS SDK: Test Linux x64'
