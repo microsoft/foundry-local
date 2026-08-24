@@ -1,36 +1,31 @@
 # Multi-Catalog Architecture Tradeoffs
 
-> Status: Design recommendation  
+> Status: Design analysis and conditional recommendation
 > Scope: Public, private, and local/BYOM model catalogs in the Foundry Local SDK
 
 ## Executive summary
 
-The SDK should keep **one aggregated catalog as the primary public experience**, backed by independently
-identified model sources internally. An aggregated view optimizes for users who want to discover and use
-all models available to their application without first understanding catalog topology. Separate public
-catalog instances make collisions more explicit, but push discovery, aggregation, fallback, and policy into
-every SDK consumer, language binding, CLI, and service.
+The SDK integrator must configure and manage model sources, so aggregation does not make catalog topology
+unknown to that developer. The decision is whether the SDK should provide one combined query surface or
+expose separate catalog instances for the application to use or present to its users.
 
-This recommendation is close to the direction in [PR #1002](https://github.com/microsoft/foundry-local/pull/1002),
-but the current collision and identity rules should not be treated as the final multi-catalog contract.
-Before enabling genuine private or BYOM sources, the implementation needs stable source-instance identity,
-source-qualified runtime/cache keys, explicit collision and "latest" rules, and per-source operational state.
+The right choice depends primarily on the application experience. If application users see one model list,
+SDK aggregation provides consistent merging, collision handling, and fallback. If users choose a catalog or
+catalog identity represents a tenant, trust boundary, or product grouping, separate instances map more
+directly to that experience and SDK aggregation offers less benefit.
 
-This is **not** a recommendation to expose both aggregate and separate catalog object hierarchies. Internally,
-each configured source (Azure public, private, or local) should retain its own fetch, cache, authentication,
-refresh, and health state. In the user-facing SDK, `Manager.GetCatalog()` should return one `Catalog` whose
-results combine all enabled sources. The SDK would not also expose separate `GetPublicCatalog()`,
-`GetPrivateCatalog()`, or `GetLocalCatalog()` objects. If advanced selection becomes necessary, the aggregate
-catalog can add source-qualified lookup or filtering without introducing a second catalog hierarchy.
+In either design, configured sources should remain operationally independent internally, with separate
+identity, fetch, cache, authentication, refresh, and health state. The SDK should avoid exposing both complete
+aggregate and separate catalog object hierarchies unless a concrete scenario requires both.
 
 ## Options
 
-### Aggregated public catalog
+### Single aggregated SDK catalog
 
 `Manager.GetCatalog()` returns one view over all configured public, private, and local sources. Source
 provenance is metadata on each model and source precedence is SDK policy.
 
-### Separate public catalog instances
+### Separate SDK catalog instances
 
 The Manager exposes independently addressable catalogs, as proposed by
 [PR #943](https://github.com/microsoft/foundry-local/pull/943). Users enumerate catalogs and query each one
@@ -38,42 +33,48 @@ independently. Any unified view is built by the application, CLI, or service.
 
 ## Tradeoff summary
 
-| Area | Aggregated public catalog | Separate catalog instances |
+| Area | Single aggregated SDK catalog | Separate SDK catalog instances |
 |---|---|---|
-| Ease of use | One place to list, find, download, and load models | Users must discover catalogs and choose where to query |
-| Discoverability | All available models appear together | Fragmented unless each consumer implements aggregation |
+| SDK integrator experience | One query surface, but the integrator still configures and understands its sources | Explicit source selection and application-owned composition |
+| Application-user experience | Natural for one combined model list | Natural for catalog selection, grouping, or trust boundaries |
+| Discoverability | SDK provides a combined result | Application merges results or presents per-catalog navigation |
 | Duplicate IDs | Requires provenance, qualified identity, and resolution rules | Naturally scoped during catalog lookup |
 | Reproducibility | Unqualified lookup may vary by source availability and policy | `(catalog, model_id)` is naturally more stable |
 | Public API/ABI | Smaller surface; advanced controls can be deferred | Requires naming, enumeration, lookup, lifetime, and default rules |
 | Internal complexity | Central merge, collision, refresh, and partial-failure policy | Simpler per catalog, but shared cache/load services still need qualified identity |
-| Ecosystem complexity | Implemented once in the SDK | Repeated in SDK consumers, CLI, REST service, and bindings |
+| Policy ownership | SDK defines merging, collision, and fallback consistently | Each application intentionally defines or avoids cross-catalog policy |
 | Failure isolation | Must be preserved and surfaced explicitly | Natural per-catalog isolation |
 | Multiple private sources | Needs a stable source-instance ID | Named instances model this naturally |
 | Reversibility | Separate views can be added later | Published catalog APIs cannot be removed; aggregation would have to coexist |
 
-## Does the SDK user need to know about catalogs?
+## Who needs to know about catalogs?
 
-Not necessarily for the default discovery path. An aggregate view can serve users who do not care about
-source topology, while provenance and qualified operations can serve users who do. By contrast, separate
-catalogs require every user to understand catalog topology even when it is irrelevant to their task.
+The SDK integrator is aware of catalog topology in either design because they configure the sources. The
+material question is whether catalog identity is also part of the application-user experience:
 
-Users do need source information when:
+- **Catalogs are internal to the application.** Application users see models, not catalogs. Aggregation is a
+  convenience and consistency benefit, but the SDK integrator could instead merge or route between separate
+  catalogs.
+- **The application exposes one combined model list.** Aggregation has stronger value because the SDK can
+  provide shared ordering, collision, fallback, and pagination behavior rather than each application
+  implementing it.
+- **The application exposes catalog selection or grouping.** Separate instances are a more natural model.
+  An aggregate view may still be useful as an optional "all catalogs" experience, but should not replace
+  explicit catalog identity.
 
-- Two sources publish the same model ID with different contents.
-- Reproducible execution must pin the exact source and artifact.
-- Applications present every source-specific copy to their users.
-- Sources represent different tenants or trust boundaries.
-- A source fails, is stale, or is unavailable.
+Regardless of presentation, source information is required when two sources publish different artifacts
+under the same ID, reproducible execution must pin an artifact, sources represent trust boundaries, or the
+application must explain source health and availability.
 
 These needs justify explicit provenance and qualified operations, but do not by themselves require multiple
-public `Catalog` objects.
+separate `Catalog` objects.
 
-No expected usage mix has been established. The **BYOM PR walkthrough meeting chat** raised public plus a
-small number of private models as a possible common scenario, but this was a hypothesis rather than a product
-decision or supporting data. Usage data would improve confidence in the choice of default experience, but it
-is not required to choose the more reversible architecture. Evidence that source-specific workflows,
-multiple private catalogs, or trust-boundary isolation dominate would be required before committing to
-separate catalog objects in the ABI.
+No expected usage mix or application presentation model has been established. The **BYOM PR walkthrough
+meeting chat** raised public plus a small number of private models as a possible scenario, but this was a
+hypothesis rather than a product decision or supporting data. Before choosing the final public API, product
+input is required on whether application users see one model universe, choose among catalogs, or never see
+catalog identity at all. Usage frequency would help prioritize the default but is secondary to that product
+contract.
 
 ## Duplicate model IDs and selection
 
@@ -183,30 +184,24 @@ lower-level implementation details should be designed after those behaviors are 
 
 ## Recommendation
 
-Adopt the following architecture:
+First decide whether catalog identity is a first-class concept in the application-user experience:
 
-- `Manager.GetCatalog()` remains the single aggregate catalog for normal discovery and use.
-- Sources are independent internal instances with stable IDs, isolated cache metadata, refresh, health,
-  authentication, and policy.
-- Every model retains source kind, stable source ID, and immutable artifact identity where available.
-- Unqualified lookup follows an explicit, documented policy and does not silently resolve
-  different-artifact collisions.
-- Qualified lookup or source filtering is added only when a concrete scenario requires advanced selection.
-- Local registration/unregistration uses a narrow administrative API rather than requiring a public local
-  catalog object.
-- Separate public catalog handles are deferred until filtering and qualified lookup are proven insufficient.
+- If application users consume one combined model universe, use a single aggregated SDK catalog. This
+  centralizes cross-source policy and gives the CLI, service, and language bindings consistent behavior.
+- If application users choose catalogs, or catalogs represent product groupings, tenants, or trust
+  boundaries, expose separate SDK catalog instances and let the application decide whether to add an
+  "all catalogs" view.
+- If catalogs are entirely internal and applications do not need consistent cross-source behavior, either
+  option is viable; aggregation is primarily convenience, while separate instances give the integrator more
+  policy control.
 
-This recommendation follows from three considerations: it provides a simple default without preventing
-explicit source selection, centralizes collision and fallback policy instead of requiring every consumer to
-reimplement it, and makes the smaller, more reversible ABI commitment. The implementation cost of aggregation
-is contained within the SDK, while the usability and API costs of separate catalogs would be permanent and
-borne by every consumer.
+In all cases, keep source instances independent internally and preserve source/artifact identity. Do not
+silently resolve same-ID entries that may represent different artifacts.
 
-Choose separate public catalogs instead if evidence shows that same-ID/different-artifact collisions,
-multiple private catalogs, strict tenant/trust isolation, or source-specific workflows are common rather
-than exceptional. In the absence of that evidence, the aggregate public experience is the lower-regret
-choice because it preserves the option to add explicit source access later without committing every user to
-catalog-aware workflows now.
+Until the application presentation model is decided, [PR #1002](https://github.com/microsoft/foundry-local/pull/1002)
+should remain a proof of concept rather than establishing the final public API. The ABI reversibility of a
+single catalog is a reason to avoid premature catalog-topology APIs, but it is not sufficient by itself to
+override a product requirement for explicit catalog selection.
 
 ## Inputs considered
 
