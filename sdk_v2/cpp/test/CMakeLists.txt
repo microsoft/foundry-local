@@ -237,6 +237,7 @@ set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
 # ==========================================================================
 add_executable(cache_only_tests
     test_main.cc
+    sdk_api/bring_your_own_model_e2e_test.cc
     sdk_api/cache_only_test.cc
     sdk_api/catalog_live_test.cc
     sdk_api/manager_web_service_test.cc
@@ -244,6 +245,7 @@ add_executable(cache_only_tests
 
 set_target_properties(cache_only_tests PROPERTIES CXX_STANDARD 17)
 target_compile_options(cache_only_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_compile_definitions(cache_only_tests PRIVATE FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS)
 
 # Pick up the shared fl::test::SafeGetEnv helper.
 target_include_directories(cache_only_tests

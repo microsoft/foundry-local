@@ -2,12 +2,19 @@
 // Licensed under the MIT License.
 // End-to-end coverage for registering existing local model assets and then running inference.
 
+#ifdef FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS
+#include <foundry_local/foundry_local_cpp.h>
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+#else
 #include "model_fixture.h"
+#endif
 
 #include "internal_api/test_model_cache.h"
 #include "utils/temp_path.h"
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -81,6 +88,7 @@ void StageModelAssets(const fs::path& source, const fs::path& destination) {
   }
 }
 
+#ifndef FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS
 class LocalRegistrationGuard {
  public:
   LocalRegistrationGuard(foundry_local::ICatalog& catalog,
@@ -110,9 +118,11 @@ class LocalRegistrationGuard {
   std::unique_ptr<foundry_local::IModel> model_;
   std::string model_id_;
 };
+#endif
 
 }  // namespace
 
+#ifndef FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS
 TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
   using namespace foundry_local;
 
@@ -176,3 +186,91 @@ TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
   EXPECT_FALSE(response_text.empty());
   EXPECT_NE(response_text.find('4'), std::string::npos) << "Unexpected response: " << response_text;
 }
+#else
+TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
+  using namespace foundry_local;
+
+  const auto source_model_path = GetByomSourceModelPath();
+  if (!source_model_path) {
+    GTEST_SKIP() << "BYOM source model not found. Set " << kByomSourceModelEnvironmentVariable
+                 << " or stage " << kByomChatModelAlias << " under FOUNDRY_TEST_DATA_DIR/Microsoft.";
+  }
+
+  auto temp_root = fl::test::TempPath::CreateTempDir("fl_byom_persistence_");
+  const auto staged_model_path = temp_root.path() / "model";
+  const auto app_data_path = temp_root.path() / "appdata";
+  fs::create_directories(staged_model_path);
+  StageModelAssets(*source_model_path, staged_model_path);
+
+  const auto registration_alias = temp_root.path().filename().string();
+  const auto first_id = registration_alias + ":1";
+  const auto second_id = registration_alias + ":2";
+  constexpr const char* kPersistenceMarker = "persistence_marker";
+
+  const auto make_config = [&app_data_path]() {
+    Configuration config("foundry_local_byom_persistence_test");
+    config.SetAppDataDir(app_data_path.string()).SetExternalServiceUrl("http://127.0.0.1:1");
+    return config;
+  };
+
+  {
+    Manager manager(make_config());
+    auto& local_catalog = manager.GetCatalog(CatalogType::Local);
+    ModelInfo first_metadata;
+    first_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+    first_metadata.SetStringProperty(kPersistenceMarker, "first");
+    ModelInfo second_metadata;
+    second_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+    second_metadata.SetStringProperty(kPersistenceMarker, "second");
+
+    auto first = local_catalog.RegisterModel(staged_model_path.string(), first_id, first_metadata);
+    auto second = local_catalog.RegisterModel(staged_model_path.string(), second_id, second_metadata);
+
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_TRUE(first->IsCached());
+    EXPECT_TRUE(second->IsCached());
+  }
+
+  const auto index_path = app_data_path / "catalogs" / "local" / "local_models.json";
+  ASSERT_TRUE(fs::is_regular_file(index_path));
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  ASSERT_TRUE(index.contains("models"));
+  ASSERT_TRUE(index["models"].is_array());
+  ASSERT_EQ(index["models"].size(), 2u);
+  for (const auto& registration : index["models"]) {
+    EXPECT_EQ(fs::path(registration.at("model_path").get<std::string>()), fs::absolute(staged_model_path));
+  }
+
+  {
+    Manager manager(make_config());
+    auto& local_catalog = manager.GetCatalog(CatalogType::Local);
+    auto first = local_catalog.GetModelVariant(first_id);
+    auto second = local_catalog.GetModelVariant(second_id);
+
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    const auto first_info = first->GetInfo();
+    const auto second_info = second->GetInfo();
+    EXPECT_EQ(first_info.Id(), first_id);
+    EXPECT_EQ(second_info.Id(), second_id);
+    const auto first_marker = first_info.GetStringProperty(kPersistenceMarker);
+    const auto second_marker = second_info.GetStringProperty(kPersistenceMarker);
+    ASSERT_TRUE(first_marker.has_value());
+    ASSERT_TRUE(second_marker.has_value());
+    EXPECT_EQ(*first_marker, "first");
+    EXPECT_EQ(*second_marker, "second");
+    EXPECT_TRUE(fs::equivalent(fs::path(std::string(first->GetPath())), staged_model_path));
+    EXPECT_TRUE(fs::equivalent(fs::path(std::string(second->GetPath())), staged_model_path));
+
+    first.reset();
+    second.reset();
+    local_catalog.UnregisterModel(first_id);
+    local_catalog.UnregisterModel(second_id);
+    EXPECT_EQ(local_catalog.GetModelVariant(first_id), nullptr);
+    EXPECT_EQ(local_catalog.GetModelVariant(second_id), nullptr);
+    EXPECT_TRUE(fs::is_regular_file(staged_model_path / "genai_config.json"));
+  }
+}
+#endif
