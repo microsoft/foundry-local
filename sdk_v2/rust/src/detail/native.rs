@@ -231,6 +231,31 @@ impl NativeCatalog {
         self.list(self.api.catalog_api().GetLoadedModels)
     }
 
+    pub(crate) fn get_model_versions(
+        &self,
+        model_alias: &str,
+        model_name: Option<&str>,
+        max_versions: i32,
+    ) -> Result<Vec<NativeModel>> {
+        let model_alias = super::api::to_cstring(model_alias)?;
+        let model_name = model_name.map(super::api::to_cstring).transpose()?;
+        let model_name_ptr = model_name
+            .as_ref()
+            .map_or(std::ptr::null(), |name| name.as_ptr());
+        let mut list: *mut flModelList = std::ptr::null_mut();
+        let status = unsafe {
+            (self.api.catalog_api().GetModelVersions)(
+                self.ptr,
+                model_alias.as_ptr(),
+                model_name_ptr,
+                max_versions,
+                &mut list,
+            )
+        };
+        self.api.check(status)?;
+        Ok(collect_models(&self.api, &self.manager, list))
+    }
+
     fn lookup(
         &self,
         f: unsafe extern "system" fn(

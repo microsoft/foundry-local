@@ -148,3 +148,39 @@ class Catalog:
         ml_out = ffi.new("flModelList**")
         api.check_status(api.catalog.GetLoadedModels(self._ptr, ml_out))
         return _consume_model_list(ml_out[0], api, ffi, parent=self)
+
+    def get_model_versions(
+        self,
+        model_alias: str,
+        model_name: str | None = None,
+        max_versions: int = 50,
+    ) -> list[IModel]:
+        """Get all versions of a model alias.
+
+        Args:
+            model_alias: Model alias. Must be non-empty.
+            model_name: Optional variant name; ``None`` or an empty string returns every
+                variant for the alias.
+            max_versions: Select the latest ``X`` versions per variant name. Defaults to
+                50, matching the web service contract. Pass ``0`` or a negative value for
+                no per-variant cap.
+
+        Returns:
+            One ``IModel`` instance per matching model variant.
+        """
+        from foundry_local_sdk._native.api import api, ffi
+
+        alias_bytes = model_alias.encode("utf-8")
+        model_name_ptr = ffi.NULL if model_name is None else model_name.encode("utf-8")
+
+        ml_out = ffi.new("flModelList**")
+        api.check_status(
+            api.catalog.GetModelVersions(
+                self._ptr,
+                alias_bytes,
+                model_name_ptr,
+                max_versions,
+                ml_out,
+            )
+        )
+        return _consume_model_list(ml_out[0], api, ffi, parent=self)

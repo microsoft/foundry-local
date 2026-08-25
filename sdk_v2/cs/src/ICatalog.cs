@@ -54,6 +54,16 @@ public interface ICatalog
     Task<List<IModel>> GetLoadedModelsAsync(CancellationToken? ct = null);
 
     /// <summary>
+    /// Get the set of available versions for a model alias, optionally filtered by variant name.
+    /// </summary>
+    /// <param name="modelAlias">Model alias.</param>
+    /// <param name="modelName">Optional exact variant name filter; null matches all variants.</param>
+    /// <param name="maxVersions">Maximum number of versions to return per variant name. Use 0 or a negative value to return all versions.</param>
+    /// <param name="ct">Optional CancellationToken.</param>
+    /// <returns>Available model versions matching the alias and variant filter.</returns>
+    Task<List<IModel>> GetModelVersionsAsync(string modelAlias, string? modelName = null, int maxVersions = 50, CancellationToken? ct = null);
+
+    /// <summary>
     /// Get the latest version of a model.
     /// This is used to check if a newer version of a model is available in the catalog for download.
     /// </summary>

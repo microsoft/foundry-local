@@ -9,54 +9,8 @@ parameters:
   type: string
   default: pscore
   values: ['pscore', 'ps']
-- name: installAzCli
-  type: boolean
-  default: false
 
 steps:
-- ${{ if eq(parameters.installAzCli, true) }}:
-  - task: PowerShell@2
-    displayName: 'Ensure Azure CLI is installed (Windows)'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    inputs:
-      targetType: inline
-      pwsh: false
-      script: |
-        $ErrorActionPreference = 'Stop'
-
-        if (Get-Command az -ErrorAction SilentlyContinue) {
-          $azDir = Split-Path -Path (Get-Command az).Source -Parent
-          Write-Host "##vso[task.prependpath]$azDir"
-          az --version | Select-Object -First 1 | Write-Host
-          Write-Host 'Azure CLI already installed.'
-          exit 0
-        }
-
-        try {
-          $installerPath = Join-Path $env:TEMP 'azure-cli-installer.msi'
-          $installerUrl = 'https://aka.ms/installazurecliwindows'
-
-          Write-Host "Downloading Azure CLI installer from $installerUrl"
-          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
-
-          Write-Host 'Installing Azure CLI via MSI...'
-          $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList "/i `"$installerPath`" /qn /norestart" -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "Azure CLI MSI install failed with exit code $($process.ExitCode)."
-          }
-        }
-        catch {
-          throw "Azure CLI install failed: $($_.Exception.Message)"
-        }
-
-        $env:PATH = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
-        $azCommand = Get-Command az -ErrorAction SilentlyContinue
-        if (-not $azCommand) {
-          throw 'Azure CLI install was attempted but az is still not on PATH.'
-        }
-        Write-Host "##vso[task.prependpath]$(Split-Path -Path $azCommand.Source -Parent)"
-        az version | Write-Host
-
 - task: AzureCLI@2
   displayName: 'Fetch test data from blob'
   inputs:

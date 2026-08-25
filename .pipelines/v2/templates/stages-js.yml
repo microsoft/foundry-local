@@ -62,6 +62,8 @@ stages:
   - job: build
     pool:
       name: onnxruntime-native-arm64-16core
+      demands:
+        - ImageOverride -equals onnxruntime-Win2025-arm64
       os: windows
       hostArchitecture: arm64
     variables:
@@ -223,6 +225,8 @@ stages:
   - job: test
     pool:
       name: onnxruntime-native-arm64-16core
+      demands:
+        - ImageOverride -equals onnxruntime-Win2025-arm64
       os: windows
       hostArchitecture: arm64
     templateContext:
@@ -236,13 +240,11 @@ stages:
     - template: ../../templates/fetch-test-data-from-blob.yml@self
       parameters:
         scriptType: ps
-        installAzCli: true
     - template: steps-test-js.yml
       parameters:
         rid: 'win-arm64'
         prebuildArtifactDir: '$(Pipeline.Workspace)/js-prebuild-win-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-        usePwsh: false
 
 - stage: js_test_linux_x64
   displayName: 'JS SDK: Test Linux x64'

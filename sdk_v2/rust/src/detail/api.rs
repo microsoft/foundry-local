@@ -14,7 +14,7 @@ use std::sync::Arc;
 use libloading::Library;
 
 use super::ffi::*;
-use crate::error::{FoundryLocalError, Result};
+use crate::error::{FoundryLocalError, NativeErrorCode, Result};
 
 // ── Library file names ───────────────────────────────────────────────────────
 
@@ -62,22 +62,18 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const c_char) -> Option<String> {
 }
 
 fn map_error(code: flErrorCode, message: String) -> FoundryLocalError {
-    match code {
-        FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT | FOUNDRY_LOCAL_ERROR_INVALID_USAGE => {
-            FoundryLocalError::Validation { reason: message }
-        }
-        FOUNDRY_LOCAL_ERROR_INTERNAL | FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED => {
-            FoundryLocalError::Internal { reason: message }
-        }
-        FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED => FoundryLocalError::CommandExecution {
-            reason: if message.is_empty() {
-                "Operation cancelled".into()
-            } else {
-                message
-            },
-        },
-        _ => FoundryLocalError::CommandExecution { reason: message },
-    }
+    let code = match code {
+        FOUNDRY_LOCAL_OK => NativeErrorCode::Ok,
+        FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED => NativeErrorCode::NotImplemented,
+        FOUNDRY_LOCAL_ERROR_INTERNAL => NativeErrorCode::Internal,
+        FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT => NativeErrorCode::InvalidArgument,
+        FOUNDRY_LOCAL_ERROR_INVALID_USAGE => NativeErrorCode::InvalidUsage,
+        FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED => NativeErrorCode::OperationCancelled,
+        FOUNDRY_LOCAL_ERROR_NETWORK => NativeErrorCode::Network,
+        _ => NativeErrorCode::Unknown(code),
+    };
+
+    FoundryLocalError::Native { code, message }
 }
 
 // ── Api ──────────────────────────────────────────────────────────────────────
@@ -440,4 +436,52 @@ fn resolve_library_path(library_path: Option<&str>) -> Result<(PathBuf, Option<P
 
     // 5. Fall back to the bare library name (system loader search path).
     Ok((PathBuf::from(LIB_FILE), None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_error_preserves_all_native_codes_and_messages() {
+        let cases = [
+            (FOUNDRY_LOCAL_OK, NativeErrorCode::Ok),
+            (
+                FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
+                NativeErrorCode::NotImplemented,
+            ),
+            (FOUNDRY_LOCAL_ERROR_INTERNAL, NativeErrorCode::Internal),
+            (
+                FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                NativeErrorCode::InvalidArgument,
+            ),
+            (
+                FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                NativeErrorCode::InvalidUsage,
+            ),
+            (
+                FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED,
+                NativeErrorCode::OperationCancelled,
+            ),
+            (FOUNDRY_LOCAL_ERROR_NETWORK, NativeErrorCode::Network),
+            (i32::MAX, NativeErrorCode::Unknown(i32::MAX)),
+        ];
+
+        for (raw_code, expected_code) in cases {
+            let error = map_error(raw_code, "native message".into());
+            assert_eq!(error.native_code(), Some(expected_code));
+            assert_eq!(error.native_message(), Some("native message"));
+        }
+    }
+
+    #[test]
+    fn map_error_preserves_empty_native_message() {
+        let error = map_error(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, String::new());
+
+        assert_eq!(
+            error.native_code(),
+            Some(NativeErrorCode::OperationCancelled)
+        );
+        assert_eq!(error.native_message(), Some(""));
+    }
 }

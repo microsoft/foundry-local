@@ -211,25 +211,23 @@ pub(crate) fn make_bytes_item(
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
-pub(crate) unsafe fn read_text_item(api: &Api, item: *const flItem) -> Option<String> {
+/// Returns `Ok(None)` for a null or non-TEXT item so callers can fall through to
+/// another item type, and `Err` when the native getter itself fails so a genuine
+/// read failure is propagated rather than silently dropped.
+pub(crate) unsafe fn read_text_item(api: &Api, item: *const flItem) -> Result<Option<String>> {
     if item.is_null() {
-        return None;
+        return Ok(None);
     }
     if (api.item_api().GetType)(item) != FOUNDRY_LOCAL_ITEM_TEXT {
-        return None;
+        return Ok(None);
     }
     let mut data = flTextData {
         version: FOUNDRY_LOCAL_API_VERSION,
         text: ptr::null::<c_char>(),
         r#type: FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT,
     };
-    if api
-        .check((api.item_api().GetText)(item, &mut data))
-        .is_err()
-    {
-        return None;
-    }
-    cstr_to_string(data.text)
+    api.check((api.item_api().GetText)(item, &mut data))?;
+    Ok(cstr_to_string(data.text))
 }
 
 /// Text + timing read from a SPEECH_SEGMENT item (output-only).
@@ -249,16 +247,20 @@ fn duration_ms_to_seconds(ms: i64) -> Option<f64> {
     }
 }
 
-/// Read a SPEECH_SEGMENT item (output-only). Returns `None` for null/other items.
+/// Read a SPEECH_SEGMENT item (output-only).
+///
+/// Returns `Ok(None)` for a null or non-SPEECH_SEGMENT item so callers can fall
+/// through to another item type, and `Err` when the native getter fails so a
+/// genuine read failure is propagated rather than silently dropped.
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
 pub(crate) unsafe fn read_speech_segment(
     api: &Api,
     item: *const flItem,
-) -> Option<SpeechSegmentText> {
+) -> Result<Option<SpeechSegmentText>> {
     if item.is_null() || (api.item_api().GetType)(item) != FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT {
-        return None;
+        return Ok(None);
     }
     let mut data = flSpeechSegmentData {
         version: FOUNDRY_LOCAL_API_VERSION,
@@ -271,29 +273,30 @@ pub(crate) unsafe fn read_speech_segment(
         words_count: 0,
         language: ptr::null::<c_char>(),
     };
-    if api
-        .check((api.item_api().GetSpeechSegment)(item, &mut data))
-        .is_err()
-    {
-        return None;
-    }
-    Some(SpeechSegmentText {
+    api.check((api.item_api().GetSpeechSegment)(item, &mut data))?;
+    Ok(Some(SpeechSegmentText {
         text: cstr_to_string(data.text).unwrap_or_default(),
         // PARTIAL is an interim hypothesis; FINAL (and NONE entries) are stable.
         is_final: data.kind == FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL,
         start_time_s: duration_ms_to_seconds(data.start_time_ms),
         end_time_s: duration_ms_to_seconds(data.end_time_ms),
-    })
+    }))
 }
 
 /// Read the concatenated transcript of a SPEECH_RESULT item (output-only).
-/// Returns `None` for null/other items.
+///
+/// Returns `Ok(None)` for a null or non-SPEECH_RESULT item so callers can fall
+/// through to another item type, and `Err` when the native getter fails so a
+/// genuine read failure is propagated rather than silently dropped.
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
-pub(crate) unsafe fn read_speech_result_text(api: &Api, item: *const flItem) -> Option<String> {
+pub(crate) unsafe fn read_speech_result_text(
+    api: &Api,
+    item: *const flItem,
+) -> Result<Option<String>> {
     if item.is_null() || (api.item_api().GetType)(item) != FOUNDRY_LOCAL_ITEM_SPEECH_RESULT {
-        return None;
+        return Ok(None);
     }
     let mut data = flSpeechResultData {
         version: FOUNDRY_LOCAL_API_VERSION,
@@ -303,13 +306,8 @@ pub(crate) unsafe fn read_speech_result_text(api: &Api, item: *const flItem) -> 
         segments: ptr::null::<*const flItem>(),
         segments_count: 0,
     };
-    if api
-        .check((api.item_api().GetSpeechResult)(item, &mut data))
-        .is_err()
-    {
-        return None;
-    }
-    cstr_to_string(data.text)
+    api.check((api.item_api().GetSpeechResult)(item, &mut data))?;
+    Ok(cstr_to_string(data.text))
 }
 
 // ── Additional native item builders (image / tensor / message / tool) ─────────
@@ -682,21 +680,21 @@ fn tensor_byte_len(data_type: TensorDataType, shape: &[i64]) -> Option<usize> {
 }
 
 /// Read a TEXT item into an owned [`Item::Text`] (preserving its [`TextKind`]).
-unsafe fn read_text_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_text_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flTextData {
         version: FOUNDRY_LOCAL_API_VERSION,
         text: ptr::null::<c_char>(),
         r#type: FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT,
     };
-    api.check((api.item_api().GetText)(item, &mut data)).ok()?;
-    Some(Item::Text {
+    api.check((api.item_api().GetText)(item, &mut data))?;
+    Ok(Item::Text {
         text: cstr_to_string(data.text).unwrap_or_default(),
         kind: TextKind::from_native(data.r#type),
     })
 }
 
 /// Read a BYTES item into an owned [`Item::Bytes`].
-unsafe fn read_bytes_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_bytes_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flBytesData {
         version: FOUNDRY_LOCAL_API_VERSION,
         item_type: FOUNDRY_LOCAL_ITEM_BYTES,
@@ -706,12 +704,12 @@ unsafe fn read_bytes_full(api: &Api, item: *const flItem) -> Option<Item> {
         deleter: None,
         deleter_user_data: ptr::null_mut(),
     };
-    api.check((api.item_api().GetBytes)(item, &mut data)).ok()?;
-    Some(Item::Bytes(copy_bytes(data.data, data.data_size)))
+    api.check((api.item_api().GetBytes)(item, &mut data))?;
+    Ok(Item::Bytes(copy_bytes(data.data, data.data_size)))
 }
 
 /// Read a TENSOR item into an owned [`Item::Tensor`].
-unsafe fn read_tensor_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_tensor_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flTensorData {
         version: FOUNDRY_LOCAL_API_VERSION,
         data_type: FOUNDRY_LOCAL_TENSOR_UNDEFINED,
@@ -722,8 +720,7 @@ unsafe fn read_tensor_full(api: &Api, item: *const flItem) -> Option<Item> {
         deleter: None,
         deleter_user_data: ptr::null_mut(),
     };
-    api.check((api.item_api().GetTensor)(item, &mut data))
-        .ok()?;
+    api.check((api.item_api().GetTensor)(item, &mut data))?;
     let shape: Vec<i64> = if data.shape.is_null() || data.rank == 0 {
         Vec::new()
     } else {
@@ -734,7 +731,7 @@ unsafe fn read_tensor_full(api: &Api, item: *const flItem) -> Option<Item> {
         Some(len) => copy_bytes(data.data, len),
         None => Vec::new(),
     };
-    Some(Item::Tensor(Tensor {
+    Ok(Item::Tensor(Tensor {
         data_type,
         shape,
         data: bytes,
@@ -742,7 +739,7 @@ unsafe fn read_tensor_full(api: &Api, item: *const flItem) -> Option<Item> {
 }
 
 /// Read an IMAGE item into an owned [`Item::Image`].
-unsafe fn read_image_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_image_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flImageData {
         version: FOUNDRY_LOCAL_API_VERSION,
         data: ptr::null(),
@@ -753,7 +750,7 @@ unsafe fn read_image_full(api: &Api, item: *const flItem) -> Option<Item> {
         deleter: None,
         deleter_user_data: ptr::null_mut(),
     };
-    api.check((api.item_api().GetImage)(item, &mut data)).ok()?;
+    api.check((api.item_api().GetImage)(item, &mut data))?;
     let source = if !data.data.is_null() && data.data_size > 0 {
         MediaSource::Data(copy_bytes(data.data, data.data_size))
     } else if let Some(uri) = cstr_to_string(data.uri) {
@@ -761,14 +758,14 @@ unsafe fn read_image_full(api: &Api, item: *const flItem) -> Option<Item> {
     } else {
         MediaSource::Data(Vec::new())
     };
-    Some(Item::Image(Image {
+    Ok(Item::Image(Image {
         source,
         format: cstr_to_string(data.format),
     }))
 }
 
 /// Read an AUDIO item into an owned [`Item::Audio`].
-unsafe fn read_audio_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_audio_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flAudioData {
         version: FOUNDRY_LOCAL_API_VERSION,
         data: ptr::null(),
@@ -781,7 +778,7 @@ unsafe fn read_audio_full(api: &Api, item: *const flItem) -> Option<Item> {
         deleter: None,
         deleter_user_data: ptr::null_mut(),
     };
-    api.check((api.item_api().GetAudio)(item, &mut data)).ok()?;
+    api.check((api.item_api().GetAudio)(item, &mut data))?;
     let source = if !data.data.is_null() && data.data_size > 0 {
         MediaSource::Data(copy_bytes(data.data, data.data_size))
     } else if let Some(uri) = cstr_to_string(data.uri) {
@@ -789,7 +786,7 @@ unsafe fn read_audio_full(api: &Api, item: *const flItem) -> Option<Item> {
     } else {
         MediaSource::Data(Vec::new())
     };
-    Some(Item::Audio(Audio {
+    Ok(Item::Audio(Audio {
         source,
         format: cstr_to_string(data.format),
         sample_rate: data.sample_rate,
@@ -798,7 +795,7 @@ unsafe fn read_audio_full(api: &Api, item: *const flItem) -> Option<Item> {
 }
 
 /// Read a MESSAGE item into an owned [`Item::Message`], recursively decoding parts.
-unsafe fn read_message_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_message_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flMessageData {
         version: FOUNDRY_LOCAL_API_VERSION,
         role: FOUNDRY_LOCAL_ROLE_NONE,
@@ -806,18 +803,15 @@ unsafe fn read_message_full(api: &Api, item: *const flItem) -> Option<Item> {
         content_items_count: 0,
         name: ptr::null(),
     };
-    api.check((api.item_api().GetMessage)(item, &mut data))
-        .ok()?;
+    api.check((api.item_api().GetMessage)(item, &mut data))?;
     let mut content = Vec::with_capacity(data.content_items_count);
     if !data.content_items.is_null() {
         for i in 0..data.content_items_count {
             let part = *data.content_items.add(i);
-            if let Some(child) = item_from_native(api, part) {
-                content.push(child);
-            }
+            content.push(item_from_native(api, part)?);
         }
     }
-    Some(Item::Message(Message {
+    Ok(Item::Message(Message {
         role: MessageRole::from_native(data.role),
         content,
         name: cstr_to_string(data.name),
@@ -825,16 +819,15 @@ unsafe fn read_message_full(api: &Api, item: *const flItem) -> Option<Item> {
 }
 
 /// Read a TOOL_CALL item into an owned [`Item::ToolCall`].
-unsafe fn read_tool_call_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_tool_call_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flToolCallData {
         version: FOUNDRY_LOCAL_API_VERSION,
         call_id: ptr::null(),
         name: ptr::null(),
         arguments: ptr::null(),
     };
-    api.check((api.item_api().GetToolCall)(item, &mut data))
-        .ok()?;
-    Some(Item::ToolCall(ToolCall {
+    api.check((api.item_api().GetToolCall)(item, &mut data))?;
+    Ok(Item::ToolCall(ToolCall {
         call_id: cstr_to_string(data.call_id).unwrap_or_default(),
         name: cstr_to_string(data.name).unwrap_or_default(),
         arguments: cstr_to_string(data.arguments).unwrap_or_default(),
@@ -842,22 +835,21 @@ unsafe fn read_tool_call_full(api: &Api, item: *const flItem) -> Option<Item> {
 }
 
 /// Read a TOOL_RESULT item into an owned [`Item::ToolResult`].
-unsafe fn read_tool_result_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_tool_result_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flToolResultData {
         version: FOUNDRY_LOCAL_API_VERSION,
         call_id: ptr::null(),
         result: ptr::null(),
     };
-    api.check((api.item_api().GetToolResult)(item, &mut data))
-        .ok()?;
-    Some(Item::ToolResult(ToolResult {
+    api.check((api.item_api().GetToolResult)(item, &mut data))?;
+    Ok(Item::ToolResult(ToolResult {
         call_id: cstr_to_string(data.call_id).unwrap_or_default(),
         result: cstr_to_string(data.result).unwrap_or_default(),
     }))
 }
 
 /// Read a SPEECH_SEGMENT item into an owned [`SpeechSegment`] value.
-unsafe fn read_speech_segment_value(api: &Api, item: *const flItem) -> Option<SpeechSegment> {
+unsafe fn read_speech_segment_value(api: &Api, item: *const flItem) -> Result<SpeechSegment> {
     let mut data = flSpeechSegmentData {
         version: FOUNDRY_LOCAL_API_VERSION,
         kind: FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE,
@@ -869,8 +861,7 @@ unsafe fn read_speech_segment_value(api: &Api, item: *const flItem) -> Option<Sp
         words_count: 0,
         language: ptr::null::<c_char>(),
     };
-    api.check((api.item_api().GetSpeechSegment)(item, &mut data))
-        .ok()?;
+    api.check((api.item_api().GetSpeechSegment)(item, &mut data))?;
     let mut words = Vec::with_capacity(data.words_count);
     if !data.words.is_null() {
         for i in 0..data.words_count {
@@ -889,7 +880,7 @@ unsafe fn read_speech_segment_value(api: &Api, item: *const flItem) -> Option<Sp
             });
         }
     }
-    Some(SpeechSegment {
+    Ok(SpeechSegment {
         kind: SpeechSegmentKind::from_native(data.kind),
         text: cstr_to_string(data.text).unwrap_or_default(),
         start_time_ms: opt_ms(data.start_time_ms),
@@ -901,7 +892,7 @@ unsafe fn read_speech_segment_value(api: &Api, item: *const flItem) -> Option<Sp
 }
 
 /// Read a SPEECH_RESULT item into an owned [`Item::SpeechResult`].
-unsafe fn read_speech_result_full(api: &Api, item: *const flItem) -> Option<Item> {
+unsafe fn read_speech_result_full(api: &Api, item: *const flItem) -> Result<Item> {
     let mut data = flSpeechResultData {
         version: FOUNDRY_LOCAL_API_VERSION,
         text: ptr::null::<c_char>(),
@@ -910,18 +901,15 @@ unsafe fn read_speech_result_full(api: &Api, item: *const flItem) -> Option<Item
         segments: ptr::null::<*const flItem>(),
         segments_count: 0,
     };
-    api.check((api.item_api().GetSpeechResult)(item, &mut data))
-        .ok()?;
+    api.check((api.item_api().GetSpeechResult)(item, &mut data))?;
     let mut segments = Vec::with_capacity(data.segments_count);
     if !data.segments.is_null() {
         for i in 0..data.segments_count {
             let seg = *data.segments.add(i);
-            if let Some(child) = item_from_native(api, seg) {
-                segments.push(child);
-            }
+            segments.push(item_from_native(api, seg)?);
         }
     }
-    Some(Item::SpeechResult(SpeechResult {
+    Ok(Item::SpeechResult(SpeechResult {
         text: cstr_to_string(data.text).unwrap_or_default(),
         language: cstr_to_string(data.language),
         duration_ms: opt_ms(data.duration_ms),
@@ -931,15 +919,19 @@ unsafe fn read_speech_result_full(api: &Api, item: *const flItem) -> Option<Item
 
 /// Decode a native `flItem` into an owned public [`Item`].
 ///
-/// Returns `None` for a null item or an item whose type is not representable.
+/// Returns an error for a null item, an unsupported item type, or a native
+/// getter failure so callers never silently lose response data.
 ///
 /// # Safety
 /// `item` must be null or a valid item pointer alive for the duration of this call.
-pub(crate) unsafe fn item_from_native(api: &Api, item: *const flItem) -> Option<Item> {
+pub(crate) unsafe fn item_from_native(api: &Api, item: *const flItem) -> Result<Item> {
     if item.is_null() {
-        return None;
+        return Err(FoundryLocalError::Internal {
+            reason: "native response contained a null item".into(),
+        });
     }
-    match (api.item_api().GetType)(item) {
+    let item_type = (api.item_api().GetType)(item);
+    match item_type {
         FOUNDRY_LOCAL_ITEM_TEXT => read_text_full(api, item),
         FOUNDRY_LOCAL_ITEM_BYTES => read_bytes_full(api, item),
         FOUNDRY_LOCAL_ITEM_TENSOR => read_tensor_full(api, item),
@@ -952,6 +944,8 @@ pub(crate) unsafe fn item_from_native(api: &Api, item: *const flItem) -> Option<
             read_speech_segment_value(api, item).map(Item::SpeechSegment)
         }
         FOUNDRY_LOCAL_ITEM_SPEECH_RESULT => read_speech_result_full(api, item),
-        _ => None,
+        _ => Err(FoundryLocalError::Internal {
+            reason: format!("native response contained unsupported item type {item_type}"),
+        }),
     }
 }

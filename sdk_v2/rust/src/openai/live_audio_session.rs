@@ -426,15 +426,30 @@ unsafe extern "C" fn live_trampoline(
                 continue;
             }
             // The native audio path now streams SPEECH_SEGMENT items; older cores
-            // (and the OpenAI-JSON path) stream plain TEXT items. Handle both.
-            let response = if let Some(text) = read_text_item(&ctx.api, item) {
-                (!text.is_empty()).then(|| LiveAudioTranscriptionResponse::from_text(text, false))
-            } else {
-                read_speech_segment(&ctx.api, item)
+            // (and the OpenAI-JSON path) stream plain TEXT items. Handle both, and
+            // propagate a genuine read failure from either getter rather than
+            // silently dropping the item.
+            let response = (|| -> Result<Option<LiveAudioTranscriptionResponse>> {
+                if let Some(text) = read_text_item(&ctx.api, item)? {
+                    return Ok((!text.is_empty())
+                        .then(|| LiveAudioTranscriptionResponse::from_text(text, false)));
+                }
+
+                Ok(read_speech_segment(&ctx.api, item)?
                     .filter(|seg| !seg.text.is_empty())
-                    .map(LiveAudioTranscriptionResponse::from_segment)
-            };
+                    .map(LiveAudioTranscriptionResponse::from_segment))
+            })();
+
             (item_api.Item_Release)(item);
+
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = ctx.tx.send(Err(error));
+                    return 1; // read failure — stop streaming and surface the error
+                }
+            };
+
             if let Some(response) = response {
                 if ctx.tx.send(Ok(response)).is_err() {
                     return 1; // receiver dropped — cancel
@@ -498,10 +513,12 @@ fn run_worker(
         // (and older cores) return TEXT items.
         let mut final_text = String::new();
         for i in 0..response.item_count() {
-            if let Some(text) = response
-                .item_text(i)
-                .or_else(|| response.item_speech_result_text(i))
-            {
+            let text = match response.item_text(i)? {
+                Some(text) => Some(text),
+                None => response.item_speech_result_text(i)?,
+            };
+
+            if let Some(text) = text {
                 final_text.push_str(&text);
             }
         }

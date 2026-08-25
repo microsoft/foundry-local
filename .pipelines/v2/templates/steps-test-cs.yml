@@ -15,10 +15,6 @@ parameters:
   type: string
   default: ''
   displayName: 'Optional extra dotnet test arguments'
-- name: usePwsh
-  type: boolean
-  default: true
-  displayName: 'Use PowerShell Core (pwsh) for PowerShell tasks'
 
 steps:
 
@@ -45,7 +41,7 @@ steps:
   condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $ErrorActionPreference = 'Stop'
       $url = 'https://aka.ms/vs/17/release/vc_redist.arm64.exe'
@@ -83,7 +79,7 @@ steps:
   displayName: 'Set package version'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $v = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       Write-Host "Package version: $v"
@@ -93,7 +89,7 @@ steps:
   displayName: 'Create NuGet.config with local Foundry Local Runtime feed'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $pkgPattern = 'Microsoft.AI.Foundry.Local.Runtime*.nupkg'
       $nupkg = Get-ChildItem "${{ parameters.flNugetDir }}" -Recurse -Filter $pkgPattern |
@@ -127,7 +123,7 @@ steps:
   displayName: 'Set isolated NuGet packages path'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $buildDir = "$(Build.BinariesDirectory)/nuget-isolated-$(System.JobId)"
       if (Test-Path $buildDir) {
@@ -148,7 +144,7 @@ steps:
   displayName: 'Restore & build tests'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/Microsoft.AI.Foundry.Local.Tests.csproj"
       $rid = dotnet msbuild $proj -getProperty:NETCoreSdkRuntimeIdentifier
@@ -173,7 +169,7 @@ steps:
   displayName: 'Purge stale native redirect files'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       # Defense in depth: in CI we resolve foundry_local exclusively via the
       # Microsoft.AI.Foundry.Local.Runtime NuGet package (runtimes/<rid>/native/).
@@ -193,7 +189,7 @@ steps:
   displayName: 'Run SDK tests'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/Microsoft.AI.Foundry.Local.Tests.csproj"
 

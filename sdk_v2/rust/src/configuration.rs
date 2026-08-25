@@ -57,6 +57,8 @@ pub struct FoundryLocalConfig {
     model_cache_dir: Option<String>,
     logs_dir: Option<String>,
     log_level: Option<LogLevel>,
+    catalog_urls: Vec<(String, Option<String>)>,
+    catalog_region: Option<String>,
     web_service_urls: Option<String>,
     service_endpoint: Option<String>,
     library_path: Option<String>,
@@ -72,6 +74,8 @@ impl fmt::Debug for FoundryLocalConfig {
             .field("model_cache_dir", &self.model_cache_dir)
             .field("logs_dir", &self.logs_dir)
             .field("log_level", &self.log_level)
+            .field("catalog_urls", &self.catalog_urls)
+            .field("catalog_region", &self.catalog_region)
             .field("web_service_urls", &self.web_service_urls)
             .field("service_endpoint", &self.service_endpoint)
             .field("library_path", &self.library_path)
@@ -120,6 +124,37 @@ impl FoundryLocalConfig {
     /// Set the log level.
     pub fn log_level(mut self, level: LogLevel) -> Self {
         self.log_level = Some(level);
+        self
+    }
+
+    /// Add a catalog URL.
+    ///
+    /// Call this method multiple times to configure multiple catalogs. Catalogs
+    /// retain insertion order, which determines their priority. Use
+    /// [`catalog_url_with_filter`](Self::catalog_url_with_filter) to attach a
+    /// per-catalog filter override.
+    pub fn catalog_url(mut self, url: impl Into<String>) -> Self {
+        self.catalog_urls.push((url.into(), None));
+        self
+    }
+
+    /// Add a catalog URL with a per-catalog filter override.
+    ///
+    /// Behaves like [`catalog_url`](Self::catalog_url) but also records a filter
+    /// override that is applied to this catalog only.
+    pub fn catalog_url_with_filter(
+        mut self,
+        url: impl Into<String>,
+        filter_override: impl Into<String>,
+    ) -> Self {
+        self.catalog_urls
+            .push((url.into(), Some(filter_override.into())));
+        self
+    }
+
+    /// Set the Azure region used by the catalog service.
+    pub fn catalog_region(mut self, region: impl Into<String>) -> Self {
+        self.catalog_region = Some(region.into());
         self
     }
 
@@ -209,6 +244,18 @@ impl FoundryLocalConfig {
         if let Some(level) = self.log_level {
             api.check(unsafe { (c.SetDefaultLogLevel)(cfg.ptr, level.as_native()) })?;
         }
+        for (url, filter_override) in &self.catalog_urls {
+            let url = to_cstring(url)?;
+            let filter_override = filter_override.as_deref().map(to_cstring).transpose()?;
+            let filter_override_ptr = filter_override
+                .as_ref()
+                .map_or(std::ptr::null(), |filter| filter.as_ptr());
+            api.check(unsafe { (c.AddCatalogUrl)(cfg.ptr, url.as_ptr(), filter_override_ptr) })?;
+        }
+        if let Some(region) = &self.catalog_region {
+            let region = to_cstring(region)?;
+            api.check(unsafe { (c.SetCatalogRegion)(cfg.ptr, region.as_ptr()) })?;
+        }
         if let Some(urls) = &self.web_service_urls {
             for url in urls.split(',').map(str::trim).filter(|u| !u.is_empty()) {
                 let s = to_cstring(url)?;
@@ -258,5 +305,39 @@ impl Drop for NativeConfig {
             unsafe { (self.api.config_api().Configuration_Release)(self.ptr) };
             self.ptr = std::ptr::null_mut();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_builder_preserves_urls_filters_and_priority() {
+        let config = FoundryLocalConfig::new("test")
+            .catalog_url("https://first.example/catalog")
+            .catalog_url_with_filter("https://second.example/catalog", "device=cpu");
+
+        assert_eq!(
+            config.catalog_urls,
+            vec![
+                ("https://first.example/catalog".into(), None),
+                (
+                    "https://second.example/catalog".into(),
+                    Some("device=cpu".into())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_region_is_optional_and_set_by_builder() {
+        assert_eq!(FoundryLocalConfig::new("test").catalog_region, None);
+        assert_eq!(
+            FoundryLocalConfig::new("test")
+                .catalog_region("australiaeast")
+                .catalog_region,
+            Some("australiaeast".into())
+        );
     }
 }
