@@ -16,7 +16,7 @@ class LocalModelCatalog final : public BaseModelCatalog {
   using ModelFactory =
       std::function<Model(ModelInfo info, std::string local_path, std::string runtime_model_id)>;
 
-  LocalModelCatalog(std::filesystem::path app_data_dir, ModelFactory model_factory, ILogger& logger);
+  LocalModelCatalog(std::filesystem::path model_cache_dir, ModelFactory model_factory, ILogger& logger);
 
   Model* RegisterModel(const std::string& model_path, const std::string& model_id,
                        const ModelInfo& metadata) override;
@@ -39,7 +39,7 @@ class LocalModelCatalog final : public BaseModelCatalog {
   void SaveRegistrations(const std::vector<Registration>& registrations) const;
   Model CreateModel(const Registration& registration) const;
 
-  std::filesystem::path catalog_dir_;
+  std::filesystem::path model_cache_dir_;
   std::filesystem::path index_path_;
   std::filesystem::path lock_path_;
   ModelFactory model_factory_;

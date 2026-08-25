@@ -138,11 +138,12 @@ nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registr
 
 }  // namespace
 
-LocalModelCatalog::LocalModelCatalog(std::filesystem::path app_data_dir, ModelFactory model_factory, ILogger& logger)
+LocalModelCatalog::LocalModelCatalog(std::filesystem::path model_cache_dir, ModelFactory model_factory,
+                                     ILogger& logger)
     : BaseModelCatalog("local", CatalogType::kLocal, logger),
-      catalog_dir_(std::move(app_data_dir) / "catalogs" / "local"),
-      index_path_(catalog_dir_ / "local_models.json"),
-      lock_path_(catalog_dir_ / "local_models.lock"),
+      model_cache_dir_(std::move(model_cache_dir)),
+      index_path_(model_cache_dir_ / "foundry.local.modelinfo.json"),
+      lock_path_(model_cache_dir_ / "foundry.local.modelinfo.lock"),
       model_factory_(std::move(model_factory)),
       logger_(logger) {}
 
@@ -401,7 +402,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
 }
 
 void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& registrations) const {
-  std::filesystem::create_directories(catalog_dir_);
+  std::filesystem::create_directories(model_cache_dir_);
   nlohmann::json models = nlohmann::json::array();
   for (const auto& registration : registrations) {
     models.push_back(RegistrationToJson(registration));

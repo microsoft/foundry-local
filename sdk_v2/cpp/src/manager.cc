@@ -327,7 +327,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
       *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
       disable_region_fallback);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
-      *config_.app_data_dir,
+      download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path, std::string runtime_model_id) {
         return CreateLocalModel(std::move(info), std::move(local_path), std::move(runtime_model_id));
       },

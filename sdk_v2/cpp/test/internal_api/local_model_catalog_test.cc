@@ -28,7 +28,7 @@ class LocalModelCatalogTest : public ::testing::Test {
 
   LocalModelCatalog MakeCatalog() {
     return LocalModelCatalog(
-        root_.path() / "appdata",
+        root_.path() / "cache" / "models",
         [this](ModelInfo info, std::string path, std::string runtime_model_id) {
           return Model::FromLocalRegistration(std::move(info), std::move(path), bindings_.download_manager,
                                               bindings_.model_load_manager, std::move(runtime_model_id));
@@ -57,7 +57,7 @@ class LocalModelCatalogTest : public ::testing::Test {
   LocalModelCatalog catalog_;
 };
 
-TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesOnlyAppDataIndex) {
+TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModelInfoCache) {
   auto info = MakeMetadata();
   info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
   info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
@@ -97,7 +97,7 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesOnlyAppDat
   EXPECT_TRUE(model->IsCached());
   EXPECT_FALSE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
 
-  const auto index_path = root_.path() / "appdata" / "catalogs" / "local" / "local_models.json";
+  const auto index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json";
   ASSERT_TRUE(std::filesystem::exists(index_path));
   nlohmann::json index;
   std::ifstream(index_path) >> index;
@@ -261,7 +261,7 @@ TEST_F(LocalModelCatalogTest, UnregisterWriteFailureLeavesModelActiveAndUsable) 
   auto* model = Register();
   ASSERT_NE(model, nullptr);
 
-  const auto temp_index_path = root_.path() / "appdata" / "catalogs" / "local" / "local_models.json.tmp";
+  const auto temp_index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json.tmp";
   std::filesystem::create_directory(temp_index_path);
 
   EXPECT_THROW(catalog_.UnregisterModel("my-model"), Exception);
@@ -297,8 +297,8 @@ TEST_F(LocalModelCatalogTest, TwoCatalogsReconcileRegisterUnregisterAndReregiste
 }
 
 TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedModelId) {
-  const auto catalog_dir = root_.path() / "appdata" / "catalogs" / "local";
-  std::filesystem::create_directories(catalog_dir);
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
   const nlohmann::json legacy_index = {
       {"version", 1},
       {"catalog_name", "local"},
@@ -313,7 +313,7 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
            {"version", 99},
            {FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion"}}}}}},
   };
-  std::ofstream(catalog_dir / "local_models.json") << legacy_index.dump(2);
+  std::ofstream(cache_dir / "foundry.local.modelinfo.json") << legacy_index.dump(2);
 
   auto restored = MakeCatalog();
   auto* model = restored.GetModelVariant("legacy-model:4");
@@ -326,7 +326,7 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
 
   ASSERT_NE(restored.RegisterModel(model_dir_.string(), "new-model:1", MakeMetadata()), nullptr);
   nlohmann::json migrated_index;
-  std::ifstream(catalog_dir / "local_models.json") >> migrated_index;
+  std::ifstream(cache_dir / "foundry.local.modelinfo.json") >> migrated_index;
   EXPECT_EQ(migrated_index["version"], 2);
   ASSERT_EQ(migrated_index["models"].size(), 2u);
   EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));

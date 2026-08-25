@@ -199,6 +199,7 @@ TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
   auto temp_root = fl::test::TempPath::CreateTempDir("fl_byom_persistence_");
   const auto staged_model_path = temp_root.path() / "model";
   const auto app_data_path = temp_root.path() / "appdata";
+  const auto model_cache_path = temp_root.path() / "cache" / "models";
   fs::create_directories(staged_model_path);
   StageModelAssets(*source_model_path, staged_model_path);
 
@@ -207,9 +208,11 @@ TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
   const auto second_id = registration_alias + ":2";
   constexpr const char* kPersistenceMarker = "persistence_marker";
 
-  const auto make_config = [&app_data_path]() {
+  const auto make_config = [&app_data_path, &model_cache_path]() {
     Configuration config("foundry_local_byom_persistence_test");
-    config.SetAppDataDir(app_data_path.string()).SetExternalServiceUrl("http://127.0.0.1:1");
+    config.SetAppDataDir(app_data_path.string())
+        .SetModelCacheDir(model_cache_path.string())
+        .SetExternalServiceUrl("http://127.0.0.1:1");
     return config;
   };
 
@@ -232,7 +235,7 @@ TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
     EXPECT_TRUE(second->IsCached());
   }
 
-  const auto index_path = app_data_path / "catalogs" / "local" / "local_models.json";
+  const auto index_path = model_cache_path / "foundry.local.modelinfo.json";
   ASSERT_TRUE(fs::is_regular_file(index_path));
   nlohmann::json index;
   std::ifstream(index_path) >> index;
