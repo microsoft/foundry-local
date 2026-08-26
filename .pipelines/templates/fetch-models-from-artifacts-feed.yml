@@ -1,5 +1,4 @@
-# Download test model data from Azure Artifacts into a local cache directory.
-# The template name and scriptType parameter are retained to avoid changing existing callers.
+# Download test models from Azure Artifacts into a local cache directory.
 
 parameters:
 - name: destinationPath

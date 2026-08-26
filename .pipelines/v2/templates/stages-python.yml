@@ -224,7 +224,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
       parameters:
         scriptType: ps
     - template: steps-test-python.yml
@@ -250,7 +250,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-x64'
@@ -274,7 +274,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
@@ -300,7 +300,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-osx-arm64'

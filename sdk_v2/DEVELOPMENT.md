@@ -132,7 +132,7 @@ model files expected by the tests you are running.
 CI does not run `foundry model download ...`. Instead, pipelines fetch a fixed
 model set into `FOUNDRY_TEST_DATA_DIR` using:
 
-- `.pipelines/templates/fetch-test-data-from-blob.yml`
+- `.pipelines/templates/fetch-models-from-artifacts-feed.yml`
 
 The legacy template name is retained to avoid changing its existing callers. The
 template downloads pinned Universal Packages from the project-scoped
@@ -206,7 +206,7 @@ the package into the target cache alias directory. Do not ZIP the directory.
 
 After publishing, add or update the corresponding `UniversalPackages@0` task in:
 
-- `.pipelines/templates/fetch-test-data-from-blob.yml`
+- `.pipelines/templates/fetch-models-from-artifacts-feed.yml`
 
 Checklist:
 

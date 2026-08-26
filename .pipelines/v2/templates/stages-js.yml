@@ -208,7 +208,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'win-x64'
@@ -233,7 +233,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
       parameters:
         scriptType: ps
     - template: steps-test-js.yml
@@ -259,7 +259,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'linux-x64'
@@ -284,7 +284,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'linux-arm64'
@@ -310,7 +310,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-js.yml
       parameters:
         rid: 'osx-arm64'
