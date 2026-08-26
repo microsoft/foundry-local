@@ -82,9 +82,7 @@ stages:
   jobs:
   - job: test
     pool:
-      name: onnxruntime-native-arm64-16core
-      demands:
-        - ImageOverride -equals onnxruntime-Win2025-arm64
+      name: onnxruntime-medium-arm64-scus
       os: windows
       hostArchitecture: arm64
     templateContext:
