@@ -87,6 +87,17 @@ TEST_F(ManagerWebServiceTest, StopWebServiceIsNoOpWhenNotStarted) {
   EXPECT_TRUE(manager.GetWebServiceEndpoints().empty());
 }
 
+TEST_F(ManagerWebServiceTest, GetCatalogRejectsInvalidType) {
+  foundry_local::Manager manager(MakeCacheOnlyConfig());
+
+  try {
+    manager.GetCatalog(static_cast<foundry_local::CatalogType>(999));
+    FAIL() << "Expected invalid catalog type to throw";
+  } catch (const foundry_local::Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
 // Start → stop → stop sequence: the second stop must be a no-op and the endpoint list must
 // return to empty so callers can use it as an "is running" probe again.
 TEST_F(ManagerWebServiceTest, StopWebServiceIsIdempotentAfterSuccessfulStart) {

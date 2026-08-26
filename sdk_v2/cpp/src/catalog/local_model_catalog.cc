@@ -76,6 +76,20 @@ ParsedModelId ParseModelId(const std::string& model_id) {
   return {std::move(name), version};
 }
 
+ParsedModelId ValidateRegistrationMetadata(const std::string& model_id, const ModelInfo& metadata) {
+  auto parsed_id = ParseModelId(model_id);
+
+  const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+  if (!task || task->empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "task is required");
+  }
+  if (!kSupportedTasks.contains(*task)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported task: " + *task);
+  }
+
+  return parsed_id;
+}
+
 std::string DeriveAlias(std::string_view name) {
   static constexpr std::array<std::string_view, 3> kGenericSuffixes = {
       "-generic-cpu",
@@ -185,7 +199,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path is required");
   }
 
-  const auto parsed_id = ParseModelId(model_id);
+  const auto parsed_id = ValidateRegistrationMetadata(model_id, metadata);
 
   const std::filesystem::path supplied_path(model_path_value);
   if (HasParentTraversal(supplied_path)) {
@@ -204,14 +218,6 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
   }
 
   GenAIConfig::LoadFromFile(config_path.string());
-
-  const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
-  if (!task || task->empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "task is required");
-  }
-  if (!kSupportedTasks.contains(*task)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported task: " + *task);
-  }
 
   ListModels();
   Registration registration;
@@ -250,10 +256,11 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
 
   ListModels();
   auto* model = GetModel(alias_or_model_id);
+  auto* target_variant = static_cast<Model*>(nullptr);
   if (!model) {
-    auto* variant = GetModelVariant(alias_or_model_id);
-    if (variant) {
-      model = GetModel(variant->Alias());
+    target_variant = GetModelVariant(alias_or_model_id);
+    if (target_variant) {
+      model = GetModel(target_variant->Alias());
     }
   }
   if (!model) {
@@ -263,13 +270,17 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
   model->BeginUnregister();
   bool unregister_in_progress = true;
   try {
-    for (const auto* variant : model->Variants()) {
-      if (variant->IsLoaded()) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot unregister a loaded model; unload it first");
+    const bool unregister_alias = model->Alias() == alias_or_model_id;
+    if (unregister_alias) {
+      for (const auto* variant : model->Variants()) {
+        if (variant->IsLoaded()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot unregister a loaded model; unload it first");
+        }
       }
+    } else if (target_variant->IsLoaded()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot unregister a loaded model; unload it first");
     }
 
-    const bool unregister_alias = model->Alias() == alias_or_model_id;
     if (!unregister_alias && !model->PrepareRetireVariant(alias_or_model_id)) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model not found: " + alias_or_model_id);
     }
@@ -329,72 +340,93 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
 }
 
 std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistrations() const {
-  std::ifstream stream(index_path_, std::ios::binary);
-  if (!stream) {
+  std::error_code exists_error;
+  const bool index_exists = std::filesystem::exists(index_path_, exists_error);
+  if (exists_error) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "failed to inspect local model registration index: " + exists_error.message());
+  }
+  if (!index_exists) {
     return {};
   }
 
-  std::vector<Registration> registrations;
+  std::ifstream stream(index_path_, std::ios::binary);
+  if (!stream) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to open local model registration index: " + index_path_.string());
+  }
+
+  nlohmann::json root;
   try {
-    nlohmann::json root;
     stream >> root;
-    const auto schema_version = root.value("version", 0);
-    if (!root.is_object() || (schema_version != 1 && schema_version != 2) || !root.contains("models") ||
-        !root["models"].is_array()) {
-      logger_.Log(LogLevel::Warning, "Ignoring malformed local model registration index: " + index_path_.string());
-      return {};
-    }
-
-    for (const auto& item : root["models"]) {
-      try {
-        if (!item.is_object() || !item.contains("model_path") || !item["model_path"].is_string()) {
-          continue;
-        }
-
-        ModelInfo info;
-        std::string model_id;
-        if (schema_version == 2) {
-          if (!item.contains("model_info") || !item["model_info"].is_object()) {
-            continue;
-          }
-
-          info = ModelInfoFromJson(item["model_info"]);
-          model_id = info.model_id;
-        } else {
-          if (!item.contains("model_id") || !item["model_id"].is_string() || !item.contains("properties")) {
-            continue;
-          }
-
-          info = ModelInfoFromLegacyPropertyBagJson(item["properties"]);
-          model_id = item["model_id"].get<std::string>();
-        }
-
-        const auto parsed_id = ParseModelId(model_id);
-        std::filesystem::path model_path = item["model_path"].get<std::string>();
-        if (model_path.empty() || HasParentTraversal(model_path)) {
-          continue;
-        }
-        model_path = std::filesystem::absolute(model_path).lexically_normal();
-
-        RemoveLegacyRegistrationProperties(info);
-        info.alias = DeriveAlias(parsed_id.name);
-        info.name = parsed_id.name;
-        info.version = parsed_id.version;
-        info.model_id = model_id;
-        info.uri.clear();
-
-        const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
-          return existing.info.model_id == info.model_id;
-        });
-        if (duplicate == registrations.end()) {
-          registrations.push_back({std::move(info), model_path.string()});
-        }
-      } catch (const std::exception& ex) {
-        logger_.Log(LogLevel::Warning, std::string("Ignoring malformed local model registration: ") + ex.what());
-      }
-    }
   } catch (const std::exception& ex) {
-    logger_.Log(LogLevel::Warning, std::string("Ignoring unreadable local model registration index: ") + ex.what());
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to parse local model registration index: " + std::string(ex.what()));
+  }
+
+  if (!root.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "unsupported or malformed local model registration index: " + index_path_.string());
+  }
+
+  const auto schema_version = root.value("version", 0);
+  if ((schema_version != 1 && schema_version != 2) || !root.contains("models") || !root["models"].is_array()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "unsupported or malformed local model registration index: " + index_path_.string());
+  }
+
+  std::vector<Registration> registrations;
+  size_t item_index = 0;
+  for (const auto& item : root["models"]) {
+    try {
+      if (!item.is_object() || !item.contains("model_path") || !item["model_path"].is_string()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must be a string");
+      }
+
+      ModelInfo info;
+      std::string model_id;
+      if (schema_version == 2) {
+        if (!item.contains("model_info") || !item["model_info"].is_object()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info must be an object");
+        }
+
+        info = ModelInfoFromJson(item["model_info"]);
+        model_id = info.model_id;
+      } else {
+        if (!item.contains("model_id") || !item["model_id"].is_string() || !item.contains("properties")) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "legacy registration is missing model metadata");
+        }
+
+        info = ModelInfoFromLegacyPropertyBagJson(item["properties"]);
+        model_id = item["model_id"].get<std::string>();
+      }
+
+      const auto parsed_id = ValidateRegistrationMetadata(model_id, info);
+      std::filesystem::path model_path = item["model_path"].get<std::string>();
+      if (model_path.empty() || HasParentTraversal(model_path)) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path is empty or contains '..' components");
+      }
+      model_path = std::filesystem::absolute(model_path).lexically_normal();
+
+      RemoveLegacyRegistrationProperties(info);
+      info.alias = DeriveAlias(parsed_id.name);
+      info.name = parsed_id.name;
+      info.version = parsed_id.version;
+      info.model_id = model_id;
+      info.uri.clear();
+
+      const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
+        return existing.info.model_id == info.model_id;
+      });
+      if (duplicate != registrations.end()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "duplicate model_id: " + info.model_id);
+      }
+
+      registrations.push_back({std::move(info), model_path.string()});
+    } catch (const std::exception& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "invalid local model registration at index " + std::to_string(item_index) + ": " + ex.what());
+    }
+
+    ++item_index;
   }
 
   return registrations;

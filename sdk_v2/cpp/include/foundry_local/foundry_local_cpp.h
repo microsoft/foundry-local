@@ -816,7 +816,8 @@ class ICatalog {
   virtual std::unique_ptr<IModel> RegisterModel(const std::string&, const std::string&, const ModelInfo&) {
     throw Error("models can only be registered in a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
-  /// Unregister without deleting model assets. Existing model wrappers and immutable metadata views remain valid, but
+  /// Unregister without deleting model assets. A model ID removes only that version/variant; an alias removes all of
+  /// its registered versions and variants. Existing model wrappers and immutable metadata views remain valid, but
   /// operations that require the retired registration, including Download and Load, fail with invalid usage.
   virtual void UnregisterModel(const std::string&) {
     throw Error("models can only be unregistered from a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);

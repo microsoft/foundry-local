@@ -202,6 +202,41 @@ TEST_F(LocalModelCatalogTest, RegistrationUsesUniqueIdsAndGroupsDistinctNamesByD
   EXPECT_NO_THROW(second->Download());
 }
 
+TEST_F(LocalModelCatalogTest, AliasUnregisterRemovesAllVersionsAndAllowsReregistration) {
+  auto* first = Register("my-model-generic-cpu:1");
+  auto* second = Register("my-model-generic-cpu:2");
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  ASSERT_EQ(catalog_.GetModel("my-model")->Variants().size(), 2u);
+
+  catalog_.UnregisterModel("my-model");
+
+  EXPECT_EQ(catalog_.GetModel("my-model"), nullptr);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:1"), nullptr);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:2"), nullptr);
+  EXPECT_THROW(first->Download(), Exception);
+  EXPECT_THROW(second->Download(), Exception);
+
+  EXPECT_NE(Register("my-model-generic-cpu:1"), nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, ModelIdUnregisterIsIndependentOfOtherVersions) {
+  const auto loadable_model_path = GetTestDataPath("tiny-random-gpt2-fp32-1");
+  auto* loaded = catalog_.RegisterModel(loadable_model_path.string(), "my-model-generic-cpu:1", MakeMetadata());
+  auto* removed = catalog_.RegisterModel(loadable_model_path.string(), "my-model-generic-cpu:2", MakeMetadata());
+  ASSERT_NE(loaded, nullptr);
+  ASSERT_NE(removed, nullptr);
+  ASSERT_NO_THROW(loaded->Load(ExecutionProvider::kCPU));
+
+  EXPECT_NO_THROW(catalog_.UnregisterModel("my-model-generic-cpu:2"));
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:2"), nullptr);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:1"), loaded);
+  EXPECT_TRUE(loaded->IsLoaded());
+  EXPECT_THROW(catalog_.UnregisterModel("my-model"), Exception);
+
+  EXPECT_NO_THROW(loaded->Unload());
+}
+
 TEST_F(LocalModelCatalogTest, RegistrationDerivesAliasFromCanonicalGenericSuffixesOnly) {
   auto* npu = Register("npu-model-generic-npu:1");
   auto* unsuffixed = Register("my-model-custom:1");
@@ -396,6 +431,43 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
   EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));
   EXPECT_FALSE(migrated_index["models"][0].contains("properties"));
   EXPECT_NE(restored.GetModelVariant("legacy-model:4"), nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDoesNotOverwriteUnreadableOrUnsupportedIndex) {
+  Register();
+  const auto index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json";
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  index["version"] = 999;
+  const std::vector<std::string> invalid_indices = {"{ not-json", index.dump(2)};
+
+  for (const auto& invalid_index : invalid_indices) {
+    std::ofstream(index_path, std::ios::binary | std::ios::trunc) << invalid_index;
+
+    EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "another-model:1", MakeMetadata()), Exception);
+
+    std::ifstream stream(index_path, std::ios::binary);
+    const std::string preserved_index{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(preserved_index, invalid_index);
+  }
+}
+
+TEST_F(LocalModelCatalogTest, RestoredRegistrationUsesFreshMetadataValidation) {
+  Register();
+  const auto index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json";
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  index["models"][0]["model_info"]["task"] = "unsupported-task";
+  const auto invalid_index = index.dump(2);
+  std::ofstream(index_path, std::ios::binary | std::ios::trunc) << invalid_index;
+
+  auto restored = MakeCatalog();
+  EXPECT_THROW(restored.ListModels(), Exception);
+  EXPECT_THROW(restored.RegisterModel(model_dir_.string(), "another-model:1", MakeMetadata()), Exception);
+
+  std::ifstream stream(index_path, std::ios::binary);
+  const std::string preserved_index{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+  EXPECT_EQ(preserved_index, invalid_index);
 }
 
 TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsRegistration) {

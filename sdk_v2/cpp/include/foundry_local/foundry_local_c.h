@@ -996,7 +996,8 @@ struct flCatalogApi {
   FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const char* model_path,
                 _In_ const char* model_id, _In_ const flModelInfo* metadata,
                 _Outptr_ flModel** out_model);
-  /// Unregister by alias or model ID without deleting model assets.
+  /// Unregister by alias or model ID without deleting model assets. A model ID removes only that version/variant;
+  /// an alias removes all registered versions and variants in the alias group.
   /// Future catalog queries exclude the registration, but outstanding model handles and their immutable metadata remain
   /// valid until the owning manager is destroyed. Operations that require the retired registration, including Download
   /// and Load, return FOUNDRY_LOCAL_ERROR_INVALID_USAGE; query and cleanup operations such as Unload remain valid.

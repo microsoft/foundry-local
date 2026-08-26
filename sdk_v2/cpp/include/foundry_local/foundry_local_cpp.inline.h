@@ -210,10 +210,17 @@ inline ICatalog& Manager::GetCatalog() const {
 }
 
 inline ICatalog& Manager::GetCatalog(CatalogType type) const {
-  if (type == CatalogType::Public) {
-    return GetCatalog();
+  switch (type) {
+    case CatalogType::Public:
+      return GetCatalog();
+    case CatalogType::Local:
+      break;
+    default:
+      throw Error("invalid catalog type", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
 
+  // Keep one C++ wrapper alive because this method returns a reference. The manager-owned C catalog is also cached by
+  // the C API, so repeated lookups would only add calls without changing the underlying catalog.
   std::call_once(*local_catalog_once_, [this, type]() {
     flCatalog* catalog = nullptr;
     Check(detail::api()->Manager_GetCatalogByType(handle_.get(), static_cast<flCatalogType>(type), &catalog));
