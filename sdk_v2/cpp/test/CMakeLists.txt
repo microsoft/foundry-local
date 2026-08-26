@@ -151,7 +151,6 @@ add_executable(sdk_integration_tests
     sdk_api/embeddings_test.cc
     sdk_api/ep_detection_test.cc
     sdk_api/chat_session_test.cc
-    sdk_api/bring_your_own_model_e2e_test.cc
     sdk_api/model_test.cc
     sdk_api/model_endpoints_test.cc
     sdk_api/chat_completions_test.cc
@@ -245,7 +244,6 @@ add_executable(cache_only_tests
 
 set_target_properties(cache_only_tests PROPERTIES CXX_STANDARD 17)
 target_compile_options(cache_only_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
-target_compile_definitions(cache_only_tests PRIVATE FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS)
 
 # Pick up the shared fl::test::SafeGetEnv helper.
 target_include_directories(cache_only_tests

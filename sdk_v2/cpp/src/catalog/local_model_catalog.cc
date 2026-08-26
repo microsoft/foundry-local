@@ -15,6 +15,7 @@
 #include <charconv>
 #include <chrono>
 #include <fstream>
+#include <system_error>
 #include <regex>
 #include <unordered_set>
 
@@ -439,30 +440,44 @@ void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& regis
   }
 
   const nlohmann::json root = {{"version", 2}, {"catalog_name", "local"}, {"models", std::move(models)}};
+  const auto serialized = root.dump(2) + '\n';
   const auto temp_path = index_path_.string() + ".tmp";
-  {
-    std::ofstream stream(temp_path, std::ios::binary | std::ios::trunc);
-    if (!stream) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write local model registration index");
-    }
+  const auto remove_temp = [&temp_path]() noexcept {
+    std::error_code ec;
+    std::filesystem::remove(temp_path, ec);
+  };
 
-    stream << root.dump(2) << '\n';
-    if (!stream) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write local model registration index");
-    }
+  std::ofstream stream(temp_path, std::ios::binary | std::ios::trunc);
+  if (!stream) {
+    remove_temp();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write local model registration index");
+  }
+
+  stream << serialized;
+  stream.flush();
+  if (!stream) {
+    stream.close();
+    remove_temp();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write local model registration index");
+  }
+
+  stream.close();
+  if (stream.fail()) {
+    remove_temp();
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to write local model registration index");
   }
 
 #ifdef _WIN32
   if (!MoveFileExW(std::filesystem::path(temp_path).wstring().c_str(), index_path_.wstring().c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    std::filesystem::remove(temp_path);
+    remove_temp();
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to commit local model registration index");
   }
 #else
   std::error_code ec;
   std::filesystem::rename(temp_path, index_path_, ec);
   if (ec) {
-    std::filesystem::remove(temp_path);
+    remove_temp();
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to commit local model registration index: " + ec.message());
   }
 #endif

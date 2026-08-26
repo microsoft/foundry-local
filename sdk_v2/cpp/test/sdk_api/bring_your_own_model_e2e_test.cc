@@ -2,13 +2,9 @@
 // Licensed under the MIT License.
 // End-to-end coverage for registering existing local model assets and then running inference.
 
-#ifdef FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS
 #include <foundry_local/foundry_local_cpp.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
-#else
-#include "model_fixture.h"
-#endif
 
 #include "internal_api/test_model_cache.h"
 #include "utils/temp_path.h"
@@ -88,12 +84,28 @@ void StageModelAssets(const fs::path& source, const fs::path& destination) {
   }
 }
 
-#ifndef FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS
+std::string CollectResponseText(const foundry_local::Response& response) {
+  std::string text;
+  for (const auto& item : response.GetItems()) {
+    if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
+      text += item.GetText().text;
+    } else if (item.GetType() == FOUNDRY_LOCAL_ITEM_MESSAGE) {
+      for (const auto& part : item.GetMessage().parts) {
+        if (part.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
+          text += part.GetText().text;
+        }
+      }
+    }
+  }
+
+  return text;
+}
+
 class LocalRegistrationGuard {
  public:
   LocalRegistrationGuard(foundry_local::ICatalog& catalog,
-          std::unique_ptr<foundry_local::IModel> model,
-          std::string model_id)
+         std::unique_ptr<foundry_local::IModel> model,
+         std::string model_id)
       : catalog_(catalog), model_(std::move(model)), model_id_(std::move(model_id)) {}
 
   ~LocalRegistrationGuard() {
@@ -101,13 +113,19 @@ class LocalRegistrationGuard {
       if (model_ && model_->IsLoaded()) {
         model_->Unload();
       }
+    } catch (const std::exception& ex) {
+      ADD_FAILURE() << "Failed to unload local registration " << model_id_ << ": " << ex.what();
     } catch (...) {
+      ADD_FAILURE() << "Failed to unload local registration " << model_id_ << ": unknown error";
     }
 
     model_.reset();
     try {
       catalog_.UnregisterModel(model_id_);
+    } catch (const std::exception& ex) {
+      ADD_FAILURE() << "Failed to unregister local model " << model_id_ << ": " << ex.what();
     } catch (...) {
+      ADD_FAILURE() << "Failed to unregister local model " << model_id_ << ": unknown error";
     }
   }
 
@@ -118,11 +136,9 @@ class LocalRegistrationGuard {
   std::unique_ptr<foundry_local::IModel> model_;
   std::string model_id_;
 };
-#endif
 
 }  // namespace
 
-#ifndef FOUNDRY_LOCAL_BYOM_PERSISTENCE_TESTS
 TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
   using namespace foundry_local;
 
@@ -134,59 +150,77 @@ TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
 
   auto temp_root = fl::test::TempPath::CreateTempDir("fl_byom_e2e_");
   const auto staged_model_path = temp_root.path() / "model";
+  const auto app_data_path = temp_root.path() / "appdata";
+  const auto model_cache_path = temp_root.path() / "cache" / "models";
   fs::create_directories(staged_model_path);
   StageModelAssets(*source_model_path, staged_model_path);
 
   ASSERT_TRUE(fs::exists(staged_model_path / "genai_config.json"));
   ASSERT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
 
-  auto& local_catalog = SharedTestEnv::Get().manager()->GetCatalog(CatalogType::Local);
   const auto registration_alias = temp_root.path().filename().string();
   const auto registration_id = registration_alias + ":1";
-  ModelInfo metadata;
-  metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
-
-  LocalRegistrationGuard registered(
-      local_catalog, local_catalog.RegisterModel(staged_model_path.string(), registration_id, metadata),
-      registration_id);
   const auto sibling_id = registration_alias + ":2";
-  ModelInfo sibling_metadata;
-  sibling_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
-  LocalRegistrationGuard registered_sibling(
-      local_catalog, local_catalog.RegisterModel(staged_model_path.string(), sibling_id, sibling_metadata), sibling_id);
-  auto& model = registered.model();
+  const auto index_path = model_cache_path / "foundry.local.modelinfo.json";
 
-  EXPECT_EQ(model.GetInfo().Id(), registration_id);
-  EXPECT_EQ(model.GetInfo().Alias(), registration_alias);
-  EXPECT_EQ(model.GetInfo().Version(), 1);
-  EXPECT_EQ(model.GetInfo().Task(), "chat-completion");
-  EXPECT_TRUE(model.IsCached());
-  EXPECT_FALSE(model.IsLoaded());
-  EXPECT_TRUE(fs::is_regular_file(staged_model_path / "genai_config.json"));
-  EXPECT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
+  {
+    Configuration config("foundry_local_byom_inference_test");
+    config.SetAppDataDir(app_data_path.string()).SetModelCacheDir(model_cache_path.string());
+    Manager manager(std::move(config));
+    auto& local_catalog = manager.GetCatalog(CatalogType::Local);
 
-  model.Load();
-  ASSERT_TRUE(model.IsLoaded());
-  EXPECT_THROW(local_catalog.UnregisterModel(registration_alias), Error);
+    ModelInfo sibling_metadata;
+    sibling_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+    LocalRegistrationGuard registered_sibling(
+        local_catalog, local_catalog.RegisterModel(staged_model_path.string(), sibling_id, sibling_metadata),
+        sibling_id);
 
-  ChatSession session(model);
-  Request request{
-      SystemMessage("You are a concise math assistant."),
-      UserMessage("What is 2+2? Answer with only the number."),
-  };
-  RequestOptions options;
-  options.search.temperature = 0.0f;
-  options.search.max_output_tokens = 16;
-  request.SetOptions(options);
+    ModelInfo metadata;
+    metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+    LocalRegistrationGuard registered(
+        local_catalog, local_catalog.RegisterModel(staged_model_path.string(), registration_id, metadata),
+        registration_id);
+    auto& model = registered.model();
 
-  Response response = session.ProcessRequest(request);
+    EXPECT_EQ(model.GetInfo().Id(), registration_id);
+    EXPECT_EQ(model.GetInfo().Alias(), registration_alias);
+    EXPECT_EQ(model.GetInfo().Version(), 1);
+    EXPECT_EQ(model.GetInfo().Task(), "chat-completion");
+    EXPECT_TRUE(model.IsCached());
+    EXPECT_FALSE(model.IsLoaded());
+    EXPECT_TRUE(fs::is_regular_file(staged_model_path / "genai_config.json"));
+    EXPECT_FALSE(fs::exists(staged_model_path / "inference_model.json"));
 
-  EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_STOP);
-  const auto response_text = CollectResponseText(response);
-  EXPECT_FALSE(response_text.empty());
-  EXPECT_NE(response_text.find('4'), std::string::npos) << "Unexpected response: " << response_text;
+    model.Load();
+    ASSERT_TRUE(model.IsLoaded());
+    EXPECT_THROW(local_catalog.UnregisterModel(registration_alias), Error);
+
+    ChatSession session(model);
+    Request request{
+        SystemMessage("You are a concise math assistant."),
+        UserMessage("What is 2+2? Answer with only the number."),
+    };
+    RequestOptions options;
+    options.search.temperature = 0.0f;
+    options.search.max_output_tokens = 16;
+    request.SetOptions(options);
+
+    Response response = session.ProcessRequest(request);
+
+    EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_STOP);
+    const auto response_text = CollectResponseText(response);
+    EXPECT_FALSE(response_text.empty());
+    EXPECT_NE(response_text.find('4'), std::string::npos) << "Unexpected response: " << response_text;
+  }
+
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  ASSERT_TRUE(index.contains("models"));
+  ASSERT_TRUE(index["models"].is_array());
+  EXPECT_TRUE(index["models"].empty());
 }
-#else
+
+
 TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
   using namespace foundry_local;
 
@@ -275,5 +309,11 @@ TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
     EXPECT_EQ(local_catalog.GetModelVariant(second_id), nullptr);
     EXPECT_TRUE(fs::is_regular_file(staged_model_path / "genai_config.json"));
   }
+
+  std::ifstream cleaned_index_stream(index_path);
+  ASSERT_TRUE(cleaned_index_stream);
+  cleaned_index_stream >> index;
+  ASSERT_TRUE(index.contains("models"));
+  ASSERT_TRUE(index["models"].is_array());
+  EXPECT_TRUE(index["models"].empty());
 }
-#endif

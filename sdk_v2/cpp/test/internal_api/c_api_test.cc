@@ -6,8 +6,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -248,6 +250,7 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   auto root = fl::test::TempPath::CreateTempDir("c_api_local_catalog");
   const auto model_path = root.path() / "model";
   const auto app_data_path = root.path() / "appdata";
+  const auto model_cache_path = root.path() / "cache" / "models";
   std::filesystem::create_directories(model_path);
   std::ofstream(model_path / "genai_config.json") << R"({"model":{"type":"phi3"}})";
 
@@ -255,18 +258,32 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   const flConfigurationApi* config_api = api->GetConfigurationApi();
   const flCatalogApi* catalog_api = api->GetCatalogApi();
   const flModelApi* model_api = api->GetModelApi();
+  using ConfigurationGuard = std::unique_ptr<flConfiguration, std::function<void(flConfiguration*)>>;
+  using ManagerGuard = std::unique_ptr<flManager, std::function<void(flManager*)>>;
+  using ModelInfoGuard = std::unique_ptr<flModelInfo, std::function<void(flModelInfo*)>>;
+  using ModelListGuard = std::unique_ptr<flModelList, std::function<void(flModelList*)>>;
+
+  ConfigurationGuard config_guard(nullptr, [config_api](flConfiguration* value) {
+    config_api->Configuration_Release(value);
+  });
   flConfiguration* config = nullptr;
   ASSERT_FL_OK(api, config_api->Create("c-api-local-catalog", &config));
+  config_guard.reset(config);
   ASSERT_FL_OK(api, config_api->SetAppDataDir(config, app_data_path.string().c_str()));
+  ASSERT_FL_OK(api, config_api->SetModelCacheDir(config, model_cache_path.string().c_str()));
 
+  ManagerGuard manager_guard(nullptr, [api](flManager* value) { api->Manager_Release(value); });
   flManager* manager = nullptr;
   ASSERT_FL_OK(api, api->Manager_Create(config, &manager));
+  manager_guard.reset(manager);
   flCatalog* catalog = nullptr;
   ASSERT_FL_OK(api, api->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_LOCAL, &catalog));
   ASSERT_NE(catalog, nullptr);
 
+  ModelInfoGuard metadata_guard(nullptr, [model_api](flModelInfo* value) { model_api->ReleaseModelInfo(value); });
   flModelInfo* metadata = nullptr;
   ASSERT_FL_OK(api, model_api->CreateModelInfo(&metadata));
+  metadata_guard.reset(metadata);
   ASSERT_FL_OK(api, model_api->Info_SetStringProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                                       "chat-completion"));
   ASSERT_FL_OK(api, model_api->Info_SetIntProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 17));
@@ -274,7 +291,6 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   flModel* registered = nullptr;
   ASSERT_FL_OK(api, catalog_api->RegisterModel(catalog, model_path.string().c_str(), "c-api-model:3", metadata,
                                                &registered));
-  model_api->ReleaseModelInfo(metadata);
   ASSERT_NE(registered, nullptr);
 
   const flModelInfo* registered_info = nullptr;
@@ -286,8 +302,10 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   EXPECT_STREQ(model_api->Info_GetTask(registered_info), "chat-completion");
   EXPECT_EQ(model_api->Info_GetIntProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, -1), 17);
 
+  ModelListGuard models_guard(nullptr, [api](flModelList* value) { api->ModelList_Release(value); });
   flModelList* models = nullptr;
   ASSERT_FL_OK(api, catalog_api->GetModels(catalog, &models));
+  models_guard.reset(models);
   ASSERT_EQ(api->ModelList_Size(models), 1u);
   flModel* listed = api->ModelList_GetAt(models, 0);
   ASSERT_NE(listed, nullptr);
@@ -314,14 +332,12 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   EXPECT_EQ(api->Status_GetErrorCode(listed_load_status.s), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
   ASSERT_FL_OK(api, model_api->Unload(registered));
   ASSERT_FL_OK(api, model_api->Unload(listed));
-  api->ModelList_Release(models);
 
+  models_guard.reset();
+  models = nullptr;
   ASSERT_FL_OK(api, catalog_api->GetModels(catalog, &models));
+  models_guard.reset(models);
   EXPECT_EQ(api->ModelList_Size(models), 0u);
-  api->ModelList_Release(models);
-
-  config_api->Configuration_Release(config);
-  api->Manager_Release(manager);
 }
 
 TEST(CApiTest, GetCatalogNameReturnsNonEmptyString) {

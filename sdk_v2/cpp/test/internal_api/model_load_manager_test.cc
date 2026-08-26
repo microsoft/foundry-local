@@ -8,6 +8,7 @@
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "logger.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 
@@ -55,10 +56,8 @@ class CpuOnlyDetector : public fl::IEpDetector {
 /// Cleans up on destruction.
 class TempModelDir {
  public:
-  explicit TempModelDir(const std::string& model_name, const std::string& provider = "") {
-    path_ = (std::filesystem::temp_directory_path() / ("fl_test_" + model_name)).string();
-    std::filesystem::create_directories(path_);
-
+  explicit TempModelDir(const std::string& model_name, const std::string& provider = "")
+      : root_(fl::test::TempPath::CreateTempDir("fl_model_load_" + model_name + "_")), path_(root_.string()) {
     // Write a minimal genai_config.json
     std::ofstream config(std::filesystem::path(path_) / "genai_config.json");
     if (provider.empty()) {
@@ -69,17 +68,13 @@ class TempModelDir {
     }
   }
 
-  ~TempModelDir() {
-    std::error_code ec;
-    std::filesystem::remove_all(path_, ec);
-  }
-
   TempModelDir(const TempModelDir&) = delete;
   TempModelDir& operator=(const TempModelDir&) = delete;
 
   const std::string& path() const { return path_; }
 
  private:
+  fl::test::TempPath root_;
   std::string path_;
 };
 
@@ -92,9 +87,8 @@ class TempModelDir {
 TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaNotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("test-cpu-model");
+  fl::ModelLoadManager mgr(ep, logger);
 
   EXPECT_THROW({ mgr.LoadModel(dir.path(), "test-cpu-model", fl::ExecutionProvider::kCUDA); }, fl::Exception);
 }
@@ -102,9 +96,8 @@ TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaNotAvailable_Throws) {
 TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaNotAvailable_ErrorMessage) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("test-cpu-model");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "test-cpu-model", fl::ExecutionProvider::kCUDA);
@@ -120,9 +113,8 @@ TEST(ModelLoadManagerTest, LoadWithCudaOverride_CudaNotAvailable_ErrorMessage) {
 TEST(ModelLoadManagerTest, LoadCudaGpuModel_CudaNotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("phi-4-mini-cuda-gpu");
+  fl::ModelLoadManager mgr(ep, logger);
 
   EXPECT_THROW({ mgr.LoadModel(dir.path(), "phi-4-mini-cuda-gpu"); }, fl::Exception);
 }
@@ -130,9 +122,8 @@ TEST(ModelLoadManagerTest, LoadCudaGpuModel_CudaNotAvailable_Throws) {
 TEST(ModelLoadManagerTest, LoadCudaGpuModel_CudaNotAvailable_ErrorMessage) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("phi-4-mini-cuda-gpu");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "phi-4-mini-cuda-gpu");
@@ -148,9 +139,8 @@ TEST(ModelLoadManagerTest, LoadCudaGpuModel_CudaNotAvailable_ErrorMessage) {
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaNotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("alias-cuda-config", "cuda");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
@@ -164,9 +154,8 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaNotAvailable_Throws) 
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithWebGpuConfig_WebGpuNotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("alias-webgpu-config", "WebGPU");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
@@ -180,9 +169,8 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithWebGpuConfig_WebGpuNotAvailable_Thro
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCuda) {
   GpuEpDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("alias-cuda-available", "cuda");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
@@ -196,9 +184,8 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCudaConfig_CudaAvailable_PreparesCud
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("alias-migraphx-config", "MIGraphXExecutionProvider");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
@@ -212,9 +199,8 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_
 TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDownloadableEp) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("alias-dml-config", "DmlExecutionProvider");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
@@ -228,9 +214,8 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDo
 TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("unknown-override");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration", fl::ExecutionProvider::kUnknown);
@@ -243,9 +228,8 @@ TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {
 TEST(ModelLoadManagerTest, LoadWithCpuOverride_IgnoresCudaConfigAndModelId) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("explicit-cpu", "cuda");
+  fl::ModelLoadManager mgr(ep, logger);
 
   try {
     mgr.LoadModel(dir.path(), "local/alias-cuda-gpu:0", fl::ExecutionProvider::kCPU);
@@ -259,9 +243,8 @@ TEST(ModelLoadManagerTest, LoadWithCpuOverride_IgnoresCudaConfigAndModelId) {
 TEST(ModelLoadManagerTest, LoadOpenVinoNpuModel_NotAvailable_Throws) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("phi-4-mini-openvino-npu");
+  fl::ModelLoadManager mgr(ep, logger);
 
   EXPECT_THROW({ mgr.LoadModel(dir.path(), "phi-4-mini-openvino-npu"); }, fl::Exception);
 }
@@ -269,9 +252,8 @@ TEST(ModelLoadManagerTest, LoadOpenVinoNpuModel_NotAvailable_Throws) {
 TEST(ModelLoadManagerTest, LoadCpuModel_AlwaysSucceeds_NoEpGuard) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("phi-4-mini-cpu");
+  fl::ModelLoadManager mgr(ep, logger);
 
   // This will fail at GenAIModelInstance construction (no real model), not at EP guard.
   // If it threw INVALID_USAGE about EP, the guard is wrong for CPU models.
@@ -287,9 +269,8 @@ TEST(ModelLoadManagerTest, LoadCpuModel_AlwaysSucceeds_NoEpGuard) {
 TEST(ModelLoadManagerTest, LoadGenericGpuModel_CudaAvailable_AutoSelectsCuda) {
   GpuEpDetector ep;
   fl::StderrLogger logger;
-  fl::ModelLoadManager mgr(ep, logger);
-
   TempModelDir dir("phi-4-mini-generic-gpu");
+  fl::ModelLoadManager mgr(ep, logger);
 
   // Will fail at GenAIModelInstance construction, but should NOT fail at EP guard.
   // The auto-select logic should pick CUDA, and CUDA IS available.
