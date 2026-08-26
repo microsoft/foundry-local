@@ -13,6 +13,8 @@
 
 namespace fl {
 
+struct ToolCallItem;
+
 /// Shared utilities for converting between Responses API format and internal
 /// session types. Used by both the web service handler and the direct
 /// ResponsesClient API.
@@ -90,6 +92,16 @@ ResponseObject BuildInitialResponseObject(const std::string& response_id,
                                           int64_t created_at,
                                           const std::string& model_name,
                                           const ResponseCreateParams& params);
+
+struct FunctionCallStreamOutput {
+  std::vector<StreamEvent> events;
+  FunctionCallOutputItem completed_item;
+};
+
+/// Build the complete Responses streaming event sequence for an atomically parsed function call.
+FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
+                                                       int output_index,
+                                                       int& next_sequence_number);
 
 /// Convert input items from the request JSON to a storable form.
 /// Returns a JSON array of input items (instructions as system message + input).

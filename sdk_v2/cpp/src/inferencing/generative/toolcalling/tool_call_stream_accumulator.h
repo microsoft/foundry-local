@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace fl {
@@ -19,10 +20,10 @@ namespace fl {
 /// across tokens, parse it once the closing marker arrives, and surface the structured `ParsedToolCall`s.
 ///
 /// `Push(chunk)` accepts any text chunk (a single decoded token, or a multi-token segment produced by the upstream
-/// `ReasoningStreamSplitter`) and returns:
-///   - `visible_text`: text that is safe to emit to the caller (everything outside a tool-call block, minus any
-///     pending suffix that could still grow into the start marker).
-///   - `ready_calls`: zero or more fully parsed tool calls whose closing marker arrived in this chunk.
+/// `ReasoningStreamSplitter`) and returns ordered events containing:
+///   - text that is safe to emit to the caller (everything outside a tool-call block, minus any pending suffix that
+///     could still grow into the start marker);
+///   - fully parsed tool calls whose closing marker arrived in this chunk.
 ///
 /// Marker matching is buffered, mirroring `ReasoningStreamSplitter`: a marker can straddle multiple tokens, so the
 /// accumulator holds back the longest suffix of its scan buffer that could still extend into the marker rather than
@@ -32,23 +33,24 @@ namespace fl {
 /// returned as visible text — they turned out not to be a tool call, so the caller still sees what the model
 /// produced. Matches `ReasoningStreamSplitter::Flush()`.
 ///
-/// When either marker is empty, the accumulator degrades to a passthrough: `Push` returns its input verbatim as
-/// `visible_text` with no `ready_calls`. This keeps the call site uniform for non-tool-calling models.
+/// When either marker is empty, the accumulator degrades to a passthrough and returns its input as a text event.
+/// This keeps the call site uniform for non-tool-calling models.
 ///
 /// Callers must not feed REASONING-tagged content into `Push` — reasoning is the model's scratchpad and any
 /// tool-call-shaped text inside `<think>...</think>` is not a real tool call. The upstream `ReasoningStreamSplitter`
 /// already routes REASONING segments through a separate path; this accumulator sits below the DEFAULT-segment branch.
 class ToolCallStreamAccumulator {
  public:
+  using Event = std::variant<std::string, ParsedToolCall>;
+
   struct Output {
-    std::string visible_text;
-    std::vector<ParsedToolCall> ready_calls;
+    std::vector<Event> events;
   };
 
   ToolCallStreamAccumulator(std::string start_marker, std::string end_marker)
       : start_marker_(std::move(start_marker)), end_marker_(std::move(end_marker)) {}
 
-  /// Feed a chunk into the accumulator. Returns visible text and any tool calls completed by this chunk.
+  /// Feed a chunk into the accumulator. Returns ordered visible-text and completed-tool-call events.
   Output Push(const std::string& chunk) {
     Output out;
 
@@ -58,7 +60,7 @@ class ToolCallStreamAccumulator {
 
     if (start_marker_.empty() || end_marker_.empty()) {
       // Passthrough mode — no tool-call detection.
-      out.visible_text = chunk;
+      EmitVisible(out, chunk);
       return out;
     }
 
@@ -86,6 +88,19 @@ class ToolCallStreamAccumulator {
   bool InsideToolCall() const noexcept { return inside_tool_call_; }
 
  private:
+  static void EmitVisible(Output& out, std::string text) {
+    if (text.empty()) {
+      return;
+    }
+    if (!out.events.empty()) {
+      if (auto* previous = std::get_if<std::string>(&out.events.back())) {
+        *previous += text;
+        return;
+      }
+    }
+    out.events.emplace_back(std::move(text));
+  }
+
   void Drain(Output& out, bool flushing) {
     while (true) {
       const std::string& marker = inside_tool_call_ ? end_marker_ : start_marker_;
@@ -100,8 +115,14 @@ class ToolCallStreamAccumulator {
           buffer_.erase(0, found + marker.size());
 
           auto parsed = ParseToolCalls(tool_call_buffer_, start_marker_, end_marker_);
-          for (auto& pc : parsed) {
-            out.ready_calls.push_back(std::move(pc));
+          if (parsed.empty()) {
+            // A marker-shaped block that cannot be parsed is model text, not a tool call. Preserve it rather than
+            // silently dropping generated output.
+            EmitVisible(out, tool_call_buffer_);
+          } else {
+            for (auto& pc : parsed) {
+              out.events.emplace_back(std::move(pc));
+            }
           }
 
           tool_call_buffer_.clear();
@@ -110,7 +131,7 @@ class ToolCallStreamAccumulator {
           // Opening marker: emit prefix as visible text, then start buffering the tool-call block (including the
           // marker — ParseToolCalls expects the full `<tool_call>...</tool_call>` substring).
           if (found > 0) {
-            out.visible_text.append(buffer_, 0, found);
+            EmitVisible(out, buffer_.substr(0, found));
           }
           tool_call_buffer_ = buffer_.substr(found, marker.size());
           buffer_.erase(0, found + marker.size());
@@ -125,12 +146,11 @@ class ToolCallStreamAccumulator {
         if (inside_tool_call_) {
           // Unterminated tool-call block: surface the buffered bytes as visible text so the caller still sees what
           // the model produced. Matches ReasoningStreamSplitter::Flush behavior for unterminated reasoning.
-          out.visible_text.append(tool_call_buffer_);
-          out.visible_text.append(buffer_);
+          EmitVisible(out, tool_call_buffer_ + buffer_);
           tool_call_buffer_.clear();
           inside_tool_call_ = false;
         } else {
-          out.visible_text.append(buffer_);
+          EmitVisible(out, buffer_);
         }
         buffer_.clear();
         return;
@@ -152,7 +172,7 @@ class ToolCallStreamAccumulator {
         size_t safe = buffer_.size() - hold;
 
         if (safe > 0) {
-          out.visible_text.append(buffer_, 0, safe);
+          EmitVisible(out, buffer_.substr(0, safe));
           buffer_.erase(0, safe);
         }
       }

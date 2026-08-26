@@ -15,6 +15,7 @@
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
+#include "items/tool_call_item.h"
 
 using namespace fl;
 using namespace fl::responses;
@@ -38,6 +39,90 @@ static ResponseCreateParams MakeTestParams() {
   params.metadata["key1"] = "value1";
   params.user = "test-user";
   return params;
+}
+
+TEST(ResponseConverterTest, FromSessionResponse_ReasoningOnlyMessageIsNotOutputText) {
+  Response response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+
+  auto [output, output_text] = FromSessionResponse(response, "msg");
+
+  ASSERT_EQ(output.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<ReasoningOutputItem>(output.front()));
+  EXPECT_EQ(std::get<ReasoningOutputItem>(output.front()).summary.front().text, "private scratchpad");
+  EXPECT_TRUE(output_text.empty());
+}
+
+TEST(ResponseConverterTest, FromSessionResponse_InterleavedReasoningPreservesOutputOrder) {
+  Response response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("think one", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  parts.push_back(std::make_unique<TextItem>("answer one", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT));
+  parts.push_back(std::make_unique<TextItem>("think two", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  parts.push_back(std::make_unique<TextItem>("answer two", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT));
+  response.items.push_back(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+
+  auto [output, output_text] = FromSessionResponse(response, "msg");
+
+  ASSERT_EQ(output.size(), 4u);
+  EXPECT_TRUE(std::holds_alternative<ReasoningOutputItem>(output[0]));
+  EXPECT_TRUE(std::holds_alternative<ResponseOutputMessage>(output[1]));
+  EXPECT_TRUE(std::holds_alternative<ReasoningOutputItem>(output[2]));
+  EXPECT_TRUE(std::holds_alternative<ResponseOutputMessage>(output[3]));
+  EXPECT_EQ(output_text, "answer oneanswer two");
+}
+
+TEST(ResponseConverterTest, BuildFunctionCallStreamOutputEmitsCompleteLifecycle) {
+  ToolCallItem call("call_test", "get_weather", R"({"city":"Seattle"})");
+  int sequence_number = 7;
+
+  auto output = BuildFunctionCallStreamOutput(call, 3, sequence_number);
+
+  ASSERT_EQ(output.events.size(), 4u);
+  EXPECT_EQ(sequence_number, 11);
+
+  const auto& added = output.events[0];
+  EXPECT_EQ(added.type, StreamEventType::kOutputItemAdded);
+  EXPECT_EQ(added.sequence_number, 7);
+  EXPECT_EQ(added.output_index, 3);
+  ASSERT_TRUE(added.item.has_value());
+  const auto& added_item = std::get<FunctionCallOutputItem>(*added.item);
+  EXPECT_EQ(added_item.id, output.completed_item.id);
+  EXPECT_EQ(added_item.call_id, "call_test");
+  EXPECT_EQ(added_item.name, "get_weather");
+  EXPECT_TRUE(added_item.arguments.empty());
+  EXPECT_EQ(added_item.status, ResponseStatus::kInProgress);
+
+  const auto& delta = output.events[1];
+  EXPECT_EQ(delta.type, StreamEventType::kFunctionCallArgumentsDelta);
+  EXPECT_EQ(delta.sequence_number, 8);
+  EXPECT_EQ(delta.output_index, 3);
+  EXPECT_EQ(delta.item_id, output.completed_item.id);
+  EXPECT_EQ(delta.delta, R"({"city":"Seattle"})");
+  EXPECT_EQ(delta.function_call_id, "call_test");
+
+  const auto& arguments_done = output.events[2];
+  EXPECT_EQ(arguments_done.type, StreamEventType::kFunctionCallArgumentsDone);
+  EXPECT_EQ(arguments_done.sequence_number, 9);
+  EXPECT_EQ(arguments_done.output_index, 3);
+  EXPECT_EQ(arguments_done.item_id, output.completed_item.id);
+  EXPECT_EQ(arguments_done.function_name, "get_weather");
+  EXPECT_EQ(arguments_done.function_call_id, "call_test");
+  EXPECT_EQ(arguments_done.function_arguments, R"({"city":"Seattle"})");
+
+  const auto& item_done = output.events[3];
+  EXPECT_EQ(item_done.type, StreamEventType::kOutputItemDone);
+  EXPECT_EQ(item_done.sequence_number, 10);
+  EXPECT_EQ(item_done.output_index, 3);
+  ASSERT_TRUE(item_done.item.has_value());
+  const auto& completed_item = std::get<FunctionCallOutputItem>(*item_done.item);
+  EXPECT_EQ(completed_item.arguments, R"({"city":"Seattle"})");
+  EXPECT_EQ(completed_item.status, ResponseStatus::kCompleted);
+  EXPECT_EQ(output.completed_item.arguments, R"({"city":"Seattle"})");
+  EXPECT_EQ(output.completed_item.status, ResponseStatus::kCompleted);
 }
 
 // ========================================================================

@@ -3,6 +3,8 @@
 
 #include "inferencing/generative/openresponses/response_converter.h"
 
+#include "items/tool_call_item.h"
+
 #include <azure/core/base64.hpp>
 
 #include <chrono>
@@ -570,30 +572,11 @@ std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(cons
     } else if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       MessageItem& msg_item = static_cast<MessageItem&>(*item);
       if (msg_item.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-        if (msg_item.IsSimpleText()) {
-          // Single-text fast path: no reasoning possible, emit one message item.
-          std::string text = msg_item.GetSimpleText();
-
-          if (text.empty()) {
-            continue;
-          }
-
-          output_text += text;
-
-          ResponseOutputMessage msg;
-          msg.id = GenerateId(msg_id_prefix);
-          msg.role = "assistant";
-          msg.status = ResponseStatus::kCompleted;
-          msg.content.push_back(OutputTextContent{std::move(text)});
-          output.push_back(std::move(msg));
-          continue;
-        }
-
-        // Multi-part message (reasoning model, possibly interleaved). Walk the parts in stream order and start
-        // a fresh output item on every type transition. This preserves the produced sequence — e.g. the model
-        // can emit `reasoning -> answer -> reasoning -> answer` and each run becomes its own output item, which
-        // matches how the OpenAI Responses API surfaces interleaved reasoning (one `reasoning` item per
-        // contiguous reasoning run, one `message` item per contiguous visible run).
+        // Walk the parts in stream order and start a fresh output item on every type transition. This preserves the
+        // produced sequence — e.g. the model can emit `reasoning -> answer -> reasoning -> answer` and each run
+        // becomes its own output item, which matches how the OpenAI Responses API surfaces interleaved reasoning.
+        // Inspect the TextItem type even for a one-part message because a generation truncated inside a reasoning
+        // block is reasoning-only.
         std::optional<flTextItemType> current_type;
         std::string current_text;
 
@@ -703,6 +686,7 @@ ResponseObject BuildResponseObject(const std::string& response_id,
   r.usage.input_tokens = static_cast<int>(usage.prompt_tokens);
   r.usage.output_tokens = static_cast<int>(usage.completion_tokens);
   r.usage.total_tokens = static_cast<int>(usage.total_tokens);
+  r.usage.output_tokens_details.reasoning_tokens = static_cast<int>(usage.reasoning_tokens);
 
   EchoRequestParams(r, params);
 
@@ -752,6 +736,57 @@ ResponseObject BuildInitialResponseObject(const std::string& response_id,
   EchoRequestParams(r, params);
 
   return r;
+}
+
+FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
+                                                       int output_index,
+                                                       int& next_sequence_number) {
+  FunctionCallStreamOutput output;
+  output.events.reserve(4);
+
+  FunctionCallOutputItem in_progress_item;
+  in_progress_item.id = GenerateId("fc");
+  in_progress_item.call_id = call.call_id.empty() ? GenerateId("call") : call.call_id;
+  in_progress_item.name = call.name;
+
+  StreamEvent added;
+  added.type = StreamEventType::kOutputItemAdded;
+  added.sequence_number = next_sequence_number++;
+  added.output_index = output_index;
+  added.item = in_progress_item;
+  output.events.push_back(std::move(added));
+
+  StreamEvent arguments_delta;
+  arguments_delta.type = StreamEventType::kFunctionCallArgumentsDelta;
+  arguments_delta.sequence_number = next_sequence_number++;
+  arguments_delta.output_index = output_index;
+  arguments_delta.item_id = in_progress_item.id;
+  arguments_delta.delta = call.arguments;
+  arguments_delta.function_call_id = in_progress_item.call_id;
+  output.events.push_back(std::move(arguments_delta));
+
+  StreamEvent arguments_done;
+  arguments_done.type = StreamEventType::kFunctionCallArgumentsDone;
+  arguments_done.sequence_number = next_sequence_number++;
+  arguments_done.output_index = output_index;
+  arguments_done.item_id = in_progress_item.id;
+  arguments_done.function_name = in_progress_item.name;
+  arguments_done.function_call_id = in_progress_item.call_id;
+  arguments_done.function_arguments = call.arguments;
+  output.events.push_back(std::move(arguments_done));
+
+  output.completed_item = std::move(in_progress_item);
+  output.completed_item.arguments = call.arguments;
+  output.completed_item.status = ResponseStatus::kCompleted;
+
+  StreamEvent item_done;
+  item_done.type = StreamEventType::kOutputItemDone;
+  item_done.sequence_number = next_sequence_number++;
+  item_done.output_index = output_index;
+  item_done.item = output.completed_item;
+  output.events.push_back(std::move(item_done));
+
+  return output;
 }
 
 // ---------------------------------------------------------------------------

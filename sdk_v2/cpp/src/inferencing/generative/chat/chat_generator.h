@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
 namespace fl {
@@ -26,6 +28,9 @@ class ChatGenerator {
   /// Decode the most recently generated token into text.
   /// Returns empty string for special/control tokens that should not be surfaced.
   virtual std::string Decode() = 0;
+
+  /// Get the most recently generated token ID before Decode consumes it.
+  virtual std::optional<int32_t> CurrentTokenId() const = 0;
 
   /// Get the total number of tokens (input + generated) so far.
   virtual int TokenCount() const = 0;

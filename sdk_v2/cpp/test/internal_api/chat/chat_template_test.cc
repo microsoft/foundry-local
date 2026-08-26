@@ -98,6 +98,13 @@ TEST_F(ChatTemplateTest, MultiTurnConversation) {
   EXPECT_NE(prompt.find("3+3"), std::string::npos);
 }
 
+TEST(ChatTemplateUnitTest, EmptyAssistantMessageRendersAsEmptyContent) {
+  MessageItem empty_assistant;
+  empty_assistant.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+
+  EXPECT_EQ(RenderMessageForPrompt(empty_assistant), "");
+}
+
 TEST_F(ChatTemplateTest, EmptyMessagesThrows) {
   std::vector<MessageItem> messages;
   EXPECT_THROW(BuildChatPrompt(messages, GetModel()), fl::Exception);

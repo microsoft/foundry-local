@@ -7,6 +7,7 @@
 #include "contracts/chat_completions_converter.h"
 
 #include "items/message_item.h"
+#include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
 
@@ -541,7 +542,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   response.items.push_back(
       std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "Hello there!"));
   response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
-  response.usage = {10, 5, 15};
+  response.usage = {10, 5, 15, 3};
 
   auto result = BuildResponse(response, "chatcmpl-abc", 1000, "test-model");
 
@@ -557,6 +558,39 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   EXPECT_EQ(result.usage.prompt_tokens, 10);
   EXPECT_EQ(result.usage.completion_tokens, 5);
   EXPECT_EQ(result.usage.total_tokens, 15);
+  EXPECT_EQ(result.usage.completion_tokens_details.reasoning_tokens, 3);
+}
+
+TEST(ChatCompletionsConverterTest, BuildResponse_ReasoningOnlyMessageHasNoVisibleContent) {
+  Response response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+  response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+
+  auto result = BuildResponse(response, "chatcmpl-reasoning", 1000, "test-model");
+
+  ASSERT_EQ(result.choices.size(), 1u);
+  ASSERT_TRUE(result.choices[0].message.content.has_value());
+  EXPECT_TRUE(result.choices[0].message.content->empty());
+}
+
+TEST(ChatCompletionsConverterTest, BuildResponse_InterleavedReasoningKeepsVisibleTextInOrder) {
+  Response response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("think one", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  parts.push_back(std::make_unique<TextItem>("answer one", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT));
+  parts.push_back(std::make_unique<TextItem>("think two", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  parts.push_back(std::make_unique<TextItem>(" answer two", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT));
+  response.items.push_back(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+  response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+
+  auto result = BuildResponse(response, "chatcmpl-reasoning", 1000, "test-model");
+
+  ASSERT_EQ(result.choices.size(), 1u);
+  ASSERT_TRUE(result.choices[0].message.content.has_value());
+  EXPECT_EQ(*result.choices[0].message.content, "answer one answer two");
 }
 
 TEST(ChatCompletionsConverterTest, BuildResponse_ToolCallItems) {

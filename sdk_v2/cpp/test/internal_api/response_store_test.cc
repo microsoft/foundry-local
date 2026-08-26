@@ -191,7 +191,7 @@ TEST(ResponseConverterTest, BuildResponseObjectHasRequiredFields) {
   msg.content.push_back(OutputTextContent{"hello"});
   output.push_back(msg);
 
-  TokenUsage usage{10, 5, 15};
+  TokenUsage usage{10, 5, 15, 2};
 
   auto typed = ResponseConverter::BuildResponseObject(
       "resp_123", 1700000000, "test-model", params,
@@ -213,6 +213,7 @@ TEST(ResponseConverterTest, BuildResponseObjectHasRequiredFields) {
   // Usage
   EXPECT_EQ(response["usage"]["input_tokens"], 10);
   EXPECT_EQ(response["usage"]["output_tokens"], 5);
+  EXPECT_EQ(response["usage"]["output_tokens_details"]["reasoning_tokens"], 2);
   EXPECT_EQ(response["usage"]["total_tokens"], 15);
 }
 

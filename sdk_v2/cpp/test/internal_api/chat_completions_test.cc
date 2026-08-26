@@ -516,9 +516,11 @@ TEST(ChatCompletionStreamingTest, ChunkWithUsage) {
   usage.prompt_tokens = 5;
   usage.completion_tokens = 10;
   usage.total_tokens = 15;
+  usage.completion_tokens_details.reasoning_tokens = 2;
   chunk.usage = usage;
 
   json j = chunk;
   ASSERT_TRUE(j.contains("usage"));
   EXPECT_EQ(j["usage"]["total_tokens"], 15);
+  EXPECT_EQ(j["usage"]["completion_tokens_details"]["reasoning_tokens"], 2);
 }
