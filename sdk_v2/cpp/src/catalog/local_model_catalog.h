@@ -41,7 +41,6 @@ class LocalModelCatalog final : public BaseModelCatalog {
   std::filesystem::path index_path_;
   std::filesystem::path lock_path_;
   ModelFactory model_factory_;
-  ILogger& logger_;
   mutable std::mutex registration_mutex_;
 };
 

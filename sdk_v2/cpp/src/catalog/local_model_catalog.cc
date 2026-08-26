@@ -174,8 +174,7 @@ LocalModelCatalog::LocalModelCatalog(std::filesystem::path model_cache_dir, Mode
       model_cache_dir_(std::move(model_cache_dir)),
       index_path_(model_cache_dir_ / "foundry.local.modelinfo.json"),
       lock_path_(model_cache_dir_ / "foundry.local.modelinfo.lock"),
-      model_factory_(std::move(model_factory)),
-      logger_(logger) {}
+      model_factory_(std::move(model_factory)) {}
 
 std::vector<Model> LocalModelCatalog::FetchModels() const {
   std::lock_guard<std::mutex> guard(registration_mutex_);
