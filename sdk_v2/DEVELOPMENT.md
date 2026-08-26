@@ -120,7 +120,7 @@ Then set env var `FOUNDRY_TEST_DATA_DIR` to the cache path you want tests to use
 Example:
 
 ```powershell
-$env:FOUNDRY_TEST_DATA_DIR = '$env:USERPROFILE\.foundry\cache\models\Microsoft'
+$env:FOUNDRY_TEST_DATA_DIR = "$env:USERPROFILE\.foundry\cache\models"
 pwsh ./build_and_test_all.ps1
 ```
 
@@ -199,9 +199,10 @@ az artifacts universal publish `
   --path $modelDirectory
 ```
 
-Publishing the alias directory makes `v4` the package root. Do not ZIP the
-directory; `UniversalPackages@0` downloads its files directly into the target
-cache alias directory.
+Publishing the alias directory uploads its contents, so `v4` is a top-level
+directory within the package. Do not publish the contents of `v4` directly;
+the version directory must remain present when `UniversalPackages@0` downloads
+the package into the target cache alias directory. Do not ZIP the directory.
 
 After publishing, add or update the corresponding `UniversalPackages@0` task in:
 
