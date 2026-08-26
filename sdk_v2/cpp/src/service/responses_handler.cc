@@ -79,13 +79,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAnd
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+  const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");

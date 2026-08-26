@@ -13,8 +13,7 @@ namespace fl {
 /// Mutable, persistent catalog for models registered from arbitrary local directories.
 class LocalModelCatalog final : public BaseModelCatalog {
  public:
-  using ModelFactory =
-      std::function<Model(ModelInfo info, std::string local_path, std::string runtime_model_id)>;
+  using ModelFactory = std::function<Model(ModelInfo info, std::string local_path)>;
 
   LocalModelCatalog(std::filesystem::path model_cache_dir, ModelFactory model_factory, ILogger& logger);
 
@@ -25,7 +24,6 @@ class LocalModelCatalog final : public BaseModelCatalog {
   struct Registration {
     ModelInfo info;
     std::string model_path;
-    std::string registration_id;
   };
 
  protected:

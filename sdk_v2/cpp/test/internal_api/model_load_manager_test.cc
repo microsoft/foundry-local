@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -353,5 +354,29 @@ TEST_F(ModelLoadManagerUnloadTest, UnloadFailsWhenInUseAndSucceedsAfterSessionsR
   ASSERT_EQ(instance_->SessionRefCount(), 0);
 
   EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias));
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
+}
+
+TEST_F(ModelLoadManagerUnloadTest, SameIdRequiresSameCanonicalPathForLoadLookupAndUnload) {
+  const auto equivalent_path = std::filesystem::path(model_path_) / ".";
+  const auto different_path = std::filesystem::path(model_path_).parent_path();
+
+  const auto idempotent = mgr_->LoadModel(equivalent_path.string(), fl::test::kTestChatModelAlias);
+  EXPECT_EQ(idempotent.status, fl::ModelLoadManager::LoadStatus::kModelAlreadyLoaded);
+  EXPECT_EQ(idempotent.model, instance_);
+
+  try {
+    mgr_->LoadModel(different_path.string(), fl::test::kTestChatModelAlias);
+    FAIL() << "Expected a same-ID path collision";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("different path"), std::string::npos);
+  }
+
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias, different_path.string()), nullptr);
+  EXPECT_FALSE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, different_path.string()));
+  EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), instance_);
+
+  EXPECT_TRUE(mgr_->UnloadModel(fl::test::kTestChatModelAlias, equivalent_path.string()));
   EXPECT_EQ(mgr_->GetLoadedModel(fl::test::kTestChatModelAlias), nullptr);
 }

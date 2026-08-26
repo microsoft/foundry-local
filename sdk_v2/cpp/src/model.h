@@ -57,8 +57,7 @@ class Model {
   static Model FromLocalRegistration(ModelInfo info,
                                      std::string local_path,
                                      DownloadManager& download_manager,
-                                     ModelLoadManager& model_load_manager,
-                                     std::string runtime_model_id);
+                                     ModelLoadManager& model_load_manager);
 
   // --- Container construction ---
 
@@ -75,8 +74,8 @@ class Model {
   /// container has its full variant set.
   void AddVariant(Model variant);
 
-  /// Reconcile this container with a fresh authoritative container while preserving leaves whose model ID and
-  /// private runtime ID are unchanged. Returns false without changing either container when unregister is in progress.
+  /// Reconcile this container with a fresh authoritative container while preserving leaves with the same model ID and
+  /// normalized local path. Returns false without changing either container when unregister is in progress.
   /// Removed/replaced leaves are deactivated but retained in container-owned storage for outstanding handle safety.
   bool TryReconcileVariants(Model& incoming);
 
@@ -178,10 +177,6 @@ class Model {
   /// one-shot operations, so callers reading the path concurrently with download
   /// or removal of the same Model are out of contract.
   const std::string& LocalPath() const { return local_path_; }
-  const std::string& RuntimeId() const {
-    Model* selected = selected_variant_.load(std::memory_order_acquire);
-    return selected ? selected->RuntimeId() : runtime_model_id_;
-  }
 
  private:
   struct ContainerTag {};
@@ -190,7 +185,6 @@ class Model {
         std::string local_path,
         DownloadManager& download_manager,
         ModelLoadManager& model_load_manager,
-        std::string runtime_model_id,
         bool external_registration);
   Model(ContainerTag, Model first_variant);
 
@@ -209,7 +203,6 @@ class Model {
   // but operations that would use the registration reject them.
   std::atomic<bool> active_{true};
   std::string local_path_;
-  std::string runtime_model_id_;
   bool external_registration_ = false;
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
@@ -222,7 +215,7 @@ class Model {
   std::vector<std::unique_ptr<Model>> variants_;
   std::vector<std::unique_ptr<Model>> retired_variants_;
   std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
-  bool selection_is_explicit_ = false;              // guarded by state_mutex_
+  bool selection_is_explicit_ = false;             // guarded by state_mutex_
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).

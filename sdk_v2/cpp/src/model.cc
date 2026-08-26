@@ -109,12 +109,10 @@ Model::Model(ModelInfo info,
              std::string local_path,
              DownloadManager& download_manager,
              ModelLoadManager& model_load_manager,
-             std::string runtime_model_id,
              bool external_registration)
     : info_(std::make_unique<const ModelInfo>(std::move(info))),
       cached_(!local_path.empty()),
       local_path_(std::move(local_path)),
-      runtime_model_id_(std::move(runtime_model_id)),
       external_registration_(external_registration),
       download_manager_(&download_manager),
       model_load_manager_(&model_load_manager) {}
@@ -133,7 +131,6 @@ Model::Model(Model&& other) noexcept
       cached_(other.cached_.load()),
       active_(other.active_.load()),
       local_path_(std::move(other.local_path_)),
-      runtime_model_id_(std::move(other.runtime_model_id_)),
       external_registration_(other.external_registration_),
       download_manager_(other.download_manager_),
       model_load_manager_(other.model_load_manager_),
@@ -154,7 +151,6 @@ Model& Model::operator=(Model&& other) noexcept {
     cached_.store(other.cached_.load());
     active_.store(other.active_.load());
     local_path_ = std::move(other.local_path_);
-    runtime_model_id_ = std::move(other.runtime_model_id_);
     external_registration_ = other.external_registration_;
     download_manager_ = other.download_manager_;
     model_load_manager_ = other.model_load_manager_;
@@ -179,18 +175,14 @@ Model Model::FromModelInfo(ModelInfo info,
                            std::string local_path,
                            DownloadManager& download_manager,
                            ModelLoadManager& model_load_manager) {
-  auto runtime_model_id = info.model_id;
-  return Model(std::move(info), std::move(local_path), download_manager, model_load_manager,
-               std::move(runtime_model_id), false);
+  return Model(std::move(info), std::move(local_path), download_manager, model_load_manager, false);
 }
 
 Model Model::FromLocalRegistration(ModelInfo info,
                                    std::string local_path,
                                    DownloadManager& download_manager,
-                                   ModelLoadManager& model_load_manager,
-                                   std::string runtime_model_id) {
-  return Model(std::move(info), std::move(local_path), download_manager, model_load_manager,
-               std::move(runtime_model_id), true);
+                                   ModelLoadManager& model_load_manager) {
+  return Model(std::move(info), std::move(local_path), download_manager, model_load_manager, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +231,7 @@ bool Model::TryReconcileVariants(Model& incoming) {
   for (auto current = variants_.begin(); current != variants_.end();) {
     const auto match = std::find_if(incoming.variants_.begin(), incoming.variants_.end(), [&](const auto& candidate) {
       return (*current)->Info().model_id == candidate->Info().model_id &&
-             (*current)->RuntimeId() == candidate->RuntimeId();
+             (*current)->LocalPath() == candidate->LocalPath();
     });
     if (match != incoming.variants_.end()) {
       incoming.variants_.erase(match);
@@ -427,10 +419,14 @@ bool Model::IsLoaded() const {
     return sv->IsLoaded();
   }
 
+  if (!active_) {
+    return false;
+  }
+
   // ModelLoadManager owns the authoritative loaded-instance map. The pointer is set at
   // construction and never reassigned, so querying it here stays in sync with paths that
   // bypass Model::Load/Unload (e.g., Manager::Shutdown -> ModelLoadManager::UnloadAll).
-  return model_load_manager_->GetLoadedModel(runtime_model_id_) != nullptr;
+  return model_load_manager_->GetLoadedModel(Info().model_id, local_path_) != nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -512,7 +508,7 @@ void Model::Load(ExecutionProvider ep) {
 
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, runtime_model_id_, ep);
+  auto result = model_load_manager_->LoadModel(local_path_, Info().model_id, ep);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
@@ -525,8 +521,11 @@ void Model::Unload() {
     return;
   }
 
-  // UnloadModel is idempotent — returns false if the id isn't loaded.
-  model_load_manager_->UnloadModel(runtime_model_id_);
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+
+  // Path qualification lets a retired handle clean up its own instance without unloading a later registration that
+  // reused the same model ID at a different path. UnloadModel is idempotent when no matching instance is loaded.
+  model_load_manager_->UnloadModel(Info().model_id, local_path_);
 }
 
 void Model::RemoveFromCache() {

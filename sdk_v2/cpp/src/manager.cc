@@ -328,8 +328,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
       disable_region_fallback);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       download_manager_->GetCacheDirectory(),
-      [this](ModelInfo info, std::string local_path, std::string runtime_model_id) {
-        return CreateLocalModel(std::move(info), std::move(local_path), std::move(runtime_model_id));
+      [this](ModelInfo info, std::string local_path) {
+        return CreateLocalModel(std::move(info), std::move(local_path));
       },
       *logger_);
 }
@@ -567,9 +567,9 @@ Model Manager::CreateModel(ModelInfo info, std::string local_path) {
   return Model::FromModelInfo(std::move(info), std::move(local_path), *download_manager_, *model_load_manager_);
 }
 
-Model Manager::CreateLocalModel(ModelInfo info, std::string local_path, std::string runtime_model_id) {
+Model Manager::CreateLocalModel(ModelInfo info, std::string local_path) {
   return Model::FromLocalRegistration(std::move(info), std::move(local_path), *download_manager_,
-                                      *model_load_manager_, std::move(runtime_model_id));
+                                      *model_load_manager_);
 }
 
 DownloadManager& Manager::GetDownloadManager() { return *download_manager_; }

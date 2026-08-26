@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <fstream>
@@ -26,7 +27,7 @@
 namespace fl {
 namespace {
 
-constexpr const char* kRegistrationIdProperty = "_local_registration_id";
+constexpr const char* kLegacyRegistrationIdProperty = "_local_registration_id";
 constexpr const char* kLegacyModelPathProperty = "model_path";
 constexpr const char* kLegacyAliasProperty = "alias";
 constexpr const char* kLegacyVersionProperty = "version";
@@ -75,14 +76,30 @@ ParsedModelId ParseModelId(const std::string& model_id) {
   return {std::move(name), version};
 }
 
+std::string DeriveAlias(std::string_view name) {
+  static constexpr std::array<std::string_view, 3> kGenericSuffixes = {
+      "-generic-cpu",
+      "-generic-gpu",
+      "-generic-npu",
+  };
+
+  for (const auto suffix : kGenericSuffixes) {
+    if (name.size() > suffix.size() && name.ends_with(suffix)) {
+      return std::string(name.substr(0, name.size() - suffix.size()));
+    }
+  }
+
+  return std::string(name);
+}
+
 void RemoveLegacyRegistrationProperties(ModelInfo& info) {
   info.string_properties.erase(kLegacyModelPathProperty);
   info.string_properties.erase(kLegacyAliasProperty);
-  info.string_properties.erase(kRegistrationIdProperty);
+  info.string_properties.erase(kLegacyRegistrationIdProperty);
   info.string_properties.erase(kLegacyVersionProperty);
   info.int_properties.erase(kLegacyModelPathProperty);
   info.int_properties.erase(kLegacyAliasProperty);
-  info.int_properties.erase(kRegistrationIdProperty);
+  info.int_properties.erase(kLegacyRegistrationIdProperty);
   info.int_properties.erase(kLegacyVersionProperty);
 }
 
@@ -132,7 +149,6 @@ nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registr
   return {
       {"model_info", ModelInfoToJson(registration.info)},
       {"model_path", registration.model_path},
-      {"registration_id", registration.registration_id},
   };
 }
 
@@ -210,13 +226,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id is already registered: " + model_id);
     }
 
-    registration = {ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version), model_path.string(),
-                    std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count())};
-    while (std::any_of(registrations.begin(), registrations.end(), [&](const auto& existing) {
-      return existing.registration_id == registration.registration_id;
-    })) {
-      registration.registration_id += "-1";
-    }
+    registration = {ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version), model_path.string()};
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -224,8 +234,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
 
   ListModels();
   auto* model = GetModelVariant(registration.info.model_id);
-  const auto runtime_id = "local/" + registration.registration_id;
-  if (!model || model->RuntimeId() != runtime_id) {
+  if (!model || model->Id() != registration.info.model_id) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "registered model was not available after catalog refresh");
   }
 
@@ -300,7 +309,7 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
   auto resolved = metadata;
   RemoveLegacyRegistrationProperties(resolved);
 
-  resolved.alias = name;
+  resolved.alias = DeriveAlias(name);
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
@@ -360,16 +369,6 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
           model_id = item["model_id"].get<std::string>();
         }
 
-        std::string registration_id;
-        if (item.contains("registration_id") && item["registration_id"].is_string()) {
-          registration_id = item["registration_id"].get<std::string>();
-        } else if (const auto* legacy_registration_id = info.GetPropertyStr(kRegistrationIdProperty)) {
-          registration_id = *legacy_registration_id;
-        }
-        if (registration_id.empty()) {
-          continue;
-        }
-
         const auto parsed_id = ParseModelId(model_id);
         std::filesystem::path model_path = item["model_path"].get<std::string>();
         if (model_path.empty() || HasParentTraversal(model_path)) {
@@ -378,17 +377,17 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
         model_path = std::filesystem::absolute(model_path).lexically_normal();
 
         RemoveLegacyRegistrationProperties(info);
-        info.alias = parsed_id.name;
+        info.alias = DeriveAlias(parsed_id.name);
         info.name = parsed_id.name;
         info.version = parsed_id.version;
         info.model_id = model_id;
         info.uri.clear();
 
         const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
-          return existing.info.model_id == info.model_id || existing.registration_id == registration_id;
+          return existing.info.model_id == info.model_id;
         });
         if (duplicate == registrations.end()) {
-          registrations.push_back({std::move(info), model_path.string(), std::move(registration_id)});
+          registrations.push_back({std::move(info), model_path.string()});
         }
       } catch (const std::exception& ex) {
         logger_.Log(LogLevel::Warning, std::string("Ignoring malformed local model registration: ") + ex.what());
@@ -439,7 +438,7 @@ void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& regis
 }
 
 Model LocalModelCatalog::CreateModel(const Registration& registration) const {
-  return model_factory_(registration.info, registration.model_path, "local/" + registration.registration_id);
+  return model_factory_(registration.info, registration.model_path);
 }
 
 }  // namespace fl

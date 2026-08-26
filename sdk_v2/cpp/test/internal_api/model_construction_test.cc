@@ -51,11 +51,11 @@ TEST(ModelConstructionTest, LocalRegistrationHasMetadataImmediately) {
   info.task = "chat-completion";
 
   auto model = Model::FromLocalRegistration(std::move(info), "model-path", svc.download_manager,
-                                            svc.model_load_manager, "local/registration-id");
+                                            svc.model_load_manager);
 
   EXPECT_EQ(model.Info().model_id, "local-model:1");
   EXPECT_EQ(model.Info().task, "chat-completion");
-  EXPECT_EQ(model.RuntimeId(), "local/registration-id");
+  EXPECT_EQ(model.Id(), "local-model:1");
 }
 
 TEST(ModelConstructionTest, ContainerHasSelectedMetadataImmediately) {

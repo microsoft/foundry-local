@@ -156,7 +156,7 @@ class Manager {
 
  private:
   Model CreateModel(ModelInfo info, std::string local_path);
-  Model CreateLocalModel(ModelInfo info, std::string local_path, std::string runtime_model_id);
+  Model CreateLocalModel(ModelInfo info, std::string local_path);
 
   static std::mutex s_mutex_;
   static std::unique_ptr<Manager> s_instance_;

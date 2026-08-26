@@ -3,6 +3,7 @@
 #include "catalog/local_model_catalog.h"
 
 #include "internal_api/test_helpers.h"
+#include "internal_api/test_model_cache.h"
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
@@ -29,9 +30,9 @@ class LocalModelCatalogTest : public ::testing::Test {
   LocalModelCatalog MakeCatalog() {
     return LocalModelCatalog(
         root_.path() / "cache" / "models",
-        [this](ModelInfo info, std::string path, std::string runtime_model_id) {
+        [this](ModelInfo info, std::string path) {
           return Model::FromLocalRegistration(std::move(info), std::move(path), bindings_.download_manager,
-                                              bindings_.model_load_manager, std::move(runtime_model_id));
+                                              bindings_.model_load_manager);
         },
         NullLog());
   }
@@ -74,11 +75,11 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   info.SetPropertyInt("_local_registration_id", 99);
   info.SetPropertyInt("version", 99);
 
-  auto* model = catalog_.RegisterModel(model_dir_.string(), "my-model:7", info);
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "my-model-generic-cpu:7", info);
 
   ASSERT_NE(model, nullptr);
-  EXPECT_EQ(model->Id(), "my-model:7");
-  EXPECT_EQ(model->Info().name, "my-model");
+  EXPECT_EQ(model->Id(), "my-model-generic-cpu:7");
+  EXPECT_EQ(model->Info().name, "my-model-generic-cpu");
   EXPECT_EQ(model->Info().alias, "my-model");
   EXPECT_EQ(model->Info().version, 7);
   EXPECT_EQ(model->Info().task, "chat-completion");
@@ -103,14 +104,15 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   std::ifstream(index_path) >> index;
   EXPECT_EQ(index["version"], 2);
   ASSERT_EQ(index["models"].size(), 1u);
+  EXPECT_EQ(index["models"][0].size(), 2u);
   ASSERT_TRUE(index["models"][0].contains("model_info"));
-  EXPECT_EQ(index["models"][0]["model_info"]["id"], "my-model:7");
-  EXPECT_EQ(index["models"][0]["model_info"]["name"], "my-model");
+  EXPECT_EQ(index["models"][0]["model_info"]["id"], "my-model-generic-cpu:7");
+  EXPECT_EQ(index["models"][0]["model_info"]["name"], "my-model-generic-cpu");
   EXPECT_EQ(index["models"][0]["model_info"]["version"], 7);
   EXPECT_EQ(index["models"][0]["model_info"]["alias"], "my-model");
   EXPECT_EQ(index["models"][0]["model_info"]["stringProperties"]["custom_metadata"], "preserved");
   EXPECT_EQ(index["models"][0]["model_info"]["intProperties"]["custom_count"], 42);
-  EXPECT_TRUE(index["models"][0].contains("registration_id"));
+  EXPECT_FALSE(index["models"][0].contains("registration_id"));
   EXPECT_FALSE(index["models"][0].contains("model_id"));
   EXPECT_FALSE(index["models"][0].contains("alias"));
   EXPECT_FALSE(index["models"][0].contains("properties"));
@@ -118,7 +120,7 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   EXPECT_FALSE(index["models"][0].contains("metadata_prepared"));
 
   auto restored = MakeCatalog();
-  auto* restored_model = restored.GetModelVariant("my-model:7");
+  auto* restored_model = restored.GetModelVariant("my-model-generic-cpu:7");
   ASSERT_NE(restored_model, nullptr);
   EXPECT_EQ(restored_model->Info().GetPropertyWithDefault("custom_metadata", std::string{}), "preserved");
   EXPECT_EQ(restored_model->Info().GetPropertyWithDefault("custom_count", int64_t{-1}), 42);
@@ -148,9 +150,17 @@ TEST_F(LocalModelCatalogTest, RegistrationRequiresSupportedTask) {
 
 TEST_F(LocalModelCatalogTest, RegistrationRequiresCanonicalModelId) {
   const std::vector<std::string> invalid_ids = {
-      "",             "missing-version", ":1",          "model:",   "model:1:2",
-      "model:-1",     "model:+1",       "model:01",    "model:2147483648",
-      "model/path:1", "model name:1",
+      "",
+      "missing-version",
+      ":1",
+      "model:",
+      "model:1:2",
+      "model:-1",
+      "model:+1",
+      "model:01",
+      "model:2147483648",
+      "model/path:1",
+      "model name:1",
   };
 
   for (const auto& model_id : invalid_ids) {
@@ -158,12 +168,12 @@ TEST_F(LocalModelCatalogTest, RegistrationRequiresCanonicalModelId) {
   }
 }
 
-TEST_F(LocalModelCatalogTest, RegistrationUsesUniqueIdsAndGroupsVersionsByDerivedAlias) {
-  auto* first = Register("my-model:1");
+TEST_F(LocalModelCatalogTest, RegistrationUsesUniqueIdsAndGroupsDistinctNamesByDerivedAlias) {
+  auto* first = Register("my-model-generic-cpu:1");
   ASSERT_NE(first, nullptr);
-  EXPECT_THROW(Register("my-model:1"), Exception);
+  EXPECT_THROW(Register("my-model-generic-cpu:1"), Exception);
 
-  auto* second = Register("my-model:2");
+  auto* second = Register("my-model-generic-cpu:2");
   ASSERT_NE(second, nullptr);
   EXPECT_EQ(second->Info().version, 2);
   EXPECT_NO_THROW(first->Download());
@@ -171,24 +181,38 @@ TEST_F(LocalModelCatalogTest, RegistrationUsesUniqueIdsAndGroupsVersionsByDerive
   auto* grouped = catalog_.GetModel("my-model");
   ASSERT_NE(grouped, nullptr);
   EXPECT_EQ(grouped->Variants().size(), 2u);
-  EXPECT_EQ(grouped->Id(), "my-model:2");
-  EXPECT_NE(catalog_.GetModelVariant("my-model:1"), nullptr);
-  EXPECT_EQ(catalog_.GetModelVariant("my-model:2"), second);
+  EXPECT_EQ(grouped->Id(), "my-model-generic-cpu:2");
+  EXPECT_NE(catalog_.GetModelVariant("my-model-generic-cpu:1"), nullptr);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:2"), second);
 
   grouped->SelectVariant(*first);
-  EXPECT_EQ(grouped->Id(), "my-model:1");
+  EXPECT_EQ(grouped->Id(), "my-model-generic-cpu:1");
   auto other = MakeCatalog();
-  ASSERT_NE(other.RegisterModel(model_dir_.string(), "my-model:3", MakeMetadata()), nullptr);
+  ASSERT_NE(other.RegisterModel(model_dir_.string(), "my-model-generic-gpu:3", MakeMetadata()), nullptr);
   ASSERT_EQ(catalog_.ListModels().size(), 1u);
   EXPECT_EQ(grouped->Variants().size(), 3u);
-  EXPECT_EQ(grouped->Id(), "my-model:1");
-  EXPECT_EQ(catalog_.GetModelVariant("my-model:1"), first);
+  EXPECT_EQ(grouped->Id(), "my-model-generic-cpu:1");
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:1"), first);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-gpu:3")->Info().name, "my-model-generic-gpu");
 
-  catalog_.UnregisterModel("my-model:1");
-  EXPECT_EQ(catalog_.GetModelVariant("my-model:1"), nullptr);
+  catalog_.UnregisterModel("my-model-generic-cpu:1");
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:1"), nullptr);
   EXPECT_THROW(first->Download(), Exception);
-  EXPECT_EQ(catalog_.GetModelVariant("my-model:2"), second);
+  EXPECT_EQ(catalog_.GetModelVariant("my-model-generic-cpu:2"), second);
   EXPECT_NO_THROW(second->Download());
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesAliasFromCanonicalGenericSuffixesOnly) {
+  auto* npu = Register("npu-model-generic-npu:1");
+  auto* unsuffixed = Register("my-model-custom:1");
+  auto* wrong_case = Register("case-model-GENERIC-CPU:1");
+
+  ASSERT_NE(npu, nullptr);
+  EXPECT_EQ(npu->Info().alias, "npu-model");
+  ASSERT_NE(unsuffixed, nullptr);
+  EXPECT_EQ(unsuffixed->Info().alias, "my-model-custom");
+  ASSERT_NE(wrong_case, nullptr);
+  EXPECT_EQ(wrong_case->Info().alias, "case-model-GENERIC-CPU");
 }
 
 TEST_F(LocalModelCatalogTest, GetCachedModelsReturnsActiveRegisteredLeafVariants) {
@@ -285,15 +309,55 @@ TEST_F(LocalModelCatalogTest, TwoCatalogsReconcileRegisterUnregisterAndReregiste
 
   second.UnregisterModel("my-model");
   EXPECT_TRUE(catalog_.ListModels().empty());
+  EXPECT_FALSE(stale->IsLoaded());
   EXPECT_THROW(stale->Download(), Exception);
   EXPECT_THROW(stale->Load(), Exception);
   EXPECT_THROW(stale->RemoveFromCache(), Exception);
 
-  auto* replacement = second.RegisterModel(model_dir_.string(), "my-model:1", MakeMetadata());
+  const auto loadable_model_path = GetTestDataPath("tiny-random-gpt2-fp32-1");
+  auto* replacement = second.RegisterModel(loadable_model_path.string(), "my-model:1", MakeMetadata());
   ASSERT_NE(replacement, nullptr);
-  EXPECT_NE(replacement->RuntimeId(), stale->RuntimeId());
+  EXPECT_EQ(replacement->Id(), stale->Id());
+  EXPECT_NO_THROW(replacement->Load(ExecutionProvider::kCPU));
+  EXPECT_TRUE(replacement->IsLoaded());
+  EXPECT_FALSE(stale->IsLoaded());
+  EXPECT_NO_THROW(stale->Unload());
+  EXPECT_TRUE(replacement->IsLoaded());
+  EXPECT_NO_THROW(replacement->Unload());
   ASSERT_EQ(catalog_.ListModels().size(), 1u);
   EXPECT_NE(catalog_.GetModelVariant("my-model:1"), stale);
+}
+
+TEST_F(LocalModelCatalogTest, RefreshReplacesSameIdAtDifferentPathWhenUnregisterWasNotObserved) {
+  const auto original_path = GetTestDataPath("tiny-random-gpt2-fp32-1");
+  auto* stale = catalog_.RegisterModel(original_path.string(), "my-model:1", MakeMetadata());
+  ASSERT_NE(stale, nullptr);
+  ASSERT_NO_THROW(stale->Load(ExecutionProvider::kCPU));
+  ASSERT_TRUE(stale->IsLoaded());
+
+  auto second = MakeCatalog();
+  ASSERT_NE(second.GetModelVariant("my-model:1"), nullptr);
+
+  const auto replacement_path = root_.path() / "replacement-model";
+  std::filesystem::copy(original_path, replacement_path, std::filesystem::copy_options::recursive);
+
+  const auto index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json";
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  index["models"][0]["model_path"] = std::filesystem::absolute(replacement_path).lexically_normal().string();
+  std::ofstream(index_path, std::ios::binary | std::ios::trunc) << index.dump(2);
+
+  auto* replacement = catalog_.GetModelVariant("my-model:1");
+  ASSERT_NE(replacement, nullptr);
+  EXPECT_NE(replacement, stale);
+  EXPECT_EQ(replacement->LocalPath(), std::filesystem::absolute(replacement_path).lexically_normal().string());
+  EXPECT_THROW(stale->Load(), Exception);
+  EXPECT_FALSE(replacement->IsLoaded());
+
+  EXPECT_NO_THROW(stale->Unload());
+  EXPECT_NO_THROW(replacement->Load(ExecutionProvider::kCPU));
+  EXPECT_TRUE(replacement->IsLoaded());
+  EXPECT_NO_THROW(replacement->Unload());
 }
 
 TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedModelId) {
@@ -306,9 +370,9 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
        {{{"alias", "legacy-wrong-alias"},
          {"model_id", "legacy-model:4"},
          {"model_path", model_dir_.string()},
+         {"registration_id", "ignored-legacy-registration-id"},
          {"properties",
-          {{"_local_registration_id", "legacy-registration"},
-           {"alias", "legacy-wrong-alias"},
+          {{"alias", "legacy-wrong-alias"},
            {"model_path", model_dir_.string()},
            {"version", 99},
            {FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion"}}}}}},
