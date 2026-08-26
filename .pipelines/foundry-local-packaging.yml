@@ -267,3 +267,4 @@ extends:
         ortVersion: $(cppOrtVersion)
         genaiVersion: $(cppGenaiVersion)
         winmlVersion: $(cppWinmlVersion)
+        isRelease: ${{ parameters.isRelease }}
