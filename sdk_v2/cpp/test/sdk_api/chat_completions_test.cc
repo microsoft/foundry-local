@@ -304,15 +304,12 @@ TEST_F(WebServiceIntegrationTest, ChatCompletionsWithJsonSchemaGuidance) {
   std::string content = response["choices"][0]["message"]["content"].get<std::string>();
   EXPECT_FALSE(content.empty()) << "Model produced no output";
 
-  // The output should be valid JSON
+  // The output should be valid JSON matching the requested schema exactly.
   json parsed;
-  EXPECT_NO_THROW(parsed = json::parse(content)) << "Output is not valid JSON: " << content;
+  ASSERT_NO_THROW(parsed = json::parse(content)) << "Output is not valid JSON: " << content;
 
-  // The output should have the "answer" field as an integer
-  if (parsed.is_object()) {
-    EXPECT_TRUE(parsed.contains("answer")) << "Missing 'answer' field in: " << content;
-    if (parsed.contains("answer")) {
-      EXPECT_TRUE(parsed["answer"].is_number_integer()) << "'answer' is not an integer in: " << content;
-    }
-  }
+  ASSERT_TRUE(parsed.is_object()) << "Output is not an object: " << content;
+  ASSERT_TRUE(parsed.contains("answer")) << "Missing 'answer' field in: " << content;
+  EXPECT_TRUE(parsed["answer"].is_number_integer()) << "'answer' is not an integer in: " << content;
+  EXPECT_EQ(parsed.size(), 1U) << "Output contains additional properties: " << content;
 }
