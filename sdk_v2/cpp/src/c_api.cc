@@ -22,6 +22,7 @@
 #include "manager.h"
 #include "ep_detection/ep_bootstrapper.h"
 
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
@@ -316,6 +317,9 @@ static const flConfigurationApi g_configuration_api = {
     SetExternalServiceUrlImpl,
     SetAdditionalOptionsImpl,
 };
+
+  static_assert(offsetof(flConfigurationApi, SetAdditionalOptions) / sizeof(void*) == 10,
+          "Size of version 1 Configuration API cannot change");
 
 // ========================================================================
 // Manager API
@@ -785,6 +789,11 @@ static const flCatalogApi g_catalog_api = {
     Catalog_UnregisterModelImpl,
 };
 
+  static_assert(offsetof(flCatalogApi, GetModelVersions) / sizeof(void*) == 7,
+          "Size of version 1 Catalog API cannot change");
+  static_assert(offsetof(flCatalogApi, UnregisterModel) / sizeof(void*) == 9,
+          "Size of version 2 Catalog API cannot change");
+
 // ========================================================================
 // Model API
 // ========================================================================
@@ -1083,6 +1092,11 @@ static const flModelApi g_model_api = {
     Info_SetStringPropertyImpl,
     Info_SetIntPropertyImpl,
 };
+
+  static_assert(offsetof(flModelApi, Info_GetIntProperty) / sizeof(void*) == 22,
+          "Size of version 1 Model API cannot change");
+  static_assert(offsetof(flModelApi, Info_SetIntProperty) / sizeof(void*) == 26,
+          "Size of version 2 Model API cannot change");
 
 // ========================================================================
 // Item API
@@ -1630,6 +1644,9 @@ static const flItemApi g_item_api = {
     ItemQueue_IsFinishedImpl,
 };
 
+  static_assert(offsetof(flItemApi, ItemQueue_IsFinished) / sizeof(void*) == 30,
+          "Size of version 1 Item API cannot change");
+
 // ========================================================================
 // Inference API (Request / Response / Session)
 // ========================================================================
@@ -1907,6 +1924,9 @@ static const flInferenceApi g_inference_api = {
     Session_UndoTurnsImpl,
 };
 
+  static_assert(offsetof(flInferenceApi, Session_UndoTurns) / sizeof(void*) == 21,
+          "Size of version 1 Inference API cannot change");
+
 // ========================================================================
 // Sub-API accessors
 // ========================================================================
@@ -1963,6 +1983,11 @@ static const flApi g_api = {
     Manager_IsShutdownRequestedImpl,
     Manager_GetCatalogByTypeImpl,
 };
+
+  static_assert(offsetof(flApi, Manager_IsShutdownRequested) / sizeof(void*) == 28,
+          "Size of version 1 API cannot change");
+  static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
+          "Size of version 2 API cannot change");
 
 // ========================================================================
 // Exported symbols — the ONLY symbols the library exports
