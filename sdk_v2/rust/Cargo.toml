@@ -8,7 +8,15 @@ description = "Local AI model inference powered by the Foundry Local Core engine
 homepage = "https://www.foundrylocal.ai/"
 repository = "https://github.com/microsoft/Foundry-Local"
 documentation = "https://github.com/microsoft/Foundry-Local/blob/main/sdk_v2/rust/docs/api.md"
-include = ["src/**", "build.rs", "Cargo.toml", "README.md", "LICENSE.txt", "deps_versions.json"]
+include = [
+    "src/**",
+    "build.rs",
+    "build_support.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE.txt",
+    "deps_versions.json",
+]
 
 # docs.rs builds the documentation in an offline sandbox. The build script skips
 # native acquisition when DOCS_RS is set (see build.rs), so the hosted docs build
