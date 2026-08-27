@@ -61,7 +61,7 @@ stages:
   jobs:
   - job: build
     pool:
-      name: onnxruntime-native-arm64-16core
+      name: onnxruntime-medium-arm64-scus
       os: windows
       hostArchitecture: arm64
     variables:
@@ -222,7 +222,7 @@ stages:
   jobs:
   - job: test
     pool:
-      name: onnxruntime-native-arm64-16core
+      name: onnxruntime-medium-arm64-scus
       os: windows
       hostArchitecture: arm64
     templateContext:
