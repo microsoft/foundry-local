@@ -13,35 +13,39 @@ using System.Threading.Tasks;
 internal sealed class CatalogTests
 {
     [Test]
+    [NotInParallel("Catalog model selection")]
     public async Task GetLatestVersion_Works()
     {
         // Use the real catalog from the initialized FoundryLocalManager
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();
 
-        // Get all models and find one with multiple variants to test version sorting
+        // Find a model with multiple versions of the same variant name. A model can also
+        // have multiple variants for different devices, which GetLatestVersion preserves.
         var models = await catalog.ListModelsAsync();
         await Assert.That(models).IsNotNull().And.IsNotEmpty();
 
-        // Find a model with variants to test GetLatestVersionAsync
-        var modelWithVariants = models.FirstOrDefault(m => m.Variants.Count > 1);
+        var modelWithVersions = models.FirstOrDefault(m =>
+            m.Variants.GroupBy(v => v.Info.Name).Any(group => group.Count() > 1));
 
-        if (modelWithVariants == null)
+        if (modelWithVersions == null)
         {
-            // If no model has multiple variants, just verify GetLatestVersion returns the same model
-            var singleModel = models.First();
-            var result = await catalog.GetLatestVersionAsync(singleModel);
+            // If the catalog has no historical versions, verify a leaf resolves to itself.
+            var singleVariant = models[0].Variants[0];
+            var result = await catalog.GetLatestVersionAsync(singleVariant);
             await Assert.That(result).IsNotNull();
-            await Assert.That(result.Id).IsEqualTo(singleModel.Id);
+            await Assert.That(result.Id).IsEqualTo(singleVariant.Id);
             return;
         }
 
-        // Get the variants
-        var variants = modelWithVariants.Variants.ToList();
-        await Assert.That(variants.Count).IsGreaterThanOrEqualTo(2);
+        var versions = modelWithVersions.Variants
+            .GroupBy(v => v.Info.Name)
+            .First(group => group.Count() > 1)
+            .ToList();
+        await Assert.That(versions.Count).IsGreaterThanOrEqualTo(2);
 
-        // GetLatestVersion for any variant should return the first variant (highest version)
-        var latestVariant = variants[0];
-        var otherVariant = variants[^1]; // last variant (oldest version)
+        // Variants are sorted by version descending within a device/name group.
+        var latestVariant = versions[0];
+        var otherVariant = versions[^1];
 
         var result1 = await catalog.GetLatestVersionAsync(latestVariant);
         await Assert.That(result1.Id).IsEqualTo(latestVariant.Id);
@@ -50,9 +54,9 @@ internal sealed class CatalogTests
         await Assert.That(result2.Id).IsEqualTo(latestVariant.Id);
 
         // Test with Model input — when latest is selected, should get matching model back
-        modelWithVariants.SelectVariant(latestVariant);
-        var result3 = await catalog.GetLatestVersionAsync(modelWithVariants);
-        await Assert.That(result3.Id).IsEqualTo(modelWithVariants.Id);
+        modelWithVersions.SelectVariant(latestVariant);
+        var result3 = await catalog.GetLatestVersionAsync(modelWithVersions);
+        await Assert.That(result3.Id).IsEqualTo(latestVariant.Id);
     }
 
     [Test]
@@ -98,6 +102,7 @@ internal sealed class CatalogTests
     }
 
     [Test]
+    [NotInParallel("Catalog model selection")]
     public async Task SelectVariant_RefreshesReportedMetadata()
     {
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();

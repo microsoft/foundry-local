@@ -15,6 +15,7 @@ internal sealed class EndToEnd
 {
     // end-to-end using real catalog. run manually as a standalone test as it alters the model cache.
     [Test]
+    [NotInParallel("Catalog model selection")]
     public async Task EndToEndTest_Succeeds()
     {
         var manager = FoundryLocalManager.Instance; // initialized by Utils
