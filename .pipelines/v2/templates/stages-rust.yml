@@ -48,9 +48,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/checkout-steps.yml@self
-      parameters:
-        repoName: test-data-shared
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-build-rust.yml
       parameters:
         rid: 'win-x64'
@@ -109,7 +107,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-build-rust.yml
       parameters:
         rid: 'linux-x64'
@@ -142,7 +140,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-build-rust.yml
       parameters:
         rid: 'linux-arm64'
@@ -176,7 +174,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-build-rust.yml
       parameters:
         rid: 'osx-arm64'

@@ -67,7 +67,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
       parameters:
         scriptType: ps
     - template: steps-test-cs.yml
@@ -96,7 +96,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
       parameters:
         scriptType: ps
     - template: steps-test-cs.yml
@@ -127,7 +127,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
@@ -157,7 +157,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
@@ -188,7 +188,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
