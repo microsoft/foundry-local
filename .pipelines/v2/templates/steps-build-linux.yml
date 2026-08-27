@@ -48,7 +48,7 @@ steps:
   displayName: 'Append version define'
 
 - ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/fetch-test-data-from-blob.yml@self
+  - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 

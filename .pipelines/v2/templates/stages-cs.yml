@@ -67,15 +67,13 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
       parameters:
         scriptType: ps
-        installAzCli: true
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-        usePwsh: false
 
 - stage: cs_test_win_arm64
   displayName: 'C# SDK: Test Windows ARM64'
@@ -84,7 +82,7 @@ stages:
   jobs:
   - job: test
     pool:
-      name: onnxruntime-native-arm64-16core
+      name: onnxruntime-medium-arm64-scus
       os: windows
       hostArchitecture: arm64
     templateContext:
@@ -98,15 +96,13 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
       parameters:
         scriptType: ps
-        installAzCli: true
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
-        usePwsh: false
 
 # ====================================================================
 # Test — Linux x64
@@ -131,8 +127,8 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
-    - template: steps-test-cs.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
@@ -161,7 +157,7 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
@@ -192,8 +188,8 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-test-data-from-blob.yml@self
-    - template: steps-test-cs.yml@self
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'

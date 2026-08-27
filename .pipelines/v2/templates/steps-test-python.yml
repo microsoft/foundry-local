@@ -17,10 +17,6 @@ parameters:
   default: 'x64'
   values: ['x64', 'arm64']
   displayName: 'Architecture of the host Python interpreter (matches the agent OS arch).'
-- name: usePwsh
-  type: boolean
-  default: true
-  displayName: 'Use PowerShell Core (pwsh). Set false to use Windows PowerShell.'
 - name: useSystemPython
   type: boolean
   default: false
@@ -60,7 +56,7 @@ steps:
   condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), eq(variables['Agent.OSArchitecture'], 'ARM64'))
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
       $ErrorActionPreference = 'Stop'
       $url = 'https://aka.ms/vs/17/release/vc_redist.arm64.exe'
@@ -99,7 +95,7 @@ steps:
   displayName: 'Create test venv'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
         $venvDir = "$(Agent.TempDirectory)/fl-py-venv-$(System.JobId)"
         if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir }
@@ -118,7 +114,7 @@ steps:
   displayName: 'Install built wheel + test deps'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
         # Locate the wheel. Each job's wheel lands in its own artifact, so a
         # single match is expected.
@@ -146,7 +142,7 @@ steps:
   displayName: 'Run SDK tests'
   inputs:
     targetType: inline
-    pwsh: ${{ parameters.usePwsh }}
+    pwsh: true
     script: |
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
