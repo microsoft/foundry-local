@@ -15,7 +15,6 @@ internal sealed class EndToEnd
 {
     // end-to-end using real catalog. run manually as a standalone test as it alters the model cache.
     [Test]
-    [NotInParallel("Catalog model selection")]
     public async Task EndToEndTest_Succeeds()
     {
         var manager = FoundryLocalManager.Instance; // initialized by Utils
@@ -26,7 +25,8 @@ internal sealed class EndToEnd
         await Assert.That(models).IsNotNull();
         await Assert.That(models.Count).IsGreaterThan(0);
 
-        // Load the specific cached model variant directly
+        // Use a dedicated model alias so selecting this variant does not affect the
+        // catalog tests when TUnit runs them in parallel.
         var modelVariant = await catalog.GetModelVariantAsync("qwen2.5-0.5b-instruct-generic-cpu:4")
                                         .ConfigureAwait(false);
 

@@ -13,39 +13,35 @@ using System.Threading.Tasks;
 internal sealed class CatalogTests
 {
     [Test]
-    [NotInParallel("Catalog model selection")]
     public async Task GetLatestVersion_Works()
     {
-        // Use the real catalog from the initialized FoundryLocalManager
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();
 
-        // Find a model with multiple versions of the same variant name. A model can also
-        // have multiple variants for different devices, which GetLatestVersion preserves.
-        var models = await catalog.ListModelsAsync();
-        await Assert.That(models).IsNotNull().And.IsNotEmpty();
-
-        var modelWithVersions = models.FirstOrDefault(m =>
-            m.Variants.GroupBy(v => v.Info.Name).Any(group => group.Count() > 1));
-
+        // Use a dedicated alias so this test does not change the selected variant of a
+        // model used by another parallel test.
+        var modelWithVersions = await catalog.GetModelAsync("qwen2.5-coder-0.5b");
         if (modelWithVersions == null)
         {
-            // If the catalog has no historical versions, verify a leaf resolves to itself.
-            var singleVariant = models[0].Variants[0];
-            var result = await catalog.GetLatestVersionAsync(singleVariant);
-            await Assert.That(result).IsNotNull();
-            await Assert.That(result.Id).IsEqualTo(singleVariant.Id);
+            Skip.Test("The qwen2.5-coder-0.5b model is not available in the catalog.");
             return;
         }
 
         var versions = modelWithVersions.Variants
             .GroupBy(v => v.Info.Name)
-            .First(group => group.Count() > 1)
-            .ToList();
+            .FirstOrDefault(group => group.Count() > 1)?
+            .ToList() ?? [];
+        if (versions.Count < 2)
+        {
+            Skip.Test("The qwen2.5-coder-0.5b model has no historical versions in the catalog.");
+            return;
+        }
+
         await Assert.That(versions.Count).IsGreaterThanOrEqualTo(2);
 
         // Variants are sorted by version descending within a device/name group.
         var latestVariant = versions[0];
         var otherVariant = versions[^1];
+        var originalVariant = modelWithVersions.Variants.First(v => v.Id == modelWithVersions.Id);
 
         var result1 = await catalog.GetLatestVersionAsync(latestVariant);
         await Assert.That(result1.Id).IsEqualTo(latestVariant.Id);
@@ -53,10 +49,17 @@ internal sealed class CatalogTests
         var result2 = await catalog.GetLatestVersionAsync(otherVariant);
         await Assert.That(result2.Id).IsEqualTo(latestVariant.Id);
 
-        // Test with Model input — when latest is selected, should get matching model back
-        modelWithVersions.SelectVariant(latestVariant);
-        var result3 = await catalog.GetLatestVersionAsync(modelWithVersions);
-        await Assert.That(result3.Id).IsEqualTo(latestVariant.Id);
+        try
+        {
+            // Test with Model input — when latest is selected, should get matching model back.
+            modelWithVersions.SelectVariant(latestVariant);
+            var result3 = await catalog.GetLatestVersionAsync(modelWithVersions);
+            await Assert.That(result3.Id).IsEqualTo(latestVariant.Id);
+        }
+        finally
+        {
+            modelWithVersions.SelectVariant(originalVariant);
+        }
     }
 
     [Test]
@@ -102,21 +105,25 @@ internal sealed class CatalogTests
     }
 
     [Test]
-    [NotInParallel("Catalog model selection")]
     public async Task SelectVariant_RefreshesReportedMetadata()
     {
         var catalog = await FoundryLocalManager.Instance.GetCatalogAsync();
 
-        var models = await catalog.ListModelsAsync();
-        var modelWithVariants = models.FirstOrDefault(m => m.Variants.Count > 1);
-
+        // This alias is intentionally distinct from the aliases used by the latest-version
+        // and end-to-end tests so their model selections remain independent in parallel runs.
+        var modelWithVariants = await catalog.GetModelAsync("qwen3.5-0.8b");
         if (modelWithVariants == null)
         {
-            Skip.Test("No multi-variant model in the catalog.");
+            Skip.Test("The qwen3.5-0.8b model is not available in the catalog.");
             return;
         }
 
         var variants = modelWithVariants.Variants.ToList();
+        if (variants.Count < 2)
+        {
+            Skip.Test("The qwen3.5-0.8b model has fewer than two variants in the catalog.");
+            return;
+        }
 
         // Derive the original variant from the currently-selected Info rather than
         // assuming variants[0]: native selection prefers the first cached variant.
@@ -124,22 +131,28 @@ internal sealed class CatalogTests
         var defaultVariant = variants.First(v => v.Id == infoBefore.Id);
         var otherVariant = variants.First(v => v.Id != infoBefore.Id);
 
-        modelWithVariants.SelectVariant(otherVariant);
+        try
+        {
+            modelWithVariants.SelectVariant(otherVariant);
 
-        // Native is the source of truth: every read must reflect the selected variant.
-        await Assert.That(modelWithVariants.Id).IsEqualTo(otherVariant.Id);
-        await Assert.That(modelWithVariants.Alias).IsEqualTo(otherVariant.Alias);
+            // Native is the source of truth: every read must reflect the selected variant.
+            await Assert.That(modelWithVariants.Id).IsEqualTo(otherVariant.Id);
+            await Assert.That(modelWithVariants.Alias).IsEqualTo(otherVariant.Alias);
 
-        var infoAfter = modelWithVariants.Info;
-        await Assert.That(infoAfter.Id).IsEqualTo(otherVariant.Id);
-        await Assert.That(infoAfter.Name).IsEqualTo(otherVariant.Info.Name);
-        await Assert.That(infoAfter.Version).IsEqualTo(otherVariant.Info.Version);
+            var infoAfter = modelWithVariants.Info;
+            await Assert.That(infoAfter.Id).IsEqualTo(otherVariant.Id);
+            await Assert.That(infoAfter.Name).IsEqualTo(otherVariant.Info.Name);
+            await Assert.That(infoAfter.Version).IsEqualTo(otherVariant.Info.Version);
 
-        // The earlier snapshot is an independent point-in-time value.
-        await Assert.That(infoBefore.Id).IsEqualTo(defaultVariant.Id);
+            // The earlier snapshot is an independent point-in-time value.
+            await Assert.That(infoBefore.Id).IsEqualTo(defaultVariant.Id);
+        }
+        finally
+        {
+            modelWithVariants.SelectVariant(defaultVariant);
+        }
 
         // Selecting back refreshes again.
-        modelWithVariants.SelectVariant(defaultVariant);
         await Assert.That(modelWithVariants.Info.Id).IsEqualTo(defaultVariant.Id);
     }
 }
