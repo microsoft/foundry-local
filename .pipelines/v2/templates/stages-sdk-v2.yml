@@ -44,6 +44,8 @@ stages:
 
 # ── JS SDK (single multi-platform tarball) ──
 - template: stages-js.yml
+  parameters:
+    isRelease: ${{ parameters.isRelease }}
 
 # ── Rust SDK (single platform-independent crate) ──
 # Needs the ORT/GenAI versions to assemble a runnable native dir for its
