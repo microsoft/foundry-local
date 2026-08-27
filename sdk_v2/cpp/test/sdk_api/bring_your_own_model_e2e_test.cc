@@ -104,8 +104,8 @@ std::string CollectResponseText(const foundry_local::Response& response) {
 class LocalRegistrationGuard {
  public:
   LocalRegistrationGuard(foundry_local::ICatalog& catalog,
-         std::unique_ptr<foundry_local::IModel> model,
-         std::string model_id)
+                         std::unique_ptr<foundry_local::IModel> model,
+                         std::string model_id)
       : catalog_(catalog), model_(std::move(model)), model_id_(std::move(model_id)) {}
 
   ~LocalRegistrationGuard() {
@@ -167,7 +167,7 @@ TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
     Configuration config("foundry_local_byom_inference_test");
     config.SetAppDataDir(app_data_path.string()).SetModelCacheDir(model_cache_path.string());
     Manager manager(std::move(config));
-    auto& local_catalog = manager.GetCatalog(CatalogType::Local);
+    auto& local_catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
 
     ModelInfo sibling_metadata;
     sibling_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
@@ -220,7 +220,6 @@ TEST(ByomE2eTest, RegisterModelPreservesAssetsAndRunsChatInference) {
   EXPECT_TRUE(index["models"].empty());
 }
 
-
 TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
   using namespace foundry_local;
 
@@ -252,7 +251,7 @@ TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
 
   {
     Manager manager(make_config());
-    auto& local_catalog = manager.GetCatalog(CatalogType::Local);
+    auto& local_catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
     ModelInfo first_metadata;
     first_metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
     first_metadata.SetStringProperty(kPersistenceMarker, "first");
@@ -282,7 +281,7 @@ TEST(ByomE2eTest, RegistrationsPersistAcrossManagerRecreation) {
 
   {
     Manager manager(make_config());
-    auto& local_catalog = manager.GetCatalog(CatalogType::Local);
+    auto& local_catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
     auto first = local_catalog.GetModelVariant(first_id);
     auto second = local_catalog.GetModelVariant(second_id);
 

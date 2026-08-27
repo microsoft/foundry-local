@@ -25,6 +25,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -70,9 +71,13 @@ struct flCatalog {
 
 // --- Manager ---
 struct flManager {
+  explicit flManager(fl::Manager& manager) : impl(manager) {}
+
   fl::Manager& impl;
-  std::unique_ptr<flCatalog> public_catalog;
-  std::unique_ptr<flCatalog> local_catalog;
+  mutable std::unique_ptr<flCatalog> public_catalog;
+  mutable std::unique_ptr<flCatalog> local_catalog;
+  mutable std::once_flag public_catalog_once;
+  mutable std::once_flag local_catalog_once;
   mutable std::vector<const char*> urls_cache;
 };
 
@@ -327,11 +332,7 @@ FL_API_STATUS_IMPL(Manager_CreateImpl, const flConfiguration* config, flManager*
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "app_name must not be empty");
   }
 
-  auto& mgr = fl::Manager::Create(*cfg);
-  auto wrapper = std::make_unique<flManager>(flManager{mgr, nullptr, nullptr, {}});
-  wrapper->public_catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog(fl::CatalogType::kPublic)});
-  wrapper->local_catalog = std::make_unique<flCatalog>(flCatalog{mgr.GetCatalog(fl::CatalogType::kLocal)});
-  *out_manager = wrapper.release();
+  *out_manager = new flManager(fl::Manager::Create(*cfg));
   return nullptr;
   API_IMPL_END
 }
@@ -351,6 +352,10 @@ FL_API_STATUS_IMPL(Manager_GetCatalogImpl, const flManager* manager, flCatalog**
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
+  std::call_once(manager->public_catalog_once, [manager]() {
+    manager->public_catalog =
+        std::make_unique<flCatalog>(flCatalog{manager->impl.GetCatalog(fl::CatalogType::kPublic)});
+  });
   *out_catalog = manager->public_catalog.get();
   return nullptr;
   API_IMPL_END
@@ -365,9 +370,17 @@ FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCat
 
   switch (catalog_type) {
     case FOUNDRY_LOCAL_CATALOG_PUBLIC:
+      std::call_once(manager->public_catalog_once, [manager]() {
+        manager->public_catalog =
+            std::make_unique<flCatalog>(flCatalog{manager->impl.GetCatalog(fl::CatalogType::kPublic)});
+      });
       *out_catalog = manager->public_catalog.get();
       return nullptr;
     case FOUNDRY_LOCAL_CATALOG_LOCAL:
+      std::call_once(manager->local_catalog_once, [manager]() {
+        manager->local_catalog =
+            std::make_unique<flCatalog>(flCatalog{manager->impl.GetCatalog(fl::CatalogType::kLocal)});
+      });
       *out_catalog = manager->local_catalog.get();
       return nullptr;
     default:

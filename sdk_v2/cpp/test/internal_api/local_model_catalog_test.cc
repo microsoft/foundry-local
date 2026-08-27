@@ -470,7 +470,7 @@ TEST_F(LocalModelCatalogTest, RestoredRegistrationUsesFreshMetadataValidation) {
   EXPECT_EQ(preserved_index, invalid_index);
 }
 
-TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsRegistration) {
+TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsMutation) {
   class ReadOnlyCatalog final : public ICatalog {
    public:
     const std::string& GetName() const override { return name_; }
@@ -487,6 +487,7 @@ TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsRegistration) {
   } catalog;
 
   EXPECT_THROW(catalog.RegisterModel(model_dir_.string(), "my-model:1", MakeMetadata()), Exception);
+  EXPECT_THROW(catalog.UnregisterModel("my-model:1"), Exception);
 }
 
 }  // namespace

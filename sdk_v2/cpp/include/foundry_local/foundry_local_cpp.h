@@ -301,11 +301,6 @@ struct Runtime {
   std::optional<std::string_view> execution_provider;
 };
 
-enum class CatalogType {
-  Public = FOUNDRY_LOCAL_CATALOG_PUBLIC,
-  Local = FOUNDRY_LOCAL_CATALOG_LOCAL,
-};
-
 // ===========================================================================
 // ModelInfo — owning mutable value or non-owning read-only view
 // ===========================================================================
@@ -813,15 +808,12 @@ class ICatalog {
 
   /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
   /// The catalog does not take ownership of `model_path` and never deletes its contents.
-  virtual std::unique_ptr<IModel> RegisterModel(const std::string&, const std::string&, const ModelInfo&) {
-    throw Error("models can only be registered in a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-  }
+  virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
+                                                const ModelInfo& metadata) = 0;
   /// Unregister without deleting model assets. A model ID removes only that version/variant; an alias removes all of
   /// its registered versions and variants. Existing model wrappers and immutable metadata views remain valid, but
   /// operations that require the retired registration, including Download and Load, fail with invalid usage.
-  virtual void UnregisterModel(const std::string&) {
-    throw Error("models can only be unregistered from a local catalog", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-  }
+  virtual void UnregisterModel(const std::string& alias_or_model_id) = 0;
 };
 
 // ===========================================================================
@@ -877,9 +869,8 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get the catalog for querying models. Creates on first call, caches internally.
-  ICatalog& GetCatalog() const;
-  ICatalog& GetCatalog(CatalogType type) const;
+  /// Get a catalog for querying models. Creates its wrapper on first use and caches it internally.
+  ICatalog& GetCatalog(flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC) const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -915,13 +906,13 @@ class Manager {
   struct CatalogCollection {
     mutable std::unique_ptr<Catalog> public_;
     mutable std::unique_ptr<Catalog> local_;
+    mutable std::unique_ptr<std::once_flag> public_once_{std::make_unique<std::once_flag>()};
+    mutable std::unique_ptr<std::once_flag> local_once_{std::make_unique<std::once_flag>()};
   };
 
   detail::Base<flManager> handle_;
   Configuration config_;
   CatalogCollection catalogs_;
-  mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
-  mutable std::unique_ptr<std::once_flag> local_catalog_once_{std::make_unique<std::once_flag>()};
 };
 
 // ===========================================================================

@@ -200,33 +200,28 @@ inline Manager::Manager(Configuration&& config)
     : handle_(detail::CreateManager(config), detail::api()->Manager_Release),
       config_(std::move(config)) {}
 
-inline ICatalog& Manager::GetCatalog() const {
-  std::call_once(*catalog_once_, [this]() {
-    flCatalog* cat = nullptr;
-    Check(detail::api()->Manager_GetCatalog(handle_.get(), &cat));
-    catalogs_.public_ = std::unique_ptr<Catalog>(new Catalog(*cat));
-  });
-  return *catalogs_.public_;
-}
-
-inline ICatalog& Manager::GetCatalog(CatalogType type) const {
+inline ICatalog& Manager::GetCatalog(flCatalogType type) const {
+  std::unique_ptr<Catalog>* catalog;
+  std::once_flag* once;
   switch (type) {
-    case CatalogType::Public:
-      return GetCatalog();
-    case CatalogType::Local:
+    case FOUNDRY_LOCAL_CATALOG_PUBLIC:
+      catalog = &catalogs_.public_;
+      once = catalogs_.public_once_.get();
+      break;
+    case FOUNDRY_LOCAL_CATALOG_LOCAL:
+      catalog = &catalogs_.local_;
+      once = catalogs_.local_once_.get();
       break;
     default:
       throw Error("invalid catalog type", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
 
-  // Keep one C++ wrapper alive because this method returns a reference. The manager-owned C catalog is also cached by
-  // the C API, so repeated lookups would only add calls without changing the underlying catalog.
-  std::call_once(*local_catalog_once_, [this, type]() {
-    flCatalog* catalog = nullptr;
-    Check(detail::api()->Manager_GetCatalogByType(handle_.get(), static_cast<flCatalogType>(type), &catalog));
-    catalogs_.local_ = std::make_unique<Catalog>(*catalog);
+  std::call_once(*once, [this, type, catalog]() {
+    flCatalog* native_catalog = nullptr;
+    Check(detail::api()->Manager_GetCatalogByType(handle_.get(), type, &native_catalog));
+    *catalog = std::make_unique<Catalog>(*native_catalog);
   });
-  return *catalogs_.local_;
+  return **catalog;
 }
 
 inline void Manager::StartWebService() {

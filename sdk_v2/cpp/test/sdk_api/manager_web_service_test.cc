@@ -91,8 +91,42 @@ TEST_F(ManagerWebServiceTest, GetCatalogRejectsInvalidType) {
   foundry_local::Manager manager(MakeCacheOnlyConfig());
 
   try {
-    manager.GetCatalog(static_cast<foundry_local::CatalogType>(999));
+    manager.GetCatalog(static_cast<flCatalogType>(999));
     FAIL() << "Expected invalid catalog type to throw";
+  } catch (const foundry_local::Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST_F(ManagerWebServiceTest, GetCatalogCachesOneWrapperPerType) {
+  foundry_local::Manager manager(MakeCacheOnlyConfig());
+
+  auto& default_catalog = manager.GetCatalog();
+  auto& public_catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_PUBLIC);
+  auto& local_catalog = manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+
+  EXPECT_EQ(&default_catalog, &public_catalog);
+  EXPECT_EQ(&public_catalog, &manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_PUBLIC));
+  EXPECT_EQ(&local_catalog, &manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL));
+  EXPECT_NE(&public_catalog, &local_catalog);
+}
+
+TEST_F(ManagerWebServiceTest, PublicCatalogRejectsMutation) {
+  foundry_local::Manager manager(MakeCacheOnlyConfig());
+  auto& public_catalog = manager.GetCatalog();
+  foundry_local::ModelInfo metadata;
+  metadata.SetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "chat-completion");
+
+  try {
+    public_catalog.RegisterModel(test_dir_, "test-model:1", metadata);
+    FAIL() << "Expected public catalog registration to throw";
+  } catch (const foundry_local::Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+
+  try {
+    public_catalog.UnregisterModel("test-model:1");
+    FAIL() << "Expected public catalog unregistration to throw";
   } catch (const foundry_local::Error& error) {
     EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
