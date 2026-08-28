@@ -118,6 +118,7 @@ steps:
     rm -f libfoundry_local_dylib.zip
     zip libfoundry_local_dylib.zip libfoundry_local.dylib
   displayName: 'Zip libfoundry_local.dylib for signing'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   workingDirectory: '$(Build.ArtifactStagingDirectory)/native'
 
 # ESRP requires a ZIP or DMG transport for macOS signing. The C++ SDK archive,
@@ -125,6 +126,7 @@ steps:
 # staged dylib restored from this archive.
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
   displayName: 'Sign libfoundry_local.dylib ZIP'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
     UseMSIAuthentication: true
@@ -147,6 +149,7 @@ steps:
     unzip -o libfoundry_local_dylib.zip
     rm -- libfoundry_local_dylib.zip
   displayName: 'Extract signed libfoundry_local.dylib'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   workingDirectory: '$(Build.ArtifactStagingDirectory)/native'
 
 - bash: |
@@ -159,6 +162,7 @@ steps:
     grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$signature"
     grep -q '^Timestamp=' <<<"$signature"
   displayName: 'Verify libfoundry_local.dylib signature'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
 
 # Stage debug symbols into a separate artifact so they can be published
 # independently without being bundled into the Python wheel (which consumes
