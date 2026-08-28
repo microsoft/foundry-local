@@ -296,6 +296,7 @@ stages:
         parameters:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
+          isRelease: ${{ parameters.isRelease }}
 
   # ====================================================================
   # Package test — consume the Windows x64 C++ SDK bundle
