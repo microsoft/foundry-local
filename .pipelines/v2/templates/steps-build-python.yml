@@ -226,7 +226,7 @@ steps:
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
         $extraArgs = @()
         $platformTag = switch ('${{ parameters.rid }}') {
-            'linux-arm64' { 'manylinux_2_28_aarch64' }
+            'linux-arm64' { 'manylinux_2_38_aarch64' }
             'osx-arm64'   { 'macosx_11_0_arm64' }
             default       { $null }
         }
@@ -288,8 +288,8 @@ steps:
         }
 
         $requiredPolicy = [version]"$($Matches[1]).$($Matches[2])"
-        if ($requiredPolicy -gt [version]'2.28') {
-            throw "Wheel requires $($report.sym_tag), which exceeds the manylinux_2_28 target"
+        if ($requiredPolicy -gt [version]'2.38') {
+            throw "Wheel requires $($report.sym_tag), which exceeds the manylinux_2_38 target"
         }
 
         # ORT and GenAI are intentionally supplied by the wheel's declared pip
@@ -328,7 +328,7 @@ steps:
             'win-x64'     { $tags = @('win_amd64');                 $lib = 'foundry_local.dll' }
             'win-arm64'   { $tags = @('win_arm64');                 $lib = 'foundry_local.dll' }
             'linux-x64'   { $tags = @('linux_x86_64');              $lib = 'libfoundry_local.so' }
-            'linux-arm64' { $tags = @('manylinux_2_28_aarch64');    $lib = 'libfoundry_local.so' }
+            'linux-arm64' { $tags = @('manylinux_2_38_aarch64');    $lib = 'libfoundry_local.so' }
             'osx-arm64'   { $tags = @('macosx', 'arm64');           $lib = 'libfoundry_local.dylib' }
             default       { throw "Unknown rid: ${{ parameters.rid }}" }
         }
