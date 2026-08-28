@@ -595,7 +595,10 @@ fn main() {
             NuGetMode::Dotnet => restore_with_dotnet(&config, &packages, rid, &out_dir),
             NuGetMode::Nuget => restore_with_nuget(&config, &packages, rid, &out_dir),
         };
-        result.unwrap_or_else(|error| panic!("native package acquisition failed: {error}"));
+        if let Err(error) = result {
+            println!("cargo:warning=native package acquisition failed: {error}");
+            return;
+        }
         emit_native_dir(&out_dir);
         return;
     }
