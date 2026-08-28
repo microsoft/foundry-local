@@ -256,7 +256,7 @@ steps:
 
 - ${{ if startsWith(parameters.rid, 'linux-') }}:
   - task: PowerShell@2
-    displayName: 'Validate manylinux compatibility'
+    displayName: 'Audit Linux ABI compatibility'
     inputs:
       targetType: inline
       pwsh: true
@@ -272,10 +272,15 @@ steps:
             throw "auditwheel failed with exit code $LASTEXITCODE"
         }
         $report = $json | ConvertFrom-Json
-        Write-Host "auditwheel platform: $($report.overall_tag)"
+        Write-Host "auditwheel overall platform: $($report.overall_tag)"
+        Write-Host "auditwheel symbol platform: $($report.sym_tag)"
 
-        if ($report.overall_tag -notmatch '^manylinux_(\d+)_(\d+)_(x86_64|aarch64)$') {
-            throw "Wheel is not manylinux compatible: $($report.overall_tag)"
+        if ($report.pyfpe -or $report.ucs2 -or $report.unsupported_isa) {
+            throw "Wheel uses unsupported Linux ABI features"
+        }
+
+        if ($report.sym_tag -notmatch '^manylinux_(\d+)_(\d+)_(x86_64|aarch64)$') {
+            throw "Wheel does not have a manylinux-compatible symbol baseline: $($report.sym_tag)"
         }
 
         $expectedArchitecture = if ('${{ parameters.rid }}' -eq 'linux-arm64') { 'aarch64' } else { 'x86_64' }
@@ -285,7 +290,22 @@ steps:
 
         $requiredPolicy = [version]"$($Matches[1]).$($Matches[2])"
         if ($requiredPolicy -gt [version]'2.28') {
-            throw "Wheel requires $($report.overall_tag), which exceeds the manylinux_2_28 target"
+            throw "Wheel requires $($report.sym_tag), which exceeds the manylinux_2_28 target"
+        }
+
+        # ORT and GenAI are intentionally supplied by the wheel's declared pip
+        # dependencies and preloaded by lib_loader.py rather than bundled here.
+        $externalLibraries = @($report.external_libs.PSObject.Properties.Name)
+        $unexpectedLibraries = @(
+            $externalLibraries | Where-Object {
+                $_ -notmatch '^libonnxruntime(?:-genai)?\.so(?:\..*)?$'
+            }
+        )
+        if ($unexpectedLibraries.Count -gt 0) {
+            throw "Wheel has unexpected external shared libraries: $($unexpectedLibraries -join ', ')"
+        }
+        if ($externalLibraries.Count -gt 0) {
+            Write-Host "Expected pip-provided shared libraries: $($externalLibraries -join ', ')"
         }
 
 - task: PowerShell@2
