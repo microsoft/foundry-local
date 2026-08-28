@@ -77,3 +77,25 @@ steps:
 
       Write-Host "Generated packages:"
       Get-ChildItem $outDir -Filter '*.nupkg' | ForEach-Object { Write-Host "  $($_.Name)" }
+
+# Sign and verify Runtime packages from non-PR builds before they are published
+# as pipeline artifacts. PR builds still produce unsigned validation packages.
+- task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
+  displayName: 'Sign Runtime NuGet package'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
+    UseMSIAuthentication: true
+    AppRegistrationClientId: '$(esrpClientId)'
+    AppRegistrationTenantId: '$(esrpTenantId)'
+    EsrpClientId: '$(esrpClientId)'
+    AuthAKVName: '$(esrpAkvName)'
+    AuthSignCertName: '$(esrpSignCertName)'
+    FolderPath: '$(Build.ArtifactStagingDirectory)/nuget'
+    Pattern: '*.nupkg'
+    SessionTimeout: 90
+    ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
+    MaxConcurrency: 25
+    signConfigType: inlineSignParams
+    inlineOperation: |
+      [{"keyCode":"CP-401405","operationSetCode":"NuGetSign","parameters":[],"toolName":"sign","toolVersion":"6.2.9304.0"},{"keyCode":"CP-401405","operationSetCode":"NuGetVerify","parameters":[],"toolName":"sign","toolVersion":"6.2.9304.0"}]
