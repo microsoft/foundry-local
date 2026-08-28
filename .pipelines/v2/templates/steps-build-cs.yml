@@ -109,6 +109,7 @@ steps:
 # Pattern is a recursive glob so every TFM output directory is covered.
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
   displayName: 'Sign SDK DLLs'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
     UseMSIAuthentication: true
@@ -149,6 +150,7 @@ steps:
 # Sign the produced nupkg(s).
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
   displayName: 'Sign SDK NuGet package'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
     UseMSIAuthentication: true

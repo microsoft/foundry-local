@@ -18,8 +18,6 @@ parameters:
   type: string
 - name: winmlVersion
   type: string
-- name: isRelease
-  type: boolean
 
 stages:
 
@@ -194,7 +192,6 @@ stages:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
           runTests: true
-          isRelease: ${{ parameters.isRelease }}
 
   # ====================================================================
   # Pack — C++ SDK tgz bundles (base platforms)
@@ -296,7 +293,6 @@ stages:
         parameters:
           ortVersion: ${{ parameters.ortVersion }}
           genaiVersion: ${{ parameters.genaiVersion }}
-          isRelease: ${{ parameters.isRelease }}
 
   # ====================================================================
   # Package test — consume the Windows x64 C++ SDK bundle
