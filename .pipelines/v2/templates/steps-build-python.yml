@@ -16,7 +16,7 @@ parameters:
   displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
 - name: rid
   type: string
-  displayName: 'Runtime identifier (win-x64, win-arm64, linux-x64, osx-arm64)'
+  displayName: 'Runtime identifier (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64)'
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/python-sdk'
@@ -221,9 +221,15 @@ steps:
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
         $extraArgs = @()
-        if ('${{ parameters.rid }}' -eq 'osx-arm64') {
-            $extraArgs += '--config-setting=--build-option=--plat-name=macosx_11_0_arm64'
-            Write-Host "Forcing wheel plat tag macosx_11_0_arm64"
+        $platformTag = switch ('${{ parameters.rid }}') {
+            'linux-x64'   { 'manylinux_2_28_x86_64' }
+            'linux-arm64' { 'manylinux_2_28_aarch64' }
+            'osx-arm64'   { 'macosx_11_0_arm64' }
+            default       { $null }
+        }
+        if ($platformTag) {
+            $extraArgs += "--config-setting=--build-option=--plat-name=$platformTag"
+            Write-Host "Forcing wheel plat tag $platformTag"
         }
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
@@ -262,11 +268,11 @@ steps:
     script: |
         $ErrorActionPreference = 'Stop'
         switch ('${{ parameters.rid }}') {
-            'win-x64'     { $tags = @('win_amd64');             $lib = 'foundry_local.dll' }
-            'win-arm64'   { $tags = @('win_arm64');             $lib = 'foundry_local.dll' }
-            'linux-x64'   { $tags = @('linux_x86_64');          $lib = 'libfoundry_local.so' }
-            'linux-arm64' { $tags = @('linux_aarch64');         $lib = 'libfoundry_local.so' }
-            'osx-arm64'   { $tags = @('macosx', 'arm64');       $lib = 'libfoundry_local.dylib' }
+            'win-x64'     { $tags = @('win_amd64');                 $lib = 'foundry_local.dll' }
+            'win-arm64'   { $tags = @('win_arm64');                 $lib = 'foundry_local.dll' }
+            'linux-x64'   { $tags = @('manylinux_2_28_x86_64');     $lib = 'libfoundry_local.so' }
+            'linux-arm64' { $tags = @('manylinux_2_28_aarch64');    $lib = 'libfoundry_local.so' }
+            'osx-arm64'   { $tags = @('macosx', 'arm64');           $lib = 'libfoundry_local.dylib' }
             default       { throw "Unknown rid: ${{ parameters.rid }}" }
         }
 
