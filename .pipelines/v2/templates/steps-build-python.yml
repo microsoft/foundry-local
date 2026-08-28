@@ -169,7 +169,7 @@ steps:
     script: |
         python -m pip install --upgrade pip
         $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
-        if ('${{ parameters.rid }}' -like 'linux-*') {
+        if ('${{ parameters.rid }}' -eq 'linux-arm64') {
             $buildTools += 'auditwheel>=6.8'
         }
         python -m pip install --upgrade @buildTools
@@ -226,7 +226,6 @@ steps:
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
         $extraArgs = @()
         $platformTag = switch ('${{ parameters.rid }}') {
-            'linux-x64'   { 'manylinux_2_28_x86_64' }
             'linux-arm64' { 'manylinux_2_28_aarch64' }
             'osx-arm64'   { 'macosx_11_0_arm64' }
             default       { $null }
@@ -254,7 +253,7 @@ steps:
             Pop-Location
         }
 
-- ${{ if startsWith(parameters.rid, 'linux-') }}:
+- ${{ if eq(parameters.rid, 'linux-arm64') }}:
   - task: PowerShell@2
     displayName: 'Audit Linux ABI compatibility'
     inputs:
@@ -283,7 +282,7 @@ steps:
             throw "Wheel does not have a manylinux-compatible symbol baseline: $($report.sym_tag)"
         }
 
-        $expectedArchitecture = if ('${{ parameters.rid }}' -eq 'linux-arm64') { 'aarch64' } else { 'x86_64' }
+        $expectedArchitecture = 'aarch64'
         if ($Matches[3] -ne $expectedArchitecture) {
             throw "Wheel architecture is $($Matches[3]); expected $expectedArchitecture"
         }
@@ -328,7 +327,7 @@ steps:
         switch ('${{ parameters.rid }}') {
             'win-x64'     { $tags = @('win_amd64');                 $lib = 'foundry_local.dll' }
             'win-arm64'   { $tags = @('win_arm64');                 $lib = 'foundry_local.dll' }
-            'linux-x64'   { $tags = @('manylinux_2_28_x86_64');     $lib = 'libfoundry_local.so' }
+            'linux-x64'   { $tags = @('linux_x86_64');              $lib = 'libfoundry_local.so' }
             'linux-arm64' { $tags = @('manylinux_2_28_aarch64');    $lib = 'libfoundry_local.so' }
             'osx-arm64'   { $tags = @('macosx', 'arm64');           $lib = 'libfoundry_local.dylib' }
             default       { throw "Unknown rid: ${{ parameters.rid }}" }
