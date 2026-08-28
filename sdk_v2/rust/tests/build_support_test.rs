@@ -361,6 +361,19 @@ fn url_redaction_removes_credentials_queries_and_fragments() {
 }
 
 #[test]
+fn url_redaction_recognizes_mixed_case_schemes() {
+    let text =
+        "failed HTTPS://user:secret@example.test/package?sig=secret then Http://other.test/#token";
+    let redacted = build_support::redact_urls_in_text(text);
+    assert_eq!(
+        redacted,
+        "failed HTTPS://example.test/package then Http://other.test/"
+    );
+    assert!(!redacted.contains("secret"));
+    assert!(!redacted.contains("token"));
+}
+
+#[test]
 fn package_cache_requires_a_matching_version_marker() {
     let root = test_dir("package-version");
     fs::create_dir_all(&root).unwrap();
@@ -383,4 +396,35 @@ fn package_cache_requires_a_matching_version_marker() {
         "2.0.0"
     ));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn package_invalidation_removes_binary_and_version_marker() {
+    let root = test_dir("package-invalidation");
+    fs::create_dir_all(&root).unwrap();
+    create_file(&root.join("native.dll"));
+    build_support::record_package_version(&root, "native.dll", "1.0.0").unwrap();
+
+    build_support::invalidate_package(&root, "native.dll").unwrap();
+
+    assert!(!root.join("native.dll").exists());
+    assert!(!build_support::package_is_current(
+        &root,
+        "native.dll",
+        "1.0.0"
+    ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn expected_file_check_uses_the_current_package_file_list() {
+    let files = vec![
+        PathBuf::from("runtimes/win-x64/native/helper.dll"),
+        PathBuf::from("runtimes/win-x64/native/native.dll"),
+    ];
+    assert!(build_support::contains_expected_file(&files, "native.dll"));
+    assert!(!build_support::contains_expected_file(
+        &files,
+        "missing.dll"
+    ));
 }

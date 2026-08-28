@@ -194,10 +194,41 @@ pub fn redact_urls_in_text(text: &str) -> String {
 }
 
 fn find_url_start(value: &str) -> Option<usize> {
-    [value.find("https://"), value.find("http://")]
-        .into_iter()
-        .flatten()
-        .min()
+    let bytes = value.as_bytes();
+    [
+        bytes
+            .windows(b"https://".len())
+            .position(|window| window.eq_ignore_ascii_case(b"https://")),
+        bytes
+            .windows(b"http://".len())
+            .position(|window| window.eq_ignore_ascii_case(b"http://")),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
+pub fn invalidate_package(out_dir: &Path, expected_file: &str) -> Result<(), String> {
+    remove_file_if_present(&out_dir.join(expected_file))?;
+    remove_file_if_present(&package_version_path(out_dir, expected_file))
+}
+
+fn remove_file_if_present(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "remove stale package file {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+pub fn contains_expected_file(files: &[PathBuf], expected_file: &str) -> bool {
+    files.iter().any(|file| {
+        file.file_name()
+            .is_some_and(|file_name| file_name == expected_file)
+    })
 }
 
 pub fn package_is_current(out_dir: &Path, expected_file: &str, version: &str) -> bool {

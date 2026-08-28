@@ -207,7 +207,7 @@ fn try_download(
     out_dir: &Path,
     feed_url: &str,
     service_index_cache: &mut HashMap<String, String>,
-) -> Result<usize, String> {
+) -> Result<bool, String> {
     let base = resolve_base_address(agent, feed_url, service_index_cache)?;
     let name = pkg.name.to_lowercase();
     let version = pkg.version.to_lowercase();
@@ -236,7 +236,7 @@ fn try_download(
     let mut archive = zip::ZipArchive::new(io::Cursor::new(&bytes))
         .map_err(|e| format!("open nupkg {}: {e}", pkg.name))?;
 
-    let mut extracted = 0usize;
+    let mut extracted_expected_file = false;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| format!("zip entry: {e}"))?;
         let entry = file.name().to_string();
@@ -259,9 +259,9 @@ fn try_download(
             fs::File::create(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
         io::copy(&mut file, &mut out).map_err(|e| format!("write {}: {e}", dest.display()))?;
         println!("cargo:warning=  Extracted {file_name}");
-        extracted += 1;
+        extracted_expected_file |= file_name == pkg.expected_file;
     }
-    Ok(extracted)
+    Ok(extracted_expected_file)
 }
 
 fn download_and_extract(
@@ -280,6 +280,7 @@ fn download_and_extract(
     }
     let mut last = String::new();
     for feed in feeds {
+        build_support::invalidate_package(out_dir, &pkg.expected_file)?;
         match try_download(agent, pkg, rid, out_dir, feed, service_index_cache) {
             // Integrity guard: a "successful" download must actually yield the
             // expected native binary (the archive opened as a valid zip and the
@@ -287,11 +288,11 @@ fn download_and_extract(
             // against the feed's published packageHash is feed-specific — the
             // registration layout differs between nuget.org and the Azure DevOps
             // feed — and is left as future hardening.
-            Ok(_) if out_dir.join(&pkg.expected_file).exists() => {
+            Ok(true) => {
                 build_support::record_package_version(out_dir, &pkg.expected_file, &pkg.version)?;
                 return Ok(());
             }
-            Ok(_) => {
+            Ok(false) => {
                 last = format!(
                     "{} {} downloaded but did not contain expected file {}",
                     pkg.name, pkg.version, pkg.expected_file
@@ -350,6 +351,13 @@ fn stage_restored_package(
             pkg.name, pkg.version
         ));
     }
+    if !build_support::contains_expected_file(&files, &pkg.expected_file) {
+        return Err(format!(
+            "{} {} did not contain expected file {} for RID '{rid}'.",
+            pkg.name, pkg.version, pkg.expected_file
+        ));
+    }
+    build_support::invalidate_package(out_dir, &pkg.expected_file)?;
     for file in files {
         let file_name = file
             .file_name()
