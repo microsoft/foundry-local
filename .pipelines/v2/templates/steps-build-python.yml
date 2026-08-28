@@ -168,7 +168,11 @@ steps:
     pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
-        python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
+        $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
+        if ('${{ parameters.rid }}' -like 'linux-*') {
+            $buildTools += 'auditwheel>=6.8'
+        }
+        python -m pip install --upgrade @buildTools
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 - ${{ if eq(parameters.rid, 'win-arm64') }}:
@@ -248,6 +252,40 @@ steps:
             }
         } finally {
             Pop-Location
+        }
+
+- ${{ if startsWith(parameters.rid, 'linux-') }}:
+  - task: PowerShell@2
+    displayName: 'Validate manylinux compatibility'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $wheels = @(Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl')
+        if ($wheels.Count -ne 1) {
+            throw "Expected exactly one .whl under ${{ parameters.outputDir }}, found $($wheels.Count)"
+        }
+
+        $json = (& auditwheel show --json $wheels[0].FullName) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+            throw "auditwheel failed with exit code $LASTEXITCODE"
+        }
+        $report = $json | ConvertFrom-Json
+        Write-Host "auditwheel platform: $($report.overall_tag)"
+
+        if ($report.overall_tag -notmatch '^manylinux_(\d+)_(\d+)_(x86_64|aarch64)$') {
+            throw "Wheel is not manylinux compatible: $($report.overall_tag)"
+        }
+
+        $expectedArchitecture = if ('${{ parameters.rid }}' -eq 'linux-arm64') { 'aarch64' } else { 'x86_64' }
+        if ($Matches[3] -ne $expectedArchitecture) {
+            throw "Wheel architecture is $($Matches[3]); expected $expectedArchitecture"
+        }
+
+        $requiredPolicy = [version]"$($Matches[1]).$($Matches[2])"
+        if ($requiredPolicy -gt [version]'2.28') {
+            throw "Wheel requires $($report.overall_tag), which exceeds the manylinux_2_28 target"
         }
 
 - task: PowerShell@2
