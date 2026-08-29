@@ -32,8 +32,8 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 |-----------------|-----------------------------------|-------|------|-----------------------------------------|
 | Windows x64     | `onnxruntime-Win-CPU-2022`        | ✅    | ✅   | Also stages public headers              |
 | Windows ARM64   | `onnxruntime-Win-CPU-2022`        | ✅    | ❌   | Cross-compiled from x64 host            |
-| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Native CPU-only build                   |
-| Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | Native CPU-only build                   |
+| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | manylinux 2.28 container, CPU-only      |
+| Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | manylinux 2.28 container, CPU-only      |
 | macOS ARM64     | `AcesShared` (Sequoia)            | ✅    | ✅   | Native                                  |
 
 ## Architectural decisions (locked)
@@ -335,6 +335,11 @@ Windows x64 explicitly passes `--cmake_generator "Visual Studio 17 2022"`.
 Windows ARM64 adds `--arm64`. macOS expects `cmake`/`ninja`/`pkg-config` and
 falls back to Homebrew if any are missing.
 
+Linux x64 and ARM64 run the same `build.py` command inside the matching
+`quay.io/pypa/manylinux_2_28_<arch>` container. Python wheels are also built
+there and passed through `auditwheel repair`; ORT and GenAI shared libraries
+remain external because their declared pip dependencies provide them.
+
 Build output directories follow `build.py`'s convention:
 `sdk_v2/cpp/build/<Windows|Linux|macOS>/<Config>/...`.
 
@@ -371,10 +376,8 @@ Build output directories follow `build.py`'s convention:
 - **Local-dev `_native/<rid>/` cleanup.** `build.py` populates the in-tree
   staging dir but doesn't prune stale ORT DLLs from prior runs. Pipeline
   is unaffected; only impacts inner-loop devs.
-- **Linux/macOS auditwheel/delocate.** Not needed today (the only non-system
-  shared deps are the bundled vcpkg libs, which already sit beside
-  `libfoundry_local`). Revisit if `manylinux` compliance becomes a
-  publishing gate.
+- **macOS delocate.** Revisit if macOS wheel publishing introduces a
+  compatibility or dependency-bundling requirement.
 
 ## Files
 
