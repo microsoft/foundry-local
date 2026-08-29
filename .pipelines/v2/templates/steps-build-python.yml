@@ -16,7 +16,7 @@ parameters:
   displayName: 'Path to the downloaded cpp-native-<rid> artifact directory'
 - name: rid
   type: string
-  displayName: 'Runtime identifier (win-x64, win-arm64, linux-x64, osx-arm64)'
+  displayName: 'Runtime identifier (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64)'
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/python-sdk'
@@ -168,7 +168,11 @@ steps:
     pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
-        python -m pip install --upgrade build setuptools wheel "cffi>=1.16"
+        $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
+        if ('${{ parameters.rid }}' -like 'linux-*') {
+            $buildTools += 'auditwheel>=6.8'
+        }
+        python -m pip install --upgrade @buildTools
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 - ${{ if eq(parameters.rid, 'win-arm64') }}:
@@ -221,9 +225,15 @@ steps:
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
         $extraArgs = @()
-        if ('${{ parameters.rid }}' -eq 'osx-arm64') {
-            $extraArgs += '--config-setting=--build-option=--plat-name=macosx_11_0_arm64'
-            Write-Host "Forcing wheel plat tag macosx_11_0_arm64"
+        $platformTag = switch ('${{ parameters.rid }}') {
+            'linux-x64'   { 'manylinux_2_28_x86_64' }
+            'linux-arm64' { 'manylinux_2_28_aarch64' }
+            'osx-arm64'   { 'macosx_11_0_arm64' }
+            default       { $null }
+        }
+        if ($platformTag) {
+            $extraArgs += "--config-setting=--build-option=--plat-name=$platformTag"
+            Write-Host "Forcing wheel plat tag $platformTag"
         }
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
@@ -244,6 +254,40 @@ steps:
             Pop-Location
         }
 
+- ${{ if startsWith(parameters.rid, 'linux-') }}:
+  - task: PowerShell@2
+    displayName: 'Validate manylinux compatibility'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $wheels = @(Get-ChildItem "${{ parameters.outputDir }}" -Filter '*.whl')
+        if ($wheels.Count -ne 1) {
+            throw "Expected exactly one .whl under ${{ parameters.outputDir }}, found $($wheels.Count)"
+        }
+
+        $json = (& auditwheel show --json $wheels[0].FullName) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+            throw "auditwheel failed with exit code $LASTEXITCODE"
+        }
+        $report = $json | ConvertFrom-Json
+        Write-Host "auditwheel platform: $($report.overall_tag)"
+
+        if ($report.overall_tag -notmatch '^manylinux_(\d+)_(\d+)_(x86_64|aarch64)$') {
+            throw "Wheel is not manylinux compatible: $($report.overall_tag)"
+        }
+
+        $expectedArchitecture = if ('${{ parameters.rid }}' -eq 'linux-arm64') { 'aarch64' } else { 'x86_64' }
+        if ($Matches[3] -ne $expectedArchitecture) {
+            throw "Wheel architecture is $($Matches[3]); expected $expectedArchitecture"
+        }
+
+        $requiredPolicy = [version]"$($Matches[1]).$($Matches[2])"
+        if ($requiredPolicy -gt [version]'2.28') {
+            throw "Wheel requires $($report.overall_tag), which exceeds the manylinux_2_28 target"
+        }
+
 - task: PowerShell@2
   displayName: 'List produced wheel'
   inputs:
@@ -262,11 +306,11 @@ steps:
     script: |
         $ErrorActionPreference = 'Stop'
         switch ('${{ parameters.rid }}') {
-            'win-x64'     { $tags = @('win_amd64');             $lib = 'foundry_local.dll' }
-            'win-arm64'   { $tags = @('win_arm64');             $lib = 'foundry_local.dll' }
-            'linux-x64'   { $tags = @('linux_x86_64');          $lib = 'libfoundry_local.so' }
-            'linux-arm64' { $tags = @('linux_aarch64');         $lib = 'libfoundry_local.so' }
-            'osx-arm64'   { $tags = @('macosx', 'arm64');       $lib = 'libfoundry_local.dylib' }
+            'win-x64'     { $tags = @('win_amd64');                 $lib = 'foundry_local.dll' }
+            'win-arm64'   { $tags = @('win_arm64');                 $lib = 'foundry_local.dll' }
+            'linux-x64'   { $tags = @('manylinux_2_28_x86_64');     $lib = 'libfoundry_local.so' }
+            'linux-arm64' { $tags = @('manylinux_2_28_aarch64');    $lib = 'libfoundry_local.so' }
+            'osx-arm64'   { $tags = @('macosx', 'arm64');           $lib = 'libfoundry_local.dylib' }
             default       { throw "Unknown rid: ${{ parameters.rid }}" }
         }
 

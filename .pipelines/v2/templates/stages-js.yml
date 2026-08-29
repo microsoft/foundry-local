@@ -13,10 +13,6 @@
 #
 # Tests run on the same platform as the build.
 
-parameters:
-- name: isRelease
-  type: boolean
-
 stages:
 
 # =====================================================================
@@ -34,8 +30,7 @@ stages:
       name: onnxruntime-Win-CPU-2022
       os: windows
     variables:
-    - ${{ if eq(parameters.isRelease, true) }}:
-      - group: FoundryLocal-ESRP-Signing
+    - group: FoundryLocal-ESRP-Signing
     templateContext:
       inputs:
       - input: pipelineArtifact
@@ -56,7 +51,7 @@ stages:
         rid: 'win-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
-        signWindows: ${{ parameters.isRelease }}
+        signWindows: true
 
 - stage: js_build_win_arm64
   displayName: 'JS SDK: Build Windows ARM64'
@@ -70,8 +65,7 @@ stages:
       os: windows
       hostArchitecture: arm64
     variables:
-    - ${{ if eq(parameters.isRelease, true) }}:
-      - group: FoundryLocal-ESRP-Signing
+    - group: FoundryLocal-ESRP-Signing
     templateContext:
       inputs:
       - input: pipelineArtifact
@@ -92,7 +86,7 @@ stages:
         rid: 'win-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
-        signWindows: ${{ parameters.isRelease }}
+        signWindows: true
 
 - stage: js_build_linux_x64
   displayName: 'JS SDK: Build Linux x64'
@@ -170,8 +164,7 @@ stages:
       demands:
       - ImageOverride -equals ACES_VM_SharedPool_Sequoia
     variables:
-    - ${{ if eq(parameters.isRelease, true) }}:
-      - group: FoundryLocal-ESRP-Signing
+    - group: FoundryLocal-ESRP-Signing
     templateContext:
       inputs:
       - input: pipelineArtifact
@@ -192,7 +185,7 @@ stages:
         rid: 'osx-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         outputDir: '$(Build.ArtifactStagingDirectory)/js-prebuild'
-        signMac: ${{ parameters.isRelease }}
+        signMac: true
 
 # ================================================================
 # Test stages - same platform only.
