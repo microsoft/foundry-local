@@ -98,7 +98,7 @@ TEST_F(ManagerWebServiceTest, GetCatalogRejectsInvalidType) {
   }
 }
 
-TEST_F(ManagerWebServiceTest, GetCatalogCachesOneWrapperPerType) {
+TEST_F(ManagerWebServiceTest, GetCatalogReturnsStableWrapperPerType) {
   foundry_local::Manager manager(MakeCacheOnlyConfig());
 
   auto& default_catalog = manager.GetCatalog();

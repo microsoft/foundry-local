@@ -286,7 +286,7 @@ TEST(CApiTest, GetCatalogFromManager) {
   api->Manager_Release(mgr);
 }
 
-TEST(CApiTest, ConcurrentFirstCatalogAccessReturnsStableWrappers) {
+TEST(CApiTest, ConcurrentCatalogAccessReturnsStableWrappers) {
   const flApi* api = GetApi();
   ASSERT_NE(api, nullptr);
 

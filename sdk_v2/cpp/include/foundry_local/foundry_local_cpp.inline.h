@@ -196,32 +196,32 @@ inline flConfiguration* detail::CreateConfiguration(const std::string& app_name)
 // Manager
 // ===========================================================================
 
+inline Manager::CatalogCollection::CatalogCollection(const flManager* manager)
+    : public_([manager]() -> flCatalog& {
+        flCatalog* catalog = nullptr;
+        Check(detail::api()->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_PUBLIC, &catalog));
+        return *catalog;
+      }()),
+      local_([manager]() -> flCatalog& {
+        flCatalog* catalog = nullptr;
+        Check(detail::api()->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_LOCAL, &catalog));
+        return *catalog;
+      }()) {}
+
 inline Manager::Manager(Configuration&& config)
     : handle_(detail::CreateManager(config), detail::api()->Manager_Release),
-      config_(std::move(config)) {}
+      config_(std::move(config)),
+      catalogs_(handle_.get()) {}
 
 inline ICatalog& Manager::GetCatalog(flCatalogType type) const {
-  std::unique_ptr<Catalog>* catalog;
-  std::once_flag* once;
   switch (type) {
     case FOUNDRY_LOCAL_CATALOG_PUBLIC:
-      catalog = &catalogs_.public_;
-      once = catalogs_.public_once_.get();
-      break;
+      return catalogs_.public_;
     case FOUNDRY_LOCAL_CATALOG_LOCAL:
-      catalog = &catalogs_.local_;
-      once = catalogs_.local_once_.get();
-      break;
+      return catalogs_.local_;
     default:
       throw Error("invalid catalog type", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
   }
-
-  std::call_once(*once, [this, type, catalog]() {
-    flCatalog* native_catalog = nullptr;
-    Check(detail::api()->Manager_GetCatalogByType(handle_.get(), type, &native_catalog));
-    *catalog = std::make_unique<Catalog>(*native_catalog);
-  });
-  return **catalog;
 }
 
 inline void Manager::StartWebService() {

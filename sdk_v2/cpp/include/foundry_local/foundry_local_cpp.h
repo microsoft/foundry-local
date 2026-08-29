@@ -25,7 +25,6 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -869,7 +868,7 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get a catalog for querying models. Creates its wrapper on first use and caches it internally.
+  /// Get a manager-owned catalog for querying models.
   ICatalog& GetCatalog(flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC) const;
 
   /// Start the embedded web service.
@@ -904,10 +903,10 @@ class Manager {
 
  private:
   struct CatalogCollection {
-    mutable std::unique_ptr<Catalog> public_;
-    mutable std::unique_ptr<Catalog> local_;
-    mutable std::unique_ptr<std::once_flag> public_once_{std::make_unique<std::once_flag>()};
-    mutable std::unique_ptr<std::once_flag> local_once_{std::make_unique<std::once_flag>()};
+    explicit CatalogCollection(const flManager* manager);
+
+    mutable Catalog public_;
+    mutable Catalog local_;
   };
 
   detail::Base<flManager> handle_;

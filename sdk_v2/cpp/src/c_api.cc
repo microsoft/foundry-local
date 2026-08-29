@@ -26,7 +26,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -72,13 +71,14 @@ struct flCatalog {
 
 // --- Manager ---
 struct flManager {
-  explicit flManager(fl::Manager& manager) : impl(manager) {}
+  explicit flManager(fl::Manager& manager)
+      : impl(manager),
+        public_catalog{manager.GetCatalog(fl::CatalogType::kPublic)},
+        local_catalog{manager.GetCatalog(fl::CatalogType::kLocal)} {}
 
   fl::Manager& impl;
-  mutable std::unique_ptr<flCatalog> public_catalog;
-  mutable std::unique_ptr<flCatalog> local_catalog;
-  mutable std::once_flag public_catalog_once;
-  mutable std::once_flag local_catalog_once;
+  mutable flCatalog public_catalog;
+  mutable flCatalog local_catalog;
   mutable std::vector<const char*> urls_cache;
 };
 
@@ -356,11 +356,7 @@ FL_API_STATUS_IMPL(Manager_GetCatalogImpl, const flManager* manager, flCatalog**
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  std::call_once(manager->public_catalog_once, [manager]() {
-    manager->public_catalog =
-        std::make_unique<flCatalog>(flCatalog{manager->impl.GetCatalog(fl::CatalogType::kPublic)});
-  });
-  *out_catalog = manager->public_catalog.get();
+  *out_catalog = &manager->public_catalog;
   return nullptr;
   API_IMPL_END
 }
@@ -374,18 +370,10 @@ FL_API_STATUS_IMPL(Manager_GetCatalogByTypeImpl, const flManager* manager, flCat
 
   switch (catalog_type) {
     case FOUNDRY_LOCAL_CATALOG_PUBLIC:
-      std::call_once(manager->public_catalog_once, [manager]() {
-        manager->public_catalog =
-            std::make_unique<flCatalog>(flCatalog{manager->impl.GetCatalog(fl::CatalogType::kPublic)});
-      });
-      *out_catalog = manager->public_catalog.get();
+      *out_catalog = &manager->public_catalog;
       return nullptr;
     case FOUNDRY_LOCAL_CATALOG_LOCAL:
-      std::call_once(manager->local_catalog_once, [manager]() {
-        manager->local_catalog =
-            std::make_unique<flCatalog>(flCatalog{manager->impl.GetCatalog(fl::CatalogType::kLocal)});
-      });
-      *out_catalog = manager->local_catalog.get();
+      *out_catalog = &manager->local_catalog;
       return nullptr;
     default:
       return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown catalog type");
