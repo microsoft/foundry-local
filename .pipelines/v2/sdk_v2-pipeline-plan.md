@@ -336,11 +336,11 @@ Windows ARM64 adds `--arm64`. macOS expects `cmake`/`ninja`/`pkg-config` and
 falls back to Homebrew if any are missing.
 
 Linux x64 and ARM64 run the same `build.py` command inside the matching
-`quay.io/pypa/manylinux_2_28_<arch>` container. The native-build stage adds
-the `zip` utility required by vcpkg bootstrap in a small derived image. Python
-wheels are also built in the policy container and passed through `auditwheel
-repair`; ORT and GenAI shared libraries remain external because their declared
-pip dependencies provide them.
+`quay.io/pypa/manylinux_2_28_<arch>` container. The native-build stage uses a
+small derived image with the vcpkg and OpenSSL build prerequisites also used by
+ORT/GenAI's manylinux images. Python wheels are built in the policy container
+and passed through `auditwheel repair`; ORT and GenAI shared libraries remain
+external because their declared pip dependencies provide them.
 
 Build output directories follow `build.py`'s convention:
 `sdk_v2/cpp/build/<Windows|Linux|macOS>/<Config>/...`.
