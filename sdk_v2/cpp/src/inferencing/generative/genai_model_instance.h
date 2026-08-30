@@ -32,6 +32,7 @@ class GenAIModelInstance {
   const std::string& ModelPath() const { return model_path_; }
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ExecutionProvider EP() const { return ep_; }
+  bool IsModelPackage() const { return is_model_package_; }
   bool IsMultiModal() const;
 
   /// Access the underlying OGA objects.
@@ -55,12 +56,16 @@ class GenAIModelInstance {
                      std::string effective_model_path,
                      GenAIConfig genai_config,
                      ExecutionProvider resolved_ep,
+                     bool is_model_package,
+                     bool is_multimodal,
                      ILogger& logger);
 
   std::string model_id_;
   std::string model_path_;
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
+  bool is_model_package_;
+  bool is_multimodal_;
   std::unique_ptr<OgaModel> oga_model_;
   std::unique_ptr<Preprocessor> preprocessor_;
   std::chrono::steady_clock::time_point last_activity_;

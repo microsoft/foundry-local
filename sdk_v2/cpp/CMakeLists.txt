@@ -267,6 +267,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/utils.cc
     src/util/file_lock.cc
     src/http/http_download.cc
+    src/util/model_layout.cc
     src/util/path_safety.cc
     src/util/region_fallback.cc
     src/util/sha256.cc

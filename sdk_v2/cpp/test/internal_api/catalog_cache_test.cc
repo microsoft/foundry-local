@@ -137,6 +137,53 @@ TEST_F(CatalogCacheTest, DetectedRegionRoundTrip) {
   }
 }
 
+TEST_F(CatalogCacheTest, VariantMetadataRoundTrip) {
+  ModelInfo model = MakeTestModel("phi-4-mini:3", 3);
+
+  ModelPackageVariant package_variant;
+  package_variant.name = "cpu-compiled";
+  package_variant.execution_provider = "CPUExecutionProvider";
+  package_variant.device_type = DeviceType::kCPU;
+  package_variant.compatibility_string = "compat-a";
+
+  ModelPackageMetadata package_metadata;
+  package_metadata.schema_version = 5;
+  package_metadata.variants = {package_variant};
+
+  ModelVariantMetadata variant_metadata;
+  variant_metadata.model_format = "ort-model-package";
+  variant_metadata.model_package = package_metadata;
+  model.variant_metadata = variant_metadata;
+
+  {
+    CatalogCache cache(test_dir_, logger_);
+    cache.Save({model});
+  }
+
+  {
+    CatalogCache cache(test_dir_, logger_);
+    cache.Load();
+    auto loaded = cache.GetCachedModels();
+
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->size(), 1u);
+    ASSERT_TRUE((*loaded)[0].variant_metadata.has_value());
+    ASSERT_TRUE((*loaded)[0].variant_metadata->model_format.has_value());
+    EXPECT_EQ(*(*loaded)[0].variant_metadata->model_format, "ort-model-package");
+
+    ASSERT_TRUE((*loaded)[0].variant_metadata->model_package.has_value());
+    ASSERT_TRUE((*loaded)[0].variant_metadata->model_package->schema_version.has_value());
+    EXPECT_EQ(*(*loaded)[0].variant_metadata->model_package->schema_version, 5);
+
+    const auto& variants = (*loaded)[0].variant_metadata->model_package->variants;
+    ASSERT_EQ(variants.size(), 1u);
+    EXPECT_EQ(variants[0].name, "cpu-compiled");
+    EXPECT_EQ(variants[0].execution_provider, "CPUExecutionProvider");
+    EXPECT_EQ(variants[0].device_type, DeviceType::kCPU);
+    EXPECT_EQ(variants[0].compatibility_string, "compat-a");
+  }
+}
+
 TEST_F(CatalogCacheTest, EmptyModelListRoundTrip) {
   std::vector<ModelInfo> empty_models;
 
