@@ -5,6 +5,7 @@
 #include "catalog.h"
 #include "logger.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -87,11 +88,20 @@ class BaseModelCatalog : public ICatalog {
   mutable std::vector<std::unique_ptr<Model>> models_;
 
   /// Lookup indices, rebuilt on each populate/refresh.
-  /// Guarded by std::atomic_load/store free functions so readers get a consistent
-  /// snapshot — the swap after rebuild is atomic, so a concurrent reader never sees
-  /// a partially-built index.
-  /// Can't use std::atomic<std::shared_ptr<>> due to lack of implemention in XCode (macOS)
+  ///
+  /// std::atomic<std::shared_ptr<T>> (C++20, __cpp_lib_atomic_shared_ptr) gives readers
+  /// a consistent snapshot: the swap after RebuildIndex() is atomic, so a concurrent
+  /// reader never observes a partially-built index, and the shared_ptr returned by
+  /// GetIndex() keeps that snapshot alive even if a later refresh replaces index_.
+  ///
+  /// Falls back to a plain shared_ptr guarded by the (C++20-deprecated) free functions
+  /// std::atomic_load/atomic_store on toolchains that don't yet implement the
+  /// specialization (older libc++/Xcode).
+#if defined(__cpp_lib_atomic_shared_ptr)
+  mutable std::atomic<std::shared_ptr<const ModelIndex>> index_;
+#else
   mutable std::shared_ptr<const ModelIndex> index_;
+#endif
 
   /// Atomically grab the current index snapshot. Callers hold the returned shared_ptr
   /// for the duration of their lookup, keeping the index alive if a refresh swaps it out.

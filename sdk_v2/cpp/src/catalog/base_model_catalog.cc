@@ -186,26 +186,48 @@ void BaseModelCatalog::RebuildIndex() const {
   }
 
   // Atomic swap — readers holding the old shared_ptr keep it alive until they're done.
-  // Suppress C++20 deprecation warning for std::atomic_store/load free functions.
-  // We can't use std::atomic<std::shared_ptr<>> due to missing XCode support (see header).
+  // release: publishes the fully-built *new_index to any reader whose GetIndex() acquire-load
+  // observes this store (see GetIndex()).
+#if defined(__cpp_lib_atomic_shared_ptr)
+  index_.store(std::move(new_index), std::memory_order_release);
+#else
+  // Fallback for toolchains without the atomic<shared_ptr> specialization (older libc++/Xcode).
+  // Suppress the C++20 deprecation warning for the atomic_store/atomic_load free functions.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-  std::atomic_store(&index_, std::shared_ptr<const ModelIndex>(std::move(new_index)));
+  std::atomic_store_explicit(&index_, std::shared_ptr<const ModelIndex>(std::move(new_index)),
+                              std::memory_order_release);
 #if defined(_MSC_VER)
 #pragma warning(pop)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #endif
 }
 
 std::shared_ptr<const BaseModelCatalog::ModelIndex> BaseModelCatalog::GetIndex() const {
+#if defined(__cpp_lib_atomic_shared_ptr)
+  return index_.load(std::memory_order_acquire);
+#else
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-  return std::atomic_load(&index_);
+  auto index = std::atomic_load_explicit(&index_, std::memory_order_acquire);
 #if defined(_MSC_VER)
 #pragma warning(pop)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+  return index;
 #endif
 }
 
