@@ -2,6 +2,21 @@
 
 find_package(httplib CONFIG REQUIRED)
 
+# The vcpkg cpp-httplib port enables CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO,
+# whose Linux implementation calls getaddrinfo_a/gai_suspend/gai_cancel/gai_error.
+# On glibc < 2.34 (e.g. manylinux_2_28's glibc 2.28) those symbols live in libanl,
+# which the header-only httplib::httplib target does not pull in automatically.
+# Link it alongside httplib::httplib wherever the latter is used; find_library
+# yields NOTFOUND (silently omitted below) on newer glibc, where libanl was
+# folded into libc.
+set(FOUNDRY_LOCAL_HTTPLIB_LIBS httplib::httplib)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(ANL_LIBRARY anl)
+    if(ANL_LIBRARY)
+        list(APPEND FOUNDRY_LOCAL_HTTPLIB_LIBS ${ANL_LIBRARY})
+    endif()
+endif()
+
 # ==========================================================================
 # Internal tests — test the implementation directly
 # Links against the static library with access to internal src/ headers.
@@ -80,7 +95,7 @@ target_link_libraries(foundry_local_tests
     PRIVATE
         foundry_local_static
         GTest::gtest
-        httplib::httplib
+        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
         ZLIB::ZLIB
 )
 
@@ -179,7 +194,7 @@ target_link_libraries(sdk_integration_tests
         foundry_local_cpp
         GTest::gtest
         nlohmann_json::nlohmann_json
-        httplib::httplib
+        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
