@@ -97,8 +97,18 @@ class BaseModelCatalog : public ICatalog {
   /// Falls back to a plain shared_ptr guarded by the (C++20-deprecated) free functions
   /// std::atomic_load/atomic_store on toolchains that don't yet implement the
   /// specialization (older libc++/Xcode).
+  ///
+  /// Held behind a unique_ptr rather than by value: MSVC's atomic<shared_ptr<T>>
+  /// specialization has an internal over-alignment requirement (for its lock-free
+  /// CAS storage) that, if embedded directly, forces the compiler to pad
+  /// BaseModelCatalog -- and every class deriving from it -- to satisfy that
+  /// alignment (MSVC C4324, treated as an error). Storing it on the heap keeps the
+  /// member's footprint here to an ordinary pointer, so no padding is introduced in
+  /// this class or in any derived catalog, while the pointer is fixed for the
+  /// object's lifetime (only the pointee's value changes, via atomic store/load).
 #if defined(__cpp_lib_atomic_shared_ptr)
-  mutable std::atomic<std::shared_ptr<const ModelIndex>> index_;
+  mutable std::unique_ptr<std::atomic<std::shared_ptr<const ModelIndex>>> index_ =
+      std::make_unique<std::atomic<std::shared_ptr<const ModelIndex>>>();
 #else
   mutable std::shared_ptr<const ModelIndex> index_;
 #endif

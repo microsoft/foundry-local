@@ -189,7 +189,7 @@ void BaseModelCatalog::RebuildIndex() const {
   // release: publishes the fully-built *new_index to any reader whose GetIndex() acquire-load
   // observes this store (see GetIndex()).
 #if defined(__cpp_lib_atomic_shared_ptr)
-  index_.store(std::move(new_index), std::memory_order_release);
+  index_->store(std::move(new_index), std::memory_order_release);
 #else
   // Fallback for toolchains without the atomic<shared_ptr> specialization (older libc++/Xcode).
   // Suppress the C++20 deprecation warning for the atomic_store/atomic_load free functions.
@@ -212,7 +212,7 @@ void BaseModelCatalog::RebuildIndex() const {
 
 std::shared_ptr<const BaseModelCatalog::ModelIndex> BaseModelCatalog::GetIndex() const {
 #if defined(__cpp_lib_atomic_shared_ptr)
-  return index_.load(std::memory_order_acquire);
+  return index_->load(std::memory_order_acquire);
 #else
 #if defined(_MSC_VER)
 #pragma warning(push)

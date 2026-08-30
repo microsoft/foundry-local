@@ -6,15 +6,13 @@ find_package(httplib CONFIG REQUIRED)
 # whose Linux implementation calls getaddrinfo_a/gai_suspend/gai_cancel/gai_error.
 # On glibc < 2.34 (e.g. manylinux_2_28's glibc 2.28) those symbols live in libanl,
 # which the header-only httplib::httplib target does not pull in automatically.
-# Link it alongside httplib::httplib wherever the latter is used; find_library
-# yields NOTFOUND (silently omitted below) on newer glibc, where libanl was
-# folded into libc.
+# Link it alongside httplib::httplib wherever the latter is used. Requiring
+# the library makes a missing glibc development package fail at configure time
+# instead of reproducing the less actionable executable link failure.
 set(FOUNDRY_LOCAL_HTTPLIB_LIBS httplib::httplib)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_library(ANL_LIBRARY anl)
-    if(ANL_LIBRARY)
-        list(APPEND FOUNDRY_LOCAL_HTTPLIB_LIBS ${ANL_LIBRARY})
-    endif()
+    find_library(ANL_LIBRARY anl REQUIRED)
+    list(APPEND FOUNDRY_LOCAL_HTTPLIB_LIBS ${ANL_LIBRARY})
 endif()
 
 # ==========================================================================
