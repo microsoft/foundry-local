@@ -296,18 +296,12 @@ Manager::Manager(const Configuration& config) : config_(config) {
     }
   }
 
-  // Read whether cross-region fallback should be disabled (default: enabled).
-  // Accepts case-insensitive true/1/yes.
-  const bool disable_region_fallback = IsAdditionalOptionEnabled(config_, "DisableRegionFallback");
-
-  download_manager_ =
-      std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
-                                        download_concurrency, *logger_, disable_region_fallback);
+  download_manager_ = std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
+                                                        download_concurrency, *logger_);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
   const bool disable_nonessential_telemetry =
-      config_.disable_nonessential_telemetry ||
-      IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
   const bool telemetry_hard_disabled =
       TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
   telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
@@ -325,8 +319,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
   catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
-      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
-      disable_region_fallback);
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"));
 }
 
 Manager::~Manager() {
