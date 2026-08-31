@@ -561,6 +561,9 @@ fn main() {
         let packages = get_packages(&deps, &runtime_version);
         let config = build_support::read_config()
             .unwrap_or_else(|error| panic!("invalid NuGet configuration: {error}"));
+        if let Some(config_file) = &config.config_file {
+            println!("cargo:rerun-if-changed={config_file}");
+        }
         let package_versions: Vec<_> = packages
             .iter()
             .map(|pkg| (pkg.expected_file.as_str(), pkg.version.as_str()))
