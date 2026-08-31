@@ -25,7 +25,10 @@
 #include <azure/core/context.hpp>
 #include <azure/storage/blobs.hpp>
 
-#if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+// The Azure Storage SDK builds its own libcurl transport, which — like our other curl transports —
+// does not honor SSL_CERT_FILE. On Android we install a CurlTransport preconfigured with CAInfo
+// (see MakeBlobClientOptions below); every other platform uses the SDK's default transport.
+#if defined(ANDROID)
 #include "http/curl_transport.h"
 
 #include <azure/core/http/curl_transport.hpp>
@@ -40,10 +43,15 @@ namespace {
 /// memory at this many bytes regardless of chunk size.
 constexpr size_t kStreamingBufferBytes = 64 * 1024;
 
-/// Uses the same resolved CA bundle as the SDK's other curl transports.
+/// Builds BlobClientOptions with the CA bundle wired into the transport. The Azure Storage SDK
+/// constructs its own libcurl transport internally, which does not consult SSL_CERT_FILE, so blob
+/// downloads would otherwise fail TLS verification on Android with "unable to get local issuer
+/// certificate". On Android we install a CurlTransport preconfigured with CAInfo so verification
+/// uses the caller-provided trust store; every other platform resolves trust through its default
+/// transport (system CA store on Linux/macOS, WinHTTP OS store on Windows) and is left untouched.
 Azure::Storage::Blobs::BlobClientOptions MakeBlobClientOptions() {
   Azure::Storage::Blobs::BlobClientOptions options;
-#if !defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
+#if defined(ANDROID)
   // Only override the Storage SDK's default transport when a CA bundle is configured.
   auto curl_options = fl::http::MakeCurlTransportOptions();
   if (!curl_options.CAInfo.empty()) {

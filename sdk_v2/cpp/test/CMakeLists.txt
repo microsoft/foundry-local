@@ -2,13 +2,6 @@
 
 find_package(httplib CONFIG REQUIRED)
 
-# cpp-httplib's non-blocking resolver uses getaddrinfo_a, which lives in libanl on glibc < 2.34.
-set(FOUNDRY_LOCAL_HTTPLIB_LIBS httplib::httplib)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_library(ANL_LIBRARY anl REQUIRED)
-    list(APPEND FOUNDRY_LOCAL_HTTPLIB_LIBS ${ANL_LIBRARY})
-endif()
-
 # ==========================================================================
 # Internal tests — test the implementation directly
 # Links against the static library with access to internal src/ headers.
@@ -41,7 +34,6 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
-    internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
     internal_api/item_test.cc
@@ -88,7 +80,7 @@ target_link_libraries(foundry_local_tests
     PRIVATE
         foundry_local_static
         GTest::gtest
-        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
+        httplib::httplib
         ZLIB::ZLIB
 )
 
@@ -187,7 +179,7 @@ target_link_libraries(sdk_integration_tests
         foundry_local_cpp
         GTest::gtest
         nlohmann_json::nlohmann_json
-        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
+        httplib::httplib
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

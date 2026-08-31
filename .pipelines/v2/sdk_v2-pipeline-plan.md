@@ -32,8 +32,8 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 |-----------------|-----------------------------------|-------|------|-----------------------------------------|
 | Windows x64     | `onnxruntime-Win-CPU-2022`        | ✅    | ✅   | Also stages public headers              |
 | Windows ARM64   | `onnxruntime-Win-CPU-2022`        | ✅    | ❌   | Cross-compiled from x64 host            |
-| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | manylinux 2.28 container, CPU-only      |
-| Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | manylinux 2.28 container, CPU-only      |
+| Linux x64       | `onnxruntime-Ubuntu2404-AMD-CPU`  | ✅    | ✅   | Native CPU-only build                   |
+| Linux ARM64     | `onnxruntime-linux-ARM64-CPU-2019`| ✅    | ✅   | Native CPU-only build                   |
 | macOS ARM64     | `AcesShared` (Sequoia)            | ✅    | ✅   | Native                                  |
 
 ## Architectural decisions (locked)
@@ -252,7 +252,9 @@ the same string that appears in the `.nupkg` filename. Each platform build
 stage:
 
 1. Depends on `compute_version` and downloads the `version-info` artifact.
-2. Reads `sdkVersion.txt` and sets `FOUNDRY_LOCAL_VERSION_STRING`.
+2. Reads `sdkVersion.txt` and appends
+   `"FOUNDRY_LOCAL_VERSION_STRING=<version>"` to `cmakeFetchDefines` after
+   the NuGet prefetch step.
 3. Passes the combined defines to `build.py --cmake_extra_defines`.
 
 Local developer builds (no `-D` override) use the `PROJECT_VERSION` from
@@ -293,9 +295,9 @@ These must be kept in sync with the cmake defaults and with
 in the same PR.
 
 The shared download logic is in `steps-prefetch-nuget.yml` and exposes both
-a PowerShell and a bash implementation behind a `shell` parameter. The
-PowerShell build steps consume its `cmakeFetchDefines` variable; Linux
-container builds use the downloaded package paths directly.
+a PowerShell (Windows) and a bash (Linux/macOS) implementation behind a
+`shell` parameter. It emits a single pipeline variable `cmakeFetchDefines`
+containing the quoted `KEY=PATH` pairs to splice into the build command.
 
 WinML downloads `Microsoft.Windows.AI.MachineLearning` directly from
 nuget.org as a single self-contained reg-free package — no transitive
@@ -333,13 +335,6 @@ Windows x64 explicitly passes `--cmake_generator "Visual Studio 17 2022"`.
 Windows ARM64 adds `--arm64`. macOS expects `cmake`/`ninja`/`pkg-config` and
 falls back to Homebrew if any are missing.
 
-Linux x64 and ARM64 run the same `build.py` command inside the matching
-`quay.io/pypa/manylinux_2_28_<arch>` container. The native-build stage uses a
-small derived image with the required native build prerequisites. Python
-wheels are built in the policy container and passed through `auditwheel repair`;
-ORT and GenAI shared libraries remain external because their declared pip
-dependencies provide them.
-
 Build output directories follow `build.py`'s convention:
 `sdk_v2/cpp/build/<Windows|Linux|macOS>/<Config>/...`.
 
@@ -376,8 +371,10 @@ Build output directories follow `build.py`'s convention:
 - **Local-dev `_native/<rid>/` cleanup.** `build.py` populates the in-tree
   staging dir but doesn't prune stale ORT DLLs from prior runs. Pipeline
   is unaffected; only impacts inner-loop devs.
-- **macOS delocate.** Revisit if macOS wheel publishing introduces a
-  compatibility or dependency-bundling requirement.
+- **Linux/macOS auditwheel/delocate.** Not needed today (the only non-system
+  shared deps are the bundled vcpkg libs, which already sit beside
+  `libfoundry_local`). Revisit if `manylinux` compliance becomes a
+  publishing gate.
 
 ## Files
 

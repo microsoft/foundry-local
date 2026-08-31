@@ -12,7 +12,8 @@
 namespace fl {
 namespace http {
 
-/// Creates curl transport options with CAInfo set when CABundleFilePath() resolves one.
+/// Creates libcurl transport options with `CAInfo` set from `CABundleFilePath` (Android only; empty
+/// elsewhere, so libcurl falls back to the system default CA store).
 Azure::Core::Http::CurlTransportOptions MakeCurlTransportOptions();
 
 }  // namespace http
