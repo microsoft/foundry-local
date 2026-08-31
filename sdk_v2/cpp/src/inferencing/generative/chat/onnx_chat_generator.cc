@@ -271,13 +271,6 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                "model has no multimodal processor available for media input");
     }
-
-    // Match upstream's single-image limit. Easy to relax once the wider
-    // pipeline (and ORT GenAI templates) reliably handle multi-image inputs.
-    if (images.size() > 1) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "only one image per request is supported");
-    }
   }
 
   // 1. Build the chat prompt using the model's template.
