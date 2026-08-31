@@ -296,6 +296,7 @@ steps:
           "$HOME/venv/bin/auditwheel" repair "$RAW_WHEEL_DIR"/*.whl \
             --wheel-dir "$WHEEL_DIR" \
             --plat "$AUDITWHEEL_PLAT" \
+            --exclude "libfoundry_local.so" \
             --exclude "libonnxruntime.so*" \
             --exclude "libonnxruntime-genai.so*"
         '
@@ -339,19 +340,19 @@ steps:
             throw "Wheel requires $($report.sym_tag), which exceeds the manylinux_2_28 target"
         }
 
-        # ORT and GenAI are intentionally supplied by the wheel's declared pip
-        # dependencies and preloaded by lib_loader.py rather than bundled here.
+        # libfoundry_local is already bundled in the RID directory. ORT and GenAI
+        # are supplied by declared pip dependencies and preloaded by lib_loader.py.
         $externalLibraries = @($report.external_libs.PSObject.Properties.Name)
         $unexpectedLibraries = @(
             $externalLibraries | Where-Object {
-                $_ -notmatch '^libonnxruntime(?:-genai)?\.so(?:\..*)?$'
+                $_ -notmatch '^(?:libfoundry_local|libonnxruntime(?:-genai)?)\.so(?:\..*)?$'
             }
         )
         if ($unexpectedLibraries.Count -gt 0) {
             throw "Wheel has unexpected external shared libraries: $($unexpectedLibraries -join ', ')"
         }
         if ($externalLibraries.Count -gt 0) {
-            Write-Host "Expected pip-provided shared libraries: $($externalLibraries -join ', ')"
+            Write-Host "Expected external library references: $($externalLibraries -join ', ')"
         }
 
 - task: PowerShell@2
