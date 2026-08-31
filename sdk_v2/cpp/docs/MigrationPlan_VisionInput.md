@@ -38,11 +38,10 @@ Out of scope (track separately):
 
 ## Supported Model Scope (matches C# upstream)
 
-This migration mirrors the upstream C# vision support exactly. The set of
-vision-language model types we enable on the C++ side is bounded by what the
-C# server's `IsMultiModal()` recognizes after PR 14989371:
+The set of vision-language model types we enable on the C++ side 
+is defined by the models behind the `IsMultiModal()` gate:
 
-- `phi3v`, `phi4mm`, `fara`, `qwen2_5_vl`, `qwen3_vl`, `qwen3_5`, `mistral3`
+- `phi3v`, `phi4mm`, `fara`, `qwen2_5_vl`, `qwen3_vl`, `qwen3_5`, `gemma4`, `mistral3`
   (`whisper` is also `IsMultiModal` but it's the audio path, not vision.)
 
 These are the model types our model catalog currently ships. Other ORT GenAI

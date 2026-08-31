@@ -155,3 +155,45 @@ TEST_F(ResponsesVisionIntegrationTest, RemoteHttpUrlIsRejected) {
   // not a 200. Exact code is the handler's choice; the contract is "not 200".
   EXPECT_NE(result->status, 200) << "Expected error for unsupported http(s) image URL: " << result->body;
 }
+
+TEST_F(ResponsesVisionIntegrationTest, TwoImagesProduceOutput) {
+  auto client = MakeClient();
+  client.set_read_timeout(600, 0);
+
+  json request_body = {
+      {"model", vision_model_id()},
+      {"input", json::array({
+                    {{"role", "user"},
+                     {"content", json::array({
+                                     {{"type", "input_text"},
+                                      {"text", "Describe both images in one short sentence."}},
+                                     {{"type", "input_image"},
+                                      {"detail", "low"},
+                                      {"image_data", kTinyPngBase64},
+                                      {"media_type", "image/png"}},
+                                     {{"type", "input_image"},
+                                      {"detail", "low"},
+                                      {"image_data", kTinyPngBase64},
+                                      {"media_type", "image/png"}},
+                                 })}},
+                })},
+      {"max_output_tokens", 512},
+      {"temperature", 0},
+      {"store", false},
+  };
+
+  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  json response = json::parse(result->body);
+  EXPECT_EQ(response["status"], "completed") << response.dump(2);
+  EXPECT_EQ(response["model"], vision_model_id());
+  ASSERT_TRUE(response.contains("output_text"));
+  EXPECT_FALSE(response["output_text"].get<std::string>().empty())
+      << "Two-image request produced an empty output_text";
+
+  ASSERT_TRUE(response.contains("usage"));
+  EXPECT_GT(response["usage"]["input_tokens"].get<int>(), 0);
+  EXPECT_GT(response["usage"]["output_tokens"].get<int>(), 0);
+}
