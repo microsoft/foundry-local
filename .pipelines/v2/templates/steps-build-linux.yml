@@ -109,6 +109,7 @@ steps:
         --env "HOME=$(Build.BinariesDirectory)/manylinux-home" \
         --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
         --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
+        --env "TF_BUILD=true" \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
         "$(manylinuxImage)" \
         "$(Build.BinariesDirectory)/manylinux-home/venv/bin/python" build.py --test \
