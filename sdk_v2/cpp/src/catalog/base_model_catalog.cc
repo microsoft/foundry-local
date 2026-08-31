@@ -185,16 +185,20 @@ void BaseModelCatalog::RebuildIndex() const {
     }
   }
 
-  // Atomic swap — readers holding the old shared_ptr keep it alive until they're done.
-  // Suppress C++20 deprecation warning for std::atomic_store/load free functions.
-  // We can't use std::atomic<std::shared_ptr<>> due to missing XCode support (see header).
+  // Readers holding the previous shared_ptr keep that snapshot alive.
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-  std::atomic_store(&index_, std::shared_ptr<const ModelIndex>(std::move(new_index)));
+  std::atomic_store_explicit(&index_, std::shared_ptr<const ModelIndex>(std::move(new_index)),
+                             std::memory_order_release);
 #if defined(_MSC_VER)
 #pragma warning(pop)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
 #endif
 }
 
@@ -202,11 +206,17 @@ std::shared_ptr<const BaseModelCatalog::ModelIndex> BaseModelCatalog::GetIndex()
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-  return std::atomic_load(&index_);
+  auto index = std::atomic_load_explicit(&index_, std::memory_order_acquire);
 #if defined(_MSC_VER)
 #pragma warning(pop)
+#elif defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
 #endif
+  return index;
 }
 
 void BaseModelCatalog::InvalidateCache() {

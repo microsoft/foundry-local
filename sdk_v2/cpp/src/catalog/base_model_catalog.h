@@ -5,6 +5,7 @@
 #include "catalog.h"
 #include "logger.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -86,11 +87,8 @@ class BaseModelCatalog : public ICatalog {
   /// Models are only appended, never removed — external Model* pointers remain valid.
   mutable std::vector<std::unique_ptr<Model>> models_;
 
-  /// Lookup indices, rebuilt on each populate/refresh.
-  /// Guarded by std::atomic_load/store free functions so readers get a consistent
-  /// snapshot — the swap after rebuild is atomic, so a concurrent reader never sees
-  /// a partially-built index.
-  /// Can't use std::atomic<std::shared_ptr<>> due to lack of implemention in XCode (macOS)
+  /// Atomically replaced after each index rebuild so readers always observe a complete snapshot.
+  /// The free functions avoid atomic<shared_ptr> availability and alignment differences across standard libraries.
   mutable std::shared_ptr<const ModelIndex> index_;
 
   /// Atomically grab the current index snapshot. Callers hold the returned shared_ptr
