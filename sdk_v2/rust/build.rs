@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod build_support;
+mod http_extract;
 
 use build_support::{NuGetConfig, NuGetMode};
 
@@ -204,10 +205,10 @@ fn try_download(
     agent: &ureq::Agent,
     pkg: &NuGetPackage,
     rid: &str,
-    out_dir: &Path,
+    staging_dir: &Path,
     feed_url: &str,
     service_index_cache: &mut HashMap<String, String>,
-) -> Result<bool, String> {
+) -> Result<Vec<PathBuf>, String> {
     let base = resolve_base_address(agent, feed_url, service_index_cache)?;
     let name = pkg.name.to_lowercase();
     let version = pkg.version.to_lowercase();
@@ -230,38 +231,14 @@ fn try_download(
         return Err(format!("downloaded {} {} is empty", pkg.name, pkg.version));
     }
 
-    let ext = native_lib_extension();
-    let native_prefix = format!("runtimes/{rid}/native/");
-    let runtime_prefix = format!("runtimes/{rid}/");
-    let mut archive = zip::ZipArchive::new(io::Cursor::new(&bytes))
-        .map_err(|e| format!("open nupkg {}: {e}", pkg.name))?;
-
-    let mut extracted_expected_file = false;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| format!("zip entry: {e}"))?;
-        let entry = file.name().to_string();
-        if !entry.ends_with(&format!(".{ext}")) {
-            continue;
-        }
-        let direct = entry
-            .strip_prefix(&runtime_prefix)
-            .map(|r| !r.is_empty() && !r.contains('/'))
-            .unwrap_or(false);
-        if !entry.starts_with(&native_prefix) && !direct {
-            continue;
-        }
-        let file_name = match Path::new(&entry).file_name() {
-            Some(n) => n.to_string_lossy().to_string(),
-            None => continue,
-        };
-        let dest = out_dir.join(&file_name);
-        let mut out =
-            fs::File::create(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
-        io::copy(&mut file, &mut out).map_err(|e| format!("write {}: {e}", dest.display()))?;
-        println!("cargo:warning=  Extracted {file_name}");
-        extracted_expected_file |= file_name == pkg.expected_file;
-    }
-    Ok(extracted_expected_file)
+    http_extract::extract_package(
+        io::Cursor::new(bytes),
+        rid,
+        native_lib_extension(),
+        &pkg.expected_file,
+        staging_dir,
+    )
+    .map_err(|error| format!("extract nupkg {}: {error}", pkg.name))
 }
 
 fn download_and_extract(
@@ -278,27 +255,32 @@ fn download_and_extract(
     if pkg.version.trim().is_empty() {
         return Err(format!("no version configured for {}", pkg.name));
     }
+    let staging_dir = out_dir.join(format!(".nuget-http-{}", pkg.expected_file));
     let mut last = String::new();
     for feed in feeds {
-        build_support::invalidate_package(out_dir, &pkg.expected_file)?;
-        match try_download(agent, pkg, rid, out_dir, feed, service_index_cache) {
+        match try_download(agent, pkg, rid, &staging_dir, feed, service_index_cache) {
             // Integrity guard: a "successful" download must actually yield the
             // expected native binary (the archive opened as a valid zip and the
             // expected file landed on disk). Cryptographic SHA-512 verification
             // against the feed's published packageHash is feed-specific — the
             // registration layout differs between nuget.org and the Azure DevOps
             // feed — and is left as future hardening.
-            Ok(true) => {
+            Ok(files) => {
+                let stage_result = http_extract::stage_files(&files, out_dir);
+                http_extract::cleanup_dir(&staging_dir);
+                stage_result?;
+                for file in files {
+                    if let Some(file_name) = file.file_name() {
+                        println!("cargo:warning=  Extracted {}", file_name.to_string_lossy());
+                    }
+                }
                 build_support::record_package_version(out_dir, &pkg.expected_file, &pkg.version)?;
                 return Ok(());
             }
-            Ok(false) => {
-                last = format!(
-                    "{} {} downloaded but did not contain expected file {}",
-                    pkg.name, pkg.version, pkg.expected_file
-                )
+            Err(error) => {
+                http_extract::cleanup_dir(&staging_dir);
+                last = error;
             }
-            Err(e) => last = e,
         }
     }
     Err(format!(
@@ -567,7 +549,16 @@ fn main() {
         let packages = get_packages(&deps, &runtime_version);
         let config = build_support::read_config()
             .unwrap_or_else(|error| panic!("invalid NuGet configuration: {error}"));
-        let result = match config.mode {
+        let package_versions: Vec<_> = packages
+            .iter()
+            .map(|pkg| (pkg.expected_file.as_str(), pkg.version.as_str()))
+            .collect();
+        let result = build_support::reset_native_cache_if_stale(
+            &out_dir,
+            &package_versions,
+            native_lib_extension(),
+        )
+        .and_then(|_| match config.mode {
             NuGetMode::Http => {
                 let mut failed = false;
                 let mut service_index_cache = HashMap::new();
@@ -594,7 +585,7 @@ fn main() {
             }
             NuGetMode::Dotnet => restore_with_dotnet(&config, &packages, rid, &out_dir),
             NuGetMode::Nuget => restore_with_nuget(&config, &packages, rid, &out_dir),
-        };
+        });
         if let Err(error) = result {
             println!("cargo:warning=native package acquisition failed: {error}");
             return;

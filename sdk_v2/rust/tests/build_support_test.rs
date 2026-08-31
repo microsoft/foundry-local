@@ -428,3 +428,50 @@ fn expected_file_check_uses_the_current_package_file_list() {
         "missing.dll"
     ));
 }
+
+#[test]
+fn stale_package_resets_all_managed_native_files() {
+    let root = test_dir("reset-native-cache");
+    fs::create_dir_all(&root).unwrap();
+    create_file(&root.join("runtime.dll"));
+    create_file(&root.join("stale-companion.dll"));
+    create_file(&root.join("ort.dll"));
+    create_file(&root.join("keep.txt"));
+    build_support::record_package_version(&root, "runtime.dll", "1.0.0").unwrap();
+    build_support::record_package_version(&root, "ort.dll", "2.0.0").unwrap();
+
+    let reset = build_support::reset_native_cache_if_stale(
+        &root,
+        &[("runtime.dll", "1.1.0"), ("ort.dll", "2.0.0")],
+        "dll",
+    )
+    .unwrap();
+
+    assert!(reset);
+    assert!(!root.join("runtime.dll").exists());
+    assert!(!root.join("stale-companion.dll").exists());
+    assert!(!root.join("ort.dll").exists());
+    assert!(root.join("keep.txt").exists());
+    assert!(!build_support::package_is_current(
+        &root, "ort.dll", "2.0.0"
+    ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn current_native_cache_is_left_untouched() {
+    let root = test_dir("keep-native-cache");
+    fs::create_dir_all(&root).unwrap();
+    create_file(&root.join("runtime.dll"));
+    create_file(&root.join("companion.dll"));
+    build_support::record_package_version(&root, "runtime.dll", "1.0.0").unwrap();
+
+    let reset =
+        build_support::reset_native_cache_if_stale(&root, &[("runtime.dll", "1.0.0")], "dll")
+            .unwrap();
+
+    assert!(!reset);
+    assert!(root.join("runtime.dll").exists());
+    assert!(root.join("companion.dll").exists());
+    fs::remove_dir_all(root).unwrap();
+}

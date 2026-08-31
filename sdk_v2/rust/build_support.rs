@@ -251,6 +251,37 @@ fn package_version_path(out_dir: &Path, expected_file: &str) -> PathBuf {
     out_dir.join(format!(".{expected_file}.version"))
 }
 
+pub fn reset_native_cache_if_stale(
+    out_dir: &Path,
+    packages: &[(&str, &str)],
+    extension: &str,
+) -> Result<bool, String> {
+    if packages
+        .iter()
+        .all(|(expected_file, version)| package_is_current(out_dir, expected_file, version))
+    {
+        return Ok(false);
+    }
+
+    for entry in fs::read_dir(out_dir)
+        .map_err(|error| format!("read native cache {}: {error}", out_dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read native cache entry: {error}"))?;
+        if entry
+            .file_type()
+            .map_err(|error| format!("read native cache entry type: {error}"))?
+            .is_file()
+            && entry.path().extension().and_then(|value| value.to_str()) == Some(extension)
+        {
+            remove_file_if_present(&entry.path())?;
+        }
+    }
+    for (expected_file, _) in packages {
+        remove_file_if_present(&package_version_path(out_dir, expected_file))?;
+    }
+    Ok(true)
+}
+
 pub fn generate_restore_project(packages: &[(&str, &str)]) -> String {
     let references = packages
         .iter()
