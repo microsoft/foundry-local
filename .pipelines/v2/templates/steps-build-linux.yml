@@ -2,9 +2,8 @@
 #
 # Supports both linux-x64 (pool: onnxruntime-Ubuntu2404-AMD-CPU) and
 # linux-arm64 (pool: onnxruntime-linux-ARM64-CPU-2019) via the `arch`
-# parameter. Each pool has the toolchain pre-installed; we still bootstrap
-# vcpkg and pre-download NuGet packages from the aiinfra feed for version
-# pinning.
+# parameter. Native compilation runs in the matching manylinux_2_28
+# container so all downstream packages have a glibc 2.28 baseline.
 
 parameters:
 - name: arch
@@ -25,9 +24,28 @@ steps:
 
 - bash: |
     set -euo pipefail
-    git clone https://github.com/microsoft/vcpkg.git "$(Build.BinariesDirectory)/vcpkg"
-    "$(Build.BinariesDirectory)/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
-  displayName: 'Bootstrap vcpkg'
+    case '${{ parameters.arch }}' in
+      x64)
+        image='quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb'
+        ;;
+      arm64)
+        image='quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1'
+        ;;
+      *) echo "Unsupported architecture: ${{ parameters.arch }}" >&2; exit 1 ;;
+    esac
+    docker version
+    docker pull "$image"
+    build_image="foundry-local-manylinux-2.28:${{ parameters.arch }}"
+    image_id_file="$(Build.BinariesDirectory)/manylinux-${{ parameters.arch }}.iid"
+    docker build \
+      --build-arg "BASE_IMAGE=$image" \
+      --file "$(Build.SourcesDirectory)/.pipelines/v2/docker/manylinux/Dockerfile" \
+      --iidfile "$image_id_file" \
+      --tag "$build_image" \
+      "$(Build.SourcesDirectory)/.pipelines/v2/docker/manylinux"
+    IFS= read -r image_id < "$image_id_file" || [ -n "$image_id" ]
+    echo "##vso[task.setvariable variable=manylinuxImage]$image_id"
+  displayName: 'Prepare manylinux 2.28 build image'
 
 - template: steps-prefetch-nuget.yml
   parameters:
@@ -37,16 +55,6 @@ steps:
     includeWinml: false
     shell: bash
 
-# Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
-# matches the .nupkg version instead of the cmake default.
-- bash: |
-    set -euo pipefail
-    version=$(cat "$(Pipeline.Workspace)/version-info/sdkVersion.txt" | tr -d '[:space:]')
-    defines="$(cmakeFetchDefines) \"FOUNDRY_LOCAL_VERSION_STRING=$version\""
-    echo "##vso[task.setvariable variable=cmakeFetchDefines]$defines"
-    echo "cmakeFetchDefines = $defines"
-  displayName: 'Append version define'
-
 - ${{ if eq(parameters.runTests, true) }}:
   - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
     parameters:
@@ -54,23 +62,61 @@ steps:
 
 - bash: |
     set -euo pipefail
-    python3 build.py --configure --build \
-      --config ${{ parameters.buildConfig }} \
-      --cmake_extra_defines $(cmakeFetchDefines)
-  displayName: 'Configure and build'
-  workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-  env:
-    VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
+    version=$(tr -d '[:space:]' < "$(Pipeline.Workspace)/version-info/sdkVersion.txt")
+    home_dir="$(Build.BinariesDirectory)/manylinux-home"
+    mkdir -p "$home_dir"
+    user_id=$(id -u)
+    group_id=$(id -g)
+
+    docker run --rm \
+      --user "$user_id:$group_id" \
+      --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
+      --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
+      --env "HOME=$home_dir" \
+      --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
+      --env "NUGET_CACHE=$(Build.BinariesDirectory)/nuget_packages" \
+      --env "SDK_VERSION=$version" \
+      --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
+      "$(manylinuxImage)" \
+      bash -c '
+        set -euo pipefail
+        /opt/python/cp312-cp312/bin/python3.12 -m venv "$HOME/venv"
+        python="$HOME/venv/bin/python"
+        "$python" -m pip install --upgrade "cmake==3.31.6"
+        git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+        "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+        "$python" build.py --configure --build \
+          --config ${{ parameters.buildConfig }} \
+          --cmake_path "$HOME/venv/bin/cmake" \
+          --ctest_path "$HOME/venv/bin/ctest" \
+          --cmake_extra_defines \
+            "GENAI_FETCH_URL=$NUGET_CACHE/genai.nupkg" \
+            "ORT_FETCH_URL=$NUGET_CACHE/ort.nupkg" \
+            "FOUNDRY_LOCAL_VERSION_STRING=$SDK_VERSION"
+      '
+  displayName: 'Configure and build in manylinux 2.28'
 
 - ${{ if eq(parameters.runTests, true) }}:
   - bash: |
       set -euo pipefail
-      python3 build.py --test --config ${{ parameters.buildConfig }}
-    displayName: 'Run tests'
-    workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
-    env:
-      VCPKG_ROOT: $(Build.BinariesDirectory)/vcpkg
-      FOUNDRY_TEST_DATA_DIR: $(Agent.BuildDirectory)/test-data-shared
+      user_id=$(id -u)
+      group_id=$(id -g)
+      docker run --rm \
+        --user "$user_id:$group_id" \
+        --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
+        --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
+        --volume "$(Agent.BuildDirectory)/test-data-shared:$(Agent.BuildDirectory)/test-data-shared:ro" \
+        --env "HOME=$(Build.BinariesDirectory)/manylinux-home" \
+        --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
+        --env "FOUNDRY_TEST_DATA_DIR=$(Agent.BuildDirectory)/test-data-shared" \
+        --env "TF_BUILD=true" \
+        --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
+        "$(manylinuxImage)" \
+        "$(Build.BinariesDirectory)/manylinux-home/venv/bin/python" build.py --test \
+          --config ${{ parameters.buildConfig }} \
+          --cmake_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/cmake" \
+          --ctest_path "$(Build.BinariesDirectory)/manylinux-home/venv/bin/ctest"
+    displayName: 'Run tests in manylinux 2.28'
 
 - bash: |
     echo "=== vcpkg buildtrees error logs ==="
