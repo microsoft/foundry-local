@@ -35,13 +35,16 @@ steps:
     esac
     docker version
     docker pull "$image"
-    build_image="foundry-local-manylinux-2.28-${{ parameters.arch }}:$(Build.BuildId)"
+    build_image="foundry-local-manylinux-2.28:${{ parameters.arch }}"
+    image_id_file="$(Build.BinariesDirectory)/manylinux-${{ parameters.arch }}.iid"
     docker build \
       --build-arg "BASE_IMAGE=$image" \
       --file "$(Build.SourcesDirectory)/.pipelines/v2/docker/manylinux/Dockerfile" \
+      --iidfile "$image_id_file" \
       --tag "$build_image" \
       "$(Build.SourcesDirectory)/.pipelines/v2/docker/manylinux"
-    echo "##vso[task.setvariable variable=manylinuxImage]$build_image"
+    read -r image_id < "$image_id_file"
+    echo "##vso[task.setvariable variable=manylinuxImage]$image_id"
   displayName: 'Prepare manylinux 2.28 build image'
 
 - template: steps-prefetch-nuget.yml
@@ -62,9 +65,11 @@ steps:
     version=$(tr -d '[:space:]' < "$(Pipeline.Workspace)/version-info/sdkVersion.txt")
     home_dir="$(Build.BinariesDirectory)/manylinux-home"
     mkdir -p "$home_dir"
+    user_id=$(id -u)
+    group_id=$(id -g)
 
     docker run --rm \
-      --user "$(id -u):$(id -g)" \
+      --user "$user_id:$group_id" \
       --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
       --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
       --env "HOME=$home_dir" \
@@ -78,9 +83,7 @@ steps:
         /opt/python/cp312-cp312/bin/python3.12 -m venv "$HOME/venv"
         python="$HOME/venv/bin/python"
         "$python" -m pip install --upgrade "cmake==3.31.6"
-        if [ ! -d "$VCPKG_ROOT/.git" ]; then
-          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-        fi
+        git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
         "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
         "$python" build.py --configure --build \
           --config ${{ parameters.buildConfig }} \
@@ -96,8 +99,10 @@ steps:
 - ${{ if eq(parameters.runTests, true) }}:
   - bash: |
       set -euo pipefail
+      user_id=$(id -u)
+      group_id=$(id -g)
       docker run --rm \
-        --user "$(id -u):$(id -g)" \
+        --user "$user_id:$group_id" \
         --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
         --volume "$(Build.BinariesDirectory):$(Build.BinariesDirectory)" \
         --volume "$(Agent.BuildDirectory)/test-data-shared:$(Agent.BuildDirectory)/test-data-shared:ro" \

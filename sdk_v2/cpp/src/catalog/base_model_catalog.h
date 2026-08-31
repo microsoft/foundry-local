@@ -87,31 +87,9 @@ class BaseModelCatalog : public ICatalog {
   /// Models are only appended, never removed — external Model* pointers remain valid.
   mutable std::vector<std::unique_ptr<Model>> models_;
 
-  /// Lookup indices, rebuilt on each populate/refresh.
-  ///
-  /// std::atomic<std::shared_ptr<T>> (C++20, __cpp_lib_atomic_shared_ptr) gives readers
-  /// a consistent snapshot: the swap after RebuildIndex() is atomic, so a concurrent
-  /// reader never observes a partially-built index, and the shared_ptr returned by
-  /// GetIndex() keeps that snapshot alive even if a later refresh replaces index_.
-  ///
-  /// Falls back to a plain shared_ptr guarded by the (C++20-deprecated) free functions
-  /// std::atomic_load/atomic_store on toolchains that don't yet implement the
-  /// specialization (older libc++/Xcode).
-  ///
-  /// Held behind a unique_ptr rather than by value: MSVC's atomic<shared_ptr<T>>
-  /// specialization has an internal over-alignment requirement (for its lock-free
-  /// CAS storage) that, if embedded directly, forces the compiler to pad
-  /// BaseModelCatalog -- and every class deriving from it -- to satisfy that
-  /// alignment (MSVC C4324, treated as an error). Storing it on the heap keeps the
-  /// member's footprint here to an ordinary pointer, so no padding is introduced in
-  /// this class or in any derived catalog, while the pointer is fixed for the
-  /// object's lifetime (only the pointee's value changes, via atomic store/load).
-#if defined(__cpp_lib_atomic_shared_ptr)
-  mutable std::unique_ptr<std::atomic<std::shared_ptr<const ModelIndex>>> index_ =
-      std::make_unique<std::atomic<std::shared_ptr<const ModelIndex>>>();
-#else
+  /// Atomically replaced after each index rebuild so readers always observe a complete snapshot.
+  /// The free functions avoid atomic<shared_ptr> availability and alignment differences across standard libraries.
   mutable std::shared_ptr<const ModelIndex> index_;
-#endif
 
   /// Atomically grab the current index snapshot. Callers hold the returned shared_ptr
   /// for the duration of their lookup, keeping the index alive if a refresh swaps it out.

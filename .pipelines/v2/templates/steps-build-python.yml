@@ -168,9 +168,10 @@ steps:
     pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
-        $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
         if ('${{ parameters.rid }}' -like 'linux-*') {
-            $buildTools += 'auditwheel==6.8.1'
+            $buildTools = @('auditwheel==6.8.1')
+        } else {
+            $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
         }
         python -m pip install --upgrade @buildTools
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -265,15 +266,17 @@ steps:
       esac
 
       platform_tag="manylinux_2_28_${manylinux_arch}"
-      raw_dir="$(Build.ArtifactStagingDirectory)/python-sdk-raw"
+      raw_dir="$(Agent.TempDirectory)/python-sdk-raw"
       out_dir="${{ parameters.outputDir }}"
       home_dir="$(Agent.TempDirectory)/manylinux-python-home"
       mkdir -p "$raw_dir" "$out_dir" "$home_dir"
+      user_id=$(id -u)
+      group_id=$(id -g)
       docker version
       docker pull "$image"
 
       docker run --rm \
-        --user "$(id -u):$(id -g)" \
+        --user "$user_id:$group_id" \
         --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
         --volume "$(Build.ArtifactStagingDirectory):$(Build.ArtifactStagingDirectory)" \
         --volume "$(Agent.TempDirectory):$(Agent.TempDirectory)" \
@@ -282,7 +285,6 @@ steps:
         --env "RAW_WHEEL_DIR=$raw_dir" \
         --env "WHEEL_DIR=$out_dir" \
         --env "AUDITWHEEL_PLAT=$platform_tag" \
-        --env "LD_LIBRARY_PATH=${{ parameters.nativeArtifactDir }}" \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/python" \
         "$image" \
         bash -c '
