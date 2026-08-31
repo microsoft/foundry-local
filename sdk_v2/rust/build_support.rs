@@ -213,6 +213,26 @@ pub fn invalidate_package(out_dir: &Path, expected_file: &str) -> Result<(), Str
     remove_file_if_present(&package_version_path(out_dir, expected_file))
 }
 
+pub fn invalidate_package_version_markers(out_dir: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(out_dir)
+        .map_err(|error| format!("read native cache {}: {error}", out_dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read native cache entry: {error}"))?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if entry
+            .file_type()
+            .map_err(|error| format!("read native cache entry type: {error}"))?
+            .is_file()
+            && file_name.starts_with('.')
+            && file_name.ends_with(".version")
+        {
+            remove_file_if_present(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 fn remove_file_if_present(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),

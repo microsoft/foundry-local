@@ -475,3 +475,49 @@ fn current_native_cache_is_left_untouched() {
     assert!(root.join("companion.dll").exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn local_staging_invalidates_nuget_cache_identity() {
+    let root = test_dir("local-source-transition");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("runtime.dll"), b"nuget").unwrap();
+    fs::write(root.join("ort.dll"), b"nuget").unwrap();
+    build_support::record_package_version(&root, "runtime.dll", "1.0.0").unwrap();
+    build_support::record_package_version(&root, "ort.dll", "2.0.0").unwrap();
+
+    fs::write(root.join("runtime.dll"), b"local").unwrap();
+    build_support::invalidate_package_version_markers(&root).unwrap();
+
+    assert_eq!(fs::read(root.join("runtime.dll")).unwrap(), b"local");
+    assert!(!build_support::package_is_current(
+        &root,
+        "runtime.dll",
+        "1.0.0"
+    ));
+    assert!(!build_support::package_is_current(
+        &root, "ort.dll", "2.0.0"
+    ));
+    assert!(build_support::reset_native_cache_if_stale(
+        &root,
+        &[("runtime.dll", "1.0.0"), ("ort.dll", "2.0.0")],
+        "dll",
+    )
+    .unwrap());
+    assert!(!root.join("runtime.dll").exists());
+    assert!(!root.join("ort.dll").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn marker_invalidation_is_a_noop_without_package_markers() {
+    let root = test_dir("no-package-markers");
+    fs::create_dir_all(&root).unwrap();
+    create_file(&root.join("runtime.dll"));
+    create_file(&root.join(".unrelated"));
+
+    build_support::invalidate_package_version_markers(&root).unwrap();
+
+    assert!(root.join("runtime.dll").exists());
+    assert!(root.join(".unrelated").exists());
+    fs::remove_dir_all(root).unwrap();
+}

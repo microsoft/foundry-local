@@ -463,10 +463,10 @@ fn restore_with_nuget(
     result
 }
 
-fn copy_from_local_dir(src: &Path, out_dir: &Path) -> bool {
+fn copy_from_local_dir(src: &Path, out_dir: &Path) -> Result<bool, String> {
     let ext = native_lib_extension();
     let Ok(entries) = fs::read_dir(src) else {
-        return false;
+        return Ok(false);
     };
     let mut copied = false;
     for entry in entries.flatten() {
@@ -483,7 +483,10 @@ fn copy_from_local_dir(src: &Path, out_dir: &Path) -> bool {
             }
         }
     }
-    copied
+    if copied {
+        build_support::invalidate_package_version_markers(out_dir)?;
+    }
+    Ok(copied)
 }
 
 fn emit_native_dir(out_dir: &Path) {
@@ -525,9 +528,18 @@ fn main() {
     // 1. Local C++ build output (dev path).
     if let Ok(local) = env::var("FOUNDRY_LOCAL_NATIVE_BIN_DIR") {
         let src = Path::new(&local);
-        if src.is_dir() && copy_from_local_dir(src, &out_dir) {
-            emit_native_dir(&out_dir);
-            return;
+        if src.is_dir() {
+            match copy_from_local_dir(src, &out_dir) {
+                Ok(true) => {
+                    emit_native_dir(&out_dir);
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    println!("cargo:warning=local native staging failed: {error}");
+                    return;
+                }
+            }
         }
     }
 
