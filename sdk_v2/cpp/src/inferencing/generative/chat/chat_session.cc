@@ -534,9 +534,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // tool-call markers configured, both marker strings are empty and the accumulator degrades to passthrough.
   // REASONING segments bypass the accumulator entirely — tool-call-shaped text inside <think>...</think> is the
   // model's scratchpad and is not a real tool call.
+  auto tool_call_config = ToolCallConfig::FromModelType(
+      model_.GetGenAIConfig().model ? model_.GetGenAIConfig().model->type : "");
   ToolCallStreamAccumulator tool_accumulator(
       cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_start : std::string{},
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{});
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{},
+      std::move(tool_call_config));
 
   // Tool calls parsed during streaming. Reused by ProcessGeneratedOutput so call_ids stay stable across stream
   // deltas and the final response (OpenAI Chat Completions contract). Populated even when there is no streaming
@@ -731,8 +734,11 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // qwen tokenizer happens to emit `<tool_call>` as a single special token. Tokenizers that split the marker across
   // multiple tokens (or chat templates that produce marker-shaped text gradually) would silently fail. The shared
   // accumulator buffers across tokens and is verified by unit tests.
+  auto tool_call_config = ToolCallConfig::FromModelType(
+      model_.GetGenAIConfig().model ? model_.GetGenAIConfig().model->type : "");
   ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.tool_call_start : std::string{},
-                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{});
+                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{},
+                                             std::move(tool_call_config));
 
   // Tool calls parsed during streaming. Reused by ProcessGeneratedOutput so call_ids stay stable across stream
   // deltas and the final ChatCompletionResponse (OpenAI Chat Completions contract).

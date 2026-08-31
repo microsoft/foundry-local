@@ -236,3 +236,110 @@ TEST(ToolCallStreamAccumulatorTest, FalseStartPrefixReleasesAfterDisambiguation)
   EXPECT_EQ(out2.visible_text, "<toolbox>");
   EXPECT_TRUE(out2.ready_calls.empty());
 }
+
+// ========================================================================
+// Header-inspection mode (Harmony / GPT-OSS protocol)
+// ========================================================================
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyBasicToolCall) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  auto out = acc.Push("<|start|>assistant to=functions.get_weather<|channel|>default<|message|>{\"city\": \"Seattle\"}<|call|>");
+  EXPECT_EQ(out.visible_text, "");
+  ASSERT_EQ(out.ready_calls.size(), 1u);
+  EXPECT_EQ(out.ready_calls[0].name, "get_weather");
+  EXPECT_EQ(out.ready_calls[0].arguments, "{\"city\": \"Seattle\"}");
+  EXPECT_FALSE(out.ready_calls[0].id.empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyToolCallSplitAcrossChunks) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  std::vector<std::string> chunks = {
+      "<|start|>",
+      "assistant to=functions.multiply",
+      "<|channel|>default",
+      "<|message|>",
+      "{\"a\": 7, \"b\": 6}",
+      "<|call|>"};
+
+  auto outs = RunChunks(acc, chunks);
+  std::string visible = CollectVisible(outs);
+  EXPECT_EQ(visible, "");
+
+  // Collect all ready_calls across all outputs
+  std::vector<ParsedToolCall> all_calls;
+  for (const auto& o : outs) {
+    for (const auto& c : o.ready_calls) {
+      all_calls.push_back(c);
+    }
+  }
+  ASSERT_EQ(all_calls.size(), 1u);
+  EXPECT_EQ(all_calls[0].name, "multiply");
+  EXPECT_EQ(all_calls[0].arguments, "{\"a\": 7, \"b\": 6}");
+}
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyRegularTextNotToolCall) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  // Regular assistant text: header doesn't match "to=functions.X" pattern
+  auto out = acc.Push("<|start|>assistant<|channel|>default<|message|>Hello, how can I help?<|end|>");
+  // The header doesn't match → emitted as visible text (header + message_token + body until we see end)
+  // Note: <|end|> is an end_token in config, so body terminates there
+  // But since header didn't match, it went back to Idle and this is all visible
+  EXPECT_FALSE(out.visible_text.empty());
+  EXPECT_TRUE(out.ready_calls.empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyParallelToolCalls) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  // Two tool calls: first ends with <|end|> (intermediate), second with <|call|> (final)
+  std::string input =
+      "<|start|>assistant to=functions.func1<|channel|>default<|message|>{\"x\": 1}<|end|>"
+      "<|start|>assistant to=functions.func2<|channel|>default<|message|>{\"x\": 2}<|call|>";
+
+  auto out = acc.Push(input);
+  EXPECT_EQ(out.visible_text, "");
+  ASSERT_EQ(out.ready_calls.size(), 2u);
+  EXPECT_EQ(out.ready_calls[0].name, "func1");
+  EXPECT_EQ(out.ready_calls[0].arguments, "{\"x\": 1}");
+  EXPECT_EQ(out.ready_calls[1].name, "func2");
+  EXPECT_EQ(out.ready_calls[1].arguments, "{\"x\": 2}");
+}
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyTextBeforeToolCall) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  auto out = acc.Push("Some preamble text<|start|>assistant to=functions.foo<|channel|>default<|message|>{}<|call|>");
+  EXPECT_EQ(out.visible_text, "Some preamble text");
+  ASSERT_EQ(out.ready_calls.size(), 1u);
+  EXPECT_EQ(out.ready_calls[0].name, "foo");
+}
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyFlushUnterminatedHeader) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  acc.Push("<|start|>assistant to=functions.bar");
+  auto flush_out = acc.Flush();
+  // Unterminated → surface as visible text
+  EXPECT_FALSE(flush_out.visible_text.empty());
+  EXPECT_TRUE(flush_out.ready_calls.empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, HarmonyFlushUnterminatedBody) {
+  auto config = ToolCallConfig::Harmony();
+  ToolCallStreamAccumulator acc("<|start|>", "<|call|>", config);
+
+  acc.Push("<|start|>assistant to=functions.bar<|channel|>default<|message|>{\"partial\": true");
+  auto flush_out = acc.Flush();
+  // Unterminated body → surface everything as visible text
+  EXPECT_FALSE(flush_out.visible_text.empty());
+  EXPECT_TRUE(flush_out.ready_calls.empty());
+}
