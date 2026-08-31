@@ -168,9 +168,10 @@ steps:
     pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
     script: |
         python -m pip install --upgrade pip
-        $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
         if ('${{ parameters.rid }}' -like 'linux-*') {
-            $buildTools += 'auditwheel>=6.8'
+            $buildTools = @('auditwheel==6.8.1')
+        } else {
+            $buildTools = @('build', 'setuptools', 'wheel', 'cffi>=1.16')
         }
         python -m pip install --upgrade @buildTools
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -216,28 +217,23 @@ steps:
           Write-Host "vcvarsall.bat: $vcvars"
           Write-Host "##vso[task.setvariable variable=vcvarsAllPath]$vcvars"
 
-- task: PowerShell@2
-  displayName: 'Build wheel'
-  inputs:
-    targetType: inline
-    pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
-    script: |
+- ${{ if not(startsWith(parameters.rid, 'linux-')) }}:
+  - task: PowerShell@2
+    displayName: 'Build wheel'
+    inputs:
+      targetType: inline
+      pwsh: ${{ ne(parameters.rid, 'win-arm64') }}
+      script: |
         $outDir = "${{ parameters.outputDir }}"
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
         $extraArgs = @()
-        $platformTag = switch ('${{ parameters.rid }}') {
-            'linux-x64'   { 'manylinux_2_28_x86_64' }
-            'linux-arm64' { 'manylinux_2_28_aarch64' }
-            'osx-arm64'   { 'macosx_11_0_arm64' }
-            default       { $null }
-        }
-        if ($platformTag) {
-            $extraArgs += "--config-setting=--build-option=--plat-name=$platformTag"
-            Write-Host "Forcing wheel plat tag $platformTag"
+        if ('${{ parameters.rid }}' -eq 'osx-arm64') {
+            $extraArgs += '--config-setting=--build-option=--plat-name=macosx_11_0_arm64'
+            Write-Host "Forcing wheel plat tag macosx_11_0_arm64"
         }
         Push-Location "$(Build.SourcesDirectory)/sdk_v2/python"
         try {
-        if ('${{ parameters.rid }}' -eq 'win-arm64') {
+            if ('${{ parameters.rid }}' -eq 'win-arm64') {
                 $vcvars = "$(vcvarsAllPath)"
                 if (-not $vcvars) { throw "vcvarsAllPath pipeline variable is empty" }
                 $buildArgs = @('-m', 'build', '--wheel', '--outdir', $outDir) + $extraArgs
@@ -255,8 +251,59 @@ steps:
         }
 
 - ${{ if startsWith(parameters.rid, 'linux-') }}:
+  - bash: |
+      set -euo pipefail
+      case '${{ parameters.rid }}' in
+        linux-x64)
+          manylinux_arch='x86_64'
+          image='quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb'
+          ;;
+        linux-arm64)
+          manylinux_arch='aarch64'
+          image='quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1'
+          ;;
+        *) echo "Unsupported Linux RID: ${{ parameters.rid }}" >&2; exit 1 ;;
+      esac
+
+      platform_tag="manylinux_2_28_${manylinux_arch}"
+      raw_dir="$(Agent.TempDirectory)/python-sdk-raw"
+      out_dir="${{ parameters.outputDir }}"
+      home_dir="$(Agent.TempDirectory)/manylinux-python-home"
+      mkdir -p "$raw_dir" "$out_dir" "$home_dir"
+      user_id=$(id -u)
+      group_id=$(id -g)
+      docker version
+      docker pull "$image"
+
+      docker run --rm \
+        --user "$user_id:$group_id" \
+        --volume "$(Build.SourcesDirectory):$(Build.SourcesDirectory)" \
+        --volume "$(Build.ArtifactStagingDirectory):$(Build.ArtifactStagingDirectory)" \
+        --volume "$(Agent.TempDirectory):$(Agent.TempDirectory)" \
+        --volume "${{ parameters.nativeArtifactDir }}:${{ parameters.nativeArtifactDir }}:ro" \
+        --env "HOME=$home_dir" \
+        --env "RAW_WHEEL_DIR=$raw_dir" \
+        --env "WHEEL_DIR=$out_dir" \
+        --env "AUDITWHEEL_PLAT=$platform_tag" \
+        --workdir "$(Build.SourcesDirectory)/sdk_v2/python" \
+        "$image" \
+        bash -c '
+          set -euo pipefail
+          /opt/python/cp312-cp312/bin/python3.12 -m venv "$HOME/venv"
+          python="$HOME/venv/bin/python"
+          "$python" -m pip install --upgrade build setuptools wheel "cffi>=1.16" "auditwheel==6.8.1"
+          "$python" -m build --wheel --outdir "$RAW_WHEEL_DIR"
+          "$HOME/venv/bin/auditwheel" repair "$RAW_WHEEL_DIR"/*.whl \
+            --wheel-dir "$WHEEL_DIR" \
+            --plat "$AUDITWHEEL_PLAT" \
+            --exclude "libfoundry_local.so" \
+            --exclude "libonnxruntime.so*" \
+            --exclude "libonnxruntime-genai.so*"
+        '
+    displayName: 'Build and repair manylinux 2.28 wheel'
+
   - task: PowerShell@2
-    displayName: 'Validate manylinux compatibility'
+    displayName: 'Audit Linux ABI compatibility'
     inputs:
       targetType: inline
       pwsh: true
@@ -272,10 +319,15 @@ steps:
             throw "auditwheel failed with exit code $LASTEXITCODE"
         }
         $report = $json | ConvertFrom-Json
-        Write-Host "auditwheel platform: $($report.overall_tag)"
+        Write-Host "auditwheel overall platform: $($report.overall_tag)"
+        Write-Host "auditwheel symbol platform: $($report.sym_tag)"
 
-        if ($report.overall_tag -notmatch '^manylinux_(\d+)_(\d+)_(x86_64|aarch64)$') {
-            throw "Wheel is not manylinux compatible: $($report.overall_tag)"
+        if ($report.pyfpe -or $report.ucs2 -or $report.unsupported_isa) {
+            throw "Wheel uses unsupported Linux ABI features"
+        }
+
+        if ($report.sym_tag -notmatch '^manylinux_(\d+)_(\d+)_(x86_64|aarch64)$') {
+            throw "Wheel does not have a manylinux-compatible symbol baseline: $($report.sym_tag)"
         }
 
         $expectedArchitecture = if ('${{ parameters.rid }}' -eq 'linux-arm64') { 'aarch64' } else { 'x86_64' }
@@ -285,7 +337,22 @@ steps:
 
         $requiredPolicy = [version]"$($Matches[1]).$($Matches[2])"
         if ($requiredPolicy -gt [version]'2.28') {
-            throw "Wheel requires $($report.overall_tag), which exceeds the manylinux_2_28 target"
+            throw "Wheel requires $($report.sym_tag), which exceeds the manylinux_2_28 target"
+        }
+
+        # libfoundry_local is already bundled in the RID directory. ORT and GenAI
+        # are supplied by declared pip dependencies and preloaded by lib_loader.py.
+        $externalLibraries = @($report.external_libs.PSObject.Properties.Name)
+        $unexpectedLibraries = @(
+            $externalLibraries | Where-Object {
+                $_ -notmatch '^(?:libfoundry_local|libonnxruntime(?:-genai)?)\.so(?:\..*)?$'
+            }
+        )
+        if ($unexpectedLibraries.Count -gt 0) {
+            throw "Wheel has unexpected external shared libraries: $($unexpectedLibraries -join ', ')"
+        }
+        if ($externalLibraries.Count -gt 0) {
+            Write-Host "Expected external library references: $($externalLibraries -join ', ')"
         }
 
 - task: PowerShell@2
@@ -332,9 +399,20 @@ steps:
         $code = @'
         import sys, zipfile
 
-        whl, expected = sys.argv[1], sys.argv[2]
+        whl, expected, rid = sys.argv[1], sys.argv[2], sys.argv[3]
         with zipfile.ZipFile(whl) as wheel:
             names = wheel.namelist()
+
+        if rid.startswith("linux-"):
+            bundled_ort = [
+                name for name in names
+                if name.rsplit("/", 1)[-1].startswith("libonnxruntime") and ".so" in name
+            ]
+            if bundled_ort:
+                print("ERROR: ORT libraries must come from declared pip dependencies:")
+                for name in bundled_ort:
+                    print("  " + name)
+                sys.exit(1)
 
         hits = [name for name in names if name.endswith(expected)]
         if not hits:
@@ -346,6 +424,6 @@ steps:
 
         print("OK: found " + hits[0])
         '@
-        $code | python - "$($whl.FullName)" "$expected"
+        $code | python - "$($whl.FullName)" "$expected" "${{ parameters.rid }}"
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "Wheel validation passed."
