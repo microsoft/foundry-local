@@ -56,6 +56,12 @@ std::string FormatStreamingChunk(const std::string& content,
                                  int64_t created,
                                  const std::string& model_name);
 
+/// Format a streaming chunk with reasoning_content in the delta as JSON string.
+std::string FormatReasoningStreamingChunk(const std::string& reasoning_content,
+                                          const std::string& completion_id,
+                                          int64_t created,
+                                          const std::string& model_name);
+
 /// Format a streaming chunk with tool call data in delta.tool_calls.
 std::string FormatToolCallStreamingChunk(const std::vector<ChatCompletionToolCall>& tool_calls,
                                          const std::string& completion_id,

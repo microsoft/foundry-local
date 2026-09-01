@@ -719,8 +719,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   int next_tool_call_index = 0;
   std::vector<GeneratedOutputEvent> generated_events;
 
-  // Chat Completions suppresses REASONING segments, but final response construction still consumes this same typed
-  // sequence so it does not need to re-split decoded text.
+  // Use the same typed segments for streaming and final response construction.
   auto splitter = CreateReasoningSplitter(tool_ctx, Model());
 
   auto emit_visible_text = [&](std::string visible) {
@@ -760,13 +759,20 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   auto process_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
     for (const auto& seg : segments) {
-      // REASONING segments: intentionally dropped from the Chat Completions stream. Never feed reasoning text to
-      // the tool-call accumulator — tool-call-shaped text inside <think>...</think> is scratchpad, not a real call.
+      // REASONING segments: never feed reasoning text to the tool-call accumulator — tool-call-shaped text inside
+      // <think>...</think> is scratchpad, not a real call. Emit via reasoning_content, not content.
       if (seg.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
         if (!tool_accumulator.InsideToolCall()) {
           process_tool_output(tool_accumulator.Flush());
         }
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
+
+        if (is_streaming && !seg.text.empty()) {
+          auto chunk_json = chat_completions::FormatReasoningStreamingChunk(
+              seg.text, completion_id, created, model_name);
+          streaming_callback->PushItem(std::make_unique<TextItem>(
+              std::move(chunk_json), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+        }
         continue;
       }
 

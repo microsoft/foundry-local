@@ -94,11 +94,12 @@ struct ChatCompletionToolCall {
   std::optional<int> index;  // streaming only — distinguishes parallel tool calls
 };
 
-/// The message in a response choice. JSON keys: "role", "content", "refusal", "tool_calls"
+/// The message in a response choice. JSON keys: "role", "content", "reasoning_content", "refusal", "tool_calls"
 struct ChatCompletionResponseMessage {
   std::string role = "assistant";
-  std::optional<std::string> content;  // nullable when tool_calls present
-  std::optional<std::string> refusal;  // null unless refusal
+  std::optional<std::string> content;            // nullable when tool_calls present
+  std::optional<std::string> reasoning_content;  // present only for reasoning models
+  std::optional<std::string> refusal;            // null unless refusal
   std::optional<std::vector<ChatCompletionToolCall>> tool_calls;
 };
 
@@ -143,10 +144,11 @@ struct ChatCompletionResponse {
 
 // --- Streaming types ---
 
-/// Delta content in a streaming chunk. JSON keys: "role", "content", "tool_calls"
+/// Delta content in a streaming chunk. JSON keys: "role", "content", "reasoning_content", "tool_calls"
 struct ChatCompletionDelta {
   std::optional<std::string> role;
   std::optional<std::string> content;
+  std::optional<std::string> reasoning_content;  // present only for reasoning model chunks
   std::optional<std::vector<ChatCompletionToolCall>> tool_calls;
 };
 

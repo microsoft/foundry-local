@@ -15,7 +15,10 @@
 //   * Reasoning text must be exposed on at least one turn — the model's chain-of-thought is now first-class output.
 //   * Multi-turn correctness is validated by finish reason and structural properties (turn count, usage), not by
 //     exact-string answer matching, because reasoning models often paraphrase rather than echo.
-#include "model_fixture.h"
+#include "chat_completions_from_json.h"
+#include "web_service_fixture.h"
+
+#include <sstream>
 
 namespace {
 
@@ -33,6 +36,23 @@ bool ContainsCaseInsensitive(const std::string& haystack, const std::string& nee
 }
 
 }  // namespace
+
+class ReasoningWebServiceFixture : public WebServiceFixture {
+ protected:
+  static void SetUpTestSuite() {
+    SharedTestEnv::Get().AcquireModels({SharedTestEnv::Modality::Reasoning});
+  }
+
+  void SetUp() override {
+    if (!SharedTestEnv::Get().reasoning_model()) {
+      GTEST_SKIP() << "No reasoning model available";
+    }
+  }
+
+  static const std::string& model_id() {
+    return SharedTestEnv::Get().reasoning_model_id();
+  }
+};
 
 // Single-turn: reasoning model produces a non-empty visible answer plus exposed reasoning content.
 TEST_F(ReasoningFixture, SingleTurnStripsThinkBlock) {
@@ -70,6 +90,93 @@ TEST_F(ReasoningFixture, SingleTurnStripsThinkBlock) {
 
   std::cout << "Reasoning single-turn visible: " << visible << "\n";
   std::cout << "Reasoning single-turn thoughts: " << reasoning << "\n";
+}
+
+TEST_F(ReasoningWebServiceFixture, ChatCompletionsReturnsReasoningContent) {
+  auto client = MakeClient(180);
+  json request_body = {
+      {"model", model_id()},
+      {"messages", json::array({
+                       {{"role", "user"}, {"content", "What is 2+2? Answer with just the number."}},
+                   })},
+      {"temperature", 0},
+      {"max_tokens", 1024},
+  };
+
+  auto result = client.Post("/v1/chat/completions", request_body.dump(), "application/json");
+  ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  auto response = json::parse(result->body).get<fl::ChatCompletionResponse>();
+  ASSERT_EQ(response.choices.size(), 1u);
+  const auto& message = response.choices[0].message;
+  ASSERT_TRUE(message.reasoning_content.has_value());
+  EXPECT_FALSE(message.reasoning_content->empty());
+  ASSERT_TRUE(message.content.has_value());
+  EXPECT_FALSE(message.content->empty());
+  EXPECT_EQ(message.content->find("<think>"), std::string::npos);
+  EXPECT_GT(response.usage.completion_tokens_details.reasoning_tokens, 0);
+}
+
+TEST_F(ReasoningWebServiceFixture, ChatCompletionsStreamsReasoningContent) {
+  auto client = MakeClient(180);
+  json request_body = {
+      {"model", model_id()},
+      {"messages", json::array({
+                       {{"role", "user"}, {"content", "What is 2+2? Answer with just the number."}},
+                   })},
+      {"temperature", 0},
+      {"max_tokens", 1024},
+      {"stream", true},
+      {"stream_options", {{"include_usage", true}}},
+  };
+
+  auto result = client.Post("/v1/chat/completions", request_body.dump(), "application/json");
+  ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  std::string reasoning;
+  std::string content;
+  bool got_done = false;
+  bool got_reasoning_usage = false;
+  std::istringstream stream(result->body);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.rfind("data: ", 0) != 0) {
+      continue;
+    }
+
+    auto data = line.substr(6);
+    if (data == "[DONE]") {
+      got_done = true;
+      break;
+    }
+
+    auto chunk = json::parse(data).get<fl::ChatCompletionChunk>();
+    if (chunk.usage.has_value()) {
+      got_reasoning_usage =
+          chunk.usage->completion_tokens_details.reasoning_tokens > 0;
+    }
+    for (const auto& choice : chunk.choices) {
+      const auto& delta = choice.delta;
+      EXPECT_FALSE(delta.reasoning_content.has_value() && delta.content.has_value());
+      if (delta.reasoning_content.has_value()) {
+        reasoning += *delta.reasoning_content;
+      }
+      if (delta.content.has_value()) {
+        content += *delta.content;
+      }
+    }
+  }
+
+  EXPECT_TRUE(got_done);
+  EXPECT_FALSE(reasoning.empty());
+  EXPECT_FALSE(content.empty());
+  EXPECT_EQ(content.find("<think>"), std::string::npos);
+  EXPECT_TRUE(got_reasoning_usage);
 }
 
 // Multi-turn: continuous decoding through a reasoning model must not crash and must produce non-empty visible output

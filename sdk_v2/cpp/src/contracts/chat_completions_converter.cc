@@ -226,6 +226,7 @@ ChatCompletionResponse BuildResponse(const Response& response,
                                      const std::string& model_name) {
   // Extract assistant message and tool calls from response items
   std::string response_text;
+  std::string reasoning_text;
   std::vector<ChatCompletionToolCall> tool_calls;
 
   for (const auto& item : response.items) {
@@ -241,6 +242,8 @@ ChatCompletionResponse BuildResponse(const Response& response,
           const auto& ti = static_cast<const TextItem&>(*part.view);
           if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
             response_text += ti.text;
+          } else if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            reasoning_text += ti.text;
           }
         }
       }
@@ -261,6 +264,10 @@ ChatCompletionResponse BuildResponse(const Response& response,
   choice.index = 0;
   choice.finish_reason = MapFinishReason(response.finish_reason);
   choice.message.content = response_text;
+
+  if (!reasoning_text.empty()) {
+    choice.message.reasoning_content = std::move(reasoning_text);
+  }
 
   if (has_tool_calls) {
     choice.message.tool_calls = std::move(tool_calls);
@@ -292,6 +299,22 @@ std::string FormatStreamingChunk(const std::string& content,
 
   ChatCompletionChunkChoice choice;
   choice.delta.content = content;
+  chunk.choices.push_back(std::move(choice));
+
+  return nlohmann::json(chunk).dump();
+}
+
+std::string FormatReasoningStreamingChunk(const std::string& reasoning_content,
+                                          const std::string& completion_id,
+                                          int64_t created,
+                                          const std::string& model_name) {
+  ChatCompletionChunk chunk;
+  chunk.id = completion_id;
+  chunk.created = created;
+  chunk.model = model_name;
+
+  ChatCompletionChunkChoice choice;
+  choice.delta.reasoning_content = reasoning_content;
   chunk.choices.push_back(std::move(choice));
 
   return nlohmann::json(chunk).dump();

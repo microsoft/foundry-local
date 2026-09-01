@@ -171,6 +171,10 @@ void to_json(nlohmann::json& j, const ChatCompletionResponseMessage& m) {
     j["content"] = nullptr;
   }
 
+  if (m.reasoning_content.has_value()) {
+    j["reasoning_content"] = *m.reasoning_content;
+  }
+
   if (m.tool_calls.has_value()) {
     j["tool_calls"] = *m.tool_calls;
   }
@@ -241,6 +245,10 @@ void to_json(nlohmann::json& j, const ChatCompletionDelta& d) {
 
   if (d.content.has_value()) {
     j["content"] = *d.content;
+  }
+
+  if (d.reasoning_content.has_value()) {
+    j["reasoning_content"] = *d.reasoning_content;
   }
 
   if (d.tool_calls.has_value()) {

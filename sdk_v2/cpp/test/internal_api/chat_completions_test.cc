@@ -524,3 +524,65 @@ TEST(ChatCompletionStreamingTest, ChunkWithUsage) {
   EXPECT_EQ(j["usage"]["total_tokens"], 15);
   EXPECT_EQ(j["usage"]["completion_tokens_details"]["reasoning_tokens"], 2);
 }
+
+// ========================================================================
+// reasoning_content serialization
+// ========================================================================
+
+TEST(ChatCompletionResponseTest, ResponseMessageWithReasoningContent) {
+  ChatCompletionResponseMessage msg;
+  msg.content = "The answer is 42.";
+  msg.reasoning_content = "Let me think step by step...";
+
+  json j = msg;
+  EXPECT_EQ(j["content"], "The answer is 42.");
+  EXPECT_EQ(j["reasoning_content"], "Let me think step by step...");
+  EXPECT_TRUE(j["refusal"].is_null());
+}
+
+TEST(ChatCompletionResponseTest, ResponseMessageOmitsReasoningContentWhenAbsent) {
+  ChatCompletionResponseMessage msg;
+  msg.content = "Hello!";
+  // reasoning_content left as nullopt
+
+  json j = msg;
+  EXPECT_EQ(j["content"], "Hello!");
+  EXPECT_FALSE(j.contains("reasoning_content"));
+}
+
+TEST(ChatCompletionStreamingTest, DeltaWithReasoningContent) {
+  ChatCompletionDelta delta;
+  delta.reasoning_content = "thinking...";
+
+  json j = delta;
+  EXPECT_EQ(j["reasoning_content"], "thinking...");
+  EXPECT_FALSE(j.contains("content"));
+  EXPECT_FALSE(j.contains("role"));
+}
+
+TEST(ChatCompletionStreamingTest, DeltaOmitsReasoningContentWhenAbsent) {
+  ChatCompletionDelta delta;
+  delta.content = "visible text";
+
+  json j = delta;
+  EXPECT_EQ(j["content"], "visible text");
+  EXPECT_FALSE(j.contains("reasoning_content"));
+}
+
+TEST(ChatCompletionStreamingTest, DeltaDoesNotMixReasoningAndContent) {
+  // Verify that setting only reasoning_content does not produce a content field
+  ChatCompletionDelta delta;
+  delta.reasoning_content = "step 1";
+
+  json j = delta;
+  EXPECT_TRUE(j.contains("reasoning_content"));
+  EXPECT_FALSE(j.contains("content"));
+
+  // And vice versa
+  ChatCompletionDelta delta2;
+  delta2.content = "result";
+
+  json j2 = delta2;
+  EXPECT_TRUE(j2.contains("content"));
+  EXPECT_FALSE(j2.contains("reasoning_content"));
+}
