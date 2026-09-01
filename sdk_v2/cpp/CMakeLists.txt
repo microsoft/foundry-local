@@ -540,6 +540,16 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
         )
 
+        # GenAI 0.15.0 split most of its implementation out of
+        # libonnxruntime-genai.so into libmat.so
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/libmat.so")
+            add_custom_command(TARGET foundry_local POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${ORT_GENAI_LIB_DIR}/libmat.so"
+                    $<TARGET_FILE_DIR:foundry_local>
+            )
+        endif()
+
         if(EXISTS "${ORT_LIB_DIR}/libonnxruntime_providers_shared.so")
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
