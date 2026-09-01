@@ -2,6 +2,7 @@
 
 Documentation for Foundry Local can be found in the following resources:
 
+- [MSBench Tool Calling Fixes](MSBench%20Tool%20Calling%20Fixes.md): Engineering notes for the Responses API and tool-calling changes that enabled a local Qwen model to produce SWE-bench patches through MSBench.
 - [Microsoft Learn](https://learn.microsoft.com/azure/foundry-local/): This is the official documentation for Foundry Local, providing comprehensive guides, tutorials, and reference materials to help you get started and make the most of Foundry Local.
 - SDK Reference:
     - [C# SDK Reference](../sdk/cs/README.md): This documentation provides detailed information about the C# SDK for Foundry Local, including API references, usage examples, and best practices for integrating Foundry Local into your applications.

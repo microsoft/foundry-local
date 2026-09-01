@@ -28,10 +28,12 @@ struct ParsedToolCall {
 /// @param text            The full generated text (may contain mixed text and tool calls)
 /// @param tool_call_start The start marker token string
 /// @param tool_call_end   The end marker token string
+/// @param tools_json      Advertised OpenAI-format tools, used to resolve legacy aliases
 /// @return                Parsed tool calls, empty if none found
 std::vector<ParsedToolCall> ParseToolCalls(const std::string& text,
                                            const std::string& tool_call_start,
-                                           const std::string& tool_call_end);
+                                           const std::string& tool_call_end,
+                                           const std::string& tools_json = {});
 
 /// Generate a unique tool call ID (e.g., "call_abc123def").
 std::string GenerateToolCallId();

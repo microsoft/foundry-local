@@ -4,6 +4,7 @@
 
 #include "items/item.h"
 #include "items/text_item.h"
+#include "items/tool_call_item.h"
 #include "exception.h"
 
 #include <memory>
@@ -62,6 +63,7 @@ struct MessagePart {
 struct MessageItem : Item {
   flMessageRole role;
   std::vector<MessagePart> content;
+  std::vector<ToolCallItem> tool_calls;
   std::string name;
 
   // C API usage

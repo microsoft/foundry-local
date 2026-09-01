@@ -372,7 +372,7 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_KnownThinkIds_KnownToolIds) {
 cot: <think> THINK_TEXT </think> "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | toolcall
-TEXT: /[^{<](.|\n)*/
+TEXT: /[^{<][^<]*/
 toolcall: <tool_call> functioncall </tool_call>
 functioncall: %json )" +
       json_schema + "\n";
@@ -397,7 +397,7 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_UnknownThinkIds_KnownToolIds) {
 cot: "<think>" THINK_TEXT "</think>" "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | toolcall
-TEXT: /[^{<](.|\n)*/
+TEXT: /[^{<][^<]*/
 toolcall: <tool_call> functioncall </tool_call>
 functioncall: %json )" +
       json_schema + "\n";
@@ -422,7 +422,7 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_KnownThinkIds_UnknownToolIds) {
 cot: <think> THINK_TEXT </think> "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | functioncall
-TEXT: /[^{<](.|\n)*/
+TEXT: /[^{<][^{]*/
 functioncall: %json )" +
       json_schema + "\n";
 
@@ -444,7 +444,7 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_UnknownThinkIds_UnknownToolIds) {
 cot: "<think>" THINK_TEXT "</think>" "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | functioncall
-TEXT: /[^{<](.|\n)*/
+TEXT: /[^{<][^{]*/
 functioncall: %json )" +
       json_schema + "\n";
 

@@ -28,6 +28,9 @@ class GenAIModelInstance;
 /// in one place.
 std::string RenderMessageForPrompt(const MessageItem& msg);
 
+/// Serialize messages into the JSON shape consumed by the model chat template.
+std::string BuildChatMessagesJson(const std::vector<MessageItem>& messages);
+
 /// Build a chat prompt string from a list of messages.
 /// Uses the tokenizer's built-in chat template (via GenAIModelInstance::ApplyChatTemplate).
 ///

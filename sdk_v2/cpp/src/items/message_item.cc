@@ -14,7 +14,7 @@
 namespace fl {
 
 MessageItem::MessageItem(const MessageItem& other)
-    : Item(other), role(other.role), name(other.name) {
+  : Item(other), role(other.role), tool_calls(other.tool_calls), name(other.name) {
   content.reserve(other.content.size());
   for (const auto& part : other.content) {
     if (!part.view) {
@@ -31,6 +31,7 @@ MessageItem& MessageItem::operator=(const MessageItem& other) {
 
   Item::operator=(other);
   role = other.role;
+  tool_calls = other.tool_calls;
   name = other.name;
   content.clear();
   content.reserve(other.content.size());

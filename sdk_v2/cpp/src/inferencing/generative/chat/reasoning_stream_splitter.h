@@ -30,8 +30,16 @@ class ReasoningStreamSplitter {
     flTextItemType type;
   };
 
-  ReasoningStreamSplitter(std::string start_marker, std::string end_marker)
-      : start_marker_(std::move(start_marker)), end_marker_(std::move(end_marker)) {}
+  /// @param start_inside_reasoning True when the chat template pre-fills the reasoning
+  ///        open marker (e.g. `<think>\n`) before the model's first token. In that case
+  ///        the model's first byte is reasoning content and the splitter must start in
+  ///        the reasoning state instead of waiting for a start marker that will never
+  ///        appear.
+  ReasoningStreamSplitter(std::string start_marker, std::string end_marker,
+                          bool start_inside_reasoning = false)
+      : start_marker_(std::move(start_marker)),
+        end_marker_(std::move(end_marker)),
+        inside_reasoning_(start_inside_reasoning) {}
 
   /// Feed a token into the splitter. Returns zero or more segments to emit.
   std::vector<Segment> Push(const std::string& token) {

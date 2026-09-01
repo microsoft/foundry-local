@@ -10,9 +10,13 @@
 
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
 
@@ -20,7 +24,53 @@ namespace fl {
 
 namespace {
 
-ModelInfo MakeByomModelInfo(const std::string& model_id) {
+// Merge selected fields from the model directory's inference_model.json into
+// a BYOM ModelInfo. The scanner only extracts the model name, so tool-calling
+// and reasoning tags declared by the model author would otherwise be dropped.
+void MergeInferenceModelJson(ModelInfo& info, const std::string& local_path) {
+  if (local_path.empty()) {
+    return;
+  }
+
+  auto json_path = std::filesystem::path(local_path) / "inference_model.json";
+  std::error_code ec;
+  if (!std::filesystem::exists(json_path, ec)) {
+    return;
+  }
+
+  try {
+    std::ifstream file(json_path);
+    if (!file.is_open()) {
+      return;
+    }
+    auto j = nlohmann::json::parse(file, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (j.is_discarded() || !j.is_object()) {
+      return;
+    }
+
+    auto read_string = [&](const char* key, const char* prop) {
+      if (j.contains(key) && j[key].is_string()) {
+        info.string_properties[prop] = j[key].get<std::string>();
+      }
+    };
+    auto read_bool_as_int = [&](const char* key, const char* prop) {
+      if (j.contains(key) && j[key].is_boolean()) {
+        info.int_properties[prop] = j[key].get<bool>() ? 1 : 0;
+      }
+    };
+
+    read_bool_as_int("supportsToolCalling", FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
+    read_bool_as_int("supportsReasoning", FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT);
+    read_string("toolCallStart", FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
+    read_string("toolCallEnd", FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+    read_string("reasoningStart", FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
+    read_string("reasoningEnd", FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
+  } catch (...) {
+    // inference_model.json is best-effort metadata; ignore parse failures.
+  }
+}
+
+ModelInfo MakeByomModelInfo(const std::string& model_id, const std::string& local_path) {
   auto [name, version] = Utils::SplitModelNameAndVersion(model_id);
 
   ModelInfo info;
@@ -31,6 +81,9 @@ ModelInfo MakeByomModelInfo(const std::string& model_id) {
   info.version = version;
   info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "Local";
   info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
+
+  MergeInferenceModelJson(info, local_path);
+
   return info;
 }
 
@@ -142,7 +195,7 @@ std::vector<Model> AzureModelCatalog::AddLocalModels(std::vector<ModelInfo>& mod
       continue;
     }
 
-    model_infos.push_back(MakeByomModelInfo(model_id));
+    model_infos.push_back(MakeByomModelInfo(model_id, local_path));
     models.push_back(model_factory_(ModelInfo(model_infos.back()), local_path));
   }
 

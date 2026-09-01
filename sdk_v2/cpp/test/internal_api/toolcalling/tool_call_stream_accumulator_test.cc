@@ -200,6 +200,19 @@ TEST(ToolCallStreamAccumulatorTest, UnterminatedToolCallBecomesVisibleOnFlush) {
   EXPECT_FALSE(acc.InsideToolCall()) << "Flush should leave accumulator in outside state";
 }
 
+TEST(ToolCallStreamAccumulatorTest, FlushRecoversCompleteCallWithWrongClosingTag) {
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+  auto outs = RunChunks(
+      acc, {R"(<tool_call>{"function":"exec_command","arguments":{"cmd":"pwd"}</think>)"});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  ASSERT_EQ(outs.back().ready_calls.size(), 1u);
+  EXPECT_EQ(outs.back().ready_calls[0].name, "shell");
+  EXPECT_EQ(outs.back().ready_calls[0].arguments, R"({"cmd":"pwd"})");
+}
+
 // ========================================================================
 // InsideToolCall state machine.
 // ========================================================================

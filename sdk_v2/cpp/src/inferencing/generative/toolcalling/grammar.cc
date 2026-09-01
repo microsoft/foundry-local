@@ -382,7 +382,13 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
 
   // Add grammar for text output
   if (ctx.text_output) {
-    grammar << "TEXT: /[^{<](.|\\n)*/\n";
+    if (ctx.tool_output) {
+      // Keep marker-delimited calls out of the free-text branch so they must
+      // pass through the schema-constrained functioncall rule.
+      grammar << (known_tool_tokens ? "TEXT: /[^{<][^<]*/\n" : "TEXT: /[^{<][^{]*/\n");
+    } else {
+      grammar << "TEXT: /[^{<](.|\\n)*/\n";
+    }
   }
 
   // Add grammar for tool output

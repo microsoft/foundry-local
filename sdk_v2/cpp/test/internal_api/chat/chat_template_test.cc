@@ -98,6 +98,22 @@ TEST_F(ChatTemplateTest, MultiTurnConversation) {
   EXPECT_NE(prompt.find("3+3"), std::string::npos);
 }
 
+TEST(ChatTemplateSerializationTest, AssistantToolCallPrecedesToolResponse) {
+  std::vector<MessageItem> messages = {
+      {FOUNDRY_LOCAL_ROLE_USER, "Inspect the repository."},
+      {FOUNDRY_LOCAL_ROLE_ASSISTANT, "I'll inspect it now."},
+      {FOUNDRY_LOCAL_ROLE_TOOL, "file.txt"}};
+  messages[1].tool_calls.emplace_back("call_1", "shell", R"({"cmd":"ls"})");
+
+  std::string messages_json = BuildChatMessagesJson(messages);
+  const auto call_pos = messages_json.find(R"("tool_calls":[{"arguments":"{\"cmd\":\"ls\"}","name":"shell"}])");
+  const auto result_pos = messages_json.find("file.txt");
+
+  ASSERT_NE(call_pos, std::string::npos) << messages_json;
+  ASSERT_NE(result_pos, std::string::npos) << messages_json;
+  EXPECT_LT(call_pos, result_pos) << messages_json;
+}
+
 TEST_F(ChatTemplateTest, EmptyMessagesThrows) {
   std::vector<MessageItem> messages;
   EXPECT_THROW(BuildChatPrompt(messages, GetModel()), fl::Exception);

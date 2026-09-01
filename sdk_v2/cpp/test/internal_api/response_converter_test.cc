@@ -15,6 +15,8 @@
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
+#include "items/tool_call_item.h"
+#include "items/tool_result_item.h"
 
 using namespace fl;
 using namespace fl::responses;
@@ -287,6 +289,31 @@ TEST(ResponseConverterTest, ToInputItems_FunctionCallOutput_GetsFcoPrefix) {
   ASSERT_EQ(items.size(), 1u);
   std::string id = items[0]["id"].get<std::string>();
   EXPECT_TRUE(id.find("fco_") == 0);
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_FunctionCallAndOutput_PreserveToolTurn) {
+  nlohmann::json json = {
+      {"model", "test-model"},
+      {"input", nlohmann::json::array({
+                    {{"type", "function_call"},
+                     {"call_id", "call_1"},
+                     {"name", "shell"},
+                     {"arguments", R"({"cmd":"pwd"})"}},
+                    {{"type", "function_call_output"},
+                     {"call_id", "call_1"},
+                     {"output", "/testbed"}},
+                })}};
+
+  auto params = json.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 2u);
+  auto* call = dynamic_cast<ToolCallItem*>(request.items[0]);
+  ASSERT_NE(call, nullptr);
+  EXPECT_EQ(call->call_id, "call_1");
+  auto* result = dynamic_cast<ToolResultItem*>(request.items[1]);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->call_id, "call_1");
 }
 
 // ========================================================================

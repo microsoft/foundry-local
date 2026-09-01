@@ -42,12 +42,31 @@ class OnnxChatGenerator : public ChatGenerator {
   int PromptTokenCount() const override;
   void Cancel() override;
 
+  /// True when the most recently rendered prompt ends with the reasoning open
+  /// marker (e.g. `<think>\n`) supplied by the chat template's generation prompt.
+  /// Reasoning-model chat templates pre-fill this marker so the model's first
+  /// generated token is reasoning content rather than the marker itself. The
+  /// stream splitter consumes this flag to start in the reasoning state.
+  bool PromptEndsInReasoning() const { return prompt_ends_in_reasoning_; }
+
   /// Encode new messages and append their tokens to the generator's sequence.
   /// Used for continuous decoding — only the new turn's messages are encoded and appended.
   /// Returns the number of new prompt tokens appended.
+  ///
+  /// @param reasoning_start Reasoning-open marker (e.g. `<think>`) used to detect
+  ///        whether the chat template prefilled it as part of the assistant
+  ///        generation prompt. Pass an empty string to skip the detection; the
+  ///        reasoning-prefill flag is left unchanged in that case.
   int AppendMessages(const std::vector<MessageItem>& new_messages,
                      GenAIModelInstance& model,
-                     const std::string& tools_json);
+                     const std::string& tools_json,
+                     const std::string& reasoning_start = {});
+
+  /// Recompute whether the appended prompt ends in an open reasoning block.
+  /// Callers must invoke this after `AppendMessages` when they use the streaming
+  /// splitter — the assistant generation prompt is re-emitted each turn and may
+  /// or may not prefill the reasoning open marker depending on the template.
+  void SetPromptEndsInReasoning(bool value) { prompt_ends_in_reasoning_ = value; }
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
@@ -97,6 +116,7 @@ class OnnxChatGenerator : public ChatGenerator {
                     std::unique_ptr<OgaTokenizerStream> stream_with_special,
                     GenAIModelInstance& model,
                     int prompt_token_count,
+                    bool prompt_ends_in_reasoning,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
 
   // Shared implementation for text and media creation paths. Empty image and
@@ -122,6 +142,7 @@ class OnnxChatGenerator : public ChatGenerator {
   std::unique_ptr<OgaNamedTensors> named_tensors_;
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
+  bool prompt_ends_in_reasoning_ = false;
   std::atomic<bool> cancelled_{false};
 };
 

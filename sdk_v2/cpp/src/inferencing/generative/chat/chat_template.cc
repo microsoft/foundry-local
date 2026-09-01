@@ -41,9 +41,7 @@ std::string RenderMessageForPrompt(const MessageItem& msg) {
   return text;
 }
 
-std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
-                            GenAIModelInstance& model,
-                            const std::string& tools_json) {
+std::string BuildChatMessagesJson(const std::vector<MessageItem>& messages) {
   if (messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
@@ -52,10 +50,26 @@ std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
   // Format: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, ...]
   nlohmann::json messages_json = nlohmann::json::array();
   for (const auto& msg : messages) {
-    messages_json.push_back({{"role", Utils::RoleToString(msg.role)}, {"content", RenderMessageForPrompt(msg)}});
+    nlohmann::json message = {
+        {"role", Utils::RoleToString(msg.role)}, {"content", RenderMessageForPrompt(msg)}};
+    if (!msg.tool_calls.empty()) {
+      message["tool_calls"] = nlohmann::json::array();
+      for (const auto& tool_call : msg.tool_calls) {
+        message["tool_calls"].push_back({
+            {"name", tool_call.name}, {"arguments", tool_call.arguments}});
+      }
+    }
+    messages_json.push_back(std::move(message));
   }
 
-  std::string messages_str = messages_json.dump();
+  return messages_json.dump();
+}
+
+std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
+                            GenAIModelInstance& model,
+                            const std::string& tools_json) {
+  std::string messages_str = BuildChatMessagesJson(messages);
+
   const char* tools_ptr = tools_json.empty() ? nullptr : tools_json.c_str();
 
   // ApplyChatTemplate uses the model's built-in template (template_str=nullptr) and appends the assistant

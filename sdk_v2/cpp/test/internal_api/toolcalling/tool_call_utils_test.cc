@@ -107,6 +107,165 @@ TEST(ParseToolCallsTest, ParametersKeyWorksAsAlternative) {
   EXPECT_NE(calls[0].arguments.find("b"), std::string::npos);
 }
 
+TEST(ParseToolCallsTest, SingleKeyToolCall) {
+  std::string text =
+      R"(<tc>{"exec_command":{"cmd":"grep -n test file.py"}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"grep -n test file.py"})");
+}
+
+TEST(ParseToolCallsTest, SingleKeyToolCallWithMissingArgumentsBrace) {
+  std::string text =
+      R"(<tc>{"update_plan":"explanation":"Done","plan":[{"step":"verify","status":"completed"}]}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "update_plan");
+  EXPECT_EQ(calls[0].arguments,
+            R"({"explanation":"Done","plan":[{"status":"completed","step":"verify"}]})");
+}
+
+TEST(ParseToolCallsTest, RecoversNestedToolCallWithArgs) {
+  std::string text =
+      R"(<tool_call><exec_command","arguments":{"cmd":"ls"}<tool_call>{"name":"exec_command","args":{"cmd":"pwd"}}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+}
+
+TEST(ParseToolCallsTest, RecoversMissingNameObjectPrefix) {
+  std::string text =
+      R"(<tool_call><exec_command","arguments":{"cmd":"ls /testbed","workdir":"/testbed"}}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls /testbed","workdir":"/testbed"})");
+}
+
+TEST(ParseToolCallsTest, RecoversMultilineMissingNamePrefixWithDirectArguments) {
+  std::string text = R"(<tool_call>
+<exec_command","cmd":"ls /testbed && git -C /testbed log --oneline -3"}
+</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments,
+            R"({"cmd":"ls /testbed && git -C /testbed log --oneline -3"})");
+}
+
+TEST(ParseToolCallsTest, RecoversCommaAfterToolName) {
+  std::string text =
+      R"(<tool_call>{"exec_command","cmd":"ls /testbed","workdir":"/testbed"}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls /testbed","workdir":"/testbed"})");
+}
+
+TEST(ParseToolCallsTest, MapsLegacyExecCommandToAdvertisedShell) {
+  std::string text =
+      R"(<tool_call>{"name":"exec_command","arguments":{"cmd":"git diff"}}</tool_call>)";
+  std::string tools =
+    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"git diff"})");
+}
+
+TEST(ParseToolCallsTest, StripsLeadingQuoteBeforeMappingLegacyExecCommand) {
+  std::string text =
+      R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
+  std::string tools =
+    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"git diff"})");
+}
+
+TEST(ParseToolCallsTest, MapsLegacyExecCommandWhenToolMetadataIsEmpty) {
+  std::string text =
+      R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", "[]");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"git diff"})");
+}
+
+TEST(ParseToolCallsTest, PreservesAdvertisedExecCommand) {
+  std::string text =
+      R"(<tool_call>{"name":"exec_command","arguments":{"cmd":"git diff"}}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+}
+
+TEST(ParseToolCallsTest, MapsFunctionPrefixedExecCommandToAdvertisedShell) {
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  const std::vector<std::string> texts = {
+      R"(<tool_call>{"name":"function=\"exec_command","arguments":{"cmd":"pwd"}}</tool_call>)",
+      R"(<tool_call>{"name":"function=exec_command","arguments":{"cmd":"pwd"}}</tool_call>)"};
+
+  for (const auto& text : texts) {
+    auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls[0].name, "shell");
+    EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+  }
+}
+
+TEST(ParseToolCallsTest, RecoversSingletonCmdAsAdvertisedShellCall) {
+  std::string text = R"(<tool_call>{"cmd":"pwd"}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+}
+
+TEST(ParseToolCallsTest, MapsCommandArgumentToAdvertisedShellCmd) {
+  std::string text =
+      R"(<tool_call>{"name":"exec_command","arguments":{"command":"pwd"}}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+}
+
+TEST(ParseToolCallsTest, RecoversFunctionKeyAndMissingOuterBrace) {
+  std::string text =
+      R"(<tool_call>{"function":"exec_command","arguments":{"cmd":"pwd"}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+}
+
 TEST(ParseToolCallsTest, InvalidJsonReturnsEmpty) {
   std::string text = R"(<tc>not valid json</tc>)";
   auto calls = ParseToolCalls(text, "<tc>", "</tc>");

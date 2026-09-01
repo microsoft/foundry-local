@@ -203,6 +203,14 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
     tool_ctx.tools_json.clear();
   }
 
+  // Locally imported models may not have catalog metadata even when their
+  // chat template uses the standard Qwen tool-call markers.
+  if (tool_ctx.HasTools() && tool_ctx.tool_call_start.empty() && tool_ctx.tool_call_end.empty()) {
+    tool_ctx.supports_tool_calling = true;
+    tool_ctx.tool_call_start = "<tool_call>";
+    tool_ctx.tool_call_end = "</tool_call>";
+  }
+
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
   auto tool_choice = SearchOptions::ParseToolChoice(request.options);
@@ -315,7 +323,7 @@ void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext
     parsed_calls = std::move(pre_parsed_calls);
     has_tool_calls = true;
   } else if (tool_ctx.HasTools() && tool_ctx.tool_output && tool_ctx.HasToolCallTokens()) {
-    parsed_calls = ParseToolCalls(text, tool_ctx.tool_call_start, tool_ctx.tool_call_end);
+    parsed_calls = ParseToolCalls(text, tool_ctx.tool_call_start, tool_ctx.tool_call_end, tool_ctx.tools_json);
     has_tool_calls = !parsed_calls.empty();
   }
 
@@ -459,13 +467,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   if (cached_generator_) {
     // Check if guidance requirements changed since the generator was created. Guidance (LARK grammar) is baked into
-    // the OGA generator at creation time and cannot be changed. If tool_choice went from "required" to "auto" (or
-    // vice versa), we must recreate the generator from full history.
+    // the OGA generator at creation time and cannot be changed.
     auto turn_tool_ctx = cached_tool_ctx_;
     UpdateToolContextForTurn(request, turn_tool_ctx);
 
-    bool prev_needs_guidance = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
-    bool curr_needs_guidance = turn_tool_ctx.tool_output && !turn_tool_ctx.text_output;
+    bool prev_needs_guidance = cached_tool_ctx_.tool_output && cached_tool_ctx_.HasTools();
+    bool curr_needs_guidance = turn_tool_ctx.tool_output && turn_tool_ctx.HasTools();
 
     if (prev_needs_guidance != curr_needs_guidance) {
       // Guidance requirements changed — invalidate. The branch below will rebuild from full history.
@@ -474,7 +481,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     } else {
       // Continuous decoding: append only the new messages to the existing generator.
       pre_turn_token_count = cached_generator_->TokenCount();
-      prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json);
+      const std::string reasoning_start_marker =
+          cached_tool_ctx_.reasoning_start.empty() ? std::string("<think>") : cached_tool_ctx_.reasoning_start;
+      prompt_tokens = cached_generator_->AppendMessages(
+          new_messages, Model(), cached_tool_ctx_.tools_json,
+          cached_tool_ctx_.supports_reasoning ? reasoning_start_marker : std::string{});
 
       // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
       UpdateToolContextForTurn(request, cached_tool_ctx_);
@@ -528,7 +539,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                                           : std::string(),
       cached_tool_ctx_.supports_reasoning ? (cached_tool_ctx_.reasoning_end.empty() ? std::string("</think>")
                                                                                     : cached_tool_ctx_.reasoning_end)
-                                          : std::string());
+                                          : std::string(),
+      cached_generator_ && cached_generator_->PromptEndsInReasoning());
 
   // Accumulator: separates visible text from tool-call blocks in the DEFAULT-segment stream. For models without
   // tool-call markers configured, both marker strings are empty and the accumulator degrades to passthrough.
@@ -536,7 +548,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // model's scratchpad and is not a real tool call.
   ToolCallStreamAccumulator tool_accumulator(
       cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_start : std::string{},
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{});
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{}, cached_tool_ctx_.tools_json);
 
   // Tool calls parsed during streaming. Reused by ProcessGeneratedOutput so call_ids stay stable across stream
   // deltas and the final response (OpenAI Chat Completions contract). Populated even when there is no streaming
@@ -621,7 +633,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   // Commit input messages + assistant reply to history only on success (not cancelled)
   if (!request.canceled) {
-    // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
+    // LARK tool grammar is a single-shot finite parse. If generation was truncated while grammar was
     // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
     // return true on the next turn. Invalidate after any grammar-guided generation so the next turn rebuilds.
     //
@@ -629,7 +641,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     // cache and the model fails to close subsequent reasoning blocks. The chat template strips prior </think> content
     // when re-applied to history, so a rebuild restores correct behavior. This matches C#, which always applies the
     // full template per turn.
-    bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
+    bool grammar_was_active = cached_tool_ctx_.tool_output && cached_tool_ctx_.HasTools();
     bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
 
     if (grammar_was_active || reasoning_was_active) {
@@ -732,7 +744,8 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // multiple tokens (or chat templates that produce marker-shaped text gradually) would silently fail. The shared
   // accumulator buffers across tokens and is verified by unit tests.
   ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.tool_call_start : std::string{},
-                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{});
+                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{},
+                                             tool_ctx.tools_json);
 
   // Tool calls parsed during streaming. Reused by ProcessGeneratedOutput so call_ids stay stable across stream
   // deltas and the final ChatCompletionResponse (OpenAI Chat Completions contract).
@@ -749,7 +762,8 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
                                   : std::string(),
       tool_ctx.supports_reasoning ? (tool_ctx.reasoning_end.empty() ? std::string("</think>")
                                                                     : tool_ctx.reasoning_end)
-                                  : std::string());
+                                  : std::string(),
+      generator->PromptEndsInReasoning());
 
   auto emit_visible_text = [&](std::string visible) {
     if (visible.empty() || !is_streaming) {
@@ -868,15 +882,29 @@ void ChatSession::CommitTurn(std::vector<MessageItem>&& new_messages, const Resp
     history_.push_back(std::move(msg));
   }
 
-  // Commit assistant reply from the response (first MESSAGE item with role=assistant)
+  // Commit the assistant reply and its tool calls as one template message. A
+  // reused Responses session does not replay previous_output, so history must
+  // retain the assistant call that precedes the next tool result.
+  std::optional<MessageItem> assistant_reply;
   for (const auto& item : response.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       const auto& msg = static_cast<const MessageItem&>(*item);
       if (msg.role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !msg.content.empty()) {
-        history_.push_back(msg);
-        break;
+        auto tool_calls = assistant_reply ? std::move(assistant_reply->tool_calls)
+                                          : std::vector<ToolCallItem>{};
+        assistant_reply = msg;
+        assistant_reply->tool_calls = std::move(tool_calls);
       }
+    } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      if (!assistant_reply) {
+        assistant_reply.emplace();
+        assistant_reply->role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+      }
+      assistant_reply->tool_calls.push_back(static_cast<const ToolCallItem&>(*item));
     }
+  }
+  if (assistant_reply) {
+    history_.push_back(std::move(*assistant_reply));
   }
 
   turns_.push_back({history_start, input_count, pre_turn_token_count, post_turn_token_count});

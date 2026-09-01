@@ -326,6 +326,9 @@ static void AddTypedInputItems(Request& request,
     if (auto* fc_result = std::get_if<FunctionCallResultInputItem>(&input_item)) {
       auto i = std::make_unique<ToolResultItem>(fc_result->call_id, fc_result->output);
       request.AddOwnedItem(std::move(i));
+    } else if (auto* fc = std::get_if<FunctionCallInputItem>(&input_item)) {
+      auto i = std::make_unique<ToolCallItem>(fc->call_id, fc->name, fc->arguments);
+      request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
       // Build typed parts from the message's content array.
       std::vector<std::unique_ptr<Item>> parts;
