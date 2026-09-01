@@ -108,16 +108,17 @@ int main() {
     }
 
     model->Load();
-    ChatSession session(*model);
-    Request request{UserMessage("Why is the sky blue?")};
-    Response response = session.ProcessRequest(request);
+    {
+      ChatSession session(*model);
+      Request request{UserMessage("Why is the sky blue?")};
+      Response response = session.ProcessRequest(request);
 
-    for (const Item& item : response.GetItems()) {
-      if (item.GetType() == FOUNDRY_LOCAL_ITEM_MESSAGE) {
-        std::cout << item.GetMessage().GetSimpleText() << "\n";
+      for (const Item& item : response.GetItems()) {
+        if (item.GetType() == FOUNDRY_LOCAL_ITEM_MESSAGE) {
+          std::cout << item.GetMessage().GetSimpleText() << "\n";
+        }
       }
     }
-
     model->Unload();
   } catch (const Error& error) {
     std::cerr << "Foundry Local error [" << error.Code() << "]: " << error.what() << "\n";
@@ -218,10 +219,11 @@ session.AddToolDefinition(ToolDefinition{
 });
 
 Request request{UserMessage("What is the weather in Seattle?")};
-request.SetOptions({
-    .search = {.temperature = 0.2f, .max_output_tokens = 256},
-    .tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_AUTO,
-});
+RequestOptions options;
+options.search.temperature = 0.2f;
+options.search.max_output_tokens = 256;
+options.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_AUTO;
+request.SetOptions(options);
 Response response = session.ProcessRequest(request);
 ```
 
@@ -290,10 +292,11 @@ The source for each is under [examples/](examples/). `basic_chat_example` honors
 ## Testing
 
 `build.py --test` invokes CTest with a 600-second timeout and prints failures. The build
-creates two test executables:
+creates three test executables:
 
 - `foundry_local_tests`: implementation-level unit tests
 - `sdk_integration_tests`: public C++ wrapper tests compiled as C++17
+- `cache_only_tests`: cache-only, live-catalog, BYOM, and manager web-service tests
 
 To run one executable directly after a build on Windows:
 
@@ -328,4 +331,4 @@ sdk_v2/cpp/
 
 ## License
 
-Microsoft Software License Terms. See [LICENSE.txt](LICENSE.txt).
+Licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
