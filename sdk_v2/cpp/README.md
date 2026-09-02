@@ -14,7 +14,7 @@ wrapper need only C++17 or newer.
 - **Model catalog** -- discover model aliases, variants, cached models, and loaded models
 - **Model lifecycle** -- download, load, unload, remove, and register local model assets
 - **Chat** -- stateful chat sessions with streaming callbacks and per-request settings
-- **Tool calling** -- session-scoped tool definitions and typed tool call/result items
+- **Tool calling** -- session-scoped and request-scoped tool definitions, plus typed tool call/result items
 - **Embeddings** -- single and batch `std::vector<float>` helpers
 - **Audio** -- offline and real-time streaming audio transcription
 - **Execution providers** -- discover, download, and register hardware acceleration on demand
@@ -109,6 +109,8 @@ int main() {
 
     model->Load();
     {
+      // The session owns conversation state. Creating a session is cheap;
+      // loading the model is the expensive operation.
       ChatSession session(*model);
       Request request{UserMessage("Why is the sky blue?")};
       Response response = session.ProcessRequest(request);
