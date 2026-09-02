@@ -314,9 +314,19 @@ steps:
             throw "Expected exactly one .whl under ${{ parameters.outputDir }}, found $($wheels.Count)"
         }
 
-        $json = (& auditwheel show --json $wheels[0].FullName) -join "`n"
+        $hostVenv = "$(Agent.TempDirectory)/auditwheel-venv"
+        python3 -m venv $hostVenv
         if ($LASTEXITCODE -ne 0) {
-            throw "auditwheel failed with exit code $LASTEXITCODE"
+            throw "Failed to create auditwheel virtual environment with exit code $LASTEXITCODE"
+        }
+        $hostPython = "$hostVenv/bin/python"
+        & $hostPython -m pip install --upgrade pip "auditwheel==6.8.1"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install auditwheel with exit code $LASTEXITCODE"
+        }
+        $json = (& $hostPython -m auditwheel show --json $wheels[0].FullName) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Auditwheel inspection failed with exit code $LASTEXITCODE"
         }
         $report = $json | ConvertFrom-Json
         Write-Host "auditwheel overall platform: $($report.overall_tag)"
