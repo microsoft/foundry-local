@@ -152,11 +152,13 @@ See the "Session caching" TODO in `State of the Branch.md` for current status.
 **C#:** Pull-based via `IAsyncEnumerable<ChatCompletionCreateResponse>`. The caller drives
 iteration with `await foreach`.
 
-**C++:** Push-based via `StreamingCallbackFn` (a `std::function<int(flStreamingCallbackData, void*)>`).
-Each callback delivers an `flStreamingCallbackData` containing an `flItemQueue*` — one item
-is pushed to the queue per callback invocation. The return value is 0 to continue or
-non-zero to cancel. `StreamingThreadTracker` manages the lifecycle of the background
-threads that drive generation to ensure clean shutdown.
+**C++:** Push-based via `Session::SetStreamingCallback()` (a `std::function<int(Item)>`).
+Each callback receives one owning `Item`; the wrapper pops it from the C ABI's queue and
+releases it automatically after the callback unless the caller moves it elsewhere. The
+return value is 0 to continue or non-zero to cancel. `StreamingThreadTracker` manages the
+lifecycle of the background threads that drive generation to ensure clean shutdown.
+The former `std::function<int(flStreamingCallbackData)>` overload remains available but is
+deprecated; new code should use the item-oriented overload.
 
 **Why:** C++ has no equivalent of `IAsyncEnumerable`. Callbacks are the natural C++
 pattern and map cleanly to the C ABI's function-pointer-based streaming interface.
@@ -265,12 +267,12 @@ item in a `Request` or as the delivery mechanism in a streaming callback. Owners
 item transfers through the queue: the consumer that pops an item is responsible for
 deleting it.
 
-**Streaming output:** The `flStreamingCallbackData` passed to the streaming callback
-contains an `flItemQueue*`. Each callback invocation pushes one item to the queue. This
-guarantees ordering — items arrive in generation order regardless of threading. The queue
-carries the same item types as the overall `Response` (e.g., `MessageItem` for text
-tokens, `ToolCallItem` for tool invocations), so streaming output is a per-item view of
-the final response.
+**Streaming output:** At the C ABI, `flStreamingCallbackData` contains an `flItemQueue*`,
+with one item pushed per callback invocation. The public C++ wrapper pops that item and
+passes it to the callback as an owning `Item`. This guarantees ordering — items arrive in
+generation order regardless of threading. The callback receives the same item types as
+the overall `Response` (e.g., `MessageItem` for text tokens and `ToolCallItem` for tool
+invocations), so streaming output is a per-item view of the final response.
 
 **Streaming input:** A `Request` can contain an `ItemQueue` as one of its input items.
 This enables scenarios like realtime audio:

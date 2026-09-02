@@ -1202,6 +1202,22 @@ inline Session& Session::SetOptions(const RequestOptions& options) {
   return *this;
 }
 
+inline Session& Session::SetStreamingCallback(std::function<int(Item)> callback) {
+  flStreamingCallback callback_fn = nullptr;
+  void* user_data = nullptr;
+
+  if (callback) {
+    streaming_callback_helper_ = std::make_unique<detail::StreamingCallbackHelper>(std::move(callback));
+    callback_fn = &detail::StreamingCallbackHelper::CCallback;
+    user_data = streaming_callback_helper_.get();
+  } else {
+    streaming_callback_helper_.reset();
+  }
+
+  Check(detail::inference_api()->Session_SetStreamingCallback(handle_.get_mutable(), callback_fn, user_data));
+  return *this;
+}
+
 inline Session& Session::SetStreamingCallback(std::function<int(flStreamingCallbackData)> callback) {
   flStreamingCallback callback_fn = nullptr;
   void* user_data = nullptr;
@@ -1216,6 +1232,10 @@ inline Session& Session::SetStreamingCallback(std::function<int(flStreamingCallb
 
   Check(detail::inference_api()->Session_SetStreamingCallback(handle_.get_mutable(), callback_fn, user_data));
   return *this;
+}
+
+inline Session& Session::SetStreamingCallback(std::nullptr_t) {
+  return SetStreamingCallback(std::function<int(Item)>{});
 }
 
 inline flSession* detail::CreateSession(IModel& model) {
