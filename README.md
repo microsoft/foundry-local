@@ -163,11 +163,29 @@ Explore complete working examples in the [`samples/`](samples/) folder:
 
 ## 🖥️ CLI
 
-The Foundry Local CLI lets you explore models and experiment interactively.
+The optional Foundry Local CLI lets you explore models and experiment interactively. It is available in Public Preview.
 
-**Install (public preview):**
+**Install the CLI:**
 
-Download the asset for your platform from the [`cli-preview-0.10.0`](https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0) GitHub release.
+Windows:
+
+```powershell
+winget install Microsoft.FoundryLocal
+```
+
+macOS (Apple silicon):
+
+```bash
+brew tap microsoft/foundrylocal
+brew install foundrylocal
+```
+
+For manual installation, download the current asset for your platform from the
+[Foundry Local CLI release assets](https://aka.ms/foundry-local-installer).
+
+> [!NOTE]
+> The releases page includes both SDK and CLI releases. `vX.Y.Z` tags are SDK releases, not CLI installers; use a
+> `cli-preview-X.Y.Z` release for a manual CLI download.
 
 **Run a model:**
 
