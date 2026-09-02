@@ -270,9 +270,9 @@ deleting it.
 **Streaming output:** At the C ABI, `flStreamingCallbackData` contains an `flItemQueue*`,
 with one item pushed per callback invocation. The public C++ wrapper pops that item and
 passes it to the callback as an owning `Item`. This guarantees ordering — items arrive in
-generation order regardless of threading. The callback receives the same item types as
-the overall `Response` (e.g., `MessageItem` for text tokens and `ToolCallItem` for tool
-invocations), so streaming output is a per-item view of the final response.
+generation order regardless of threading. Streaming uses incremental item types (e.g., `TextItem`
+for text tokens and `ToolCallItem` for tool invocations), while the final `Response` may
+aggregate them into higher-level items such as `MessageItem`.
 
 **Streaming input:** A `Request` can contain an `ItemQueue` as one of its input items.
 This enables scenarios like realtime audio:
