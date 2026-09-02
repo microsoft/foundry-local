@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Callable
 from typing_extensions import deprecated
 
 from foundry_local_sdk.exception import FoundryLocalException
-from foundry_local_sdk.model_info import DeviceType, ModelInfo, Runtime
+from foundry_local_sdk.model_info import ModelInfo
 
 if TYPE_CHECKING:
     # These modules are implemented in Phase 6 (openai submodule).
@@ -159,82 +159,15 @@ Model = IModel
 # ---------------------------------------------------------------------------
 
 
-def _model_info_from_native(native_model_ptr: object) -> ModelInfo:
-    """Read the native ``flModelInfo`` for *native_model_ptr* and return a ``ModelInfo``."""
+def _model_info_from_native(native_model_ptr: object, *, parent: object) -> ModelInfo:
+    """Return a borrowed metadata view while keeping its model and catalog alive."""
     from foundry_local_sdk._native.api import api, ffi  # local to avoid circular imports
 
     info_out = ffi.new("const flModelInfo**")
     api.check_status(api.model.GetInfo(native_model_ptr, info_out))
-    info = info_out[0]
-
-    # Core string identity fields
-    id_str = ffi.string(api.model.Info_GetId(info)).decode("utf-8")
-    name_str = ffi.string(api.model.Info_GetName(info)).decode("utf-8")
-    version = int(api.model.Info_GetVersion(info))
-    alias_str = ffi.string(api.model.Info_GetAlias(info)).decode("utf-8")
-
-    uri_ptr = api.model.Info_GetUri(info)
-    uri_str = ffi.string(uri_ptr).decode("utf-8") if uri_ptr != ffi.NULL else ""
-
-    # Device type enum mapping (from flDeviceType values in foundry_local_c.h). FOUNDRY_LOCAL_DEVICE_NOTSET
-    # (0) means "unspecified" — surface that as ``None`` rather than silently aliasing to CPU. Unknown values
-    # also map to ``None`` so a future native enum extension does not get silently misclassified.
-    device_type_val = int(api.model.Info_GetDeviceType(info))
-    device_type: DeviceType | None = {1: DeviceType.CPU, 2: DeviceType.GPU, 3: DeviceType.NPU}.get(
-        device_type_val
-    )
-
-    ep_ptr = api.model.Info_GetExecutionProvider(info)
-    ep_str = ffi.string(ep_ptr).decode("utf-8") if ep_ptr != ffi.NULL else ""
-
-    task_ptr = api.model.Info_GetTask(info)
-    task_str = ffi.string(task_ptr).decode("utf-8") if task_ptr != ffi.NULL else None
-
-    # Generic string/int property accessors — no status check, returns NULL / default_value
-    def get_str(key: str) -> str | None:
-        ptr = api.model.Info_GetStringProperty(info, key.encode("utf-8"))
-        return ffi.string(ptr).decode("utf-8") if ptr != ffi.NULL else None
-
-    def get_int(key: str, default: int = -1) -> int:
-        return int(api.model.Info_GetIntProperty(info, key.encode("utf-8"), default))
-
-    # Optional int properties: sentinel -1 means "not set"
-
-    filesize_raw = get_int("filesize_mb")
-    max_tokens_raw = get_int("max_output_tokens")
-    context_length_raw = get_int("context_length")
-    supports_tool_raw = get_int("supports_tool_calling", -1)
-    created_at_raw = get_int("created_at_unix", 0)
-
-    # PromptTemplate is deprecated and intentionally not populated from native catalog data.
-    # Templates are applied internally by ChatSession; see foundry_local_sdk.model_info.PromptTemplate.
-
-    return ModelInfo(
-        id=id_str,
-        name=name_str,
-        version=version,
-        alias=alias_str,
-        display_name=get_str("display_name"),
-        provider_type=get_str("model_provider") or "",
-        uri=uri_str,
-        model_type=get_str("type") or "",
-        prompt_template=None,
-        publisher=get_str("publisher"),
-        model_settings=None,  # complex parsing deferred to Phase 3
-        license=get_str("license"),
-        license_description=get_str("license_description"),
-        task=task_str,
-        runtime=Runtime(device_type=device_type, execution_provider=ep_str),
-        file_size_mb=filesize_raw if filesize_raw >= 0 else None,
-        supports_tool_calling=None if supports_tool_raw < 0 else bool(supports_tool_raw),
-        max_output_tokens=max_tokens_raw if max_tokens_raw >= 0 else None,
-        min_fl_version=get_str("min_fl_version"),
-        created_at_unix=max(created_at_raw, 0),
-        context_length=context_length_raw if context_length_raw >= 0 else None,
-        input_modalities=get_str("input_modalities"),
-        output_modalities=get_str("output_modalities"),
-        capabilities=get_str("capabilities"),
-    )
+    if info_out[0] == ffi.NULL:
+        raise FoundryLocalException("GetInfo returned no model metadata.")
+    return ModelInfo._from_native(info_out[0], parent=parent)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +190,10 @@ class _ModelImpl(IModel):
 
     @property
     def _native_ptr(self) -> object:
-        """Raw native ``flModel*`` pointer. Internal use only — keep an `IModel`\n        reference alive while the pointer is in use."""
+        """Raw native ``flModel*`` pointer.
+
+        Internal use only; keep an ``IModel`` reference alive while using it.
+        """
         return self._ptr
 
     # ------------------------------------------------------------------
@@ -274,9 +210,9 @@ class _ModelImpl(IModel):
 
     @property
     def info(self) -> ModelInfo:
-        # The native model is the source of truth. Read fresh every time so metadata stays correct
-        # after select_variant / download / cache changes. Each read returns a point-in-time snapshot.
-        return _model_info_from_native(self._ptr)
+        # Each call captures the currently selected native metadata pointer. The
+        # returned borrowed view retains this model, which retains its catalog.
+        return _model_info_from_native(self._ptr, parent=self)
 
     # ------------------------------------------------------------------
     # Live state properties — always go to native for fresh data

@@ -22,6 +22,7 @@ namespace foundry_local_node {
 
 struct CatalogCtorToken {
   foundry_local::ICatalog* impl = nullptr;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive;
   Napi::ObjectReference manager;  // pins the owning Manager
 };
 
@@ -41,8 +42,13 @@ class Catalog : public Napi::ObjectWrap<Catalog> {
   Napi::Value GetModel(const Napi::CallbackInfo& info);
   Napi::Value GetModelVariant(const Napi::CallbackInfo& info);
   Napi::Value GetLatestVersion(const Napi::CallbackInfo& info);
+  Napi::Value RegisterModel(const Napi::CallbackInfo& info);
+  Napi::Value RegisterModelSync(const Napi::CallbackInfo& info);
+  Napi::Value UnregisterModel(const Napi::CallbackInfo& info);
+  Napi::Value UnregisterModelSync(const Napi::CallbackInfo& info);
 
   foundry_local::ICatalog* impl_ = nullptr;
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
   Napi::ObjectReference manager_;
 };
 

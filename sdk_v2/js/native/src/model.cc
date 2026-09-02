@@ -144,13 +144,15 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
 // Drain a ModelList into a JS array, with each entry wrapped as a JS Model
 // whose keepalive holds the shared ModelList.
 Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelList> list,
-                          Napi::ObjectReference manager) {
+                          Napi::ObjectReference manager,
+                          std::shared_ptr<foundry_local::Manager> manager_keepalive) {
   const auto& models = *list;
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
     ModelCtorToken token;
     token.impl = models[i].get();
     token.keepalive = list;  // shared_ptr copy keeps the ModelList alive
+    token.manager_keepalive = manager_keepalive;
     // Cloning the manager ObjectReference per Model so each entry pins it.
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);
     arr.Set(static_cast<uint32_t>(i), Model::NewInstance(env, std::move(token)));
@@ -198,6 +200,7 @@ Model::Model(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Model>(info) {
   }
   impl_ = token->impl;
   keepalive_ = std::move(token->keepalive);
+  manager_keepalive_ = std::move(token->manager_keepalive);
   manager_ = std::move(token->manager);
 }
 
@@ -238,7 +241,7 @@ Napi::Value Model::GetVariants(const Napi::CallbackInfo& info) {
   Napi::ObjectReference owner_clone = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto list = std::make_shared<foundry_local::ModelList>(impl_->GetVariants());
-    return WrapModelList(env, std::move(list), std::move(owner_clone));
+    return WrapModelList(env, std::move(list), std::move(owner_clone), manager_keepalive_);
   });
 }
 

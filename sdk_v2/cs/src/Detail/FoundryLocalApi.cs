@@ -253,9 +253,9 @@ public sealed class Manager : IDisposable
         Ptr = ptr;
     }
 
-    public Catalog GetCatalog()
+    public Catalog GetCatalog(FlCatalogType catalogType = FlCatalogType.Public)
     {
-        var status = Api.Root.ManagerGetCatalog(Ptr, out var catalogPtr);
+        var status = Api.Root.ManagerGetCatalogByType(Ptr, catalogType, out var catalogPtr);
         Api.CheckStatus(status);
         return new Catalog(catalogPtr);
     }
@@ -496,6 +496,24 @@ public sealed class Catalog
             }
         }
     }
+
+    public Model RegisterModel(string modelPath, string modelId, MutableModelInfo metadata)
+    {
+        var status = Api.Catalog.RegisterModel(Ptr, modelPath, modelId, metadata.Ptr, out var ptr);
+        Api.CheckStatus(status);
+
+        if (ptr == IntPtr.Zero)
+        {
+            throw new FoundryLocalException("RegisterModel returned no model.");
+        }
+
+        return new Model(ptr);
+    }
+
+    public void UnregisterModel(string aliasOrModelId)
+    {
+        Api.CheckStatus(Api.Catalog.UnregisterModel(Ptr, aliasOrModelId));
+    }
 }
 
 // ===================================================================
@@ -580,6 +598,57 @@ public sealed class ModelInfo
         }
 
         return result;
+    }
+}
+
+// ===================================================================
+// MutableModelInfo — owns caller-created flModelInfo*
+// ===================================================================
+
+public sealed class MutableModelInfo : IDisposable
+{
+    private bool _disposed;
+
+    internal IntPtr Ptr { get; private set; }
+
+    public MutableModelInfo()
+    {
+        Api.EnsureInitialized();
+        var status = Api.Model.CreateModelInfo(out var ptr);
+        Api.CheckStatus(status);
+        Ptr = ptr;
+    }
+
+    public void SetStringProperty(string key, string value)
+    {
+        Detail.Throw.IfDisposed(_disposed, this);
+        Api.CheckStatus(Api.Model.InfoSetStringProperty(Ptr, key, value));
+    }
+
+    public void SetIntProperty(string key, long value)
+    {
+        Detail.Throw.IfDisposed(_disposed, this);
+        Api.CheckStatus(Api.Model.InfoSetIntProperty(Ptr, key, value));
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed && Ptr != IntPtr.Zero)
+        {
+            Api.Model.ReleaseModelInfo(Ptr);
+            Ptr = IntPtr.Zero;
+            _disposed = true;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    ~MutableModelInfo()
+    {
+        if (!_disposed)
+        {
+            Api.FinalizeRelease(Ptr, Api.Model.ReleaseModelInfo.Invoke);
+        }
     }
 }
 

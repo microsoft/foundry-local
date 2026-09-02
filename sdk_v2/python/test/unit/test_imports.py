@@ -17,6 +17,7 @@ PUBLIC_NAMES = [
     "Configuration",
     "FoundryLocalManager",
     "Catalog",
+    "CatalogType",
     "IModel",
     "Model",
     "ModelInfo",

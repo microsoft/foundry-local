@@ -51,6 +51,8 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
+  // Declared before impl_ so the session is destroyed before its native manager.
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
   std::unique_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
 };
@@ -82,6 +84,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
   std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
 };
@@ -111,6 +114,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
+  std::shared_ptr<foundry_local::Manager> manager_keepalive_;
   std::unique_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
 };

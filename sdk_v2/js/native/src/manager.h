@@ -55,7 +55,7 @@ class Manager : public Napi::ObjectWrap<Manager> {
   // on env and returns true. Callers should return env.Undefined() when true.
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::Manager> impl_;
+  std::shared_ptr<foundry_local::Manager> impl_;
 };
 
 }  // namespace foundry_local_node

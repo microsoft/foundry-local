@@ -4,7 +4,7 @@ The Foundry Local Python SDK is a native Python binding for the Foundry Local C+
 
 ## Features
 
-- **Model Catalog** – browse and search the Foundry Local model catalog
+- **Model Catalog and BYOM** – browse the public catalog or register existing local model assets without copying them
 - **Model Management** – download, cache, load, and unload models
 - **Chat Completions** – streaming and non-streaming, with first-class tool calling
 - **Embeddings** – text embeddings via a typed tensor API
@@ -148,6 +148,40 @@ variant = catalog.get_model_variant("qwen2.5-0.5b-instruct-generic-cpu:4")
 cached = catalog.get_cached_models()
 loaded = catalog.get_loaded_models()
 ```
+
+### Bring your own model (BYOM)
+
+Use the local catalog to register an existing ONNX Runtime GenAI model directory. Registration does not copy,
+download, or take ownership of the model assets. The directory must contain `genai_config.json`, and the model ID
+must use the canonical `<name>:<version>` format. The `task` metadata property is required and must be one of
+`chat-completion`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
+
+```python
+from foundry_local_sdk import CatalogType, ModelInfo
+
+local_catalog = manager.get_catalog(CatalogType.LOCAL)
+
+with ModelInfo() as metadata:
+    metadata.set_string_property("task", "chat-completion")
+    metadata.set_string_property("display_name", "My Local Model")
+    metadata.set_int_property("context_length", 4096)
+    model = local_catalog.register_model(
+        model_path="/path/to/model-directory",
+        model_id="my-model-generic-cpu:1",
+        metadata=metadata,
+    )
+
+print(model.id)
+print(model.info.get_string_property("display_name"))
+
+# Existing model handles remain safe for metadata and cleanup queries after
+# unregistration, while future catalog lookups no longer return the model.
+local_catalog.unregister_model(model.id)
+```
+
+`manager.catalog` and `manager.get_catalog()` both return the public catalog for backward compatibility.
+`ModelInfo()` owns a mutable native metadata handle; call `close()` or use a `with` block. In contrast,
+`model.info` is a read-only borrowed view whose lifetime is tied to the model and catalog.
 
 ### Inspecting model metadata
 
@@ -347,8 +381,10 @@ manager.stop_web_service()
 | Class | Description |
 |---|---|
 | `Configuration` | SDK configuration (app name, cache dir, log level, web service settings) |
-| `FoundryLocalManager` | Singleton entry point — initialization, catalog access, EP management, web service |
-| `Catalog` | Model discovery — listing, lookup by alias / ID, cached and loaded queries |
+| `FoundryLocalManager` | Singleton entry point — initialization, typed catalog access, EP management, web service |
+| `CatalogType` | Catalog selection enum: `PUBLIC` or `LOCAL` |
+| `Catalog` | Model discovery plus local `register_model` / `unregister_model` operations |
+| `ModelInfo` | Read-only model metadata or caller-owned mutable BYOM registration metadata |
 | `IModel` | Model interface — identity, metadata, lifecycle (`download`, `load`, `unload`), variant selection |
 | `EpInfo` | Discoverable execution provider info (`name`, `is_registered`) |
 | `EpDownloadResult` | Result of EP download / registration (`success`, `status`, `registered_eps`, `failed_eps`) |

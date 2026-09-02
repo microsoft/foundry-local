@@ -89,6 +89,24 @@ impl NativeManager {
         Ok(catalog)
     }
 
+    /// A manager-owned catalog handle selected by source type.
+    pub(crate) fn catalog_ptr_by_type(
+        &self,
+        catalog_type: flCatalogType,
+    ) -> Result<*mut flCatalog> {
+        let mut catalog: *mut flCatalog = std::ptr::null_mut();
+        let status = unsafe {
+            (self.api.root().Manager_GetCatalogByType)(self.ptr, catalog_type, &mut catalog)
+        };
+        self.api.check(status)?;
+        if catalog.is_null() {
+            return Err(FoundryLocalError::Internal {
+                reason: "Manager_GetCatalogByType returned a null catalog".into(),
+            });
+        }
+        Ok(catalog)
+    }
+
     pub(crate) fn web_service_start(&self) -> Result<()> {
         let status = unsafe { (self.api.root().Manager_WebServiceStart)(self.ptr) };
         self.api.check(status)

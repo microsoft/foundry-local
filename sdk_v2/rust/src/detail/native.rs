@@ -202,6 +202,10 @@ impl NativeCatalog {
         Self { api, ptr, manager }
     }
 
+    pub(crate) fn manager(&self) -> Arc<NativeManager> {
+        Arc::clone(&self.manager)
+    }
+
     pub(crate) fn name(&self) -> Result<String> {
         let mut name: *const std::os::raw::c_char = std::ptr::null();
         let status = unsafe { (self.api.catalog_api().GetName)(self.ptr, &mut name) };
@@ -303,5 +307,44 @@ impl NativeCatalog {
             latest,
             Arc::clone(&self.manager),
         ))
+    }
+
+    pub(crate) fn register_model(
+        &self,
+        model_path: &str,
+        model_id: &str,
+        metadata: *const flModelInfo,
+    ) -> Result<NativeModel> {
+        let model_path = super::api::to_cstring(model_path)?;
+        let model_id = super::api::to_cstring(model_id)?;
+        let mut model = std::ptr::null_mut();
+        let status = unsafe {
+            (self.api.catalog_api().RegisterModel)(
+                self.ptr,
+                model_path.as_ptr(),
+                model_id.as_ptr(),
+                metadata,
+                &mut model,
+            )
+        };
+        self.api.check(status)?;
+        if model.is_null() {
+            return Err(FoundryLocalError::Internal {
+                reason: "RegisterModel returned a null model".into(),
+            });
+        }
+        Ok(NativeModel::new(
+            Arc::clone(&self.api),
+            model,
+            Arc::clone(&self.manager),
+        ))
+    }
+
+    pub(crate) fn unregister_model(&self, alias_or_model_id: &str) -> Result<()> {
+        let alias_or_model_id = super::api::to_cstring(alias_or_model_id)?;
+        let status = unsafe {
+            (self.api.catalog_api().UnregisterModel)(self.ptr, alias_or_model_id.as_ptr())
+        };
+        self.api.check(status)
     }
 }

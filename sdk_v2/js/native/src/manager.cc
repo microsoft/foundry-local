@@ -222,7 +222,7 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       kvp.Set("DisableNonessentialTelemetry", "true");
       config.SetAdditionalOptions(kvp);
     }
-    impl_ = std::make_unique<foundry_local::Manager>(std::move(config));
+    impl_ = std::make_shared<foundry_local::Manager>(std::move(config));
   });
 }
 
@@ -250,11 +250,26 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) {
     return env.Undefined();
   }
+  flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC;
+  if (info.Length() >= 1 && !info[0].IsUndefined()) {
+    if (!info[0].IsNumber()) {
+      Napi::TypeError::New(env, "getCatalog: type must be CatalogType.Public or CatalogType.Local")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    const int value = info[0].As<Napi::Number>().Int32Value();
+    if (value != FOUNDRY_LOCAL_CATALOG_PUBLIC && value != FOUNDRY_LOCAL_CATALOG_LOCAL) {
+      Napi::TypeError::New(env, "getCatalog: invalid catalog type").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    type = static_cast<flCatalogType>(value);
+  }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    foundry_local::ICatalog& cat = impl_->GetCatalog();
+    foundry_local::ICatalog& cat = impl_->GetCatalog(type);
     CatalogCtorToken token;
     token.impl = &cat;
+    token.manager_keepalive = impl_;
     token.manager = std::move(owner);
     return Catalog::NewInstance(env, std::move(token));
   });

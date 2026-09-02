@@ -15,7 +15,7 @@ use core::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
 /// The library is built against this API version (`FOUNDRY_LOCAL_API_VERSION`).
-pub const FOUNDRY_LOCAL_API_VERSION: u32 = 1;
+pub const FOUNDRY_LOCAL_API_VERSION: u32 = 2;
 
 // ── Opaque handle types ──────────────────────────────────────────────────────
 
@@ -70,6 +70,10 @@ pub const FOUNDRY_LOCAL_DEVICE_NOTSET: flDeviceType = 0;
 pub const FOUNDRY_LOCAL_DEVICE_CPU: flDeviceType = 1;
 pub const FOUNDRY_LOCAL_DEVICE_GPU: flDeviceType = 2;
 pub const FOUNDRY_LOCAL_DEVICE_NPU: flDeviceType = 3;
+
+pub type flCatalogType = c_int;
+pub const FOUNDRY_LOCAL_CATALOG_PUBLIC: flCatalogType = 0;
+pub const FOUNDRY_LOCAL_CATALOG_LOCAL: flCatalogType = 1;
 
 pub type flTensorDataType = c_int;
 pub const FOUNDRY_LOCAL_TENSOR_UNDEFINED: flTensorDataType = 0;
@@ -147,6 +151,17 @@ pub const FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR: &str = "license_desc
 pub const FOUNDRY_LOCAL_MODEL_PROP_TASK_STR: &str = "task";
 pub const FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR: &str = "model_provider";
 pub const FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR: &str = "min_fl_version";
+pub const FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR: &str = "parent_uri";
+pub const FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR: &str = "tool_call_start";
+pub const FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR: &str = "tool_call_end";
+pub const FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR: &str = "reasoning_start";
+pub const FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR: &str = "reasoning_end";
+pub const FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR: &str = "device_type";
+pub const FOUNDRY_LOCAL_MODEL_PROP_EP_STR: &str = "execution_provider";
+pub const FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR: &str = "entity_type";
+pub const FOUNDRY_LOCAL_MODEL_PROP_AUTHOR_STR: &str = "author";
+pub const FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR: &str = "quantization";
+pub const FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR: &str = "creation_time";
 pub const FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR: &str = "input_modalities";
 pub const FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR: &str = "output_modalities";
 pub const FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR: &str = "capabilities";
@@ -156,7 +171,10 @@ pub const FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT: &str = "supports_reas
 pub const FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT: &str = "filesize_mb";
 pub const FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT: &str = "max_output_tokens";
 pub const FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT: &str = "created_at_unix";
+pub const FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT: &str = "is_test_model";
 pub const FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT: &str = "context_length";
+pub const FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT: &str =
+    "supports_hybrid_reasoning";
 
 pub const FOUNDRY_LOCAL_PARAM_TEMPERATURE: &str = "temperature";
 pub const FOUNDRY_LOCAL_PARAM_TOP_P: &str = "top_p";
@@ -445,6 +463,13 @@ pub struct flApiVtable {
 
     pub Manager_Shutdown: unsafe extern "system" fn(manager: *mut flManager) -> flStatusPtr,
     pub Manager_IsShutdownRequested: unsafe extern "system" fn(manager: *const flManager) -> bool,
+
+    // V2
+    pub Manager_GetCatalogByType: unsafe extern "system" fn(
+        manager: *const flManager,
+        catalog_type: flCatalogType,
+        out_catalog: *mut *mut flCatalog,
+    ) -> flStatusPtr,
 }
 
 /// Item API table (`flItemApi`).
@@ -685,6 +710,19 @@ pub struct flCatalogApiVtable {
         max_versions: i32,
         out_models: *mut *mut flModelList,
     ) -> flStatusPtr,
+
+    // V2
+    pub RegisterModel: unsafe extern "system" fn(
+        catalog: *mut flCatalog,
+        model_path: *const c_char,
+        model_id: *const c_char,
+        metadata: *const flModelInfo,
+        out_model: *mut *mut flModel,
+    ) -> flStatusPtr,
+    pub UnregisterModel: unsafe extern "system" fn(
+        catalog: *mut flCatalog,
+        alias_or_model_id: *const c_char,
+    ) -> flStatusPtr,
 }
 
 /// Model API table (`flModelApi`).
@@ -747,4 +785,18 @@ pub struct flModelApiVtable {
         key: *const c_char,
         default_value: i64,
     ) -> i64,
+
+    // V2
+    pub CreateModelInfo: unsafe extern "system" fn(out_info: *mut *mut flModelInfo) -> flStatusPtr,
+    pub ReleaseModelInfo: unsafe extern "system" fn(info: *mut flModelInfo),
+    pub Info_SetStringProperty: unsafe extern "system" fn(
+        info: *mut flModelInfo,
+        key: *const c_char,
+        value: *const c_char,
+    ) -> flStatusPtr,
+    pub Info_SetIntProperty: unsafe extern "system" fn(
+        info: *mut flModelInfo,
+        key: *const c_char,
+        value: i64,
+    ) -> flStatusPtr,
 }
