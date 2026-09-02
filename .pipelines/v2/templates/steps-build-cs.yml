@@ -67,6 +67,7 @@ steps:
         <packageSources>
           <clear />
           <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+          <add key="ORT-Nightly" value="https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json" />
           <add key="LocalFLRuntime" value="$flFeedDir" />
           <add key="AIFoundryLocal_PublicPackages" value="https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json" />
         </packageSources>

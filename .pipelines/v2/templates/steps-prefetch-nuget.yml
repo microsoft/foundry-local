@@ -28,8 +28,9 @@ parameters:
 
 steps:
 
-# Fail fast if the pipeline-pinned versions drift from the cmake source of
-# truth in sdk_v2/deps_versions.json.
+# Fail fast if stable pipeline-pinned versions drift from the cmake source of
+# truth in sdk_v2/deps_versions.json. A GenAI pre-release is an intentional CI
+# override sourced from ORT-Nightly.
 - task: PowerShell@2
   displayName: 'Validate pinned versions match deps_versions.json'
   inputs:
@@ -42,7 +43,9 @@ steps:
       $deps = Get-Content $depsFile -Raw | ConvertFrom-Json
       $expected = @{
         'onnxruntime'                = '${{ parameters.ortVersion }}'
-        'onnxruntime-genai'          = '${{ parameters.genaiVersion }}'
+      }
+      if ('${{ parameters.genaiVersion }}' -notmatch '-dev') {
+        $expected['onnxruntime-genai'] = '${{ parameters.genaiVersion }}'
       }
       if ('${{ parameters.winmlVersion }}' -ne '') {
         $expected['windows-ai-machinelearning'] = '${{ parameters.winmlVersion }}'
@@ -72,12 +75,6 @@ steps:
         $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
-        # These packages are public on nuget.org. Foundry Local Core's
-        # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
-        # (see .pipelines/templates/build-core-steps.yml), so we follow the
-        # same source of truth here.
-        $feed = "https://www.nuget.org/api/v2/package"
-
         $packages = @(
           @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
           @{ key = 'ort';   id = 'Microsoft.ML.OnnxRuntime';             version = '${{ parameters.ortVersion }}'   }
@@ -85,7 +82,12 @@ steps:
 
         $defines = @()
         foreach ($pkg in $packages) {
-          $url = "$feed/$($pkg.id)/$($pkg.version)"
+          if ($pkg.key -eq 'genai' -and $pkg.version -match '-dev') {
+            $lowerId = $pkg.id.ToLowerInvariant()
+            $url = "https://pkgs.dev.azure.com/aiinfra/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/7982ae20-ed19-4a35-a362-a96ac99897b7/nuget/v3/flat2/$lowerId/$($pkg.version)/$lowerId.$($pkg.version).nupkg"
+          } else {
+            $url = "https://www.nuget.org/api/v2/package/$($pkg.id)/$($pkg.version)"
+          }
           $out = "$cacheDir/$($pkg.key).nupkg"
           Write-Host "Downloading $($pkg.id) $($pkg.version)"
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
@@ -120,12 +122,6 @@ steps:
       cacheDir="$(Build.BinariesDirectory)/nuget_packages"
       mkdir -p "$cacheDir"
 
-      # These packages are public on nuget.org. Foundry Local Core's
-      # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
-      # (see .pipelines/templates/build-core-steps.yml), so we follow the
-      # same source of truth here.
-      feed="https://www.nuget.org/api/v2/package"
-
       declare -a entries=(
         "genai:Microsoft.ML.OnnxRuntimeGenAI.Foundry:${{ parameters.genaiVersion }}"
         "ort:Microsoft.ML.OnnxRuntime:${{ parameters.ortVersion }}"
@@ -139,7 +135,12 @@ steps:
       for entry in "${entries[@]}"; do
         IFS=: read -r key id version <<< "$entry"
         out="$cacheDir/${key}.nupkg"
-        url="$feed/${id}/${version}"
+        if [ "$key" = "genai" ] && [[ "$version" == *-dev* ]]; then
+          lowerId="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+          url="https://pkgs.dev.azure.com/aiinfra/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/7982ae20-ed19-4a35-a362-a96ac99897b7/nuget/v3/flat2/${lowerId}/${version}/${lowerId}.${version}.nupkg"
+        else
+          url="https://www.nuget.org/api/v2/package/${id}/${version}"
+        fi
         echo "Downloading $id $version"
         curl -fSL -o "$out" "$url"
         echo "  -> $out ($(stat -c%s "$out" 2>/dev/null || stat -f%z "$out") bytes)"

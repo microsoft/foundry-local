@@ -152,7 +152,7 @@ else()
     # file:// path when direct nuget.org access is blocked in CI).
     if(NOT GENAI_FETCH_URL)
         # Dev builds come from the ADO nightly feed; release versions come from nuget.org.
-        if(ORT_GENAI_VERSION MATCHES "-dev-")
+        if(ORT_GENAI_VERSION MATCHES "-dev")
             set(ORT_GENAI_FEED_ORG  "aiinfra")
             set(ORT_GENAI_FEED_PROJECT "2692857e-05ef-43b4-ba9c-ccf1c22c437c")
             set(ORT_GENAI_FEED_ID   "7982ae20-ed19-4a35-a362-a96ac99897b7")

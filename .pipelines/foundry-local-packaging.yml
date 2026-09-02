@@ -53,12 +53,13 @@ parameters:
 
 variables:
 - group: FoundryLocal-ESRP-Signing
-# C++ SDK (sdk_v2/cpp) native dependency versions. Must match cmake defaults
-# in sdk_v2/deps_versions.json.
+# C++ SDK (sdk_v2/cpp) native dependency versions. ORT and WinML must match
+# sdk_v2/deps_versions.json. CI intentionally consumes the selected GenAI
+# pre-release from ORT-Nightly.
 - name: cppOrtVersion
   value: '1.28.0'
 - name: cppGenaiVersion
-  value: '0.15.2'
+  value: '0.16.0-dev1001393852'
 - name: cppWinmlVersion
   value: '2.1.70'
 - name: cppBuildConfig

@@ -126,10 +126,8 @@ steps:
         Write-Host "  native : $($f.Name)"
       }
 
-      # 2b. ONNX Runtime + GenAI from the pinned public NuGet packages — needed
-      #     only to *run* a model (integration tests). The versions come from the
-      #     same pipeline literals that drive the C++ native build, which
-      #     steps-prefetch-nuget.yml asserts against sdk_v2/deps_versions.json.
+      # 2b. ONNX Runtime + GenAI from their configured public NuGet feeds —
+      #     needed only to *run* a model (integration tests).
       $ortVersion   = '${{ parameters.ortVersion }}'
       $genaiVersion = '${{ parameters.genaiVersion }}'
       if ($ortVersion -ne '' -and $genaiVersion -ne '') {
@@ -146,7 +144,13 @@ steps:
           $zip = Join-Path $tmp "$($p.id).$($p.version).zip"
           $out = Join-Path $tmp $p.id
           Write-Host "Downloading $($p.id) $($p.version)"
-          Invoke-WebRequest -Uri "$feed/$($p.id)/$($p.version)" -OutFile $zip -UseBasicParsing
+          if ($p.id -eq 'Microsoft.ML.OnnxRuntimeGenAI.Foundry' -and $p.version -match '-dev') {
+            $lowerId = $p.id.ToLowerInvariant()
+            $url = "https://pkgs.dev.azure.com/aiinfra/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/7982ae20-ed19-4a35-a362-a96ac99897b7/nuget/v3/flat2/$lowerId/$($p.version)/$lowerId.$($p.version).nupkg"
+          } else {
+            $url = "$feed/$($p.id)/$($p.version)"
+          }
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
           Expand-Archive -Path $zip -DestinationPath $out -Force
 
           $nativeDir = Join-Path $out "runtimes/$rid/native"
