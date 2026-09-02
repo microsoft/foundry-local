@@ -222,7 +222,7 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       kvp.Set("DisableNonessentialTelemetry", "true");
       config.SetAdditionalOptions(kvp);
     }
-    impl_ = std::make_shared<foundry_local::Manager>(std::move(config));
+    impl_ = std::make_unique<foundry_local::Manager>(std::move(config));
   });
 }
 
@@ -269,7 +269,6 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
     foundry_local::ICatalog& cat = impl_->GetCatalog(type);
     CatalogCtorToken token;
     token.impl = &cat;
-    token.manager_keepalive = impl_;
     token.manager = std::move(owner);
     return Catalog::NewInstance(env, std::move(token));
   });
@@ -277,7 +276,8 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
 
 Napi::Value Manager::Dispose(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  // Idempotent — releasing an already-null unique_ptr is a no-op.
+  // Idempotent — releasing an already-null unique_ptr is a no-op. Catalog and Model wrappers pin this
+  // ObjectWrap for GC safety but do not share native ownership, so explicit disposal destroys the singleton.
   impl_.reset();
   return env.Undefined();
 }

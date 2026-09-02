@@ -20,9 +20,7 @@ namespace {
 
 // Wrap a ModelList (rvalue) into a JS array of Model handles, each pinning the
 // passed-in manager reference.
-Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml,
-                          Napi::ObjectReference manager,
-                          std::shared_ptr<foundry_local::Manager> manager_keepalive) {
+Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml, Napi::ObjectReference manager) {
   auto list = std::make_shared<foundry_local::ModelList>(std::move(ml));
   const auto& models = *list;
   Napi::Array arr = Napi::Array::New(env, models.size());
@@ -30,7 +28,6 @@ Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml,
     ModelCtorToken token;
     token.impl = models[i].get();
     token.keepalive = list;
-    token.manager_keepalive = manager_keepalive;
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);
     arr.Set(static_cast<uint32_t>(i), Model::NewInstance(env, std::move(token)));
   }
@@ -39,8 +36,7 @@ Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml,
 
 // Wrap an owning unique_ptr<IModel> into a JS Model (or undefined when null).
 Napi::Value WrapOwnedModelOrUndefined(Napi::Env env, std::unique_ptr<foundry_local::IModel> owned,
-                                      Napi::ObjectReference manager,
-                                      std::shared_ptr<foundry_local::Manager> manager_keepalive) {
+                                      Napi::ObjectReference manager) {
   if (!owned) {
     return env.Undefined();
   }
@@ -50,7 +46,6 @@ Napi::Value WrapOwnedModelOrUndefined(Napi::Env env, std::unique_ptr<foundry_loc
   // type-erased shared_ptr<void>.
   auto holder = std::make_shared<std::unique_ptr<foundry_local::IModel>>(std::move(owned));
   token.keepalive = holder;
-  token.manager_keepalive = std::move(manager_keepalive);
   token.manager = std::move(manager);
   return Model::NewInstance(env, std::move(token));
 }
@@ -91,10 +86,10 @@ Napi::Function Catalog::Init(Napi::Env env) {
           InstanceMethod("getModel", &Catalog::GetModel),
           InstanceMethod("getModelVariant", &Catalog::GetModelVariant),
           InstanceMethod("getLatestVersion", &Catalog::GetLatestVersion),
-            InstanceMethod("registerModel", &Catalog::RegisterModel),
-            InstanceMethod("registerModelSync", &Catalog::RegisterModelSync),
-            InstanceMethod("unregisterModel", &Catalog::UnregisterModel),
-            InstanceMethod("unregisterModelSync", &Catalog::UnregisterModelSync),
+          InstanceMethod("registerModel", &Catalog::RegisterModel),
+          InstanceMethod("registerModelSync", &Catalog::RegisterModelSync),
+          InstanceMethod("unregisterModel", &Catalog::UnregisterModel),
+          InstanceMethod("unregisterModelSync", &Catalog::UnregisterModelSync),
       });
 }
 
@@ -119,7 +114,6 @@ Catalog::Catalog(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Catalog>(inf
     return;
   }
   impl_ = token->impl;
-  manager_keepalive_ = std::move(token->manager_keepalive);
   manager_ = std::move(token->manager);
 }
 
@@ -136,17 +130,16 @@ Napi::Value Catalog::GetName(const Napi::CallbackInfo& info) {
 Napi::Value Catalog::GetModels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference mgr = CloneManager(manager_);
-  return CallChecked<Napi::Value>(
-      env, [&]() -> Napi::Value {
-        return WrapModelList(env, impl_->GetModels(), std::move(mgr), manager_keepalive_);
-      });
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    return WrapModelList(env, impl_->GetModels(), std::move(mgr));
+  });
 }
 
 Napi::Value Catalog::GetCachedModels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    return WrapModelList(env, impl_->GetCachedModels(), std::move(mgr), manager_keepalive_);
+    return WrapModelList(env, impl_->GetCachedModels(), std::move(mgr));
   });
 }
 
@@ -154,7 +147,7 @@ Napi::Value Catalog::GetLoadedModels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    return WrapModelList(env, impl_->GetLoadedModels(), std::move(mgr), manager_keepalive_);
+    return WrapModelList(env, impl_->GetLoadedModels(), std::move(mgr));
   });
 }
 
@@ -190,19 +183,18 @@ Napi::Value Catalog::GetModelVersions(const Napi::CallbackInfo& info) {
   // GetModelVersions performs a fresh network FetchModelVersions query on every
   // call, so it must NOT run on the JS thread. Argument parsing/validation above
   // stays on the JS thread; only the network fetch is dispatched to the libuv
-  // worker. The Manager is pinned two ways: `owner` keeps it (and the ICatalog*
-  // it owns) alive across the worker, and `manager_pin` is a JS-thread-only
-  // clone the resolver uses to build the Model handles.
+  // worker. `owner` keeps the Manager ObjectWrap (and the ICatalog* it owns)
+  // alive across the worker, while `manager_pin` is a JS-thread-only clone the
+  // resolver uses to build the Model handles.
   auto* impl = impl_;
   auto manager_pin = std::make_shared<Napi::ObjectReference>(CloneManager(manager_));
-  auto manager_keepalive = manager_keepalive_;
   return PromiseWorker<foundry_local::ModelList>::Run(
       env,
       [impl, model_alias, variant_name, max_versions]() -> foundry_local::ModelList {
         return impl->GetModelVersions(model_alias, variant_name, max_versions);
       },
-      [manager_pin, manager_keepalive](Napi::Env env, foundry_local::ModelList& ml) -> Napi::Value {
-        return WrapModelList(env, std::move(ml), CloneManager(*manager_pin), manager_keepalive);
+      [manager_pin](Napi::Env env, foundry_local::ModelList& ml) -> Napi::Value {
+        return WrapModelList(env, std::move(ml), CloneManager(*manager_pin));
       },
       CloneManager(manager_));
 }
@@ -219,7 +211,7 @@ Napi::Value Catalog::GetModel(const Napi::CallbackInfo& info) {
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto owned = impl_->GetModel(alias);
-    return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_);
+    return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr));
   });
 }
 
@@ -233,7 +225,7 @@ Napi::Value Catalog::GetModelVariant(const Napi::CallbackInfo& info) {
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto owned = impl_->GetModelVariant(model_id);
-    return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_);
+    return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr));
   });
 }
 
@@ -251,7 +243,7 @@ Napi::Value Catalog::GetLatestVersion(const Napi::CallbackInfo& info) {
   Napi::ObjectReference mgr = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto owned = impl_->GetLatestVersion(*arg);
-    return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr), manager_keepalive_);
+    return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr));
   });
 }
 
@@ -295,15 +287,13 @@ Napi::Value Catalog::RegisterModel(const Napi::CallbackInfo& info) {
 
   auto* catalog = impl_;
   auto manager_pin = std::make_shared<Napi::ObjectReference>(CloneManager(manager_));
-  auto manager_keepalive = manager_keepalive_;
   return PromiseWorker<std::unique_ptr<foundry_local::IModel>>::Run(
       env,
       [catalog, model_path, model_id, metadata]() {
         return catalog->RegisterModel(model_path, model_id, *metadata);
       },
-      [manager_pin, manager_keepalive](Napi::Env env,
-                                      std::unique_ptr<foundry_local::IModel>& model) -> Napi::Value {
-        return WrapOwnedModelOrUndefined(env, std::move(model), CloneManager(*manager_pin), manager_keepalive);
+      [manager_pin](Napi::Env env, std::unique_ptr<foundry_local::IModel>& model) -> Napi::Value {
+        return WrapOwnedModelOrUndefined(env, std::move(model), CloneManager(*manager_pin));
       },
       Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1));
 }
@@ -316,8 +306,7 @@ Napi::Value Catalog::RegisterModelSync(const Napi::CallbackInfo& info) {
   if (!ReadRegistrationArgs(info, model_path, model_id, metadata)) return env.Undefined();
   Napi::ObjectReference manager = CloneManager(manager_);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    return WrapOwnedModelOrUndefined(env, impl_->RegisterModel(model_path, model_id, *metadata), std::move(manager),
-                     manager_keepalive_);
+    return WrapOwnedModelOrUndefined(env, impl_->RegisterModel(model_path, model_id, *metadata), std::move(manager));
   });
 }
 

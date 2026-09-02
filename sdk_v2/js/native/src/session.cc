@@ -321,7 +321,6 @@ ChatSession::ChatSession(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Chat
         .ThrowAsJavaScriptException();
     return;
   }
-  manager_keepalive_ = model->manager_keepalive();
   try {
     impl_ = std::make_unique<foundry_local::ChatSession>(*native);
   } catch (const foundry_local::Error& e) {
@@ -479,7 +478,6 @@ EmbeddingsSession::EmbeddingsSession(const Napi::CallbackInfo& info)
         .ThrowAsJavaScriptException();
     return;
   }
-  manager_keepalive_ = model->manager_keepalive();
   try {
     impl_ = std::make_unique<foundry_local::EmbeddingsSession>(*native);
   } catch (const foundry_local::Error& e) {
@@ -574,7 +572,6 @@ AudioSession::AudioSession(const Napi::CallbackInfo& info)
         .ThrowAsJavaScriptException();
     return;
   }
-  manager_keepalive_ = model->manager_keepalive();
   try {
     impl_ = std::make_unique<foundry_local::AudioSession>(*native);
   } catch (const foundry_local::Error& e) {
