@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -51,6 +52,11 @@ class Session {
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
+
+  /// Signal every in-flight request on this session to cancel. Only sets each request's atomic
+  /// cancel flag — never blocks and never joins — so it is safe to call from a shutdown path while
+  /// another thread holds a manager lock. Generation loops poll the flag and stop within ~one token.
+  void Cancel();
 
   /// Add a tool definition to this session.
   /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
@@ -144,6 +150,10 @@ class Session {
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
  private:
+  /// Reject items (and message content parts) whose type the model's task does not advertise as an
+  /// input. Currently applies to chat tasks only.
+  void ValidateRequestItems(const Request& request) const;
+
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
@@ -153,6 +163,18 @@ class Session {
   void* callback_user_data_ = nullptr;
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
+
+  // In-flight requests tracked so Cancel() can flip their cancel flags from another thread. Guarded
+  // by its own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several
+  // at once, and Cancel() must run without waiting on an active generation holding request_mutex_.
+  // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
+  std::unordered_set<const Request*> active_requests_;
+  mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
+
+  // Latched by Cancel() under active_requests_mutex_. A request admitted after Cancel() ran (its streaming
+  // thread hadn't reached ProcessRequest when the shutdown sweep happened) is stamped canceled on insert,
+  // so a late arrival during shutdown never runs a full generation while JoinAll() waits to drain.
+  bool session_canceled_ = false;
 };
 
 }  // namespace fl

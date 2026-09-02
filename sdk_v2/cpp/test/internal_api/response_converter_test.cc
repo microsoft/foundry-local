@@ -11,6 +11,7 @@
 
 #include <string>
 
+#include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -320,6 +321,23 @@ ResponseCreateParams MakeImageRequest(const std::string& image_url, const std::s
   return params;
 }
 
+ResponseCreateParams MakeImageDataRequest(const std::string& image_data,
+                                          const std::optional<std::string>& media_type = std::nullopt) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputImageContent image_part;
+  image_part.detail = "auto";
+  image_part.image_data = image_data;
+  image_part.media_type = media_type;
+  msg.content.push_back(image_part);
+
+  params.input = std::vector<InputItem>{msg};
+  return params;
+}
+
 }  // namespace
 
 TEST(ResponseConverterTest, ToSessionRequest_InputImage_DataUrl_DecodesToImageItem) {
@@ -345,6 +363,148 @@ TEST(ResponseConverterTest, ToSessionRequest_InputImage_DataUrl_DecodesToImageIt
   EXPECT_EQ(img->format, "image/png");
   EXPECT_EQ(img->data_size, kSamplePngDecodedSize);
   EXPECT_NE(img->data, nullptr);
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputAudio_DecodesToAudioItem) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputTextContent text_part;
+  text_part.text = "Transcribe this audio.";
+  msg.content.push_back(text_part);
+  InputAudioContent audio_part;
+  audio_part.data = "AQIDBA==";
+  audio_part.format = "wav";
+  msg.content.push_back(audio_part);
+  params.input = std::vector<InputItem>{msg};
+
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 1u);
+  auto* message = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(message, nullptr);
+  ASSERT_EQ(message->content.size(), 2u);
+  ASSERT_EQ(message->content[1].view->type, FOUNDRY_LOCAL_ITEM_AUDIO);
+  const auto* audio = static_cast<const AudioItem*>(message->content[1].view);
+  EXPECT_EQ(audio->format, "wav");
+  ASSERT_EQ(audio->data_size, 4u);
+  const auto* bytes = static_cast<const std::uint8_t*>(audio->data);
+  EXPECT_EQ(bytes[0], 1u);
+  EXPECT_EQ(bytes[3], 4u);
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputAudio_RejectsInvalidBase64) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputAudioContent audio_part;
+  audio_part.data = "not-base64!";
+  audio_part.format = "wav";
+  msg.content.push_back(audio_part);
+  params.input = std::vector<InputItem>{msg};
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected invalid base64 audio data to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputAudio_RejectsEmptyData) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputAudioContent audio_part;
+  audio_part.format = "wav";
+  msg.content.push_back(audio_part);
+  params.input = std::vector<InputItem>{msg};
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected empty audio data to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputAudio_RejectsEmptyFormat) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  InputMessage msg;
+  msg.role = "user";
+  InputAudioContent audio_part;
+  audio_part.data = "AQIDBA==";
+  msg.content.push_back(audio_part);
+  params.input = std::vector<InputItem>{msg};
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected empty audio format to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageData_DecodesWithMediaType) {
+  auto params = MakeImageDataRequest(kSamplePngBase64, "image/jpeg");
+
+  auto request = ToSessionRequest(params);
+
+  auto* msg = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(msg, nullptr);
+  ASSERT_EQ(msg->content.size(), 2u);
+  const auto* img = static_cast<const ImageItem*>(msg->content[0].view);
+  EXPECT_EQ(img->format, "image/jpeg");
+  EXPECT_EQ(img->data_size, kSamplePngDecodedSize);
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageData_DefaultsToPng) {
+  auto params = MakeImageDataRequest(kSamplePngBase64);
+
+  auto request = ToSessionRequest(params);
+
+  auto* msg = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(msg, nullptr);
+  const auto* img = static_cast<const ImageItem*>(msg->content[0].view);
+  EXPECT_EQ(img->format, "image/png");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_InvalidImageData_NamesSourceField) {
+  auto params = MakeImageDataRequest("not-valid-base64");
+
+  try {
+    ToSessionRequest(params);
+    FAIL() << "Expected invalid image_data to throw";
+  } catch (const std::exception& e) {
+    const std::string message = e.what();
+    EXPECT_NE(message.find("image_data"), std::string::npos);
+    EXPECT_EQ(message.find("image_url"), std::string::npos);
+  }
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_InputImage_ImageUrlTakesPrecedenceOverImageData) {
+  std::string data_url = std::string("data:image/png;base64,") + kSamplePngBase64;
+  auto params = MakeImageRequest(data_url);
+  auto& items = std::get<std::vector<InputItem>>(params.input);
+  auto& msg = std::get<InputMessage>(items[0]);
+  auto& image = std::get<InputImageContent>(msg.content[1]);
+  image.image_data = "not-valid-base64";
+  image.media_type = "image/jpeg";
+
+  auto request = ToSessionRequest(params);
+
+  auto* converted_msg = dynamic_cast<MessageItem*>(request.items[0]);
+  ASSERT_NE(converted_msg, nullptr);
+  const auto* img = static_cast<const ImageItem*>(converted_msg->content[1].view);
+  EXPECT_EQ(img->format, "image/png");
 }
 
 TEST(ResponseConverterTest, ToSessionRequest_InputImage_DataUrl_MissingBase64Marker_Throws) {

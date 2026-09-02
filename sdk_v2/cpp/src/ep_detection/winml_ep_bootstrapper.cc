@@ -7,6 +7,7 @@
 // header (and this file) unconditionally reference WinML 2.x catalog APIs.
 #include "ep_detection/winml_ep_bootstrapper.h"
 
+#include "ep_detection/winml_provider_allowlist.h"
 #include "logger.h"
 
 #include <fmt/format.h>
@@ -287,6 +288,11 @@ std::vector<std::unique_ptr<WinMLEpBootstrapper>> WinMLEpBootstrapper::DiscoverP
         auto* ctx = static_cast<EnumContext*>(context);
 
         std::string provider_name = info->name ? info->name : "";
+        if (!IsTrustedWinMLProvider(provider_name)) {
+          ctx->logger->Log(LogLevel::Information,
+                           fmt::format("WinML EP ignored because it is not trusted: {}", provider_name));
+          return TRUE;
+        }
 
         ctx->logger->Log(
             LogLevel::Information,
@@ -314,7 +320,7 @@ std::vector<std::unique_ptr<WinMLEpBootstrapper>> WinMLEpBootstrapper::DiscoverP
       &ctx);
 
   logger.Log(LogLevel::Information,
-             fmt::format("WinML EP catalog: discovered {} provider(s)", ctx.bootstrappers.size()));
+             fmt::format("WinML EP catalog: discovered {} trusted provider(s)", ctx.bootstrappers.size()));
 
   return std::move(ctx.bootstrappers);
 }

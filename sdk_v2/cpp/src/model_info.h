@@ -55,6 +55,12 @@ struct ModelInfo {
   std::map<std::string, std::string, std::less<>> string_properties;
   std::map<std::string, int64_t, std::less<>> int_properties;
 
+  /// Set a string property while keeping typed fields synchronized with well-known keys.
+  void SetPropertyStr(std::string key, std::string value);
+
+  /// Set an int property.
+  void SetPropertyInt(std::string key, int64_t value);
+
   /// Look up a string property by key, returning nullptr if missing.
   const std::string* GetPropertyStr(std::string_view key) const {
     auto it = string_properties.find(key);

@@ -38,5 +38,9 @@ src/foundry_local_sdk/_native/_cffi_bindings*.c
 src/foundry_local_sdk/_native/win-x64/
 src/foundry_local_sdk/_native/win-arm64/
 src/foundry_local_sdk/_native/linux-x64/
+src/foundry_local_sdk/_native/linux-arm64/
 src/foundry_local_sdk/_native/osx-x64/
 src/foundry_local_sdk/_native/osx-arm64/
+src/foundry_local_sdk/_native/_cffi_bindings*.so
+src/foundry_local_sdk/_native/_cffi_bindings*.pyd
+src/foundry_local_sdk/_native/_cffi_bindings*.dylib

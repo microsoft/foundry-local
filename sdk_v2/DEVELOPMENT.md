@@ -92,7 +92,7 @@ See `pwsh ./build_and_test_all.ps1 -?` for the full parameter list.
 Model-dependent sdk_v2 tests require `FOUNDRY_TEST_DATA_DIR` to point to a
 local model cache directory.
 
-In CI, sdk_v2 pipelines pre-populate this directory from blob storage.
+In CI, sdk_v2 pipelines pre-populate this directory from Azure Artifacts.
 For local runs, developers should populate a local cache first, then point
 `FOUNDRY_TEST_DATA_DIR` at it.
 
@@ -120,7 +120,7 @@ Then set env var `FOUNDRY_TEST_DATA_DIR` to the cache path you want tests to use
 Example:
 
 ```powershell
-$env:FOUNDRY_TEST_DATA_DIR = '$env:USERPROFILE\.foundry\cache\models\Microsoft'
+$env:FOUNDRY_TEST_DATA_DIR = "$env:USERPROFILE\.foundry\cache\models"
 pwsh ./build_and_test_all.ps1
 ```
 
@@ -132,26 +132,99 @@ model files expected by the tests you are running.
 CI does not run `foundry model download ...`. Instead, pipelines fetch a fixed
 model set into `FOUNDRY_TEST_DATA_DIR` using:
 
-- `.pipelines/templates/fetch-test-data-from-blob.yml`
+- `.pipelines/templates/fetch-models-from-artifacts-feed.yml`
 
-That template downloads versioned model assets and writes `inference_model.json`
-entries expected by the local model scanner.
+The legacy template name is retained to avoid changing its existing callers. The
+template downloads pinned Universal Packages from the project-scoped
+`AIFoundryLocal/AIFoundryLocal_PublicPackages` feed. The pipeline and feed are in
+the same Azure DevOps organization, so downloads use the pipeline identity and
+do not require an Azure service connection.
+
+Each package contains one model's `v<model-version>` directory. The template
+downloads it into the cache layout expected by the local model scanner:
+
+```text
+test-data-shared/
+└── Microsoft/
+    └── <model-alias>-<model-version>/
+        └── v<model-version>/
+            ├── genai_config.json
+            ├── inference_model.json
+            └── <model files>
+```
 
 ### Updating the test models available in CI
 
-When tests need a different model/version set, update the model mapping list in:
+Models are published as separate Universal Packages so one model can be added or
+updated without republishing the entire test cache. Universal Package versions
+are immutable.
 
-- `.pipelines/templates/fetch-test-data-from-blob.yml`
+To publish a model, first stage a complete cache alias directory. For example:
+
+```text
+C:\model-staging\qwen2.5-0.5b-instruct-generic-cpu-4\
+└── v4\
+    ├── genai_config.json
+    ├── inference_model.json
+    └── <model files>
+```
+
+The model leaf must contain `inference_model.json` with the versioned cache ID:
+
+```json
+{
+  "Name": "qwen2.5-0.5b-instruct-generic-cpu:4"
+}
+```
+
+Install the Azure DevOps CLI extension, authenticate with an identity that has
+Feed Publisher permission, and publish the alias directory:
+
+```powershell
+az extension add --name azure-devops
+az login
+
+$packageName = '<lowercase-package-name>'
+$packageVersion = '<major.minor.patch>'
+$modelDirectory = 'C:\model-staging\<cache-alias>-<model-version>'
+
+az artifacts universal publish `
+  --organization "https://dev.azure.com/aiinfra" `
+  --project "AIFoundryLocal" `
+  --scope project `
+  --feed "AIFoundryLocal_PublicPackages" `
+  --name $packageName `
+  --version $packageVersion `
+  --description "Foundry Local generic CPU test model cache" `
+  --path $modelDirectory
+```
+
+Publishing the alias directory uploads its contents, so `v4` is a top-level
+directory within the package. Do not publish the contents of `v4` directly;
+the version directory must remain present when `UniversalPackages@0` downloads
+the package into the target cache alias directory. Do not ZIP the directory.
+
+After publishing, add or update the corresponding `UniversalPackages@0` task in:
+
+- `.pipelines/templates/fetch-models-from-artifacts-feed.yml`
 
 Checklist:
 
-1. Add or update the model entry (`SourcePath` + `Version`) in `modelMappings`.
-2. Ensure the selected version path exists in blob storage (`v<Version>`).
-3. Keep at least one model per test task used across SDKs (chat, embeddings,
+1. Use a stable lowercase package name for a model variant and pin an exact
+   semantic package version in the template; do not use `*`.
+2. Set `downloadDirectory` to
+   `${{ parameters.destinationPath }}/Microsoft/<cache-alias>-<model-version>`.
+3. For a new model version, stage the new `v<model-version>` directory, update
+   `inference_model.json`, publish a new package version, and update the cache
+   alias, package version, and download path in the template.
+4. To correct packaging without changing the model version, publish a new patch
+   package version (for example, `4.0.1`) and update only
+   `vstsPackageVersion`. The cache ID can remain at model version `4`.
+5. Keep at least one model per test task used across SDKs (chat, embeddings,
   audio/ASR) so integration suites remain runnable.
-4. Validate by running `pwsh ./build_and_test_all.ps1` with
+6. Validate by running `pwsh ./build_and_test_all.ps1` with
   `FOUNDRY_TEST_DATA_DIR` set to a cache containing the same model set.
-5. If local instructions change, update this file so contributors can mirror CI.
+7. Verify the package with a CI download before removing an older package entry.
 
 ## Troubleshooting
 

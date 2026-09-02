@@ -59,6 +59,7 @@ static_assert(sizeof(ResponseObject) == 832,
 }  // namespace fl
 
 #include "exception.h"
+#include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -188,7 +189,7 @@ std::string MimeFromExtension(const std::string& path) {
   return {};
 }
 
-std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
+std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url, std::string_view error_source) {
   // Format: "data:<media-type>;base64,<payload>"
   // Strict: we require base64 encoding (not raw text) and a `;base64,`
   // marker. Anything else throws — vision models can't consume non-base64
@@ -196,7 +197,7 @@ std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
   auto comma = url.find(',');
   if (comma == std::string::npos) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "image_url data URL is missing payload separator ','");
+             std::string(error_source) + " is missing payload separator ','");
   }
 
   std::string header = url.substr(kDataUrlPrefix.size(), comma - kDataUrlPrefix.size());
@@ -204,8 +205,7 @@ std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
   constexpr std::string_view kBase64Marker = ";base64";
   auto base64_pos = header.find(kBase64Marker);
   if (base64_pos == std::string::npos) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "image_url data URL must use ';base64,' encoding");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " must use ';base64,' encoding");
   }
 
   std::string media_type = header.substr(0, base64_pos);
@@ -216,11 +216,11 @@ std::unique_ptr<ImageItem> MakeImageItemFromDataUrl(const std::string& url) {
     bytes = Azure::Core::Convert::Base64Decode(payload);
   } catch (const std::exception& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             std::string("image_url data URL has invalid base64 payload: ") + e.what());
+             std::string(error_source) + " has invalid base64 payload: " + e.what());
   }
 
   if (bytes.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image_url data URL decoded to zero bytes");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, std::string(error_source) + " decoded to zero bytes");
   }
 
   return std::make_unique<ImageItem>(std::move(bytes), std::move(media_type));
@@ -259,31 +259,59 @@ std::unique_ptr<ImageItem> MakeImageItemFromLocalFile(const std::string& url,
 }
 
 std::unique_ptr<ImageItem> MakeImageItemFromInputImage(const InputImageContent& c) {
-  if (c.file_id.has_value() && !c.file_id->empty()) {
+  if (c.image_url.has_value() && !c.image_url->empty()) {
+    const std::string& url = *c.image_url;
+
+    if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
+      return MakeImageItemFromDataUrl(url, "image_url data URL");
+    }
+
+    // file:// URI or absolute local path.
+    if (url.compare(0, kFileScheme.size(), kFileScheme) == 0 ||
+        (url.size() >= 2 && (url[0] == '/' || url[0] == '\\' ||
+                             (url.size() >= 3 && url[1] == ':' && (url[2] == '/' || url[2] == '\\'))))) {
+      return MakeImageItemFromLocalFile(url, c.media_type);
+    }
+
     FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-             "image input via file_id is not supported on Foundry Local");
+             "image_url must be a data: URL or a local file path; remote http(s) URLs are not supported");
   }
 
-  if (!c.image_url.has_value() || c.image_url->empty()) {
+  if (c.image_data.has_value() && !c.image_data->empty()) {
+    const std::string media_type =
+        c.media_type.has_value() && !c.media_type->empty() ? *c.media_type : "image/png";
+    return MakeImageItemFromDataUrl("data:" + media_type + ";base64," + *c.image_data, "image_data");
+  }
+
+  if (c.file_id.has_value() && !c.file_id->empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED, "image input via file_id is not supported on Foundry Local");
+  }
+
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+           "input_image content requires a non-empty image_url, image_data, or file_id");
+}
+
+std::unique_ptr<AudioItem> MakeAudioItemFromInputAudio(const InputAudioContent& c) {
+  if (c.data.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "input_audio data must not be empty");
+  }
+  if (c.format.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "input_audio format must not be empty");
+  }
+
+  std::vector<std::uint8_t> bytes;
+  try {
+    bytes = Azure::Core::Convert::Base64Decode(c.data);
+  } catch (const std::exception& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "input_image content requires a non-empty image_url or file_id");
+             std::string("input_audio has invalid base64 payload: ") + e.what());
   }
 
-  const std::string& url = *c.image_url;
-
-  if (url.compare(0, kDataUrlPrefix.size(), kDataUrlPrefix) == 0) {
-    return MakeImageItemFromDataUrl(url);
+  if (bytes.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "input_audio decoded to zero bytes");
   }
 
-  // file:// URI or absolute local path.
-  if (url.compare(0, kFileScheme.size(), kFileScheme) == 0 ||
-      (url.size() >= 2 && (url[0] == '/' || url[0] == '\\' ||
-                           (url.size() >= 3 && url[1] == ':' && (url[2] == '/' || url[2] == '\\'))))) {
-    return MakeImageItemFromLocalFile(url, c.media_type);
-  }
-
-  FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-           "image_url must be a data: URL or a local file path; remote http(s) URLs are not supported");
+  return std::make_unique<AudioItem>(std::move(bytes), c.format);
 }
 
 }  // namespace
@@ -299,10 +327,7 @@ static void AddTypedInputItems(Request& request,
       auto i = std::make_unique<ToolResultItem>(fc_result->call_id, fc_result->output);
       request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
-      // Build typed parts from the message's content array. Text and image
-      // parts are forwarded; other content variants (file, audio) are
-      // rejected at the converter so we fail fast rather than silently
-      // dropping content.
+      // Build typed parts from the message's content array.
       std::vector<std::unique_ptr<Item>> parts;
       bool has_text = false;
       for (const auto& c : msg->content) {
@@ -313,9 +338,11 @@ static void AddTypedInputItems(Request& request,
           }
         } else if (auto* ic = std::get_if<InputImageContent>(&c)) {
           parts.push_back(MakeImageItemFromInputImage(*ic));
+        } else if (auto* ac = std::get_if<InputAudioContent>(&c)) {
+          parts.push_back(MakeAudioItemFromInputAudio(*ac));
         } else {
           FL_THROW(FOUNDRY_LOCAL_ERROR_NOT_IMPLEMENTED,
-                   "input message content type not supported (only input_text and input_image)");
+                   "input message content type not supported (only input_text, input_image, and input_audio)");
         }
       }
 

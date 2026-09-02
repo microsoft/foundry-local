@@ -9,10 +9,11 @@
 #include <vector>
 
 // Forward declarations
-struct OgaTokenizer;
 struct OgaSequences;
 
 namespace fl {
+
+class GenAIModelInstance;
 
 /// Render a MessageItem's content as a plain string suitable for the chat template.
 ///
@@ -28,23 +29,23 @@ namespace fl {
 std::string RenderMessageForPrompt(const MessageItem& msg);
 
 /// Build a chat prompt string from a list of messages.
-/// Uses the tokenizer's built-in chat template (via OgaTokenizer::ApplyChatTemplate).
+/// Uses the tokenizer's built-in chat template (via GenAIModelInstance::ApplyChatTemplate).
 ///
 /// @param messages       Ordered list of chat messages (system, user, assistant, tool, etc.)
-/// @param tokenizer      ORT GenAI tokenizer (for ApplyChatTemplate)
+/// @param model          Model instance whose shared tokenizer renders the template (thread-safe)
 /// @param tools_json     Optional JSON string describing available tools. Pass empty string for none.
 /// @returns The formatted prompt string ready for tokenization
 std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
-                            OgaTokenizer& tokenizer,
+                            GenAIModelInstance& model,
                             const std::string& tools_json = "");
 
-/// Encode a prompt string into token sequences using the tokenizer.
+/// Encode a prompt string into token sequences using the model's shared tokenizer (thread-safe).
 /// Returns a unique_ptr to OgaSequences. Caller takes ownership.
 ///
 /// @param prompt     The formatted prompt string (from BuildChatPrompt)
-/// @param tokenizer  ORT GenAI tokenizer
+/// @param model      Model instance whose shared tokenizer encodes the prompt
 /// @returns Encoded token sequences
 std::unique_ptr<OgaSequences> EncodePrompt(const std::string& prompt,
-                                           OgaTokenizer& tokenizer);
+                                           GenAIModelInstance& model);
 
 }  // namespace fl

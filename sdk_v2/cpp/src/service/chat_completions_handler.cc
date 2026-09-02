@@ -60,13 +60,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+  const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
@@ -108,6 +108,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
@@ -117,6 +118,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   // telemetry. How much do we care about that? Is it worth the double parsing?
   ChatCompletionRequest req;
   if (auto err = ParseAndValidateRequest(body_str->c_str(), req)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -199,9 +201,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
                                 req = std::move(session_request),
                                 include_usage, &tracker,
                                 &session_manager = ctx_.session_manager]() mutable {
-    SessionRegistration reg(session_manager, bg_session);
-
     try {
+      // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
+      // instead of escaping this raw std::thread and calling std::terminate.
+      SessionRegistration reg(session_manager, bg_session);
+
       fl::Response bg_response;
 
       // Callback receives OPENAI_JSON-tagged TextItem chunks from ChatSession — just wrap in SSE framing.

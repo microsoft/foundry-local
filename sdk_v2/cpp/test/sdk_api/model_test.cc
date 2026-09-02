@@ -53,7 +53,7 @@ TEST_F(ModelFixture, ModelInfoAllPropertyAccessorsSucceed) {
 // --- Catalog and Download Validation ---
 
 TEST_F(ModelFixture, CatalogValidation) {
-  auto models = model_list().Models();
+  const auto& models = model_list();
 
   std::cout << "\n=== Catalog Validation ==="
             << "\nTotal models in catalog: " << models.size()
@@ -161,13 +161,12 @@ TEST_F(ModelFixture, LoadUnloadCycle) {
   // Verify the model appears in GetLoadedModels
   {
     foundry_local::ModelList loaded_models = catalog().GetLoadedModels();
-    auto loaded = loaded_models.Models();
 
-    EXPECT_GE(loaded.size(), 1u)
+    EXPECT_GE(loaded_models.size(), 1u)
         << "At least one model should be loaded";
 
     bool found_loaded = false;
-    for (const auto& m : loaded) {
+    for (const auto& m : loaded_models) {
       if (m->GetInfo().Name() == info.Name()) {
         found_loaded = true;
         break;
@@ -187,10 +186,9 @@ TEST_F(ModelFixture, LoadUnloadCycle) {
   // Verify the model is no longer in GetLoadedModels
   {
     foundry_local::ModelList loaded_after_unload = catalog().GetLoadedModels();
-    auto remaining = loaded_after_unload.Models();
 
     bool still_loaded = false;
-    for (const auto& m : remaining) {
+    for (const auto& m : loaded_after_unload) {
       if (m->GetInfo().Name() == info.Name()) {
         still_loaded = true;
         break;

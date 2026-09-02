@@ -37,7 +37,8 @@ inline long CurrentPid() {
 /// within one process, so no two live temp paths collide — no randomness required.
 inline std::filesystem::path MakeUniqueTempPath(const std::string& prefix) {
   static std::atomic<uint64_t> counter{0};
-  return std::filesystem::temp_directory_path() /
+  const auto temp_directory = std::filesystem::canonical(std::filesystem::temp_directory_path());
+  return temp_directory /
          (prefix + std::to_string(CurrentPid()) + "_" +
           std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
 }
@@ -68,6 +69,9 @@ class TempPath {
     try {
       std::error_code ec;
       std::filesystem::remove_all(path_, ec);
+      if (ec) {
+        std::fprintf(stderr, "TempPath: failed to remove '%s': %s\n", path_.string().c_str(), ec.message().c_str());
+      }
     } catch (const std::exception& e) {
       std::fprintf(stderr, "TempPath: failed to remove '%s': %s\n", path_.string().c_str(), e.what());
     }

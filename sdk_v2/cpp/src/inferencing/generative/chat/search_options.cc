@@ -14,6 +14,7 @@ int ApplySearchOptions(const SearchOptions& options,
                        int input_token_count,
                        const GenAIConfig& config,
                        OgaGeneratorParams& gen_params,
+                       ExecutionProvider ep,
                        bool use_full_context,
                        int default_max_output_tokens) {
   // Determine model's max context length from genai_config.json search.max_length
@@ -26,7 +27,10 @@ int ApplySearchOptions(const SearchOptions& options,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
   }
 
-  // Determine max output tokens
+  // genai_config.json's search.max_length (read above) is the source of truth for the total input+output budget.
+  // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
+  // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
+  // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
   int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
   if (max_output < 1) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
@@ -52,7 +56,12 @@ int ApplySearchOptions(const SearchOptions& options,
 
   // Temperature
   if (options.temperature.has_value()) {
-    gen_params.SetSearchOption("temperature", static_cast<double>(*options.temperature));
+    const float temperature = *options.temperature;
+    if (!(temperature >= 0.0f && temperature <= 2.0f)) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "temperature must be in the range [0.0, 2.0]");
+    }
+
+    gen_params.SetSearchOption("temperature", static_cast<double>(temperature));
   }
 
   // top_p
@@ -95,6 +104,31 @@ int ApplySearchOptions(const SearchOptions& options,
     gen_params.SetSearchOptionBool("early_stopping", true);
   }
 
+  // Preserve a positive model setting. ORT GenAI reports both an absent setting and explicit zero as zero; Foundry
+  // Local intentionally treats both as unset. ORT GenAI decides whether the model consumes the resulting option.
+  if (gen_params.GetSearchNumber("chunk_size") <= 0) {
+    // The model's resolved EP is kDefault for the common load path, so use the provider declared in
+    // genai_config.json. An empty provider means ORT's CPU fallback.
+    ExecutionProvider effective_ep = ep;
+    if (effective_ep == ExecutionProvider::kDefault) {
+      std::string config_provider = config.DefaultProvider();
+      effective_ep = config_provider.empty() ? ExecutionProvider::kCPU
+                                              : EPUtils::StringtoEP(config_provider);
+    }
+
+    constexpr double kDefaultChunkSize = 2048.0;
+    switch (effective_ep) {
+      case ExecutionProvider::kCUDA:
+      case ExecutionProvider::kTensorRT_RTX:
+      case ExecutionProvider::kWebGPU:
+      case ExecutionProvider::kCPU:
+        gen_params.SetSearchOption("chunk_size", kDefaultChunkSize);
+        break;
+      default:
+        break;
+    }
+  }
+
   return effective_max_length;
 }
 
@@ -120,6 +154,10 @@ SearchOptions SearchOptions::FromParameters(const KeyValuePairs& params) {
   };
 
   opts.temperature = try_float(FOUNDRY_LOCAL_PARAM_TEMPERATURE);
+  if (opts.temperature.has_value() && !(*opts.temperature >= 0.0f && *opts.temperature <= 2.0f)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "temperature must be in the range [0.0, 2.0]");
+  }
+
   opts.top_p = try_float(FOUNDRY_LOCAL_PARAM_TOP_P);
   opts.top_k = try_int(FOUNDRY_LOCAL_PARAM_TOP_K);
   opts.max_output_tokens = try_int(FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS);

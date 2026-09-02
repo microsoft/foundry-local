@@ -2,11 +2,19 @@
 
 find_package(httplib CONFIG REQUIRED)
 
+# cpp-httplib's non-blocking resolver uses getaddrinfo_a, which lives in libanl on glibc < 2.34.
+set(FOUNDRY_LOCAL_HTTPLIB_LIBS httplib::httplib)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(ANL_LIBRARY anl REQUIRED)
+    list(APPEND FOUNDRY_LOCAL_HTTPLIB_LIBS ${ANL_LIBRARY})
+endif()
+
 # ==========================================================================
 # Internal tests — test the implementation directly
 # Links against the static library with access to internal src/ headers.
 # ==========================================================================
 add_executable(foundry_local_tests
+    test_main.cc
     internal_api/audio/audio_session_test.cc
     internal_api/audio/audio_transcription_contract_test.cc
     internal_api/audio/pcm_utils_test.cc
@@ -33,12 +41,15 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
+    internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
     internal_api/item_test.cc
+    internal_api/local_model_catalog_test.cc
     internal_api/local_model_scanner_test.cc
     internal_api/model_info_test.cc
     internal_api/model_info_accessors_test.cc
+    internal_api/model_construction_test.cc
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
@@ -51,24 +62,37 @@ add_executable(foundry_local_tests
     internal_api/region_fallback_test.cc
     internal_api/sse_stream_body_test.cc
     internal_api/azure_catalog_test.cc
+    internal_api/azure_model_catalog_test.cc
     internal_api/telemetry_test.cc
     internal_api/tensor_test.cc
+    internal_api/time_utils_test.cc
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
     internal_api/web_service_test.cc
+    internal_api/winml_provider_allowlist_test.cc
     internal_api/zip_extract_test.cc
 )
+
+if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
+    target_sources(foundry_local_tests PRIVATE
+        internal_api/cuda_ep_bootstrapper_test.cc
+        internal_api/ep_bundle_installer_test.cc
+        internal_api/nvml_gpu_detector_test.cc
+        internal_api/webgpu_ep_bootstrapper_test.cc
+    )
+endif()
 
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
 
 target_link_libraries(foundry_local_tests
     PRIVATE
         foundry_local_static
-        GTest::gtest_main
-        httplib::httplib
+        GTest::gtest
+        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
+        ZLIB::ZLIB
 )
 
 # On Linux, GenAI does dlopen("libonnxruntime.so") internally. Modern GCC emits
@@ -127,6 +151,7 @@ gtest_discover_tests(foundry_local_tests
 # ==========================================================================
 
 add_executable(sdk_integration_tests
+    test_main.cc
     sdk_api/audio_transcriptions_test.cc
     sdk_api/cpp_api_test.cc
     sdk_api/catalog_test.cc
@@ -163,13 +188,20 @@ target_include_directories(sdk_integration_tests
 target_link_libraries(sdk_integration_tests
     PRIVATE
         foundry_local_cpp
-        GTest::gtest_main
+        GTest::gtest
         nlohmann_json::nlohmann_json
-        httplib::httplib
+        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sdk_integration_tests PRIVATE -Wl,--disable-new-dtags)
+endif()
+
+# On Android the ORT/GenAI prebuilts statically link libc++ but export its symbols WEAK.
+# Without this, the executable's own static libc++ symbols (e.g. std::locale::use_facet) are
+# exported GLOBAL and interpose the prebuilts' weak copies.
+if(ANDROID)
+    target_link_options(sdk_integration_tests PRIVATE -Wl,--exclude-libs,ALL)
 endif()
 
 add_custom_command(TARGET sdk_integration_tests POST_BUILD
@@ -211,6 +243,8 @@ set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
 # their own Manager instances with different configurations.
 # ==========================================================================
 add_executable(cache_only_tests
+    test_main.cc
+    sdk_api/bring_your_own_model_e2e_test.cc
     sdk_api/cache_only_test.cc
     sdk_api/catalog_live_test.cc
     sdk_api/manager_web_service_test.cc
@@ -228,7 +262,7 @@ target_include_directories(cache_only_tests
 target_link_libraries(cache_only_tests
     PRIVATE
         foundry_local_cpp
-        GTest::gtest_main
+        GTest::gtest
         nlohmann_json::nlohmann_json
 )
 

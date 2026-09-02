@@ -13,6 +13,12 @@ endif()
 if(NOT DEFINED FOUNDRY_LOCAL_BUILD_SERVICE OR FOUNDRY_LOCAL_BUILD_SERVICE)
     list(APPEND VCPKG_MANIFEST_FEATURES "service")
 endif()
+# Telemetry must be selected before project() so vcpkg resolves the feature. Foundry Local Core always builds with
+# telemetry; platforms that cannot link the 1DS transport are unsupported for this target.
+if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uwp")
+    message(FATAL_ERROR "Foundry Local Core always builds with telemetry; UWP/WindowsStore is not supported.")
+endif()
+list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
 project(foundry_local VERSION 0.1.0 LANGUAGES CXX C)
 
@@ -45,6 +51,30 @@ option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
 
+# Optional 1DS ingestion token override. Override only via environment so it does
+# not appear in CMake cache files.
+if(DEFINED CACHE{FOUNDRY_LOCAL_TELEMETRY_TOKEN}
+   AND NOT "$CACHE{FOUNDRY_LOCAL_TELEMETRY_TOKEN}" STREQUAL "")
+    message(FATAL_ERROR
+        "Do not pass FOUNDRY_LOCAL_TELEMETRY_TOKEN via -D or CMake cache. "
+        "Use the FOUNDRY_LOCAL_TELEMETRY_TOKEN environment variable for temporary test-tenant overrides.")
+endif()
+unset(FOUNDRY_LOCAL_TELEMETRY_TOKEN CACHE)
+
+set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
+if(DEFINED ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN})
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "$ENV{FOUNDRY_LOCAL_TELEMETRY_TOKEN}")
+endif()
+if(FOUNDRY_LOCAL_TELEMETRY_TOKEN MATCHES "^\\$\\(")
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN "")
+endif()
+if(FOUNDRY_LOCAL_TELEMETRY_TOKEN)
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN_DEFINE
+        "#define FOUNDRY_LOCAL_TELEMETRY_TOKEN \"${FOUNDRY_LOCAL_TELEMETRY_TOKEN}\"")
+else()
+    set(FOUNDRY_LOCAL_TELEMETRY_TOKEN_DEFINE "")
+endif()
+
 # Android: interactive examples and host tools don't run on device
 if(ANDROID)
     set(FOUNDRY_LOCAL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -64,7 +94,7 @@ include(cmake/Sanitizers.cmake)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(Microsoft.GSL CONFIG REQUIRED)
+find_package(LibArchive REQUIRED)
 
 if(FOUNDRY_LOCAL_BUILD_SERVICE)
     find_package(oatpp CONFIG REQUIRED)
@@ -72,6 +102,7 @@ endif()
 
 if(FOUNDRY_LOCAL_BUILD_TESTS)
     find_package(GTest CONFIG REQUIRED)
+    find_package(ZLIB REQUIRED)
     enable_testing()
 endif()
 
@@ -86,6 +117,13 @@ find_package(OnnxRuntime REQUIRED)
 if(WIN32)
     find_package(WinMLEpCatalog)
 endif()
+
+# 1DS C++ client telemetry — provided by the cpp-client-telemetry vcpkg port.
+find_package(MSTelemetry CONFIG REQUIRED)
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+endif()
+message(STATUS "1DS telemetry: enabled (cpp-client-telemetry found)")
 
 # --------------------------------------------------------------------------
 # Library target
@@ -104,6 +142,7 @@ if(WIN32)
         src/platform/windows/path.cc
         src/platform/windows/file_io.cc
         src/platform/windows/cross_process_file_lock.cc
+        src/platform/windows/dynlib_loader.cc
     )
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
@@ -112,6 +151,13 @@ else()
         src/platform/posix/file_io.cc
         src/platform/posix/cross_process_file_lock.cc
     )
+    # Android does not support the dlopen-based loader; dynlib_loader.cc is
+    # only compiled for Linux and macOS.
+    if(NOT ANDROID)
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/posix/dynlib_loader.cc
+        )
+    endif()
 endif()
 
 # WinML EP bootstrapper is only built when the WinML EP catalog package is
@@ -122,6 +168,24 @@ endif()
 if(WinMLEpCatalog_FOUND)
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/ep_detection/winml_ep_bootstrapper.cc
+    )
+endif()
+
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FOUNDRY_LOCAL_SYSTEM_PROCESSOR)
+set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS ON)
+if(ANDROID OR
+   (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+    NOT FOUNDRY_LOCAL_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$"))
+    set(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS OFF)
+endif()
+
+if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
+    list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+        src/ep_detection/cuda_ep_bootstrapper.cc
+        src/ep_detection/cuda_ep_manifest.cc
+        src/ep_detection/ep_bundle_installer.cc
+        src/ep_detection/nvml_gpu_detector.cc
+        src/ep_detection/webgpu_ep_bootstrapper.cc
     )
 endif()
 
@@ -141,6 +205,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc
     src/catalog/catalog_client.cc
+    src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
@@ -160,15 +225,14 @@ set(FOUNDRY_LOCAL_SOURCES
     src/download/file_writer.cc
     src/download/inference_model_writer.cc
     src/download/model_registry_client.cc
-    src/ep_detection/cuda_ep_bootstrapper.cc
     src/ep_detection/ep_detector.cc
-    src/ep_detection/ep_utils.cc
     src/ep_detection/runtime_version_info.cc
-    src/ep_detection/webgpu_ep_bootstrapper.cc
     src/exception.cc
     src/inferencing/generative/genai_config.cc
     src/http/http_client.cc
+    src/http/curl_transport.cc
     src/inferencing/generative/genai_model_instance.cc
+    src/inferencing/generative/preprocessor.cc
     src/logger.cc
     src/spdlog_logger.cc
     src/model_info.cc
@@ -196,17 +260,25 @@ set(FOUNDRY_LOCAL_SOURCES
     src/service/web_service.cc
     src/telemetry/telemetry.cc
     src/telemetry/telemetry_action_tracker.cc
+    src/telemetry/device_id.cc
+    src/telemetry/invocation_context.cc
+    src/telemetry/telemetry_environment.cc
     src/telemetry/telemetry_logger.cc
+    src/telemetry/telemetry_metadata.cc
     src/utils.cc
     src/util/file_lock.cc
     src/http/http_download.cc
     src/util/path_safety.cc
     src/util/region_fallback.cc
     src/util/sha256.cc
+    src/util/time_utils.cc
     src/util/zip_extract.cc
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
+
+# 1DS bridge — always compiled for Foundry Local Core.
+list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
 
 # Organize headers into filters matching the directory structure in Visual Studio
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "Source" FILES ${FOUNDRY_LOCAL_SOURCES})
@@ -238,7 +310,13 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
             Azure::azure-core
             Azure::azure-storage-blobs
             spdlog::spdlog
+            LibArchive::LibArchive
+            ${CMAKE_DL_LIBS}
     )
+
+    if(WIN32)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} shell32 ole32)
+    endif()
 
     if(TARGET OnnxRuntimeGenAI::OnnxRuntimeGenAI)
         target_link_libraries(${TARGET} ${LINK_SCOPE}
@@ -250,17 +328,29 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     endif()
 
     if(WIN32)
-        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt version)
         # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
-        # WinHTTP is not available in UWP, so only define this on desktop Windows.
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
-            target_compile_definitions(${TARGET} PRIVATE FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1)
+            target_compile_definitions(${TARGET} PRIVATE
+                FOUNDRY_LOCAL_DESKTOP_WINDOWS=1
+                FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1
+            )
         endif()
+    else()
+        target_link_libraries(${TARGET} ${LINK_SCOPE} OpenSSL::Crypto)
+    endif()
+
+    if(APPLE)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} "-framework CoreFoundation")
     endif()
 
     if(ANDROID)
         target_link_libraries(${TARGET} ${LINK_SCOPE} log)
     endif()
+    target_compile_definitions(
+        ${TARGET}
+        PRIVATE FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
+    )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)
         target_link_libraries(${TARGET} ${LINK_SCOPE} oatpp::oatpp)
@@ -273,6 +363,9 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     else()
         target_compile_definitions(${TARGET} ${LINK_SCOPE} FOUNDRY_LOCAL_HAS_EP_CATALOG=0)
     endif()
+
+    target_link_libraries(${TARGET} ${LINK_SCOPE} MSTelemetry::mat)
+
 endfunction()
 
 # --------------------------------------------------------------------------
@@ -285,9 +378,21 @@ endfunction()
 set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
     CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
 
+set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
+if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
+    set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "unknown")
+endif()
+
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
+    @ONLY
+)
+
+# Generate the 1DS tenant-token header.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/telemetry/one_ds_tenant_token.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/one_ds_tenant_token.h"
     @ONLY
 )
 
@@ -454,7 +559,7 @@ target_include_directories(foundry_local_cpp
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(foundry_local_cpp INTERFACE foundry_local Microsoft.GSL::GSL)
+target_link_libraries(foundry_local_cpp INTERFACE foundry_local)
 
 # --------------------------------------------------------------------------
 # Split debug symbols (Linux / macOS, RelWithDebInfo only)

@@ -58,6 +58,15 @@ function modelToNativeChatSession(model: IModel): NativeChatSession {
   if (!(model instanceof Model)) {
     throw new TypeError("ChatSession: expected a Model as the first argument");
   }
+  // Validate the task BEFORE constructing the native session so a wrong-task model
+  // surfaces a `TypeError` here rather than a native `FoundryLocalError`, consistently
+  // with the C# and Python bindings.
+  const task = model.info.task;
+  if (task !== "chat-completion" && task !== "vision-language-chat") {
+    throw new TypeError(
+      `ChatSession requires a model with task 'chat-completion' or 'vision-language-chat', but got '${task ?? "(unset)"}'.`,
+    );
+  }
   const nativeModel = unwrapNativeModel(model);
   return new (getAddon().ChatSession)(nativeModel);
 }
@@ -66,11 +75,9 @@ function modelToNativeEmbeddingsSession(model: IModel): NativeEmbeddingsSession 
   if (!(model instanceof Model)) {
     throw new TypeError("EmbeddingsSession: expected a Model as the first argument");
   }
-  // Validate task in JS BEFORE constructing the native session. Matches the
-  // C# (`ValidateTask`) and Python (`__init__` precheck) conventions: a
-  // wrong-task model surfaces a `TypeError` rather than a native
-  // `FoundryLocalError`, and the check works whether or not the model has
-  // been loaded yet (the native ctor would fail later either way).
+  // Validate the task BEFORE constructing the native session so a wrong-task model
+  // surfaces a `TypeError` here rather than a native `FoundryLocalError`, consistently
+  // with the C# and Python bindings.
   const task = model.info.task;
   if (task !== "embeddings") {
     throw new TypeError(`EmbeddingsSession requires a model with task 'embeddings', but got '${task ?? "(unset)"}'.`);

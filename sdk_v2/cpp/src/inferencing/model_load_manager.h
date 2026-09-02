@@ -63,9 +63,16 @@ class ModelLoadManager {
   ///          contract violation.
   bool UnloadModel(std::string_view model_id);
 
+  /// Unload only when the loaded model's normalized path matches `model_path`.
+  /// Returns false when the ID is absent or belongs to a different path.
+  bool UnloadModel(std::string_view model_id, std::string_view model_path);
+
   /// Get a loaded model by ID. Returns nullptr if not loaded.
   /// The returned pointer is valid until UnloadModel is called for this model_id.
   GenAIModelInstance* GetLoadedModel(std::string_view model_id);
+
+  /// Get a loaded model for an immediate query only when its normalized path matches `model_path`.
+  GenAIModelInstance* GetLoadedModel(std::string_view model_id, std::string_view model_path);
 
   /// Reject all future LoadModel calls. Called by Manager::Shutdown().
   /// Idempotent and thread-safe.
@@ -84,6 +91,8 @@ class ModelLoadManager {
 
  private:
   bool HasEP(const std::string& ep_name) const;
+  bool UnloadModel(std::string_view model_id, const std::string* normalized_model_path);
+  GenAIModelInstance* GetLoadedModel(std::string_view model_id, const std::string* normalized_model_path);
 
   IEpDetector& ep_detector_;
   ILogger& logger_;

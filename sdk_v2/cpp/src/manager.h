@@ -7,8 +7,10 @@
 #include "logger.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,7 @@ namespace fl {
 
 // Forward declarations
 class ICatalog;
+enum class CatalogType;
 class DownloadManager;
 class ITelemetry;
 class Model;
@@ -49,6 +52,7 @@ class Manager {
   /// The catalog is owned by the manager and shared across all consumers
   /// (web service, C API, etc.) so model state (e.g. IsLoaded) is consistent.
   ICatalog& GetCatalog();
+  ICatalog& GetCatalog(CatalogType type);
 
   /// Get the configuration used to create this manager.
   const Configuration& GetConfiguration() const;
@@ -66,9 +70,8 @@ class Manager {
   /// so subsequent catalog queries reflect the new device/EP availability.
   /// This is the preferred entry point — going through GetEpDetector() directly
   /// will not invalidate the catalog.
-  EpDownloadResult DownloadAndRegisterEps(
-      const std::vector<std::string>* names,
-      const IEpBootstrapper::ProgressCallback& progress_cb);
+  EpDownloadResult DownloadAndRegisterEps(const std::vector<std::string>* names,
+                                          const IEpBootstrapper::ProgressCallback& progress_cb);
 
   /// Get the model load manager (for loading/unloading ORT GenAI models).
   ModelLoadManager& GetModelLoadManager();
@@ -118,17 +121,18 @@ class Manager {
   //   ort_api_, ort_env_,
   //     registered_ep_libraries_ — ORT environment & EP registrations;
   //                                released manually in ~Manager() after all
-  //                                consumers (sessions, ep_detector_) are gone.
+  //                                consumers and GenAI globals are gone.
   //   logger_                  — everything logs through this, destroyed last
-  //   ep_detector_             — detects HW acceleration; holds OrtEnv& (must
-  //                              outlive ort_env_ release in ~Manager())
+  //   ep_detector_             — owns EP bootstrappers and dependency handles;
+  //                              reset after provider unregistration and before OrtEnv release
   //   telemetry_               — used throughout
-  //   catalog_                 — owns all Model instances. used by download_manager, model_load_manager, and web service
-  //   download_manager_        — uses ModelInfo owned by catalog
+  //   catalog_                 — owns all Model instances; used by download_manager_, model_load_manager_,
+  //                              and the web service
+  //   download_manager_        — uses ModelInfo owned by catalog_
   //   model_load_manager_      — holds loaded model state referencing catalog models
-  //   session_manager_         — tracks all active sessions. destroyed after web service, before models
+  //   session_manager_         — tracks active sessions; destroyed after the web service and before models
   //   shutdown_requested_      — atomic flag checked by subsystems and the host process
-  //   web service members      — use catalog, model_load_manager, session_manager, telemetry, logger
+  //   web service members      — use catalog_, model_load_manager_, session_manager_, telemetry_, and logger_
   //
   Configuration config_;
   const OrtApi* ort_api_ = nullptr;
@@ -137,7 +141,8 @@ class Manager {
   std::unique_ptr<ILogger> logger_;
   std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ITelemetry> telemetry_;
-  std::unique_ptr<ICatalog> catalog_;
+  std::unique_ptr<ICatalog> public_catalog_;
+  std::unique_ptr<ICatalog> local_catalog_;
   std::unique_ptr<DownloadManager> download_manager_;
   std::unique_ptr<ModelLoadManager> model_load_manager_;
   std::unique_ptr<SessionManager> session_manager_;
@@ -151,6 +156,7 @@ class Manager {
 
  private:
   Model CreateModel(ModelInfo info, std::string local_path);
+  Model CreateLocalModel(ModelInfo info, std::string local_path);
 
   static std::mutex s_mutex_;
   static std::unique_ptr<Manager> s_instance_;

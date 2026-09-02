@@ -5,11 +5,10 @@
 # `KEY=PATH` pairs to pass to build.py --cmake_extra_defines.
 #
 # Parameters:
-#   ortVersion     – Microsoft.ML.OnnxRuntime.Foundry version
+#   ortVersion     – Microsoft.ML.OnnxRuntime version
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
 #   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
-#   includeOrtGpuLinux – Also download Microsoft.ML.OnnxRuntime.Gpu.Linux (Linux only)
 #   shell          – 'pwsh' (Windows/macOS) or 'bash' (Linux)
 
 parameters:
@@ -21,9 +20,6 @@ parameters:
   type: string
   default: ''
 - name: includeWinml
-  type: boolean
-  default: false
-- name: includeOrtGpuLinux
   type: boolean
   default: false
 - name: shell
@@ -76,7 +72,7 @@ steps:
         $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
-        # All four packages are public on nuget.org. Foundry Local Core's
+        # These packages are public on nuget.org. Foundry Local Core's
         # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
         # (see .pipelines/templates/build-core-steps.yml), so we follow the
         # same source of truth here.
@@ -84,11 +80,8 @@ steps:
 
         $packages = @(
           @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
-          @{ key = 'ort';   id = 'Microsoft.ML.OnnxRuntime.Foundry';     version = '${{ parameters.ortVersion }}'   }
+          @{ key = 'ort';   id = 'Microsoft.ML.OnnxRuntime';             version = '${{ parameters.ortVersion }}'   }
         )
-        if ($${{ parameters.includeOrtGpuLinux }}) {
-          $packages += @{ key = 'ort_gpu_linux'; id = 'Microsoft.ML.OnnxRuntime.Gpu.Linux'; version = '${{ parameters.ortVersion }}' }
-        }
 
         $defines = @()
         foreach ($pkg in $packages) {
@@ -100,9 +93,8 @@ steps:
           Write-Host "  -> $out ($((Get-Item $out).Length) bytes)"
 
           switch ($pkg.key) {
-            'genai'         { $defines += "GENAI_FETCH_URL=$out" }
-            'ort'           { $defines += "ORT_FETCH_URL=$out" }
-            'ort_gpu_linux' { $defines += "ORT_GPU_LINUX_FETCH_URL=$out" }
+            'genai' { $defines += "GENAI_FETCH_URL=$out" }
+            'ort'   { $defines += "ORT_FETCH_URL=$out" }
           }
         }
 
@@ -128,7 +120,7 @@ steps:
       cacheDir="$(Build.BinariesDirectory)/nuget_packages"
       mkdir -p "$cacheDir"
 
-      # All four packages are public on nuget.org. Foundry Local Core's
+      # These packages are public on nuget.org. Foundry Local Core's
       # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
       # (see .pipelines/templates/build-core-steps.yml), so we follow the
       # same source of truth here.
@@ -136,17 +128,13 @@ steps:
 
       declare -a entries=(
         "genai:Microsoft.ML.OnnxRuntimeGenAI.Foundry:${{ parameters.genaiVersion }}"
-        "ort:Microsoft.ML.OnnxRuntime.Foundry:${{ parameters.ortVersion }}"
+        "ort:Microsoft.ML.OnnxRuntime:${{ parameters.ortVersion }}"
       )
       if [ "${{ parameters.includeWinml }}" = "True" ]; then
         # WinML is Windows-only; the bash branch should never receive includeWinml=true.
         echo "ERROR: includeWinml=true is not supported on the bash prefetch branch (WinML is Windows-only)." >&2
         exit 1
       fi
-      if [ "${{ parameters.includeOrtGpuLinux }}" = "True" ]; then
-        entries+=("ort_gpu_linux:Microsoft.ML.OnnxRuntime.Gpu.Linux:${{ parameters.ortVersion }}")
-      fi
-
       defines=()
       for entry in "${entries[@]}"; do
         IFS=: read -r key id version <<< "$entry"
@@ -157,9 +145,8 @@ steps:
         echo "  -> $out ($(stat -c%s "$out" 2>/dev/null || stat -f%z "$out") bytes)"
 
         case "$key" in
-          genai)         defines+=("\"GENAI_FETCH_URL=$out\"") ;;
-          ort)           defines+=("\"ORT_FETCH_URL=$out\"") ;;
-          ort_gpu_linux) defines+=("\"ORT_GPU_LINUX_FETCH_URL=$out\"") ;;
+          genai) defines+=("\"GENAI_FETCH_URL=$out\"") ;;
+          ort)   defines+=("\"ORT_FETCH_URL=$out\"") ;;
         esac
       done
 

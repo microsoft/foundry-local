@@ -5,6 +5,7 @@
 #   2. C# SDK                     (templates/stages-cs.yml)
 #   3. Python SDK                 (templates/stages-python.yml)
 #   4. JS SDK                     (templates/stages-js.yml)
+#   5. Rust SDK                   (templates/stages-rust.yml)
 #
 # Assumes the caller has already emitted a `compute_version` stage that
 # publishes the `version-info` pipeline artifact (containing sdkVersion.txt
@@ -40,3 +41,11 @@ stages:
 
 # ── JS SDK (single multi-platform tarball) ──
 - template: stages-js.yml
+
+# ── Rust SDK (single platform-independent crate) ──
+# Needs the ORT/GenAI versions to assemble a runnable native dir for its
+# integration tests (the cpp-native artifacts ship foundry_local only).
+- template: stages-rust.yml
+  parameters:
+    ortVersion: ${{ parameters.ortVersion }}
+    genaiVersion: ${{ parameters.genaiVersion }}

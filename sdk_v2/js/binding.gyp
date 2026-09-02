@@ -16,8 +16,7 @@
             ],
             "include_dirs": [
                 "<!@(node -p \"require('node-addon-api').include\")",
-                "../cpp/include",
-                "<!(node script/gyp/print-vcpkg-include.mjs)"
+                "../cpp/include"
             ],
             "defines": [
                 "NAPI_VERSION=8",

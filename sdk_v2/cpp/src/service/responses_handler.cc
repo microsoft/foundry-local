@@ -79,13 +79,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAnd
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+  const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
@@ -134,6 +134,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
@@ -141,6 +142,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   nlohmann::json req_json;
   ResponseCreateParams params;
   if (auto err = ParseAndValidateRequest(body_str->c_str(), req_json, params)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -155,6 +157,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   Model* model = nullptr;
   GenAIModelInstance* loaded = nullptr;
   if (auto err = ResolveModel(model_name, model, loaded)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -327,8 +330,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                 req_copy = std::move(req_copy),
                                 params_copy = std::move(params_copy),
                                 &tracker]() mutable {
-    SessionRegistration reg(session_manager, *session);
-
     int seq = 2;
     std::string full_text;  // concatenation of all visible runs, used for output_text in completed_response
 
@@ -474,6 +475,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     };
 
     try {
+      // Register inside the try so a shutdown rejection (Register throws) is reported as a stream failure
+      // instead of escaping this raw std::thread and calling std::terminate.
+      SessionRegistration reg(session_manager, *session);
+
       fl::Response bg_response;
       fl::Session::StreamingCallbackFn callback_fn = [&](flStreamingCallbackData event, void* /*user_data*/) -> int {
         fl::ItemQueue* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
@@ -602,6 +607,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> GetResponseHandler::handle
 
   auto id = request->getPathVariable("id");
   if (!id) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Missing response ID");
   }
 
@@ -692,6 +698,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> DeleteResponseHandler::han
 
   auto id = request->getPathVariable("id");
   if (!id) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Missing response ID");
   }
 
@@ -737,6 +744,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> GetInputItemsHandler::hand
 
   auto id = request->getPathVariable("id");
   if (!id) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Missing response ID");
   }
 

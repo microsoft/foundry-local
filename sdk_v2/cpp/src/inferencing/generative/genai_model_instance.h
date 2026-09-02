@@ -4,23 +4,21 @@
 
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
+#include "inferencing/generative/preprocessor.h"
 #include "logger.h"
 
 #include <atomic>
 #include <chrono>
 #include <memory>
-#include <mutex>
 #include <string>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
 struct OgaModel;
-struct OgaTokenizer;
-struct OgaMultiModalProcessor;
 
 namespace fl {
 
 /// A model that has been loaded into the ORT GenAI runtime.
-/// Owns the OgaModel, OgaTokenizer, and optional OgaMultiModalProcessor.
+/// Owns the OgaModel and its preprocessing resources.
 /// Non-copyable, non-movable. Owned by ModelLoadManager via std::unique_ptr.
 class GenAIModelInstance {
  public:
@@ -36,16 +34,9 @@ class GenAIModelInstance {
   ExecutionProvider EP() const { return ep_; }
   bool IsMultiModal() const;
 
-  /// Access the underlying OGA objects (for future chat generation work).
+  /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();
-  OgaTokenizer& GetOgaTokenizer();
-  OgaTokenizer& GetOgaTokenizerWithSpecial();  // For tool calling, we need a tokenizer that does not skip special tokens.
-
-  /// Cached EOS token IDs for the tokenizer. Avoids re-fetching from OGA on every Decode() call.
-  const std::vector<int32_t>& GetEosTokenIds();
-
-  /// Returns nullptr if the model is not multimodal.
-  OgaMultiModalProcessor* GetProcessor();
+  Preprocessor& GetPreprocessor();
 
   /// Get the last-activity timestamp.
   std::chrono::steady_clock::time_point LastActivity() const { return last_activity_; }
@@ -71,11 +62,7 @@ class GenAIModelInstance {
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
-  std::unique_ptr<OgaTokenizer> tokenizer_;
-  std::unique_ptr<OgaTokenizer> tokenizer_with_special_;
-  std::unique_ptr<OgaMultiModalProcessor> processor_;  // nullptr if not multimodal
-  std::vector<int32_t> eos_token_ids_;                 // cached; populated on first GetEosTokenIds() call
-  std::once_flag eos_token_ids_init_flag_;
+  std::unique_ptr<Preprocessor> preprocessor_;
   std::chrono::steady_clock::time_point last_activity_;
   mutable std::atomic<int> session_ref_count_{0};
 };

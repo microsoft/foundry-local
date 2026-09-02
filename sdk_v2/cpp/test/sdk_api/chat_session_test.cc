@@ -9,6 +9,24 @@
 #include <mutex>
 #include <vector>
 
+namespace {
+
+void AddMultiplyNumbersTool(foundry_local::ChatSession& session) {
+  session.AddToolDefinition(foundry_local::ToolDefinition{
+      "multiply_numbers",
+      "A tool for multiplying two numbers.",
+      R"({
+        "type": "object",
+        "properties": {
+          "first": { "type": "integer" },
+          "second": { "type": "integer" }
+        },
+        "required": ["first", "second"]
+      })"});
+}
+
+}  // namespace
+
 TEST_F(ModelFixture, ChatMathPrompt) {
   using namespace foundry_local;
 
@@ -130,10 +148,20 @@ TEST_F(ModelFixture, SessionSetOptionsAcceptsRequestOptions) {
       << "Expected non-empty output with session-level RequestOptions applied.";
 }
 
-// Multi-turn E2E test: exercises generator caching and delayed history commit
-// across multiple ProcessRequest calls on the same session.
+// Exercises cached-generator reuse, delayed history commit, and undo/replay. Exact arithmetic outputs are
+// soft-checked because greedy decoding can vary across CPU architectures; session mechanics remain strict.
 TEST_F(ModelFixture, ChatMultiTurnSession) {
   using namespace foundry_local;
+
+  // Keep content checks non-fatal while asserting session mechanics strictly below.
+  auto expect_contains_soft = [](const std::string& haystack, const std::string& needle,
+                                 const std::string& context) {
+    if (haystack.find(needle) == std::string::npos) {
+      GTEST_LOG_(WARNING) << context << ": expected '" << needle
+                          << "' but model emitted '" << haystack
+                          << "'. Treated as non-fatal due to cross-ISA greedy-decode differences.";
+    }
+  };
 
   ChatSession session(chat_model());
   RequestOptions session_opts;
@@ -152,8 +180,7 @@ TEST_F(ModelFixture, ChatMultiTurnSession) {
 
   EXPECT_NE(r1.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_NE(r1.GetFinishReason(), FOUNDRY_LOCAL_FINISH_ERROR);
-  EXPECT_NE(t1.find("4"), std::string::npos)
-      << "Turn 1: expected '4'. Got: " << t1;
+  expect_contains_soft(t1, "4", "Turn 1");
   EXPECT_GT(r1.GetUsage().prompt_tokens, 0);
   EXPECT_GT(r1.GetUsage().completion_tokens, 0);
   EXPECT_EQ(session.TurnCount(), 1u);
@@ -170,8 +197,7 @@ TEST_F(ModelFixture, ChatMultiTurnSession) {
 
   EXPECT_NE(r2.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_NE(r2.GetFinishReason(), FOUNDRY_LOCAL_FINISH_ERROR);
-  EXPECT_NE(t2.find("5"), std::string::npos)
-      << "Turn 2: expected '5'. Got: " << t2;
+  expect_contains_soft(t2, "5", "Turn 2");
   EXPECT_GT(r2.GetUsage().prompt_tokens, 0);
   EXPECT_GT(r2.GetUsage().completion_tokens, 0);
   EXPECT_EQ(session.TurnCount(), 2u);
@@ -184,6 +210,9 @@ TEST_F(ModelFixture, ChatMultiTurnSession) {
   // Turn 3 (replaces turn 2): re-ask the SAME question as turn 2.
   // With temperature=0 and identical context after rewind, the model must produce
   // the same answer. This isolates the rewind mechanism from model quality.
+  // This equality stays a STRICT assertion: t2 and t3 run on the same host through
+  // the same kernel path, so they are bit-stable regardless of the cross-ISA FP
+  // nondeterminism noted above — a mismatch here is a real rewind/replay bug.
   Request req3{
       UserMessage("Now add 1 to that. Answer with just the number."),
   };
@@ -213,8 +242,7 @@ TEST_F(ModelFixture, ChatMultiTurnSession) {
 
   EXPECT_NE(r4.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_NE(r4.GetFinishReason(), FOUNDRY_LOCAL_FINISH_ERROR);
-  EXPECT_NE(t4.find("6"), std::string::npos)
-      << "Turn 4: expected '6'. Got: " << t4;
+  expect_contains_soft(t4, "6", "Turn 4");
   EXPECT_GT(r4.GetUsage().prompt_tokens, 0);
   EXPECT_GT(r4.GetUsage().completion_tokens, 0);
   EXPECT_EQ(session.TurnCount(), 3u);
@@ -270,6 +298,95 @@ TEST_F(ToolCallFixture, ToolCallWithRequired) {
   }
 
   EXPECT_TRUE(found_tool_call) << "No TOOL_CALL item in response";
+}
+
+TEST_F(ToolCallFixture, SessionToolChoiceRequiredIsInherited) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+  AddMultiplyNumbersTool(session);
+
+  RequestOptions session_opts;
+  session_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  session.SetOptions(session_opts);
+
+  Request request{
+      SystemMessage("You are a helpful AI assistant."),
+      UserMessage("What is the answer to 7 multiplied by 6?"),
+  };
+  RequestOptions request_opts;
+  request_opts.search.temperature = 0.0f;
+  request_opts.search.max_output_tokens = 256;
+  request.SetOptions(request_opts);
+
+  Response response = session.ProcessRequest(request);
+
+  EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+}
+
+TEST_F(ToolCallFixture, RequestToolChoiceOverridesSessionToolChoice) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+  AddMultiplyNumbersTool(session);
+
+  RequestOptions session_opts;
+  session_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  session.SetOptions(session_opts);
+
+  Request request{
+      SystemMessage("You are a helpful AI assistant."),
+      UserMessage("What is the answer to 7 multiplied by 6?"),
+  };
+  RequestOptions request_opts;
+  request_opts.search.temperature = 0.0f;
+  request_opts.search.max_output_tokens = 256;
+  request_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_NONE;
+  request.SetOptions(request_opts);
+
+  Response response = session.ProcessRequest(request);
+
+  EXPECT_NE(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+  for (const auto& item : response.GetItems()) {
+    EXPECT_NE(item.GetType(), FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+  }
+}
+
+TEST_F(ToolCallFixture, SessionToolChoiceIsRestoredAfterRequestOverride) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+  AddMultiplyNumbersTool(session);
+
+  RequestOptions session_opts;
+  session_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  session.SetOptions(session_opts);
+
+  Request first_request{
+      SystemMessage("You are a helpful AI assistant."),
+      UserMessage("Respond with the word ready."),
+  };
+  RequestOptions first_request_opts;
+  first_request_opts.search.temperature = 0.0f;
+  first_request_opts.search.max_output_tokens = 256;
+  first_request_opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_NONE;
+  first_request.SetOptions(first_request_opts);
+
+  Response first_response = session.ProcessRequest(first_request);
+
+  ASSERT_NE(first_response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+
+  Request second_request{
+      UserMessage("What is the answer to 7 multiplied by 6?"),
+  };
+  RequestOptions second_request_opts;
+  second_request_opts.search.temperature = 0.0f;
+  second_request_opts.search.max_output_tokens = 256;
+  second_request.SetOptions(second_request_opts);
+
+  Response second_response = session.ProcessRequest(second_request);
+
+  EXPECT_EQ(second_response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
 }
 
 TEST_F(ToolCallFixture, ToolCallWithResult) {

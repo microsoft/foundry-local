@@ -4,6 +4,7 @@
 
 #include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/session/session.h"
 
 #include <cassert>
 #include <fmt/format.h>
@@ -22,11 +23,15 @@ SessionManager::~SessionManager() {
 }
 
 void SessionManager::Register(Session& session) {
+  // Check shutting_down_ and insert under the same lock CancelAll() uses to flip the flag and iterate.
+  // Reading the flag outside the lock would let a session observe false, lose the race to the cancel
+  // sweep, then insert itself afterward — running uncanceled while shutdown waits to drain.
+  std::lock_guard<std::mutex> lock(mutex_);
+
   if (shutting_down_.load()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "cannot create session during shutdown");
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   sessions_.insert(&session);
 }
 
@@ -48,16 +53,24 @@ void SessionManager::Deregister(Session& session) {
 }
 
 void SessionManager::CancelAll() {
-  shutting_down_.store(true);
-
-  // Clear cache — frees idle cached sessions so they don't block drain.
+  // Clear cache first — frees idle cached sessions so they don't block drain. ClearCache() takes mutex_
+  // internally, so run it before acquiring the lock below.
   ClearCache();
 
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Flip the flag under mutex_ before iterating so Register() (which now checks it under the same lock)
+  // cannot admit a new session between this transition and the cancel sweep.
+  shutting_down_.store(true);
+
   logger_.Log(LogLevel::Information,
               fmt::format("SessionManager: cancelling all sessions ({} active)", sessions_.size()));
 
-  // Future (Phase 3): iterate sessions_ and call Cancel() on each
+  // Signal every in-flight request to stop. Cancel() only sets atomic flags — no joins, no
+  // re-entrancy into SessionManager — so calling it while holding mutex_ cannot deadlock.
+  for (Session* s : sessions_) {
+    s->Cancel();
+  }
 }
 
 void SessionManager::WaitForDrain(std::chrono::milliseconds timeout) {

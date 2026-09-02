@@ -1,0 +1,50 @@
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO microsoft/cpp_client_telemetry
+    REF 5152cb4067c3c0f46ffd79672702ffcffcade9c8
+    SHA512 d46e929f1724333f41574829da2521d0c76cb07273b00baf978f459b38416a8cb7eeba9b0898364540b9a6ad1f2319f70c5e89f92e15c6f80ef59921e7ee0325
+    HEAD_REF main
+)
+
+set(MATSDK_BUILD_APPLE_HTTP OFF)
+if(VCPKG_TARGET_IS_OSX OR VCPKG_TARGET_IS_IOS)
+    set(MATSDK_BUILD_APPLE_HTTP ON)
+endif()
+
+set(MATSDK_BUILD_IOS OFF)
+if(VCPKG_TARGET_IS_IOS)
+    set(MATSDK_BUILD_IOS ON)
+endif()
+
+vcpkg_check_features(
+    OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+    FEATURES
+        minimal-sqlite MATSDK_MINIMAL_SQLITE
+)
+
+vcpkg_cmake_configure(
+    SOURCE_PATH "${SOURCE_PATH}"
+    OPTIONS
+        ${FEATURE_OPTIONS}
+        -DMATSDK_USE_VCPKG_DEPS=ON
+        -DBUILD_HEADERS=ON
+        -DBUILD_LIBRARY=ON
+        -DBUILD_TEST_TOOL=OFF
+        -DBUILD_UNIT_TESTS=OFF
+        -DBUILD_FUNC_TESTS=OFF
+        -DBUILD_JNI_WRAPPER=OFF
+        -DBUILD_OBJC_WRAPPER=OFF
+        -DBUILD_SWIFT_WRAPPER=OFF
+        -DBUILD_PACKAGE=OFF
+        -DBUILD_VERSION=${VERSION}
+        -DBUILD_APPLE_HTTP=${MATSDK_BUILD_APPLE_HTTP}
+        -DBUILD_IOS=${MATSDK_BUILD_IOS}
+)
+
+vcpkg_cmake_install()
+vcpkg_cmake_config_fixup(PACKAGE_NAME MSTelemetry CONFIG_PATH lib/cmake/MSTelemetry)
+
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
+
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")

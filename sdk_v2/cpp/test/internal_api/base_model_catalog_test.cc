@@ -304,6 +304,28 @@ TEST_F(BaseModelCatalogTest, GroupedModel_PrefersCachedVariant) {
   EXPECT_EQ(m->Info().model_id, "phi-3:2");
 }
 
+TEST_F(BaseModelCatalogTest, GetCachedModelsReturnsEveryCachedLeafInCatalogVariantOrder) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("alpha:1", "alpha", 1, "alpha", "/cache/alpha-1"));
+  catalog.AddModel(MakeModel("alpha:3", "alpha", 3, "alpha"));
+  catalog.AddModel(MakeModel("alpha:2", "alpha", 2, "alpha", "/cache/alpha-2"));
+  catalog.AddModel(MakeModel("beta:1", "beta", 1, "beta", "/cache/beta-1"));
+
+  auto cached = catalog.GetCachedModels();
+
+  ASSERT_EQ(cached.size(), 3u);
+  EXPECT_EQ(cached[0]->Info().model_id, "alpha:2");
+  EXPECT_EQ(cached[1]->Info().model_id, "alpha:1");
+  EXPECT_EQ(cached[2]->Info().model_id, "beta:1");
+
+  for (auto* variant : cached) {
+    EXPECT_FALSE(variant->IsContainer());
+    EXPECT_TRUE(variant->IsCached());
+    EXPECT_EQ(variant->Variants().size(), 1u);
+    EXPECT_EQ(variant, catalog.GetModelVariant(variant->Info().model_id));
+  }
+}
+
 TEST_F(BaseModelCatalogTest, GetModelVariant_ById_ReturnsVariantNotContainer) {
   TestCatalog catalog(logger_);
   catalog.AddModel(MakeModel("phi-3-mini:1", "phi-3-mini", 1, "phi-3"));
@@ -372,21 +394,20 @@ TEST_F(BaseModelCatalogTest, GetModelVersionsCrossAliasPointersRemainValid) {
       << "Querying a different alias should not invalidate pointers from a prior GetModelVersions call.";
 }
 
-    TEST_F(BaseModelCatalogTest, GetModelVersionsMaxVersionsSelectsLatestRegardlessOfFetchOrder) {
-      QueryingTestCatalog catalog(logger_);
+TEST_F(BaseModelCatalogTest, GetLatestVersionReturnsBestVariantWithSameName) {
+  TestCatalog catalog(logger_);
+  catalog.AddModel(MakeModel("family-generic-gpu:1", "family-generic-gpu", 1, "family"));
+  catalog.AddModel(MakeModel("family-generic-cpu:1", "family-generic-cpu", 1, "family"));
+  catalog.AddModel(MakeModel("family-generic-cpu:3", "family-generic-cpu", 3, "family"));
 
-      std::vector<Model> version_results;
-      // Intentionally unsorted fetch order: v2, v1, v3.
-      version_results.push_back(MakeModel("phi-3-mini-generic-cpu:2", "phi-3-mini", 2, "phi-3"));
-      version_results.push_back(MakeModel("phi-3-mini-generic-cpu:1", "phi-3-mini", 1, "phi-3"));
-      version_results.push_back(MakeModel("phi-3-mini-generic-cpu:3", "phi-3-mini", 3, "phi-3"));
-      catalog.SetVersionFetchResults(std::move(version_results));
+  auto* supplied = catalog.GetModelVariant("family-generic-cpu:1");
+  ASSERT_NE(supplied, nullptr);
 
-      auto versions = catalog.GetModelVersions("phi-3", "", /*max_versions=*/1);
-      ASSERT_EQ(versions.size(), 1u);
-      EXPECT_EQ(versions.front()->Info().version, 3)
-      << "max_versions=1 should pick the latest version even when fetch order is arbitrary.";
-    }
+  auto* latest = catalog.GetLatestVersion(supplied);
+  ASSERT_NE(latest, nullptr);
+  EXPECT_EQ(latest->Info().model_id, "family-generic-cpu:3");
+  EXPECT_EQ(latest->Info().name, supplied->Info().name);
+}
 
 TEST_F(BaseModelCatalogTest, GetModelVariantIdIntegratesFetchedVariant) {
   QueryingTestCatalog catalog(logger_);

@@ -29,6 +29,9 @@ def _lib_name() -> str:
 
 def _platform_subdir() -> str:
     if sys.platform == "win32":
+        machine = platform.machine().lower()
+        if machine in {"arm64", "aarch64"}:
+            return "win-arm64"
         return "win-x64"
     if sys.platform == "darwin":
         return "osx-arm64" if platform.machine() == "arm64" else "osx-x64"
@@ -112,17 +115,8 @@ def find_library() -> pathlib.Path | None:
 # ---------------------------------------------------------------------------
 # ORT / GenAI native dependency discovery
 #
-# foundry_local.{dll|so|dylib} is dynamically linked against onnxruntime and
-# onnxruntime-genai. Those libraries ship in separate PyPI packages
-# (onnxruntime-{core,gpu}, onnxruntime-genai-{core,cuda}) declared as
-# install-time deps in pyproject.toml. At process start we have to:
-#   * On Windows: add each package's bin dir to the DLL search path so the
-#     loader can resolve onnxruntime.dll / onnxruntime-genai.dll when our
-#     foundry_local.dll is loaded.
-#   * On Linux/macOS: bridge the "lib" filename prefix mismatch
-#     (libonnxruntime.so vs onnxruntime.so the binary was linked against)
-#     by symlinking, since dlopen has no equivalent of add_dll_directory
-#     and we don't want to mutate LD_LIBRARY_PATH for the whole process.
+# ORT and GenAI are installed as separate Python packages. Preload them by
+# absolute path before loading foundry_local.
 # ---------------------------------------------------------------------------
 
 # On Linux/macOS the ORT packages ship their shared libs with a "lib" prefix;
@@ -136,6 +130,18 @@ def _native_binary_names() -> tuple[str, str]:
     ext = _lib_name().rsplit(".", 1)[-1]
     ext = "." + ext
     return (f"{_ORT_PREFIX}onnxruntime{ext}", f"{_ORT_PREFIX}onnxruntime-genai{ext}")
+
+
+def _matches_native_filename(candidate_name: str, filename: str) -> bool:
+    """Match exact and versioned native library names."""
+    if candidate_name.endswith(".dbg"):
+        return False
+    if filename in candidate_name:
+        return True
+    if filename.endswith(".dylib"):
+        stem = filename.removesuffix(".dylib")
+        return candidate_name.startswith(f"{stem}.") and candidate_name.endswith(".dylib")
+    return False
 
 
 def _find_file_in_package(package_name: str, filename: str) -> pathlib.Path | None:
@@ -153,35 +159,28 @@ def _find_file_in_package(package_name: str, filename: str) -> pathlib.Path | No
     pkg_root = pathlib.Path(spec.origin).parent
 
     for candidate_dir in (pkg_root, pkg_root / "capi", pkg_root / "native", pkg_root / "lib", pkg_root / "bin"):
-        # Glob with a wildcard around the filename to tolerate versioned suffixes
-        # (e.g. libonnxruntime.so.1.25.1) but skip debug-info side files.
-        candidates = [p for p in candidate_dir.glob(f"*{filename}*") if not p.name.endswith(".dbg")]
-        if candidates:
-            return candidates[0]
+        if not candidate_dir.is_dir():
+            continue
+        for candidate in sorted(candidate_dir.iterdir()):
+            if candidate.is_file() and _matches_native_filename(candidate.name, filename):
+                return candidate
 
     # Recursive fallback — slow but only hit when the layout is unexpected.
-    for match in pkg_root.rglob(filename):
-        return match
+    for match in sorted(pkg_root.rglob("*")):
+        if match.is_file() and _matches_native_filename(match.name, filename):
+            return match
 
     return None
 
 
 def _resolve_ort_package_path(filename: str) -> pathlib.Path | None:
-    """Locate ORT shared library, preferring the platform-specific variant."""
-    if sys.platform.startswith("linux"):
-        primary, fallback = "onnxruntime-gpu", "onnxruntime"
-    else:
-        primary, fallback = "onnxruntime-core", "onnxruntime"
-    return _find_file_in_package(primary, filename) or _find_file_in_package(fallback, filename)
+    """Locate the shared library in the vanilla ORT package."""
+    return _find_file_in_package("onnxruntime", filename)
 
 
 def _resolve_genai_package_path(filename: str) -> pathlib.Path | None:
-    """Locate GenAI shared library, preferring the platform-specific variant."""
-    if sys.platform.startswith("linux"):
-        primary, fallback = "onnxruntime-genai-cuda", "onnxruntime-genai"
-    else:
-        primary, fallback = "onnxruntime-genai-core", "onnxruntime-genai"
-    return _find_file_in_package(primary, filename) or _find_file_in_package(fallback, filename)
+    """Locate the shared library in the universal GenAI core package."""
+    return _find_file_in_package("onnxruntime-genai-core", filename)
 
 
 def find_ort_native_dirs() -> list[pathlib.Path]:
@@ -211,9 +210,9 @@ def prepare_native_dependencies(foundry_local_dir: pathlib.Path) -> list:
     Why explicit preload — and not just RPATH:
 
     * The wheel ships libfoundry_local in ``_native/<rid>/`` but ORT and GenAI
-      live in *sibling* PyPI packages (``onnxruntime-{core,gpu}`` /
-      ``onnxruntime-genai-{core,cuda}``). They are NOT next to libfoundry_local,
-      so libfoundry_local's RPATH (``$ORIGIN`` / ``@loader_path``) cannot find
+      live in *sibling* PyPI packages (``onnxruntime`` and
+      ``onnxruntime-genai-core``). They are NOT next to libfoundry_local, so
+      libfoundry_local's RPATH (``$ORIGIN`` / ``@loader_path``) cannot find
       them.
     * Once ORT and GenAI are loaded into the process by absolute path, the
       OS loader resolves libfoundry_local's references to them by *name* from
