@@ -15,6 +15,7 @@ from foundry_local_sdk.imodel import IModel
 from foundry_local_sdk.ep_types import EpInfo, EpDownloadResult
 from foundry_local_sdk.model_info import (
     ModelInfo,
+    ModelInfoBuilder,
     PromptTemplate,
     Runtime,
     Parameter,
@@ -77,6 +78,7 @@ __all__ = [
     "IModel",
     "Model",
     "ModelInfo",
+    "ModelInfoBuilder",
     "PromptTemplate",
     "Runtime",
     "Parameter",

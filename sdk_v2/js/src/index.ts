@@ -1,8 +1,5 @@
 // Public entry for foundry-local-sdk.
 
-import { MutableModelInfo } from "./modelInfo.js";
-import type { ModelInfo as ModelInfoSnapshot } from "./types.js";
-
 export { FoundryLocalManager } from "./foundryLocalManager.js";
 export type { FoundryLocalConfig } from "./configuration.js";
 export { Catalog } from "./catalog.js";
@@ -13,9 +10,6 @@ export {
   ModelInfoIntProperty,
   ModelInfoStringProperty,
 } from "./modelInfo.js";
-/** Mutable metadata constructor. Shares its name with the read-only `ModelInfo` snapshot type. */
-export const ModelInfo = MutableModelInfo;
-export type ModelInfo = ModelInfoSnapshot;
 export type {
   ModelInfoIntProperty as ModelInfoIntPropertyKey,
   ModelInfoStringProperty as ModelInfoStringPropertyKey,
@@ -25,6 +19,7 @@ export { CatalogType, DeviceType } from "./types.js";
 export type {
   EpDownloadResult,
   EpInfo,
+  ModelInfo,
   ModelSettings,
   Parameter,
   PromptTemplate,

@@ -73,8 +73,9 @@ public interface ICatalog
     Task<IModel> GetLatestVersionAsync(IModel model, CancellationToken? ct = null);
 
     /// <summary>
-    /// Register existing model assets in the local catalog. The catalog copies <paramref name="metadata"/> and does
-    /// not take ownership of the directory or delete its contents.
+    /// Register existing model assets in the local catalog. The SDK synchronously snapshots
+    /// <paramref name="metadata"/> when this method is called; the catalog copies that snapshot and does not take
+    /// ownership of the directory or delete its contents.
     /// </summary>
     /// <param name="modelPath">Model directory containing a valid genai_config.json file.</param>
     /// <param name="modelId">Canonical model identifier in &lt;name&gt;:&lt;version&gt; format.</param>

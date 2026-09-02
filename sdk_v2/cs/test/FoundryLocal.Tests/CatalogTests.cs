@@ -57,7 +57,10 @@ internal sealed class CatalogTests
         IModel? registered = null;
         try
         {
-            registered = await catalog.RegisterModelAsync(modelPath, modelId, metadata);
+            var registrationTask = catalog.RegisterModelAsync(modelPath, modelId, metadata);
+            metadata.SetStringProperty(ModelInfoPropertyKeys.InputModalities, "mutated")
+                    .SetIntProperty(ModelInfoPropertyKeys.ContextLength, 8192);
+            registered = await registrationTask;
 
             await Assert.That(registered.Id).IsEqualTo(modelId);
             await Assert.That(registered.Alias).IsEqualTo(modelName);

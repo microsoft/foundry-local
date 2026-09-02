@@ -288,11 +288,11 @@ The backward-compatible `manager.catalog` property and `manager.getCatalog()` re
 mutable local catalog explicitly, build caller-owned metadata, and register an existing model directory:
 
 ```ts
-import { CatalogType, FoundryLocalManager, ModelInfo, ModelInfoStringProperty } from "foundry-local-sdk";
+import { CatalogType, FoundryLocalManager, ModelInfoStringProperty, MutableModelInfo } from "foundry-local-sdk";
 
 using manager = FoundryLocalManager.create({ appName: "byom-example" });
 const localCatalog = manager.getCatalog(CatalogType.Local);
-using metadata = new ModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
+using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
 const model = await localCatalog.registerModel("C:/models/my-model", "my-model-generic-cpu:1", metadata);
 
 // Registration copies metadata and never takes ownership of or deletes model assets.

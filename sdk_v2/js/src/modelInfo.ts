@@ -27,8 +27,7 @@ export const ModelInfoStringProperty = Object.freeze({
   Capabilities: "capabilities",
 } as const);
 
-export type ModelInfoStringProperty =
-  (typeof ModelInfoStringProperty)[keyof typeof ModelInfoStringProperty];
+export type ModelInfoStringProperty = (typeof ModelInfoStringProperty)[keyof typeof ModelInfoStringProperty];
 
 /** Well-known integer metadata keys. Boolean properties use `0` and `1`; arbitrary keys are also accepted. */
 export const ModelInfoIntProperty = Object.freeze({
@@ -100,7 +99,7 @@ function assertPropertyKey(key: string): void {
 export function unwrapMutableModelInfo(info: MutableModelInfo): NativeMutableModelInfo {
   const native = nativeByMutableModelInfo.get(info);
   if (native === undefined || native.isDisposed()) {
-    throw new TypeError("Catalog.registerModel: metadata must be a non-disposed ModelInfo.");
+    throw new TypeError("Catalog.registerModel: metadata must be a non-disposed MutableModelInfo.");
   }
   return native;
 }

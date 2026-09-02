@@ -157,11 +157,11 @@ must use the canonical `<name>:<version>` format. The `task` metadata property i
 `chat-completion`, `vision-language-chat`, `embeddings`, or `automatic-speech-recognition`.
 
 ```python
-from foundry_local_sdk import CatalogType, ModelInfo
+from foundry_local_sdk import CatalogType, ModelInfoBuilder
 
 local_catalog = manager.get_catalog(CatalogType.LOCAL)
 
-with ModelInfo() as metadata:
+with ModelInfoBuilder() as metadata:
     metadata.set_string_property("task", "chat-completion")
     metadata.set_string_property("display_name", "My Local Model")
     metadata.set_int_property("context_length", 4096)
@@ -180,8 +180,9 @@ local_catalog.unregister_model(model.id)
 ```
 
 `manager.catalog` and `manager.get_catalog()` both return the public catalog for backward compatibility.
-`ModelInfo()` owns a mutable native metadata handle; call `close()` or use a `with` block. In contrast,
-`model.info` is a read-only borrowed view whose lifetime is tied to the model and catalog.
+`ModelInfoBuilder()` owns a mutable native metadata handle; call `close()` or use a `with` block. In contrast,
+`model.info` is a frozen point-in-time `ModelInfo` value that supports normal dataclass operations such as
+`dataclasses.asdict()` and remains safe after the native model or manager is released.
 
 ### Inspecting model metadata
 
@@ -384,7 +385,8 @@ manager.stop_web_service()
 | `FoundryLocalManager` | Singleton entry point — initialization, typed catalog access, EP management, web service |
 | `CatalogType` | Catalog selection enum: `PUBLIC` or `LOCAL` |
 | `Catalog` | Model discovery plus local `register_model` / `unregister_model` operations |
-| `ModelInfo` | Read-only model metadata or caller-owned mutable BYOM registration metadata |
+| `ModelInfo` | Frozen point-in-time model metadata snapshot |
+| `ModelInfoBuilder` | Caller-owned mutable BYOM registration metadata |
 | `IModel` | Model interface — identity, metadata, lifecycle (`download`, `load`, `unload`), variant selection |
 | `EpInfo` | Discoverable execution provider info (`name`, `is_registered`) |
 | `EpDownloadResult` | Result of EP download / registration (`success`, `status`, `registered_eps`, `failed_eps`) |

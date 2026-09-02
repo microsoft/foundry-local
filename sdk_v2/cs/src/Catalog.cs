@@ -118,11 +118,12 @@ internal sealed class Catalog : ICatalog
     {
         Detail.Throw.IfNull(metadata);
 
+        using var nativeMetadata = new NativeModelInfo();
+        PopulateNativeMetadata(nativeMetadata, metadata);
+
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                using var nativeMetadata = new NativeModelInfo();
-                PopulateNativeMetadata(nativeMetadata, metadata);
                 NativeModel model;
                 lock (_nativeLifetimeLock)
                 {

@@ -7,9 +7,9 @@ import type { Catalog } from "../src/catalog.js";
 import {
   CatalogType,
   FoundryLocalManager,
-  ModelInfo,
   ModelInfoIntProperty,
   ModelInfoStringProperty,
+  MutableModelInfo,
 } from "../src/index.js";
 import { Model } from "../src/model.js";
 
@@ -65,7 +65,7 @@ describeIfBuilt("BYOM local catalog", () => {
   it("registers and unregisters a local model asynchronously with copied typed metadata", async () => {
     const modelId = "js-byom-async-generic-cpu:1";
     registeredIds.add(modelId);
-    using metadata = new ModelInfo()
+    using metadata = new MutableModelInfo()
       .setStringProperty(ModelInfoStringProperty.Task, "chat-completion")
       .setStringProperty(ModelInfoStringProperty.DisplayName, "JS BYOM Async")
       .setStringProperty(ModelInfoStringProperty.InputModalities, "text")
@@ -94,7 +94,7 @@ describeIfBuilt("BYOM local catalog", () => {
   it("provides explicit event-loop-blocking sync registration APIs", async () => {
     const modelId = "js-byom-sync:2";
     registeredIds.add(modelId);
-    using metadata = new ModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
+    using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
 
     const model = localCatalog.registerModelSync(modelPath, modelId, metadata);
     expect(model.info.id).toBe(modelId);
@@ -105,7 +105,7 @@ describeIfBuilt("BYOM local catalog", () => {
   });
 
   it("rejects mutation through the public catalog", async () => {
-    using metadata = new ModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
+    using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
     await expect(publicCatalog.registerModel(modelPath, "public-rejected:1", metadata)).rejects.toMatchObject({
       name: "FoundryLocalError",
     });
@@ -115,7 +115,7 @@ describeIfBuilt("BYOM local catalog", () => {
   });
 
   it("makes mutable metadata disposal idempotent and rejects post-dispose use", async () => {
-    const metadata = new ModelInfo();
+    const metadata = new MutableModelInfo();
     metadata.dispose();
     metadata.dispose();
     expect(metadata.disposed).toBe(true);
@@ -126,9 +126,7 @@ describeIfBuilt("BYOM local catalog", () => {
 
 describe("BYOM TypeScript validation", () => {
   it("rejects invalid catalog selectors before native dispatch", () => {
-    expect(() => Reflect.apply(FoundryLocalManager.prototype.getCatalog, {}, [999])).toThrow(
-      /Catalog type must be/,
-    );
+    expect(() => Reflect.apply(FoundryLocalManager.prototype.getCatalog, {}, [999])).toThrow(/Catalog type must be/);
   });
 
   it("exports every property key with its canonical native spelling", () => {

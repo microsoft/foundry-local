@@ -21,6 +21,7 @@ PUBLIC_NAMES = [
     "IModel",
     "Model",
     "ModelInfo",
+    "ModelInfoBuilder",
     "PromptTemplate",
     "Runtime",
     "Parameter",
