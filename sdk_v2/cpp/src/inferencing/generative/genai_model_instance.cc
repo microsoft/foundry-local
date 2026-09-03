@@ -76,17 +76,12 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   }
 
   if (genai_config_.GetChatBackendKind() != ChatBackendKind::kGenerator) {
-#ifdef FOUNDRY_LOCAL_HAS_OGA_ENGINE
     try {
       chat_engine_ = std::make_unique<OnnxChatEngine>(*this);
     } catch (const std::runtime_error& e) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                        "failed to create chat engine for model ", model_id_, ": ", e.what());
     }
-#else
-    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "model ", model_id_, " requires the ORT GenAI Engine API, but this build does not provide it");
-#endif
   }
 }
 

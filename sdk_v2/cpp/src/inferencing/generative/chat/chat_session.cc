@@ -5,9 +5,7 @@
 
 #include "contracts/chat_completions.h"
 #include "contracts/chat_completions_converter.h"
-#ifdef FOUNDRY_LOCAL_HAS_OGA_ENGINE
 #include "inferencing/generative/chat/onnx_engine_chat_generator.h"
-#endif
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/genai_model_instance.h"
@@ -56,12 +54,7 @@ std::unique_ptr<ChatGenerator> CreateTextChatGenerator(const std::vector<Message
                                                        GenAIModelInstance& model,
                                                        const ToolCallContext& tool_ctx) {
   if (model.GetGenAIConfig().GetChatBackendKind() != ChatBackendKind::kGenerator) {
-#ifdef FOUNDRY_LOCAL_HAS_OGA_ENGINE
     return OnnxEngineChatGenerator::Create(messages, options, model, tool_ctx);
-#else
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
-             "model requires the ORT GenAI Engine API, but this build does not provide it");
-#endif
   }
 
   return OnnxChatGenerator::Create(messages, options, model, tool_ctx, /*use_full_context=*/true);
