@@ -270,3 +270,46 @@ TEST_F(WebServiceIntegrationTest, ChatCompletionsWithResponseFormat) {
   std::string content = response["choices"][0]["message"]["content"].get<std::string>();
   EXPECT_FALSE(content.empty());
 }
+
+TEST_F(WebServiceIntegrationTest, ChatCompletionsWithJsonSchemaGuidance) {
+  auto client = MakeClient();
+
+  // json_schema response_format should constrain the output to valid JSON matching the schema.
+  // This tests that guidance is applied even without tool_choice=required (bug #1042).
+  json schema = {
+      {"type", "object"},
+      {"properties", {
+          {"answer", {{"type", "integer"}}},
+      }},
+      {"required", json::array({"answer"})},
+      {"additionalProperties", false},
+  };
+
+  json request_body = {
+      {"model", model_id()},
+      {"messages", json::array({
+                       {{"role", "user"}, {"content", "What is 2+2? Respond with JSON."}},
+                   })},
+      {"temperature", 0},
+      {"max_tokens", 64},
+      {"response_format", {{"type", "json_schema"}, {"json_schema", schema}}},
+  };
+
+  auto result = client.Post("/v1/chat/completions", request_body.dump(), "application/json");
+  ASSERT_TRUE(result) << "HTTP request failed";
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  json response = json::parse(result->body);
+  ASSERT_TRUE(response.contains("choices"));
+  std::string content = response["choices"][0]["message"]["content"].get<std::string>();
+  EXPECT_FALSE(content.empty()) << "Model produced no output";
+
+  // The output should be valid JSON matching the requested schema exactly.
+  json parsed;
+  ASSERT_NO_THROW(parsed = json::parse(content)) << "Output is not valid JSON: " << content;
+
+  ASSERT_TRUE(parsed.is_object()) << "Output is not an object: " << content;
+  ASSERT_TRUE(parsed.contains("answer")) << "Missing 'answer' field in: " << content;
+  EXPECT_TRUE(parsed["answer"].is_number_integer()) << "'answer' is not an integer in: " << content;
+  EXPECT_EQ(parsed.size(), 1U) << "Output contains additional properties: " << content;
+}

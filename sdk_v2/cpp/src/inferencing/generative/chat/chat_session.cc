@@ -464,10 +464,16 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     auto turn_tool_ctx = cached_tool_ctx_;
     UpdateToolContextForTurn(request, turn_tool_ctx);
 
-    bool prev_needs_guidance = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
-    bool curr_needs_guidance = turn_tool_ctx.tool_output && !turn_tool_ctx.text_output;
+    bool prev_has_user_guidance = !cached_tool_ctx_.guidance_type.empty() && !cached_tool_ctx_.guidance_data.empty();
+    bool curr_has_user_guidance = !turn_tool_ctx.guidance_type.empty() && !turn_tool_ctx.guidance_data.empty();
+    bool prev_needs_guidance = prev_has_user_guidance || (cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output);
+    bool curr_needs_guidance = curr_has_user_guidance || (turn_tool_ctx.tool_output && !turn_tool_ctx.text_output);
 
-    if (prev_needs_guidance != curr_needs_guidance) {
+    // Guidance (grammar) is baked into the OGA generator at creation time and cannot be changed.
+    // Rebuild when: guidance requirements changed OR the previous turn had user-specified guidance
+    // (the finite grammar may have completed, causing IsDone() to return true on the next turn,
+    // and switching schemas requires a fresh grammar).
+    if (prev_needs_guidance != curr_needs_guidance || prev_has_user_guidance) {
       // Guidance requirements changed — invalidate. The branch below will rebuild from full history.
       cached_generator_.reset();
       cached_tool_ctx_ = {};
