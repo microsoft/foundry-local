@@ -196,17 +196,32 @@ inline flConfiguration* detail::CreateConfiguration(const std::string& app_name)
 // Manager
 // ===========================================================================
 
+inline Manager::CatalogCollection::CatalogCollection(const flManager* manager)
+    : public_([manager]() -> flCatalog& {
+        flCatalog* catalog = nullptr;
+        Check(detail::api()->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_PUBLIC, &catalog));
+        return *catalog;
+      }()),
+      local_([manager]() -> flCatalog& {
+        flCatalog* catalog = nullptr;
+        Check(detail::api()->Manager_GetCatalogByType(manager, FOUNDRY_LOCAL_CATALOG_LOCAL, &catalog));
+        return *catalog;
+      }()) {}
+
 inline Manager::Manager(Configuration&& config)
     : handle_(detail::CreateManager(config), detail::api()->Manager_Release),
-      config_(std::move(config)) {}
+      config_(std::move(config)),
+      catalogs_(handle_.get()) {}
 
-inline ICatalog& Manager::GetCatalog() const {
-  std::call_once(*catalog_once_, [this]() {
-    flCatalog* cat = nullptr;
-    Check(detail::api()->Manager_GetCatalog(handle_.get(), &cat));
-    catalog_ = std::unique_ptr<Catalog>(new Catalog(*cat));
-  });
-  return *catalog_;
+inline ICatalog& Manager::GetCatalog(flCatalogType type) const {
+  switch (type) {
+    case FOUNDRY_LOCAL_CATALOG_PUBLIC:
+      return catalogs_.public_;
+    case FOUNDRY_LOCAL_CATALOG_LOCAL:
+      return catalogs_.local_;
+    default:
+      throw Error("invalid catalog type", FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
 }
 
 inline void Manager::StartWebService() {
@@ -295,32 +310,50 @@ inline flManager* detail::CreateManager(const Configuration& config) {
 // ModelInfo
 // ===========================================================================
 
+inline ModelInfo::ModelInfo()
+    : handle_([] {
+        flModelInfo* info = nullptr;
+        Check(detail::model_api()->CreateModelInfo(&info));
+        return info;
+      }(),
+              detail::model_api()->ReleaseModelInfo) {}
+
+inline ModelInfo& ModelInfo::SetStringProperty(const char* key, const char* value) {
+  Check(detail::model_api()->Info_SetStringProperty(handle_.get_mutable(), key, value));
+  return *this;
+}
+
+inline ModelInfo& ModelInfo::SetIntProperty(const char* key, int64_t value) {
+  Check(detail::model_api()->Info_SetIntProperty(handle_.get_mutable(), key, value));
+  return *this;
+}
+
 inline std::string_view ModelInfo::Id() const noexcept {
-  return safe(detail::model_api()->Info_GetId(info_));
+  return safe(detail::model_api()->Info_GetId(handle_.get()));
 }
 
 inline std::string_view ModelInfo::Name() const noexcept {
-  return safe(detail::model_api()->Info_GetName(info_));
+  return safe(detail::model_api()->Info_GetName(handle_.get()));
 }
 
 inline int ModelInfo::Version() const noexcept {
-  return detail::model_api()->Info_GetVersion(info_);
+  return detail::model_api()->Info_GetVersion(handle_.get());
 }
 
 inline std::string_view ModelInfo::Alias() const noexcept {
-  return safe(detail::model_api()->Info_GetAlias(info_));
+  return safe(detail::model_api()->Info_GetAlias(handle_.get()));
 }
 
 inline std::string_view ModelInfo::Uri() const noexcept {
-  return safe(detail::model_api()->Info_GetUri(info_));
+  return safe(detail::model_api()->Info_GetUri(handle_.get()));
 }
 
 inline flDeviceType ModelInfo::DeviceType() const noexcept {
-  return detail::model_api()->Info_GetDeviceType(info_);
+  return detail::model_api()->Info_GetDeviceType(handle_.get());
 }
 
 inline std::optional<std::string_view> ModelInfo::ExecutionProvider() const noexcept {
-  const char* v = detail::model_api()->Info_GetExecutionProvider(info_);
+  const char* v = detail::model_api()->Info_GetExecutionProvider(handle_.get());
   return v ? std::optional<std::string_view>{v} : std::nullopt;
 }
 
@@ -333,7 +366,7 @@ inline std::optional<Runtime> ModelInfo::GetRuntime() const noexcept {
 }
 
 inline std::optional<std::string_view> ModelInfo::GetPromptTemplate(const char* key) const noexcept {
-  const flKeyValuePairs* kvps = detail::model_api()->Info_GetPromptTemplates(info_);
+  const flKeyValuePairs* kvps = detail::model_api()->Info_GetPromptTemplates(handle_.get());
   if (!kvps) {
     return std::nullopt;
   }
@@ -342,7 +375,7 @@ inline std::optional<std::string_view> ModelInfo::GetPromptTemplate(const char* 
 }
 
 inline std::optional<std::string_view> ModelInfo::GetModelSetting(const char* key) const noexcept {
-  const flKeyValuePairs* kvps = detail::model_api()->Info_GetModelSettings(info_);
+  const flKeyValuePairs* kvps = detail::model_api()->Info_GetModelSettings(handle_.get());
   if (!kvps) {
     return std::nullopt;
   }
@@ -351,7 +384,7 @@ inline std::optional<std::string_view> ModelInfo::GetModelSetting(const char* ke
 }
 
 inline std::optional<KeyValuePairs> ModelInfo::GetModelSettings() const noexcept {
-  const flKeyValuePairs* kvps = detail::model_api()->Info_GetModelSettings(info_);
+  const flKeyValuePairs* kvps = detail::model_api()->Info_GetModelSettings(handle_.get());
   if (!kvps) {
     return std::nullopt;
   }
@@ -359,12 +392,12 @@ inline std::optional<KeyValuePairs> ModelInfo::GetModelSettings() const noexcept
 }
 
 inline std::optional<std::string_view> ModelInfo::GetStringProperty(const char* key) const noexcept {
-  const char* v = detail::model_api()->Info_GetStringProperty(info_, key);
+  const char* v = detail::model_api()->Info_GetStringProperty(handle_.get(), key);
   return v ? std::optional<std::string_view>{v} : std::nullopt;
 }
 
 inline int64_t ModelInfo::GetIntProperty(const char* key, int64_t default_value) const noexcept {
-  return detail::model_api()->Info_GetIntProperty(info_, key, default_value);
+  return detail::model_api()->Info_GetIntProperty(handle_.get(), key, default_value);
 }
 
 // --- Typed property accessors ---
@@ -624,6 +657,18 @@ inline ModelList Catalog::GetModelVersions(const std::string& model_alias,
       max_versions,
       &models));
   return ModelList(*models);
+}
+
+inline std::unique_ptr<IModel> Catalog::RegisterModel(const std::string& model_path, const std::string& model_id,
+                                                      const ModelInfo& metadata) {
+  flModel* model = nullptr;
+  Check(detail::catalog_api()->RegisterModel(handle_.get_mutable(), model_path.c_str(), model_id.c_str(),
+                                             metadata.native_handle(), &model));
+  return std::make_unique<Model>(*model);
+}
+
+inline void Catalog::UnregisterModel(const std::string& alias_or_model_id) {
+  Check(detail::catalog_api()->UnregisterModel(handle_.get_mutable(), alias_or_model_id.c_str()));
 }
 
 // ===========================================================================

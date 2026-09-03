@@ -50,8 +50,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto& lm = mgr.GetModelLoadManager();
-    auto* loaded = lm.GetLoadedModel(model.Id());
+    auto* loaded = mgr.GetModelLoadManager().GetLoadedModel(model.Id(), model.GetPath());
     if (!loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
     }

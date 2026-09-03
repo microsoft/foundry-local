@@ -243,6 +243,7 @@ steps:
 - ${{ if eq(parameters.signWindows, true) }}:
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
     displayName: 'Sign Windows JS addon (.node) + foundry_local.dll'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
       UseMSIAuthentication: true
@@ -272,10 +273,12 @@ steps:
       rm -f foundry_local_node_addons.zip
       zip foundry_local_node_addons.zip foundry_local_node.node foundry_local_preload.node
     displayName: 'Zip macOS JS addons for signing'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
 
   - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
     displayName: 'Sign macOS JS addon ZIP'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     inputs:
       ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
       UseMSIAuthentication: true
@@ -298,6 +301,7 @@ steps:
       unzip -o foundry_local_node_addons.zip
       rm -- foundry_local_node_addons.zip
     displayName: 'Extract signed macOS JS addons'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     workingDirectory: '${{ parameters.outputDir }}/prebuilds/$(prebuildDir)'
 
   - bash: |
@@ -312,3 +316,4 @@ steps:
         grep -q '^Timestamp=' <<<"$signature"
       done
     displayName: 'Verify macOS JS addon signatures'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))

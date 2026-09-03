@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 1
+#define FOUNDRY_LOCAL_API_VERSION 2
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -202,6 +202,11 @@ typedef enum flDeviceType {
   FOUNDRY_LOCAL_DEVICE_NPU = 3
 } flDeviceType;
 
+typedef enum flCatalogType {
+  FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
+  FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
+} flCatalogType;
+
 /// Tensor element data types. Values match ONNX TensorProto.DataType.
 typedef enum flTensorDataType {
   FOUNDRY_LOCAL_TENSOR_UNDEFINED = 0,
@@ -256,6 +261,12 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR "tool_call_end"              ///< optional tool call end marker token
 #define FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR "reasoning_start"          ///< optional reasoning/think start marker token
 #define FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR "reasoning_end"              ///< optional reasoning/think end marker token
+#define FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR "device_type"                  ///< CPU, GPU, or NPU
+#define FOUNDRY_LOCAL_MODEL_PROP_EP_STR "execution_provider"                    ///< optional execution provider
+#define FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR "entity_type"                  ///< fixed to "Model" for BYOM
+#define FOUNDRY_LOCAL_MODEL_PROP_AUTHOR_STR "author"                            ///< optional
+#define FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR "quantization"                ///< optional
+#define FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR "creation_time"              ///< ISO-8601 UTC timestamp
 
 /* flModelInfo Int properties. Comments provide details on the type and expected values. */
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"  ///< optional bool (not set or -1=unknown, 0=false, 1=true)
@@ -265,6 +276,7 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"              ///< Unix timestamp. default=0
 #define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                  ///< bool (0=false, 1=true)
 #define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                ///< optional int64_t
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT "supports_hybrid_reasoning"  ///< optional bool
 
 #define FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR "input_modalities"    ///< optional, comma-separated
 #define FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR "output_modalities"  ///< optional, comma-separated
@@ -709,6 +721,10 @@ typedef struct flApi {
   bool FL_API_T(Manager_IsShutdownRequested, _In_ const flManager* manager);
 
   // End V1
+  FL_API_STATUS(Manager_GetCatalogByType, _In_ const flManager* manager, flCatalogType catalog_type,
+                _Outptr_ flCatalog** out_catalog);
+
+  // End V2
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;
 
@@ -941,8 +957,9 @@ struct flCatalogApi {
   /// Returned string is owned by the catalog and valid for the catalog's lifetime.
   FL_API_STATUS(GetName, _In_ const flCatalog* catalog, _Out_ const char** out_name);
 
-  // Catalog owns model list. Cached for efficiency.
-  // Models are mutable for load/unload/remove operations. Model info is immutable though.
+  /// The caller owns each returned model list and must release it with ModelList_Release. The model handles in a list
+  /// are borrowed from the catalog and remain address-valid until the owning manager is destroyed. Releasing a list
+  /// does not invalidate its model handles. Models are mutable for load/unload/remove operations; model info is immutable.
   FL_API_STATUS(GetModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
   FL_API_STATUS(GetModel, _In_ const flCatalog* catalog, _In_ const char* alias,
                 _Outptr_ flModel** out_model);
@@ -972,6 +989,21 @@ struct flCatalogApi {
                 _In_opt_ const char* model_name, int32_t max_versions, _Outptr_ flModelList** out_models);
 
   // End V1
+  /// Register a model in a local catalog without taking ownership of its assets.
+  /// `model_path` must identify a model directory containing genai_config.json.
+  /// `model_id` must use the canonical `<name>:<version>` format and be unique in the local catalog.
+  /// The metadata is copied; model identity and location are taken only from the explicit arguments.
+  FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const char* model_path,
+                _In_ const char* model_id, _In_ const flModelInfo* metadata,
+                _Outptr_ flModel** out_model);
+  /// Unregister by alias or model ID without deleting model assets. A model ID removes only that version/variant;
+  /// an alias removes all registered versions and variants in the alias group.
+  /// Future catalog queries exclude the registration, but outstanding model handles and their immutable metadata remain
+  /// valid until the owning manager is destroyed. Operations that require the retired registration, including Download
+  /// and Load, return FOUNDRY_LOCAL_ERROR_INVALID_USAGE; query and cleanup operations such as Unload remain valid.
+  FL_API_STATUS(UnregisterModel, _In_ flCatalog* catalog, _In_ const char* alias_or_model_id);
+
+  // End V2
 };
 
 /* --- Model API --------------------------------------------------------- */
@@ -988,8 +1020,8 @@ struct flModelApi {
 
   /* Model handle operations. Catalog owns Model instances. */
   FL_API_STATUS(IsCached, _In_ const flModel* model, _Out_ int* out_cached);
-  /// Returned path string is owned by the model and valid until the model is released or its cache state
-  /// changes via RemoveFromCache.
+  /// Returned path string is owned by the model and valid until the owning manager is destroyed or the model's cache
+  /// state changes via Download or RemoveFromCache.
   FL_API_STATUS(GetPath, _In_ const flModel* model, _Out_ const char** out_path);
   FL_API_STATUS(Download, _In_ flModel* model, _In_opt_ flProgressCallback callback,
                 _In_opt_ void* user_data);
@@ -1041,6 +1073,13 @@ struct flModelApi {
   int64_t FL_API_T(Info_GetIntProperty, _In_ const flModelInfo* info, _In_ const char* key, int64_t default_value);
 
   // End V1
+  /// Create a caller-owned mutable ModelInfo. Release it with ReleaseModelInfo.
+  FL_API_STATUS(CreateModelInfo, _Outptr_ flModelInfo** out_info);
+  void FL_API_T(ReleaseModelInfo, _Frees_ptr_opt_ flModelInfo* info);
+  FL_API_STATUS(Info_SetStringProperty, _In_ flModelInfo* info, _In_ const char* key, _In_ const char* value);
+  FL_API_STATUS(Info_SetIntProperty, _In_ flModelInfo* info, _In_ const char* key, int64_t value);
+
+  // End V2
 };
 
 #ifdef __cplusplus

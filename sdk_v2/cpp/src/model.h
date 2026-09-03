@@ -28,13 +28,15 @@ class ModelLoadManager;
 // Model leaves that share the same alias and delegates all operations
 // to a selected variant. Additional variants are added via AddVariant.
 //
-// The C API type (flModel) inherits from this with zero extra members,
-// following the same pattern as flItem : fl::Item.
+// The C API exposes this through the unrelated opaque flModel handle type;
+// c_api_types.h provides the internal pointer conversions.
 // -----------------------------------------------------------------------
 
 class Model {
  public:
-  Model() = default;
+  // Every successfully constructed Model is either a leaf with immutable metadata or a container with a selected,
+  // metadata-bearing leaf. A moved-from Model may only be destroyed or assigned a new value.
+  Model() = delete;
   ~Model();
   Model(Model&& other) noexcept;
   Model& operator=(Model&& other) noexcept;
@@ -51,6 +53,12 @@ class Model {
                              DownloadManager& download_manager,
                              ModelLoadManager& model_load_manager);
 
+  /// Create an in-place externally registered model. Assets are never deleted by this Model.
+  static Model FromLocalRegistration(ModelInfo info,
+                                     std::string local_path,
+                                     DownloadManager& download_manager,
+                                     ModelLoadManager& model_load_manager);
+
   // --- Container construction ---
 
   /// Create a container Model wrapping the given variant as its first (and selected) variant.
@@ -65,6 +73,21 @@ class Model {
   /// Does not change the current selection. Call SelectDefaultVariant once the
   /// container has its full variant set.
   void AddVariant(Model variant);
+
+  /// Reconcile this container with a fresh authoritative container while preserving leaves with the same model ID and
+  /// normalized local path. Returns false without changing either container when unregister is in progress.
+  /// Removed/replaced leaves are deactivated but retained in container-owned storage for outstanding handle safety.
+  bool TryReconcileVariants(Model& incoming);
+
+  /// Deactivate this container for an authoritative refresh unless unregister currently owns its lifecycle lock.
+  bool TryDeactivateForRefresh();
+
+  /// Reserve storage for retiring one variant. Call before persisting an unregister operation so the later
+  /// in-memory commit cannot fail while transferring ownership of an outstanding model handle.
+  bool PrepareRetireVariant(const std::string& model_id);
+
+  /// Retire one variant after PrepareRetireVariant succeeds. Returns true when active variants remain.
+  bool RetireVariant(const std::string& model_id);
 
   /// Choose the default selected variant from the current sorted variant list:
   /// first cached variant if any, else the best variant.
@@ -130,6 +153,13 @@ class Model {
   void Unload();
   void RemoveFromCache();
 
+  /// Mark this model and its variants inactive while retaining pointer validity.
+  void Deactivate();
+
+  /// Serialize unregister with Load(); EndUnregister releases the lock after success or rollback.
+  void BeginUnregister();
+  void EndUnregister();
+
   /// Select a specific variant within this container. Throws if the variant is
   /// not part of this model, or if this is a leaf.
   ///
@@ -149,7 +179,16 @@ class Model {
   const std::string& LocalPath() const { return local_path_; }
 
  private:
-  // Leaf data (default/empty for containers).
+  struct ContainerTag {};
+
+  Model(ModelInfo info,
+        std::string local_path,
+        DownloadManager& download_manager,
+        ModelLoadManager& model_load_manager,
+        bool external_registration);
+  Model(ContainerTag, Model first_variant);
+
+  // Leaf data (empty for containers). Construction guarantees this is non-null for every leaf.
   // cached_ is atomic — flipped concurrently by the download path.
   // Loaded state is NOT stored here; it is queried from ModelLoadManager so the load
   // manager remains the single source of truth (Manager::Shutdown clears its map without
@@ -158,9 +197,13 @@ class Model {
   // cleared by RemoveFromCache(). Its mutation is guarded by state_mutex_; the reader-safety
   // contract is that the path is published before cached_ flips true (and cleared after cached_
   // flips false), so any reader that gates on IsCached() observes a complete path.
-  ModelInfo info_;
+  std::unique_ptr<const ModelInfo> info_;
   std::atomic<bool> cached_{false};
+  // Logical tombstone state. Retired models remain allocated so outstanding catalog-owned handles stay address-valid,
+  // but operations that would use the registration reject them.
+  std::atomic<bool> active_{true};
   std::string local_path_;
+  bool external_registration_ = false;
 
   // Non-owning service bindings for leaf operations. Set once at construction and never
   // reassigned; guaranteed non-null because FromModelInfo takes them by reference.
@@ -170,11 +213,18 @@ class Model {
   // Container data (empty/null for leaves). unique_ptr keeps Model addresses
   // stable across vector growth/reordering.
   std::vector<std::unique_ptr<Model>> variants_;
+  std::vector<std::unique_ptr<Model>> retired_variants_;
   std::atomic<Model*> selected_variant_{nullptr};  // non-null = this is a container
+  bool selection_is_explicit_ = false;             // guarded by state_mutex_
 
   // Guards variants_ across reader/writer threads (catalog refresh adding variants
   // while another thread enumerates via Variants()).
   mutable std::mutex state_mutex_;
+
+  // Leaf lifecycle state. A Model must not be moved while an unregister operation holds this lock.
+  mutable std::mutex lifecycle_mutex_;
+  bool unregistering_ = false;
+  std::vector<Model*> unregistering_variants_;  // exact container snapshot locked by BeginUnregister
 };
 
 }  // namespace fl

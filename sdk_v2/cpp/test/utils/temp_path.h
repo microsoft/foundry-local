@@ -69,6 +69,9 @@ class TempPath {
     try {
       std::error_code ec;
       std::filesystem::remove_all(path_, ec);
+      if (ec) {
+        std::fprintf(stderr, "TempPath: failed to remove '%s': %s\n", path_.string().c_str(), ec.message().c_str());
+      }
     } catch (const std::exception& e) {
       std::fprintf(stderr, "TempPath: failed to remove '%s': %s\n", path_.string().c_str(), e.what());
     }

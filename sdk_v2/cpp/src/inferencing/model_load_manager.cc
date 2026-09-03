@@ -5,9 +5,11 @@
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "platform/path.h"
 #include "utils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
@@ -19,6 +21,33 @@ namespace {
 
 /// The expected config filename inside a model directory.
 constexpr const char* kGenAIConfigFileName = "genai_config.json";
+
+std::string NormalizeModelPath(std::string_view path) {
+  std::filesystem::path normalized;
+  std::string error_message;
+  if (!platform::GetWeaklyCanonicalPath(std::filesystem::path(std::string(path)), normalized, error_message)) {
+    std::error_code ec;
+    normalized = std::filesystem::absolute(std::filesystem::path(std::string(path)), ec);
+    if (ec) {
+      normalized = std::filesystem::path(std::string(path));
+    }
+  }
+
+  return normalized.lexically_normal().string();
+}
+
+bool ModelPathsEqual(std::string_view left, std::string_view right) {
+  const auto normalized_left = NormalizeModelPath(left);
+  const auto normalized_right = NormalizeModelPath(right);
+#ifdef _WIN32
+  return normalized_left.size() == normalized_right.size() &&
+         std::equal(normalized_left.begin(), normalized_left.end(), normalized_right.begin(), [](char lhs, char rhs) {
+           return std::tolower(static_cast<unsigned char>(lhs)) == std::tolower(static_cast<unsigned char>(rhs));
+         });
+#else
+  return normalized_left == normalized_right;
+#endif
+}
 
 /// Maps model_id substrings to their required execution provider registration name.
 /// If a model_id contains one of these keys, the corresponding EP must be registered.
@@ -45,6 +74,36 @@ std::string_view RequiredEpForModelId(std::string_view model_id) {
   }
 
   return {};
+}
+
+/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
+bool IsDmlProvider(std::string_view provider) {
+  return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
+         provider == "DMLExecutionProvider";
+}
+
+/// Returns the required EP registration name for a provider declared in genai_config.json.
+std::string RequiredEpForConfigProvider(std::string_view provider) {
+  if (provider.empty() || IsDmlProvider(provider)) {
+    return {};
+  }
+
+  auto ep = EPUtils::StringtoEP(provider);
+  if (provider == "WebGpuExecutionProvider") {
+    ep = ExecutionProvider::kWebGPU;
+  }
+
+  if (ep == ExecutionProvider::kCPU) {
+    return {};
+  }
+  if (ep != ExecutionProvider::kUnknown) {
+    return std::string(EPUtils::EPtoRegistrationName(ep));
+  }
+
+  // Configs may name WinML/OGA providers that are intentionally outside the public override enum, such as
+  // MIGraphXExecutionProvider and RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
+  constexpr std::string_view suffix = "ExecutionProvider";
+  return provider.ends_with(suffix) ? std::string(provider) : std::string{};
 }
 
 }  // namespace
@@ -85,14 +144,18 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
                      "cannot load model during shutdown");
   }
 
-  // Convert to std::string for map operations and string concatenation
-  std::string path_str(model_path);
+  const auto path_str = NormalizeModelPath(model_path);
   std::string id_str(model_id);
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Check if model is already loaded
   auto it = loaded_models_.find(id_str);
   if (it != loaded_models_.end()) {
+    if (!ModelPathsEqual(path_str, it->second->ModelPath())) {
+      FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model '", id_str,
+                       "' is already loaded from a different path: ", it->second->ModelPath(),
+                       "; requested path: ", path_str);
+    }
+
     return {LoadStatus::kModelAlreadyLoaded, it->second.get()};
   }
 
@@ -118,6 +181,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   // Determine execution provider
   auto resolved_ep = ep_override;
 
+  if (resolved_ep == ExecutionProvider::kUnknown) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown execution provider override");
+  }
+
   if (resolved_ep == ExecutionProvider::kDefault) {
     // Auto-select EP for generic-gpu models: DML models are compatible with
     // CUDA and WebGPU, so try those in order when available.
@@ -132,11 +199,15 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     }
   }
 
-  std::string_view required_ep;
-  if (resolved_ep != ExecutionProvider::kDefault && resolved_ep != ExecutionProvider::kCPU) {
+  std::string required_ep;
+  if (resolved_ep == ExecutionProvider::kCPU) {
+    // Explicit CPU overrides both the provider in genai_config.json and model-ID hints.
+  } else if (resolved_ep != ExecutionProvider::kDefault) {
     required_ep = EPUtils::EPtoRegistrationName(resolved_ep);
   } else {
-    required_ep = RequiredEpForModelId(id_str);
+    const auto config_provider = genai_config.DefaultProvider();
+    required_ep = config_provider.empty() ? std::string(RequiredEpForModelId(id_str))
+                                          : RequiredEpForConfigProvider(config_provider);
   }
 
   // OGA can crash or hang if a model is loaded with an unregistered EP.
@@ -170,12 +241,27 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
 // ---------------------------------------------------------------------------
 
 bool ModelLoadManager::UnloadModel(std::string_view model_id) {
+  return UnloadModel(model_id, static_cast<const std::string*>(nullptr));
+}
+
+bool ModelLoadManager::UnloadModel(std::string_view model_id, std::string_view model_path) {
+  const auto normalized_model_path = NormalizeModelPath(model_path);
+  return UnloadModel(model_id, &normalized_model_path);
+}
+
+bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string* normalized_model_path) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string id_str(model_id);
   auto it = loaded_models_.find(id_str);
   if (it == loaded_models_.end()) {
     logger_.Log(LogLevel::Information, fmt::format("model was not loaded: {}", id_str));
+    return false;
+  }
+
+  if (normalized_model_path && !ModelPathsEqual(*normalized_model_path, it->second->ModelPath())) {
+    logger_.Log(LogLevel::Information,
+                fmt::format("model '{}' is loaded from a different path", id_str));
     return false;
   }
 
@@ -236,7 +322,8 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
     auto remaining = instance->SessionRefCount();
     if (remaining > 0) {
       logger_.Log(LogLevel::Warning,
-                  fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; leaving loaded",
+                  fmt::format("Shutdown: model '{}' still has {} session(s) after overall {}ms deadline; "
+                              "leaving loaded",
                               id, remaining, timeout.count()));
       continue;
     }
@@ -258,11 +345,22 @@ void ModelLoadManager::UnloadAll(std::chrono::milliseconds timeout) {
 // ---------------------------------------------------------------------------
 
 GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id) {
+  return GetLoadedModel(model_id, static_cast<const std::string*>(nullptr));
+}
+
+GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id, std::string_view model_path) {
+  const auto normalized_model_path = NormalizeModelPath(model_path);
+  return GetLoadedModel(model_id, &normalized_model_path);
+}
+
+GenAIModelInstance* ModelLoadManager::GetLoadedModel(std::string_view model_id,
+                                                     const std::string* normalized_model_path) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string id_str(model_id);
   auto it = loaded_models_.find(id_str);
-  if (it != loaded_models_.end()) {
+  if (it != loaded_models_.end() &&
+      (!normalized_model_path || ModelPathsEqual(*normalized_model_path, it->second->ModelPath()))) {
     return it->second.get();
   }
 

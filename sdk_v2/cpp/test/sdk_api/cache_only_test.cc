@@ -257,11 +257,11 @@ TEST_F(CacheOnlyTest, MissingCacheFileReturnsEmptyModelList) {
   }
 }
 
-TEST_F(CacheOnlyTest, SnapshotAndByomModelsUseScannedLocalPaths) {
+TEST_F(CacheOnlyTest, SnapshotModelsUseScannedPathsAndUnknownDirectoriesAreIgnored) {
   WriteTwoModelCacheFile();
   const auto snapshot_model_path =
       CreateLocalModel("phi-4-mini-instruct-generic-cpu:2", "phi-snapshot-model");
-  const auto byom_model_path = CreateLocalModel("contoso-custom-model:7", "contoso-byom-model");
+  CreateLocalModel("contoso-custom-model:7", "contoso-byom-model");
 
   {
     foundry_local::Manager manager(MakeCacheOnlyConfig());
@@ -269,8 +269,8 @@ TEST_F(CacheOnlyTest, SnapshotAndByomModelsUseScannedLocalPaths) {
     auto models = catalog.GetModels();
     auto cached_models = catalog.GetCachedModels();
 
-    ASSERT_EQ(models.size(), 3u);
-    ASSERT_EQ(cached_models.size(), 2u);
+    ASSERT_EQ(models.size(), 2u);
+    ASSERT_EQ(cached_models.size(), 1u);
 
     auto snapshot_model = catalog.GetModelVariant("phi-4-mini-instruct-generic-cpu:2");
     ASSERT_NE(snapshot_model, nullptr);
@@ -278,15 +278,6 @@ TEST_F(CacheOnlyTest, SnapshotAndByomModelsUseScannedLocalPaths) {
     EXPECT_EQ(std::string(snapshot_model->GetPath()), snapshot_model_path);
     EXPECT_EQ(snapshot_model->GetInfo().Publisher().value_or(""), "Microsoft");
 
-    auto byom_model = catalog.GetModelVariant("contoso-custom-model:7");
-    ASSERT_NE(byom_model, nullptr);
-    EXPECT_TRUE(byom_model->IsCached());
-    EXPECT_EQ(std::string(byom_model->GetPath()), byom_model_path);
-    EXPECT_EQ(byom_model->GetInfo().Name(), "contoso-custom-model");
-    EXPECT_EQ(byom_model->GetInfo().Alias(), "contoso-custom-model");
-    EXPECT_EQ(byom_model->GetInfo().Version(), 7);
-    EXPECT_EQ(byom_model->GetInfo().Uri(), "local://contoso-custom-model");
-    EXPECT_EQ(byom_model->GetInfo().ModelProvider().value_or(""), "Local");
-    EXPECT_EQ(byom_model->GetInfo().ModelType().value_or(""), "ONNX");
+    EXPECT_EQ(catalog.GetModelVariant("contoso-custom-model:7"), nullptr);
   }
 }

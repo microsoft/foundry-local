@@ -67,7 +67,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
       return ErrorResponse(Status::CODE_404, "Model not found", model_name);
     }
 
-    auto* loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+    auto* loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
     if (!loaded) {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Model not loaded", model_name);

@@ -25,7 +25,6 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -63,6 +62,9 @@ namespace detail {
 /// Returns nullptr if the library does not support the requested API version.
 inline const flApi* api() {
   static const flApi* p = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  if (!p) {
+    throw std::runtime_error("Foundry Local runtime does not support the API version requested by this header");
+  }
   return p;
 }
 
@@ -299,13 +301,25 @@ struct Runtime {
 };
 
 // ===========================================================================
-// ModelInfo — non-owning read-only view
+// ModelInfo — owning mutable value or non-owning read-only view
 // ===========================================================================
 
-/// Non-owning view over an opaque flModelInfo. Lifetime is tied to the owning Model/Catalog. Immutable.
+/// Opaque model metadata. Default construction creates an owning mutable value for registration.
+/// Construction from `const flModelInfo&` creates a non-owning read-only view tied to its Model.
 class ModelInfo {
  public:
-  explicit ModelInfo(const flModelInfo& info) noexcept : info_(&info) {}
+  ModelInfo();
+  explicit ModelInfo(const flModelInfo& info) noexcept : handle_(&info) {}
+
+  ModelInfo(const ModelInfo&) = delete;
+  ModelInfo& operator=(const ModelInfo&) = delete;
+  ModelInfo(ModelInfo&&) noexcept = default;
+  ModelInfo& operator=(ModelInfo&&) noexcept = default;
+
+  ModelInfo& SetStringProperty(const char* key, const char* value);
+  ModelInfo& SetIntProperty(const char* key, int64_t value);
+
+  const flModelInfo* native_handle() const noexcept { return handle_.get(); }
 
   // Core identity.
   std::string_view Id() const noexcept;
@@ -376,7 +390,7 @@ class ModelInfo {
 
  private:
   static std::string_view safe(const char* s) noexcept { return s ? s : ""; }
-  const flModelInfo* info_;
+  detail::Base<flModelInfo> handle_;
 };
 
 // ===========================================================================
@@ -695,6 +709,9 @@ class IModel {
 // Model — concrete IModel implementation using composition
 // ===========================================================================
 
+/// Non-owning wrapper over a catalog-owned model. The Manager that supplied the catalog must outlive this object and
+/// any ModelInfo view obtained from it. Unregistering a local model removes it from future catalog queries without
+/// invalidating existing wrappers; operations that require the retired registration, including Download and Load, fail.
 class Model final : public IModel {
  public:
   /// Mutable construction (from catalog lookups that return flModel*).
@@ -735,6 +752,8 @@ class Model final : public IModel {
 // ModelList
 // ===========================================================================
 
+/// Owning wrapper for a native model-list allocation. Its Model entries are non-owning views into catalog storage, so
+/// the Manager that supplied the catalog must outlive the list and any Model wrapper retained from it.
 class ModelList {
  public:
   ModelList(flModelList& model_list);
@@ -780,12 +799,20 @@ class ICatalog {
   /// returns every variant. `max_versions` selects the latest X versions per
   /// variant name (defaults to 50, matching the web service contract); pass 0
   /// or a negative value for no per-variant cap. Each call performs a fresh
-  /// query and the returned model handles remain valid until the next
-  /// GetModelVersions call for the same alias or until the catalog is destroyed.
-  /// Queries for different aliases do not invalidate each other's results.
+  /// query and the returned model handles remain valid until the owning Manager
+  /// is destroyed. Repeated queries do not invalidate earlier results.
   virtual ModelList GetModelVersions(const std::string& model_alias,
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
+
+  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// The catalog does not take ownership of `model_path` and never deletes its contents.
+  virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
+                                                const ModelInfo& metadata) = 0;
+  /// Unregister without deleting model assets. A model ID removes only that version/variant; an alias removes all of
+  /// its registered versions and variants. Existing model wrappers and immutable metadata views remain valid, but
+  /// operations that require the retired registration, including Download and Load, fail with invalid usage.
+  virtual void UnregisterModel(const std::string& alias_or_model_id) = 0;
 };
 
 // ===========================================================================
@@ -794,7 +821,7 @@ class ICatalog {
 
 class Catalog final : public ICatalog {
  public:
-  /// Adopt an already-created catalog handle (owning).
+  /// Wrap an already-created manager-owned catalog handle (non-owning).
   /// Most users should obtain a catalog via Manager::GetCatalog() rather than constructing one directly.
   explicit Catalog(flCatalog& catalog) : handle_(&catalog) {}
 
@@ -811,6 +838,9 @@ class Catalog final : public ICatalog {
   ModelList GetModelVersions(const std::string& model_alias,
                              const std::string& variant_name = {},
                              int max_versions = 50) override;
+  std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
+                                        const ModelInfo& metadata) override;
+  void UnregisterModel(const std::string& alias_or_model_id) override;
 
  private:
   detail::Base<flCatalog> handle_;
@@ -838,8 +868,8 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get the catalog for querying models. Creates on first call, caches internally.
-  ICatalog& GetCatalog() const;
+  /// Get a manager-owned catalog for querying models.
+  ICatalog& GetCatalog(flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC) const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -872,10 +902,16 @@ class Manager {
   bool IsShutdownRequested() const;
 
  private:
+  struct CatalogCollection {
+    explicit CatalogCollection(const flManager* manager);
+
+    mutable Catalog public_;
+    mutable Catalog local_;
+  };
+
   detail::Base<flManager> handle_;
   Configuration config_;
-  mutable std::unique_ptr<Catalog> catalog_;
-  mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
+  CatalogCollection catalogs_;
 };
 
 // ===========================================================================
