@@ -250,16 +250,7 @@ TEST_F(StreamingAudioFixture, StreamingCallbackReceivesTokens) {
   std::mutex text_mutex;
   std::string streamed_text;
 
-  session.SetStreamingCallback([&](flStreamingCallbackData data) {
-    // Pop the item from the queue — this is the established contract.
-    flItem* raw_item = nullptr;
-    if (!detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw_item) || !raw_item) {
-      return 0;
-    }
-
-    // Wrap in Item for RAII release and checked accessors.
-    Item item(*raw_item);
-
+  session.SetStreamingCallback([&](Item item) {
     // Audio output is always a SpeechSegmentItem per token.
     EXPECT_EQ(item.GetType(), FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
     auto seg = item.GetSpeechSegment();

@@ -501,13 +501,7 @@ TEST_F(ToolCallFixture, ToolCallStreamingWithRequired) {
   std::vector<StreamedToolCall> collected_tool_calls;
   std::string collected_text;
 
-  session.SetStreamingCallback([&](flStreamingCallbackData data) -> int {
-    flItem* raw_item = nullptr;
-    if (!detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw_item) || !raw_item) {
-      return 0;
-    }
-
-    Item item(*raw_item);
+  session.SetStreamingCallback([&](Item item) -> int {
     ++callback_count;
 
     if (item.GetType() == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
