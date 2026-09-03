@@ -28,7 +28,7 @@ struct GenAIConfig {
     std::optional<Decoder> decoder;
 
     /// Returns true if the model type is multimodal (phi3v, whisper, phi4mm, fara,
-    /// qwen2_5_vl, qwen3_vl, qwen3_5, gemma4).
+    /// qwen2_5_vl, qwen3_vl, qwen3_5, gemma4, mistral3).
     bool IsMultiModal() const;
   };
 
