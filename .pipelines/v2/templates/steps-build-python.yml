@@ -314,7 +314,7 @@ steps:
             throw "Expected exactly one .whl under ${{ parameters.outputDir }}, found $($wheels.Count)"
         }
 
-        $json = (& auditwheel show --json $wheels[0].FullName) -join "`n"
+        $json = (& python -m auditwheel show --json $wheels[0].FullName) -join "`n"
         if ($LASTEXITCODE -ne 0) {
             throw "auditwheel failed with exit code $LASTEXITCODE"
         }
