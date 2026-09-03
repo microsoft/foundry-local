@@ -6,11 +6,9 @@
 #   1. Install a stable Rust toolchain (clippy + rustfmt), plus the cross target
 #      when `crossTarget` is set (win-arm64 is cross-compiled from an x64 host).
 #   2. Assemble a native runtime directory:
-#        * `foundry_local` (+ the reg-free WinML DLL on Windows) taken from the
-#          `cpp-native-<rid>` pipeline artifact, and
-#        * ONNX Runtime + GenAI extracted from the pinned public NuGet packages
-#          (only when `runTests` — the SDK compiles without them, but loading a
-#          model at runtime needs them next to `foundry_local`).
+#        * `foundry_local`, ONNX Runtime, and GenAI taken from the matching
+#          `cpp-native-<rid>` pipeline artifact
+#        * the reg-free WinML DLL included by the Windows native artifacts
 #      The directory is handed to build.rs via `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
 #      which copies every platform library into OUT_DIR and bakes the path into
 #      the crate, so both unit and integration tests resolve the native by that
@@ -32,7 +30,7 @@ parameters:
   # win-x64 | win-arm64 | linux-x64 | linux-arm64 | osx-arm64
 - name: nativeArtifactDir
   type: string
-  # Downloaded `cpp-native-<rid>` artifact (carries foundry_local, + WinML on Windows).
+  # Downloaded `cpp-native-<rid>` artifact containing the complete native runtime.
 - name: runTests
   type: boolean
   default: false
@@ -40,12 +38,6 @@ parameters:
   type: string
   default: ''
   # e.g. 'aarch64-pc-windows-msvc' for the win-arm64 cross build; '' for native.
-- name: ortVersion
-  type: string
-  default: ''
-- name: genaiVersion
-  type: string
-  default: ''
 - name: testDataSharedDir
   type: string
   default: ''
@@ -124,45 +116,6 @@ steps:
       foreach ($f in $nativeFiles) {
         Copy-Item $f.FullName (Join-Path $assembled $f.Name) -Force
         Write-Host "  native : $($f.Name)"
-      }
-
-      # 2b. ONNX Runtime + GenAI from the pinned public NuGet packages — needed
-      #     only to *run* a model (integration tests). The versions come from the
-      #     same pipeline literals that drive the C++ native build, which
-      #     steps-prefetch-nuget.yml asserts against sdk_v2/deps_versions.json.
-      $ortVersion   = '${{ parameters.ortVersion }}'
-      $genaiVersion = '${{ parameters.genaiVersion }}'
-      if ($ortVersion -ne '' -and $genaiVersion -ne '') {
-        $feed = 'https://www.nuget.org/api/v2/package'
-        $tmp  = Join-Path '$(Build.BinariesDirectory)' 'rt-nupkg'
-        if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-
-        $pkgs = @(
-          @{ id = 'Microsoft.ML.OnnxRuntime';              version = $ortVersion   },
-          @{ id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = $genaiVersion }
-        )
-        foreach ($p in $pkgs) {
-          $zip = Join-Path $tmp "$($p.id).$($p.version).zip"
-          $out = Join-Path $tmp $p.id
-          Write-Host "Downloading $($p.id) $($p.version)"
-          Invoke-WebRequest -Uri "$feed/$($p.id)/$($p.version)" -OutFile $zip -UseBasicParsing
-          Expand-Archive -Path $zip -DestinationPath $out -Force
-
-          $nativeDir = Join-Path $out "runtimes/$rid/native"
-          if (-not (Test-Path $nativeDir)) {
-            throw "runtimes/$rid/native not found in $($p.id) $($p.version)."
-          }
-          $libs = @(Get-ChildItem -Path $nativeDir -File |
-            Where-Object { $_.Extension -eq ".$ext" })
-          if ($libs.Count -eq 0) {
-            throw "No *.$ext libraries under runtimes/$rid/native for $($p.id)."
-          }
-          foreach ($lib in $libs) {
-            Copy-Item $lib.FullName (Join-Path $assembled $lib.Name) -Force
-            Write-Host "  runtime: $($lib.Name)"
-          }
-        }
       }
 
       Write-Host "Assembled native dir: $assembled"

@@ -53,12 +53,17 @@ parameters:
 
 variables:
 - group: FoundryLocal-ESRP-Signing
-# C++ SDK (sdk_v2/cpp) native dependency versions. Must match cmake defaults
-# in sdk_v2/deps_versions.json.
+# C++ SDK (sdk_v2/cpp) native dependency versions. Release builds use the
+# stable pins from sdk_v2/deps_versions.json; non-release CI validates the
+# selected GenAI nightly before it becomes a stable SDK default.
 - name: cppOrtVersion
   value: '1.28.0'
-- name: cppGenaiVersion
-  value: '0.15.2'
+- ${{ if eq(parameters.isRelease, true) }}:
+  - name: cppGenaiVersion
+    value: '0.15.2'
+- ${{ else }}:
+  - name: cppGenaiVersion
+    value: '0.16.0-dev1001400138'
 - name: cppWinmlVersion
   value: '2.1.70'
 - name: cppBuildConfig

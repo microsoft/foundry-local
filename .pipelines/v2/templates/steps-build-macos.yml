@@ -38,7 +38,6 @@ steps:
     genaiVersion: ${{ parameters.genaiVersion }}
     winmlVersion: ''
     includeWinml: false
-    shell: bash
 
 # Bake the pipeline-computed version into the binary so FoundryLocalGetVersionString()
 # matches the .nupkg version instead of the cmake default.

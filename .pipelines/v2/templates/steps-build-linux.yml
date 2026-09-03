@@ -53,7 +53,6 @@ steps:
     genaiVersion: ${{ parameters.genaiVersion }}
     winmlVersion: ''
     includeWinml: false
-    shell: bash
 
 - ${{ if eq(parameters.runTests, true) }}:
   - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
@@ -90,8 +89,9 @@ steps:
           --cmake_path "$HOME/venv/bin/cmake" \
           --ctest_path "$HOME/venv/bin/ctest" \
           --cmake_extra_defines \
-            "GENAI_FETCH_URL=$NUGET_CACHE/genai.nupkg" \
-            "ORT_FETCH_URL=$NUGET_CACHE/ort.nupkg" \
+            "GENAI_FETCH_URL=$NUGET_CACHE/genai.zip" \
+            "ORT_GENAI_VERSION=${{ parameters.genaiVersion }}" \
+            "ORT_FETCH_URL=$NUGET_CACHE/ort.zip" \
             "FOUNDRY_LOCAL_VERSION_STRING=$SDK_VERSION"
       '
   displayName: 'Configure and build in manylinux 2.28'
