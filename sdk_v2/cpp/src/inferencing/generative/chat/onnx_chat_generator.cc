@@ -138,14 +138,15 @@ void OnnxChatGenerator::Cancel() {
 
 int OnnxChatGenerator::AppendMessages(const std::vector<MessageItem>& new_messages,
                                       GenAIModelInstance& model,
-                                      const std::string& tools_json) {
+                                      const std::string& tools_json,
+                                      const std::string& template_kwargs_json) {
   if (new_messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages must not be empty");
   }
 
   // Build prompt from only the new messages. ApplyChatTemplate with add_generation_prompt=true
   // produces the correct continuation tokens (e.g. <|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n)
-  std::string prompt = BuildChatPrompt(new_messages, model, tools_json);
+  std::string prompt = BuildChatPrompt(new_messages, model, tools_json, template_kwargs_json);
   auto sequences = EncodePrompt(prompt, model);
   int new_token_count = static_cast<int>(sequences->SequenceCount(0));
 
@@ -286,10 +287,12 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
   if (media_branch) {
     std::string messages_json = TransformMessagesForMedia(messages);
     const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-    prompt =
-        model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+    const char* template_kwargs_ptr =
+        tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+    prompt = model.GetPreprocessor().ApplyChatTemplateWithOptions(
+        messages_json.c_str(), tools_ptr, template_kwargs_ptr, /*add_generation_prompt=*/true);
   } else {
-    prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+    prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json);
   }
 
   // 2. Token budgeting.

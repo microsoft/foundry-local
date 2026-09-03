@@ -108,6 +108,12 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
 
   // metadata — map<string, string>
   opt(j, "metadata", r.metadata);
+
+  // chat_template_kwargs — typed JSON object
+  if (j.contains("chat_template_kwargs") && !j["chat_template_kwargs"].is_null()) {
+    auto kwargs = j["chat_template_kwargs"].get<std::map<std::string, nlohmann::json>>();
+    r.chat_template_kwargs = nlohmann::json(std::move(kwargs));
+  }
 }
 
 // ========================================================================

@@ -166,6 +166,10 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
     session_request.options["max_output_tokens"] = std::to_string(*req.max_tokens);
   }
 
+  if (req.chat_template_kwargs.has_value()) {
+    session_request.options["chat_template_kwargs"] = req.chat_template_kwargs->dump();
+  }
+
   // Extract metadata extensions (matching C# GetTopK/GetRandomSeed)
   if (req.metadata.has_value()) {
     const auto& meta = *req.metadata;

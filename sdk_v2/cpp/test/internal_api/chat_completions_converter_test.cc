@@ -416,6 +416,22 @@ TEST(ChatCompletionsConverterTest, MapRequestParameters_EmptyMetadataValuesIgnor
   EXPECT_EQ(session_request.options.Find("seed"), nullptr);
 }
 
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ChatTemplateKwargsPreserveTypes) {
+  ChatCompletionRequest req;
+  req.chat_template_kwargs = json::parse(
+      R"({"enable_thinking":false,"reasoning_effort":"low","level":2})");
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const char* serialized = session_request.options.Find("chat_template_kwargs");
+  ASSERT_NE(serialized, nullptr);
+  auto parsed = json::parse(serialized);
+  EXPECT_EQ(parsed["enable_thinking"], false);
+  EXPECT_EQ(parsed["reasoning_effort"], "low");
+  EXPECT_EQ(parsed["level"], 2);
+}
+
 // ========================================================================
 // MapGuidance
 // ========================================================================
