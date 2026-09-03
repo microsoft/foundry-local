@@ -17,6 +17,8 @@ struct OgaGeneratorParams;
 
 namespace fl {
 
+struct ToolCallContext;
+
 /// Parameters extracted from a request that map to ORT GenAI search options.
 /// Decoupled from any specific request type so both C API and C++ API can use it.
 struct SearchOptions {
@@ -47,7 +49,13 @@ struct SearchOptions {
   /// Returns std::nullopt when the key is absent. Throws fl::Exception when present
   /// with a value other than "auto", "none", or "required".
   static std::optional<flToolChoice> ParseToolChoice(const KeyValuePairs& params);
+
+  /// Whether settings baked into retained generator/request state match another turn.
+  bool HasSameRetainedGenerationSettings(const SearchOptions& other) const;
 };
+
+/// Return the explicit or default output-token limit for a text generation turn.
+int ResolveMaxOutputTokens(const SearchOptions& options, int default_max_output_tokens = 2048);
 
 /// Apply search options to OgaGeneratorParams.
 /// Validates token budget (input + output vs model max_length from config).
@@ -74,5 +82,8 @@ int ApplySearchOptions(const SearchOptions& options,
                        ExecutionProvider ep,
                        bool use_full_context = false,
                        int default_max_output_tokens = 2048);
+
+/// Applies request-level grammar guidance to generator parameters when the tool context requires tool-only output.
+void ApplyGuidanceOptions(const ToolCallContext& tool_ctx, OgaGeneratorParams& gen_params);
 
 }  // namespace fl

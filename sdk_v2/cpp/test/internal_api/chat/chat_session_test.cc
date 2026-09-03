@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -142,6 +143,28 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(session.GetHistory()[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(session.GetHistory()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(session.GetHistory()[1].GetSimpleText(), text);
+}
+
+TEST_F(ChatSessionTest, ConcurrentIndependentSessions) {
+  auto run_request = [this](std::string prompt) {
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    Request request;
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, prompt));
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+
+    Response response;
+    session.ProcessRequest(request, response);
+    return GetAssistantText(response);
+  };
+
+  auto first = std::async(std::launch::async, run_request, "What is 2+2? Answer with just the number.");
+  auto second = std::async(std::launch::async, run_request, "What is 3+3? Answer with just the number.");
+
+  const auto first_text = first.get();
+  const auto second_text = second.get();
+  EXPECT_NE(first_text.find("4"), std::string::npos) << first_text;
+  EXPECT_NE(second_text.find("6"), std::string::npos) << second_text;
 }
 
 TEST_F(ChatSessionTest, ChatCompletionRejectsAudioInput) {

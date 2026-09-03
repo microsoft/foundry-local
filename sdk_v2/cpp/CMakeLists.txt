@@ -109,6 +109,15 @@ endif()
 # ORT and ORT GenAI — acquired via FetchContent from nuget.org.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
+
+file(STRINGS "${ORT_GENAI_HEADER_DIR}/ort_genai_c.h" _OGA_ENGINE_DECLARATION REGEX "OgaCreateEngine")
+if(_OGA_ENGINE_DECLARATION)
+    set(FOUNDRY_LOCAL_HAS_OGA_ENGINE ON)
+    message(STATUS "ORT GenAI Engine API: enabled")
+else()
+    set(FOUNDRY_LOCAL_HAS_OGA_ENGINE OFF)
+    message(STATUS "ORT GenAI Engine API: unavailable")
+endif()
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -277,6 +286,13 @@ set(FOUNDRY_LOCAL_SOURCES
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
 
+if(FOUNDRY_LOCAL_HAS_OGA_ENGINE)
+    list(APPEND FOUNDRY_LOCAL_SOURCES
+        src/inferencing/generative/chat/onnx_chat_engine.cc
+        src/inferencing/generative/chat/onnx_engine_chat_generator.cc
+    )
+endif()
+
 # 1DS bridge — always compiled for Foundry Local Core.
 list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
 
@@ -401,6 +417,9 @@ configure_file(
 # static library targets re-use these object files, avoiding a double build.
 # --------------------------------------------------------------------------
 add_library(foundry_local_objects OBJECT ${FOUNDRY_LOCAL_SOURCES})
+if(FOUNDRY_LOCAL_HAS_OGA_ENGINE)
+    target_compile_definitions(foundry_local_objects PRIVATE FOUNDRY_LOCAL_HAS_OGA_ENGINE=1)
+endif()
 set_target_properties(foundry_local_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
 foundry_local_configure_target(foundry_local_objects PUBLIC)
 # FL_STATIC_LIBRARY makes FL_EXPORT empty on Windows so the two exported entry

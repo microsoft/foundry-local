@@ -17,6 +17,8 @@ struct OgaModel;
 
 namespace fl {
 
+class OnnxChatEngine;
+
 /// A model that has been loaded into the ORT GenAI runtime.
 /// Owns the OgaModel and its preprocessing resources.
 /// Non-copyable, non-movable. Owned by ModelLoadManager via std::unique_ptr.
@@ -37,6 +39,7 @@ class GenAIModelInstance {
   /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();
   Preprocessor& GetPreprocessor();
+  OnnxChatEngine* GetChatEngine() { return chat_engine_.get(); }
 
   /// Get the last-activity timestamp.
   std::chrono::steady_clock::time_point LastActivity() const { return last_activity_; }
@@ -63,6 +66,7 @@ class GenAIModelInstance {
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
   std::unique_ptr<Preprocessor> preprocessor_;
+  std::unique_ptr<OnnxChatEngine> chat_engine_;
   std::chrono::steady_clock::time_point last_activity_;
   mutable std::atomic<int> session_ref_count_{0};
 };

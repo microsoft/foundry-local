@@ -3,11 +3,18 @@
 #pragma once
 
 #include <map>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace fl {
+
+enum class ChatBackendKind {
+  kGenerator,
+  kStaticEngine,
+  kDynamicEngine,
+};
 
 /// Represents the parsed contents of a genai_config.json file.
 /// Maps the C# GenAIConfig / OnnxModel / OnnxDecoder types.
@@ -36,13 +43,34 @@ struct GenAIConfig {
     int max_length = 0;
   };
 
+  struct Engine {
+    struct DynamicBatching {
+      size_t max_batch_size = 16;
+      size_t max_scheduled_tokens = 2048;
+    };
+
+    struct StaticBatching {
+      size_t max_batch_size = 4;
+    };
+
+    std::optional<DynamicBatching> dynamic_batching;
+    std::optional<StaticBatching> static_batching;
+  };
+
   std::optional<OnnxModel> model;
   std::optional<Search> search;
+  std::optional<Engine> engine;
   std::optional<int> hidden_size;  // embedding dimension from genai_config.json
 
   /// Returns the first provider key from decoder.session_options.provider_options,
   /// or empty string if not found.
   std::string DefaultProvider() const;
+
+  /// Selects the chat inference backend declared by the model artifact.
+  ChatBackendKind GetChatBackendKind() const;
+
+  /// Returns the configured Engine batch capacity, or nullopt for Generator models.
+  std::optional<size_t> EngineMaxBatchSize() const;
 
   /// Load and parse a genai_config.json file. Throws fl::Exception on failure.
   static GenAIConfig LoadFromFile(const std::string& path);

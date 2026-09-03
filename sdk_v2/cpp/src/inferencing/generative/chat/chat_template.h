@@ -39,6 +39,12 @@ std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json = "");
 
+/// Build the fragment appended after an Engine-generated assistant response.
+/// Engine does not retain the generated EOS token, so this includes the template's assistant-turn boundary.
+std::string BuildChatContinuationPrompt(const std::vector<MessageItem>& messages,
+                                        GenAIModelInstance& model,
+                                        const std::string& tools_json = "");
+
 /// Encode a prompt string into token sequences using the model's shared tokenizer (thread-safe).
 /// Returns a unique_ptr to OgaSequences. Caller takes ownership.
 ///

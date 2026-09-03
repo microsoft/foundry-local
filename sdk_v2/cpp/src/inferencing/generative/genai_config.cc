@@ -4,9 +4,33 @@
 #include "exception.h"
 
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 
 namespace fl {
+namespace {
+
+size_t ParsePositiveSize(const nlohmann::json& object, const char* name, size_t default_value) {
+  if (!object.contains(name)) {
+    return default_value;
+  }
+
+  const auto& value = object[name];
+  if (!value.is_number_integer()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             std::string("genai_config.json engine.") + name + " must be a positive integer");
+  }
+
+  const auto parsed = value.get<int64_t>();
+  if (parsed <= 0 || static_cast<uint64_t>(parsed) > std::numeric_limits<size_t>::max()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             std::string("genai_config.json engine.") + name + " must be a positive integer");
+  }
+
+  return static_cast<size_t>(parsed);
+}
+
+}  // namespace
 
 bool GenAIConfig::OnnxModel::IsMultiModal() const {
   return type == "phi3v" || type == "whisper" || type == "phi4mm" || type == "fara" ||
@@ -30,6 +54,35 @@ std::string GenAIConfig::DefaultProvider() const {
   }
 
   return first.begin()->first;
+}
+
+ChatBackendKind GenAIConfig::GetChatBackendKind() const {
+  if (!engine) {
+    return ChatBackendKind::kGenerator;
+  }
+
+  if (engine->dynamic_batching) {
+    return ChatBackendKind::kDynamicEngine;
+  }
+
+  if (engine->static_batching) {
+    return ChatBackendKind::kStaticEngine;
+  }
+
+  return ChatBackendKind::kGenerator;
+}
+
+std::optional<size_t> GenAIConfig::EngineMaxBatchSize() const {
+  switch (GetChatBackendKind()) {
+    case ChatBackendKind::kDynamicEngine:
+      return engine->dynamic_batching->max_batch_size;
+    case ChatBackendKind::kStaticEngine:
+      return engine->static_batching->max_batch_size;
+    case ChatBackendKind::kGenerator:
+      return std::nullopt;
+  }
+
+  return std::nullopt;
 }
 
 GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
@@ -110,6 +163,46 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
     }
 
     config.search = std::move(search);
+  }
+
+  if (j.contains("engine") && j["engine"].is_object()) {
+    const auto& je = j["engine"];
+    Engine engine;
+
+    if (je.contains("dynamic_batching") && !je["dynamic_batching"].is_null()) {
+      if (!je["dynamic_batching"].is_object()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "genai_config.json engine.dynamic_batching must be an object");
+      }
+
+      const auto& batching = je["dynamic_batching"];
+      Engine::DynamicBatching dynamic_batching;
+      dynamic_batching.max_batch_size =
+          ParsePositiveSize(batching, "max_batch_size", dynamic_batching.max_batch_size);
+      dynamic_batching.max_scheduled_tokens =
+          ParsePositiveSize(batching, "max_scheduled_tokens", dynamic_batching.max_scheduled_tokens);
+      engine.dynamic_batching = dynamic_batching;
+    }
+
+    if (je.contains("static_batching") && !je["static_batching"].is_null()) {
+      if (!je["static_batching"].is_object()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 "genai_config.json engine.static_batching must be an object");
+      }
+
+      const auto& batching = je["static_batching"];
+      Engine::StaticBatching static_batching;
+      static_batching.max_batch_size =
+          ParsePositiveSize(batching, "max_batch_size", static_batching.max_batch_size);
+      engine.static_batching = static_batching;
+    }
+
+    if (engine.dynamic_batching && engine.static_batching) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "genai_config.json cannot declare both engine.dynamic_batching and engine.static_batching");
+    }
+
+    config.engine = std::move(engine);
   }
 
   // hidden_size can appear at the top level or inside model

@@ -16,7 +16,7 @@
 namespace fl {
 
 class GenAIModelInstance;
-class OnnxChatGenerator;
+class ChatGenerator;
 
 /// A chat session that maintains conversation history across turns.
 /// Designed for multi-turn conversations where message history accumulates
@@ -119,11 +119,14 @@ class ChatSession : public Session {
 
   // Cached generator for continuous decoding (non-JSON path only).
   // Null until first non-JSON ProcessRequestImpl call.
-  std::unique_ptr<OnnxChatGenerator> cached_generator_;
+  std::unique_ptr<ChatGenerator> cached_generator_;
 
   // Tool context used when creating the cached generator.
   // Reused for subsequent turns to maintain tool definition consistency.
   ToolCallContext cached_tool_ctx_;
+
+  // Search settings baked into the retained generator or Engine request.
+  SearchOptions cached_search_options_;
 };
 
 }  // namespace fl

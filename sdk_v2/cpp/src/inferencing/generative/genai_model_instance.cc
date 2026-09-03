@@ -3,6 +3,7 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "exception.h"
 #include "inferencing/execution_provider.h"
+#include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "utils.h"
 
 #include <ort_genai.h>
@@ -68,11 +69,30 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to create preprocessor for model ", model_id_, ": ", e.what());
   }
+
+  if (IsMultiModal() && genai_config_.GetChatBackendKind() != ChatBackendKind::kGenerator) {
+    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "model ", model_id_, " declares an Engine backend, but Engine is not supported for multimodal models");
+  }
+
+  if (genai_config_.GetChatBackendKind() != ChatBackendKind::kGenerator) {
+#ifdef FOUNDRY_LOCAL_HAS_OGA_ENGINE
+    try {
+      chat_engine_ = std::make_unique<OnnxChatEngine>(*this);
+    } catch (const std::runtime_error& e) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                       "failed to create chat engine for model ", model_id_, ": ", e.what());
+    }
+#else
+    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "model ", model_id_, " requires the ORT GenAI Engine API, but this build does not provide it");
+#endif
+  }
 }
 
 // Destructor: unique_ptr members are destroyed in reverse declaration order.
 // OGA objects have custom operator delete that calls OgaDestroy* functions.
-// Destruction order: preprocessor → oga_model (correct: dependents first).
+// Destruction order: chat engine → preprocessor → OGA model (correct: dependents first).
 GenAIModelInstance::~GenAIModelInstance() = default;
 
 // ---------------------------------------------------------------------------
