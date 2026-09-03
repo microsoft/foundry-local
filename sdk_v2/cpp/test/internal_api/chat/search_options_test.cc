@@ -109,6 +109,31 @@ TEST_F(SearchOptionsTest, TokenBudgetExceededThrows) {
                fl::Exception);
 }
 
+TEST_F(SearchOptionsTest, ModelContextLengthTakesPrecedenceOverSearchMaxLength) {
+  SearchOptions opts;
+  opts.max_output_tokens = 256;
+  auto params = MakeParams();
+  GenAIConfig config;
+  config.model.emplace().context_length = 131072;
+  config.search.emplace().max_length = 4096;
+
+  int max_length = ApplySearchOptions(opts, 127826, config, *params, ExecutionProvider::kDefault);
+
+  EXPECT_EQ(max_length, 128082);
+}
+
+TEST_F(SearchOptionsTest, SearchMaxLengthSupportsLegacyConfig) {
+  SearchOptions opts;
+  opts.max_output_tokens = 256;
+  auto params = MakeParams();
+  GenAIConfig config;
+  config.search.emplace().max_length = 4096;
+
+  int max_length = ApplySearchOptions(opts, 3840, config, *params, ExecutionProvider::kDefault);
+
+  EXPECT_EQ(max_length, 4096);
+}
+
 TEST_F(SearchOptionsTest, TemperatureZeroDisablesSampling) {
   SearchOptions opts;
   opts.temperature = 0.0f;
