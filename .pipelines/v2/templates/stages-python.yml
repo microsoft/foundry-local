@@ -255,6 +255,7 @@ stages:
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-x64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        useSystemPython: true
 
 - stage: python_test_linux_arm64
   displayName: 'Python SDK: Test Linux ARM64'
