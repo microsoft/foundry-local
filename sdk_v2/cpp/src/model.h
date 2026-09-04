@@ -197,7 +197,7 @@ class Model {
   // cleared by RemoveFromCache(). Its mutation is guarded by state_mutex_; the reader-safety
   // contract is that the path is published before cached_ flips true (and cleared after cached_
   // flips false), so any reader that gates on IsCached() observes a complete path.
-  std::unique_ptr<ModelInfo> info_;
+  std::unique_ptr<const ModelInfo> info_;
   std::atomic<bool> cached_{false};
   // Logical tombstone state. Retired models remain allocated so outstanding catalog-owned handles stay address-valid,
   // but operations that would use the registration reject them.

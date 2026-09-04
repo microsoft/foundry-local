@@ -145,6 +145,17 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
     }
   }
 
+  // Catalog metadata is immutable and may not contain markers for models whose
+  // tokenizer defines them dynamically. Read those markers from the loaded GenAI
+  // model without mutating the published ModelInfo.
+  const auto& tag_info = model_.GetTagInfo();
+  if (tool_ctx.tool_call_start.empty()) {
+    tool_ctx.tool_call_start = tag_info.bot_str;
+  }
+  if (tool_ctx.tool_call_end.empty()) {
+    tool_ctx.tool_call_end = tag_info.eot_str;
+  }
+
   // Check if the model supports chain-of-thought reasoning
   const auto* reasoning_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT);
   if (reasoning_val && *reasoning_val == 1) {
@@ -167,6 +178,12 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
     if (val) {
       tool_ctx.reasoning_end = *val;
     }
+  }
+  if (tool_ctx.reasoning_start.empty()) {
+    tool_ctx.reasoning_start = tag_info.bor_str;
+  }
+  if (tool_ctx.reasoning_end.empty()) {
+    tool_ctx.reasoning_end = tag_info.eor_str;
   }
 
   // Accumulate tool definitions from the session.
