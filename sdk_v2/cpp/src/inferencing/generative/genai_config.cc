@@ -34,7 +34,8 @@ size_t ParsePositiveSize(const nlohmann::json& object, const char* name, size_t 
 
 bool GenAIConfig::OnnxModel::IsMultiModal() const {
   return type == "phi3v" || type == "whisper" || type == "phi4mm" || type == "fara" ||
-         type == "qwen2_5_vl" || type == "qwen3_vl" || type == "qwen3_5" || type == "gemma4";
+         type == "qwen2_5_vl" || type == "qwen3_vl" || type == "qwen3_5" || type == "gemma4" ||
+         type == "mistral3";
 }
 
 std::string GenAIConfig::DefaultProvider() const {

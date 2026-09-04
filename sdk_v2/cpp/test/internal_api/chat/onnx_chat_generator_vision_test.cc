@@ -43,6 +43,16 @@ MessageItem MakeImageMessage(flMessageRole role, std::string text) {
   return MessageItem(role, std::move(parts));
 }
 
+MessageItem MakeTwoImageMessage(flMessageRole role, std::string text) {
+  std::vector<std::unique_ptr<Item>> parts;
+  static const std::uint8_t kFirstFakeImage[] = {0x89};
+  static const std::uint8_t kSecondFakeImage[] = {0x89, 0x50};
+  parts.emplace_back(std::make_unique<ImageItem>(kFirstFakeImage, sizeof(kFirstFakeImage), "image/png"));
+  parts.emplace_back(std::make_unique<ImageItem>(kSecondFakeImage, sizeof(kSecondFakeImage), "image/png"));
+  parts.emplace_back(std::make_unique<TextItem>(std::move(text)));
+  return MessageItem(role, std::move(parts));
+}
+
 MessageItem MakeAudioMessage(flMessageRole role, std::string text) {
   std::vector<std::unique_ptr<Item>> parts;
   static const std::uint8_t kFakeAudio[] = {0x52, 0x49, 0x46, 0x46};
@@ -89,6 +99,19 @@ TEST(OnnxChatGeneratorVision, TransformRewritesLastUserAsStructuredContent) {
   EXPECT_EQ(json[1]["content"][0]["type"], "image");
   EXPECT_EQ(json[1]["content"][1]["type"], "text");
   EXPECT_EQ(json[1]["content"][1]["text"], "describe the image");
+}
+
+TEST(OnnxChatGeneratorVision, TransformIncludesOneMarkerPerImage) {
+  std::vector<MessageItem> messages;
+  messages.push_back(MakeTwoImageMessage(FOUNDRY_LOCAL_ROLE_USER, "identify each image"));
+
+  auto json = nlohmann::json::parse(OnnxChatGenerator::TransformMessagesForMedia(messages));
+
+  ASSERT_EQ(json[0]["content"].size(), 3u);
+  EXPECT_EQ(json[0]["content"][0]["type"], "image");
+  EXPECT_EQ(json[0]["content"][1]["type"], "image");
+  EXPECT_EQ(json[0]["content"][2]["type"], "text");
+  EXPECT_EQ(json[0]["content"][2]["text"], "identify each image");
 }
 
 TEST(OnnxChatGeneratorVision, TransformPreservesPriorTextOnlyMessages) {
