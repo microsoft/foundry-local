@@ -1,0 +1,71 @@
+# Download test models from Azure Artifacts into a local cache directory.
+
+parameters:
+- name: destinationPath
+  type: string
+  default: '$(Build.SourcesDirectory)/test-data-shared'
+- name: scriptType
+  type: string
+  default: pscore
+  values: ['pscore', 'ps']
+
+steps:
+- task: UniversalPackages@0
+  displayName: 'Fetch Qwen 2.5 0.5B Instruct test model'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'foundry-local-qwen-2-5-0-5b-instruct-generic-cpu'
+    vstsPackageVersion: '4.0.2'
+    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/qwen2.5-0.5b-instruct-generic-cpu-4'
+
+- task: UniversalPackages@0
+  displayName: 'Fetch OpenAI Whisper Tiny test model'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'foundry-local-openai-whisper-tiny-generic-cpu'
+    vstsPackageVersion: '4.0.0'
+    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/openai-whisper-tiny-generic-cpu-4'
+
+- task: UniversalPackages@0
+  displayName: 'Fetch Nemotron Speech Streaming test model'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'foundry-local-nemotron-speech-streaming-en-0-6b-generic-cpu'
+    vstsPackageVersion: '3.0.0'
+    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/nemotron-speech-streaming-en-0.6b-generic-cpu-3'
+
+- task: UniversalPackages@0
+  displayName: 'Fetch Qwen3 Embedding test model'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'foundry-local-qwen3-embedding-0-6b-generic-cpu'
+    vstsPackageVersion: '1.0.0'
+    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/qwen3-embedding-0.6b-generic-cpu-1'
+
+- task: UniversalPackages@0
+  displayName: 'Fetch Qwen3.5 0.8B test model'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'foundry-local-qwen3-5-0-8b-generic-cpu'
+    vstsPackageVersion: '2.0.0'
+    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/qwen3.5-0.8b-generic-cpu-2'
+
+- task: UniversalPackages@0
+  displayName: 'Fetch DeepSeek R1 Distill Qwen 14B test model'
+  inputs:
+    command: download
+    feedsToUse: internal
+    vstsFeed: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+    vstsFeedPackage: 'foundry-local-deepseek-r1-distill-qwen-14b-generic-cpu'
+    vstsPackageVersion: '4.0.0'
+    downloadDirectory: '${{ parameters.destinationPath }}/Microsoft/deepseek-r1-distill-qwen-14b-generic-cpu-4'

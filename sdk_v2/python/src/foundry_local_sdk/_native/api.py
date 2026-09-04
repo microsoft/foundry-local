@@ -16,8 +16,8 @@ import os
 from foundry_local_sdk._native.lib_loader import find_library, prepare_native_dependencies
 from foundry_local_sdk.exception import FoundryLocalException
 
-# FOUNDRY_LOCAL_API_VERSION = 1 (from foundry_local_c.h)
-_FOUNDRY_LOCAL_API_VERSION: int = 1
+# FOUNDRY_LOCAL_API_VERSION = 2 (from foundry_local_c.h)
+_FOUNDRY_LOCAL_API_VERSION: int = 2
 
 _lib_path = find_library()
 

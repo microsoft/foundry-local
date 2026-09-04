@@ -1,0 +1,10 @@
+Microsoft AI Foundry Local Runtime
+Third-Party Notices
+
+This package includes or depends on software from third parties. The applicable third-party licenses and notices are available from the corresponding dependency packages and source repositories:
+
+- ONNX Runtime: https://github.com/microsoft/onnxruntime
+- ONNX Runtime GenAI: https://github.com/microsoft/onnxruntime-genai
+- Microsoft Windows App SDK / Windows ML components, where applicable: https://github.com/microsoft/WindowsAppSDK
+
+The native runtime package is distributed under the MIT License. Dependency packages retain their respective licenses and notices. Review the dependency packages restored with this package for the complete notices applicable to each dependency version.

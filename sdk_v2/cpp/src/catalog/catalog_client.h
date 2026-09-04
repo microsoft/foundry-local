@@ -49,8 +49,8 @@ class ICatalogClient {
   }
 };
 
-/// Production helper that combines a catalog fetch with locally cached model
-/// resolution and BYO synthesis.
+/// Production helper that combines a catalog fetch with resolution of cached versions known to the public source.
+/// Unknown cache entries are omitted; BYOM models require explicit local-catalog registration.
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,

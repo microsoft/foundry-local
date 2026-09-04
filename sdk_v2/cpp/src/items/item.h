@@ -5,6 +5,7 @@
 #include <foundry_local/foundry_local_c.h>
 
 #include <memory>
+#include <string_view>
 
 #include "util/key_value_pairs.h"
 
@@ -50,6 +51,9 @@ struct Item {
 
   /// Factory: creates the correct derived type for the given flItemType.
   static std::unique_ptr<Item> Create(flItemType type);
+
+  /// Return the stable symbolic name for an item type.
+  static std::string_view TypeName(flItemType type) noexcept;
 
  protected:
   explicit Item(flItemType type)

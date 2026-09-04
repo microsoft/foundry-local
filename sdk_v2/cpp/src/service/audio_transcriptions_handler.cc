@@ -57,13 +57,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::ResolveModel(
-    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+  const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
   }
 
-  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id());
+  loaded = ctx_.model_load_manager.GetLoadedModel(model->Id(), model->GetPath());
   if (!loaded) {
     return ErrorResponse(Status::CODE_400, "Model not loaded",
                          "Model '" + model_name + "' must be loaded before inference");
@@ -91,12 +91,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
   auto body_str = request->readBodyToString();
   if (!body_str || body_str->empty()) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Empty request body");
   }
 
   // 1. Parse & validate
   AudioTranscriptionRequest req;
   if (auto err = ParseAndValidateRequest(body_str->c_str(), req)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -108,9 +110,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   // 2. Validate file path
   try {
     if (!std::filesystem::exists(req.filename)) {
+      tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Audio file not found", "'" + req.filename + "'");
     }
   } catch (const std::filesystem::filesystem_error& ex) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return ErrorResponse(Status::CODE_400, "Invalid file path", ex.what());
   }
 
@@ -119,6 +123,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   Model* model = nullptr;
   GenAIModelInstance* loaded = nullptr;
   if (auto err = ResolveModel(model_name, model, loaded)) {
+    tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
 
@@ -186,9 +191,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
                                 req = std::move(session_request), &tracker,
                                 &session_manager = ctx_.session_manager]() mutable {
-    SessionRegistration reg(session_manager, bg_session);
-
     try {
+      // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
+      // instead of escaping this raw std::thread and calling std::terminate.
+      SessionRegistration reg(session_manager, bg_session);
+
       fl::Response bg_response;
 
       // Callback receives OPENAI_JSON-tagged TextItem chunks from AudioSession — just wrap in SSE framing.

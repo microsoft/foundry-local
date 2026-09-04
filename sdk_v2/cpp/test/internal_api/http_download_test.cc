@@ -19,6 +19,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -39,9 +40,7 @@ constexpr const char* kUserAgent = "FoundryLocal";
 /// Captures log output so a failed download surfaces the downloader's own diagnostics.
 class RecordingLogger : public ILogger {
  public:
-  void Log(LogLevel level, std::string_view message) override {
-    entries.emplace_back(level, std::string(message));
-  }
+  void Log(LogLevel level, std::string_view message) override { entries.emplace_back(level, std::string(message)); }
 
   std::string Dump() const {
     std::ostringstream oss;
@@ -56,6 +55,31 @@ class RecordingLogger : public ILogger {
 
 }  // namespace
 
+TEST(ContentLengthHeaderTest, AcceptsUnsignedDecimalWithSurroundingHttpWhitespace) {
+  EXPECT_EQ(ParseContentLengthHeader("0"), 0);
+  EXPECT_EQ(ParseContentLengthHeader("\t 12345 \t"), 12345);
+  EXPECT_EQ(ParseContentLengthHeader("9223372036854775807"), std::numeric_limits<int64_t>::max());
+}
+
+TEST(ContentLengthHeaderTest, RejectsEmptyMalformedOverflowAndNegativeValues) {
+  EXPECT_EQ(ParseContentLengthHeader(""), std::nullopt);
+  EXPECT_EQ(ParseContentLengthHeader(" \t"), std::nullopt);
+  EXPECT_EQ(ParseContentLengthHeader("12x"), std::nullopt);
+  EXPECT_EQ(ParseContentLengthHeader("1 2"), std::nullopt);
+  EXPECT_EQ(ParseContentLengthHeader("+12"), std::nullopt);
+  EXPECT_EQ(ParseContentLengthHeader("-1"), std::nullopt);
+  EXPECT_EQ(ParseContentLengthHeader("9223372036854775808"), std::nullopt);
+}
+
+TEST(ContentLengthHeaderTest, RequiresExactBodyLengthWhenHeaderIsPresent) {
+  EXPECT_TRUE(ContentLengthMatchesBody(-1, 123));
+  EXPECT_TRUE(ContentLengthMatchesBody(0, 0));
+  EXPECT_TRUE(ContentLengthMatchesBody(123, 123));
+  EXPECT_FALSE(ContentLengthMatchesBody(0, 1));
+  EXPECT_FALSE(ContentLengthMatchesBody(123, 122));
+  EXPECT_FALSE(ContentLengthMatchesBody(123, 124));
+}
+
 // Downloads the real WebGPU EP zip and validates the success path end-to-end: returns
 // true, writes a non-empty file, and reports a terminal 100% progress callback.
 TEST(DISABLED_HttpDownload, DownloadsWebGpuZip) {
@@ -66,12 +90,9 @@ TEST(DISABLED_HttpDownload, DownloadsWebGpuZip) {
   std::atomic<bool> cancel{false};
 
   bool ok = HttpDownloadFile(
-      kWebGpuZipUrl, dest.path(), kUserAgent, &cancel,
-      [&progress](float pct) { progress.push_back(pct); },
-      logger);
+      kWebGpuZipUrl, dest.path(), kUserAgent, &cancel, [&progress](float pct) { progress.push_back(pct); }, logger);
 
-  ASSERT_TRUE(ok) << "WebGPU zip download failed. Logger output:\n"
-                  << logger.Dump();
+  ASSERT_TRUE(ok) << "WebGPU zip download failed. Logger output:\n" << logger.Dump();
 
   ASSERT_TRUE(fs::exists(dest.path()));
   EXPECT_GT(fs::file_size(dest.path()), 0u);
@@ -88,8 +109,8 @@ TEST(DISABLED_HttpDownload, ReturnsFalseAndWritesNoFileOnUnresolvableHost) {
   RecordingLogger logger;
   auto dest = TempPath::CreateTempFile("fl_webgpu_zip_unresolvable_");
 
-  bool ok = HttpDownloadFile("https://foundry-local-test.invalid/webgpu_ep_0.1.0_win-x64.zip", dest.path(),
-                             kUserAgent, /*cancel_flag=*/nullptr, /*progress_cb=*/{}, logger);
+  bool ok = HttpDownloadFile("https://foundry-local-test.invalid/webgpu_ep_0.1.0_win-x64.zip", dest.path(), kUserAgent,
+                             /*cancel_flag=*/nullptr, /*progress_cb=*/{}, logger);
 
   EXPECT_FALSE(ok);
   EXPECT_FALSE(fs::exists(dest.path()));

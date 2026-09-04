@@ -18,17 +18,74 @@
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
 #include <azure/core/http/win_http_transport.hpp>
 #else
+#include "http/curl_transport.h"
+
 #include <azure/core/http/curl_transport.hpp>
 #endif
 
+#include <array>
 #include <chrono>
+#include <filesystem>
+#include <optional>
 #include <random>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fl {
 namespace http {
+
+namespace {
+
+// Well-known CA bundle locations across Linux distributions, most common first.
+constexpr std::array<std::string_view, 6> kLinuxCaBundleCandidates = {
+    "/etc/ssl/certs/ca-certificates.crt",                 // Debian/Ubuntu/Gentoo/Arch Linux
+    "/etc/pki/tls/certs/ca-bundle.crt",                   // Fedora/RHEL/CentOS/AlmaLinux/Rocky Linux
+    "/etc/ssl/ca-bundle.pem",                             // openSUSE
+    "/etc/pki/tls/cacert.pem",                            // OpenELEC
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  // CentOS/RHEL 7+ (update-ca-trust output)
+    "/etc/ssl/cert.pem",                                  // Alpine Linux
+};
+
+}  // namespace
+
+std::string ResolveLinuxCaBundle(const std::function<std::optional<std::string>(const char*)>& get_env,
+                                 const std::function<bool(std::string_view)>& path_exists) {
+  if (auto cert_file = get_env("SSL_CERT_FILE"); cert_file && !cert_file->empty()) {
+    return std::move(*cert_file);
+  }
+
+  for (const std::string_view candidate : kLinuxCaBundleCandidates) {
+    if (path_exists(candidate)) {
+      return std::string(candidate);
+    }
+  }
+
+  return {};
+}
+
+const std::string& CABundleFilePath() {
+  static const std::string ca_bundle = [] {
+#if defined(ANDROID)
+    auto cert_file = Utils::GetEnv("SSL_CERT_FILE");
+    return (cert_file && !cert_file->empty()) ? std::move(*cert_file) : std::string();
+#elif defined(__linux__)
+    // Static curl/OpenSSL builds can carry a CA path that is absent on the host distribution.
+    return ResolveLinuxCaBundle(
+        [](const char* name) { return Utils::GetEnv(name); },
+        [](std::string_view path) {
+          std::error_code ec;
+          return std::filesystem::is_regular_file(path, ec);
+        });
+#else
+    return std::string();
+#endif
+  }();
+  return ca_bundle;
+}
 
 namespace {
 
@@ -48,7 +105,7 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  CurlTransport transport;
+  CurlTransport transport(MakeCurlTransportOptions());
 #endif
 
   // Build the request. For methods with a body (POST), attach a MemoryBodyStream.

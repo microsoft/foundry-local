@@ -251,7 +251,6 @@ class _ModelImpl(IModel):
         # is owned by the catalog; without this reference, GC could release the
         # catalog (and the manager behind it) first and dangle our pointer.
         self._parent = parent
-        self._cached_info: ModelInfo | None = None
         # Callback references — stored to prevent premature GC.
         self._progress_cb = None
         self._progress_cb_handle = None
@@ -262,7 +261,7 @@ class _ModelImpl(IModel):
         return self._ptr
 
     # ------------------------------------------------------------------
-    # Identity properties — read from cached ModelInfo
+    # Identity properties — read from native ModelInfo
     # ------------------------------------------------------------------
 
     @property
@@ -275,10 +274,9 @@ class _ModelImpl(IModel):
 
     @property
     def info(self) -> ModelInfo:
-        # Lazily build and cache — reading native info is non-trivial.
-        if self._cached_info is None:
-            self._cached_info = _model_info_from_native(self._ptr)
-        return self._cached_info
+        # The native model is the source of truth. Read fresh every time so metadata stays correct
+        # after select_variant / download / cache changes. Each read returns a point-in-time snapshot.
+        return _model_info_from_native(self._ptr)
 
     # ------------------------------------------------------------------
     # Live state properties — always go to native for fresh data

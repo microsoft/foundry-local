@@ -32,7 +32,7 @@ export class Catalog {
     return wrapAll(this.#native.getModels());
   }
 
-  /** Models currently present in the local cache. */
+  /** Every individual model variant currently present in the local cache. */
   async getCachedModels(): Promise<IModel[]> {
     return wrapAll(this.#native.getCachedModels());
   }
@@ -79,6 +79,29 @@ export class Catalog {
       throw new Error(`Latest version for model '${model.alias}' not found.`);
     }
     return wrapNativeModel(n);
+  }
+
+  /**
+   * Get all versions of a model alias, optionally narrowed to a single variant name. `maxVersions`
+   * defaults to 50 and acts as a per-variant cap; pass 0 or a negative value for no cap.
+   */
+  async getModelVersions(modelAlias: string, modelName?: string, maxVersions = 50): Promise<IModel[]> {
+    if (typeof modelAlias !== "string" || modelAlias.trim() === "") {
+      throw new Error("Model alias must be a non-empty string.");
+    }
+    // The native parameter is int32_t; N-API's Int32Value() silently coerces
+    // fractions, NaN, Infinity, and out-of-range values into a different cap.
+    // Reject them here (matching Rust's i32::MAX rejection) so callers get a
+    // clear error rather than a surprising truncated result. Negatives/0 are
+    // valid ("no cap") but must still fit i32.
+    if (
+      !Number.isInteger(maxVersions) ||
+      maxVersions < -(2 ** 31) ||
+      maxVersions > 2 ** 31 - 1
+    ) {
+      throw new TypeError("maxVersions must be an integer within the 32-bit range.");
+    }
+    return wrapAll(await this.#native.getModelVersions(modelAlias, modelName ?? null, maxVersions));
   }
 }
 

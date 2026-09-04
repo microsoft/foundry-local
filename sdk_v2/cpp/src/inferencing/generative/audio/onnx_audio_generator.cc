@@ -135,8 +135,7 @@ std::unique_ptr<OnnxAudioGenerator> OnnxAudioGenerator::Create(const std::string
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "audio_file_path must not be empty");
   }
 
-  auto* processor = model.GetProcessor();
-  if (processor == nullptr) {
+  if (!model.GetPreprocessor().HasMultiModalProcessor()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model does not support audio processing");
   }
 
@@ -153,7 +152,7 @@ std::unique_ptr<OnnxAudioGenerator> OnnxAudioGenerator::Create(const std::string
   std::vector<const char*> prompts = {prompt.c_str()};
 
   // 3. Process audio through the multimodal processor to get model inputs
-  auto inputs = processor->ProcessAudios(prompts, audios.get());
+  auto inputs = model.GetPreprocessor().ProcessAudios(prompts, audios.get());
 
   // 4. Create generator params and configure temperature (only override model default if explicitly set)
   auto gen_params = OgaGeneratorParams::Create(model.GetOgaModel());
@@ -176,7 +175,7 @@ std::unique_ptr<OnnxAudioGenerator> OnnxAudioGenerator::Create(const std::string
   int prompt_token_count = static_cast<int>(generator->GetSequenceCount(0));
 
   // 7. Create tokenizer stream for decoding (no special-token stream needed for audio)
-  auto stream = OgaTokenizerStream::Create(model.Tokenizer().Oga());
+  auto stream = model.GetPreprocessor().CreateTokenizerStream();
 
   // `std::make_unique` cannot access the private constructor, so use `new` directly.
   return std::unique_ptr<OnnxAudioGenerator>(new OnnxAudioGenerator(std::move(audios),

@@ -8,12 +8,13 @@
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/chat/search_options.h"
+#include "items/audio_item.h"
+#include "items/image_item.h"
 #include "items/text_item.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
 #include "model.h"
 #include "internal_api/null_session_manager.h"
-#include "internal_api/null_telemetry.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "utils/string_utils.h"
@@ -66,9 +67,12 @@ class ChatSessionTest : public ::testing::Test {
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
   static inline GenAIModelInstance* model_ = nullptr;
   static inline fl::test::FakeServiceBindings svc_;
-  static inline Model catalog_model_ = Model::FromModelInfo(
-      ModelInfo{}, "", svc_.download_manager, svc_.model_load_manager);
-  fl::test::NullTelemetry null_telemetry_;
+  static inline Model catalog_model_ = [] {
+    ModelInfo info;
+    info.task = "chat-completion";
+    return Model::FromModelInfo(std::move(info), "", svc_.download_manager, svc_.model_load_manager);
+  }();
+  TelemetryLogger null_telemetry_{"test", fl::test::NullLog()};
   fl::test::NullSessionManager null_session_manager_;
 };
 
@@ -138,6 +142,46 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(session.GetHistory()[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(session.GetHistory()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(session.GetHistory()[1].GetSimpleText(), text);
+}
+
+TEST_F(ChatSessionTest, ChatCompletionRejectsAudioInput) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<AudioItem>(std::vector<std::uint8_t>(32000), "pcm"));
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+
+  Response response;
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "Expected unsupported audio input to be rejected";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(e.what()).find("AUDIO input is not supported"), std::string::npos);
+    EXPECT_NE(std::string(e.what()).find("chat-completion"), std::string::npos);
+  }
+}
+
+TEST_F(ChatSessionTest, ChatCompletionRejectsImageInput) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<ImageItem>(std::vector<std::uint8_t>{1}, "png"));
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+
+  Response response;
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "Expected image input to be rejected by a chat-completion model";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(e.what()).find("IMAGE input is not supported"), std::string::npos);
+    EXPECT_NE(std::string(e.what()).find("chat-completion"), std::string::npos);
+  }
 }
 
 TEST_F(ChatSessionTest, RunWithStreaming) {

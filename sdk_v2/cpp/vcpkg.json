@@ -6,6 +6,10 @@
   "dependencies": [
     "azure-storage-blobs-cpp",
     {
+      "name": "libarchive",
+      "default-features": false
+    },
+    {
       "name": "azure-core-cpp",
       "default-features": false,
       "features": ["winhttp"],
@@ -17,7 +21,7 @@
       "features": ["curl"],
       "platform": "!windows | uwp"
     },
-    "ms-gsl",
+    "zlib",
     "nlohmann-json",
     "spdlog"
   ],
@@ -30,6 +34,17 @@
       "description": "Build web service support (not available on Android)",
       "dependencies": [
         "oatpp"
+      ]
+    },
+    "telemetry": {
+      "description": "Build with 1DS (cpp-client-telemetry) telemetry uploads",
+      "dependencies": [
+        {
+          "name": "cpp-client-telemetry",
+          "default-features": false,
+          "features": ["minimal-sqlite", "curl-openssl"],
+          "platform": "!uwp"
+        }
       ]
     },
     "tests": {

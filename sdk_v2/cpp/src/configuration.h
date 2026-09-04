@@ -44,6 +44,10 @@ struct Configuration {
   /// inference) via the external service's HTTP endpoints.
   std::optional<std::string> external_service_url;
 
+  /// Disable non-essential telemetry. Foundry Local may still send a minimal ProcessInfo event.
+  /// Defaults to false.
+  bool disable_nonessential_telemetry = false;
+
   /// Additional/undocumented options passed through to the core.
   std::map<std::string, std::string> additional_options;
 

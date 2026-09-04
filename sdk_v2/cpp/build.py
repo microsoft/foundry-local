@@ -165,7 +165,6 @@ def _parse_args() -> argparse.Namespace:
         help="Override the Microsoft.Windows.AI.MachineLearning NuGet version for the WinML EP "
              "catalog (Windows only). Defaults to the version pinned in deps_versions.json.",
     )
-
     # Cross-compilation (mutually exclusive targets)
     cross_group = parser.add_mutually_exclusive_group()
     cross_group.add_argument(
@@ -439,6 +438,10 @@ def configure(args: argparse.Namespace) -> None:
     if triplets_dir.is_dir():
         command += [f"-DVCPKG_OVERLAY_TRIPLETS={triplets_dir}"]
 
+    ports_dir = SCRIPT_DIR / "ports"
+    if ports_dir.is_dir():
+        command += [f"-DVCPKG_OVERLAY_PORTS={ports_dir}"]
+
     # Project options
     build_tests = "ON"
 
@@ -451,9 +454,13 @@ def configure(args: argparse.Namespace) -> None:
         f"-DFOUNDRY_LOCAL_BUILD_SERVICE={build_service}",
     ]
 
-    # Enable vcpkg manifest features for tests
+    # Enable vcpkg manifest features as needed. Multiple features are passed as a
+    # semicolon-separated list in a single -D flag.
+    manifest_features = []
     if build_tests == "ON":
-        command += ["-DVCPKG_MANIFEST_FEATURES=tests"]
+        manifest_features.append("tests")
+    if manifest_features:
+        command += [f"-DVCPKG_MANIFEST_FEATURES={';'.join(manifest_features)}"]
 
     # WinML EP catalog is enabled automatically on Windows by CMake. Allow an
     # optional version override for the Microsoft.Windows.AI.MachineLearning NuGet.
@@ -561,17 +568,14 @@ def android_test(args: argparse.Namespace) -> None:
 
         # Collect shared libraries that need to be pushed alongside the test binary
         build_dir = args.build_dir
-        shared_libs = list(build_dir.glob("*.so"))
+        bin_dir = build_dir / "bin"
+        shared_libs = list(bin_dir.glob("*.so"))
 
-        # Also include ORT/GenAI .so files that were copied to the build dir
-        for pattern in ["libonnxruntime.so", "libonnxruntime-genai.so"]:
-            shared_libs.extend(build_dir.glob(pattern))
-
-        # Deduplicate
-        shared_libs = list({lib.resolve(): lib for lib in shared_libs}.values())
-
-        test_binary = build_dir / "bin" / "foundry_local_tests"
-        test_data = build_dir / "bin" / "testdata"
+        # foundry_local_tests links the SDK statically (unit tests); sdk_integration_tests links the
+        # shared lib and drives the SDK end to end
+        test_binaries = [bin_dir / name for name in ("foundry_local_tests", "sdk_integration_tests")]
+        test_binaries = [b for b in test_binaries if b.exists()]
+        test_data = bin_dir / "testdata"
 
         # Resolve test model cache the same way the C++ tests do (FOUNDRY_TEST_DATA_DIR env var)
         model_cache_env = os.environ.get("FOUNDRY_TEST_DATA_DIR")
@@ -579,7 +583,7 @@ def android_test(args: argparse.Namespace) -> None:
 
         exit_code = android_tools.run_tests_on_device(
             sdk_tool_paths,
-            test_binary,
+            test_binaries,
             shared_libs,
             test_data_dir=test_data if test_data.exists() else None,
             model_cache_dir=model_cache if model_cache and model_cache.is_dir() else None,

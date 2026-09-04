@@ -7,7 +7,9 @@
 #include <chrono>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace fl {
 namespace http {
@@ -26,6 +28,13 @@ struct HttpRequestOptions {
   std::chrono::milliseconds timeout = std::chrono::seconds(30);
   bool close_connection = false;
 };
+
+/// Resolves SSL_CERT_FILE or a well-known Linux CA bundle path.
+std::string ResolveLinuxCaBundle(const std::function<std::optional<std::string>(const char*)>& get_env,
+                                 const std::function<bool(std::string_view)>& path_exists);
+
+/// Returns SSL_CERT_FILE, a known Linux CA bundle, or empty when the platform default should be used.
+const std::string& CABundleFilePath();
 
 /// Perform an HTTP POST and return status, headers, and body without throwing on non-2xx responses.
 /// Transport failures are returned as `status == 0` with the error message in `body`.

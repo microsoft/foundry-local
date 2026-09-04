@@ -14,30 +14,15 @@
 	import { ModelFilters, ModelGrid, ModelDetailsModal } from './components';
 	import { Terminal, Copy, Check, ExternalLink } from 'lucide-svelte';
 	import { detectModelFamily } from '$lib/utils/model-helpers';
+	import { fallbackCliDownloadLinks, type CliDownloadLink } from '$lib/cli-downloads';
 
 	// Known device names used as shorthand URL params (e.g. /models?cpu)
 	const KNOWN_DEVICES = ['cpu', 'gpu', 'npu'];
 	const MODEL_QUERY_PARAM = 'model';
 	const CLI_RUN_COMMAND = 'foundry run qwen2.5-0.5b';
-	const CLI_RELEASE_URL =
-		'https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0';
-	const CLI_INSTALL_LINKS = [
-		{
-			id: 'windows-cli',
-			label: 'Windows',
-			href: CLI_RELEASE_URL
-		},
-		{
-			id: 'macos-cli',
-			label: 'macOS',
-			href: CLI_RELEASE_URL
-		},
-		{
-			id: 'linux-cli',
-			label: 'Linux',
-			href: CLI_RELEASE_URL
-		}
-	];
+	function getCliInstallLinks(): CliDownloadLink[] {
+		return ($page.data.cliDownloadLinks as CliDownloadLink[] | undefined) ?? fallbackCliDownloadLinks;
+	}
 
 	// Debounce timer for search
 	let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -535,7 +520,7 @@
 					<div
 						class="grid min-w-0 flex-1 gap-2 md:grid-cols-[repeat(3,minmax(6rem,auto))_minmax(18rem,1fr)]"
 					>
-						{#each CLI_INSTALL_LINKS as item}
+						{#each getCliInstallLinks() as item}
 							<a
 								href={item.href}
 								target="_blank"

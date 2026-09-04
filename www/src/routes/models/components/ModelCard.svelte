@@ -87,17 +87,14 @@
 
 <div use:animate={{ delay: 0, duration: 600, animation: 'fade-in', once: true }} class="flex">
 	<Card.Root
-		class="border-border/40 hover:border-primary/50 focus:ring-primary relative z-0 flex flex-1 cursor-pointer flex-col transition-all duration-300 focus-within:z-20 hover:z-20 focus:ring-2 focus:ring-offset-2 focus:outline-none"
-		onclick={() => onCardClick(model)}
-		onkeydown={(e) => {
-			if (e.key === 'Enter' || e.key === ' ') {
-				e.preventDefault();
-				onCardClick(model);
-			}
-		}}
-		role="button"
-		tabindex="0"
+		class="border-border/40 hover:border-primary/50 relative z-0 flex flex-1 cursor-pointer flex-col transition-all duration-300 focus-within:z-20 hover:z-20"
 	>
+		<button
+			type="button"
+			class="model-card-details focus-visible:ring-primary absolute inset-0 z-10 cursor-pointer rounded-xl bg-transparent focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+			onclick={() => onCardClick(model)}
+			aria-label={`View details for ${model.displayName}`}
+		></button>
 		<Card.Header class="pb-3">
 			<Card.Title class="line-clamp-1 text-lg">
 				{model.displayName}
@@ -149,7 +146,7 @@
 							target="_blank"
 							rel="noopener noreferrer"
 							onclick={(e) => e.stopPropagation()}
-							class="inline-block"
+							class="relative z-20 inline-block"
 							aria-label={`View ${model.license} license (opens in new tab)`}
 						>
 							<Badge
@@ -203,7 +200,7 @@
 								target="_blank"
 								rel="noopener noreferrer"
 								onclick={(e) => e.stopPropagation()}
-								class="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors"
+								class="relative z-20 inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 transition-colors hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300"
 								aria-label="View SDK Documentation (opens in new tab)"
 							>
 								<svg class="size-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -234,7 +231,7 @@
 											e.stopPropagation();
 											onCopyCommand(genericModelName);
 										}}
-										class="border-primary text-primary hover:bg-primary/10 group relative h-8 w-full justify-start gap-2 overflow-hidden border-2 px-3 text-xs font-semibold"
+										class="border-primary text-primary hover:bg-primary/10 group relative z-20 h-8 w-full justify-start gap-2 overflow-hidden border-2 px-3 text-xs font-semibold"
 									>
 										{#if copiedModelId === `run-${genericModelName}`}
 											<!-- Success State -->
@@ -285,7 +282,7 @@
 													e.stopPropagation();
 													onCopyCommand(variant.name);
 												}}
-												class="h-7 w-full justify-start gap-1.5 px-2.5 text-xs"
+												class="relative z-20 h-7 w-full justify-start gap-1.5 px-2.5 text-xs"
 											>
 												{#if copiedModelId === `run-${variant.name}`}
 													<Check class="size-4 shrink-0 text-green-500" />
