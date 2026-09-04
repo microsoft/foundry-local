@@ -94,7 +94,6 @@ class OnnxChatGenerator : public ChatGenerator {
   OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_params,
                     std::unique_ptr<OgaGenerator> generator,
                     std::unique_ptr<OgaTokenizerStream> stream,
-                    std::unique_ptr<OgaTokenizerStream> stream_with_special,
                     GenAIModelInstance& model,
                     int prompt_token_count,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
@@ -114,7 +113,6 @@ class OnnxChatGenerator : public ChatGenerator {
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;
   std::unique_ptr<OgaTokenizerStream> stream_;
-  std::unique_ptr<OgaTokenizerStream> stream_with_special_;  // for tool call token detection
   // Holds the named tensors produced by OgaMultiModalProcessor media processing
   // for the lifetime of the generator. Generator retains shared_ptr<Tensor>
   // copies internally, but we keep the wrapper alive for symmetry with
