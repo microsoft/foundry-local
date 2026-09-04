@@ -10,6 +10,14 @@ cloned the repo and wants to build, test, and debug the JS SDK.
 > and [.github/instructions/js-sdk-v2-items.instructions.md](../../.github/instructions/js-sdk-v2-items.instructions.md).
 > Read those before changing the addon or item types.
 
+## Features
+
+- **Model catalog** — browse public models and inspect cached or loaded state
+- **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
+- **Native inference** — run chat, embeddings, and audio sessions directly through the C++ engine
+- **Streaming and tool calling** — consume streamed items and run multi-turn tool-enabled chat
+- **Embedded web service** — optionally expose OpenAI-compatible HTTP endpoints
+
 ---
 
 ## 1. Architecture in 30 seconds
@@ -273,6 +281,27 @@ the wrapper behavior, then trace the divergence into the addon.
 
 The other SDKs (`sdk_v2/cs/`, `sdk_v2/python/`) consume the **same** `foundry_local`
 binary. Their tests are an equally valid reference for behavior.
+
+### 4.1 Register local model assets (BYOM)
+
+The backward-compatible `manager.catalog` property and `manager.getCatalog()` return the public catalog. Select the
+mutable local catalog explicitly, build caller-owned metadata, and register an existing model directory:
+
+```ts
+import { CatalogType, FoundryLocalManager, ModelInfoStringProperty, MutableModelInfo } from "foundry-local-sdk";
+
+using manager = FoundryLocalManager.create({ appName: "byom-example" });
+const localCatalog = manager.getCatalog(CatalogType.Local);
+using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
+const model = await localCatalog.registerModel("C:/models/my-model", "my-model-generic-cpu:1", metadata);
+
+// Registration copies metadata and never takes ownership of or deletes model assets.
+console.log(model.info.id);
+await localCatalog.unregisterModel(model.info.id);
+```
+
+Model IDs use `<name>:<version>`. `registerModel()` and `unregisterModel()` dispatch file work off the event loop.
+Explicit `registerModelSync()` and `unregisterModelSync()` variants are available for legacy synchronous workflows.
 
 ---
 

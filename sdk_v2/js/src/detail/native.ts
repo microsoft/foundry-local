@@ -25,7 +25,7 @@ export interface NativeManagerCtor {
 
 export interface NativeManager {
   getWebServiceEndpoints(): string[];
-  getCatalog(): NativeCatalog;
+  getCatalog(type?: 0 | 1): NativeCatalog;
   startWebService(): void;
   stopWebService(): void;
   discoverEps(): Array<{ name: string; isRegistered: boolean }>;
@@ -35,6 +35,17 @@ export interface NativeManager {
   isShutdownRequested(): boolean;
   dispose(): void;
   isDisposed(): boolean;
+}
+
+export interface NativeMutableModelInfo {
+  setStringProperty(key: string, value: string): NativeMutableModelInfo;
+  setIntProperty(key: string, value: number): NativeMutableModelInfo;
+  dispose(): void;
+  isDisposed(): boolean;
+}
+
+export interface NativeMutableModelInfoCtor {
+  new (): NativeMutableModelInfo;
 }
 
 // Raw snapshot returned by the native side. All optional fields are omitted
@@ -105,6 +116,10 @@ export interface NativeCatalog {
   getModelVariant(modelId: string): NativeModel | undefined;
   getLatestVersion(model: NativeModel): NativeModel | undefined;
   getModelVersions(modelAlias: string, modelName: string | null, maxVersions: number): Promise<NativeModel[]>;
+  registerModel(modelPath: string, modelId: string, metadata: NativeMutableModelInfo): Promise<NativeModel>;
+  registerModelSync(modelPath: string, modelId: string, metadata: NativeMutableModelInfo): NativeModel;
+  unregisterModel(aliasOrModelId: string): Promise<void>;
+  unregisterModelSync(aliasOrModelId: string): void;
 }
 
 // ── Inference surface ───────────────────────────────────────────────────────
@@ -202,6 +217,7 @@ export interface NativeAddon {
     ...args: unknown[]
   ) => unknown;
   Model: new (...args: unknown[]) => unknown;
+  ModelInfo: NativeMutableModelInfoCtor;
   // `Request` IS directly constructible from JS — it's a stateful builder.
   Request: NativeRequestCtor;
   // `ItemQueue` is directly constructible — the public TS `ItemQueue` class

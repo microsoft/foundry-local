@@ -250,9 +250,23 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) {
     return env.Undefined();
   }
+  flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC;
+  if (info.Length() >= 1 && !info[0].IsUndefined()) {
+    if (!info[0].IsNumber()) {
+      Napi::TypeError::New(env, "getCatalog: type must be CatalogType.Public or CatalogType.Local")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    const int value = info[0].As<Napi::Number>().Int32Value();
+    if (value != FOUNDRY_LOCAL_CATALOG_PUBLIC && value != FOUNDRY_LOCAL_CATALOG_LOCAL) {
+      Napi::TypeError::New(env, "getCatalog: invalid catalog type").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    type = static_cast<flCatalogType>(value);
+  }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    foundry_local::ICatalog& cat = impl_->GetCatalog();
+    foundry_local::ICatalog& cat = impl_->GetCatalog(type);
     CatalogCtorToken token;
     token.impl = &cat;
     token.manager = std::move(owner);
@@ -262,7 +276,8 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
 
 Napi::Value Manager::Dispose(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  // Idempotent — releasing an already-null unique_ptr is a no-op.
+  // Idempotent — releasing an already-null unique_ptr is a no-op. Catalog and Model wrappers pin this
+  // ObjectWrap for GC safety but do not share native ownership, so explicit disposal destroys the singleton.
   impl_.reset();
   return env.Undefined();
 }

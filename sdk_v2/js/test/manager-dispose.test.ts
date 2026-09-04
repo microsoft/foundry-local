@@ -40,6 +40,16 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     expect(mgr.disposed).toBe(true);
   });
 
+  it("dispose() releases the native singleton while a Catalog wrapper remains reachable", () => {
+    const first = freshManager("retained-catalog");
+    const retainedCatalog = first.catalog;
+    first.dispose();
+
+    const second = freshManager("after-retained-catalog");
+    second.dispose();
+    expect(retainedCatalog).toBeDefined();
+  });
+
   it("reading urls after dispose() returns the cleared cache (no native call)", () => {
     const mgr = freshManager("post-dispose-urls");
     mgr.dispose();

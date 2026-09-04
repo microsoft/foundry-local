@@ -4,8 +4,19 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
+import os
+from enum import IntEnum
+
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.imodel import IModel, _ModelImpl
+from foundry_local_sdk.model_info import ModelInfoBuilder
+
+
+class CatalogType(IntEnum):
+    """Catalogs exposed by :class:`FoundryLocalManager`."""
+
+    PUBLIC = 0
+    LOCAL = 1
 
 
 def _consume_model_list(ml, api, ffi, parent: object | None = None) -> list[IModel]:
@@ -32,10 +43,17 @@ class Catalog:
     ``FoundryLocalManager`` does.
     """
 
-    def __init__(self, native_catalog_ptr: object, *, parent: object | None = None) -> None:
+    def __init__(
+        self,
+        native_catalog_ptr: object,
+        *,
+        catalog_type: CatalogType = CatalogType.PUBLIC,
+        parent: object | None = None,
+    ) -> None:
         from foundry_local_sdk._native.api import api, ffi
 
         self._ptr = native_catalog_ptr
+        self._catalog_type = catalog_type
         # Keep the owning object (typically the FoundryLocalManager) alive while this
         # Catalog exists. The native flCatalog* is owned by the manager; without this
         # reference, GC could release the manager first and dangle our pointer.
@@ -44,6 +62,15 @@ class Catalog:
         name_out = ffi.new("const char**")
         api.check_status(api.catalog.GetName(self._ptr, name_out))
         self.name: str = ffi.string(name_out[0]).decode("utf-8") if name_out[0] != ffi.NULL else ""
+
+    @property
+    def catalog_type(self) -> CatalogType:
+        """Whether this is the public or local catalog."""
+        return self._catalog_type
+
+    def _ensure_manager_open(self) -> None:
+        if self._parent is not None and getattr(self._parent, "_native_manager", None) is None:
+            raise RuntimeError("FoundryLocalManager is closed")
 
     # ------------------------------------------------------------------
     # Public query methods
@@ -55,11 +82,76 @@ class Catalog:
         Returns:
             List of ``IModel`` instances, one per model alias.
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         ml_out = ffi.new("flModelList**")
         api.check_status(api.catalog.GetModels(self._ptr, ml_out))
         return _consume_model_list(ml_out[0], api, ffi, parent=self)
+
+    def register_model(
+        self,
+        model_path: str | os.PathLike[str],
+        model_id: str,
+        metadata: ModelInfoBuilder,
+    ) -> IModel:
+        """Register existing model assets in the local catalog.
+
+        The native catalog copies ``metadata`` and does not take ownership of
+        the model directory. ``model_id`` must use ``<name>:<version>`` format,
+        and ``model_path`` must contain ``genai_config.json``.
+
+        Args:
+            model_path: Existing model directory.
+            model_id: Unique canonical model ID.
+            metadata: Mutable registration metadata. At minimum, set ``task``.
+
+        Returns:
+            A borrowed model wrapper kept valid by this catalog's manager.
+        """
+        self._ensure_manager_open()
+        if self.catalog_type is not CatalogType.LOCAL:
+            raise FoundryLocalException("Models can only be registered in the local catalog.")
+        if not isinstance(metadata, ModelInfoBuilder):
+            raise TypeError("metadata must be a ModelInfoBuilder instance")
+
+        from foundry_local_sdk._native.api import api, ffi
+
+        model_path_bytes = os.fspath(model_path).encode("utf-8")
+        model_id_bytes = model_id.encode("utf-8")
+        out = ffi.new("flModel**")
+        api.check_status(
+            api.catalog.RegisterModel(
+                self._ptr,
+                model_path_bytes,
+                model_id_bytes,
+                metadata._native_ptr,
+                out,
+            )
+        )
+        if out[0] == ffi.NULL:
+            raise FoundryLocalException("RegisterModel returned no model.")
+        return _ModelImpl(
+            out[0],
+            parent=self,
+            string_properties=metadata._string_properties,
+            int_properties=metadata._int_properties,
+        )
+
+    def unregister_model(self, alias_or_model_id: str) -> None:
+        """Unregister a local model without deleting its assets.
+
+        Existing model wrappers remain valid for metadata and cleanup queries,
+        but future catalog queries no longer return the registration.
+        """
+        self._ensure_manager_open()
+        if self.catalog_type is not CatalogType.LOCAL:
+            raise FoundryLocalException("Models can only be unregistered from the local catalog.")
+
+        from foundry_local_sdk._native.api import api
+
+        identifier_bytes = alias_or_model_id.encode("utf-8")
+        api.check_status(api.catalog.UnregisterModel(self._ptr, identifier_bytes))
 
     def get_model(self, model_alias: str) -> IModel | None:
         """Lookup a model by its alias.
@@ -70,6 +162,7 @@ class Catalog:
         Returns:
             ``IModel`` if found, ``None`` otherwise.
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         out = ffi.new("flModel**")
@@ -91,6 +184,7 @@ class Catalog:
         Returns:
             ``IModel`` if found, ``None`` otherwise.
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         out = ffi.new("flModel**")
@@ -108,6 +202,7 @@ class Catalog:
         Returns:
             Latest catalog version for the same model name.
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         if not isinstance(model_or_model_variant, _ModelImpl):
@@ -131,6 +226,7 @@ class Catalog:
         Returns:
             One ``IModel`` instance per cached model variant.
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         ml_out = ffi.new("flModelList**")
@@ -143,6 +239,7 @@ class Catalog:
         Returns:
             List of ``IModel`` instances (leaf variants loaded in memory).
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         ml_out = ffi.new("flModelList**")
@@ -168,6 +265,7 @@ class Catalog:
         Returns:
             One ``IModel`` instance per matching model variant.
         """
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         alias_bytes = model_alias.encode("utf-8")

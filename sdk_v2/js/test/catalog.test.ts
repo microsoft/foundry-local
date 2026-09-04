@@ -2,9 +2,9 @@
 // helper so this file constructs exactly one Manager + cache directory.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { NativeCatalog, NativeModel, NativeModelInfo } from "../src/detail/native.js";
 import type { Catalog } from "../src/catalog.js";
 import { wrapNativeCatalog } from "../src/catalog.js";
+import type { NativeCatalog, NativeModel, NativeModelInfo } from "../src/detail/native.js";
 import { Model } from "../src/model.js";
 
 import {
@@ -75,9 +75,7 @@ describeIfBuilt("Catalog (cache-only)", () => {
   });
 
   it("getModel rejects with a descriptive error for an unknown alias", async () => {
-    await expect(catalog.getModel("does-not-exist-anywhere")).rejects.toThrow(
-      /does-not-exist-anywhere/,
-    );
+    await expect(catalog.getModel("does-not-exist-anywhere")).rejects.toThrow(/does-not-exist-anywhere/);
   });
 
   it("getModelVariant resolves a full model id", async () => {
@@ -137,6 +135,10 @@ describeIfBuilt("Catalog (cache-only)", () => {
       getModel: () => undefined,
       getModelVariant: () => undefined,
       getLatestVersion: () => undefined,
+      registerModel: async () => fakeNativeModel,
+      registerModelSync: () => fakeNativeModel,
+      unregisterModel: async () => {},
+      unregisterModelSync: () => {},
       getModelVersions: (modelAlias, modelName, maxVersions) => {
         expect(modelAlias).toBe("phi-4-mini-instruct");
         expect(modelName).toBeNull();
@@ -170,6 +172,14 @@ describe("Catalog.getModelVersions maxVersions validation", () => {
       getModel: () => undefined,
       getModelVariant: () => undefined,
       getLatestVersion: () => undefined,
+      registerModel: async () => {
+        throw new Error("not used");
+      },
+      registerModelSync: () => {
+        throw new Error("not used");
+      },
+      unregisterModel: async () => {},
+      unregisterModelSync: () => {},
       getModelVersions: () => {
         throw new Error("native getModelVersions must not be called for invalid maxVersions");
       },
@@ -212,6 +222,14 @@ describe("Catalog.getModelVersions maxVersions validation", () => {
         getModel: () => undefined,
         getModelVariant: () => undefined,
         getLatestVersion: () => undefined,
+        registerModel: async () => {
+          throw new Error("not used");
+        },
+        registerModelSync: () => {
+          throw new Error("not used");
+        },
+        unregisterModel: async () => {},
+        unregisterModelSync: () => {},
         getModelVersions: (_alias, _name, maxVersions) => {
           expect(maxVersions).toBe(value);
           return Promise.resolve([]);

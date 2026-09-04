@@ -7,7 +7,7 @@ from __future__ import annotations
 import threading
 from typing import Callable
 
-from foundry_local_sdk.catalog import Catalog
+from foundry_local_sdk.catalog import Catalog, CatalogType
 from foundry_local_sdk.configuration import Configuration
 from foundry_local_sdk.ep_types import EpDownloadResult, EpInfo
 from foundry_local_sdk.exception import FoundryLocalException
@@ -44,6 +44,7 @@ class FoundryLocalManager:
         # Declared up front so close() / __del__ can run safely even if
         # _initialize() raises before the native handle is assigned.
         self._native_manager: object | None = None
+        self._catalogs: dict[CatalogType, Catalog] = {}
         self.urls: list[str] | None = None
 
         with FoundryLocalManager._lock:
@@ -86,16 +87,47 @@ class FoundryLocalManager:
             api.config.Configuration_Release(native_config)
 
         try:
-            cat_out = ffi.new("flCatalog**")
-            api.check_status(api.root.Manager_GetCatalog(self._native_manager, cat_out))
-            self.catalog = Catalog(cat_out[0], parent=self)
+            # Keep the legacy attribute as the public catalog while routing all
+            # new selection through the typed V2 API.
+            self.catalog = self.get_catalog()
         except BaseException:
             # Catalog fetch failed; release the manager handle to avoid leaking it.
             try:
                 api.root.Manager_Release(self._native_manager)
             finally:
                 self._native_manager = None
+                self._catalogs.clear()
             raise
+
+    def get_catalog(self, catalog_type: CatalogType = CatalogType.PUBLIC) -> Catalog:
+        """Get the public or local model catalog.
+
+        Args:
+            catalog_type: Catalog to return. Defaults to :attr:`CatalogType.PUBLIC`
+                for backward compatibility with ``manager.catalog``.
+
+        Returns:
+            A stable catalog wrapper owned by this manager.
+        """
+        if not isinstance(catalog_type, CatalogType):
+            raise TypeError("catalog_type must be a CatalogType")
+        if self._native_manager is None:
+            raise RuntimeError("FoundryLocalManager is closed")
+
+        cached = self._catalogs.get(catalog_type)
+        if cached is not None:
+            return cached
+
+        from foundry_local_sdk._native.api import api, ffi
+
+        out = ffi.new("flCatalog**")
+        api.check_status(api.root.Manager_GetCatalogByType(self._native_manager, int(catalog_type), out))
+        if out[0] == ffi.NULL:
+            raise FoundryLocalException(f"GetCatalogByType returned no {catalog_type.name.lower()} catalog.")
+
+        catalog = Catalog(out[0], catalog_type=catalog_type, parent=self)
+        self._catalogs[catalog_type] = catalog
+        return catalog
 
     # ------------------------------------------------------------------
     # EP discovery and registration
@@ -311,6 +343,7 @@ class FoundryLocalManager:
                 api.root.Manager_Release(self._native_manager)
             finally:
                 self._native_manager = None
+                self._catalogs.clear()
                 if FoundryLocalManager.instance is self:
                     FoundryLocalManager.instance = None
 
