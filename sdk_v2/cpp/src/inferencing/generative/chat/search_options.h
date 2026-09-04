@@ -50,13 +50,13 @@ struct SearchOptions {
 };
 
 /// Apply search options to OgaGeneratorParams.
-/// Validates token budget (input + output vs model max_length from config).
+/// Validates the input + output token budget against model.context_length, falling back to search.max_length.
 /// Returns the computed max_length that was set on the params.
 /// Throws fl::Exception on invalid configuration (e.g., input too long for model).
 ///
 /// @param options            Search options extracted from the request
 /// @param input_token_count  Number of tokens in the encoded prompt
-/// @param config             Model's GenAI config (for search.max_length)
+/// @param config             Model's GenAI config (for model.context_length and legacy search.max_length)
 /// @param gen_params         ORT GenAI generator params to configure
 /// @param ep                 Resolved execution provider. Used to enable chunked prefill by default
 ///                           on providers that benefit from it (CUDA, NvTensorRtRtx, WebGPU, CPU).
