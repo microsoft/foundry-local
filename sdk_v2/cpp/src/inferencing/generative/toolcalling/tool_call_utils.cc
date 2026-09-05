@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <optional>
 #include <random>
 
 namespace fl {
@@ -28,55 +29,65 @@ std::string RandomAlphanumeric(int length) {
   return result;
 }
 
+std::optional<ParsedToolCall> ParseOneToolCall(const nlohmann::json& call) {
+  if (!call.is_object()) {
+    return std::nullopt;
+  }
+
+  auto name_it = call.find("name");
+  if (name_it == call.end() || !name_it->is_string() || name_it->get<std::string>().empty()) {
+    return std::nullopt;
+  }
+
+  ParsedToolCall tc;
+  tc.name = name_it->get<std::string>();
+
+  if (auto args_it = call.find("arguments"); args_it != call.end()) {
+    tc.arguments = args_it->is_string() ? args_it->get<std::string>() : args_it->dump();
+  } else if (auto params_it = call.find("parameters"); params_it != call.end()) {
+    tc.arguments = params_it->is_string() ? params_it->get<std::string>() : params_it->dump();
+  }
+
+  return tc;
+}
+
 /// Try to parse a JSON string as a list of tool calls.
 /// Handles both array and single-object formats:
 ///   [{"name": "fn", "arguments": {...}}]
 ///   {"name": "fn", "arguments": {...}}
 std::vector<ParsedToolCall> DeserializeToolCalls(const std::string& json_text) {
-  std::vector<ParsedToolCall> results;
-
   try {
     auto json = nlohmann::json::parse(json_text);
-
-    auto parse_one = [&](const nlohmann::json& call) {
-      if (!call.is_object() || !call.contains("name")) {
-        return;
-      }
-
-      ParsedToolCall tc;
-      tc.id = GenerateToolCallId();
-      tc.name = call["name"].get<std::string>();
-
-      // Arguments can be under "arguments" or "parameters"
-      if (call.contains("arguments")) {
-        if (call["arguments"].is_string()) {
-          tc.arguments = call["arguments"].get<std::string>();
-        } else {
-          tc.arguments = call["arguments"].dump();
-        }
-      } else if (call.contains("parameters")) {
-        if (call["parameters"].is_string()) {
-          tc.arguments = call["parameters"].get<std::string>();
-        } else {
-          tc.arguments = call["parameters"].dump();
-        }
-      }
-
-      results.push_back(std::move(tc));
-    };
+    std::vector<ParsedToolCall> results;
 
     if (json.is_array()) {
+      results.reserve(json.size());
+
       for (const auto& item : json) {
-        parse_one(item);
+        auto parsed = ParseOneToolCall(item);
+        if (!parsed) {
+          return {};
+        }
+
+        results.push_back(std::move(*parsed));
       }
     } else if (json.is_object()) {
-      parse_one(json);
-    }
-  } catch (const nlohmann::json::parse_error&) {
-    // Invalid JSON — return whatever we have so far (may be empty)
-  }
+      auto parsed = ParseOneToolCall(json);
+      if (!parsed) {
+        return {};
+      }
 
-  return results;
+      results.push_back(std::move(*parsed));
+    }
+
+    for (auto& result : results) {
+      result.id = GenerateToolCallId();
+    }
+
+    return results;
+  } catch (const nlohmann::json::exception&) {
+    return {};
+  }
 }
 
 }  // namespace

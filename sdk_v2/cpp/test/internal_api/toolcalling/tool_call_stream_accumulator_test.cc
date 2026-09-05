@@ -222,6 +222,26 @@ TEST(ToolCallStreamAccumulatorTest, CompletedToolCallWithoutNameBecomesVisible) 
   EXPECT_TRUE(CollectCalls(outs).empty());
 }
 
+TEST(ToolCallStreamAccumulatorTest, CompletedToolCallWithNonStringNameBecomesVisible) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated = R"(<tool_call>{"name":123,"arguments":{}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_EQ(CollectVisible(outs), generated);
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, CompletedMixedValidAndInvalidArrayBecomesVisible) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated =
+      R"(<tool_call>[{"name":"fn1","arguments":{}},{"name":123}]</tool_call>)";
+  auto outs = RunChunks(acc, {"before ", generated, " after"});
+
+  EXPECT_EQ(CollectVisible(outs), "before " + generated + " after")
+      << "A partially-invalid block must be preserved whole, not partially parsed";
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
 // ========================================================================
 // InsideToolCall state machine.
 // ========================================================================
