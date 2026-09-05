@@ -4,6 +4,10 @@
 
 namespace fl {
 
+std::optional<ChatTurnUsage> ChatGenerator::GetTurnUsage() const {
+  return std::nullopt;
+}
+
 std::string ChatGenerator::GenerateAll() {
   std::string result;
 

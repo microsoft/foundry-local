@@ -513,7 +513,6 @@ void Model::Load(ExecutionProvider ep) {
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);
   }
-
 }
 
 void Model::Unload() {

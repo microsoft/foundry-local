@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #include "inferencing/generative/chat/search_options.h"
 #include "exception.h"
+#include "inferencing/generative/toolcalling/grammar.h"
+#include "inferencing/generative/toolcalling/tool_call_context.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <ort_genai.h>
@@ -9,6 +11,44 @@
 #include <algorithm>
 
 namespace fl {
+
+int ResolveMaxOutputTokens(const SearchOptions& options, int default_max_output_tokens) {
+  const int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
+  if (max_output < 1) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
+  }
+
+  return max_output;
+}
+
+void ApplyGuidanceOptions(const ToolCallContext& tool_ctx, OgaGeneratorParams& gen_params) {
+  std::string guidance_type;
+  std::string guidance_data;
+
+  if (!tool_ctx.guidance_type.empty() && !tool_ctx.guidance_data.empty()) {
+    guidance_type = tool_ctx.guidance_type;
+    guidance_data = tool_ctx.guidance_data;
+  } else {
+    std::string json_schema;
+    if (tool_ctx.HasTools()) {
+      json_schema = BuildToolJsonSchema(tool_ctx);
+    }
+
+    guidance_data = BuildLarkGrammar(tool_ctx, json_schema);
+    if (!guidance_data.empty()) {
+      guidance_type = "lark_grammar";
+    }
+  }
+
+  const bool tool_call_only = tool_ctx.tool_output && !tool_ctx.text_output;
+  if (!guidance_type.empty() && !guidance_data.empty() && tool_call_only) {
+    try {
+      gen_params.SetGuidance(guidance_type.c_str(), guidance_data.c_str());
+    } catch (const std::runtime_error&) {
+      // Some model/runtime combinations do not implement guidance. Preserve the existing unguided behavior.
+    }
+  }
+}
 
 int ApplySearchOptions(const SearchOptions& options,
                        int input_token_count,
@@ -31,10 +71,7 @@ int ApplySearchOptions(const SearchOptions& options,
   // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
   // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
   // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
-  int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
-  if (max_output < 1) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
-  }
+  const int max_output = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
   // Validate token budget: input + output must not exceed model's max_length
   int total_required = input_token_count + max_output;
@@ -106,14 +143,15 @@ int ApplySearchOptions(const SearchOptions& options,
 
   // Preserve a positive model setting. ORT GenAI reports both an absent setting and explicit zero as zero; Foundry
   // Local intentionally treats both as unset. ORT GenAI decides whether the model consumes the resulting option.
-  if (gen_params.GetSearchNumber("chunk_size") <= 0) {
+  if (config.GetChatBackendKind() != ChatBackendKind::kStaticEngine &&
+      gen_params.GetSearchNumber("chunk_size") <= 0) {
     // The model's resolved EP is kDefault for the common load path, so use the provider declared in
     // genai_config.json. An empty provider means ORT's CPU fallback.
     ExecutionProvider effective_ep = ep;
     if (effective_ep == ExecutionProvider::kDefault) {
       std::string config_provider = config.DefaultProvider();
       effective_ep = config_provider.empty() ? ExecutionProvider::kCPU
-                                              : EPUtils::StringtoEP(config_provider);
+                                             : EPUtils::StringtoEP(config_provider);
     }
 
     constexpr double kDefaultChunkSize = 2048.0;
@@ -198,6 +236,13 @@ std::optional<flToolChoice> SearchOptions::ParseToolChoice(const KeyValuePairs& 
 
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
            "Invalid value for tool_choice: '" + value + "'. Expected 'auto', 'none', or 'required'.");
+}
+
+bool SearchOptions::HasSameRetainedGenerationSettings(const SearchOptions& other) const {
+  return temperature == other.temperature && top_p == other.top_p && top_k == other.top_k &&
+         frequency_penalty == other.frequency_penalty && presence_penalty == other.presence_penalty &&
+         seed == other.seed && do_sample == other.do_sample && early_stopping == other.early_stopping &&
+         extra == other.extra;
 }
 
 }  // namespace fl

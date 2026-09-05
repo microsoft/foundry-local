@@ -18,14 +18,64 @@
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "utils/string_utils.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
 
 using namespace fl;
+
+namespace {
+
+class EngineModelStaging {
+ public:
+  explicit EngineModelStaging(const std::filesystem::path& source)
+      : root_(fl::test::TempPath::CreateTempDir("engine-chat-test-static-")) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(source)) {
+      const auto relative = std::filesystem::relative(entry.path(), source);
+      const auto destination = root_.path() / relative;
+      if (entry.is_directory()) {
+        std::filesystem::create_directories(destination);
+      } else {
+        std::filesystem::copy_file(entry.path(), destination);
+        std::filesystem::permissions(destination, std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::add);
+      }
+    }
+
+    const auto config_path = root_.path() / "genai_config.json";
+    std::ifstream input(config_path);
+    if (!input) {
+      throw std::runtime_error("Failed to open staged genai_config.json");
+    }
+    auto config = nlohmann::json::parse(input);
+    input.close();
+    config["engine"] = {
+        {"static_batching", {{"max_batch_size", 2}}},
+    };
+    std::ofstream output(config_path, std::ios::trunc);
+    if (!output || !(output << config.dump(2))) {
+      throw std::runtime_error("Failed to write staged genai_config.json");
+    }
+  }
+
+  EngineModelStaging(const EngineModelStaging&) = delete;
+  EngineModelStaging& operator=(const EngineModelStaging&) = delete;
+
+  const std::filesystem::path& path() const { return root_.path(); }
+
+ private:
+  fl::test::TempPath root_;
+};
+
+}  // namespace
 
 // ===========================================================================
 // Integration test fixture: loads the shared test model once per suite
@@ -35,12 +85,13 @@ class ChatSessionTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     auto model_path = fl::test::GetTestModelPath(fl::test::kTestChatModelAlias);
+    engine_model_ = std::make_unique<EngineModelStaging>(model_path);
     logger_ = std::make_unique<StderrLogger>();
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
 
     auto result = load_manager_->LoadModel(
-        model_path.string(),
+        engine_model_->path().string(),
         fl::test::kTestChatModelAlias);
 
     ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess)
@@ -57,12 +108,14 @@ class ChatSessionTest : public ::testing::Test {
     load_manager_.reset();
     ep_detector_.reset();
     model_ = nullptr;
+    engine_model_.reset();
   }
 
   GenAIModelInstance& GetModel() { return *model_; }
   const Model& GetCatalogModel() { return catalog_model_; }
 
   static inline std::unique_ptr<StderrLogger> logger_;
+  static inline std::unique_ptr<EngineModelStaging> engine_model_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
   static inline GenAIModelInstance* model_ = nullptr;
@@ -142,6 +195,31 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(session.GetHistory()[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(session.GetHistory()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(session.GetHistory()[1].GetSimpleText(), text);
+}
+
+TEST_F(ChatSessionTest, ConcurrentIndependentSessions) {
+  ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kStaticEngine);
+  ASSERT_NE(GetModel().GetChatEngine(), nullptr);
+
+  auto run_request = [this](std::string prompt) {
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    Request request;
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, prompt));
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+
+    Response response;
+    session.ProcessRequest(request, response);
+    return GetAssistantText(response);
+  };
+
+  auto first = std::async(std::launch::async, run_request, "What is 2+2? Answer with just the number.");
+  auto second = std::async(std::launch::async, run_request, "What is 3+3? Answer with just the number.");
+
+  const auto first_text = first.get();
+  const auto second_text = second.get();
+  EXPECT_NE(first_text.find("4"), std::string::npos) << first_text;
+  EXPECT_NE(second_text.find("6"), std::string::npos) << second_text;
 }
 
 TEST_F(ChatSessionTest, ChatCompletionRejectsAudioInput) {
@@ -316,7 +394,34 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
+TEST_F(ChatSessionTest, StaticEngineReconstructsMultiTurnHistory) {
+  ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kStaticEngine);
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request first_request;
+  first_request.AddOwnedItem(
+      MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Remember the word sapphire. Reply OK."));
+  first_request.options.Add("max_output_tokens", "32");
+  first_request.options.Add("temperature", "0");
+  Response first_response;
+  session.ProcessRequest(first_request, first_response);
+
+  Request second_request;
+  second_request.AddOwnedItem(
+      MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What word did I ask you to remember?"));
+  second_request.options.Add("max_output_tokens", "32");
+  second_request.options.Add("temperature", "0");
+  Response second_response;
+  session.ProcessRequest(second_request, second_response);
+
+  EXPECT_NE(fl::test::ToLower(GetAssistantText(second_response)).find("sapphire"), std::string::npos);
+  EXPECT_EQ(session.TurnCount(), 2u);
+}
+
 TEST_F(ChatSessionTest, RunStreamingCancellation) {
+  ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kStaticEngine);
+  ASSERT_NE(GetModel().GetChatEngine(), nullptr);
+
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
 
   Request request;

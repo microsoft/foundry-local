@@ -199,6 +199,89 @@ TEST_F(GenAIConfigTest, LoadMissingOptionalFields) {
   EXPECT_FALSE(config.model->decoder.has_value());
 }
 
+TEST_F(GenAIConfigTest, SelectsGeneratorWhenEngineBatchingIsAbsent) {
+  auto path = WriteFile("genai_config.json", R"({"engine": {}})");
+
+  auto config = GenAIConfig::LoadFromFile(path);
+
+  EXPECT_EQ(config.GetChatBackendKind(), ChatBackendKind::kGenerator);
+  EXPECT_FALSE(config.EngineMaxBatchSize().has_value());
+}
+
+TEST_F(GenAIConfigTest, ParsesDynamicEngineConfiguration) {
+  auto path = WriteFile("genai_config.json", R"({
+    "engine": {
+      "dynamic_batching": {
+        "max_batch_size": 8,
+        "max_scheduled_tokens": 1024
+      }
+    }
+  })");
+
+  auto config = GenAIConfig::LoadFromFile(path);
+
+  ASSERT_TRUE(config.engine.has_value());
+  ASSERT_TRUE(config.engine->dynamic_batching.has_value());
+  EXPECT_EQ(config.engine->dynamic_batching->max_batch_size, 8u);
+  EXPECT_EQ(config.engine->dynamic_batching->max_scheduled_tokens, 1024u);
+  EXPECT_EQ(config.GetChatBackendKind(), ChatBackendKind::kDynamicEngine);
+  EXPECT_EQ(config.EngineMaxBatchSize(), 8u);
+}
+
+TEST_F(GenAIConfigTest, ParsesStaticEngineConfiguration) {
+  auto path = WriteFile("genai_config.json", R"({
+    "engine": {
+      "static_batching": {
+        "max_batch_size": 2
+      }
+    }
+  })");
+
+  auto config = GenAIConfig::LoadFromFile(path);
+
+  ASSERT_TRUE(config.engine.has_value());
+  ASSERT_TRUE(config.engine->static_batching.has_value());
+  EXPECT_EQ(config.engine->static_batching->max_batch_size, 2u);
+  EXPECT_EQ(config.GetChatBackendKind(), ChatBackendKind::kStaticEngine);
+  EXPECT_EQ(config.EngineMaxBatchSize(), 2u);
+}
+
+TEST_F(GenAIConfigTest, AppliesEngineDefaults) {
+  auto dynamic_path = WriteFile("dynamic.json", R"({"engine": {"dynamic_batching": {}}})");
+  auto static_path = WriteFile("static.json", R"({"engine": {"static_batching": {}}})");
+
+  auto dynamic_config = GenAIConfig::LoadFromFile(dynamic_path);
+  auto static_config = GenAIConfig::LoadFromFile(static_path);
+
+  EXPECT_EQ(dynamic_config.engine->dynamic_batching->max_batch_size, 16u);
+  EXPECT_EQ(dynamic_config.engine->dynamic_batching->max_scheduled_tokens, 2048u);
+  EXPECT_EQ(static_config.engine->static_batching->max_batch_size, 4u);
+}
+
+TEST_F(GenAIConfigTest, RejectsBothEngineBatchingModes) {
+  auto path = WriteFile("genai_config.json", R"({
+    "engine": {
+      "dynamic_batching": {},
+      "static_batching": {}
+    }
+  })");
+
+  EXPECT_THROW(GenAIConfig::LoadFromFile(path), fl::Exception);
+}
+
+TEST_F(GenAIConfigTest, RejectsInvalidEngineCapacity) {
+  auto zero_path =
+      WriteFile("zero.json", R"({"engine": {"dynamic_batching": {"max_batch_size": 0}}})");
+  auto negative_path =
+      WriteFile("negative.json", R"({"engine": {"static_batching": {"max_batch_size": -1}}})");
+  auto wrong_type_path =
+      WriteFile("wrong_type.json", R"({"engine": {"dynamic_batching": {"max_scheduled_tokens": "bad"}}})");
+
+  EXPECT_THROW(GenAIConfig::LoadFromFile(zero_path), fl::Exception);
+  EXPECT_THROW(GenAIConfig::LoadFromFile(negative_path), fl::Exception);
+  EXPECT_THROW(GenAIConfig::LoadFromFile(wrong_type_path), fl::Exception);
+}
+
 TEST_F(GenAIConfigTest, LoadThrowsForMissingFile) {
   EXPECT_THROW(GenAIConfig::LoadFromFile("/nonexistent/path/genai_config.json"),
                fl::Exception);

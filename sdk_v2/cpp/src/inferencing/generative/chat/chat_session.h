@@ -16,7 +16,7 @@
 namespace fl {
 
 class GenAIModelInstance;
-class OnnxChatGenerator;
+class ChatGenerator;
 
 /// A chat session that maintains conversation history across turns.
 /// Designed for multi-turn conversations where message history accumulates
@@ -36,6 +36,7 @@ class ChatSession : public Session {
     size_t input_count;         // number of input messages (user + tool results) in this turn
     int pre_turn_token_count;   // generator sequence length before this turn's input was appended
     int post_turn_token_count;  // generator sequence length after generation completed
+    bool can_rewind_to_pre_turn;
     // The assistant reply is at history_[history_start + input_count]
   };
 
@@ -92,7 +93,8 @@ class ChatSession : public Session {
   void ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options, bool canceled,
                               Response& response, int prompt_tokens, int total_tokens,
-                              std::vector<ParsedToolCall> pre_parsed_calls = {});
+                              std::vector<ParsedToolCall> pre_parsed_calls = {},
+                              std::optional<flFinishReason> backend_finish_reason = std::nullopt);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged
@@ -103,7 +105,7 @@ class ChatSession : public Session {
 
   /// Commit input messages and assistant reply to history after a successful turn.
   void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                  int pre_turn_token_count, int post_turn_token_count);
+                  int pre_turn_token_count, int post_turn_token_count, bool can_rewind_to_pre_turn);
 
   GenAIModelInstance& Model() { return model_; }
   const GenAIModelInstance& Model() const { return model_; }
@@ -119,11 +121,14 @@ class ChatSession : public Session {
 
   // Cached generator for continuous decoding (non-JSON path only).
   // Null until first non-JSON ProcessRequestImpl call.
-  std::unique_ptr<OnnxChatGenerator> cached_generator_;
+  std::unique_ptr<ChatGenerator> cached_generator_;
 
   // Tool context used when creating the cached generator.
   // Reused for subsequent turns to maintain tool definition consistency.
   ToolCallContext cached_tool_ctx_;
+
+  // Search settings baked into the retained generator or Engine request.
+  SearchOptions cached_search_options_;
 };
 
 }  // namespace fl

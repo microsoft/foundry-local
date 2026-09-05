@@ -30,6 +30,30 @@ TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
   }
 }
 
+TEST(SearchOptionsParsingTest, ResolvesDefaultAndExplicitOutputLimits) {
+  SearchOptions defaults;
+  EXPECT_EQ(ResolveMaxOutputTokens(defaults), 2048);
+
+  SearchOptions explicit_limit;
+  explicit_limit.max_output_tokens = 64;
+  EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit), 64);
+}
+
+TEST(SearchOptionsParsingTest, RetainedGenerationSettingsIgnorePerTurnOptions) {
+  SearchOptions first;
+  first.temperature = 0.5f;
+  first.max_output_tokens = 16;
+  first.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_AUTO;
+
+  SearchOptions second = first;
+  second.max_output_tokens = 64;
+  second.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  EXPECT_TRUE(first.HasSameRetainedGenerationSettings(second));
+
+  second.temperature = 1.0f;
+  EXPECT_FALSE(first.HasSameRetainedGenerationSettings(second));
+}
+
 // ---------------------------------------------------------------------------
 // Test fixture: loads the shared test model once per suite
 // ---------------------------------------------------------------------------

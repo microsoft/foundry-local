@@ -5,6 +5,7 @@
 
 #include "contracts/chat_completions.h"
 #include "contracts/chat_completions_converter.h"
+#include "inferencing/generative/chat/onnx_engine_chat_generator.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/genai_model_instance.h"
@@ -48,6 +49,18 @@ void ApplyToolChoiceToContext(std::optional<flToolChoice> tool_choice, ToolCallC
   }
 }
 
+std::unique_ptr<ChatGenerator> CreateTextChatGenerator(const std::vector<MessageItem>& messages,
+                                                       const SearchOptions& options,
+                                                       GenAIModelInstance& model,
+                                                       const ToolCallContext& tool_ctx,
+                                                       bool use_full_context) {
+  if (model.GetGenAIConfig().GetChatBackendKind() != ChatBackendKind::kGenerator) {
+    return OnnxEngineChatGenerator::Create(messages, options, model, tool_ctx);
+  }
+
+  return OnnxChatGenerator::Create(messages, options, model, tool_ctx, use_full_context);
+}
+
 }  // namespace
 
 ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry)
@@ -59,6 +72,7 @@ ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& mod
 
 ChatSession::~ChatSession() {
   if (owns_session_) {
+    cached_generator_.reset();
     model_.ReleaseSession();
   }
 }
@@ -71,7 +85,9 @@ ChatSession::ChatSession(ChatSession&& other) noexcept
       history_(std::move(other.history_)),
       turns_(std::move(other.turns_)),
       session_options_(std::move(other.session_options_)),
-      cached_generator_(std::move(other.cached_generator_)) {
+      cached_generator_(std::move(other.cached_generator_)),
+      cached_tool_ctx_(std::move(other.cached_tool_ctx_)),
+      cached_search_options_(std::move(other.cached_search_options_)) {
   other.owns_session_ = false;
 }
 
@@ -320,7 +336,8 @@ static std::vector<TextSegment> SplitReasoningContent(const std::string& text,
 void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options, bool canceled,
                                          Response& response, int prompt_tokens, int total_tokens,
-                                         std::vector<ParsedToolCall> pre_parsed_calls) {
+                                         std::vector<ParsedToolCall> pre_parsed_calls,
+                                         std::optional<flFinishReason> backend_finish_reason) {
   int completion_tokens = total_tokens - prompt_tokens;
 
   // Check if the generated text contains tool calls. If the caller has already parsed them (streaming path), reuse
@@ -382,6 +399,8 @@ void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
   } else if (has_tool_calls) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_TOOL_CALLS;
+  } else if (backend_finish_reason.has_value()) {
+    response.finish_reason = *backend_finish_reason;
   } else {
     int max_output = effective_options.max_output_tokens.value_or(0);
 
@@ -473,6 +492,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   int prompt_tokens = 0;
   int pre_turn_token_count = 0;
+  bool can_rewind_to_pre_turn = true;
+
+  if (cached_generator_ &&
+      !cached_search_options_.HasSameRetainedGenerationSettings(effective_options)) {
+    cached_generator_.reset();
+    cached_tool_ctx_ = {};
+  }
 
   if (cached_generator_) {
     // Check if guidance requirements changed since the generator was created. Guidance (LARK grammar) is baked into
@@ -483,24 +509,36 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     bool prev_needs_guidance = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
     bool curr_needs_guidance = turn_tool_ctx.tool_output && !turn_tool_ctx.text_output;
+    const bool guidance_changed =
+        cached_tool_ctx_.guidance_type != turn_tool_ctx.guidance_type ||
+        cached_tool_ctx_.guidance_data != turn_tool_ctx.guidance_data;
 
-    if (prev_needs_guidance != curr_needs_guidance) {
+    const bool static_engine =
+        Model().GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kStaticEngine;
+    if (prev_needs_guidance != curr_needs_guidance || guidance_changed || static_engine) {
       // Guidance requirements changed — invalidate. The branch below will rebuild from full history.
       cached_generator_.reset();
       cached_tool_ctx_ = {};
     } else {
       // Continuous decoding: append only the new messages to the existing generator.
       pre_turn_token_count = cached_generator_->TokenCount();
-      prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json);
+      try {
+        prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json,
+                                                          effective_options);
 
-      // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
-      UpdateToolContextForTurn(request, cached_tool_ctx_);
+        // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
+        UpdateToolContextForTurn(request, cached_tool_ctx_);
+      } catch (const OnnxChatEngine::ConversationEvictedError&) {
+        cached_generator_.reset();
+        cached_tool_ctx_ = {};
+      }
     }
   }
 
   if (!cached_generator_) {
     // First request (or cache invalidated): create the generator from scratch.
     // Combine existing history with new messages for the full context.
+    can_rewind_to_pre_turn = history_.empty();
     auto tool_ctx = BuildToolCallContext(request);
 
     std::vector<MessageItem> all_messages;
@@ -508,7 +546,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     all_messages.insert(all_messages.end(), history_.begin(), history_.end());
     all_messages.insert(all_messages.end(), new_messages.begin(), new_messages.end());
 
-    std::unique_ptr<OnnxChatGenerator> generator;
+    std::unique_ptr<ChatGenerator> generator;
     if (media_turn) {
       // Media is single-shot: the generator is dropped after the turn (see
       // CommitTurn cleanup below) because AppendMessages can't extend a
@@ -517,18 +555,19 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       // gigabytes (262k tokens × 28 layers × 8 heads × 128 dims for
       // qwen3-vl-2b ≈ 120 GB). Bound it to prompt + max_output_tokens.
       generator = OnnxChatGenerator::CreateWithMedia(all_messages, effective_options, Model(), images, audios,
-                         tool_ctx, /*use_full_context*/ false);
+                                                     tool_ctx, /*use_full_context*/ false);
     } else {
-      generator = OnnxChatGenerator::Create(all_messages, effective_options, Model(), tool_ctx,
-                                            /*use_full_context*/ true);
+      generator = CreateTextChatGenerator(all_messages, effective_options, Model(), tool_ctx,
+                                          /*use_full_context=*/true);
     }
     prompt_tokens = generator->PromptTokenCount();
 
     cached_generator_ = std::move(generator);
     cached_tool_ctx_ = std::move(tool_ctx);
+    cached_search_options_ = effective_options;
   }
 
-  int max_output = effective_options.max_output_tokens.value_or(0);
+  const int max_output = effective_options.max_output_tokens.value_or(0);
 
   // Generate token-by-token with optional streaming.
   // Check request.canceled each iteration — a streaming callback returning
@@ -625,16 +664,35 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   emit_segments(splitter.Flush());
   flush_accumulator();
 
+  if (request.canceled) {
+    cached_generator_->Cancel();
+  }
+
   int total_tokens = cached_generator_->TokenCount();
+  std::optional<flFinishReason> backend_finish_reason;
+  if (const auto turn_usage = cached_generator_->GetTurnUsage()) {
+    prompt_tokens = turn_usage->prompt_tokens;
+    total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    backend_finish_reason = turn_usage->finish_reason;
+  }
+  bool discard_generator = false;
 
   if (request.canceled) {
-    // Rewind the generator to undo this turn's input. The generator remains valid
-    // for the next attempt — the caller can re-send the same input.
-    cached_generator_->RewindTo(pre_turn_token_count);
+    if (cached_generator_->CanRewind()) {
+      cached_generator_->RewindTo(pre_turn_token_count);
+    } else {
+      discard_generator = true;
+    }
   }
 
   ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls),
+                         backend_finish_reason);
+
+  if (discard_generator) {
+    cached_generator_.reset();
+    cached_tool_ctx_ = {};
+  }
 
   // Commit input messages + assistant reply to history only on success (not cancelled)
   if (!request.canceled) {
@@ -649,12 +707,15 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     bool grammar_was_active = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
     bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
 
-    if (grammar_was_active || reasoning_was_active) {
+    const bool static_engine =
+        Model().GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kStaticEngine;
+    if (grammar_was_active || reasoning_was_active || static_engine) {
       cached_generator_.reset();
       cached_tool_ctx_ = {};
     }
 
-    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
+    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens,
+               can_rewind_to_pre_turn);
 
     // After a media turn, drop the cached generator so any text follow-up
     // rebuilds from history. AppendMessages cannot extend a media-decoded
@@ -730,7 +791,8 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   }
 
   // Create generator
-  auto generator = OnnxChatGenerator::Create(messages, options, Model(), tool_ctx);
+  auto generator = CreateTextChatGenerator(messages, options, Model(), tool_ctx,
+                                           /*use_full_context=*/false);
   int prompt_tokens = generator->PromptTokenCount();
 
   auto streaming_callback = CreateCallbackHandler(original_request);
@@ -843,13 +905,24 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     emit_ready_calls(out.ready_calls);
   }
 
+  if (original_request.canceled) {
+    generator->Cancel();
+  }
+
   int total_tokens = generator->TokenCount();
+  std::optional<flFinishReason> backend_finish_reason;
+  if (const auto turn_usage = generator->GetTurnUsage()) {
+    prompt_tokens = turn_usage->prompt_tokens;
+    total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    backend_finish_reason = turn_usage->finish_reason;
+  }
 
   // Process the generated output into response items (MessageItem, ToolCallItem, etc.)
   // This also updates finish_reason, and usage on the response. Streamed-parsed tool calls are reused so call_ids
   // stay stable across stream deltas and the final ChatCompletionResponse.
   ProcessGeneratedOutput(std::move(text), tool_ctx, options, original_request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls),
+                         backend_finish_reason);
 
   // Emit final streaming chunk with finish_reason
   if (is_streaming) {
@@ -876,7 +949,8 @@ const std::vector<MessageItem>& ChatSession::GetHistory() const {
 }
 
 void ChatSession::CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                             int pre_turn_token_count, int post_turn_token_count) {
+                             int pre_turn_token_count, int post_turn_token_count,
+                             bool can_rewind_to_pre_turn) {
   size_t history_start = history_.size();
   size_t input_count = new_messages.size();
 
@@ -896,7 +970,8 @@ void ChatSession::CommitTurn(std::vector<MessageItem>&& new_messages, const Resp
     }
   }
 
-  turns_.push_back({history_start, input_count, pre_turn_token_count, post_turn_token_count});
+  turns_.push_back(
+      {history_start, input_count, pre_turn_token_count, post_turn_token_count, can_rewind_to_pre_turn});
 }
 
 size_t ChatSession::TurnCount() const {
@@ -926,8 +1001,11 @@ void ChatSession::UndoTurns(size_t count) {
       // Undoing all turns — destroy the generator entirely
       cached_generator_.reset();
       cached_tool_ctx_ = {};
-    } else {
+    } else if (cached_generator_->CanRewind() && target.can_rewind_to_pre_turn) {
       cached_generator_->RewindTo(target.pre_turn_token_count);
+    } else {
+      cached_generator_.reset();
+      cached_tool_ctx_ = {};
     }
   }
 
