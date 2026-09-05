@@ -88,6 +88,17 @@ TEST(ReasoningStreamSplitterTest, MissingStartMarkerDisablesReasoningClassificat
   EXPECT_EQ(splitter.ReasoningTokenCount(), 0);
 }
 
+TEST(ReasoningStreamSplitterTest, NoTextMarkersOmitIgnoredControlToken) {
+  ReasoningStreamSplitter splitter("", "", {}, {}, {99});
+
+  EXPECT_TRUE(splitter.Push(99, "<|im_end|>").empty());
+  auto segments = splitter.Push(1, "visible");
+
+  ASSERT_EQ(segments.size(), 1u);
+  EXPECT_EQ(segments[0].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT);
+  EXPECT_EQ(segments[0].text, "visible");
+}
+
 TEST(ReasoningStreamSplitterTest, IgnoredEmptyDecodedTokensAreNotReasoningContent) {
   ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102}, {99});
 
@@ -108,6 +119,138 @@ TEST(ReasoningStreamSplitterTest, IgnoredVisibleControlTokensAreNotEmittedOrCoun
   Append(segments, splitter.Flush());
 
   EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
+}
+
+TEST(ReasoningStreamSplitterTest, IncompleteTokenMarkersOmitIgnoredControlTokenOutsideReasoning) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(1, "before "));
+  Append(segments, splitter.Push(99, "<|im_end|>"));
+  Append(segments, splitter.Push(2, "after"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "before after");
+  EXPECT_FALSE(splitter.InsideReasoning());
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 0);
+}
+
+TEST(ReasoningStreamSplitterTest, IncompleteTokenMarkersOmitIgnoredControlTokenInsideReasoning) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(1, "<think>"));
+  Append(segments, splitter.Push(2, "hidden"));
+  Append(segments, splitter.Push(99, "<|im_end|>"));
+  Append(segments, splitter.Push(3, " more"));
+  Append(segments, splitter.Push(4, "</think>"));
+  Append(segments, splitter.Push(5, "after"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden more");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "after");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 2);
+}
+
+TEST(ReasoningStreamSplitterTest, IgnoredTokenWhoseDecodedTextIsCompleteMarkerStillToggles) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(99, "<think>"));
+  EXPECT_TRUE(splitter.InsideReasoning());
+
+  Append(segments, splitter.Push(1, "hidden"));
+  Append(segments, splitter.Push(99, "</think>"));
+  EXPECT_FALSE(splitter.InsideReasoning());
+
+  Append(segments, splitter.Push(2, "after"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "after");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
+}
+
+TEST(ReasoningStreamSplitterTest, IgnoredTokenCompletesSplitMarkerAsSuffix) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(1, "<th"));
+  Append(segments, splitter.Push(99, "ink>"));
+  EXPECT_TRUE(splitter.InsideReasoning());
+
+  Append(segments, splitter.Push(2, "hidden"));
+  Append(segments, splitter.Push(3, "</think>"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+}
+
+TEST(ReasoningStreamSplitterTest, IgnoredTokenContributesSplitMarkerAsPrefix) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(99, "<th"));
+  Append(segments, splitter.Push(1, "ink>"));
+  EXPECT_TRUE(splitter.InsideReasoning());
+
+  Append(segments, splitter.Push(2, "hidden"));
+  Append(segments, splitter.Push(3, "</think>"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+}
+
+TEST(ReasoningStreamSplitterTest, IgnoredBoundaryTokenSuppressesNonMarkerText) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(1, "<th"));
+  Append(segments, splitter.Push(99, "control<think>ignored"));
+  EXPECT_TRUE(splitter.InsideReasoning());
+
+  Append(segments, splitter.Push(2, "hidden"));
+  Append(segments, splitter.Push(99, "control</think>ignored"));
+  EXPECT_FALSE(splitter.InsideReasoning());
+
+  Append(segments, splitter.Push(3, "after"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "<thafter");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
+}
+
+TEST(ReasoningStreamSplitterTest, IgnoredTokenAfterClosingMarkerDoesNotConsumeNewlineTrim) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {}, {}, {99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(1, "<think>hidden</think>"));
+  Append(segments, splitter.Push(99, "<|im_end|>"));
+  Append(segments, splitter.Push(2, "\n\nafter"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "\nafter");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
+}
+
+TEST(ReasoningStreamSplitterTest, TokenIdMarkerPathTakesPrecedenceOverOverlappingIgnoredIds) {
+  ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102}, {101, 102, 99});
+  std::vector<Segment> segments;
+
+  Append(segments, splitter.Push(101, ""));
+  Append(segments, splitter.Push(1, "hidden"));
+  Append(segments, splitter.Push(99, "<|im_end|>"));
+  Append(segments, splitter.Push(102, ""));
+  Append(segments, splitter.Push(2, "after"));
+  Append(segments, splitter.Flush());
+
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING), "hidden");
+  EXPECT_EQ(Collect(segments, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT), "after");
+  EXPECT_FALSE(splitter.InsideReasoning());
   EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
 }
 

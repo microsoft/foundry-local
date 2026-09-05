@@ -42,7 +42,7 @@ class ReasoningStreamSplitter {
   /// Feed one generated token into the splitter. Marker IDs are consumed even when decoded_text is empty.
   std::vector<Segment> Push(int32_t token_id, std::string decoded_text) {
     if (!HasTextMarkers()) {
-      if (decoded_text.empty()) {
+      if (decoded_text.empty() || IsIgnoredToken(token_id)) {
         return {};
       }
 
@@ -50,7 +50,7 @@ class ReasoningStreamSplitter {
     }
 
     if (!HasTokenMarkers()) {
-      return Push(decoded_text);
+      return PushText(decoded_text, IsIgnoredToken(token_id));
     }
 
     std::vector<Segment> out;
@@ -61,22 +61,7 @@ class ReasoningStreamSplitter {
 
   /// Feed a decoded token into the text-only fallback.
   std::vector<Segment> Push(const std::string& token) {
-    std::vector<Segment> out;
-
-    if (token.empty()) {
-      return out;
-    }
-
-    if (!HasTextMarkers()) {
-      out.push_back({token, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT});
-      return out;
-    }
-
-    pending_text_tokens_.push_back({token});
-    text_buffer_ += token;
-    DrainText(out, /*flushing=*/false);
-
-    return out;
+    return PushText(token, false);
   }
 
   /// Drain pending content at end-of-generation. A partial marker is content in the current reasoning state.
@@ -113,6 +98,7 @@ class ReasoningStreamSplitter {
   struct PendingTextToken {
     std::string text;
     bool reasoning_counted = false;
+    bool ignored = false;
   };
 
   bool HasTextMarkers() const noexcept {
@@ -121,6 +107,26 @@ class ReasoningStreamSplitter {
 
   bool HasTokenMarkers() const noexcept {
     return !start_token_ids_.empty() && !end_token_ids_.empty();
+  }
+
+  std::vector<Segment> PushText(const std::string& token, bool ignored) {
+    std::vector<Segment> out;
+
+    if (token.empty()) {
+      return out;
+    }
+
+    if (!HasTextMarkers()) {
+      if (!ignored) {
+        out.push_back({token, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT});
+      }
+      return out;
+    }
+
+    pending_text_tokens_.push_back({token, false, ignored});
+    text_buffer_ += token;
+    DrainText(out, /*flushing=*/false);
+    return out;
   }
 
   void DrainTokens(std::vector<Segment>& out, bool flushing) {
@@ -291,7 +297,8 @@ class ReasoningStreamSplitter {
   }
 
   std::string ConsumeText(size_t length, flTextItemType type, bool is_content) {
-    auto text = text_buffer_.substr(0, length);
+    std::string text;
+    text.reserve(length);
     text_buffer_.erase(0, length);
 
     auto remaining = length;
@@ -299,10 +306,13 @@ class ReasoningStreamSplitter {
       auto& token = pending_text_tokens_.front();
       const auto consumed = std::min(remaining, token.text.size());
 
-      if (is_content && type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING &&
-          !token.reasoning_counted) {
-        ++reasoning_token_count_;
-        token.reasoning_counted = true;
+      // Ignored token bytes participate in marker matching but are never emitted or counted.
+      if (is_content && !token.ignored) {
+        text.append(token.text, 0, consumed);
+        if (type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING && !token.reasoning_counted) {
+          ++reasoning_token_count_;
+          token.reasoning_counted = true;
+        }
       }
 
       token.text.erase(0, consumed);
@@ -316,7 +326,7 @@ class ReasoningStreamSplitter {
   }
 
   void EmitTextSegment(std::vector<Segment>& out, std::string text, flTextItemType type) {
-    if (type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT && trim_default_prefix_) {
+    if (type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT && trim_default_prefix_ && !text.empty()) {
       if (text.starts_with("\r\n")) {
         text.erase(0, 2);
       } else if (text.starts_with('\n')) {
