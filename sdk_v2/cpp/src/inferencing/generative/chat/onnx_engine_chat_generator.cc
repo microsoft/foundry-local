@@ -17,7 +17,11 @@ namespace {
 std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
   switch (reason) {
     case OgaFinishReason_Eos:
+#if defined(OgaFinishReason_StopSequence)
     case OgaFinishReason_StopSequence:
+#elif defined(OgaFinishReason_StopString)
+    case OgaFinishReason_StopString:
+#endif
       return FOUNDRY_LOCAL_FINISH_STOP;
     case OgaFinishReason_MaxGeneratedTokens:
     case OgaFinishReason_MaxSessionTokens:
@@ -160,16 +164,24 @@ std::unique_ptr<OnnxEngineChatGenerator> OnnxEngineChatGenerator::Create(
   auto prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
   auto sequences = EncodePrompt(prompt, model);
   const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
+  auto stream = model.GetPreprocessor().CreateTokenizerStream();
+  auto stream_with_special = model.GetPreprocessor().CreateSpecialTokenizerStream();
   auto conversation = engine->CreateConversation(options, tool_ctx, prompt_token_count);
-  const auto* data = sequences->SequenceData(0);
-  engine->BeginTurn(conversation, std::span<const int32_t>(data, static_cast<size_t>(prompt_token_count)),
-                    ResolveMaxOutputTokens(options));
+  try {
+    const auto* data = sequences->SequenceData(0);
+    engine->BeginTurn(conversation, std::span<const int32_t>(data, static_cast<size_t>(prompt_token_count)),
+                      ResolveMaxOutputTokens(options));
 
-  return std::unique_ptr<OnnxEngineChatGenerator>(
-      new OnnxEngineChatGenerator(*engine, std::move(conversation),
-                                  model.GetPreprocessor().CreateTokenizerStream(),
-                                  model.GetPreprocessor().CreateSpecialTokenizerStream(), model,
-                                  prompt_token_count));
+    return std::unique_ptr<OnnxEngineChatGenerator>(
+        new OnnxEngineChatGenerator(*engine, std::move(conversation), std::move(stream),
+                                    std::move(stream_with_special), model, prompt_token_count));
+  } catch (...) {
+    try {
+      engine->Close(conversation);
+    } catch (...) {
+    }
+    throw;
+  }
 }
 
 }  // namespace fl

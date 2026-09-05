@@ -509,10 +509,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     bool prev_needs_guidance = cached_tool_ctx_.tool_output && !cached_tool_ctx_.text_output;
     bool curr_needs_guidance = turn_tool_ctx.tool_output && !turn_tool_ctx.text_output;
+    const bool guidance_changed =
+        cached_tool_ctx_.guidance_type != turn_tool_ctx.guidance_type ||
+        cached_tool_ctx_.guidance_data != turn_tool_ctx.guidance_data;
 
     const bool static_engine =
         Model().GetGenAIConfig().GetChatBackendKind() == ChatBackendKind::kStaticEngine;
-    if (prev_needs_guidance != curr_needs_guidance || static_engine) {
+    if (prev_needs_guidance != curr_needs_guidance || guidance_changed || static_engine) {
       // Guidance requirements changed — invalidate. The branch below will rebuild from full history.
       cached_generator_.reset();
       cached_tool_ctx_ = {};
