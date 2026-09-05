@@ -349,7 +349,7 @@ bool OnnxChatEngine::EvictDormantConversation() {
     auto conversation = it->second->state;
     {
       std::lock_guard<std::mutex> lock(conversation->mutex);
-      if (!conversation->turn_finished) {
+      if (!conversation->turn_finished || conversation->turn_id == 0) {
         continue;
       }
       conversation->closed = true;
