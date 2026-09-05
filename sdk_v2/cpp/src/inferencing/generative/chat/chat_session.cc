@@ -52,12 +52,13 @@ void ApplyToolChoiceToContext(std::optional<flToolChoice> tool_choice, ToolCallC
 std::unique_ptr<ChatGenerator> CreateTextChatGenerator(const std::vector<MessageItem>& messages,
                                                        const SearchOptions& options,
                                                        GenAIModelInstance& model,
-                                                       const ToolCallContext& tool_ctx) {
+                                                       const ToolCallContext& tool_ctx,
+                                                       bool use_full_context) {
   if (model.GetGenAIConfig().GetChatBackendKind() != ChatBackendKind::kGenerator) {
     return OnnxEngineChatGenerator::Create(messages, options, model, tool_ctx);
   }
 
-  return OnnxChatGenerator::Create(messages, options, model, tool_ctx, /*use_full_context=*/true);
+  return OnnxChatGenerator::Create(messages, options, model, tool_ctx, use_full_context);
 }
 
 }  // namespace
@@ -71,6 +72,7 @@ ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& mod
 
 ChatSession::~ChatSession() {
   if (owns_session_) {
+    cached_generator_.reset();
     model_.ReleaseSession();
   }
 }
@@ -490,6 +492,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   int prompt_tokens = 0;
   int pre_turn_token_count = 0;
+  bool can_rewind_to_pre_turn = true;
 
   if (cached_generator_ &&
       !cached_search_options_.HasSameRetainedGenerationSettings(effective_options)) {
@@ -527,6 +530,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (!cached_generator_) {
     // First request (or cache invalidated): create the generator from scratch.
     // Combine existing history with new messages for the full context.
+    can_rewind_to_pre_turn = history_.empty();
     auto tool_ctx = BuildToolCallContext(request);
 
     std::vector<MessageItem> all_messages;
@@ -545,7 +549,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       generator = OnnxChatGenerator::CreateWithMedia(all_messages, effective_options, Model(), images, audios,
                                                      tool_ctx, /*use_full_context*/ false);
     } else {
-      generator = CreateTextChatGenerator(all_messages, effective_options, Model(), tool_ctx);
+      generator = CreateTextChatGenerator(all_messages, effective_options, Model(), tool_ctx,
+                                          /*use_full_context=*/true);
     }
     prompt_tokens = generator->PromptTokenCount();
 
@@ -554,7 +559,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     cached_search_options_ = effective_options;
   }
 
-  const int max_output = ResolveMaxOutputTokens(effective_options);
+  const int max_output = effective_options.max_output_tokens.value_or(0);
 
   // Generate token-by-token with optional streaming.
   // Check request.canceled each iteration — a streaming callback returning
@@ -701,7 +706,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_ = {};
     }
 
-    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens);
+    CommitTurn(std::move(new_messages), response, pre_turn_token_count, total_tokens,
+               can_rewind_to_pre_turn);
 
     // After a media turn, drop the cached generator so any text follow-up
     // rebuilds from history. AppendMessages cannot extend a media-decoded
@@ -777,7 +783,8 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   }
 
   // Create generator
-  auto generator = CreateTextChatGenerator(messages, options, Model(), tool_ctx);
+  auto generator = CreateTextChatGenerator(messages, options, Model(), tool_ctx,
+                                           /*use_full_context=*/false);
   int prompt_tokens = generator->PromptTokenCount();
 
   auto streaming_callback = CreateCallbackHandler(original_request);
@@ -934,7 +941,8 @@ const std::vector<MessageItem>& ChatSession::GetHistory() const {
 }
 
 void ChatSession::CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                             int pre_turn_token_count, int post_turn_token_count) {
+                             int pre_turn_token_count, int post_turn_token_count,
+                             bool can_rewind_to_pre_turn) {
   size_t history_start = history_.size();
   size_t input_count = new_messages.size();
 
@@ -954,7 +962,8 @@ void ChatSession::CommitTurn(std::vector<MessageItem>&& new_messages, const Resp
     }
   }
 
-  turns_.push_back({history_start, input_count, pre_turn_token_count, post_turn_token_count});
+  turns_.push_back(
+      {history_start, input_count, pre_turn_token_count, post_turn_token_count, can_rewind_to_pre_turn});
 }
 
 size_t ChatSession::TurnCount() const {
@@ -984,7 +993,7 @@ void ChatSession::UndoTurns(size_t count) {
       // Undoing all turns — destroy the generator entirely
       cached_generator_.reset();
       cached_tool_ctx_ = {};
-    } else if (cached_generator_->CanRewind()) {
+    } else if (cached_generator_->CanRewind() && target.can_rewind_to_pre_turn) {
       cached_generator_->RewindTo(target.pre_turn_token_count);
     } else {
       cached_generator_.reset();

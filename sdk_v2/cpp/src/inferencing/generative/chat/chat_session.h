@@ -36,6 +36,7 @@ class ChatSession : public Session {
     size_t input_count;         // number of input messages (user + tool results) in this turn
     int pre_turn_token_count;   // generator sequence length before this turn's input was appended
     int post_turn_token_count;  // generator sequence length after generation completed
+    bool can_rewind_to_pre_turn;
     // The assistant reply is at history_[history_start + input_count]
   };
 
@@ -104,7 +105,7 @@ class ChatSession : public Session {
 
   /// Commit input messages and assistant reply to history after a successful turn.
   void CommitTurn(std::vector<MessageItem>&& new_messages, const Response& response,
-                  int pre_turn_token_count, int post_turn_token_count);
+                  int pre_turn_token_count, int post_turn_token_count, bool can_rewind_to_pre_turn);
 
   GenAIModelInstance& Model() { return model_; }
   const GenAIModelInstance& Model() const { return model_; }

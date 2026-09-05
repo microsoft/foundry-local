@@ -18,15 +18,72 @@
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "utils/string_utils.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
 #include <vector>
 
 using namespace fl;
+
+namespace {
+
+class EngineModelStaging {
+ public:
+  explicit EngineModelStaging(const std::filesystem::path& source)
+      : path_(source.parent_path() /
+              ("engine-chat-test-" + std::to_string(fl::test::CurrentPid()))) {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+    std::filesystem::create_directories(path_);
+
+    try {
+      for (const auto& entry : std::filesystem::recursive_directory_iterator(source)) {
+        const auto relative = std::filesystem::relative(entry.path(), source);
+        const auto destination = path_ / relative;
+        if (entry.is_directory()) {
+          std::filesystem::create_directories(destination);
+        } else if (entry.path().filename() == "genai_config.json") {
+          std::filesystem::copy_file(entry.path(), destination);
+        } else {
+          std::filesystem::create_hard_link(entry.path(), destination);
+        }
+      }
+
+      const auto config_path = path_ / "genai_config.json";
+      std::ifstream input(config_path);
+      auto config = nlohmann::json::parse(input);
+      config["engine"] = {
+          {"dynamic_batching", {{"max_batch_size", 2}, {"max_scheduled_tokens", 2048}}},
+      };
+      std::ofstream(config_path) << config.dump(2);
+    } catch (...) {
+      std::filesystem::remove_all(path_, ec);
+      throw;
+    }
+  }
+
+  ~EngineModelStaging() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+
+  EngineModelStaging(const EngineModelStaging&) = delete;
+  EngineModelStaging& operator=(const EngineModelStaging&) = delete;
+
+  const std::filesystem::path& path() const { return path_; }
+
+ private:
+  std::filesystem::path path_;
+};
+
+}  // namespace
 
 // ===========================================================================
 // Integration test fixture: loads the shared test model once per suite
@@ -36,12 +93,13 @@ class ChatSessionTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     auto model_path = fl::test::GetTestModelPath(fl::test::kTestChatModelAlias);
+    engine_model_ = std::make_unique<EngineModelStaging>(model_path);
     logger_ = std::make_unique<StderrLogger>();
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
 
     auto result = load_manager_->LoadModel(
-        model_path.string(),
+        engine_model_->path().string(),
         fl::test::kTestChatModelAlias);
 
     ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess)
@@ -58,12 +116,14 @@ class ChatSessionTest : public ::testing::Test {
     load_manager_.reset();
     ep_detector_.reset();
     model_ = nullptr;
+    engine_model_.reset();
   }
 
   GenAIModelInstance& GetModel() { return *model_; }
   const Model& GetCatalogModel() { return catalog_model_; }
 
   static inline std::unique_ptr<StderrLogger> logger_;
+  static inline std::unique_ptr<EngineModelStaging> engine_model_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
   static inline GenAIModelInstance* model_ = nullptr;
@@ -146,6 +206,10 @@ TEST_F(ChatSessionTest, RunBasic) {
 }
 
 TEST_F(ChatSessionTest, ConcurrentIndependentSessions) {
+  ASSERT_NE(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator)
+      << "The concurrency test model must declare an Engine backend";
+  ASSERT_NE(GetModel().GetChatEngine(), nullptr);
+
   auto run_request = [this](std::string prompt) {
     ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
     Request request;
@@ -340,6 +404,10 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
 }
 
 TEST_F(ChatSessionTest, RunStreamingCancellation) {
+  ASSERT_NE(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator)
+      << "The cancellation test model must declare an Engine backend";
+  ASSERT_NE(GetModel().GetChatEngine(), nullptr);
+
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
 
   Request request;
