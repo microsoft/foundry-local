@@ -92,7 +92,8 @@ class ChatSession : public Session {
   void ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options, bool canceled,
                               Response& response, int prompt_tokens, int total_tokens,
-                              std::vector<ParsedToolCall> pre_parsed_calls = {});
+                              std::vector<ParsedToolCall> pre_parsed_calls = {},
+                              std::optional<flFinishReason> backend_finish_reason = std::nullopt);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged

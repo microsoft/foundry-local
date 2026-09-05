@@ -285,8 +285,13 @@ void OnnxChatEngine::RouteEvents() {
   engine_->Run(*event_buffer_);
   for (size_t i = 0; i < event_buffer_->Count(); ++i) {
     const auto* event = event_buffer_->Get(i);
+    const auto flags = event->Flags();
     const auto request = event->Request();
     if (!request) {
+      if ((flags & OgaEngineEventFlag_Failed) != 0) {
+        throw std::runtime_error("ORT GenAI Engine failed with error code " +
+                                 std::to_string(event->ErrorCode()));
+      }
       continue;
     }
 
@@ -298,7 +303,6 @@ void OnnxChatEngine::RouteEvents() {
     }
 
     auto& conversation = it->second->state;
-    const auto flags = event->Flags();
     {
       std::lock_guard<std::mutex> lock(conversation->mutex);
       if ((flags & OgaEngineEventFlag_Token) != 0) {

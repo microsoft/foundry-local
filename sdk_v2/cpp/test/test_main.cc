@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include <gtest/gtest.h>
-#include <gtest/gtest.h>
-#include <gtest/gtest.h>
 #if __has_include(<ort_genai.h>)
 #include <ort_genai.h>
 #define FOUNDRY_LOCAL_TEST_HAS_OGA 1

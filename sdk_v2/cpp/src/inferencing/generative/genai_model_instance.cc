@@ -4,6 +4,7 @@
 #include "exception.h"
 #include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
+#include "util/key_value_pairs.h"
 #include "utils.h"
 
 #include <ort_genai.h>
@@ -72,7 +73,8 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
 
   if (IsMultiModal() && genai_config_.GetChatBackendKind() != ChatBackendKind::kGenerator) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
-                     "model ", model_id_, " declares an Engine backend, but Engine is not supported for multimodal models");
+                     "model ", model_id_,
+                     " declares an Engine backend, but Engine is not supported for multimodal models");
   }
 
   if (genai_config_.GetChatBackendKind() != ChatBackendKind::kGenerator) {
@@ -112,6 +114,53 @@ Preprocessor& GenAIModelInstance::GetPreprocessor() {
   }
 
   return *preprocessor_;
+}
+
+const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
+  std::call_once(tag_info_init_flag_, [this]() {
+    std::unique_ptr<OgaTokenizer> tokenizer;
+    std::unique_ptr<OgaTokenizer> tokenizer_with_special;
+    try {
+      tokenizer = OgaTokenizer::Create(GetOgaModel());
+      tokenizer_with_special = OgaTokenizer::Create(GetOgaModel());
+      KeyValuePairs options;
+      options.Add("skip_special_tokens", "0");
+      tokenizer_with_special->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
+    } catch (...) {
+      return;
+    }
+
+    // Get tag IDs from the tokenizer (reads from config, with fallback vocab lookup).
+    // These throw if the model doesn't define the token, so we catch and leave as nullopt.
+    auto try_get_id = [](auto&& getter) -> std::optional<int32_t> {
+      try {
+        return getter();
+      } catch (...) {
+        return std::nullopt;
+      }
+    };
+    tag_info_.bot_id = try_get_id([&] { return tokenizer->GetBotTokenId(); });
+    tag_info_.eot_id = try_get_id([&] { return tokenizer->GetEotTokenId(); });
+    tag_info_.bor_id = try_get_id([&] { return tokenizer->GetBorTokenId(); });
+    tag_info_.eor_id = try_get_id([&] { return tokenizer->GetEorTokenId(); });
+
+    // Decode each valid ID once through the special tokenizer to get the string.
+    // Uses tokenizer_with_special_ so that special token text (e.g., "<tool_call>") is produced.
+    auto decode_id = [&](std::optional<int32_t> id) -> std::string {
+      if (!id.has_value()) return {};
+      int32_t val = *id;
+      OgaString text = tokenizer_with_special->Decode(&val, 1);
+      const char* p = text;
+      return p ? std::string(p) : std::string();
+    };
+
+    tag_info_.bot_str = decode_id(tag_info_.bot_id);
+    tag_info_.eot_str = decode_id(tag_info_.eot_id);
+    tag_info_.bor_str = decode_id(tag_info_.bor_id);
+    tag_info_.eor_str = decode_id(tag_info_.eor_id);
+  });
+
+  return tag_info_;
 }
 
 }  // namespace fl

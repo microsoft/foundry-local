@@ -2,8 +2,10 @@
 // Licensed under the MIT License.
 #pragma once
 
-#include <string>
+#include "foundry_local/foundry_local_c.h"
+
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace fl {
@@ -15,6 +17,7 @@ struct SearchOptions;
 struct ChatTurnUsage {
   int prompt_tokens = 0;
   int generated_tokens = 0;
+  std::optional<flFinishReason> finish_reason;
 };
 
 /// Abstract interface for token-by-token text generation.

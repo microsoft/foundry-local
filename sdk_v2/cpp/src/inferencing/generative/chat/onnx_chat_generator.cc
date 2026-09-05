@@ -12,8 +12,6 @@
 #include <nlohmann/json.hpp>
 #include <ort_genai.h>
 
-#include <algorithm>
-
 namespace fl {
 
 OnnxChatGenerator::~OnnxChatGenerator() = default;
@@ -25,14 +23,12 @@ OnnxChatGenerator::~OnnxChatGenerator() = default;
 OnnxChatGenerator::OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_params,
                                      std::unique_ptr<OgaGenerator> generator,
                                      std::unique_ptr<OgaTokenizerStream> stream,
-                                     std::unique_ptr<OgaTokenizerStream> stream_with_special,
                                      GenAIModelInstance& model,
                                      int prompt_token_count,
                                      std::unique_ptr<OgaNamedTensors> named_tensors)
     : gen_params_(std::move(gen_params)),
       generator_(std::move(generator)),
       stream_(std::move(stream)),
-      stream_with_special_(std::move(stream_with_special)),
       named_tensors_(std::move(named_tensors)),
       model_(model),
       prompt_token_count_(prompt_token_count) {}
@@ -85,31 +81,30 @@ std::string OnnxChatGenerator::Decode() {
 
   int32_t token_id = next_tokens[0];
 
-  // Decode through the normal tokenizer stream
-  const char* token_text = stream_->Decode(token_id);
+  // Fast path: if this token matches a known tag ID, return the pre-decoded string.
+  // Decode is always single-stream for normal tokens.
+  const auto& tag_info = model_.GetTagInfo();
 
-  // Also decode through the special-token stream to detect tool call and think tokens.
-  // If the special stream gives a different result and it's a known special token type
-  // that isn't an EOS token, surface the special representation instead.
-  // Matches C# OnnxChatGenerator.Decode behavior.
-  const char* special_text = stream_with_special_->Decode(token_id);
-
-  std::string token_str = token_text ? std::string(token_text) : "";
-
-  if (special_text != nullptr && token_text != nullptr && std::string(special_text) != token_str) {
-    std::string special_str(special_text);
-    bool is_tool_call_token = special_str.find("tool_call") != std::string::npos;
-    bool is_think_token = special_str.find("think") != std::string::npos;
-
-    const auto& eos_ids = model_.GetPreprocessor().GetEosTokenIds();
-    bool is_eos = std::find(eos_ids.begin(), eos_ids.end(), token_id) != eos_ids.end();
-
-    if (!is_eos && (is_tool_call_token || is_think_token)) {
-      return special_str;
-    }
+  if (tag_info.bot_id.has_value() && token_id == *tag_info.bot_id) {
+    stream_->Decode(token_id);
+    return tag_info.bot_str;
+  }
+  if (tag_info.eot_id.has_value() && token_id == *tag_info.eot_id) {
+    stream_->Decode(token_id);
+    return tag_info.eot_str;
+  }
+  if (tag_info.bor_id.has_value() && token_id == *tag_info.bor_id) {
+    stream_->Decode(token_id);
+    return tag_info.bor_str;
+  }
+  if (tag_info.eor_id.has_value() && token_id == *tag_info.eor_id) {
+    stream_->Decode(token_id);
+    return tag_info.eor_str;
   }
 
-  return token_str;
+  // Single decode for all non-tag tokens.
+  const char* token_text = stream_->Decode(token_id);
+  return token_text ? std::string(token_text) : "";
 }
 
 int OnnxChatGenerator::TokenCount() const {
@@ -379,19 +374,14 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to create generator: ") + e.what());
   }
 
-  // 7. Create two tokenizer streams:
-  //    - Normal stream: standard decoding (special tokens filtered)
-  //    - Special stream: includes special tokens (for tool call detection)
-
+  // 7. Create tokenizer stream (single-decode path).
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
-  auto stream_with_special = model.GetPreprocessor().CreateSpecialTokenizerStream();
 
   // `std::make_unique` constructs inside the library helper, which does not have
   // access to this class's private constructor.
   return std::unique_ptr<OnnxChatGenerator>(new OnnxChatGenerator(std::move(gen_params),
                                                                   std::move(generator),
                                                                   std::move(stream),
-                                                                  std::move(stream_with_special),
                                                                   model,
                                                                   input_token_count,
                                                                   std::move(named_tensors)));

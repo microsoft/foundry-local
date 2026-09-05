@@ -159,6 +159,17 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
     }
   }
 
+  // Catalog metadata is immutable and may not contain markers for models whose
+  // tokenizer defines them dynamically. Read those markers from the loaded GenAI
+  // model without mutating the published ModelInfo.
+  const auto& tag_info = model_.GetTagInfo();
+  if (tool_ctx.tool_call_start.empty()) {
+    tool_ctx.tool_call_start = tag_info.bot_str;
+  }
+  if (tool_ctx.tool_call_end.empty()) {
+    tool_ctx.tool_call_end = tag_info.eot_str;
+  }
+
   // Check if the model supports chain-of-thought reasoning
   const auto* reasoning_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT);
   if (reasoning_val && *reasoning_val == 1) {
@@ -181,6 +192,12 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
     if (val) {
       tool_ctx.reasoning_end = *val;
     }
+  }
+  if (tool_ctx.reasoning_start.empty()) {
+    tool_ctx.reasoning_start = tag_info.bor_str;
+  }
+  if (tool_ctx.reasoning_end.empty()) {
+    tool_ctx.reasoning_end = tag_info.eor_str;
   }
 
   // Accumulate tool definitions from the session.
@@ -317,7 +334,8 @@ static std::vector<TextSegment> SplitReasoningContent(const std::string& text,
 void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options, bool canceled,
                                          Response& response, int prompt_tokens, int total_tokens,
-                                         std::vector<ParsedToolCall> pre_parsed_calls) {
+                                         std::vector<ParsedToolCall> pre_parsed_calls,
+                                         std::optional<flFinishReason> backend_finish_reason) {
   int completion_tokens = total_tokens - prompt_tokens;
 
   // Check if the generated text contains tool calls. If the caller has already parsed them (streaming path), reuse
@@ -379,6 +397,8 @@ void ChatSession::ProcessGeneratedOutput(std::string text, const ToolCallContext
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
   } else if (has_tool_calls) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_TOOL_CALLS;
+  } else if (backend_finish_reason.has_value()) {
+    response.finish_reason = *backend_finish_reason;
   } else {
     int max_output = effective_options.max_output_tokens.value_or(0);
 
@@ -636,9 +656,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   }
 
   int total_tokens = cached_generator_->TokenCount();
+  std::optional<flFinishReason> backend_finish_reason;
   if (const auto turn_usage = cached_generator_->GetTurnUsage()) {
     prompt_tokens = turn_usage->prompt_tokens;
     total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    backend_finish_reason = turn_usage->finish_reason;
   }
   bool discard_generator = false;
 
@@ -651,7 +673,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   }
 
   ProcessGeneratedOutput(std::move(text), cached_tool_ctx_, effective_options, request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls),
+                         backend_finish_reason);
 
   if (discard_generator) {
     cached_generator_.reset();
@@ -872,16 +895,19 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   }
 
   int total_tokens = generator->TokenCount();
+  std::optional<flFinishReason> backend_finish_reason;
   if (const auto turn_usage = generator->GetTurnUsage()) {
     prompt_tokens = turn_usage->prompt_tokens;
     total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    backend_finish_reason = turn_usage->finish_reason;
   }
 
   // Process the generated output into response items (MessageItem, ToolCallItem, etc.)
   // This also updates finish_reason, and usage on the response. Streamed-parsed tool calls are reused so call_ids
   // stay stable across stream deltas and the final ChatCompletionResponse.
   ProcessGeneratedOutput(std::move(text), tool_ctx, options, original_request.canceled,
-                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls));
+                         response, prompt_tokens, total_tokens, std::move(streamed_tool_calls),
+                         backend_finish_reason);
 
   // Emit final streaming chunk with finish_reason
   if (is_streaming) {

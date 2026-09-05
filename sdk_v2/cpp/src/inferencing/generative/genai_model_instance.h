@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
@@ -35,6 +37,20 @@ class GenAIModelInstance {
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ExecutionProvider EP() const { return ep_; }
   bool IsMultiModal() const;
+
+  /// Cached tag token IDs and decoded strings for tool/reasoning detection.
+  /// Populated once on first access using OGA tokenizer APIs.
+  struct TagInfo {
+    std::optional<int32_t> bot_id;
+    std::optional<int32_t> eot_id;
+    std::optional<int32_t> bor_id;
+    std::optional<int32_t> eor_id;
+    std::string bot_str;
+    std::string eot_str;
+    std::string bor_str;
+    std::string eor_str;
+  };
+  const TagInfo& GetTagInfo();
 
   /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();
@@ -67,6 +83,8 @@ class GenAIModelInstance {
   std::unique_ptr<OgaModel> oga_model_;
   std::unique_ptr<Preprocessor> preprocessor_;
   std::unique_ptr<OnnxChatEngine> chat_engine_;
+  TagInfo tag_info_;
+  std::once_flag tag_info_init_flag_;
   std::chrono::steady_clock::time_point last_activity_;
   mutable std::atomic<int> session_ref_count_{0};
 };

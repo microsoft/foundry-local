@@ -12,15 +12,17 @@
 //!   3. Otherwise no-op: the library is resolved at runtime from
 //!      `FOUNDRY_LOCAL_LIB_DIR`, next to the executable, or the system path.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-const FEEDS: &[&str] = &[
-    "https://api.nuget.org/v3/index.json",
-    "https://pkgs.dev.azure.com/aiinfra/PublicPackages/_packaging/ORT-Nightly/nuget/v3/index.json",
-];
+mod build_support;
+mod http_extract;
+
+use build_support::{NuGetConfig, NuGetMode};
 
 struct DepsVersions {
     ort: String,
@@ -160,10 +162,23 @@ fn get_packages(deps: &DepsVersions, runtime_version: &str) -> Vec<NuGetPackage>
     ]
 }
 
-fn resolve_base_address(feed_url: &str) -> Result<String, String> {
-    let body: String = ureq::get(feed_url)
+fn resolve_base_address(
+    agent: &ureq::Agent,
+    feed_url: &str,
+    cache: &mut HashMap<String, String>,
+) -> Result<String, String> {
+    if let Some(base) = cache.get(feed_url) {
+        return Ok(base.clone());
+    }
+    let safe_feed_url = build_support::redact_url(feed_url);
+    let body: String = agent
+        .get(feed_url)
         .call()
-        .map_err(|e| format!("fetch feed index {feed_url}: {e}"))?
+        .map_err(|error| {
+            build_support::redact_urls_in_text(&format!(
+                "fetch feed index {safe_feed_url}: {error}"
+            ))
+        })?
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("read feed index: {e}"))?;
@@ -172,32 +187,37 @@ fn resolve_base_address(feed_url: &str) -> Result<String, String> {
     for resource in index["resources"].as_array().ok_or("missing resources")? {
         if resource["@type"].as_str() == Some("PackageBaseAddress/3.0.0") {
             if let Some(id) = resource["@id"].as_str() {
-                return Ok(if id.ends_with('/') {
+                build_support::validate_http_package_base_address(id)?;
+                let base = if id.ends_with('/') {
                     id.to_string()
                 } else {
                     format!("{id}/")
-                });
+                };
+                cache.insert(feed_url.to_string(), base.clone());
+                return Ok(base);
             }
         }
     }
-    Err(format!("no PackageBaseAddress in {feed_url}"))
+    Err(format!("no PackageBaseAddress in {safe_feed_url}"))
 }
 
 fn try_download(
+    agent: &ureq::Agent,
     pkg: &NuGetPackage,
     rid: &str,
-    out_dir: &Path,
+    staging_dir: &Path,
     feed_url: &str,
-) -> Result<usize, String> {
-    let base = resolve_base_address(feed_url)?;
+    service_index_cache: &mut HashMap<String, String>,
+) -> Result<Vec<PathBuf>, String> {
+    let base = resolve_base_address(agent, feed_url, service_index_cache)?;
     let name = pkg.name.to_lowercase();
     let version = pkg.version.to_lowercase();
     let url = format!("{base}{name}/{version}/{name}.{version}.nupkg");
     println!("cargo:warning=Downloading {} {}", pkg.name, pkg.version);
 
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|e| format!("download {}: {e}", pkg.name))?;
+    let mut response = agent.get(&url).call().map_err(|error| {
+        build_support::redact_urls_in_text(&format!("download {}: {error}", pkg.name))
+    })?;
     let mut bytes = Vec::new();
     response
         .body_mut()
@@ -211,64 +231,56 @@ fn try_download(
         return Err(format!("downloaded {} {} is empty", pkg.name, pkg.version));
     }
 
-    let ext = native_lib_extension();
-    let native_prefix = format!("runtimes/{rid}/native/");
-    let runtime_prefix = format!("runtimes/{rid}/");
-    let mut archive = zip::ZipArchive::new(io::Cursor::new(&bytes))
-        .map_err(|e| format!("open nupkg {}: {e}", pkg.name))?;
-
-    let mut extracted = 0usize;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| format!("zip entry: {e}"))?;
-        let entry = file.name().to_string();
-        if !entry.ends_with(&format!(".{ext}")) {
-            continue;
-        }
-        let direct = entry
-            .strip_prefix(&runtime_prefix)
-            .map(|r| !r.is_empty() && !r.contains('/'))
-            .unwrap_or(false);
-        if !entry.starts_with(&native_prefix) && !direct {
-            continue;
-        }
-        let file_name = match Path::new(&entry).file_name() {
-            Some(n) => n.to_string_lossy().to_string(),
-            None => continue,
-        };
-        let dest = out_dir.join(&file_name);
-        let mut out =
-            fs::File::create(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
-        io::copy(&mut file, &mut out).map_err(|e| format!("write {}: {e}", dest.display()))?;
-        println!("cargo:warning=  Extracted {file_name}");
-        extracted += 1;
-    }
-    Ok(extracted)
+    http_extract::extract_package(
+        io::Cursor::new(bytes),
+        rid,
+        native_lib_extension(),
+        &pkg.expected_file,
+        staging_dir,
+    )
+    .map_err(|error| format!("extract nupkg {}: {error}", pkg.name))
 }
 
-fn download_and_extract(pkg: &NuGetPackage, rid: &str, out_dir: &Path) -> Result<(), String> {
-    if out_dir.join(&pkg.expected_file).exists() {
+fn download_and_extract(
+    agent: &ureq::Agent,
+    pkg: &NuGetPackage,
+    rid: &str,
+    out_dir: &Path,
+    feeds: &[String],
+    service_index_cache: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    if build_support::package_is_current(out_dir, &pkg.expected_file, &pkg.version) {
         return Ok(());
     }
     if pkg.version.trim().is_empty() {
         return Err(format!("no version configured for {}", pkg.name));
     }
+    let staging_dir = out_dir.join(format!(".nuget-http-{}", pkg.expected_file));
     let mut last = String::new();
-    for feed in FEEDS {
-        match try_download(pkg, rid, out_dir, feed) {
+    for feed in feeds {
+        match try_download(agent, pkg, rid, &staging_dir, feed, service_index_cache) {
             // Integrity guard: a "successful" download must actually yield the
             // expected native binary (the archive opened as a valid zip and the
             // expected file landed on disk). Cryptographic SHA-512 verification
             // against the feed's published packageHash is feed-specific — the
             // registration layout differs between nuget.org and the Azure DevOps
             // feed — and is left as future hardening.
-            Ok(_) if out_dir.join(&pkg.expected_file).exists() => return Ok(()),
-            Ok(_) => {
-                last = format!(
-                    "{} {} downloaded but did not contain expected file {}",
-                    pkg.name, pkg.version, pkg.expected_file
-                )
+            Ok(files) => {
+                let stage_result = http_extract::stage_files(&files, out_dir);
+                http_extract::cleanup_dir(&staging_dir);
+                stage_result?;
+                for file in files {
+                    if let Some(file_name) = file.file_name() {
+                        println!("cargo:warning=  Extracted {}", file_name.to_string_lossy());
+                    }
+                }
+                build_support::record_package_version(out_dir, &pkg.expected_file, &pkg.version)?;
+                return Ok(());
             }
-            Err(e) => last = e,
+            Err(error) => {
+                http_extract::cleanup_dir(&staging_dir);
+                last = error;
+            }
         }
     }
     Err(format!(
@@ -277,10 +289,184 @@ fn download_and_extract(pkg: &NuGetPackage, rid: &str, out_dir: &Path) -> Result
     ))
 }
 
-fn copy_from_local_dir(src: &Path, out_dir: &Path) -> bool {
+fn missing_packages<'a>(packages: &'a [NuGetPackage], out_dir: &Path) -> Vec<&'a NuGetPackage> {
+    packages
+        .iter()
+        .filter(|pkg| !build_support::package_is_current(out_dir, &pkg.expected_file, &pkg.version))
+        .collect()
+}
+
+fn reset_temp_dir(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "remove temporary directory {}: {error}",
+                path.display()
+            ))
+        }
+    }
+    fs::create_dir_all(path)
+        .map_err(|error| format!("create temporary directory {}: {error}", path.display()))
+}
+
+fn cleanup_temp_dir(path: &Path) {
+    if let Err(error) = fs::remove_dir_all(path) {
+        println!(
+            "cargo:warning=Could not remove temporary directory {}: {error}",
+            path.display()
+        );
+    }
+}
+
+fn stage_restored_package(
+    pkg: &NuGetPackage,
+    package_dir: &Path,
+    rid: &str,
+    out_dir: &Path,
+) -> Result<(), String> {
+    let files = build_support::collect_native_files(package_dir, rid, native_lib_extension())?;
+    if files.is_empty() {
+        return Err(format!(
+            "No native files found for RID '{rid}' in {} {}.",
+            pkg.name, pkg.version
+        ));
+    }
+    if !build_support::contains_expected_file(&files, &pkg.expected_file) {
+        return Err(format!(
+            "{} {} did not contain expected file {} for RID '{rid}'.",
+            pkg.name, pkg.version, pkg.expected_file
+        ));
+    }
+    build_support::invalidate_package(out_dir, &pkg.expected_file)?;
+    for file in files {
+        let file_name = file
+            .file_name()
+            .ok_or_else(|| format!("native file has no file name: {}", file.display()))?;
+        fs::copy(&file, out_dir.join(file_name))
+            .map_err(|error| format!("stage {}: {error}", file.display()))?;
+        println!("cargo:warning=  Staged {}", file_name.to_string_lossy());
+    }
+    if out_dir.join(&pkg.expected_file).exists() {
+        build_support::record_package_version(out_dir, &pkg.expected_file, &pkg.version)
+    } else {
+        Err(format!(
+            "{} {} restored but did not contain expected file {}",
+            pkg.name, pkg.version, pkg.expected_file
+        ))
+    }
+}
+
+fn run_command(command: &str, args: &[std::ffi::OsString], operation: &str) -> Result<(), String> {
+    let output = Command::new(command).args(args).output().map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            format!(
+                "{operation} command not found: '{command}'. Install it or configure its \
+                     FOUNDRY_LOCAL_*_COMMAND override."
+            )
+        } else {
+            format!("start {operation}: {error}")
+        }
+    })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = build_support::redact_urls_in_text(&format!("{stdout}\n{stderr}"));
+    Err(format!(
+        "{operation} failed (exit {}).\n{}",
+        output
+            .status
+            .code()
+            .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
+        detail.trim()
+    ))
+}
+
+fn restore_with_dotnet(
+    config: &NuGetConfig,
+    packages: &[NuGetPackage],
+    rid: &str,
+    out_dir: &Path,
+) -> Result<(), String> {
+    let missing = missing_packages(packages, out_dir);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let temp_dir = out_dir.join("nuget-dotnet-restore");
+    reset_temp_dir(&temp_dir)?;
+    let result = (|| {
+        let project_path = temp_dir.join("restore.csproj");
+        let packages_dir = temp_dir.join("packages");
+        fs::create_dir_all(&packages_dir)
+            .map_err(|error| format!("create package directory: {error}"))?;
+        let package_refs: Vec<_> = missing
+            .iter()
+            .map(|pkg| (pkg.name.as_str(), pkg.version.as_str()))
+            .collect();
+        fs::write(
+            &project_path,
+            build_support::generate_restore_project(&package_refs),
+        )
+        .map_err(|error| format!("write restore project: {error}"))?;
+        let args = build_support::build_dotnet_restore_args(config, &project_path, &packages_dir);
+        println!("cargo:warning=Running dotnet restore for native runtime packages");
+        run_command(&config.dotnet_command, &args, "dotnet restore")?;
+        for pkg in missing {
+            let package_dir =
+                build_support::find_dotnet_package_dir(&packages_dir, &pkg.name, &pkg.version)?;
+            stage_restored_package(pkg, &package_dir, rid, out_dir)?;
+        }
+        Ok(())
+    })();
+    cleanup_temp_dir(&temp_dir);
+    result
+}
+
+fn restore_with_nuget(
+    config: &NuGetConfig,
+    packages: &[NuGetPackage],
+    rid: &str,
+    out_dir: &Path,
+) -> Result<(), String> {
+    let missing = missing_packages(packages, out_dir);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let temp_dir = out_dir.join("nuget-cli-restore");
+    reset_temp_dir(&temp_dir)?;
+    let result = (|| {
+        let packages_dir = temp_dir.join("packages");
+        fs::create_dir_all(&packages_dir)
+            .map_err(|error| format!("create package directory: {error}"))?;
+        for pkg in missing {
+            let args = build_support::build_nuget_install_args(
+                config,
+                &pkg.name,
+                &pkg.version,
+                &packages_dir,
+            );
+            println!(
+                "cargo:warning=Running nuget install for {} {}",
+                pkg.name, pkg.version
+            );
+            run_command(&config.nuget_command, &args, "nuget install")?;
+            let package_dir =
+                build_support::find_nuget_package_dir(&packages_dir, &pkg.name, &pkg.version)?;
+            stage_restored_package(pkg, &package_dir, rid, out_dir)?;
+        }
+        Ok(())
+    })();
+    cleanup_temp_dir(&temp_dir);
+    result
+}
+
+fn copy_from_local_dir(src: &Path, out_dir: &Path) -> Result<bool, String> {
     let ext = native_lib_extension();
     let Ok(entries) = fs::read_dir(src) else {
-        return false;
+        return Ok(false);
     };
     let mut copied = false;
     for entry in entries.flatten() {
@@ -297,7 +483,10 @@ fn copy_from_local_dir(src: &Path, out_dir: &Path) -> bool {
             }
         }
     }
-    copied
+    if copied {
+        build_support::invalidate_package_version_markers(out_dir)?;
+    }
+    Ok(copied)
 }
 
 fn emit_native_dir(out_dir: &Path) {
@@ -314,6 +503,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NATIVE_BIN_DIR");
     println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_RUNTIME_VERSION");
+    println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NUGET_MODE");
+    println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NUGET_FEEDS");
+    println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NUGET_CONFIG");
+    println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_DOTNET_COMMAND");
+    println!("cargo:rerun-if-env-changed=FOUNDRY_LOCAL_NUGET_COMMAND");
 
     // docs.rs builds run in an offline sandbox and only need the crate to
     // type-check — `cargo doc` never links or runs the native library. Skip all
@@ -334,9 +528,18 @@ fn main() {
     // 1. Local C++ build output (dev path).
     if let Ok(local) = env::var("FOUNDRY_LOCAL_NATIVE_BIN_DIR") {
         let src = Path::new(&local);
-        if src.is_dir() && copy_from_local_dir(src, &out_dir) {
-            emit_native_dir(&out_dir);
-            return;
+        if src.is_dir() {
+            match copy_from_local_dir(src, &out_dir) {
+                Ok(true) => {
+                    emit_native_dir(&out_dir);
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    println!("cargo:warning=local native staging failed: {error}");
+                    return;
+                }
+            }
         }
     }
 
@@ -356,16 +559,53 @@ fn main() {
         };
         let deps = load_deps_versions(&manifest_dir);
         let packages = get_packages(&deps, &runtime_version);
-        let mut failed = false;
-        for pkg in &packages {
-            if let Err(e) = download_and_extract(pkg, rid, &out_dir) {
-                println!("cargo:warning={e}");
-                failed = true;
+        let config = build_support::read_config()
+            .unwrap_or_else(|error| panic!("invalid NuGet configuration: {error}"));
+        if let Some(config_file) = &config.config_file {
+            println!("cargo:rerun-if-changed={config_file}");
+        }
+        let package_versions: Vec<_> = packages
+            .iter()
+            .map(|pkg| (pkg.expected_file.as_str(), pkg.version.as_str()))
+            .collect();
+        let result = build_support::reset_native_cache_if_stale(
+            &out_dir,
+            &package_versions,
+            native_lib_extension(),
+        )
+        .and_then(|_| match config.mode {
+            NuGetMode::Http => {
+                let mut failed = false;
+                let mut service_index_cache = HashMap::new();
+                let http_config = ureq::Agent::config_builder().https_only(true).build();
+                let http_agent = ureq::Agent::new_with_config(http_config);
+                for pkg in &packages {
+                    if let Err(error) = download_and_extract(
+                        &http_agent,
+                        pkg,
+                        rid,
+                        &out_dir,
+                        &config.feeds,
+                        &mut service_index_cache,
+                    ) {
+                        println!("cargo:warning={error}");
+                        failed = true;
+                    }
+                }
+                if failed {
+                    Err("one or more native runtime packages failed to download".to_string())
+                } else {
+                    Ok(())
+                }
             }
+            NuGetMode::Dotnet => restore_with_dotnet(&config, &packages, rid, &out_dir),
+            NuGetMode::Nuget => restore_with_nuget(&config, &packages, rid, &out_dir),
+        });
+        if let Err(error) = result {
+            println!("cargo:warning=native package acquisition failed: {error}");
+            return;
         }
-        if !failed {
-            emit_native_dir(&out_dir);
-        }
+        emit_native_dir(&out_dir);
         return;
     }
 

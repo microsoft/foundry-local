@@ -555,6 +555,44 @@ runtime. The `build.rs` build script can obtain it in two ways, controlled by en
 | `FOUNDRY_LOCAL_NATIVE_BIN_DIR` | Copy native binaries from a local C++ build output directory (the dev path). Mirrors the C# `FoundryLocalNativeBinDir`. |
 | `FOUNDRY_LOCAL_RUNTIME_VERSION` | Download the Runtime NuGet package (`Microsoft.AI.Foundry.Local.Runtime`) plus ONNX Runtime / GenAI for the target RID. On Windows this package bundles the reg-free WinML 2.x runtime. |
 
+When `FOUNDRY_LOCAL_RUNTIME_VERSION` is set, the NuGet acquisition path supports three modes:
+
+- **`http` (default)** — talks to the NuGet v3 HTTP protocol directly. No external tools are
+  required, but feeds must support anonymous HTTPS access.
+- **`dotnet`** — runs `dotnet restore` against a temporary project. Use this with a
+  `NuGet.Config` or a credential provider supported by the .NET SDK.
+- **`nuget`** — runs `nuget install` once per package. Use this when authentication depends on a
+  NuGet or Visual Studio credential provider that the standalone NuGet CLI can host.
+
+| Variable | Applies to | Purpose |
+|----------|------------|---------|
+| `FOUNDRY_LOCAL_NUGET_MODE` | all | `http` (default), `dotnet`, or `nuget`. |
+| `FOUNDRY_LOCAL_NUGET_FEEDS` | all | Semicolon-separated NuGet v3 service-index URLs. Replaces the public defaults. `http` mode requires HTTPS. |
+| `FOUNDRY_LOCAL_NUGET_CONFIG` | `dotnet`, `nuget` | Path to a `NuGet.Config`. When set, the config owns package sources; no command-line sources are added. |
+| `FOUNDRY_LOCAL_DOTNET_COMMAND` | `dotnet` | Command or path for the .NET CLI. Defaults to `dotnet`. |
+| `FOUNDRY_LOCAL_NUGET_COMMAND` | `nuget` | Command or path for the NuGet CLI. Defaults to `nuget.exe` on Windows and `nuget` elsewhere. |
+
+Authentication is delegated to the standard NuGet tooling in `dotnet` and `nuget` modes. The build
+script does not read or print credentials, and it redacts query strings, fragments, and embedded
+credentials from URLs in tool errors.
+
+To use an anonymous mirror directly:
+
+```bash
+export FOUNDRY_LOCAL_RUNTIME_VERSION="x.y.z" # Replace with the runtime package version.
+export FOUNDRY_LOCAL_NUGET_FEEDS=https://mirror.example/nuget/v3/index.json
+cargo build
+```
+
+To use package sources and credentials from a `NuGet.Config`:
+
+```bash
+export FOUNDRY_LOCAL_RUNTIME_VERSION="x.y.z" # Replace with the runtime package version.
+export FOUNDRY_LOCAL_NUGET_MODE=dotnet
+export FOUNDRY_LOCAL_NUGET_CONFIG="$HOME/.nuget/NuGet/NuGet.Config"
+cargo build
+```
+
 If neither is set at build time, the library is resolved at **runtime** from (in order):
 
 1. `FoundryLocalConfig::library_path` — a path to the `foundry_local` library file or its directory.
