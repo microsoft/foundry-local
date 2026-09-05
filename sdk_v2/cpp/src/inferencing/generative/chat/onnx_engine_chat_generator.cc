@@ -41,13 +41,11 @@ OnnxEngineChatGenerator::OnnxEngineChatGenerator(
     OnnxChatEngine& engine,
     std::shared_ptr<OnnxChatEngine::Conversation> conversation,
     std::unique_ptr<OgaTokenizerStream> stream,
-    std::unique_ptr<OgaTokenizerStream> stream_with_special,
     GenAIModelInstance& model,
     int prompt_token_count)
     : engine_(engine),
       conversation_(std::move(conversation)),
       stream_(std::move(stream)),
-      stream_with_special_(std::move(stream_with_special)),
       model_(model),
       prompt_token_count_(prompt_token_count) {}
 
@@ -83,22 +81,27 @@ std::string OnnxEngineChatGenerator::Decode() {
 
   const int32_t token_id = *current_token_;
   current_token_.reset();
-  const char* token_text = stream_->Decode(token_id);
-  const char* special_text = stream_with_special_->Decode(token_id);
-  std::string token = token_text ? token_text : "";
 
-  if (special_text != nullptr && token_text != nullptr && std::string(special_text) != token) {
-    const std::string special(special_text);
-    const bool surfaced_special =
-        special.find("tool_call") != std::string::npos || special.find("think") != std::string::npos;
-    const auto& eos_ids = model_.GetPreprocessor().GetEosTokenIds();
-    const bool eos = std::find(eos_ids.begin(), eos_ids.end(), token_id) != eos_ids.end();
-    if (surfaced_special && !eos) {
-      return special;
-    }
+  const auto& tag_info = model_.GetTagInfo();
+  if (tag_info.bot_id.has_value() && token_id == *tag_info.bot_id) {
+    stream_->Decode(token_id);
+    return tag_info.bot_str;
+  }
+  if (tag_info.eot_id.has_value() && token_id == *tag_info.eot_id) {
+    stream_->Decode(token_id);
+    return tag_info.eot_str;
+  }
+  if (tag_info.bor_id.has_value() && token_id == *tag_info.bor_id) {
+    stream_->Decode(token_id);
+    return tag_info.bor_str;
+  }
+  if (tag_info.eor_id.has_value() && token_id == *tag_info.eor_id) {
+    stream_->Decode(token_id);
+    return tag_info.eor_str;
   }
 
-  return token;
+  const char* token_text = stream_->Decode(token_id);
+  return token_text ? std::string(token_text) : "";
 }
 
 int OnnxEngineChatGenerator::TokenCount() const {
@@ -165,7 +168,6 @@ std::unique_ptr<OnnxEngineChatGenerator> OnnxEngineChatGenerator::Create(
   auto sequences = EncodePrompt(prompt, model);
   const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
-  auto stream_with_special = model.GetPreprocessor().CreateSpecialTokenizerStream();
   auto conversation = engine->CreateConversation(options, tool_ctx, prompt_token_count);
   try {
     const auto* data = sequences->SequenceData(0);
@@ -173,8 +175,8 @@ std::unique_ptr<OnnxEngineChatGenerator> OnnxEngineChatGenerator::Create(
                       ResolveMaxOutputTokens(options));
 
     return std::unique_ptr<OnnxEngineChatGenerator>(
-        new OnnxEngineChatGenerator(*engine, std::move(conversation), std::move(stream),
-                                    std::move(stream_with_special), model, prompt_token_count));
+        new OnnxEngineChatGenerator(*engine, std::move(conversation), std::move(stream), model,
+                                    prompt_token_count));
   } catch (...) {
     try {
       engine->Close(conversation);

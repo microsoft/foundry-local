@@ -36,9 +36,9 @@ namespace {
 
 class EngineModelStaging {
  public:
-  explicit EngineModelStaging(const std::filesystem::path& source)
-      : path_(source.parent_path() /
-              ("engine-chat-test-" + std::to_string(fl::test::CurrentPid()))) {
+  EngineModelStaging(const std::filesystem::path& source, ChatBackendKind backend)
+      : path_(source.parent_path() / ("engine-chat-test-" + BackendName(backend) + "-" +
+                                      std::to_string(fl::test::CurrentPid()))) {
     std::error_code ec;
     std::filesystem::remove_all(path_, ec);
     std::filesystem::create_directories(path_);
@@ -59,9 +59,15 @@ class EngineModelStaging {
       const auto config_path = path_ / "genai_config.json";
       std::ifstream input(config_path);
       auto config = nlohmann::json::parse(input);
-      config["engine"] = {
-          {"dynamic_batching", {{"max_batch_size", 2}, {"max_scheduled_tokens", 2048}}},
-      };
+      if (backend == ChatBackendKind::kDynamicEngine) {
+        config["engine"] = {
+            {"dynamic_batching", {{"max_batch_size", 2}, {"max_scheduled_tokens", 2048}}},
+        };
+      } else {
+        config["engine"] = {
+            {"static_batching", {{"max_batch_size", 2}}},
+        };
+      }
       std::ofstream(config_path) << config.dump(2);
     } catch (...) {
       std::filesystem::remove_all(path_, ec);
@@ -80,6 +86,10 @@ class EngineModelStaging {
   const std::filesystem::path& path() const { return path_; }
 
  private:
+  static std::string BackendName(ChatBackendKind backend) {
+    return backend == ChatBackendKind::kDynamicEngine ? "dynamic" : "static";
+  }
+
   std::filesystem::path path_;
 };
 
@@ -93,7 +103,8 @@ class ChatSessionTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     auto model_path = fl::test::GetTestModelPath(fl::test::kTestChatModelAlias);
-    engine_model_ = std::make_unique<EngineModelStaging>(model_path);
+    engine_model_ =
+        std::make_unique<EngineModelStaging>(model_path, ChatBackendKind::kDynamicEngine);
     logger_ = std::make_unique<StderrLogger>();
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
@@ -401,6 +412,44 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_NE(t2.find("5"), std::string::npos)
       << "Turn 2: expected '5'. Got: " << t2;
   EXPECT_EQ(session.MessageCount(), 4u);
+}
+
+TEST_F(ChatSessionTest, StaticEngineReconstructsMultiTurnHistory) {
+  constexpr const char* kStaticModelAlias = "static-engine-chat-test";
+  auto model_path = fl::test::GetTestModelPath(fl::test::kTestChatModelAlias);
+  EngineModelStaging static_model(model_path, ChatBackendKind::kStaticEngine);
+  test::CpuOnlyEpDetector ep_detector;
+  ModelLoadManager load_manager(ep_detector, *logger_);
+  auto result = load_manager.LoadModel(static_model.path().string(), kStaticModelAlias);
+  ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess);
+  ASSERT_NE(result.model, nullptr);
+  ASSERT_EQ(result.model->GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kStaticEngine);
+
+  {
+    ChatSession session(GetCatalogModel(), *result.model, *logger_, null_telemetry_);
+
+    Request first_request;
+    first_request.AddOwnedItem(
+        MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Remember the word sapphire. Reply OK."));
+    first_request.options.Add("max_output_tokens", "32");
+    first_request.options.Add("temperature", "0");
+    Response first_response;
+    session.ProcessRequest(first_request, first_response);
+
+    Request second_request;
+    second_request.AddOwnedItem(
+        MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What word did I ask you to remember?"));
+    second_request.options.Add("max_output_tokens", "32");
+    second_request.options.Add("temperature", "0");
+    Response second_response;
+    session.ProcessRequest(second_request, second_response);
+
+    EXPECT_NE(fl::test::ToLower(GetAssistantText(second_response)).find("sapphire"),
+              std::string::npos);
+    EXPECT_EQ(session.TurnCount(), 2u);
+  }
+
+  EXPECT_TRUE(load_manager.UnloadModel(kStaticModelAlias));
 }
 
 TEST_F(ChatSessionTest, RunStreamingCancellation) {

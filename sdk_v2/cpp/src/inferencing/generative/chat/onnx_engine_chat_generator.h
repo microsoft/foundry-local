@@ -46,14 +46,12 @@ class OnnxEngineChatGenerator final : public ChatGenerator {
   OnnxEngineChatGenerator(OnnxChatEngine& engine,
                           std::shared_ptr<OnnxChatEngine::Conversation> conversation,
                           std::unique_ptr<OgaTokenizerStream> stream,
-                          std::unique_ptr<OgaTokenizerStream> stream_with_special,
                           GenAIModelInstance& model,
                           int prompt_token_count);
 
   OnnxChatEngine& engine_;
   std::shared_ptr<OnnxChatEngine::Conversation> conversation_;
   std::unique_ptr<OgaTokenizerStream> stream_;
-  std::unique_ptr<OgaTokenizerStream> stream_with_special_;
   GenAIModelInstance& model_;
   int prompt_token_count_ = 0;
   std::optional<int32_t> current_token_;
