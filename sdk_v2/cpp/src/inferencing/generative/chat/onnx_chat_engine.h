@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +32,11 @@ struct ToolCallContext;
 /// Owns one ORT GenAI Engine and serializes every Engine operation onto its owner thread.
 class OnnxChatEngine {
  public:
+  class ConversationEvictedError : public std::runtime_error {
+   public:
+    ConversationEvictedError() : std::runtime_error("Engine conversation was evicted for capacity") {}
+  };
+
   struct TurnResult {
     uint64_t prompt_tokens = 0;
     uint64_t generated_tokens = 0;
@@ -87,6 +93,7 @@ class OnnxChatEngine {
   void Enqueue(std::function<void()> command, std::function<void(std::exception_ptr)> fail);
   void WorkerLoop(std::promise<void> initialized);
   void RouteEvents();
+  bool EvictDormantConversation();
   void FailAll(std::exception_ptr error);
   NativeConversation& FindNative(const std::shared_ptr<Conversation>& conversation);
 
@@ -102,6 +109,7 @@ class OnnxChatEngine {
   std::unique_ptr<OgaEngine> engine_;
   std::unique_ptr<OgaEngineEventBuffer> event_buffer_;
   std::unordered_map<Conversation*, std::unique_ptr<NativeConversation>> conversations_;
+  size_t consecutive_retry_events_ = 0;
 };
 
 }  // namespace fl

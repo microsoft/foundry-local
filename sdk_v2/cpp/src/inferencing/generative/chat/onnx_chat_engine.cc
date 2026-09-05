@@ -292,8 +292,24 @@ void OnnxChatEngine::RouteEvents() {
         throw std::runtime_error("ORT GenAI Engine failed with error code " +
                                  std::to_string(event->ErrorCode()));
       }
-      continue;
+      if ((flags & OgaEngineEventFlag_CapacityBlocked) != 0 && EvictDormantConversation()) {
+        consecutive_retry_events_ = 0;
+        continue;
+      }
+      if ((flags & (OgaEngineEventFlag_CapacityBlocked | OgaEngineEventFlag_Retryable)) != 0) {
+        constexpr size_t kMaxConsecutiveRetries = 100;
+        if (++consecutive_retry_events_ > kMaxConsecutiveRetries) {
+          throw std::runtime_error("ORT GenAI Engine made no progress after " +
+                                   std::to_string(kMaxConsecutiveRetries) +
+                                   " retryable events; last error code " +
+                                   std::to_string(event->ErrorCode()));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;
+      }
+      throw std::runtime_error("ORT GenAI Engine returned an invalid request-less event");
     }
+    consecutive_retry_events_ = 0;
 
     auto it = std::find_if(conversations_.begin(), conversations_.end(), [&](const auto& entry) {
       return entry.second->request.get() == &request->get();
@@ -328,6 +344,25 @@ void OnnxChatEngine::RouteEvents() {
   }
 }
 
+bool OnnxChatEngine::EvictDormantConversation() {
+  for (auto it = conversations_.begin(); it != conversations_.end(); ++it) {
+    auto conversation = it->second->state;
+    {
+      std::lock_guard<std::mutex> lock(conversation->mutex);
+      if (!conversation->turn_finished) {
+        continue;
+      }
+      conversation->closed = true;
+    }
+
+    it->second->request->Close();
+    conversations_.erase(it);
+    conversation->cv.notify_all();
+    return true;
+  }
+  return false;
+}
+
 void OnnxChatEngine::FailAll(std::exception_ptr error) {
   for (auto& [_, native] : conversations_) {
     {
@@ -343,7 +378,7 @@ OnnxChatEngine::NativeConversation& OnnxChatEngine::FindNative(
     const std::shared_ptr<Conversation>& conversation) {
   auto it = conversations_.find(conversation.get());
   if (it == conversations_.end()) {
-    throw std::runtime_error("Engine conversation is closed or does not belong to this model.");
+    throw ConversationEvictedError();
   }
   return *it->second;
 }

@@ -522,11 +522,16 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     } else {
       // Continuous decoding: append only the new messages to the existing generator.
       pre_turn_token_count = cached_generator_->TokenCount();
-      prompt_tokens =
-          cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json, effective_options);
+      try {
+        prompt_tokens = cached_generator_->AppendMessages(new_messages, Model(), cached_tool_ctx_.tools_json,
+                                                          effective_options);
 
-      // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
-      UpdateToolContextForTurn(request, cached_tool_ctx_);
+        // Refresh per-turn fields (tool_choice, guidance) while keeping session-level definitions stable.
+        UpdateToolContextForTurn(request, cached_tool_ctx_);
+      } catch (const OnnxChatEngine::ConversationEvictedError&) {
+        cached_generator_.reset();
+        cached_tool_ctx_ = {};
+      }
     }
   }
 
