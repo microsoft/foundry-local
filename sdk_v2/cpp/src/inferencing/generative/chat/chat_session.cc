@@ -4,6 +4,7 @@
 #include "inferencing/generative/chat/chat_session.h"
 
 #include "contracts/chat_completions.h"
+#include "contracts/tool_definitions.h"
 #include "contracts/chat_completions_converter.h"
 #include "inferencing/generative/chat/media_input.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
@@ -130,22 +131,6 @@ TranscriptMessage MakeAssistantMessage(const std::vector<GeneratedOutputEvent>& 
   return assistant;
 }
 
-/// Name-to-kind index over a snapshot of tool definitions. Unnamed entries are whole pre-serialized tools payloads
-/// rather than registrable tools (see ToolRegistry::Add), so they are deliberately absent: no generated call
-/// resolves against them.
-std::unordered_map<std::string, ToolKind> KindsByName(const std::vector<ToolDefinition>& definitions) {
-  std::unordered_map<std::string, ToolKind> kinds;
-  kinds.reserve(definitions.size());
-
-  for (const auto& td : definitions) {
-    if (!td.name.empty()) {
-      kinds.emplace(td.name, td.kind);
-    }
-  }
-
-  return kinds;
-}
-
 ReasoningStreamSplitter CreateReasoningSplitter(const ToolCallContext& tool_ctx,
                                                 GenAIModelInstance& model,
                                                 bool prompt_opens_reasoning) {
@@ -210,17 +195,9 @@ bool AcceptVisibleText(AssistantTurnGuard& guard, const std::string& text, ILogg
 namespace chat_session_internal {
 
 std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
-    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot) {
-  if (tools_json.empty()) {
+    std::vector<ToolDefinition> definitions, const std::vector<ToolDefinition>& session_snapshot) {
+  if (definitions.empty()) {
     return {};
-  }
-
-  const auto custom_tool =
-      std::find_if(session_snapshot.begin(), session_snapshot.end(),
-                   [](const ToolDefinition& tool) { return tool.kind == ToolKind::kCustom; });
-  if (custom_tool != session_snapshot.end()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-             "Custom tool definitions cannot be used with OpenAI JSON input");
   }
 
   if (!session_snapshot.empty()) {
@@ -228,7 +205,54 @@ std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
              "Tool definitions cannot be used with OpenAI JSON input; the JSON payload must be fully self-contained");
   }
 
-  return {{{}, {}, std::move(tools_json), ToolKind::kFunction}};
+  ToolRegistry request_registry;
+  for (auto& definition : definitions) {
+    request_registry.Add(std::move(definition));
+  }
+
+  return request_registry.Definitions();
+}
+
+void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context) {
+  nlohmann::json tools_array = nlohmann::json::array();
+  context.tool_kinds = tools::KindsByName(definitions);
+
+  for (const auto& definition : definitions) {
+    if (definition.name.empty()) {
+      const auto serialized = nlohmann::json::parse(definition.json_schema);
+      if (!serialized.is_array()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "an unnamed version 1 tool definition must contain a complete tools array");
+      }
+
+      for (const auto& tool : serialized) {
+        tools_array.push_back(tool);
+      }
+      continue;
+    }
+
+    nlohmann::json tool;
+    tool["type"] = "function";
+    tool["function"]["name"] = definition.name;
+
+    if (definition.include_description_in_prompt) {
+      tool["function"]["description"] = definition.description;
+    }
+
+    if (definition.include_parameters_in_prompt && !definition.json_schema.empty()) {
+      tool["function"]["parameters"] = nlohmann::json::parse(definition.json_schema);
+    }
+
+    if (definition.strict.has_value()) {
+      tool["function"]["strict"] = *definition.strict;
+    }
+
+    tools_array.push_back(std::move(tool));
+  }
+
+  if (!tools_array.empty()) {
+    context.tools_json = tools_array.dump();
+  }
 }
 
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
@@ -443,45 +467,15 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
         ResolveMarkerTokenId(tool_ctx.reasoning_end, {tag_info.eor_id, tag_info.eor_str});
   }
 
-  // Accumulate tool definitions from the session.
-  // Tool definitions may come from two sources:
-  // 1. Individual AddToolDefinition calls (name + description + parameters schema)
-  // 2. ChatCompletions converter (pre-serialized full OpenAI tools JSON array, no name)
-  // We need to produce a JSON array in OpenAI tools format for the chat template.
+  // Serialize named definitions into the OpenAI tools array the chat template expects. Released
+  // version 1 C ABI callers instead supply one unnamed definition whose schema is already a
+  // complete tools array; preserve that representation and append its elements in registration
+  // order when old and new callers are mixed.
   // Custom tools are already normalized by the registry into a function-shaped schema, so the
   // template and the guidance grammar only ever see function tools. Their kinds are carried on the
   // context, so this turn's output is read back with exactly the tool set that shaped its prompt
   // even if the session's registry changes underneath.
-  nlohmann::json tools_array = nlohmann::json::array();
-  bool has_preserialized = false;
-
-  tool_ctx.tool_kinds = KindsByName(definitions);
-
-  for (const auto& td : definitions) {
-    if (!td.name.empty()) {
-      // Individual tool: wrap in OpenAI format
-      nlohmann::json tool;
-      tool["type"] = "function";
-      tool["function"]["name"] = td.name;
-      tool["function"]["description"] = td.description;
-
-      if (!td.json_schema.empty()) {
-        tool["function"]["parameters"] = nlohmann::json::parse(td.json_schema);
-      }
-
-      tools_array.push_back(std::move(tool));
-    } else if (!td.json_schema.empty()) {
-      // Pre-serialized from ChatCompletions path — already a complete tools array
-      has_preserialized = true;
-      tool_ctx.tools_json += td.json_schema;
-    }
-  }
-
-  if (!tools_array.empty()) {
-    tool_ctx.tools_json = tools_array.dump();
-  } else if (!has_preserialized) {
-    tool_ctx.tools_json.clear();
-  }
+  chat_session_internal::PopulateToolDefinitions(definitions, tool_ctx);
 
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
@@ -963,7 +957,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
              "the request has nothing to generate from: `messages` carried no content");
   }
 
-  std::string tools_json = chat_completions::ExtractToolDefinitions(req, internal_request);
+  auto tool_definitions = original_request.prepared_tool_definitions.has_value()
+                              ? *original_request.prepared_tool_definitions
+                              : chat_completions::ExtractToolDefinitions(req, internal_request);
   chat_completions::MapRequestParameters(req, internal_request);
   chat_completions::MapGuidance(req, internal_request);
   chat_completions::MapStopSequences(req, internal_request);
@@ -975,11 +971,21 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     }
   }
 
-  // Build a request-local tool definition. It must never enter the session registry: this payload
-  // is self-contained and concurrent registration must not alter either its prompt or call parsing.
-  const auto request_tool_definitions =
-      chat_session_internal::BuildJsonRequestToolDefinitions(std::move(tools_json),
-                                                             session_tool_definitions);
+  // Build request-local definitions. They never enter the session registry: this payload is
+  // self-contained and concurrent registration must not alter either its prompt or call parsing.
+  std::vector<ToolDefinition> request_tool_definitions;
+  if (original_request.prepared_tool_definitions.has_value()) {
+    if (!session_tool_definitions.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "Tool definitions cannot be used with OpenAI JSON input; "
+               "the JSON payload must be fully self-contained");
+    }
+
+    request_tool_definitions = std::move(tool_definitions);
+  } else {
+    request_tool_definitions = chat_session_internal::BuildJsonRequestToolDefinitions(
+        std::move(tool_definitions), session_tool_definitions);
+  }
 
   const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);
 
@@ -1045,6 +1051,10 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   };
 
   auto process_tool_output = [&](ToolCallStreamAccumulator::Output out) {
+    // Validate and normalize the entire parsed batch before publishing any element. In particular,
+    // custom input comes from argument_source, which preserves the complete provider wrapper.
+    chat_session_internal::NormalizeToolOutputBatch(out, tool_ctx);
+
     for (auto& event : out.events) {
       if (auto* text = std::get_if<std::string>(&event)) {
         // A chat completion carries the assistant reply as `content` plus a `tool_calls` array — the same schema the
@@ -1064,12 +1074,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
       turn_guard.RecordToolCall();
 
       if (is_streaming) {
-        ChatCompletionToolCall streamed;
+        auto streamed = chat_completions::MakeToolCall(call.id, call.name, call.arguments,
+                                                       tool_ctx.KindOf(call.name));
         streamed.index = next_tool_call_index++;
-        streamed.id = call.id;
-        streamed.type = "function";
-        streamed.function.name = call.name;
-        streamed.function.arguments = call.arguments;
         auto chunk_json = chat_completions::FormatToolCallStreamingChunk(
             {streamed}, completion_id, created, model_name);
         streaming_callback->PushItem(std::make_unique<TextItem>(

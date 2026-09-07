@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <string_view>
+
 using namespace fl;
 using json = nlohmann::json;
 
@@ -78,6 +80,9 @@ TEST(ChatCompletionMessageTest, ToolCallsParsedWithNullContent) {
   ASSERT_EQ(msg.tool_calls.size(), 1u);
   EXPECT_EQ(msg.tool_calls[0].id, "call_1");
   EXPECT_EQ(msg.tool_calls[0].type, "function");
+  EXPECT_FALSE(msg.tool_calls[0].IsCustom());
+  EXPECT_EQ(msg.tool_calls[0].Name(), "get_weather");
+  EXPECT_EQ(msg.tool_calls[0].Payload(), R"({"city":"Seattle"})");
   EXPECT_EQ(msg.tool_calls[0].function.name, "get_weather");
   EXPECT_EQ(msg.tool_calls[0].function.arguments, R"({"city":"Seattle"})");
 }
@@ -113,12 +118,69 @@ TEST(ChatCompletionMessageTest, ToolCallWithoutFunctionNameIsRejected) {
   EXPECT_THROW(j.get<ChatCompletionMessage>(), fl::Exception);
 }
 
-TEST(ChatCompletionMessageTest, UnknownToolCallKindIsRejected) {
-  // Only function calls exist today. Unknown kinds are rejected rather than quietly coerced — support for a new kind
-  // is an explicit extension, not a fallback.
+TEST(ChatCompletionMessageTest, CustomToolCallCarriesRawInput) {
+  // A custom tool call is the second supported kind: its payload is free-form text nested under "custom",
+  // and it must not be read through the function contract.
   auto j = json::parse(R"({
     "role": "assistant",
-    "tool_calls": [{"id": "call_1", "type": "custom", "custom": {"name": "x"}}]
+    "tool_calls": [{"id": "call_2", "type": "custom", "custom": {"name": "apply_patch", "input": "PATCH BODY"}}]
+  })");
+  auto msg = j.get<ChatCompletionMessage>();
+
+  ASSERT_EQ(msg.tool_calls.size(), 1u);
+  EXPECT_TRUE(msg.tool_calls[0].IsCustom());
+  EXPECT_EQ(msg.tool_calls[0].Name(), "apply_patch");
+  EXPECT_EQ(msg.tool_calls[0].Payload(), "PATCH BODY");
+  EXPECT_TRUE(msg.tool_calls[0].function.name.empty()) << "a custom call carries no function payload";
+}
+
+TEST(ChatCompletionMessageTest, CustomToolCallWithNonStringInputIsRejected) {
+  auto j = json::parse(R"({
+    "role": "assistant",
+    "tool_calls": [{"id": "call_2", "type": "custom", "custom": {"name": "apply_patch", "input": {"a": 1}}}]
+  })");
+
+  EXPECT_THROW(j.get<ChatCompletionMessage>(), fl::Exception);
+}
+
+TEST(ChatCompletionMessageTest, CustomToolCallRequiresInputButAcceptsEmptyString) {
+  for (const auto& custom : {json{{"name", "apply_patch"}},
+                             json{{"name", "apply_patch"}, {"input", nullptr}}}) {
+    const json message = {
+        {"role", "assistant"},
+        {"tool_calls",
+         json::array({{{"id", "call_2"}, {"type", "custom"}, {"custom", custom}}})},
+    };
+    EXPECT_THROW(message.get<ChatCompletionMessage>(), fl::Exception);
+  }
+
+  const json message = {
+      {"role", "assistant"},
+      {"tool_calls",
+       json::array({{{"id", "call_2"},
+                     {"type", "custom"},
+                     {"custom", {{"name", "apply_patch"}, {"input", ""}}}}})},
+  };
+  const auto parsed = message.get<ChatCompletionMessage>();
+  EXPECT_EQ(parsed.tool_calls.at(0).Payload(), "");
+}
+
+TEST(ChatCompletionMessageTest, ToolResultRequiresNonEmptyCallId) {
+  for (const auto& message : {
+           json{{"role", "tool"}, {"content", "done"}},
+           json{{"role", "tool"}, {"tool_call_id", nullptr}, {"content", "done"}},
+           json{{"role", "tool"}, {"tool_call_id", ""}, {"content", "done"}},
+       }) {
+    EXPECT_THROW(message.get<ChatCompletionMessage>(), fl::Exception);
+  }
+}
+
+TEST(ChatCompletionMessageTest, UnknownToolCallKindIsRejected) {
+  // Function and custom are the two kinds that exist. Anything else is rejected rather than quietly coerced —
+  // support for a new kind is an explicit extension, not a fallback.
+  auto j = json::parse(R"({
+    "role": "assistant",
+    "tool_calls": [{"id": "call_1", "type": "computer_use", "computer_use": {"name": "x"}}]
   })");
 
   try {
@@ -149,22 +211,23 @@ TEST(ChatCompletionFunctionDefTest, MinimalFunction) {
   EXPECT_FALSE(f.strict.has_value());
 }
 
-TEST(ChatCompletionFunctionDefTest, FullFunction) {
+TEST(ChatCompletionFunctionDefTest, FunctionWithStrictTrueIsRejected) {
   auto j = json::parse(R"({
     "name": "search",
     "description": "Search the web",
     "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
     "strict": true
   })");
-  auto f = j.get<ChatCompletionFunctionDef>();
 
-  EXPECT_EQ(f.name, "search");
-  ASSERT_TRUE(f.description.has_value());
-  EXPECT_EQ(*f.description, "Search the web");
-  ASSERT_TRUE(f.parameters.has_value());
-  EXPECT_EQ((*f.parameters)["type"], "object");
-  ASSERT_TRUE(f.strict.has_value());
-  EXPECT_TRUE(*f.strict);
+  try {
+    (void)j.get<ChatCompletionFunctionDef>();
+    FAIL() << "expected strict:true to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string_view(ex.what()).find(
+                  "function tool 'strict' true is not supported until constrained decoding is implemented"),
+              std::string_view::npos);
+  }
 }
 
 TEST(ChatCompletionFunctionDefTest, RoundTripMinimal) {
@@ -350,7 +413,8 @@ TEST(ChatCompletionRequestTest, PolymorphicFieldsPreservedAsJson) {
   EXPECT_EQ(req.stop->size(), 2);
 
   ASSERT_TRUE(req.tool_choice.has_value());
-  EXPECT_EQ(*req.tool_choice, "auto");
+  EXPECT_EQ(req.tool_choice->kind, ChatCompletionToolChoice::Kind::kAuto);
+  EXPECT_EQ(req.tool_choice->ModeString(), "auto");
 
   ASSERT_TRUE(req.response_format.has_value());
   EXPECT_EQ((*req.response_format)["type"], "json_object");

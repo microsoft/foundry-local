@@ -11,6 +11,7 @@
 #include "inferencing/session/session_manager.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
+#include "internal_api/toolcalling/coding_agent_tools_fixture.h"
 #include "internal_api/web_service_test_helpers.h"
 #include "logger.h"
 #include "model.h"
@@ -754,6 +755,385 @@ TEST_F(WebServiceTest, AudioTranscriptionRejectsNonexistentFile) {
 
   EXPECT_THROW(TestHttpPost(base_url_ + "/v1/audio/transcriptions", body.dump()),
                std::exception);
+}
+
+// ========================================================================
+// Tool declarations over HTTP
+//
+// These exercise the boundary rather than generation: a request is accepted only once its tools
+// have been parsed and registered, so "rejected with 400" and "got as far as model loading" are
+// exactly the two outcomes that distinguish a declaration this runtime can honour from one it
+// cannot.
+// ========================================================================
+
+namespace {
+
+struct HttpResult {
+  int status = 0;
+  json body;
+};
+
+/// POST a JSON body and report the status alongside the parsed body.
+///
+/// Uses the product's own HTTP client rather than httplib: httplib keeps the connection alive and
+/// stalls against this server once a request body grows past a few kilobytes, which a realistic
+/// tool inventory does immediately.
+HttpResult PostJson(const std::string& url, const json& body) {
+  http::HttpRequestOptions options;
+  options.close_connection = true;
+
+  auto response = http::HttpPostWithResponse(url, body.dump(), options);
+  EXPECT_NE(response.status, 0) << "transport failure: " << response.body;
+
+  HttpResult result;
+  result.status = response.status;
+  result.body = json::parse(response.body, nullptr, /*allow_exceptions=*/false);
+  return result;
+}
+
+/// The `message` of an OpenAI-style error body, or the failed response's error message.
+std::string ErrorMessageOf(const json& body) {
+  if (body.contains("error") && body["error"].is_object()) {
+    return body["error"].value("message", "");
+  }
+
+  return "";
+}
+
+}  // namespace
+
+TEST_F(WebServiceTest, StreamingChatCompletionsRejectsGrammarBeforeStartingSse) {
+  json body = {
+      {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"tools", json::parse(test::kCodingAgentChatToolsJson)},
+      {"stream", true},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("only 'text' is supported"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsStrictContractIsValidatedBeforeModelResolution) {
+  for (const bool stream : {false, true}) {
+    for (const auto& [strict, expected_status] :
+         std::vector<std::pair<json, int>>{{nullptr, 404}, {false, 404}, {true, 400}}) {
+      const json body = {
+          {"model", "alpha-model"},
+          {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+          {"tools",
+           json::array({{{"type", "function"},
+                         {"function",
+                          {{"name", "lookup"},
+                           {"parameters", json::object()},
+                           {"strict", strict}}}}})},
+          {"stream", stream},
+      };
+
+      const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+      EXPECT_EQ(result.status, expected_status) << body.dump() << '\n'
+                                                << result.body.dump(2);
+      if (strict == true) {
+        EXPECT_NE(ErrorMessageOf(result.body).find("constrained decoding"), std::string::npos)
+            << result.body.dump(2);
+      }
+    }
+  }
+}
+
+TEST_F(WebServiceTest, ResponsesStrictContractIsValidatedBeforeModelResolution) {
+  for (const bool stream : {false, true}) {
+    for (const auto& [strict, expected_status] :
+         std::vector<std::pair<json, int>>{{nullptr, 404}, {false, 404}, {true, 400}}) {
+      const json body = {
+          {"model", "alpha-model"},
+          {"input", "hi"},
+          {"tools",
+           json::array({{{"type", "function"},
+                         {"name", "lookup"},
+                         {"parameters", json::object()},
+                         {"strict", strict}}})},
+          {"stream", stream},
+      };
+
+      const auto result = PostJson(base_url_ + "/v1/responses", body);
+      EXPECT_EQ(result.status, expected_status) << body.dump() << '\n'
+                                                << result.body.dump(2);
+      if (strict == true) {
+        EXPECT_NE(ErrorMessageOf(result.body).find("constrained decoding"), std::string::npos)
+            << result.body.dump(2);
+      }
+    }
+  }
+}
+
+TEST_F(WebServiceTest, ChatCompletionsAcceptsTextCustomToolDeclaration) {
+  json body = {
+      {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"tools", json::array({{{"type", "custom"},
+                              {"custom", {{"name", "apply_patch"}, {"format", {{"type", "text"}}}}}}})},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  // The declaration was accepted: the request got as far as model resolution, and the only
+  // complaint is the model, not the tools.
+  EXPECT_EQ(result.status, 404) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("No model matching"), std::string::npos) << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, StreamingChatCompletionsRejectsRequiredChoiceWithoutToolsBeforeSse) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"tool_choice", "required"},
+      {"stream", true},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("at least one declared tool"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsCapturedCustomToolGrammarFormat) {
+  json body = {
+      {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
+      {"input", "hi"},
+      {"tools", json::parse(test::kCodingAgentResponsesToolsJson)},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("only 'text' is supported"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsForcedToolRemovedByAllowedFilter) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"input", "hi"},
+      {"tools", json::array({{{"type", "function"}, {"name", "a"}, {"parameters", json::object()}},
+                             {{"type", "function"}, {"name", "b"}, {"parameters", json::object()}}})},
+      {"tool_choice", {{"type", "function"}, {"name", "a"}}},
+      {"allowed_tools", json::array({"b"})},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("at least one effective tool"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsRequiredAllowedToolsWithNoEffectiveTools) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"input", "hi"},
+      {"tools", json::array({{{"type", "function"}, {"name", "a"}, {"parameters", json::object()}}})},
+      {"tool_choice",
+       {{"type", "allowed_tools"},
+        {"mode", "required"},
+        {"tools", json::array({{{"type", "custom"}, {"name", "a"}}})}}},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("wrong tool kind"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsMalformedToolItemsBeforeModelResolution) {
+  for (const auto& item : {
+           json{{"type", "function_call"}, {"call_id", ""}, {"name", "f"}, {"arguments", "{}"}},
+           json{{"type", "function_call"}, {"call_id", "c"}, {"name", ""}, {"arguments", "{}"}},
+           json{{"type", "custom_tool_call"}, {"call_id", ""}, {"name", "c"}, {"input", "raw"}},
+           json{{"type", "custom_tool_call"}, {"call_id", "c"}, {"name", ""}, {"input", "raw"}},
+           json{{"type", "custom_tool_call"}, {"call_id", "c"}, {"name", "c"}},
+           json{{"type", "custom_tool_call"}, {"call_id", "c"}, {"name", "c"}, {"input", nullptr}},
+           json{{"type", "function_call_output"}, {"call_id", ""}, {"output", "done"}},
+           json{{"type", "custom_tool_call_output"}, {"call_id", ""}, {"output", "done"}}}) {
+    const json body = {
+        {"model", "alpha-model"},
+        {"input", json::array({item})},
+    };
+
+    const auto result = PostJson(base_url_ + "/v1/responses", body);
+    const auto expects_input_error =
+        item.at("type") == "custom_tool_call" &&
+        (!item.contains("input") || item.at("input").is_null());
+    const auto expected_error =
+        expects_input_error ? "required and must be a string" : "non-empty string";
+
+    EXPECT_EQ(result.status, 400) << item.dump() << '\n'
+                                  << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find(expected_error), std::string::npos)
+        << item.dump() << '\n'
+        << result.body.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, ChatCompletionsCustomCallRequiresStringInputButAcceptsEmptyString) {
+  const auto make_body = [](const json& custom) {
+    return json{
+        {"model", "alpha-model"},
+        {"messages",
+         json::array({
+             {{"role", "assistant"},
+              {"tool_calls",
+               json::array({{{"id", "call_1"}, {"type", "custom"}, {"custom", custom}}})}},
+             {{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "done"}},
+         })},
+    };
+  };
+
+  for (const auto& custom : {json{{"name", "apply_patch"}},
+                             json{{"name", "apply_patch"}, {"input", nullptr}}}) {
+    const auto result = PostJson(base_url_ + "/v1/chat/completions", make_body(custom));
+    EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  }
+
+  const auto accepted = PostJson(
+      base_url_ + "/v1/chat/completions",
+      make_body(json{{"name", "apply_patch"}, {"input", ""}}));
+  EXPECT_EQ(accepted.status, 404) << accepted.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsUnknownOfficialAllowedToolBeforeModelResolution) {
+  const json body = {
+      {"model", "alpha-model"},
+      {"input", "hi"},
+      {"tools", json::array({{{"type", "function"}, {"name", "a"}, {"parameters", json::object()}}})},
+      {"tool_choice",
+       {{"type", "allowed_tools"},
+        {"mode", "auto"},
+        {"tools", json::array({{{"type", "function"}, {"name", "missing"}}})}}},
+  };
+
+  const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("undeclared tool"), std::string::npos)
+      << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsRejectsMalformedCustomToolGrammarFormat) {
+  json body = {
+      {"model", test::kLoadableTestModelAlias},
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"tools",
+       json::array({{{"type", "custom"},
+                     {"custom",
+                      {{"name", "apply_patch"},
+                       {"format", {{"type", "grammar"}, {"grammar", {{"syntax", "lark"}}}}}}}}})},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("apply_patch"), std::string::npos) << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsMalformedCustomToolGrammarFormat) {
+  json body = {
+      {"model", test::kLoadableTestModelAlias},
+      {"input", "hi"},
+      {"tools", json::array({{{"type", "custom"},
+                              {"name", "apply_patch"},
+                              {"format", {{"type", "grammar"}, {"syntax", "lark"}}}}})},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("apply_patch"), std::string::npos) << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsUnknownToolTypeAsBadRequest) {
+  // An unsupported tool type is a client mistake and must surface as a 400 naming the type, not be silently
+  // accepted as a function tool. Mirrors the Chat Completions surface.
+  json body = {
+      {"model", test::kLoadableTestModelAlias},
+      {"input", "hi"},
+      {"tools", json::array({{{"type", "web_search"}}})},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("web_search"), std::string::npos) << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownToolTypeAsBadRequest) {
+  json body = {
+      {"model", test::kLoadableTestModelAlias},
+      {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+      {"tools", json::array({{{"type", "web_search"}}})},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+  EXPECT_EQ(result.status, 400) << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("web_search"), std::string::npos) << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, ResponsesAcceptsCustomToolCallTranscriptItems) {
+  for (const auto& input : {json("PATCH BODY"), json("")}) {
+    json body = {
+        {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
+        {"input", json::array({
+                      {{"type", "message"}, {"role", "user"}, {"content", "patch it"}},
+                      {{"type", "custom_tool_call"},
+                       {"call_id", "call_2"},
+                       {"name", "apply_patch"},
+                       {"input", input}},
+                      {{"type", "custom_tool_call_output"}, {"call_id", "call_2"}, {"output", "applied"}},
+                  })},
+        {"tools", json::array({{{"type", "custom"}, {"name", "apply_patch"}}})},
+    };
+
+    const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+    // Parsed fine — the only complaint is the model, not the transcript items.
+    EXPECT_EQ(result.status, 404) << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find("No model matching"), std::string::npos)
+        << result.body.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, ResponsesRejectedToolDeclarationIsAClientErrorAndStoresNothing) {
+  // Declaring the same tool name twice is rejected by the registry, which happens after the request has been
+  // accepted and a response id minted. It is the caller's mistake, so it comes back as a 400 error envelope rather
+  // than a stored `failed` response — and nothing about the turn may reach the store.
+  auto load_result = Get(std::string("/models/load/") + test::kLoadableTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << "Response: " << load_result.dump(2);
+
+  const auto before = Get("/v1/responses")["data"].size();
+
+  json body = {
+      {"model", std::string(test::kLoadableTestModelAlias) + ":1"},
+      {"input", "hi"},
+      {"store", true},
+      {"tools", json::array({{{"type", "custom"}, {"name", "apply_patch"}},
+                             {{"type", "function"}, {"name", "apply_patch"}, {"parameters", json::object()}}})},
+  };
+
+  auto result = PostJson(base_url_ + "/v1/responses", body);
+
+  ASSERT_EQ(result.status, 400) << result.body.dump(2);
+  ASSERT_TRUE(result.body.contains("error")) << result.body.dump(2);
+  EXPECT_EQ(result.body["error"].value("type", ""), "invalid_request_error") << result.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(result.body).find("apply_patch"), std::string::npos) << result.body.dump(2);
+
+  // A rejected turn leaves the store exactly as it was.
+  EXPECT_EQ(Get("/v1/responses")["data"].size(), before);
 }
 
 // ========================================================================

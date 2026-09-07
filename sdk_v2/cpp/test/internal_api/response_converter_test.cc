@@ -80,14 +80,16 @@ TEST(ResponseConverterTest, FromSessionResponse_InterleavedReasoningPreservesOut
   EXPECT_EQ(output_text, "answer oneanswer two");
 }
 
-TEST(ResponseConverterTest, BuildFunctionCallStreamOutputEmitsCompleteLifecycle) {
+TEST(ResponseConverterTest, BuildToolCallStreamOutput_FunctionCall_EmitsCompleteLifecycle) {
   ToolCallItem call("call_test", "get_weather", R"({"city":"Seattle"})");
   int sequence_number = 7;
 
-  auto output = BuildFunctionCallStreamOutput(call, 3, sequence_number);
+  auto output = BuildToolCallStreamOutput(call, 3, sequence_number);
 
   ASSERT_EQ(output.events.size(), 4u);
   EXPECT_EQ(sequence_number, 11);
+
+  const auto& completed = std::get<FunctionCallOutputItem>(output.completed_item);
 
   const auto& added = output.events[0];
   EXPECT_EQ(added.type, StreamEventType::kOutputItemAdded);
@@ -95,28 +97,28 @@ TEST(ResponseConverterTest, BuildFunctionCallStreamOutputEmitsCompleteLifecycle)
   EXPECT_EQ(added.output_index, 3);
   ASSERT_TRUE(added.item.has_value());
   const auto& added_item = std::get<FunctionCallOutputItem>(*added.item);
-  EXPECT_EQ(added_item.id, output.completed_item.id);
+  EXPECT_EQ(added_item.id, completed.id);
   EXPECT_EQ(added_item.call_id, "call_test");
   EXPECT_EQ(added_item.name, "get_weather");
-  EXPECT_TRUE(added_item.arguments.empty());
+  EXPECT_TRUE(added_item.arguments.empty()) << "the announced item carries no payload; the deltas deliver it";
   EXPECT_EQ(added_item.status, ResponseStatus::kInProgress);
 
   const auto& delta = output.events[1];
   EXPECT_EQ(delta.type, StreamEventType::kFunctionCallArgumentsDelta);
   EXPECT_EQ(delta.sequence_number, 8);
   EXPECT_EQ(delta.output_index, 3);
-  EXPECT_EQ(delta.item_id, output.completed_item.id);
+  EXPECT_EQ(delta.item_id, completed.id);
   EXPECT_EQ(delta.delta, R"({"city":"Seattle"})");
-  EXPECT_EQ(delta.function_call_id, "call_test");
+  EXPECT_EQ(delta.tool_call_id, "call_test");
 
   const auto& arguments_done = output.events[2];
   EXPECT_EQ(arguments_done.type, StreamEventType::kFunctionCallArgumentsDone);
   EXPECT_EQ(arguments_done.sequence_number, 9);
   EXPECT_EQ(arguments_done.output_index, 3);
-  EXPECT_EQ(arguments_done.item_id, output.completed_item.id);
-  EXPECT_EQ(arguments_done.function_name, "get_weather");
-  EXPECT_EQ(arguments_done.function_call_id, "call_test");
-  EXPECT_EQ(arguments_done.function_arguments, R"({"city":"Seattle"})");
+  EXPECT_EQ(arguments_done.item_id, completed.id);
+  EXPECT_EQ(arguments_done.tool_name, "get_weather");
+  EXPECT_EQ(arguments_done.tool_call_id, "call_test");
+  EXPECT_EQ(arguments_done.tool_payload, R"({"city":"Seattle"})");
 
   const auto& item_done = output.events[3];
   EXPECT_EQ(item_done.type, StreamEventType::kOutputItemDone);
@@ -126,8 +128,8 @@ TEST(ResponseConverterTest, BuildFunctionCallStreamOutputEmitsCompleteLifecycle)
   const auto& completed_item = std::get<FunctionCallOutputItem>(*item_done.item);
   EXPECT_EQ(completed_item.arguments, R"({"city":"Seattle"})");
   EXPECT_EQ(completed_item.status, ResponseStatus::kCompleted);
-  EXPECT_EQ(output.completed_item.arguments, R"({"city":"Seattle"})");
-  EXPECT_EQ(output.completed_item.status, ResponseStatus::kCompleted);
+  EXPECT_EQ(completed.arguments, R"({"city":"Seattle"})");
+  EXPECT_EQ(completed.status, ResponseStatus::kCompleted);
 }
 
 // ========================================================================
@@ -755,36 +757,30 @@ TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_NoTools_ReturnsEmpty
   // No tools, no tool_choice.
 
   Request req;
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
-
-  EXPECT_TRUE(tools_json.empty());
+  EXPECT_TRUE(ExtractResponsesToolDefinitions(params, req).empty());
   EXPECT_EQ(req.options.Find("tool_choice"), nullptr);
 
-  // Empty vector should also produce empty json.
+  // An explicitly empty array declares no tools either.
   params.tools = std::vector<responses::ToolDefinition>{};
   Request req2;
   EXPECT_TRUE(ExtractResponsesToolDefinitions(params, req2).empty());
 }
 
-TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_ToolChoiceString_SerializesAllTools) {
+TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_ToolChoiceString_KeepsAllToolsInOrder) {
   auto params = MakeToolParams();
   params.tools = std::vector<responses::ToolDefinition>{MakeTool("tool_a", "first"), MakeTool("tool_b", "second")};
   params.tool_choice = std::string("auto");
 
   Request req;
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
+  auto definitions = ExtractResponsesToolDefinitions(params, req);
 
-  ASSERT_FALSE(tools_json.empty());
-  auto j = nlohmann::json::parse(tools_json);
-  ASSERT_TRUE(j.is_array());
-  ASSERT_EQ(j.size(), 2u);
-
-  // Chat-template (OpenAI nested) format expected by ChatSession::BuildToolCallContext.
-  EXPECT_EQ(j[0]["type"], "function");
-  EXPECT_EQ(j[0]["function"]["name"], "tool_a");
-  EXPECT_EQ(j[0]["function"]["description"], "first");
-  EXPECT_TRUE(j[0]["function"].contains("parameters"));
-  EXPECT_EQ(j[1]["function"]["name"], "tool_b");
+  ASSERT_EQ(definitions.size(), 2u);
+  EXPECT_EQ(definitions[0].name, "tool_a");
+  EXPECT_EQ(definitions[0].description, "first");
+  EXPECT_EQ(definitions[0].kind, fl::ToolKind::kFunction);
+  EXPECT_EQ(nlohmann::json::parse(definitions[0].json_schema),
+            nlohmann::json::parse(R"({"type":"object","properties":{}})"));
+  EXPECT_EQ(definitions[1].name, "tool_b");
 
   const char* opt = req.options.Find("tool_choice");
   ASSERT_NE(opt, nullptr);
@@ -797,13 +793,10 @@ TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_ForcedFunction_Filte
   params.tool_choice = ForcedFunction{"tool_b"};
 
   Request req;
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
+  auto definitions = ExtractResponsesToolDefinitions(params, req);
 
-  ASSERT_FALSE(tools_json.empty());
-  auto j = nlohmann::json::parse(tools_json);
-  ASSERT_TRUE(j.is_array());
-  ASSERT_EQ(j.size(), 1u);
-  EXPECT_EQ(j[0]["function"]["name"], "tool_b");
+  ASSERT_EQ(definitions.size(), 1u);
+  EXPECT_EQ(definitions[0].name, "tool_b");
 
   const char* opt = req.options.Find("tool_choice");
   ASSERT_NE(opt, nullptr);
@@ -818,22 +811,14 @@ TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_AllowedTools_Filters
   params.allowed_tools = std::vector<std::string>{"tool_b", "tool_c"};
 
   Request req;
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
+  auto definitions = ExtractResponsesToolDefinitions(params, req);
 
-  ASSERT_FALSE(tools_json.empty());
-  auto j = nlohmann::json::parse(tools_json);
-  ASSERT_TRUE(j.is_array());
-  ASSERT_EQ(j.size(), 2u);
-  EXPECT_EQ(j[0]["function"]["name"], "tool_b");
-  EXPECT_EQ(j[1]["function"]["name"], "tool_c");
+  ASSERT_EQ(definitions.size(), 2u);
+  EXPECT_EQ(definitions[0].name, "tool_b");
+  EXPECT_EQ(definitions[1].name, "tool_c");
 }
 
 TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_AllowedToolsAndForcedFunction_BothApplied) {
-  // Forced function names tool_c, but allowed_tools only permits tool_a and tool_b.
-  // Result: empty tools (strict intersection — matches C# behaviour). tool_choice still
-  // gets "required" since the forced-function branch sets it before allowed_tools runs;
-  // an empty tools array combined with "required" effectively disables tool calling,
-  // which is the intended consequence of an over-restricted allowed_tools list.
   auto params = MakeToolParams();
   params.tools = std::vector<responses::ToolDefinition>{
       MakeTool("tool_a"), MakeTool("tool_b"), MakeTool("tool_c")};
@@ -841,13 +826,7 @@ TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_AllowedToolsAndForce
   params.allowed_tools = std::vector<std::string>{"tool_a", "tool_b"};
 
   Request req;
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
-
-  EXPECT_TRUE(tools_json.empty());
-
-  const char* opt = req.options.Find("tool_choice");
-  ASSERT_NE(opt, nullptr);
-  EXPECT_EQ(std::string(opt), "required");
+  EXPECT_THROW(ExtractResponsesToolDefinitions(params, req), fl::Exception);
 }
 
 TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_AllowedTools_CaseInsensitive) {
@@ -856,13 +835,10 @@ TEST(ResponseConverterTest, ExtractResponsesToolDefinitions_AllowedTools_CaseIns
   params.allowed_tools = std::vector<std::string>{"getweather"};
 
   Request req;
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
+  auto definitions = ExtractResponsesToolDefinitions(params, req);
 
-  ASSERT_FALSE(tools_json.empty());
-  auto j = nlohmann::json::parse(tools_json);
-  ASSERT_TRUE(j.is_array());
-  ASSERT_EQ(j.size(), 1u);
-  EXPECT_EQ(j[0]["function"]["name"], "GetWeather");
+  ASSERT_EQ(definitions.size(), 1u);
+  EXPECT_EQ(definitions[0].name, "GetWeather");
 }
 
 // ========================================================================
@@ -889,7 +865,7 @@ TEST(ResponseConverterTest, ToSessionRequest_AllRequestOptions_PropagatedToSessi
   params.tool_choice = std::string("required");
 
   Request req = ToSessionRequest(params);
-  std::string tools_json = ExtractResponsesToolDefinitions(params, req);
+  auto definitions = ExtractResponsesToolDefinitions(params, req);
 
   auto expect_opt = [&](const char* key, const std::string& expected) {
     const char* val = req.options.Find(key);
@@ -905,7 +881,7 @@ TEST(ResponseConverterTest, ToSessionRequest_AllRequestOptions_PropagatedToSessi
   expect_opt("guidance_data", R"({"type":"object"})");
   expect_opt("tool_choice", "required");
 
-  EXPECT_FALSE(tools_json.empty());
+  EXPECT_EQ(definitions.size(), 1u);
 }
 
 TEST(ResponseConverterTest, ToSessionRequest_RejectsNonzeroPenalties) {

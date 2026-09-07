@@ -7,11 +7,13 @@
 #include "c_api_types.h"
 #include "catalog.h"
 #include "contracts/chat_completions.h"
+#include "contracts/chat_completions_converter.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session.h"
 #include "inferencing/session/session_manager.h"
 #include "inferencing/session/session_registration.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/text_item.h"
 #include "model_info.h"
 #include "service/web_service.h"
@@ -33,7 +35,7 @@ ChatCompletionsHandler::ChatCompletionsHandler(ServiceContext& ctx) : ctx_(ctx) 
 // --- Validation & model resolution ---
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ParseAndValidateRequest(
-    const std::string& body, ChatCompletionRequest& req) {
+    const std::string& body, ChatCompletionRequest& req, Request& prepared_request) {
   nlohmann::json req_json;
 
   try {
@@ -44,6 +46,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
 
   try {
     req = req_json.get<ChatCompletionRequest>();
+
+    auto definitions = chat_completions::ExtractToolDefinitions(req, prepared_request);
+    ToolRegistry registry;
+    for (auto& definition : definitions) {
+      registry.Add(std::move(definition));
+    }
+
+    prepared_request.prepared_tool_definitions = registry.Definitions();
   } catch (const fl::Exception& ex) {
     // Contract validation (tool call shape, unsupported tool kinds) rejects malformed client payloads.
     return ErrorResponse(StatusForException(ex), "Invalid request", ex.what());
@@ -69,7 +79,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
 }
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ResolveModel(
-  const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
+    const std::string& model_name, Model*& model, GenAIModelInstance*& loaded) {
   model = ctx_.catalog.GetModelVariant(model_name);
   if (!model) {
     return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + model_name + "'");
@@ -126,7 +136,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   // We could push the validation down so the only meaningful thing this is doing is adding the model name to the
   // telemetry. How much do we care about that? Is it worth the double parsing?
   ChatCompletionRequest req;
-  if (auto err = ParseAndValidateRequest(body_str->c_str(), req)) {
+  Request session_request;
+  if (auto err = ParseAndValidateRequest(body_str->c_str(), req, session_request)) {
     tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
@@ -147,7 +158,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   tracker.SetModelId(model_name);
 
   // 3. Build an OPENAI_JSON-tagged TEXT request item.
-  Request session_request;
   BuildOpenAIJsonRequest(body_str->c_str(), req, *model, session_request);
 
   // 5. Check stream_options for include_usage
@@ -184,8 +194,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
     ctx_.logger.Log(LogLevel::Error, fmt::format("Chat completion inference failed: {}", ex.what()));
     return ErrorResponse(status, "Inference failed", ex.what());
   } catch (const std::exception& ex) {
+    // Not an fl::Exception, so it carries no error code to classify: nothing below reports a client mistake this
+    // way, which makes it a service failure by construction.
     tracker.RecordException(ex);
     ctx_.logger.Log(LogLevel::Error, fmt::format("Chat completion inference failed: {}", ex.what()));
+
     return ErrorResponse(Status::CODE_500, "Inference failed", ex.what());
   }
 }
