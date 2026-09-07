@@ -920,16 +920,41 @@ class Manager {
 
 /// C++ wrapper for flToolDefinition. Sets the version field automatically.
 struct ToolDefinition {
-  std::string name;         ///< Tool name.
+  std::string name;         ///< Tool name. Case-sensitive and unique within a session across kinds.
   std::string description;  ///< Tool description for model context.
-  std::string json_schema;  ///< JSON schema defining the tool's arguments.
+  /// JSON schema defining the tool's arguments. Required for a function tool; must stay empty for a
+  /// custom tool, whose schema is synthesized.
+  std::string json_schema;
+  /// Tool kind. Determines how a generated call's arguments are shaped: JSON for a function tool,
+  /// raw text for a custom tool.
+  flToolKind kind = FOUNDRY_LOCAL_TOOL_KIND_FUNCTION;
 
+  /// Function tool: `json_schema` is required and must be valid JSON.
   ToolDefinition(std::string name, std::string description, std::string json_schema)
       : name(std::move(name)), description(std::move(description)), json_schema(std::move(json_schema)) {}
 
+  /// Custom tool: the model is prompted with a synthesized single-string schema, and the arguments
+  /// of a generated call are delivered as the raw text the model produced.
+  static ToolDefinition Custom(std::string name, std::string description) {
+    ToolDefinition definition(std::move(name), std::move(description), std::string{});
+    definition.kind = FOUNDRY_LOCAL_TOOL_KIND_CUSTOM;
+    return definition;
+  }
+
   /// Convert to the C struct for passing across the ABI boundary.
   flToolDefinition ToC() const noexcept {
-    return {FOUNDRY_LOCAL_API_VERSION, name.c_str(), description.c_str(), json_schema.c_str()};
+    static_assert(FOUNDRY_LOCAL_API_VERSION == 2,
+                  "flToolDefinition may have new fields; initialize them here before updating this assertion");
+    // Zero-initialized and assigned by name rather than aggregate-initialized, so a field appended
+    // to flToolDefinition in a future version defaults to zero (the value that preserves the older
+    // behavior) instead of being left uninitialized.
+    flToolDefinition c_def{};
+    c_def.version = FOUNDRY_LOCAL_API_VERSION;
+    c_def.name = name.c_str();
+    c_def.description = description.c_str();
+    c_def.json_schema = json_schema.c_str();
+    c_def.kind = kind;
+    return c_def;
   }
 };
 
@@ -1053,7 +1078,9 @@ class ChatSession : public Session {
  public:
   explicit ChatSession(IModel& model);
 
-  /// Add a tool definition that is available for the entire session.
+  /// Add a tool definition that is available for the entire session. Names are case-sensitive and
+  /// unique across kinds — adding a name that is already registered throws. Use
+  /// `ToolDefinition::Custom` for a tool whose arguments are raw text rather than JSON.
   ChatSession& AddToolDefinition(const ToolDefinition& tool_definition);
 
   /// Remove a previously-added tool definition by name.

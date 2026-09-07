@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
 #include "items/item.h"
 
 #include <nlohmann/json.hpp>
@@ -11,30 +12,30 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace fl {
 
-/// Kind of tool invocation recorded in the transcript. Function calls are the only kind produced today; the enum
-/// keeps the internal representation extensible without widening the public ABI.
-enum class ToolCallKind {
-  kFunction,
-};
-
 /// A single tool invocation, carried through the transcript exactly as it was generated or supplied.
 struct TranscriptToolCall {
   std::string call_id;
   std::string name;
-  /// Raw argument bytes exactly as generated or supplied. Never rewritten, so the authoritative record and the
-  /// response always report what actually happened.
+  /// Raw argument bytes exactly as they crossed the public API boundary. Never rewritten, so the authoritative
+  /// record and the response always agree on what actually happened. For a kFunction call these are the JSON
+  /// argument bytes; for a kCustom call they are the free-form text payload, already unwrapped from the synthesized
+  /// `{"input": ...}` shape the model was prompted with.
   std::string arguments;
   /// Object form used for template projection. Always a JSON object, so projecting a committed transcript can never
-  /// fail. For caller-supplied calls this is the parsed `arguments`; for model output that failed to produce an
-  /// object it is an empty object (the raw bytes are still preserved above).
+  /// fail. For kFunction this is the parsed `arguments`, or an empty object when model output failed to produce one.
+  /// For kCustom it is the payload rewrapped as `{"input": arguments}` — the exact shape the model emitted and the
+  /// only shape the chat template and the tool-call grammar understand.
   nlohmann::ordered_json normalized_arguments = nlohmann::ordered_json::object();
-  ToolCallKind kind = ToolCallKind::kFunction;
+  /// Which of the session's tool kinds produced this call. Recorded so the authoritative transcript reports the call
+  /// as what it was, and so a replayed call normalizes the same way the generated one did.
+  ToolKind kind = ToolKind::kFunction;
 };
 
 /// One event within a message, stored in the order it occurred.
@@ -115,26 +116,31 @@ struct TranscriptMessage {
 /// JSON object — the caller decides whether that is a client error or a model defect.
 std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& arguments);
 
-/// Build a function tool call supplied by the caller. Arguments are validated strictly: a client that replays a call
-/// with bytes that are not a JSON object gets an explicit error rather than a silently altered conversation.
+/// Build a tool call supplied by the caller. Arguments are validated strictly: a client that replays a kFunction
+/// call with bytes that are not a JSON object gets an explicit error rather than a silently altered conversation.
+/// A kCustom call carries free-form text, so it is always accepted.
 ///
-/// @throws fl::Exception FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT when the arguments are not a JSON object.
-TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments);
+/// @throws fl::Exception FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT when a kFunction call's arguments are not a JSON
+///         object.
+TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments,
+                                        ToolKind kind = ToolKind::kFunction);
 
 /// Result of admitting a model-generated tool call into the transcript.
 struct GeneratedToolCall {
   TranscriptToolCall call;
   /// False when the model's raw argument bytes were not a JSON object. The raw bytes are preserved on `call` and the
-  /// normalized form falls back to an empty object; the caller is expected to report the model defect.
+  /// normalized form falls back to an empty object; the caller is expected to report the model defect. Always true
+  /// for kCustom calls, whose payload is text and therefore cannot be malformed.
   bool arguments_usable = true;
 };
 
-/// Build a function tool call from model output.
+/// Build a tool call from model output.
 ///
 /// Generation has already been streamed to the caller by the time a turn is committed, so a model that emits
 /// unusable argument bytes must not fail the request. The raw bytes are preserved verbatim and the normalized form
 /// degrades to an empty object, which keeps the committed transcript renderable on every later turn.
-GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments);
+GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments,
+                                        ToolKind kind = ToolKind::kFunction);
 
 /// Result of turning a request's items into transcript messages.
 struct TranscriptIngest {
@@ -185,10 +191,17 @@ struct TranscriptIngest {
 /// An assistant message whose only content is empty text survives as a message with no entries. That is the
 /// assistant-turn boundary of a turn that produced nothing replayable, and dropping it would leave two user turns
 /// adjacent in the rebuilt conversation.
-TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts);
+///
+/// @param tool_kinds Kind of each named tool for this request, snapshotted from the session's registry. A replayed
+///        call is normalized the same way the generated one was, so a custom tool's text payload round-trips
+///        instead of being rejected as malformed JSON. Names absent from the map are treated as kFunction, which is
+///        the behavior for sessions that register no custom tools.
+TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts,
+                                    const std::unordered_map<std::string, ToolKind>& tool_kinds = {});
 
 /// IngestRequestItems for an item list with no known segment boundaries.
-std::vector<TranscriptMessage> BuildTranscriptMessages(const std::vector<Item*>& items);
+std::vector<TranscriptMessage> BuildTranscriptMessages(
+    const std::vector<Item*>& items, const std::unordered_map<std::string, ToolKind>& tool_kinds = {});
 
 /// True when any message replays a tool call or answers one.
 ///

@@ -3,6 +3,7 @@
 #include "inferencing/generative/chat/chat_transcript.h"
 
 #include "exception.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -53,23 +54,37 @@ std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& 
   return parsed;
 }
 
-TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments) {
-  auto normalized = ParseToolCallArguments(arguments);
+/// Project raw argument bytes into the object form the chat template renders, according to the tool's kind.
+///
+/// kFunction defers to ParseToolCallArguments and can fail. kCustom never fails: the payload is free-form text by
+/// definition, so it is wrapped as `{"input": <arguments>}` — the exact shape the synthesized custom-tool schema
+/// asks the model for, and therefore the shape a replayed call must render back to. Wrapping unconditionally keeps
+/// the rule unambiguous: a payload that happens to look like `{"input": "..."}` is still just text.
+static std::optional<nlohmann::ordered_json> NormalizeToolCallArguments(ToolKind kind,
+                                                                        const std::string& arguments) {
+  if (kind == ToolKind::kCustom) {
+    return nlohmann::ordered_json{{kCustomToolInputParameter, arguments}};
+  }
+
+  return ParseToolCallArguments(arguments);
+}
+
+TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, std::string arguments, ToolKind kind) {
+  auto normalized = NormalizeToolCallArguments(kind, arguments);
   if (!normalized.has_value()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "tool call '" + name + "' has arguments that are not a JSON object: " + arguments);
   }
 
-  return {std::move(call_id), std::move(name), std::move(arguments), std::move(*normalized),
-          ToolCallKind::kFunction};
+  return {std::move(call_id), std::move(name), std::move(arguments), std::move(*normalized), kind};
 }
 
-GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments) {
-  auto normalized = ParseToolCallArguments(arguments);
+GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments, ToolKind kind) {
+  auto normalized = NormalizeToolCallArguments(kind, arguments);
   const bool usable = normalized.has_value();
 
   return {{std::move(call_id), std::move(name), std::move(arguments),
-           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), ToolCallKind::kFunction},
+           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind},
           usable};
 }
 
@@ -228,7 +243,15 @@ void AppendWithinSegment(std::vector<TranscriptMessage>& messages, TranscriptMes
 
 }  // namespace
 
-TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts) {
+TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts,
+                                    const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  // A replayed call is normalized the way the generated one was: a custom tool's payload is text, so resolving its
+  // kind here is what keeps it from being rejected as malformed JSON on the way back in.
+  const auto kind_of = [&tool_kinds](const std::string& name) {
+    auto it = tool_kinds.find(name);
+    return it == tool_kinds.end() ? ToolKind::kFunction : it->second;
+  };
+
   TranscriptIngest ingest;
   auto& messages = ingest.messages;
 
@@ -282,7 +305,8 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
 
       TranscriptMessage message;
       message.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-      message.AppendToolCall(MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments));
+      message.AppendToolCall(
+          MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind_of(call_item.name)));
 
       // The same rule folds the call into the open assistant turn, so replayed content and its calls stay in one
       // message — and a call that opens a segment starts its own.
@@ -320,8 +344,9 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
   return ingest;
 }
 
-std::vector<TranscriptMessage> BuildTranscriptMessages(const std::vector<Item*>& items) {
-  return IngestRequestItems(items, {}).messages;
+std::vector<TranscriptMessage> BuildTranscriptMessages(
+    const std::vector<Item*>& items, const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  return IngestRequestItems(items, {}, tool_kinds).messages;
 }
 
 bool CarriesToolActivity(const std::vector<TranscriptMessage>& messages) {

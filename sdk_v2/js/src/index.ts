@@ -55,6 +55,7 @@ export {
   EmbeddingsSession,
   AudioSession,
   type ToolDefinition,
+  type ToolKind,
   type StreamOptions,
   type StreamingResponse,
 } from "./session.js";

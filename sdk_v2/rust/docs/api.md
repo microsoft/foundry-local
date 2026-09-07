@@ -38,6 +38,7 @@
   - [RequestOptions](#requestoptions)
   - [Response](#response)
   - [FinishReason](#finishreason)
+  - [ToolKind](#toolkind)
   - [ToolDefinition](#tooldefinition)
 - [Types](#types)
   - [ModelInfo](#modelinfo)
@@ -677,6 +678,22 @@ re-exported as [`ChatFinishReason`](#re-exported-openai-types).)
 pub enum FinishReason { None, Error, Stop, Length, ToolCalls }
 ```
 
+### ToolKind
+
+How a tool's arguments are shaped.
+
+```rust
+pub enum ToolKind {
+    Function,
+    Custom,
+}
+```
+
+`Function` tools require a JSON schema and produce arguments as a JSON object
+conforming to that schema. `Custom` tools carry no schema; their schema is
+synthesized natively, and generated calls contain the model's raw text payload.
+`Function` is the default.
+
 ### ToolDefinition
 
 A tool the model may call, registered on a [`ChatSession`](#chatsession).
@@ -686,12 +703,14 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: Option<String>,
     pub json_schema: String,
+    pub kind: ToolKind,
 }
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A tool with a name and JSON-schema parameters. |
+| `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A function tool with a name and JSON-schema parameters. |
+| `custom` | `fn custom(name: impl Into<String>) -> ToolDefinition` | A custom tool with no schema whose generated calls carry raw text arguments. |
 | `with_description` | `fn with_description(mut self, description: impl Into<String>) -> ToolDefinition` | Attach a description (builder-style). |
 
 ---

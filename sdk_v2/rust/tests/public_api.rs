@@ -27,3 +27,24 @@ fn native_errors_expose_stable_and_unknown_codes() {
     assert_eq!(unknown.native_code(), Some(NativeErrorCode::Unknown(42)));
     assert_eq!(unknown.native_message(), Some("future native error"));
 }
+
+#[test]
+fn tool_definitions_can_be_built_for_both_kinds() {
+    use foundry_local_sdk::{ToolDefinition, ToolKind};
+
+    // The pre-existing function-tool constructor is unchanged and still defaults to Function.
+    let function = ToolDefinition::new("multiply", r#"{"type":"object"}"#)
+        .with_description("Multiplies two numbers.");
+    assert_eq!(function.kind, ToolKind::Function);
+    assert_eq!(function.json_schema, r#"{"type":"object"}"#);
+    assert_eq!(
+        function.description.as_deref(),
+        Some("Multiplies two numbers.")
+    );
+
+    // A custom tool carries no schema — the one the model sees is synthesized natively.
+    let custom = ToolDefinition::custom("apply_patch").with_description("Applies a patch.");
+    assert_eq!(custom.kind, ToolKind::Custom);
+    assert!(custom.json_schema.is_empty());
+    assert_eq!(ToolKind::default(), ToolKind::Function);
+}

@@ -52,8 +52,8 @@ internal static class Api
             var apiPtr = NativeMethods.FoundryLocalGetApi(NativeMethods.ApiVersion);
             if (apiPtr == IntPtr.Zero)
             {
-                throw new InvalidOperationException(
-                    $"FoundryLocalGetApi returned null for version {NativeMethods.ApiVersion}.");
+                var loadedRuntimeVersion = FoundryLocal.GetVersionString();
+                throw new InvalidOperationException(CreateIncompatibleRuntimeMessage(loadedRuntimeVersion));
             }
 
             Root = Marshal.PtrToStructure<FlApi>(apiPtr);
@@ -90,6 +90,14 @@ internal static class Api
 
             _initialized = true;
         }
+    }
+
+    internal static string CreateIncompatibleRuntimeMessage(string loadedRuntimeVersion)
+    {
+        return "FoundryLocalGetApi returned null: loaded native Foundry Local runtime version "
+            + $"'{loadedRuntimeVersion}' is incompatible with this build of the SDK. Required C API version: "
+            + $"{NativeMethods.ApiVersion}. Update the native Foundry Local runtime ({NativeMethods.LibraryName} "
+            + "and the libraries shipped with it).";
     }
 
     internal static void CheckStatus(IntPtr status)
@@ -737,8 +745,16 @@ public sealed class Session : IDisposable
         Ptr = ptr;
     }
 
-    /// <summary>Add a tool definition to the session. The session copies the data.</summary>
+    /// <summary>
+    /// Add a tool definition to the session. The session copies the data, so the marshalled buffers
+    /// are freed as soon as the call returns.
+    /// </summary>
     public Session AddToolDefinition(string name, string description, string jsonSchema)
+    {
+        return AddToolDefinition(name, description, jsonSchema, FlToolKind.Function);
+    }
+
+    public Session AddToolDefinition(string name, string description, string jsonSchema, FlToolKind kind)
     {
         var nameNative = Utf8.StringToCoTaskMem(name);
         var descNative = Utf8.StringToCoTaskMem(description);
@@ -751,6 +767,7 @@ public sealed class Session : IDisposable
                 Name = nameNative,
                 Description = descNative,
                 JsonSchema = schemaNative,
+                Kind = kind,
             };
             Api.CheckStatus(Api.Inference.SessionAddToolDefinition(Ptr, ref toolDef));
         }

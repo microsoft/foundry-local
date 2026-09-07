@@ -140,6 +140,16 @@ The C API boundary (`foundry_local_c.h`) follows these conventions for ABI stabi
 * All other functionality is accessed through **versioned structs of function pointers** (vtables) returned by `FoundryLocalGetApi`.
 * `FOUNDRY_LOCAL_API_VERSION` is incremented with each release. New entries are appended at the end of each vtable struct — never removed or reordered.
 
+### Versioned Data Structs
+
+Structs passed across the boundary (`flToolDefinition`, `flTensorData`, `flMessageData`, ...) carry a leading `version` field, and new fields are **appended** with a comment marking the version that introduced them.
+
+* The caller stamps the version of the header it was compiled against and allocates a struct of that header's size, so a caller from an older header owns *fewer bytes* than the current struct declares.
+* The implementation must decide what it may read from the stamped `version` alone, **before** touching any field past the prefix that version guarantees. Reading a newly appended field from an old caller's struct is an out-of-bounds read, not merely a stale value.
+* A missing field means "the default that preserved the old behavior" — e.g. an `flToolDefinition` stamped version 1 or 2 has no `kind` and is treated as `FOUNDRY_LOCAL_TOOL_KIND_FUNCTION`.
+* Bindings stamp the same version they request from `FoundryLocalGetApi`. A binding that fills in a field added in version N therefore requires a runtime of at least version N and must fail loudly against an older one rather than negotiate down to a table that would ignore the field.
+* A discriminant carried in a versioned struct is a fixed-width integer typedef with named constants, not a C enum — an enum's underlying type is implementation-defined, so its width could differ between the library and a binding that mirrors the struct.
+
 ### Type System
 
 * Opaque types are declared with `FL_TYPE(X)` which expands to `struct flX; typedef struct flX flX`.

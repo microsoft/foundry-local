@@ -6,6 +6,8 @@
 
 namespace Microsoft.AI.Foundry.Local;
 
+using Microsoft.AI.Foundry.Local.Detail.Interop;
+
 /// <summary>
 /// A chat session for chat-completion models.
 /// Validates the model task at construction time.
@@ -47,13 +49,29 @@ public sealed class ChatSession : Session
     }
 
     /// <summary>
-    /// Add a tool definition so the model can request tool calls.
+    /// Add a function tool definition so the model can request tool calls. The tool's arguments are
+    /// a JSON object conforming to <paramref name="jsonSchema"/>, which is required and must be
+    /// valid JSON. Names are case-sensitive and must be unique within the session across kinds.
     /// </summary>
     /// <returns>This session (fluent).</returns>
     public ChatSession AddToolDefinition(string name, string description, string jsonSchema)
     {
         ThrowIfDisposed();
         GetNativeSession().AddToolDefinition(name, description, jsonSchema);
+        return this;
+    }
+
+    /// <summary>
+    /// Add a custom tool definition: a tool whose arguments are a single free-form text payload
+    /// rather than a JSON object. The schema the model is prompted with is synthesized natively, so
+    /// no schema is supplied here, and the arguments of a generated call carry the raw text the
+    /// model produced.
+    /// </summary>
+    /// <returns>This session (fluent).</returns>
+    public ChatSession AddCustomToolDefinition(string name, string description)
+    {
+        ThrowIfDisposed();
+        GetNativeSession().AddToolDefinition(name, description, string.Empty, FlToolKind.Custom);
         return this;
     }
 

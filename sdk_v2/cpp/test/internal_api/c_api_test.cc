@@ -41,9 +41,11 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   const flApi* v0 = FoundryLocalGetApi(0);
   const flApi* v1 = FoundryLocalGetApi(1);
   const flApi* v2 = FoundryLocalGetApi(2);
+  const flApi* v3 = FoundryLocalGetApi(3);
   ASSERT_NE(v0, nullptr);
   ASSERT_NE(v1, nullptr);
   ASSERT_NE(v2, nullptr);
+  ASSERT_EQ(v3, nullptr);
 
   EXPECT_EQ(v0, v2);
   EXPECT_EQ(v1, v2);

@@ -33,7 +33,12 @@ using System.Runtime.InteropServices;
 // -----------------------------------------------------------------------
 public static partial class NativeMethods
 {
-    public const uint ApiVersion = 1;
+    // The API version this binding is built against. It is both the version requested from
+    // FoundryLocalGetApi and the version stamped on every versioned struct handed to the native
+    // library, so the two can never disagree. A runtime older than this returns null from
+    // FoundryLocalGetApi and the binding fails at initialization rather than silently downgrading
+    // to a table that does not understand the structs it will be given.
+    public const uint ApiVersion = 2;
     public const string LibraryName = "foundry_local";
 
     // The first P/Invoke through this class can come from any of several entry
@@ -171,6 +176,19 @@ public enum FlFinishReason
     Stop = 2,
     Length = 3,
     ToolCalls = 4,
+}
+
+/// <summary>
+/// Kind of a registered tool. Explicitly backed by uint because flToolKind is a uint32_t typedef
+/// in the C header, not an enum — the width is part of the ABI contract.
+/// </summary>
+public enum FlToolKind : uint
+{
+    /// <summary>Arguments are a JSON object conforming to the definition's schema, which is required.</summary>
+    Function = 0,
+
+    /// <summary>Arguments are raw text. The definition must not carry a schema.</summary>
+    Custom = 1,
 }
 
 // -----------------------------------------------------------------------
@@ -346,7 +364,10 @@ public struct FlToolDefinition
     // 4 bytes implicit padding
     public IntPtr Name;        // const char*
     public IntPtr Description; // const char*
-    public IntPtr JsonSchema;  // const char*
+    public IntPtr JsonSchema;  // const char* (NULL or empty for a custom tool)
+    // Appended in API version 2. The native side only reads it when Version >= 2.
+    public FlToolKind Kind;
+    // 4 bytes implicit trailing padding to 8-byte alignment
 }
 
 [StructLayout(LayoutKind.Sequential)]

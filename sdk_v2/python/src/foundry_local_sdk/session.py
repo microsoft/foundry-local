@@ -17,7 +17,14 @@ if TYPE_CHECKING:
     from foundry_local_sdk.response import Response
     from foundry_local_sdk.session_types import RequestOptions
 
-_API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+# Stamped on every versioned struct this module builds. Must match the version requested from
+# FoundryLocalGetApi (see _native/api.py): a tool definition carrying `kind` is only read as such
+# by a runtime that supports version 2.
+_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
+
+# flToolKind values.
+_TOOL_KIND_FUNCTION = 0
+_TOOL_KIND_CUSTOM = 1
 
 # Sentinel placed on the stream queue by the background thread when inference finishes.
 _DONE = object()
@@ -481,7 +488,25 @@ class ChatSession(Session):
         super().__init__(model)
 
     def add_tool_definition(self, name: str, description: str, json_schema: str) -> "ChatSession":
-        """Register a tool so the model can request tool calls. Returns self (fluent)."""
+        """Register a function tool so the model can request tool calls. Returns self (fluent).
+
+        ``json_schema`` is required and must be valid JSON. Names are case-sensitive and must be
+        unique within the session across kinds.
+        """
+        return self._add_tool_definition(name, description, json_schema, _TOOL_KIND_FUNCTION)
+
+    def add_custom_tool_definition(self, name: str, description: str) -> "ChatSession":
+        """Register a custom tool: one whose arguments are a single free-form text payload.
+
+        The schema the model is prompted with is synthesized natively, so none is supplied here, and
+        the ``arguments`` of a generated tool call carry the raw text the model produced rather than
+        a JSON object. Returns self (fluent).
+        """
+        return self._add_tool_definition(name, description, "", _TOOL_KIND_CUSTOM)
+
+    def _add_tool_definition(
+        self, name: str, description: str, json_schema: str, kind: int
+    ) -> "ChatSession":
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
@@ -495,6 +520,7 @@ class ChatSession(Session):
         tool_def.name = c_name
         tool_def.description = c_desc
         tool_def.json_schema = c_schema
+        tool_def.kind = kind
 
         api.check_status(api.inference.Session_AddToolDefinition(self._ptr, tool_def))
         return self

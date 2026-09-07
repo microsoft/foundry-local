@@ -18,7 +18,11 @@ public sealed class ToolCallItem : Item
     /// <summary>Name of the tool the model is requesting. Always present.</summary>
     public string Name { get; }
 
-    /// <summary>JSON-encoded arguments for the call. Empty string when the tool takes no parameters.</summary>
+    /// <summary>
+    /// Arguments the model produced for this call, in whichever form the definition registered
+    /// under <see cref="Name"/> calls for: JSON for a function tool, and raw text — which need not
+    /// be JSON at all — for a custom tool. Empty string when the model produced no arguments.
+    /// </summary>
     public string Arguments { get; }
 
     public ToolCallItem(string callId, string name, string arguments)

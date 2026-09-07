@@ -118,6 +118,30 @@ TEST(CppApiTest, ToolCallRoundTrip) {
   EXPECT_EQ(arguments, R"({"city":"Seattle"})");
 }
 
+TEST(CppApiTest, ToolDefinitionDefaultsToFunctionAndStampsTheCurrentVersion) {
+  foundry_local::ToolDefinition function("get_weather", "Get the weather", R"({"type":"object"})");
+  EXPECT_EQ(function.kind, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
+
+  auto c_def = function.ToC();
+  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION));
+  EXPECT_STREQ(c_def.name, "get_weather");
+  EXPECT_STREQ(c_def.description, "Get the weather");
+  EXPECT_STREQ(c_def.json_schema, R"({"type":"object"})");
+  EXPECT_EQ(c_def.kind, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
+}
+
+TEST(CppApiTest, ToolDefinitionCustomFactoryEmitsAnExplicitKindAndNoSchema) {
+  auto custom = foundry_local::ToolDefinition::Custom("apply_patch", "Apply a patch");
+  EXPECT_EQ(custom.kind, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
+  EXPECT_TRUE(custom.json_schema.empty());
+
+  auto c_def = custom.ToC();
+  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION));
+  EXPECT_STREQ(c_def.name, "apply_patch");
+  EXPECT_STREQ(c_def.json_schema, "");
+  EXPECT_EQ(c_def.kind, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
+}
+
 TEST(CppApiTest, ToolResultRoundTrip) {
   auto tr = foundry_local::Item::ToolResult("call_42", "72 degrees");
   EXPECT_EQ(tr.GetType(), FOUNDRY_LOCAL_ITEM_TOOL_RESULT);

@@ -1796,11 +1796,14 @@ static void FL_API_CALL Session_ReleaseImpl(flSession* session) FL_NO_EXCEPTION 
 
 FL_API_STATUS_IMPL(Session_AddToolDefinitionImpl, flSession* session, const flToolDefinition* tool_def) {
   API_IMPL_BEGIN
-  if (!session || !tool_def || !tool_def->name || !tool_def->description || !tool_def->json_schema) {
+  if (!session || !tool_def) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
 
-  AsImpl(session)->AddToolDefinition({tool_def->name, tool_def->description, tool_def->json_schema});
+  // ToolDefinitionFromC validates the version before reading any field the caller's version does
+  // not guarantee, and throws for a version, kind or null string the implementation cannot honor.
+  AsImpl(session)->AddToolDefinition(fl::ToolDefinitionFromC(*tool_def));
+
   return nullptr;
   API_IMPL_END
 }

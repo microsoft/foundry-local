@@ -17,6 +17,7 @@ use std::task::{Context, Poll};
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use crate::detail::api::{Api, Kvps};
+use crate::detail::ffi::{FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION};
 use crate::detail::model::Model;
 use crate::detail::session::{run_item_streaming, NativeItemQueue, NativeRequest, NativeSession};
 use crate::detail::task::spawn_blocking;
@@ -282,24 +283,49 @@ impl futures_core::Stream for ItemStream {
     }
 }
 
+/// How a tool's arguments are shaped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolKind {
+    /// Arguments are a JSON object conforming to the tool's schema, which is required.
+    #[default]
+    Function,
+    /// Arguments are a single free-form text payload. The tool carries no schema — the one the
+    /// model is prompted with is synthesized natively — and a generated call's arguments are the
+    /// raw text the model produced.
+    Custom,
+}
+
 /// A tool the model may call, registered on a [`ChatSession`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolDefinition {
-    /// The tool's unique name.
+    /// The tool's unique name. Compared case-sensitively and unique across kinds.
     pub name: String,
     /// An optional human/model-readable description of what the tool does.
     pub description: Option<String>,
-    /// A JSON Schema string describing the tool's parameters.
+    /// A JSON Schema string describing the tool's parameters. Empty for a custom tool.
     pub json_schema: String,
+    /// The kind of tool. Defaults to [`ToolKind::Function`].
+    pub kind: ToolKind,
 }
 
 impl ToolDefinition {
-    /// A tool definition with a name and JSON-schema parameter description.
+    /// A function tool definition with a name and JSON-schema parameter description.
     pub fn new(name: impl Into<String>, json_schema: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             description: None,
             json_schema: json_schema.into(),
+            kind: ToolKind::Function,
+        }
+    }
+
+    /// A custom tool definition: no schema, and generated calls carry raw text arguments.
+    pub fn custom(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            json_schema: String::new(),
+            kind: ToolKind::Custom,
         }
     }
 
@@ -376,13 +402,22 @@ impl ChatSession {
     }
 
     /// Register a [`ToolDefinition`] for the lifetime of the session.
+    ///
+    /// Names are case-sensitive and unique across kinds; re-registering a name fails until the
+    /// existing definition is removed. A [`ToolKind::Custom`] definition must leave `json_schema`
+    /// empty — supplying one is rejected natively rather than quietly discarded.
     pub async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<()> {
         let inner = Arc::clone(&self.session.inner);
         spawn_blocking(move || {
+            let kind = match definition.kind {
+                ToolKind::Function => FOUNDRY_LOCAL_TOOL_KIND_FUNCTION,
+                ToolKind::Custom => FOUNDRY_LOCAL_TOOL_KIND_CUSTOM,
+            };
             inner.add_tool_definition(
                 &definition.name,
                 definition.description.as_deref(),
                 &definition.json_schema,
+                kind,
             )
         })
         .await
@@ -676,5 +711,16 @@ mod tests {
             .expect_err("missing task should be rejected");
 
         assert!(matches!(err, FoundryLocalError::Validation { .. }));
+    }
+
+    #[test]
+    fn tool_definitions_carry_their_kind() {
+        let function = ToolDefinition::new("multiply", r#"{"type":"object"}"#);
+        assert_eq!(function.kind, ToolKind::Function);
+        assert_eq!(function.json_schema, r#"{"type":"object"}"#);
+
+        let custom = ToolDefinition::custom("apply_patch");
+        assert_eq!(custom.kind, ToolKind::Custom);
+        assert!(custom.json_schema.is_empty());
     }
 }

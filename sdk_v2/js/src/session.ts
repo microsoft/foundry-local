@@ -6,7 +6,6 @@ import {
   type NativeSession,
   getAddon,
 } from "./detail/native.js";
-import type { Item } from "./items.js";
 // Public `Session` / `ChatSession` classes.
 //
 // Surface:
@@ -25,6 +24,7 @@ import type { Item } from "./items.js";
 //   * `ChatSession` adds turn tracking and tool definitions.
 //   * `setOptions(...)`, `dispose()`, `Symbol.dispose`.
 import type { IModel } from "./imodel.js";
+import type { Item } from "./items.js";
 import { Model, unwrapNativeModel } from "./model.js";
 import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
@@ -314,12 +314,38 @@ export abstract class Session {
   }
 }
 
-/** A tool definition exposed to {@link ChatSession.addToolDefinition}. */
-export interface ToolDefinition {
+/** The kind of a {@link ToolDefinition}. Defaults to `"function"`. */
+export type ToolKind = "function" | "custom";
+
+/**
+ * A tool definition exposed to {@link ChatSession.addToolDefinition}.
+ *
+ * A function tool takes JSON arguments conforming to its required `jsonSchema`. Its `kind` may be
+ * omitted for compatibility with the original function-tool API. A custom tool instead requires
+ * `kind: "custom"` and cannot carry a schema; its generated tool-call arguments contain the raw
+ * text produced by the model.
+ */
+export type ToolDefinition =
+  | {
+      readonly name: string;
+      readonly description: string;
+      readonly jsonSchema: string;
+      readonly kind?: "function";
+    }
+  | {
+      readonly name: string;
+      readonly description: string;
+      readonly kind: "custom";
+      readonly jsonSchema?: never;
+    };
+
+/** The object accepted by {@link ChatSession.addCustomToolDefinition}. */
+type CustomToolDefinition = {
   readonly name: string;
   readonly description: string;
-  readonly jsonSchema: string;
-}
+  readonly jsonSchema?: never;
+  readonly kind?: never;
+};
 
 export class ChatSession extends Session {
   /**
@@ -345,10 +371,30 @@ export class ChatSession extends Session {
   /**
    * Register a tool definition available to the model for the rest of the
    * session. Mirrors `foundry_local::ChatSession::AddToolDefinition`.
+   *
+   * Names are case-sensitive and must be unique within the session across kinds; re-registering a
+   * name throws until the existing definition is removed.
    */
   addToolDefinition(definition: ToolDefinition): this {
     this.#nativeChat.addToolDefinition(definition);
     return this;
+  }
+
+  /**
+   * Register a custom tool: one whose arguments are a single free-form text payload rather than a
+   * JSON object. This is equivalent to
+   * `addToolDefinition({ name: definition.name, description: definition.description, kind: "custom" })`.
+   *
+   * @example
+   * ```ts
+   * session.addCustomToolDefinition({
+   *   name: "apply_patch",
+   *   description: "Applies a patch to a file.",
+   * });
+   * ```
+   */
+  addCustomToolDefinition(definition: CustomToolDefinition): this {
+    return this.addToolDefinition({ ...definition, kind: "custom" });
   }
 
   /**

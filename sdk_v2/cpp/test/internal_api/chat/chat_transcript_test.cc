@@ -8,6 +8,7 @@
 #include "exception.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/session/request.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
@@ -21,6 +22,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace fl;
@@ -181,7 +183,7 @@ TEST(TranscriptIngestTest, ToolCallItemsFoldIntoAdjacentAssistantMessage) {
   EXPECT_EQ(calls[0]->name, "get_weather");
   EXPECT_EQ(calls[0]->arguments, R"({"city":"Seattle"})");
   EXPECT_EQ(calls[1]->call_id, "call_2");
-  EXPECT_EQ(calls[1]->kind, ToolCallKind::kFunction);
+  EXPECT_EQ(calls[1]->kind, ToolKind::kFunction);
 }
 
 TEST(TranscriptIngestTest, ToolCallItemWithoutAdjacentAssistantStartsNewMessage) {
@@ -1371,4 +1373,134 @@ TEST(ChatTranscriptTest, FullHistoryContinuationProjectsTheWholeConversation) {
             R"({"role":"tool","content":"sunny","tool_call_id":"call_1"},)"
             R"({"role":"assistant","content":"It is sunny."},)"
             R"({"role":"user","content":"And tomorrow?"}])");
+}
+
+// ===========================================================================
+// Custom tools — kind-aware normalization
+//
+// A custom tool's payload is free-form text. It crosses the public API boundary already unwrapped from the
+// synthesized `{"input": ...}` shape the model is prompted with, so the transcript stores that text as the raw
+// arguments and rewraps it for template projection. That keeps the record, the response, and every later prompt in
+// agreement, and makes a replayed call normalize exactly the way the generated one did.
+// ===========================================================================
+
+TEST(TranscriptCustomToolTest, GeneratedCustomCallKeepsRawTextAndWrapsForProjection) {
+  auto generated = MakeGeneratedToolCall("call_1", "run_python", "print('hi')\n", ToolKind::kCustom);
+
+  EXPECT_TRUE(generated.arguments_usable);
+  EXPECT_EQ(generated.call.kind, ToolKind::kCustom);
+  EXPECT_EQ(generated.call.arguments, "print('hi')\n");
+  EXPECT_EQ(generated.call.normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')\n"}}));
+}
+
+TEST(TranscriptCustomToolTest, CustomPayloadIsNeverAModelDefect) {
+  // Text that is not JSON at all, and text that is JSON but not an object, are both valid custom payloads.
+  for (const auto& payload : {std::string("not json {{"), std::string("\"a bare string\""), std::string("42")}) {
+    auto generated = MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+
+    EXPECT_TRUE(generated.arguments_usable) << payload;
+    EXPECT_EQ(generated.call.arguments, payload);
+    EXPECT_EQ(generated.call.normalized_arguments, nlohmann::ordered_json({{"input", payload}}));
+  }
+}
+
+TEST(TranscriptCustomToolTest, SuppliedCustomCallAcceptsTextThatIsNotAJsonObject) {
+  // The regression this guards: a caller replaying the text payload the session handed it must not be rejected the
+  // way a malformed function call is.
+  auto call = MakeSuppliedToolCall("call_1", "run_python", "print('hi')", ToolKind::kCustom);
+
+  EXPECT_EQ(call.kind, ToolKind::kCustom);
+  EXPECT_EQ(call.arguments, "print('hi')");
+  EXPECT_EQ(call.normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')"}}));
+}
+
+TEST(TranscriptCustomToolTest, SuppliedFunctionCallStillRejectsNonObjectArguments) {
+  EXPECT_THROW(MakeSuppliedToolCall("call_1", "get_weather", "not json", ToolKind::kFunction), fl::Exception);
+}
+
+TEST(TranscriptCustomToolTest, GeneratedAndReplayedCustomCallsNormalizeIdentically) {
+  // Round-trip: what the model produced, unwrapped on the way out, replayed by the caller, renders the same bytes
+  // back to the model on the next turn.
+  const std::string payload = "line one\n\ttabbed\tünïcode  ";
+  auto generated = MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+  auto replayed = MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+
+  EXPECT_EQ(generated.call.arguments, replayed.arguments);
+  EXPECT_EQ(generated.call.normalized_arguments, replayed.normalized_arguments);
+  EXPECT_EQ(generated.call.kind, replayed.kind);
+
+  // And the wrapped form is exactly what the extractor unwraps back to the payload.
+  EXPECT_EQ(ExtractCustomToolInput(replayed.normalized_arguments.dump()), payload);
+}
+
+TEST(TranscriptCustomToolTest, CustomCallProjectsTheSynthesizedInputShape) {
+  // The chat template and the tool-call grammar only understand function-shaped tools, so a custom call must render
+  // as the single-string object the model was prompted with.
+  std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeSuppliedToolCall("call_1", "run_python", "print('hi')", ToolKind::kCustom)})};
+
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"json([{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function",)json"
+            R"json("function":{"name":"run_python","arguments":{"input":"print('hi')"}}}]}])json");
+}
+
+TEST(TranscriptCustomToolTest, CustomKindSurvivesCommitAndFullHistoryProjection) {
+  ChatTranscript transcript;
+  transcript.CommitTurn({UserMessage("Print hi")},
+                        MakeAssistant("", {MakeSuppliedToolCall("call_1", "run_python", "print('hi')",
+                                                                ToolKind::kCustom)}),
+                        {});
+  transcript.CommitTurn({TranscriptMessage::ToolResult("call_1", "hi")}, MakeAssistant("Done.", {}), {});
+
+  auto calls = transcript.Messages()[1].ToolCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0]->kind, ToolKind::kCustom);
+  EXPECT_EQ(calls[0]->arguments, "print('hi')");
+
+  EXPECT_EQ(BuildChatMessagesJson(transcript.Messages()),
+            R"json([{"role":"user","content":"Print hi"},)json"
+            R"json({"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function",)json"
+            R"json("function":{"name":"run_python","arguments":{"input":"print('hi')"}}}]},)json"
+            R"json({"role":"tool","content":"hi","tool_call_id":"call_1"},)json"
+            R"json({"role":"assistant","content":"Done."}])json");
+}
+
+// ===========================================================================
+// Item ingestion with a per-request kind snapshot
+// ===========================================================================
+
+TEST(TranscriptIngestTest, ReplayedCustomCallIsNormalizedThroughTheKindSnapshot) {
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "run_python", "print('hi')"));
+
+  const std::unordered_map<std::string, ToolKind> kinds = {{"run_python", ToolKind::kCustom}};
+  auto messages = BuildTranscriptMessages(request.items, kinds);
+
+  ASSERT_FALSE(messages.empty());
+  auto calls = messages.back().ToolCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0]->kind, ToolKind::kCustom);
+  EXPECT_EQ(calls[0]->arguments, "print('hi')");
+  EXPECT_EQ(calls[0]->normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')"}}));
+}
+
+TEST(TranscriptIngestTest, NamesAbsentFromTheKindSnapshotAreFunctionTools) {
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "get_weather", R"({"city":"Seattle"})"));
+
+  const std::unordered_map<std::string, ToolKind> kinds = {{"run_python", ToolKind::kCustom}};
+  auto messages = BuildTranscriptMessages(request.items, kinds);
+
+  auto calls = messages.back().ToolCalls();
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0]->kind, ToolKind::kFunction);
+  EXPECT_EQ(calls[0]->normalized_arguments, nlohmann::ordered_json({{"city", "Seattle"}}));
+}
+
+TEST(TranscriptIngestTest, ReplayedCustomCallWithoutTheSnapshotIsRejectedAsMalformedJson) {
+  // Documents why the snapshot has to reach ingestion: read as a function call, a text payload is not a JSON object.
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolCallItem>("call_1", "run_python", "print('hi')"));
+
+  EXPECT_THROW(BuildTranscriptMessages(request.items), fl::Exception);
 }
