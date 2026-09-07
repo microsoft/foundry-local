@@ -105,7 +105,8 @@ bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind 
                                                                 bool host_output_limit_reached);
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
 std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
-    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot);
+    std::vector<ToolDefinition> definitions, const std::vector<ToolDefinition>& session_snapshot);
+void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context);
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx);
 

@@ -101,7 +101,8 @@ ResponsesHandler::ResponsesHandler(ServiceContext& ctx) : ctx_(ctx) {}
 // --- Extracted steps ---
 
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAndValidateRequest(
-    const std::string& body, nlohmann::json& req_json, ResponseCreateParams& params) {
+    const std::string& body, nlohmann::json& req_json, ResponseCreateParams& params,
+    Request& prepared_request, std::vector<fl::ToolDefinition>& tool_definitions) {
   try {
     req_json = nlohmann::json::parse(body.c_str());
   } catch (const nlohmann::json::parse_error& ex) {
@@ -131,10 +132,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAnd
       std::string type = entry.value("type", "");
       std::string role = entry.value("role", "");
 
-      // `reasoning` items carry no role: they are output items a client echoes back when it replays a conversation
-      // statelessly. Their text is never replayed, but the item must parse so the assistant turn that produced it
-      // keeps its boundary.
-      if (type != "function_call_output" && type != "function_call" && type != "reasoning" && role.empty()) {
+      // Tool items carry no role, and neither does a `reasoning` item: those are output items a client echoes back
+      // when it replays a conversation statelessly. Reasoning text is never replayed, but the item must still parse
+      // so the assistant turn that produced it keeps its boundary.
+      const bool is_roleless_item = type == "function_call" || type == "function_call_output" ||
+                                    type == "custom_tool_call" || type == "custom_tool_call_output" ||
+                                    type == "reasoning";
+
+      if (!is_roleless_item && role.empty()) {
         return ErrorResponse(Status::CODE_400, "Invalid input item", "Message items must have a 'role' field");
       }
     }
@@ -142,6 +147,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::ParseAnd
 
   try {
     params = req_json.get<ResponseCreateParams>();
+    tool_definitions =
+        ResponseConverter::ExtractResponsesToolDefinitions(params, prepared_request);
   } catch (const fl::Exception& ex) {
     // Contract validation (e.g. function_call arguments that are neither a string nor an object) rejects malformed
     // client payloads.
@@ -268,7 +275,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
   // 1. Parse & validate
   nlohmann::json req_json;
   ResponseCreateParams params;
-  if (auto err = ParseAndValidateRequest(body_str->c_str(), req_json, params)) {
+  Request prepared_request;
+  std::vector<fl::ToolDefinition> tool_definitions;
+  if (auto err = ParseAndValidateRequest(body_str->c_str(), req_json, params, prepared_request,
+                                         tool_definitions)) {
     tracker.SetStatus(ActionStatus::kClientError);
     return err;
   }
@@ -322,11 +332,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
     // 6. Build session request
     Request session_request = ResponseConverter::ToSessionRequest(params, previous_context);
-
-    // Extract tools + tool_choice. Done outside ToSessionRequest to mirror the chat-completions
-    // path (BuildRequestItems / ExtractToolDefinitions split) and so attachment to the session
-    // happens here in the handler that owns the session lifetime.
-    std::string tools_json = ResponseConverter::ExtractResponsesToolDefinitions(params, session_request);
+    for (const auto& [key, value] : prepared_request.options) {
+      session_request.options[key] = value;
+    }
 
     if (!session) {
       session = std::make_unique<ChatSession>(*model, *loaded, ctx_.logger, ctx_.telemetry);
@@ -335,10 +343,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
     // Sessions can be reused via previous_response_id; clear any stale tool defs from the prior
     // turn before applying this request's tools so the request stays self-contained.
     session->ClearToolDefinitions();
-    if (!tools_json.empty()) {
-      // Unnamed and function-shaped: a whole pre-serialized tools array rather than a registrable
-      // tool. It is not name-indexed, so no generated call resolves against it.
-      session->AddToolDefinition({{}, {}, std::move(tools_json), fl::ToolKind::kFunction});
+    for (auto& definition : tool_definitions) {
+      session->AddToolDefinition(std::move(definition));
     }
 
     if (params.stream) {
@@ -346,14 +352,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
                       fmt::format("Creating streaming response {} for model {}", turn.response_id, model_name));
       tracker.SetStatus(ActionStatus::kSuccess);
 
-      return HandleStreaming(std::move(session), std::move(session_request), turn, std::move(lease), params,
-                             req_json);
+      return HandleStreaming(std::move(session), std::move(session_request), turn, std::move(lease),
+                             params, req_json);
     } else {
       ctx_.logger.Log(LogLevel::Debug,
                       fmt::format("Creating response {} for model {}", turn.response_id, model_name));
 
-      auto response = HandleNonStreaming(std::move(session), session_request, turn, std::move(lease), params,
-                                         req_json);
+      auto response = HandleNonStreaming(std::move(session), session_request, turn, std::move(lease),
+                                         params, req_json);
       tracker.SetStatus(ActionStatus::kSuccess);
 
       return response;
@@ -377,6 +383,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
     nlohmann::json failed_json = failed;
     return JsonResponse(status, failed_json);
   } catch (const std::exception& ex) {
+    // Not an fl::Exception, so it carries no error code to classify: nothing below reports a client mistake this
+    // way, which makes it a service failure by construction.
     tracker.RecordException(ex);
 
     ctx_.logger.Log(LogLevel::Error, fmt::format("Response {} failed: {}", turn.response_id, ex.what()));
@@ -623,10 +631,12 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       close_current();
 
       const int output_index = next_output_index++;
-      auto output = ResponseConverter::BuildFunctionCallStreamOutput(call, output_index, seq);
+      auto output = ResponseConverter::BuildToolCallStreamOutput(call, output_index, seq);
+
       for (const auto& event : output.events) {
         push_event(StreamEventTypeToString(event.type), event);
       }
+
       closed_items.push_back(std::move(output.completed_item));
     };
 
