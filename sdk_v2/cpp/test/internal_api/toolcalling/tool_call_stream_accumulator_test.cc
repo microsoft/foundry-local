@@ -154,6 +154,34 @@ TEST(ToolCallStreamAccumulatorTest, MarkerByteByByte) {
   EXPECT_EQ(all[0].name, "f");
 }
 
+TEST(ToolCallStreamAccumulatorTest, LargeArgumentScansIncrementallyByteByByte) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string argument(16 * 1024, 'x');
+  const std::string generated =
+      R"(<tool_call>{"name":"write","arguments":{"content":")" + argument +
+      R"("}}</tool_call>)";
+
+  std::vector<ParsedToolCall> calls;
+  for (char byte : generated) {
+    auto output = acc.Push(std::string(1, byte));
+    for (auto& event : output.events) {
+      if (auto* call = std::get_if<ParsedToolCall>(&event)) {
+        calls.push_back(std::move(*call));
+      }
+    }
+  }
+  auto final = acc.Flush();
+  for (auto& event : final.events) {
+    if (auto* call = std::get_if<ParsedToolCall>(&event)) {
+      calls.push_back(std::move(*call));
+    }
+  }
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "write");
+  EXPECT_EQ(calls[0].arguments.size(), argument.size() + 14);
+}
+
 // ========================================================================
 // Multiple tool calls — sequential blocks, with interspersed visible text.
 // ========================================================================

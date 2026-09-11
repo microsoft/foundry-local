@@ -93,6 +93,13 @@ class ToolCallStreamAccumulator {
   bool InsideToolCall() const noexcept { return inside_tool_call_; }
 
  private:
+  enum class MarkerKind { kNone, kNestedStart, kEnd };
+
+  struct MarkerMatch {
+    MarkerKind kind = MarkerKind::kNone;
+    size_t position = std::string::npos;
+  };
+
   static void EmitVisible(Output& out, std::string text) {
     if (text.empty()) {
       return;
@@ -118,27 +125,125 @@ class ToolCallStreamAccumulator {
     return true;
   }
 
+  void ResetPayloadScan() {
+    scan_position_ = start_marker_.size();
+    prefix_probe_position_ = scan_position_;
+    prefix_quote_position_ = std::string::npos;
+    prefix_quote_search_position_ = std::string::npos;
+    prefix_classified_ = false;
+    ignored_prefix_quote_ = std::string::npos;
+    scan_inside_string_ = false;
+    scan_escaped_ = false;
+  }
+
+  bool ClassifyPayloadPrefix() {
+    if (prefix_classified_) {
+      return true;
+    }
+
+    while (prefix_probe_position_ < tool_call_buffer_.size() &&
+           std::string_view(" \t\r\n").find(tool_call_buffer_[prefix_probe_position_]) !=
+               std::string_view::npos) {
+      ++prefix_probe_position_;
+    }
+    if (prefix_probe_position_ == tool_call_buffer_.size()) {
+      return false;
+    }
+    if (tool_call_buffer_[prefix_probe_position_] != '<') {
+      prefix_classified_ = true;
+      return true;
+    }
+
+    if (prefix_quote_search_position_ == std::string::npos) {
+      prefix_quote_search_position_ = prefix_probe_position_ + 1;
+    }
+    if (prefix_quote_position_ == std::string::npos) {
+      while (prefix_quote_search_position_ < tool_call_buffer_.size()) {
+        if (tool_call_buffer_[prefix_quote_search_position_] == '"') {
+          prefix_quote_position_ = prefix_quote_search_position_;
+          break;
+        }
+        ++prefix_quote_search_position_;
+      }
+      if (prefix_quote_position_ == std::string::npos) {
+        return false;
+      }
+    }
+    if (prefix_quote_position_ + 1 >= tool_call_buffer_.size()) {
+      return false;
+    }
+
+    if (tool_call_buffer_[prefix_quote_position_ + 1] == ',') {
+      ignored_prefix_quote_ = prefix_quote_position_;
+    }
+    prefix_classified_ = true;
+    return true;
+  }
+
+  MarkerMatch FindNextPayloadMarker(bool flushing) {
+    if (!ClassifyPayloadPrefix()) {
+      return {};
+    }
+
+    const size_t marker_width = std::max(start_marker_.size(), end_marker_.size());
+    const size_t scan_end = flushing
+                  ? tool_call_buffer_.size()
+                  : (tool_call_buffer_.size() >= marker_width
+                       ? tool_call_buffer_.size() - marker_width + 1
+                       : 0);
+
+    while (scan_position_ < scan_end) {
+      if (!scan_inside_string_) {
+        if (tool_call_buffer_.compare(scan_position_, end_marker_.size(), end_marker_) == 0) {
+          return {MarkerKind::kEnd, scan_position_};
+        }
+        if (tool_call_buffer_.compare(scan_position_, start_marker_.size(), start_marker_) == 0) {
+          return {MarkerKind::kNestedStart, scan_position_};
+        }
+      }
+
+      const char ch = tool_call_buffer_[scan_position_];
+      if (scan_position_ == ignored_prefix_quote_) {
+        ++scan_position_;
+        continue;
+      }
+      if (scan_inside_string_) {
+        if (scan_escaped_) {
+          scan_escaped_ = false;
+        } else if (ch == '\\') {
+          scan_escaped_ = true;
+        } else if (ch == '"') {
+          scan_inside_string_ = false;
+        }
+      } else if (ch == '"') {
+        scan_inside_string_ = true;
+      }
+      ++scan_position_;
+    }
+
+    return {};
+  }
+
   void Drain(Output& out, bool flushing) {
     while (true) {
       if (inside_tool_call_) {
         tool_call_buffer_ += buffer_;
         buffer_.clear();
         const size_t payload_start = start_marker_.size();
-        const size_t nested_start =
-            FindMarkerOutsideJsonString(tool_call_buffer_, start_marker_, payload_start);
-        const size_t end =
-            FindMarkerOutsideJsonString(tool_call_buffer_, end_marker_, payload_start);
+        const MarkerMatch match = FindNextPayloadMarker(flushing);
 
-        if (nested_start != std::string::npos &&
-            (end == std::string::npos || nested_start < end)) {
+        if (match.kind == MarkerKind::kNestedStart) {
+          const size_t nested_start = match.position;
           std::string remainder = tool_call_buffer_.substr(nested_start + start_marker_.size());
           EmitVisible(out, tool_call_buffer_.substr(0, nested_start));
           tool_call_buffer_ = start_marker_;
           buffer_ = std::move(remainder);
+          ResetPayloadScan();
           continue;
         }
 
-        if (end != std::string::npos) {
+        if (match.kind == MarkerKind::kEnd) {
+          const size_t end = match.position;
           const size_t block_end = end + end_marker_.size();
           std::string block = tool_call_buffer_.substr(0, block_end);
           buffer_ = tool_call_buffer_.substr(block_end);
@@ -149,6 +254,7 @@ class ToolCallStreamAccumulator {
 
           tool_call_buffer_.clear();
           inside_tool_call_ = false;
+          ResetPayloadScan();
           continue;
         }
 
@@ -179,6 +285,7 @@ class ToolCallStreamAccumulator {
           tool_call_buffer_.clear();
           buffer_.clear();
           inside_tool_call_ = false;
+          ResetPayloadScan();
           return;
         }
 
@@ -198,6 +305,7 @@ class ToolCallStreamAccumulator {
         tool_call_buffer_ = buffer_.substr(found, marker.size());
         buffer_.erase(0, found + marker.size());
         inside_tool_call_ = true;
+        ResetPayloadScan();
 
         continue;  // re-scan the remaining buffer for the next marker
       }
@@ -243,6 +351,14 @@ class ToolCallStreamAccumulator {
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;
+  size_t scan_position_ = 0;
+  size_t prefix_probe_position_ = 0;
+  size_t prefix_quote_position_ = std::string::npos;
+  size_t prefix_quote_search_position_ = std::string::npos;
+  size_t ignored_prefix_quote_ = std::string::npos;
+  bool prefix_classified_ = false;
+  bool scan_inside_string_ = false;
+  bool scan_escaped_ = false;
 };
 
 }  // namespace fl
