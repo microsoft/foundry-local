@@ -54,12 +54,12 @@ bool PushDecodedFragment(const std::string& fragment,
     return false;
   }
 
-  auto filtered = stop_filter->PushWithTokenAlignment(fragment);
-  if (!filtered.text.empty()) {
-    if (filtered.token_aligned && token_id.has_value()) {
-      process_segments(splitter.Push(*token_id, std::move(filtered.text)));
+  auto filtered = stop_filter->PushWithTokenAlignment(fragment, token_id);
+  for (auto& safe_fragment : filtered.fragments) {
+    if (safe_fragment.token_id.has_value()) {
+      process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
     } else {
-      process_segments(splitter.Push(filtered.text));
+      process_segments(splitter.Push(safe_fragment.text));
     }
   }
 
@@ -71,9 +71,13 @@ void FlushDecodedStream(StopStringFilter* stop_filter,
                         ReasoningStreamSplitter& splitter,
                         SegmentProcessor&& process_segments) {
   if (stop_filter != nullptr && !stop_filter->matched()) {
-    auto tail = stop_filter->Flush();
-    if (!tail.empty()) {
-      process_segments(splitter.Push(tail));
+    auto tail = stop_filter->FlushWithTokenAlignment();
+    for (auto& safe_fragment : tail.fragments) {
+      if (safe_fragment.token_id.has_value()) {
+        process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
+      } else {
+        process_segments(splitter.Push(safe_fragment.text));
+      }
     }
   }
 

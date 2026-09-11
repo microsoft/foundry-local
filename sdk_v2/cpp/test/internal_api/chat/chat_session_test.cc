@@ -131,7 +131,7 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
   }
 }
 
-TEST(ChatSessionDecodedStreamTest, CombinedFilterOutputUsesTextMarkerFallback) {
+TEST(ChatSessionDecodedStreamTest, CombinedFilterOutputPreservesTokenProvenance) {
   StopStringFilter stop_filter({"STOP"});
   ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102});
   std::vector<Segment> segments;
@@ -150,31 +150,39 @@ TEST(ChatSessionDecodedStreamTest, CombinedFilterOutputUsesTextMarkerFallback) {
   EXPECT_EQ(segments[1].text, "hidden");
   EXPECT_EQ(segments[2].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT);
   EXPECT_EQ(segments[2].text, "visible");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
 }
 
 TEST(ChatSessionDecodedStreamTest, FlushReleasesUnmatchedStopPrefixThroughReasoningSplitter) {
   StopStringFilter stop_filter({"STOP"});
-  ReasoningStreamSplitter splitter("<think>", "</think>");
+  ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102});
   std::vector<Segment> segments;
   const auto process = [&](const std::vector<Segment>& emitted) { AppendSegments(segments, emitted); };
 
   EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
-      "<think>unfinished ST", 1, &stop_filter, splitter, process));
+      "", 101, &stop_filter, splitter, process));
+  EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
+      "unfinished ", 1, &stop_filter, splitter, process));
+  EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
+      "ST", 2, &stop_filter, splitter, process));
   chat_session_internal::FlushDecodedStream(&stop_filter, splitter, process);
 
   ASSERT_EQ(segments.size(), 1u);
   EXPECT_EQ(segments[0].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
   EXPECT_EQ(segments[0].text, "unfinished ST");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 2);
 }
 
 TEST(ChatSessionDecodedStreamTest, MatchedStopSuppressesStopBytesButFlushesPendingReasoningText) {
   StopStringFilter stop_filter({"STOP"});
-  ReasoningStreamSplitter splitter("<think>", "</think>");
+  ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102});
   std::vector<Segment> segments;
   const auto process = [&](const std::vector<Segment>& emitted) { AppendSegments(segments, emitted); };
 
   EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
-      "<think>hidden</thiST", 1, &stop_filter, splitter, process));
+      "", 101, &stop_filter, splitter, process));
+  EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
+      "hidden</thiST", 1, &stop_filter, splitter, process));
   EXPECT_TRUE(chat_session_internal::PushDecodedFragment(
       "OPignored", 2, &stop_filter, splitter, process));
   chat_session_internal::FlushDecodedStream(&stop_filter, splitter, process);
@@ -182,6 +190,7 @@ TEST(ChatSessionDecodedStreamTest, MatchedStopSuppressesStopBytesButFlushesPendi
   ASSERT_EQ(segments.size(), 1u);
   EXPECT_EQ(segments[0].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
   EXPECT_EQ(segments[0].text, "hidden</thi");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
 }
 
 TEST(ChatSessionDecisionTest, PreAppendRebuildTracksBackendBakedSettings) {

@@ -184,42 +184,92 @@ std::string StopStringFilter::Push(std::string_view fragment) {
   return PushWithTokenAlignment(fragment).text;
 }
 
-StopStringFilter::PushResult StopStringFilter::PushWithTokenAlignment(std::string_view fragment) {
+StopStringFilter::PushResult StopStringFilter::PushWithTokenAlignment(
+    std::string_view fragment,
+    std::optional<int32_t> token_id) {
   if (fragment.empty() || matched_) {
     return {};
   }
 
   if (stop_strings_.empty()) {
-    return {std::string(fragment), true};
+    auto text = std::string(fragment);
+    return {text, true, {{std::move(text), token_id}}};
   }
 
   const bool had_pending_text = !pending_.empty();
   pending_.append(fragment);
+  pending_fragments_.push_back({std::string(fragment), token_id});
 
   if (const auto match = FindBestMatch()) {
     matched_ = true;
     matched_index_ = match->index;
 
-    std::string safe_prefix = pending_.substr(0, match->start);
+    auto result = ConsumePendingPrefix(match->start);
     pending_.clear();
-    return {std::move(safe_prefix), false};
+    pending_fragments_.clear();
+    return result;
   }
 
   const size_t keep = LongestPendingSuffix();
-  const size_t safe_count = pending_.size() - keep;
-  std::string safe_prefix = pending_.substr(0, safe_count);
-  pending_.erase(0, safe_count);
-  const bool token_aligned = !had_pending_text && safe_count == fragment.size();
-  return {std::move(safe_prefix), token_aligned};
+  const size_t safe_count = AlignSafePrefixToTokenBoundary(pending_.size() - keep);
+  auto result = ConsumePendingPrefix(safe_count);
+  result.token_aligned = !had_pending_text && safe_count == fragment.size();
+  return result;
 }
 
 std::string StopStringFilter::Flush() {
+  return FlushWithTokenAlignment().text;
+}
+
+StopStringFilter::PushResult StopStringFilter::FlushWithTokenAlignment() {
   if (matched_) {
     pending_.clear();
+    pending_fragments_.clear();
     return {};
   }
 
-  return std::exchange(pending_, {});
+  return ConsumePendingPrefix(pending_.size());
+}
+
+StopStringFilter::PushResult StopStringFilter::ConsumePendingPrefix(size_t length) {
+  PushResult result;
+  result.text.reserve(length);
+
+  auto remaining = length;
+  while (remaining > 0 && !pending_fragments_.empty()) {
+    auto& pending_fragment = pending_fragments_.front();
+    const auto consumed = std::min(remaining, pending_fragment.text.size());
+    auto text = pending_fragment.text.substr(0, consumed);
+
+    result.text += text;
+    result.fragments.push_back({std::move(text), pending_fragment.token_id});
+
+    pending_fragment.text.erase(0, consumed);
+    remaining -= consumed;
+    if (pending_fragment.text.empty()) {
+      pending_fragments_.pop_front();
+    }
+  }
+
+  pending_.erase(0, length);
+  return result;
+}
+
+size_t StopStringFilter::AlignSafePrefixToTokenBoundary(size_t length) const {
+  size_t fragment_start = 0;
+  for (const auto& fragment : pending_fragments_) {
+    const auto fragment_end = fragment_start + fragment.text.size();
+    if (length > fragment_start && length < fragment_end && fragment.token_id.has_value()) {
+      return fragment_start;
+    }
+    if (length <= fragment_end) {
+      return length;
+    }
+
+    fragment_start = fragment_end;
+  }
+
+  return length;
 }
 
 std::optional<StopStringFilter::MatchCandidate> StopStringFilter::FindBestMatch() const {
