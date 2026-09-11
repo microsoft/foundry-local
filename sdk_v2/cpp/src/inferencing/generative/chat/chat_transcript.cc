@@ -63,7 +63,7 @@ std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& 
 static std::optional<nlohmann::ordered_json> NormalizeToolCallArguments(ToolKind kind,
                                                                         const std::string& arguments) {
   if (kind == ToolKind::kCustom) {
-    ValidateCustomToolPayload(arguments);
+    ValidateToolCallText(arguments, "custom tool payload");
     return nlohmann::ordered_json{{kCustomToolInputParameter, arguments}};
   }
 

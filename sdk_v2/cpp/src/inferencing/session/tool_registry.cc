@@ -63,14 +63,13 @@ std::string ExtractCustomToolInput(const std::string& arguments) {
   return it->get<std::string>();
 }
 
-void ValidateCustomToolPayload(const std::string& payload) {
-  if (payload.find('\0') != std::string::npos) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "custom tool payload must not contain embedded NUL bytes");
+void ValidateToolCallText(std::string_view text, std::string_view field) {
+  if (text.find('\0') != std::string_view::npos) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, field, " must not contain embedded NUL bytes");
   }
 
-  if (!IsValidUtf8(payload)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "custom tool payload must be valid UTF-8");
+  if (!IsValidUtf8(text)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, field, " must be valid UTF-8");
   }
 }
 

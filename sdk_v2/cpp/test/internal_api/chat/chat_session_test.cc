@@ -117,6 +117,45 @@ TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStr
   EXPECT_EQ(streamed_calls, 0u);
 }
 
+TEST(ChatSessionDecisionTest, InvalidLaterFunctionCallPreventsTheWholeBatchFromStreaming) {
+  ToolCallContext context;
+  context.tool_kinds = {{"first", ToolKind::kFunction}, {"second", ToolKind::kFunction}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall valid{"call_1", "first", R"({"value":1})"};
+  valid.argument_source = valid.arguments;
+  output.events.emplace_back(std::move(valid));
+
+  ParsedToolCall invalid{"call_2", "second", std::string("before\0after", 12)};
+  invalid.argument_source = R"("before\u0000after")";
+  output.events.emplace_back(std::move(invalid));
+
+  size_t streamed_calls = 0;
+  EXPECT_THROW(
+      {
+        chat_session_internal::NormalizeToolOutputBatch(output, context);
+        for (const auto& event : output.events) {
+          if (std::holds_alternative<ParsedToolCall>(event)) {
+            ++streamed_calls;
+          }
+        }
+      },
+      fl::Exception);
+  EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, FunctionCallNameMustBeNulFreeUtf8) {
+  ToolCallContext context;
+  context.tool_kinds = {{"tool", ToolKind::kFunction}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall invalid{"call_1", std::string("tool\0hidden", 11), R"({"value":1})"};
+  invalid.argument_source = invalid.arguments;
+  output.events.emplace_back(std::move(invalid));
+
+  EXPECT_THROW(chat_session_internal::NormalizeToolOutputBatch(output, context), fl::Exception);
+}
+
 TEST(ChatSessionDecisionTest, ExactResidentPrefixSelectsOnlyTheUnmatchedFullPromptSuffix) {
   const std::vector<int32_t> resident = {10, 20, 30};
   const std::vector<int32_t> full_prompt = {10, 20, 30, 40, 50};

@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fl {
@@ -48,9 +49,9 @@ inline constexpr const char* kCustomToolInputSchema =
 /// are the only faithful record of it.
 std::string ExtractCustomToolInput(const std::string& arguments);
 
-/// Validate text crossing the custom-tool payload boundary.
+/// Validate text crossing a NUL-terminated tool-call ABI boundary.
 /// @throws fl::Exception (FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) for embedded NUL or invalid UTF-8.
-void ValidateCustomToolPayload(const std::string& payload);
+void ValidateToolCallText(std::string_view text, std::string_view field);
 
 /// Ordered set of the tool definitions registered on a session. Thread-safe.
 class ToolRegistry {

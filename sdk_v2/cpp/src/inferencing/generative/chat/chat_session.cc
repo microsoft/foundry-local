@@ -235,13 +235,16 @@ void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx) {
   for (auto& event : output.events) {
     auto* call = std::get_if<ParsedToolCall>(&event);
-    if (call == nullptr || !tool_ctx.IsCustomTool(call->name)) {
+    if (call == nullptr) {
       continue;
     }
 
-    auto arguments = ExtractCustomToolInput(call->argument_source);
-    ValidateCustomToolPayload(arguments);
-    call->arguments = std::move(arguments);
+    if (tool_ctx.IsCustomTool(call->name)) {
+      call->arguments = ExtractCustomToolInput(call->argument_source);
+    }
+
+    ValidateToolCallText(call->name, "tool call name");
+    ValidateToolCallText(call->arguments, "tool call arguments");
   }
 }
 
