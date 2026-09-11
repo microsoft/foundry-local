@@ -396,8 +396,10 @@ TEST(ExtractCustomToolInputTest, UnwrapsTheSynthesizedWrapperVerbatim) {
   EXPECT_EQ(ExtractCustomToolInput(R"({"input":"line one\r\nline two"})"), "line one\r\nline two");
   EXPECT_EQ(ExtractCustomToolInput(R"({"input":"col1\tcol2  "})"), "col1\tcol2  ");
   EXPECT_EQ(ExtractCustomToolInput(R"({"input":"héllo 🌍 \u00e9"})"), "héllo 🌍 é");
-  EXPECT_EQ(ExtractCustomToolInput(R"({"input":"quote \" backslash \\ done"})"), R"(quote " backslash \ done)");
-  EXPECT_EQ(ExtractCustomToolInput(R"({"input":"{\"a\": 1}"})"), R"({"a": 1})");
+  const auto escaped_quote = ExtractCustomToolInput(R"json({"input":"quote \" backslash \\ done"})json");
+  const auto json_looking_text = ExtractCustomToolInput(R"json({"input":"{\"a\": 1}"})json");
+  EXPECT_EQ(escaped_quote, "quote \" backslash \\ done");
+  EXPECT_EQ(json_looking_text, R"json({"a": 1})json");
 
   const std::string patch =
       "*** Begin Patch\n*** Update File: a.txt\n@@\n-old line\t\n+new line \n*** End Patch";
