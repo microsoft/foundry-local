@@ -7,11 +7,24 @@
 #include "items/tool_call_item.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <string>
 #include <vector>
 
 using namespace fl;
+
+namespace {
+
+std::string AdvertisedTool(const std::string& name) {
+  return nlohmann::json::array({{
+      {"type", "function"},
+      {"name", name},
+      {"parameters", {{"type", "object"}}},
+  }}).dump();
+}
+
+}  // namespace
 
 // ========================================================================
 // GenerateToolCallId tests
@@ -100,11 +113,184 @@ TEST(ParseToolCallsTest, ArrayWithMultipleToolCalls) {
 TEST(ParseToolCallsTest, ParametersKeyWorksAsAlternative) {
   std::string text =
       R"(<tc>{"name":"fn","parameters":{"a":"b"}}</tc>)";
-  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("fn"));
 
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].name, "fn");
   EXPECT_NE(calls[0].arguments.find("b"), std::string::npos);
+}
+
+TEST(ParseToolCallsTest, SingleKeyToolCall) {
+  std::string text =
+      R"(<tc>{"exec_command":{"cmd":"grep -n test file.py"}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("exec_command"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"grep -n test file.py"})");
+}
+
+TEST(ParseToolCallsTest, SingleKeyToolCallWithMissingArgumentsBrace) {
+  std::string text =
+      R"(<tc>{"update_plan":"explanation":"Done","plan":[{"step":"verify","status":"completed"}]}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("update_plan"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "update_plan");
+  EXPECT_EQ(calls[0].arguments,
+            R"({"explanation":"Done","plan":[{"status":"completed","step":"verify"}]})");
+}
+
+TEST(ParseToolCallsTest, NestedRecoveryIsLeftToOrderedStreamParser) {
+  std::string text = R"(<tool_call><exec_command","arguments":{"cmd":"ls"})"
+                     R"(<tool_call>{"name":"exec_command","args":{"cmd":"pwd"}}</tool_call>)";
+  auto calls = ParseToolCalls(
+      text, "<tool_call>", "</tool_call>", AdvertisedTool("exec_command"));
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, MarkerInsideArgumentDoesNotTriggerNestedRecovery) {
+  std::string text =
+      R"(<tool_call>{"name":"shell","arguments":{"cmd":"grep '<tool_call>' output.txt"}}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"grep '<tool_call>' output.txt"})");
+}
+
+TEST(ParseToolCallsTest, EndMarkerInsideArgumentDoesNotTruncateCall) {
+  std::string text =
+      R"(<tool_call>{"name":"shell","arguments":{"cmd":"grep '</tool_call>' output.txt"}}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "shell");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"grep '</tool_call>' output.txt"})");
+}
+
+TEST(ParseToolCallsTest, RecoversMissingNameObjectPrefix) {
+  std::string text =
+      R"(<tool_call><exec_command","arguments":{"cmd":"ls /testbed","workdir":"/testbed"}}</tool_call>)";
+  auto calls = ParseToolCalls(
+      text, "<tool_call>", "</tool_call>", AdvertisedTool("exec_command"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls /testbed","workdir":"/testbed"})");
+}
+
+TEST(ParseToolCallsTest, RecoversMultilineMissingNamePrefixWithDirectArguments) {
+  std::string text = R"(<tool_call>
+<exec_command","cmd":"ls /testbed && git -C /testbed log --oneline -3"}
+</tool_call>)";
+  auto calls = ParseToolCalls(
+      text, "<tool_call>", "</tool_call>", AdvertisedTool("exec_command"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments,
+            R"({"cmd":"ls /testbed && git -C /testbed log --oneline -3"})");
+}
+
+TEST(ParseToolCallsTest, RecoversCommaAfterToolName) {
+  std::string text =
+      R"(<tool_call>{"exec_command","cmd":"ls /testbed","workdir":"/testbed"}</tool_call>)";
+  auto calls = ParseToolCalls(
+      text, "<tool_call>", "</tool_call>", AdvertisedTool("exec_command"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls /testbed","workdir":"/testbed"})");
+}
+
+TEST(ParseToolCallsTest, DoesNotAliasCanonicalExecCommandToShell) {
+  std::string text =
+      R"(<tool_call>{"name":"exec_command","arguments":{"cmd":"git diff"}}</tool_call>)";
+  std::string tools =
+    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"git diff"})");
+}
+
+TEST(ParseToolCallsTest, RepairedNameMustMatchAdvertisedTool) {
+  std::string text =
+      R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
+  std::string tools =
+    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, RejectsRepairWhenToolMetadataIsEmpty) {
+  std::string text =
+      R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", "[]");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, PreservesAdvertisedExecCommand) {
+  std::string text =
+      R"(<tool_call>{"name":"exec_command","arguments":{"cmd":"git diff"}}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+}
+
+TEST(ParseToolCallsTest, CleansFunctionPrefixOnlyForAdvertisedExactName) {
+  std::string tools = AdvertisedTool("exec_command");
+  const std::vector<std::string> texts = {
+      R"(<tool_call>{"name":"function=\"exec_command","arguments":{"cmd":"pwd"}}</tool_call>)",
+      R"(<tool_call>{"name":"function=exec_command","arguments":{"cmd":"pwd"}}</tool_call>)"};
+
+  for (const auto& text : texts) {
+    auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls[0].name, "exec_command");
+    EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
+  }
+}
+
+TEST(ParseToolCallsTest, DoesNotAliasSingletonCmdToShell) {
+  std::string text = R"(<tool_call>{"cmd":"pwd"}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, DoesNotAliasCanonicalCommandArgumentOrToolName) {
+  std::string text =
+      R"(<tool_call>{"name":"exec_command","arguments":{"command":"pwd"}}</tool_call>)";
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}])";
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"command":"pwd"})");
+}
+
+TEST(ParseToolCallsTest, RecoversFunctionKeyAndMissingOuterBrace) {
+  std::string text =
+      R"(<tool_call>{"function":"exec_command","arguments":{"cmd":"pwd"}</tool_call>)";
+  std::string tools = AdvertisedTool("exec_command");
+  auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
 }
 
 TEST(ParseToolCallsTest, InvalidJsonReturnsEmpty) {

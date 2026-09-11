@@ -695,7 +695,9 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // model's scratchpad and is not a real tool call.
   ToolCallStreamAccumulator tool_accumulator(
       cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_start : std::string{},
-      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{});
+      cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{},
+      cached_tool_ctx_.tools_json,
+      cached_tool_ctx_.reasoning_end);
 
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
     for (auto& event : out.events) {
@@ -925,7 +927,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // multiple tokens (or chat templates that produce marker-shaped text gradually) would silently fail. The shared
   // accumulator buffers across tokens and is verified by unit tests.
   ToolCallStreamAccumulator tool_accumulator(tool_ctx.tool_output ? tool_ctx.tool_call_start : std::string{},
-                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{});
+                                             tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{},
+                                             tool_ctx.tools_json,
+                                             tool_ctx.reasoning_end);
 
   int next_tool_call_index = 0;
   std::vector<GeneratedOutputEvent> generated_events;

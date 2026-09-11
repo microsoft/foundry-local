@@ -47,8 +47,13 @@ class ToolCallStreamAccumulator {
     std::vector<Event> events;
   };
 
-  ToolCallStreamAccumulator(std::string start_marker, std::string end_marker)
-      : start_marker_(std::move(start_marker)), end_marker_(std::move(end_marker)) {}
+  ToolCallStreamAccumulator(std::string start_marker, std::string end_marker,
+                            std::string tools_json = {},
+                            std::string reasoning_end_marker = {})
+      : start_marker_(std::move(start_marker)),
+        end_marker_(std::move(end_marker)),
+        tools_json_(std::move(tools_json)),
+        reasoning_end_marker_(std::move(reasoning_end_marker)) {}
 
   /// Feed a chunk into the accumulator. Returns ordered visible-text and completed-tool-call events.
   Output Push(const std::string& chunk) {
@@ -88,6 +93,13 @@ class ToolCallStreamAccumulator {
   bool InsideToolCall() const noexcept { return inside_tool_call_; }
 
  private:
+  enum class MarkerKind { kNone, kNestedStart, kEnd };
+
+  struct MarkerMatch {
+    MarkerKind kind = MarkerKind::kNone;
+    size_t position = std::string::npos;
+  };
+
   static void EmitVisible(Output& out, std::string text) {
     if (text.empty()) {
       return;
@@ -101,80 +113,223 @@ class ToolCallStreamAccumulator {
     out.events.emplace_back(std::move(text));
   }
 
+  bool EmitParsedBlock(Output& out, const std::string& block) const {
+    auto parsed = ParseToolCalls(block, start_marker_, end_marker_, tools_json_);
+    if (parsed.empty()) {
+      return false;
+    }
+
+    for (auto& call : parsed) {
+      out.events.emplace_back(std::move(call));
+    }
+    return true;
+  }
+
+  void ResetPayloadScan() {
+    scan_position_ = start_marker_.size();
+    prefix_probe_position_ = scan_position_;
+    prefix_quote_position_ = std::string::npos;
+    prefix_quote_search_position_ = std::string::npos;
+    prefix_classified_ = false;
+    ignored_prefix_quote_ = std::string::npos;
+    scan_inside_string_ = false;
+    scan_escaped_ = false;
+  }
+
+  bool ClassifyPayloadPrefix() {
+    if (prefix_classified_) {
+      return true;
+    }
+
+    while (prefix_probe_position_ < tool_call_buffer_.size() &&
+           std::string_view(" \t\r\n").find(tool_call_buffer_[prefix_probe_position_]) !=
+               std::string_view::npos) {
+      ++prefix_probe_position_;
+    }
+    if (prefix_probe_position_ == tool_call_buffer_.size()) {
+      return false;
+    }
+    if (tool_call_buffer_[prefix_probe_position_] != '<') {
+      prefix_classified_ = true;
+      return true;
+    }
+
+    if (prefix_quote_search_position_ == std::string::npos) {
+      prefix_quote_search_position_ = prefix_probe_position_ + 1;
+    }
+    if (prefix_quote_position_ == std::string::npos) {
+      while (prefix_quote_search_position_ < tool_call_buffer_.size()) {
+        if (tool_call_buffer_[prefix_quote_search_position_] == '"') {
+          prefix_quote_position_ = prefix_quote_search_position_;
+          break;
+        }
+        ++prefix_quote_search_position_;
+      }
+      if (prefix_quote_position_ == std::string::npos) {
+        return false;
+      }
+    }
+    if (prefix_quote_position_ + 1 >= tool_call_buffer_.size()) {
+      return false;
+    }
+
+    if (tool_call_buffer_[prefix_quote_position_ + 1] == ',') {
+      ignored_prefix_quote_ = prefix_quote_position_;
+    }
+    prefix_classified_ = true;
+    return true;
+  }
+
+  MarkerMatch FindNextPayloadMarker(bool flushing) {
+    if (!ClassifyPayloadPrefix()) {
+      return {};
+    }
+
+    const size_t marker_width = std::max(start_marker_.size(), end_marker_.size());
+    const size_t scan_end = flushing
+                  ? tool_call_buffer_.size()
+                  : (tool_call_buffer_.size() >= marker_width
+                       ? tool_call_buffer_.size() - marker_width + 1
+                       : 0);
+
+    while (scan_position_ < scan_end) {
+      if (!scan_inside_string_) {
+        if (tool_call_buffer_.compare(scan_position_, end_marker_.size(), end_marker_) == 0) {
+          return {MarkerKind::kEnd, scan_position_};
+        }
+        if (tool_call_buffer_.compare(scan_position_, start_marker_.size(), start_marker_) == 0) {
+          return {MarkerKind::kNestedStart, scan_position_};
+        }
+      }
+
+      const char ch = tool_call_buffer_[scan_position_];
+      if (scan_position_ == ignored_prefix_quote_) {
+        ++scan_position_;
+        continue;
+      }
+      if (scan_inside_string_) {
+        if (scan_escaped_) {
+          scan_escaped_ = false;
+        } else if (ch == '\\') {
+          scan_escaped_ = true;
+        } else if (ch == '"') {
+          scan_inside_string_ = false;
+        }
+      } else if (ch == '"') {
+        scan_inside_string_ = true;
+      }
+      ++scan_position_;
+    }
+
+    return {};
+  }
+
   void Drain(Output& out, bool flushing) {
     while (true) {
-      const std::string& marker = inside_tool_call_ ? end_marker_ : start_marker_;
+      if (inside_tool_call_) {
+        tool_call_buffer_ += buffer_;
+        buffer_.clear();
+        const size_t payload_start = start_marker_.size();
+        const MarkerMatch match = FindNextPayloadMarker(flushing);
 
-      size_t found = buffer_.find(marker);
+        if (match.kind == MarkerKind::kNestedStart) {
+          const size_t nested_start = match.position;
+          std::string remainder = tool_call_buffer_.substr(nested_start + start_marker_.size());
+          std::string prefix = tool_call_buffer_.substr(0, nested_start);
+          if (!EmitParsedBlock(out, prefix + end_marker_)) {
+            EmitVisible(out, std::move(prefix));
+          }
+          tool_call_buffer_ = start_marker_;
+          buffer_ = std::move(remainder);
+          ResetPayloadScan();
+          continue;
+        }
 
-      if (found != std::string::npos) {
-        if (inside_tool_call_) {
-          // Closing marker: take everything up to and including the marker, parse it as one tool-call block,
-          // and emit any tool calls it contained.
-          tool_call_buffer_ += buffer_.substr(0, found + marker.size());
-          buffer_.erase(0, found + marker.size());
+        if (match.kind == MarkerKind::kEnd) {
+          const size_t end = match.position;
+          const size_t block_end = end + end_marker_.size();
+          std::string block = tool_call_buffer_.substr(0, block_end);
+          buffer_ = tool_call_buffer_.substr(block_end);
 
-          auto parsed = ParseToolCalls(tool_call_buffer_, start_marker_, end_marker_);
-          if (parsed.empty()) {
-            // A marker-shaped block that cannot be parsed is model text, not a tool call. Preserve it rather than
-            // silently dropping generated output.
-            EmitVisible(out, tool_call_buffer_);
-          } else {
-            for (auto& pc : parsed) {
-              out.events.emplace_back(std::move(pc));
-            }
+          if (!EmitParsedBlock(out, block)) {
+            EmitVisible(out, std::move(block));
           }
 
           tool_call_buffer_.clear();
           inside_tool_call_ = false;
-        } else {
-          // Opening marker: emit prefix as visible text, then start buffering the tool-call block (including the
-          // marker — ParseToolCalls expects the full `<tool_call>...</tool_call>` substring).
-          if (found > 0) {
-            EmitVisible(out, buffer_.substr(0, found));
-          }
-          tool_call_buffer_ = buffer_.substr(found, marker.size());
-          buffer_.erase(0, found + marker.size());
-          inside_tool_call_ = true;
+          ResetPayloadScan();
+          continue;
         }
+
+        if (flushing) {
+          const size_t wrong_end = reasoning_end_marker_.empty()
+                                       ? std::string::npos
+                                       : FindMarkerOutsideJsonString(
+                                             tool_call_buffer_, reasoning_end_marker_, payload_start);
+          if (wrong_end != std::string::npos) {
+            std::string suffix =
+                tool_call_buffer_.substr(wrong_end + reasoning_end_marker_.size());
+            if (suffix.find_first_not_of(" \t\r\n") != std::string::npos) {
+              // A transcript cannot represent visible text after a tool call without reordering it. Keep the whole
+              // model output visible instead of recovering a call that would force the suffix to be discarded.
+              EmitVisible(out, std::move(tool_call_buffer_));
+            } else {
+              std::string candidate = tool_call_buffer_.substr(0, wrong_end) + end_marker_;
+              if (EmitParsedBlock(out, candidate)) {
+                EmitVisible(out, std::move(suffix));
+              } else {
+                EmitVisible(out, std::move(tool_call_buffer_));
+              }
+            }
+          } else {
+            std::string candidate = tool_call_buffer_ + end_marker_;
+            if (!EmitParsedBlock(out, candidate)) {
+              EmitVisible(out, std::move(tool_call_buffer_));
+            }
+          }
+
+          tool_call_buffer_.clear();
+          buffer_.clear();
+          inside_tool_call_ = false;
+          ResetPayloadScan();
+          return;
+        }
+
+        return;
+      }
+
+      const std::string& marker = start_marker_;
+
+      size_t found = buffer_.find(marker);
+
+      if (found != std::string::npos) {
+        // Opening marker: emit prefix as visible text, then start buffering the tool-call block (including the
+        // marker — ParseToolCalls expects the full `<tool_call>...</tool_call>` substring).
+        if (found > 0) {
+          EmitVisible(out, buffer_.substr(0, found));
+        }
+        tool_call_buffer_ = buffer_.substr(found, marker.size());
+        buffer_.erase(0, found + marker.size());
+        inside_tool_call_ = true;
+        ResetPayloadScan();
 
         continue;  // re-scan the remaining buffer for the next marker
       }
 
       // No full marker.
       if (flushing) {
-        if (inside_tool_call_) {
-          // Unterminated tool-call block: surface the buffered bytes as visible text so the caller still sees what
-          // the model produced. Matches ReasoningStreamSplitter::Flush behavior for unterminated reasoning.
-          EmitVisible(out, tool_call_buffer_ + buffer_);
-          tool_call_buffer_.clear();
-          inside_tool_call_ = false;
-        } else {
-          EmitVisible(out, buffer_);
-        }
+        EmitVisible(out, buffer_);
         buffer_.clear();
         return;
       }
 
-      if (inside_tool_call_) {
-        // Inside a tool-call block: every byte belongs to the block. Append to the tool-call buffer and hold back
-        // only the longest suffix that could still grow into the end marker.
-        size_t hold = LongestSuffixThatIsPrefixOf(buffer_, marker);
-        size_t safe = buffer_.size() - hold;
+      // Outside: emit visible text, but hold back the longest suffix that could still grow into the start marker.
+      size_t hold = LongestSuffixThatIsPrefixOf(buffer_, marker);
+      size_t safe = buffer_.size() - hold;
 
-        if (safe > 0) {
-          tool_call_buffer_.append(buffer_, 0, safe);
-          buffer_.erase(0, safe);
-        }
-      } else {
-        // Outside: emit visible text, but hold back the longest suffix that could still grow into the start marker.
-        size_t hold = LongestSuffixThatIsPrefixOf(buffer_, marker);
-        size_t safe = buffer_.size() - hold;
-
-        if (safe > 0) {
-          EmitVisible(out, buffer_.substr(0, safe));
-          buffer_.erase(0, safe);
-        }
+      if (safe > 0) {
+        EmitVisible(out, buffer_.substr(0, safe));
+        buffer_.erase(0, safe);
       }
 
       return;
@@ -197,9 +352,19 @@ class ToolCallStreamAccumulator {
 
   std::string start_marker_;
   std::string end_marker_;
+  std::string tools_json_;
+  std::string reasoning_end_marker_;
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;
+  size_t scan_position_ = 0;
+  size_t prefix_probe_position_ = 0;
+  size_t prefix_quote_position_ = std::string::npos;
+  size_t prefix_quote_search_position_ = std::string::npos;
+  size_t ignored_prefix_quote_ = std::string::npos;
+  bool prefix_classified_ = false;
+  bool scan_inside_string_ = false;
+  bool scan_escaped_ = false;
 };
 
 }  // namespace fl

@@ -5,6 +5,7 @@
 #include "inferencing/session/session.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fl {
@@ -15,6 +16,13 @@ struct ParsedToolCall {
   std::string name;       // function name
   std::string arguments;  // JSON string of arguments
 };
+
+/// Find a marker outside JSON string literals. Quote and escape state is
+/// tracked from start_pos, which must point at the beginning of the JSON-like
+/// payload being scanned.
+size_t FindMarkerOutsideJsonString(std::string_view text,
+                                   std::string_view marker,
+                                   size_t start_pos = 0);
 
 /// Parse tool calls from generated text using start/end marker tokens.
 ///
@@ -28,10 +36,12 @@ struct ParsedToolCall {
 /// @param text            The full generated text (may contain mixed text and tool calls)
 /// @param tool_call_start The start marker token string
 /// @param tool_call_end   The end marker token string
+/// @param tools_json      Advertised OpenAI-format tools used to validate repaired calls
 /// @return                Parsed tool calls, empty if none found
 std::vector<ParsedToolCall> ParseToolCalls(const std::string& text,
                                            const std::string& tool_call_start,
-                                           const std::string& tool_call_end);
+                                           const std::string& tool_call_end,
+                                           const std::string& tools_json = {});
 
 /// Generate a unique tool call ID (e.g., "call_abc123def").
 std::string GenerateToolCallId();

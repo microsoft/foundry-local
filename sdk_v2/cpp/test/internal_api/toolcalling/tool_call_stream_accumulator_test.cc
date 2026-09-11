@@ -6,6 +6,7 @@
 // EOS draining that the chat streaming paths rely on.
 //
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
+#include "inferencing/generative/chat/chat_transcript.h"
 
 #include <gtest/gtest.h>
 
@@ -153,6 +154,34 @@ TEST(ToolCallStreamAccumulatorTest, MarkerByteByByte) {
   EXPECT_EQ(all[0].name, "f");
 }
 
+TEST(ToolCallStreamAccumulatorTest, LargeArgumentScansIncrementallyByteByByte) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string argument(16 * 1024, 'x');
+  const std::string generated =
+      R"(<tool_call>{"name":"write","arguments":{"content":")" + argument +
+      R"("}}</tool_call>)";
+
+  std::vector<ParsedToolCall> calls;
+  for (char byte : generated) {
+    auto output = acc.Push(std::string(1, byte));
+    for (auto& event : output.events) {
+      if (auto* call = std::get_if<ParsedToolCall>(&event)) {
+        calls.push_back(std::move(*call));
+      }
+    }
+  }
+  auto final = acc.Flush();
+  for (auto& event : final.events) {
+    if (auto* call = std::get_if<ParsedToolCall>(&event)) {
+      calls.push_back(std::move(*call));
+    }
+  }
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "write");
+  EXPECT_EQ(calls[0].arguments.size(), argument.size() + 14);
+}
+
 // ========================================================================
 // Multiple tool calls — sequential blocks, with interspersed visible text.
 // ========================================================================
@@ -205,6 +234,18 @@ TEST(ToolCallStreamAccumulatorTest, UnterminatedToolCallBecomesVisibleOnFlush) {
   EXPECT_FALSE(acc.InsideToolCall()) << "Flush should leave accumulator in outside state";
 }
 
+TEST(ToolCallStreamAccumulatorTest, FlushRecoversCompleteCallWithoutClosingMarker) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  auto outs = RunChunks(acc, {R"(<tool_call>{"name":"complete","arguments":{"value":1}})"});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "complete");
+  EXPECT_EQ(calls[0].arguments, R"({"value":1})");
+  EXPECT_FALSE(acc.InsideToolCall());
+}
+
 TEST(ToolCallStreamAccumulatorTest, CompletedMalformedToolCallBecomesVisible) {
   ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
   auto outs = RunChunks(acc, {"before <tool_call>not json</tool_call> after"});
@@ -240,6 +281,130 @@ TEST(ToolCallStreamAccumulatorTest, CompletedMixedValidAndInvalidArrayBecomesVis
   EXPECT_EQ(CollectVisible(outs), "before " + generated + " after")
       << "A partially-invalid block must be preserved whole, not partially parsed";
   EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, WrongClosingTagWithTrailingTextStaysVisible) {
+  std::string tools =
+  R"([{"type":"function","name":"exec_command","parameters":{"type":"object",)"
+  R"("properties":{"cmd":{"type":"string"}}}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools, "</think>");
+  auto outs = RunChunks(
+      acc, {R"(<tool_call>{"function":"exec_command","arguments":{"cmd":"pwd"}</think> explanation)"});
+
+  EXPECT_EQ(CollectVisible(outs),
+            R"(<tool_call>{"function":"exec_command","arguments":{"cmd":"pwd"}</think> explanation)");
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, FlushRecoversTerminalWrongClosingTag) {
+  std::string tools =
+      R"([{"type":"function","name":"exec_command","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools, "</think>");
+  auto outs = RunChunks(
+      acc, {R"(<tool_call>{"function":"exec_command","arguments":{"cmd":"pwd"}</think>)"});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+}
+
+TEST(ToolCallStreamAccumulatorTest, ConfiguredWrongClosingMarkerInsideArgumentIsIgnored) {
+  std::string tools =
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools, "</reason>");
+  const std::string generated =
+      R"(<tool_call>{"name":"shell","arguments":{"cmd":"echo '</reason>'"}</reason>)";
+  auto outs = RunChunks(acc, {generated});
+
+    EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"echo '</reason>'"})");
+}
+
+TEST(ToolCallStreamAccumulatorTest, EndMarkerInsideArgumentDoesNotTruncateCall) {
+  const std::string generated =
+      R"(<tool_call>{"name":"shell","arguments":{"cmd":"grep '</tool_call>' output"}}</tool_call>)";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"grep '</tool_call>' output"})");
+}
+
+TEST(ToolCallStreamAccumulatorTest, NestedRecoveryRecoversSupportedPrefix) {
+  std::string tools =
+      R"([{"type":"function","name":"exec_command","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+  const std::string malformed_prefix = R"(<tool_call><exec_command","arguments":{"cmd":"ls"})";
+  const std::string valid_inner =
+      R"(<tool_call>{"name":"exec_command","args":{"cmd":"pwd"}}</tool_call>)";
+  auto outs = RunChunks(acc, {malformed_prefix + valid_inner});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 2u);
+  EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls"})");
+  EXPECT_EQ(calls[1].name, "exec_command");
+  EXPECT_EQ(calls[1].arguments, R"({"cmd":"pwd"})");
+}
+
+TEST(ToolCallStreamAccumulatorTest, NestedStartRecoversCompleteFirstCall) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated =
+      R"(<tool_call>{"name":"a","arguments":{}})"
+      R"(<tool_call>{"name":"b","arguments":{}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 2u);
+  EXPECT_EQ(calls[0].name, "a");
+  EXPECT_EQ(calls[1].name, "b");
+}
+
+TEST(ToolCallStreamAccumulatorTest, NestedMarkerInsideUnterminatedStringRemainsVisible) {
+  std::string tools =
+      R"([{"type":"function","name":"danger","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+  const std::string generated =
+      R"(<tool_call>{"name":"shell","arguments":{"cmd":"echo )"
+      R"(<tool_call>{\"name\":\"danger\",\"arguments\":{}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_EQ(CollectVisible(outs), generated);
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, RecoveredModelCallCanBeAnsweredAndContinued) {
+  std::string tools =
+      R"([{"type":"function","name":"read_file","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+  auto outs = RunChunks(
+      acc, {R"(<tool_call><read_file","arguments":{"path":"README.md"}}</tool_call>)"});
+  auto calls = CollectCalls(outs);
+
+  ASSERT_EQ(calls.size(), 1u);
+  auto generated = MakeGeneratedToolCall(calls[0].id, calls[0].name, calls[0].arguments);
+  ASSERT_TRUE(generated.arguments_usable);
+
+  TranscriptMessage assistant;
+  assistant.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+  assistant.AppendToolCall(std::move(generated.call));
+
+  ChatTranscript transcript;
+  transcript.CommitTurn({TranscriptMessage(FOUNDRY_LOCAL_ROLE_USER, "Read README.md")},
+                        std::move(assistant), {});
+  ASSERT_TRUE(transcript.IsOutstanding(calls[0].id));
+
+  transcript.CommitTurn({TranscriptMessage::ToolResult(calls[0].id, "Foundry Local")},
+                        TranscriptMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "The file was read."), {});
+  EXPECT_FALSE(transcript.HasOutstandingCalls());
+  EXPECT_EQ(transcript.Messages().back().VisibleText(), "The file was read.");
 }
 
 // ========================================================================
