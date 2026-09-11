@@ -335,7 +335,7 @@ TEST(ToolCallStreamAccumulatorTest, EndMarkerInsideArgumentDoesNotTruncateCall) 
   EXPECT_EQ(calls[0].arguments, R"({"cmd":"grep '</tool_call>' output"})");
 }
 
-TEST(ToolCallStreamAccumulatorTest, NestedRecoveryPreservesMalformedPrefix) {
+TEST(ToolCallStreamAccumulatorTest, NestedRecoveryRecoversSupportedPrefix) {
   std::string tools =
       R"([{"type":"function","name":"exec_command","parameters":{"type":"object"}}])";
   ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
@@ -344,10 +344,27 @@ TEST(ToolCallStreamAccumulatorTest, NestedRecoveryPreservesMalformedPrefix) {
       R"(<tool_call>{"name":"exec_command","args":{"cmd":"pwd"}}</tool_call>)";
   auto outs = RunChunks(acc, {malformed_prefix + valid_inner});
 
-  EXPECT_EQ(CollectVisible(outs), malformed_prefix);
+  EXPECT_TRUE(CollectVisible(outs).empty());
   auto calls = CollectCalls(outs);
-  ASSERT_EQ(calls.size(), 1u);
+  ASSERT_EQ(calls.size(), 2u);
   EXPECT_EQ(calls[0].name, "exec_command");
+  EXPECT_EQ(calls[0].arguments, R"({"cmd":"ls"})");
+  EXPECT_EQ(calls[1].name, "exec_command");
+  EXPECT_EQ(calls[1].arguments, R"({"cmd":"pwd"})");
+}
+
+TEST(ToolCallStreamAccumulatorTest, NestedStartRecoversCompleteFirstCall) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated =
+      R"(<tool_call>{"name":"a","arguments":{}})"
+      R"(<tool_call>{"name":"b","arguments":{}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 2u);
+  EXPECT_EQ(calls[0].name, "a");
+  EXPECT_EQ(calls[1].name, "b");
 }
 
 TEST(ToolCallStreamAccumulatorTest, NestedMarkerInsideUnterminatedStringRemainsVisible) {

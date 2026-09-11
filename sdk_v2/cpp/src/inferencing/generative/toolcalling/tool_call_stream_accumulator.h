@@ -235,7 +235,10 @@ class ToolCallStreamAccumulator {
         if (match.kind == MarkerKind::kNestedStart) {
           const size_t nested_start = match.position;
           std::string remainder = tool_call_buffer_.substr(nested_start + start_marker_.size());
-          EmitVisible(out, tool_call_buffer_.substr(0, nested_start));
+          std::string prefix = tool_call_buffer_.substr(0, nested_start);
+          if (!EmitParsedBlock(out, prefix + end_marker_)) {
+            EmitVisible(out, std::move(prefix));
+          }
           tool_call_buffer_ = start_marker_;
           buffer_ = std::move(remainder);
           ResetPayloadScan();
