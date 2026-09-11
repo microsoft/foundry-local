@@ -64,7 +64,7 @@ class ChatTemplateTest : public ::testing::Test {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatTemplateTest, SingleUserMessage) {
-  std::vector<MessageItem> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
+  std::vector<TranscriptMessage> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
 
   std::string prompt = BuildChatPrompt(messages, GetModel());
   EXPECT_FALSE(prompt.empty());
@@ -74,7 +74,7 @@ TEST_F(ChatTemplateTest, SingleUserMessage) {
 }
 
 TEST_F(ChatTemplateTest, SystemAndUserMessages) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a helpful assistant."},
       {FOUNDRY_LOCAL_ROLE_USER, "What is 2+2?"}};
 
@@ -85,7 +85,7 @@ TEST_F(ChatTemplateTest, SystemAndUserMessages) {
 }
 
 TEST_F(ChatTemplateTest, MultiTurnConversation) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a math tutor."},
       {FOUNDRY_LOCAL_ROLE_USER, "What is 2+2?"},
       {FOUNDRY_LOCAL_ROLE_ASSISTANT, "4"},
@@ -98,15 +98,22 @@ TEST_F(ChatTemplateTest, MultiTurnConversation) {
   EXPECT_NE(prompt.find("3+3"), std::string::npos);
 }
 
+TEST(ChatTemplateUnitTest, EmptyAssistantMessageRendersAsEmptyContent) {
+  MessageItem empty_assistant;
+  empty_assistant.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+
+  EXPECT_EQ(RenderMessageForPrompt(empty_assistant), "");
+}
+
 TEST_F(ChatTemplateTest, EmptyMessagesThrows) {
-  std::vector<MessageItem> messages;
+  std::vector<TranscriptMessage> messages;
   EXPECT_THROW(BuildChatPrompt(messages, GetModel()), fl::Exception);
 }
 
 TEST_F(ChatTemplateTest, PromptEndsWithAssistantPrefix) {
   // When add_generation_prompt=true, the template should end with the
   // assistant turn prefix so the model continues generating.
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
 
   std::string prompt = BuildChatPrompt(messages, GetModel());
@@ -120,7 +127,7 @@ TEST_F(ChatTemplateTest, PromptEndsWithAssistantPrefix) {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatTemplateTest, EncodeProducesTokens) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
 
   std::string prompt = BuildChatPrompt(messages, GetModel());
@@ -132,11 +139,12 @@ TEST_F(ChatTemplateTest, EncodeProducesTokens) {
 }
 
 TEST_F(ChatTemplateTest, LongerMessageProducesMoreTokens) {
-  std::vector<MessageItem> short_msgs = {
+  std::vector<TranscriptMessage> short_msgs = {
       {FOUNDRY_LOCAL_ROLE_USER, "Hi"}};
-  std::vector<MessageItem> long_msgs = {
+  std::vector<TranscriptMessage> long_msgs = {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a detailed technical writer who explains everything thoroughly."},
-      {FOUNDRY_LOCAL_ROLE_USER, "Explain the theory of relativity in detail, covering both special and general relativity."}};
+      {FOUNDRY_LOCAL_ROLE_USER,
+       "Explain the theory of relativity in detail, covering both special and general relativity."}};
   std::string short_prompt = BuildChatPrompt(short_msgs, GetModel());
   std::string long_prompt = BuildChatPrompt(long_msgs, GetModel());
 

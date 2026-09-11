@@ -111,3 +111,24 @@ TEST(CallbackHandlerTest, NormalCallbackCancelsViaReturnValue) {
   EXPECT_EQ(invocations.load(), 1);
   EXPECT_TRUE(request.canceled.load());
 }
+
+TEST(CallbackHandlerTest, DrainPendingWaitsForDeliveryWithoutClosingTheQueue) {
+  Request request;
+  std::atomic<int> invocations{0};
+
+  auto fn = [&invocations](flStreamingCallbackData data, void*) -> int {
+    auto* queue = reinterpret_cast<ItemQueue*>(data.item_queue);
+    (void)queue->TryPop();
+    ++invocations;
+    return 0;
+  };
+
+  CallbackHandler handler(request, fn, fl::test::NullLog());
+  handler.PushItem(std::make_unique<TextItem>("content"));
+  handler.DrainPending();
+  EXPECT_EQ(invocations.load(), 1);
+
+  handler.PushItem(std::make_unique<TextItem>("terminal"));
+  handler.Drain();
+  EXPECT_EQ(invocations.load(), 2);
+}

@@ -9,7 +9,6 @@
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
 #   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
-#   shell          – 'pwsh' (Windows/macOS) or 'bash' (Linux)
 
 parameters:
 - name: ortVersion
@@ -22,14 +21,12 @@ parameters:
 - name: includeWinml
   type: boolean
   default: false
-- name: shell
-  type: string
-  values: ['pwsh', 'bash']
 
 steps:
 
-# Fail fast if the pipeline-pinned versions drift from the cmake source of
-# truth in sdk_v2/deps_versions.json.
+# Stable pipeline versions must match sdk_v2/deps_versions.json. Non-release
+# CI intentionally overrides GenAI with a prerelease from the existing
+# AIFoundryLocal_PublicPackages feed, which has ORT-Nightly as an upstream.
 - task: PowerShell@2
   displayName: 'Validate pinned versions match deps_versions.json'
   inputs:
@@ -42,7 +39,9 @@ steps:
       $deps = Get-Content $depsFile -Raw | ConvertFrom-Json
       $expected = @{
         'onnxruntime'                = '${{ parameters.ortVersion }}'
-        'onnxruntime-genai'          = '${{ parameters.genaiVersion }}'
+      }
+      if ('${{ parameters.genaiVersion }}' -notmatch '-dev') {
+        $expected['onnxruntime-genai'] = '${{ parameters.genaiVersion }}'
       }
       if ('${{ parameters.winmlVersion }}' -ne '') {
         $expected['windows-ai-machinelearning'] = '${{ parameters.winmlVersion }}'
@@ -61,96 +60,89 @@ steps:
       }
       Write-Host "Pinned versions agree with sdk_v2/deps_versions.json."
 
-- ${{ if eq(parameters.shell, 'pwsh') }}:
-  - task: PowerShell@2
-    displayName: 'Pre-download NuGet packages'
-    inputs:
-      targetType: inline
-      pwsh: true
-      script: |
-        $ErrorActionPreference = 'Stop'
-        $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"
-        New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+- task: UseDotNet@2
+  displayName: 'Use .NET 10 SDK for NuGet restore'
+  inputs:
+    packageType: sdk
+    version: '10.0.x'
 
-        # These packages are public on nuget.org. Foundry Local Core's
-        # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
-        # (see .pipelines/templates/build-core-steps.yml), so we follow the
-        # same source of truth here.
-        $feed = "https://www.nuget.org/api/v2/package"
+- task: NuGetAuthenticate@1
+  displayName: 'Authenticate NuGet feeds'
 
-        $packages = @(
-          @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
-          @{ key = 'ort';   id = 'Microsoft.ML.OnnxRuntime';             version = '${{ parameters.ortVersion }}'   }
-        )
+- task: PowerShell@2
+  displayName: 'Restore native packages'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"
+      $restoreDir = Join-Path $cacheDir "restore"
+      $packagesDir = Join-Path $restoreDir "packages"
+      New-Item -ItemType Directory -Force -Path $restoreDir | Out-Null
 
-        $defines = @()
-        foreach ($pkg in $packages) {
-          $url = "$feed/$($pkg.id)/$($pkg.version)"
-          $out = "$cacheDir/$($pkg.key).nupkg"
-          Write-Host "Downloading $($pkg.id) $($pkg.version)"
-          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
-          if (-not (Test-Path $out)) { throw "$($pkg.key) download failed" }
-          Write-Host "  -> $out ($((Get-Item $out).Length) bytes)"
-
-          switch ($pkg.key) {
-            'genai' { $defines += "GENAI_FETCH_URL=$out" }
-            'ort'   { $defines += "ORT_FETCH_URL=$out" }
-          }
-        }
-
-        if ($${{ parameters.includeWinml }}) {
-          # WinML 2.x (Microsoft.Windows.AI.MachineLearning) is reg-free — a single self-contained
-          # native package with no transitive Windows App SDK Foundation dependency to resolve.
-          $winmlUrl = "$feed/Microsoft.Windows.AI.MachineLearning/${{ parameters.winmlVersion }}"
-          $winmlOut = "$cacheDir/winml.nupkg"
-          Write-Host "Downloading Microsoft.Windows.AI.MachineLearning ${{ parameters.winmlVersion }}"
-          Invoke-WebRequest -Uri $winmlUrl -OutFile $winmlOut
-          if (-not (Test-Path $winmlOut)) { throw "WinML download failed" }
-          Write-Host "  -> $winmlOut ($((Get-Item $winmlOut).Length) bytes)"
-          $defines += "WINML_EP_CATALOG_FETCH_URL=$winmlOut"
-        }
-
-        $joined = ($defines | ForEach-Object { "`"$_`"" }) -join ' '
-        Write-Host "##vso[task.setvariable variable=cmakeFetchDefines]$joined"
-        Write-Host "cmakeFetchDefines = $joined"
-
-- ${{ if eq(parameters.shell, 'bash') }}:
-  - bash: |
-      set -euo pipefail
-      cacheDir="$(Build.BinariesDirectory)/nuget_packages"
-      mkdir -p "$cacheDir"
-
-      # These packages are public on nuget.org. Foundry Local Core's
-      # nuget.config maps everything except Microsoft.Telemetry* to nuget.org
-      # (see .pipelines/templates/build-core-steps.yml), so we follow the
-      # same source of truth here.
-      feed="https://www.nuget.org/api/v2/package"
-
-      declare -a entries=(
-        "genai:Microsoft.ML.OnnxRuntimeGenAI.Foundry:${{ parameters.genaiVersion }}"
-        "ort:Microsoft.ML.OnnxRuntime:${{ parameters.ortVersion }}"
+      $packages = @(
+        @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
+        @{ key = 'ort'; id = 'Microsoft.ML.OnnxRuntime'; version = '${{ parameters.ortVersion }}' }
       )
-      if [ "${{ parameters.includeWinml }}" = "True" ]; then
-        # WinML is Windows-only; the bash branch should never receive includeWinml=true.
-        echo "ERROR: includeWinml=true is not supported on the bash prefetch branch (WinML is Windows-only)." >&2
-        exit 1
-      fi
-      defines=()
-      for entry in "${entries[@]}"; do
-        IFS=: read -r key id version <<< "$entry"
-        out="$cacheDir/${key}.nupkg"
-        url="$feed/${id}/${version}"
-        echo "Downloading $id $version"
-        curl -fSL -o "$out" "$url"
-        echo "  -> $out ($(stat -c%s "$out" 2>/dev/null || stat -f%z "$out") bytes)"
+      if ($${{ parameters.includeWinml }}) {
+        $packages += @{
+          key = 'winml'
+          id = 'Microsoft.Windows.AI.MachineLearning'
+          version = '${{ parameters.winmlVersion }}'
+        }
+      }
 
-        case "$key" in
-          genai) defines+=("\"GENAI_FETCH_URL=$out\"") ;;
-          ort)   defines+=("\"ORT_FETCH_URL=$out\"") ;;
-        esac
-      done
+      $references = $packages | ForEach-Object {
+        "    <PackageReference Include=`"$($_.id)`" Version=`"$($_.version)`" />"
+      }
+      $feedUrl = 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/' +
+        'AIFoundryLocal_PublicPackages/nuget/v3/index.json'
+      @"
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+        <ItemGroup>
+      $($references -join "`n")
+        </ItemGroup>
+      </Project>
+      "@ | Set-Content (Join-Path $restoreDir "restore.csproj")
 
-      joined="${defines[*]}"
-      echo "##vso[task.setvariable variable=cmakeFetchDefines]$joined"
-      echo "cmakeFetchDefines = $joined"
-    displayName: 'Pre-download NuGet packages'
+      @"
+      <?xml version="1.0" encoding="utf-8"?>
+      <configuration>
+        <packageSources>
+          <clear />
+          <add key="AIFoundryLocal_PublicPackages" value="$feedUrl" />
+        </packageSources>
+      </configuration>
+      "@ | Set-Content (Join-Path $restoreDir "NuGet.config")
+
+      dotnet restore (Join-Path $restoreDir "restore.csproj") `
+        --configfile (Join-Path $restoreDir "NuGet.config") `
+        --packages $packagesDir `
+        --no-cache
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      $defines = @()
+      foreach ($pkg in $packages) {
+        $packageDir = Join-Path $packagesDir "$($pkg.id.ToLowerInvariant())/$($pkg.version)"
+        if (-not (Test-Path $packageDir)) {
+          throw "Restored package directory not found: $packageDir"
+        }
+        $archive = Join-Path $cacheDir "$($pkg.key).zip"
+        Compress-Archive -Path "$packageDir/*" -DestinationPath $archive -Force
+        Write-Host "Restored $($pkg.id) $($pkg.version) -> $archive"
+
+        switch ($pkg.key) {
+          'genai' {
+            $defines += "GENAI_FETCH_URL=$archive"
+            $defines += "ORT_GENAI_VERSION=$($pkg.version)"
+          }
+          'ort' { $defines += "ORT_FETCH_URL=$archive" }
+          'winml' { $defines += "WINML_EP_CATALOG_FETCH_URL=$archive" }
+        }
+      }
+
+      $joined = ($defines | ForEach-Object { "`"$_`"" }) -join ' '
+      Write-Host "##vso[task.setvariable variable=cmakeFetchDefines]$joined"
+      Write-Host "cmakeFetchDefines = $joined"

@@ -43,10 +43,10 @@ public sealed record SearchOptions
     /// <summary>Maximum tokens to generate.</summary>
     public int? MaxOutputTokens { get; init; }
 
-    /// <summary>Frequency penalty. Float [-2.0, 2.0].</summary>
+    /// <summary>Frequency penalty. Currently only the neutral value 0 is supported.</summary>
     public float? FrequencyPenalty { get; init; }
 
-    /// <summary>Presence penalty. Float [-2.0, 2.0].</summary>
+    /// <summary>Presence penalty. Currently only the neutral value 0 is supported.</summary>
     public float? PresencePenalty { get; init; }
 
     /// <summary>Random seed for reproducibility.</summary>

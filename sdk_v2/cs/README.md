@@ -265,7 +265,7 @@ Tune generation parameters per client:
 chatClient.Settings.Temperature = 0.7f;
 chatClient.Settings.MaxTokens = 256;
 chatClient.Settings.TopP = 0.9f;
-chatClient.Settings.FrequencyPenalty = 0.5f;
+chatClient.Settings.FrequencyPenalty = 0.0f; // Nonzero OpenAI penalties are not currently supported.
 ```
 
 ### Audio Transcription

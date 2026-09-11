@@ -21,19 +21,19 @@ class TestSerialization:
 
     def test_top_level_fields_round_trip(self):
         s = ChatClientSettings(
-            frequency_penalty=0.1,
+            frequency_penalty=0.0,
             max_tokens=128,
             n=2,
             temperature=0.7,
-            presence_penalty=0.2,
+            presence_penalty=0.0,
             top_p=0.9,
         )
         d = s._serialize()
-        assert d["frequency_penalty"] == 0.1
+        assert d["frequency_penalty"] == 0.0
         assert d["max_tokens"] == 128
         assert d["n"] == 2
         assert d["temperature"] == 0.7
-        assert d["presence_penalty"] == 0.2
+        assert d["presence_penalty"] == 0.0
         assert d["top_p"] == 0.9
         assert "metadata" not in d
 

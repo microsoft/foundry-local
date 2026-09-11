@@ -15,12 +15,6 @@
 #
 # The pack stage emits the `rust-sdk-v2` pipeline artifact (the `.crate`).
 
-parameters:
-- name: ortVersion
-  type: string
-- name: genaiVersion
-  type: string
-
 stages:
 
 # =====================================================================
@@ -54,8 +48,6 @@ stages:
         rid: 'win-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
         runTests: true
-        ortVersion: ${{ parameters.ortVersion }}
-        genaiVersion: ${{ parameters.genaiVersion }}
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: rust_build_win_arm64
@@ -113,8 +105,6 @@ stages:
         rid: 'linux-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         runTests: true
-        ortVersion: ${{ parameters.ortVersion }}
-        genaiVersion: ${{ parameters.genaiVersion }}
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: rust_build_linux_arm64
@@ -146,8 +136,6 @@ stages:
         rid: 'linux-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
         runTests: true
-        ortVersion: ${{ parameters.ortVersion }}
-        genaiVersion: ${{ parameters.genaiVersion }}
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: rust_build_osx_arm64
@@ -180,8 +168,6 @@ stages:
         rid: 'osx-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         runTests: true
-        ortVersion: ${{ parameters.ortVersion }}
-        genaiVersion: ${{ parameters.genaiVersion }}
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # ================================================================

@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
 
+#include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
+#include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
 #include "utils.h"
@@ -47,8 +49,6 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
 
   apply_default_float("temperature", req.temperature);
   apply_default_float("top_p", req.top_p);
-  apply_default_float("presence_penalty", req.presence_penalty);
-  apply_default_float("frequency_penalty", req.frequency_penalty);
   apply_default_int("max_tokens", req.max_tokens);
 
   // top_k and random_seed go through metadata (matches C# behavior)
@@ -82,22 +82,49 @@ std::string MapFinishReason(flFinishReason reason) {
 
 void BuildRequestItems(const ChatCompletionRequest& req, Request& session_request) {
   for (const auto& msg : req.messages) {
-    if (!msg.content || msg.content->empty()) {
-      // ignore empty messages
+    auto role = Utils::StringToRole(msg.role);
+
+    if (role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      // A tool result may legitimately be an empty string; the call ID is what correlates it with its call.
+      session_request.AddOwnedItem(
+          std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""), msg.content.value_or("")));
       continue;
     }
 
-    // add a MessageItem or ToolResultItem depending on the role.
-    auto role = Utils::StringToRole(msg.role);
+    const std::string content = msg.content.value_or("");
+    if (!content.empty()) {
+      session_request.AddOwnedItem(std::make_unique<MessageItem>(role, content, msg.name.value_or("")));
+    }
 
-    switch (role) {
-      case FOUNDRY_LOCAL_ROLE_TOOL:
-        session_request.AddOwnedItem(std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""),
-                                                                      msg.content.value_or("")));
-        break;
+    if (role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      continue;
+    }
 
-      default:
-        session_request.AddOwnedItem(std::make_unique<MessageItem>(role, msg.content.value_or("")));
+    // A reasoning-only response has no model-visible text to replay, but its assistant role still separates the
+    // messages on either side. Carry that boundary as an empty visible text part; reasoning itself remains private.
+    if (content.empty() && msg.reasoning_content.has_value() && !msg.reasoning_content->empty()) {
+      auto boundary = std::make_unique<MessageItem>();
+      boundary->role = role;
+      boundary->name = msg.name.value_or("");
+      boundary->content.push_back(MessagePart::Own(std::make_unique<TextItem>("")));
+      session_request.AddOwnedItem(std::move(boundary));
+    }
+
+    // Assistant messages that issue tool calls usually have null content. When such a message also carries a
+    // participant name, emit a content-free MessageItem to carry it: the transcript folds the calls below into that
+    // message, so the name reaches the template without fabricating a text part the caller never sent.
+    if (content.empty() && (!msg.reasoning_content.has_value() || msg.reasoning_content->empty()) &&
+        !msg.tool_calls.empty() && msg.name.has_value() && !msg.name->empty()) {
+      auto named = std::make_unique<MessageItem>();
+      named->role = role;
+      named->name = *msg.name;
+      session_request.AddOwnedItem(std::move(named));
+    }
+
+    // Emit the calls as items directly after any visible text so the transcript keeps them on one assistant message.
+    for (const auto& call : msg.tool_calls) {
+      session_request.AddOwnedItem(
+          std::make_unique<ToolCallItem>(call.id, call.function.name, call.function.arguments));
     }
   }
 }
@@ -152,8 +179,14 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
 
   set_float_param(req.temperature, "temperature");
   set_float_param(req.top_p, "top_p");
-  set_float_param(req.frequency_penalty, "frequency_penalty");
-  set_float_param(req.presence_penalty, "presence_penalty");
+  if (req.frequency_penalty.value_or(0.0f) != 0.0f) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "nonzero frequency_penalty is not supported; ORT repetition_penalty has different semantics");
+  }
+  if (req.presence_penalty.value_or(0.0f) != 0.0f) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "nonzero presence_penalty is not supported; ORT diversity_penalty has different semantics");
+  }
 
   if (req.seed.has_value()) {
     session_request.options["seed"] = std::to_string(*req.seed);
@@ -212,11 +245,7 @@ void MapStopSequences(const ChatCompletionRequest& req, Request& session_request
     return;
   }
 
-  const auto& stop = *req.stop;
-  if ((stop.is_string() && !stop.get<std::string>().empty()) ||
-      (stop.is_array() && !stop.empty())) {
-    session_request.options["early_stopping"] = "true";
-  }
+  StoreStopStringsOption(NormalizeOpenAiStopStrings(*req.stop), session_request.options);
 }
 
 ChatCompletionResponse BuildResponse(const Response& response,
@@ -225,25 +254,24 @@ ChatCompletionResponse BuildResponse(const Response& response,
                                      const std::string& model_name) {
   // Extract assistant message and tool calls from response items
   std::string response_text;
+  std::string reasoning_text;
   std::vector<ChatCompletionToolCall> tool_calls;
 
   for (const auto& item : response.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       auto& msg_item = static_cast<MessageItem&>(*item);
       if (msg_item.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-        if (msg_item.IsSimpleText()) {
-          response_text = msg_item.GetSimpleText();
-        } else {
-          // Reasoning model: assistant message has multiple typed parts. The OpenAI Chat Completions response shape
-          // exposes only visible (DEFAULT) text — REASONING parts are surfaced via the Responses API path.
-          for (const auto& part : msg_item.content) {
-            if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
-              continue;
-            }
-            const auto& ti = static_cast<const TextItem&>(*part.view);
-            if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
-              response_text += ti.text;
-            }
+        // Chat Completions exposes only visible text. Inspect the TextItem type even for a one-part message because a
+        // generation truncated inside a reasoning block produces exactly one REASONING part.
+        for (const auto& part : msg_item.content) {
+          if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
+            continue;
+          }
+          const auto& ti = static_cast<const TextItem&>(*part.view);
+          if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+            response_text += ti.text;
+          } else if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            reasoning_text += ti.text;
           }
         }
       }
@@ -265,6 +293,10 @@ ChatCompletionResponse BuildResponse(const Response& response,
   choice.finish_reason = MapFinishReason(response.finish_reason);
   choice.message.content = response_text;
 
+  if (!reasoning_text.empty()) {
+    choice.message.reasoning_content = std::move(reasoning_text);
+  }
+
   if (has_tool_calls) {
     choice.message.tool_calls = std::move(tool_calls);
   }
@@ -278,6 +310,8 @@ ChatCompletionResponse BuildResponse(const Response& response,
   result.usage.prompt_tokens = static_cast<int>(response.usage.prompt_tokens);
   result.usage.completion_tokens = static_cast<int>(response.usage.completion_tokens);
   result.usage.total_tokens = static_cast<int>(response.usage.total_tokens);
+  result.usage.completion_tokens_details.reasoning_tokens =
+      static_cast<int>(response.usage.reasoning_tokens);
 
   return result;
 }
@@ -293,6 +327,22 @@ std::string FormatStreamingChunk(const std::string& content,
 
   ChatCompletionChunkChoice choice;
   choice.delta.content = content;
+  chunk.choices.push_back(std::move(choice));
+
+  return nlohmann::json(chunk).dump();
+}
+
+std::string FormatReasoningStreamingChunk(const std::string& reasoning_content,
+                                          const std::string& completion_id,
+                                          int64_t created,
+                                          const std::string& model_name) {
+  ChatCompletionChunk chunk;
+  chunk.id = completion_id;
+  chunk.created = created;
+  chunk.model = model_name;
+
+  ChatCompletionChunkChoice choice;
+  choice.delta.reasoning_content = reasoning_content;
   chunk.choices.push_back(std::move(choice));
 
   return nlohmann::json(chunk).dump();

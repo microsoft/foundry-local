@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fl {
@@ -18,16 +19,46 @@ namespace fl {
 // extended by ChatCompletionCreateRequestExtended (metadata field).
 // ========================================================================
 
+// --- Shared types (used by both requests and responses) ---
+
+/// A function call in a tool call. JSON keys: "name", "arguments"
+struct ChatCompletionFunctionCall {
+  std::string name;
+  std::string arguments;
+};
+
+/// A tool call issued by the assistant. JSON keys: "id", "type", "function"
+struct ChatCompletionToolCall {
+  std::string id;
+  std::string type = "function";
+  ChatCompletionFunctionCall function;
+  std::optional<int> index;  // streaming only — distinguishes parallel tool calls
+};
+
 // --- Request types ---
 
 /// A single message in the conversation. Maps to OpenAI ChatMessage.
 /// JSON keys: "role", "content", "name", "tool_call_id", "tool_calls"
 struct ChatCompletionMessage {
-  std::string role;                          // "system", "user", "assistant", "tool"
-  std::optional<std::string> content;        // nullable for assistant messages with tool_calls
-  std::optional<std::string> name;           // optional sender name
-  std::optional<std::string> tool_call_id;   // for role="tool": the tool call this is responding to
-  std::optional<nlohmann::json> tool_calls;  // for role="assistant": array of tool call objects
+  ChatCompletionMessage() = default;
+
+  ChatCompletionMessage(std::string role_in, std::optional<std::string> content_in,
+                        std::optional<std::string> name_in, std::optional<std::string> tool_call_id_in,
+                        std::vector<ChatCompletionToolCall> tool_calls_in,
+                        std::optional<std::string> reasoning_content_in = {})
+      : role(std::move(role_in)),
+        content(std::move(content_in)),
+        name(std::move(name_in)),
+        tool_call_id(std::move(tool_call_id_in)),
+        tool_calls(std::move(tool_calls_in)),
+        reasoning_content(std::move(reasoning_content_in)) {}
+
+  std::string role;                                // "system", "user", "assistant", "tool"
+  std::optional<std::string> content;              // nullable for assistant messages with tool_calls
+  std::optional<std::string> name;                 // optional sender name
+  std::optional<std::string> tool_call_id;         // for role="tool": the tool call this is responding to
+  std::vector<ChatCompletionToolCall> tool_calls;  // for role="assistant": the calls this message issued
+  std::optional<std::string> reasoning_content;    // replay marker only; never projected into the model prompt
 };
 
 /// Function definition within a tool. JSON keys: "name", "description", "parameters", "strict"
@@ -65,8 +96,8 @@ struct ChatCompletionRequest {
   std::optional<nlohmann::json> stop;                          // "stop" — string or array
   std::optional<int> max_tokens;                               // "max_tokens" (deprecated)
   std::optional<int> max_completion_tokens;                    // "max_completion_tokens"
-  std::optional<float> presence_penalty;                       // "presence_penalty"
-  std::optional<float> frequency_penalty;                      // "frequency_penalty"
+  std::optional<float> presence_penalty;                       // "presence_penalty"; only 0 is supported
+  std::optional<float> frequency_penalty;                      // "frequency_penalty"; only 0 is supported
   std::optional<std::vector<ChatCompletionTool>> tools;        // "tools"
   std::optional<nlohmann::json> tool_choice;                   // "tool_choice" — string or object
   std::optional<nlohmann::json> response_format;               // "response_format"
@@ -80,25 +111,12 @@ struct ChatCompletionRequest {
 
 // --- Response types ---
 
-/// A function call in a tool call. JSON keys: "name", "arguments"
-struct ChatCompletionFunctionCall {
-  std::string name;
-  std::string arguments;
-};
-
-/// A tool call from the assistant. JSON keys: "id", "type", "function"
-struct ChatCompletionToolCall {
-  std::string id;
-  std::string type = "function";
-  ChatCompletionFunctionCall function;
-  std::optional<int> index;  // streaming only — distinguishes parallel tool calls
-};
-
-/// The message in a response choice. JSON keys: "role", "content", "refusal", "tool_calls"
+/// The message in a response choice. JSON keys: "role", "content", "reasoning_content", "refusal", "tool_calls"
 struct ChatCompletionResponseMessage {
   std::string role = "assistant";
-  std::optional<std::string> content;  // nullable when tool_calls present
-  std::optional<std::string> refusal;  // null unless refusal
+  std::optional<std::string> content;            // nullable when tool_calls present
+  std::optional<std::string> reasoning_content;  // present only for reasoning models
+  std::optional<std::string> refusal;            // null unless refusal
   std::optional<std::vector<ChatCompletionToolCall>> tool_calls;
 };
 
@@ -143,10 +161,11 @@ struct ChatCompletionResponse {
 
 // --- Streaming types ---
 
-/// Delta content in a streaming chunk. JSON keys: "role", "content", "tool_calls"
+/// Delta content in a streaming chunk. JSON keys: "role", "content", "reasoning_content", "tool_calls"
 struct ChatCompletionDelta {
   std::optional<std::string> role;
   std::optional<std::string> content;
+  std::optional<std::string> reasoning_content;  // present only for reasoning model chunks
   std::optional<std::vector<ChatCompletionToolCall>> tool_calls;
 };
 
@@ -176,6 +195,8 @@ struct ChatCompletionChunk {
 // ========================================================================
 
 // --- Request deserialization ---
+void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f);
+void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc);
 void from_json(const nlohmann::json& j, ChatCompletionMessage& m);
 void from_json(const nlohmann::json& j, ChatCompletionFunctionDef& f);
 void from_json(const nlohmann::json& j, ChatCompletionTool& t);

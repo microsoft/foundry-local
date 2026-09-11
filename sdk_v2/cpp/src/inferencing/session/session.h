@@ -149,6 +149,9 @@ class Session {
 
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
+  /// Serialize a state mutation with ProcessRequest for session types that maintain mutable turn state.
+  std::unique_lock<std::mutex> LockRequestMutex() const { return std::unique_lock<std::mutex>(*request_mutex_); }
+
  private:
   /// Reject items (and message content parts) whose type the model's task does not advertise as an
   /// input. Currently applies to chat tasks only.

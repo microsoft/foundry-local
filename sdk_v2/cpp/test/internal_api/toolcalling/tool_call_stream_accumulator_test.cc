@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -16,14 +17,29 @@ using namespace fl;
 
 namespace {
 
-// Concatenate the visible_text from a sequence of Push results — handy for asserting that "what came through
-// the visible channel" equals what we'd have produced without tool-call extraction.
+// Concatenate text events from a sequence of Push results.
 std::string CollectVisible(const std::vector<ToolCallStreamAccumulator::Output>& outs) {
   std::string s;
   for (const auto& o : outs) {
-    s += o.visible_text;
+    for (const auto& event : o.events) {
+      if (const auto* text = std::get_if<std::string>(&event)) {
+        s += *text;
+      }
+    }
   }
   return s;
+}
+
+std::vector<ParsedToolCall> CollectCalls(std::vector<ToolCallStreamAccumulator::Output>& outs) {
+  std::vector<ParsedToolCall> calls;
+  for (auto& output : outs) {
+    for (auto& event : output.events) {
+      if (auto* call = std::get_if<ParsedToolCall>(&event)) {
+        calls.push_back(std::move(*call));
+      }
+    }
+  }
+  return calls;
 }
 
 // Run a sequence of chunks through the accumulator, calling Flush at the end. Returns one Output per chunk plus
@@ -48,16 +64,15 @@ std::vector<ToolCallStreamAccumulator::Output> RunChunks(ToolCallStreamAccumulat
 TEST(ToolCallStreamAccumulatorTest, EmptyMarkersIsPassthrough) {
   ToolCallStreamAccumulator acc("", "");
   auto out = acc.Push("any text including <tool_call> markers");
-  EXPECT_EQ(out.visible_text, "any text including <tool_call> markers");
-  EXPECT_TRUE(out.ready_calls.empty());
+  ASSERT_EQ(out.events.size(), 1u);
+  EXPECT_EQ(std::get<std::string>(out.events[0]), "any text including <tool_call> markers");
   EXPECT_FALSE(acc.InsideToolCall());
 }
 
 TEST(ToolCallStreamAccumulatorTest, EmptyChunkProducesNothing) {
   ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
   auto out = acc.Push("");
-  EXPECT_TRUE(out.visible_text.empty());
-  EXPECT_TRUE(out.ready_calls.empty());
+  EXPECT_TRUE(out.events.empty());
 }
 
 // ========================================================================
@@ -69,7 +84,9 @@ TEST(ToolCallStreamAccumulatorTest, PlainTextPassesThroughVerbatim) {
   auto outs = RunChunks(acc, {"Hello", ", ", "world!"});
   EXPECT_EQ(CollectVisible(outs), "Hello, world!");
   for (const auto& o : outs) {
-    EXPECT_TRUE(o.ready_calls.empty());
+    EXPECT_TRUE(std::none_of(o.events.begin(), o.events.end(), [](const auto& event) {
+      return std::holds_alternative<ParsedToolCall>(event);
+    }));
   }
 }
 
@@ -84,8 +101,10 @@ TEST(ToolCallStreamAccumulatorTest, SingleToolCallInOneChunk) {
   auto outs = RunChunks(acc, {chunk});
 
   EXPECT_EQ(CollectVisible(outs), "prefix  suffix");
-  ASSERT_EQ(outs[0].ready_calls.size(), 1u);
-  EXPECT_EQ(outs[0].ready_calls[0].name, "add");
+  ASSERT_EQ(outs[0].events.size(), 3u);
+  EXPECT_EQ(std::get<std::string>(outs[0].events[0]), "prefix ");
+  EXPECT_EQ(std::get<ParsedToolCall>(outs[0].events[1]).name, "add");
+  EXPECT_EQ(std::get<std::string>(outs[0].events[2]), " suffix");
 }
 
 TEST(ToolCallStreamAccumulatorTest, SingleToolCallSplitAcrossManyChunks) {
@@ -108,13 +127,7 @@ TEST(ToolCallStreamAccumulatorTest, SingleToolCallSplitAcrossManyChunks) {
   EXPECT_EQ(CollectVisible(outs), "before  after")
       << "Marker and JSON bytes must not leak into visible text";
 
-  // Find the tool call across whichever Push produced it (it should be the one that completed the end marker).
-  std::vector<ParsedToolCall> all;
-  for (auto& o : outs) {
-    for (auto& pc : o.ready_calls) {
-      all.push_back(std::move(pc));
-    }
-  }
+  auto all = CollectCalls(outs);
   ASSERT_EQ(all.size(), 1u);
   EXPECT_EQ(all[0].name, "mul");
   EXPECT_NE(all[0].arguments.find("7"), std::string::npos);
@@ -135,12 +148,7 @@ TEST(ToolCallStreamAccumulatorTest, MarkerByteByByte) {
 
   EXPECT_TRUE(CollectVisible(outs).empty()) << "Single tool-call block with no surrounding text produces no visible";
 
-  std::vector<ParsedToolCall> all;
-  for (auto& o : outs) {
-    for (auto& pc : o.ready_calls) {
-      all.push_back(std::move(pc));
-    }
-  }
+  auto all = CollectCalls(outs);
   ASSERT_EQ(all.size(), 1u);
   EXPECT_EQ(all[0].name, "f");
 }
@@ -158,12 +166,7 @@ TEST(ToolCallStreamAccumulatorTest, TwoSequentialToolCalls) {
 
   EXPECT_EQ(CollectVisible(outs), " middle ");
 
-  std::vector<ParsedToolCall> all;
-  for (auto& o : outs) {
-    for (auto& pc : o.ready_calls) {
-      all.push_back(std::move(pc));
-    }
-  }
+  auto all = CollectCalls(outs);
   ASSERT_EQ(all.size(), 2u);
   EXPECT_EQ(all[0].name, "a");
   EXPECT_EQ(all[1].name, "b");
@@ -194,10 +197,49 @@ TEST(ToolCallStreamAccumulatorTest, UnterminatedToolCallBecomesVisibleOnFlush) {
 
   // No tool call should have been emitted — the block never closed.
   for (const auto& o : outs) {
-    EXPECT_TRUE(o.ready_calls.empty());
+    EXPECT_TRUE(std::none_of(o.events.begin(), o.events.end(), [](const auto& event) {
+      return std::holds_alternative<ParsedToolCall>(event);
+    }));
   }
 
   EXPECT_FALSE(acc.InsideToolCall()) << "Flush should leave accumulator in outside state";
+}
+
+TEST(ToolCallStreamAccumulatorTest, CompletedMalformedToolCallBecomesVisible) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  auto outs = RunChunks(acc, {"before <tool_call>not json</tool_call> after"});
+
+  EXPECT_EQ(CollectVisible(outs), "before <tool_call>not json</tool_call> after");
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, CompletedToolCallWithoutNameBecomesVisible) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated = R"(<tool_call>{"arguments":{"value":1}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_EQ(CollectVisible(outs), generated);
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, CompletedToolCallWithNonStringNameBecomesVisible) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated = R"(<tool_call>{"name":123,"arguments":{}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_EQ(CollectVisible(outs), generated);
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, CompletedMixedValidAndInvalidArrayBecomesVisible) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  const std::string generated =
+      R"(<tool_call>[{"name":"fn1","arguments":{}},{"name":123}]</tool_call>)";
+  auto outs = RunChunks(acc, {"before ", generated, " after"});
+
+  EXPECT_EQ(CollectVisible(outs), "before " + generated + " after")
+      << "A partially-invalid block must be preserved whole, not partially parsed";
+  EXPECT_TRUE(CollectCalls(outs).empty());
 }
 
 // ========================================================================
@@ -228,11 +270,12 @@ TEST(ToolCallStreamAccumulatorTest, FalseStartPrefixReleasesAfterDisambiguation)
 
   // First chunk ends with "<tool" — a real prefix of the start marker. The accumulator must hold it back.
   auto out1 = acc.Push("hello <tool");
-  EXPECT_EQ(out1.visible_text, "hello ");
+  ASSERT_EQ(out1.events.size(), 1u);
+  EXPECT_EQ(std::get<std::string>(out1.events[0]), "hello ");
 
   // Next chunk reveals the prefix was actually part of unrelated XML-ish text. The held-back "<tool" plus the new
   // bytes must flow out as visible.
   auto out2 = acc.Push("box>");
-  EXPECT_EQ(out2.visible_text, "<toolbox>");
-  EXPECT_TRUE(out2.ready_calls.empty());
+  ASSERT_EQ(out2.events.size(), 1u);
+  EXPECT_EQ(std::get<std::string>(out2.events[0]), "<toolbox>");
 }

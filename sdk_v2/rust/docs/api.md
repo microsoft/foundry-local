@@ -205,11 +205,11 @@ pub struct ChatClient { /* private fields */ }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `frequency_penalty` | `fn frequency_penalty(mut self, v: f64) -> Self` | Set the frequency penalty. |
+| `frequency_penalty` | `fn frequency_penalty(mut self, v: f64) -> Self` | Set the OpenAI frequency penalty; currently only `0` is supported. |
 | `max_tokens` | `fn max_tokens(mut self, v: u32) -> Self` | Maximum tokens to generate. |
 | `n` | `fn n(mut self, v: u32) -> Self` | Number of completions. |
 | `temperature` | `fn temperature(mut self, v: f64) -> Self` | Sampling temperature. |
-| `presence_penalty` | `fn presence_penalty(mut self, v: f64) -> Self` | Presence penalty. |
+| `presence_penalty` | `fn presence_penalty(mut self, v: f64) -> Self` | Set the OpenAI presence penalty; currently only `0` is supported. |
 | `top_p` | `fn top_p(mut self, v: f64) -> Self` | Nucleus sampling probability. |
 | `top_k` | `fn top_k(mut self, v: u32) -> Self` | Top-k sampling *(Foundry extension)*. |
 | `random_seed` | `fn random_seed(mut self, v: u64) -> Self` | Random seed for reproducibility *(Foundry extension)*. |

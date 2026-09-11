@@ -133,6 +133,78 @@ TEST(ParseToolCallsTest, StringArguments) {
 }
 
 // ========================================================================
+// Atomic validation: malformed shape/type in any item rejects the whole block.
+// ========================================================================
+
+TEST(ParseToolCallsTest, NumericNameReturnsEmpty) {
+  std::string text = R"(<tc>{"name":123,"arguments":{}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, NullNameReturnsEmpty) {
+  std::string text = R"(<tc>{"name":null,"arguments":{}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, ObjectNameReturnsEmpty) {
+  std::string text = R"(<tc>{"name":{"first":"fn"},"arguments":{}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, EmptyStringNameReturnsEmpty) {
+  std::string text = R"(<tc>{"name":"","arguments":{}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, NonObjectArrayElementReturnsEmpty) {
+  std::string text = R"(<tc>[{"name":"fn1"},123]</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, MixedValidAndInvalidArrayReturnsEmpty) {
+  std::string text = R"(<tc>[{"name":"fn1","arguments":{}},{"name":123}]</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, MixedValidAndMissingNameArrayReturnsEmpty) {
+  std::string text = R"(<tc>[{"name":"fn1"},{"arguments":{"x":1}}]</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, ValidSingleObjectStillAccepted) {
+  std::string text = R"(<tc>{"name":"fn","arguments":{"x":1}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "fn");
+  EXPECT_FALSE(calls[0].id.empty());
+}
+
+TEST(ParseToolCallsTest, ValidArrayOfMultipleObjectsStillAccepted) {
+  std::string text =
+      R"(<tc>[{"name":"fn1","arguments":{}},{"name":"fn2","arguments":{"x":1}}]</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>");
+
+  ASSERT_EQ(calls.size(), 2u);
+  EXPECT_EQ(calls[0].name, "fn1");
+  EXPECT_EQ(calls[1].name, "fn2");
+}
+
+// ========================================================================
 // ToolCallsToItems tests
 // ========================================================================
 

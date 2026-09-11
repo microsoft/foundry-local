@@ -294,8 +294,10 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_PARAM_TOP_P "top_p"                          ///< float [0.0, 1.0]. nucleus sampling
 #define FOUNDRY_LOCAL_PARAM_TOP_K "top_k"                          ///< int. top-k sampling
 #define FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS "max_output_tokens"  ///< int. max tokens to generate
-#define FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY "frequency_penalty"  ///< float [-2.0, 2.0]
-#define FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY "presence_penalty"    ///< float [-2.0, 2.0]
+/// Float frequency penalty. Currently only the neutral value 0 is supported.
+#define FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY "frequency_penalty"
+/// Float presence penalty. Currently only the neutral value 0 is supported.
+#define FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY "presence_penalty"
 #define FOUNDRY_LOCAL_PARAM_SEED "seed"                            ///< int. for reproducible outputs
 #define FOUNDRY_LOCAL_PARAM_EARLY_STOPPING "early_stopping"        ///< bool. whether to stop on stop sequence or only at max tokens
 #define FOUNDRY_LOCAL_PARAM_DO_SAMPLE "do_sample"                  ///< bool. whether to sample (false = greedy decoding)

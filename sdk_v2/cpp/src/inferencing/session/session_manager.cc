@@ -5,14 +5,16 @@
 #include "exception.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/session/session.h"
+#include "util/scope_guard.h"
 
+#include <algorithm>
 #include <cassert>
 #include <fmt/format.h>
 
 namespace fl {
 
 SessionManager::SessionManager(ILogger& logger, size_t cache_capacity)
-    : logger_(logger), cache_capacity_(cache_capacity) {
+    : logger_(logger), cache_capacity_(std::max(cache_capacity, size_t{1})) {
 }
 
 SessionManager::~SessionManager() {
@@ -115,41 +117,46 @@ std::unique_ptr<ChatSession> SessionManager::CheckOut(const std::string& key) {
 }
 
 void SessionManager::CheckIn(const std::string& key, std::unique_ptr<ChatSession> session) {
-  // Collect evicted sessions to destroy outside the lock.
-  std::vector<std::unique_ptr<ChatSession>> evicted;
+  std::unique_ptr<ChatSession> displaced;
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Replace existing entry for this key (if any)
     auto existing = cache_.find(key);
-    if (existing != cache_.end()) {
-      evicted.push_back(std::move(existing->second.session));
-      lru_order_.erase(existing->second.lru_iter);
-      cache_.erase(existing);
-    }
+    const auto committed_size = existing == cache_.end() ? std::min(cache_.size() + 1, cache_capacity_)
+                                                         : cache_.size();
+    logger_.Log(LogLevel::Debug,
+                fmt::format("SessionManager: checking in session under '{}' (cache size: {})", key,
+                            committed_size));
 
-    // Evict LRU if at capacity
-    while (cache_.size() >= cache_capacity_) {
-      const auto& lru_key = lru_order_.back();
-      auto lru_it = cache_.find(lru_key);
-      evicted.push_back(std::move(lru_it->second.session));
-      cache_.erase(lru_it);
-      lru_order_.pop_back();
-    }
-
-    // Insert new entry
+    // Allocate every node before changing or evicting an existing entry. If insertion throws, removing this new list
+    // node restores the exact prior cache state.
     lru_order_.push_front(key);
-    cache_[key] = CacheEntry{std::move(session), lru_order_.begin()};
+    auto rollback_lru = ScopeGuard([this]() noexcept { lru_order_.pop_front(); });
 
-    logger_.Log(LogLevel::Debug,
-                fmt::format("SessionManager: checked in session under '{}' (cache size: {})", key, cache_.size()));
-  }
+    if (existing != cache_.end()) {
+      displaced = std::move(existing->second.session);
+      existing->second.session = std::move(session);
+      const auto old_lru = existing->second.lru_iter;
+      existing->second.lru_iter = lru_order_.begin();
+      lru_order_.erase(old_lru);
+      rollback_lru.Dismiss();
+    } else {
+      auto inserted = cache_.try_emplace(key, CacheEntry{nullptr, lru_order_.begin()}).first;
+      inserted->second.session = std::move(session);
+      rollback_lru.Dismiss();
 
-  // Evicted sessions destroyed here, outside lock
-  if (!evicted.empty()) {
-    logger_.Log(LogLevel::Debug,
-                fmt::format("SessionManager: evicted {} cached session(s)", evicted.size()));
+      if (cache_.size() > cache_capacity_) {
+        const auto& lru_key = lru_order_.back();
+        auto lru = cache_.find(lru_key);
+        assert(lru != cache_.end());
+        displaced = std::move(lru->second.session);
+        cache_.erase(lru);
+        lru_order_.pop_back();
+      }
+    }
+
+    assert(cache_.size() <= cache_capacity_);
   }
 }
 
@@ -158,7 +165,7 @@ size_t SessionManager::CacheSize() const {
   return cache_.size();
 }
 
-bool SessionManager::EvictCached(const std::string& key) {
+bool SessionManager::EvictCached(const std::string& key) noexcept {
   // Destroy outside the lock: ~ChatSession calls Deregister which re-acquires mutex_.
   std::unique_ptr<ChatSession> evicted;
 
@@ -175,7 +182,13 @@ bool SessionManager::EvictCached(const std::string& key) {
     cache_.erase(it);
   }
 
-  logger_.Log(LogLevel::Debug, fmt::format("SessionManager: evicted cached session for '{}'", key));
+  try {
+    logger_.Log(LogLevel::Debug, fmt::format("SessionManager: evicted cached session for '{}'", key));
+  } catch (...) {
+    // Cache coordination is part of ResponseStore's no-throw publication phase. Diagnostic logging cannot roll back
+    // the removal and must not break metadata/session coherence.
+  }
+
   return true;
 }
 

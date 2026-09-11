@@ -43,9 +43,5 @@ stages:
 - template: stages-js.yml
 
 # ── Rust SDK (single platform-independent crate) ──
-# Needs the ORT/GenAI versions to assemble a runnable native dir for its
-# integration tests (the cpp-native artifacts ship foundry_local only).
+# Rust integration tests consume the complete matching cpp-native artifact.
 - template: stages-rust.yml
-  parameters:
-    ortVersion: ${{ parameters.ortVersion }}
-    genaiVersion: ${{ parameters.genaiVersion }}

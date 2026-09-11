@@ -12,9 +12,68 @@
 #include <nlohmann/json.hpp>
 #include <ort_genai.h>
 
-#include <algorithm>
-
 namespace fl {
+
+namespace {
+
+/// Probe whether the rendered prompt leaves a reasoning block open. Uses the encoded prompt token IDs when they are
+/// available (the text path) and falls back to the rendered text for the media path, which has no encoded sequence
+/// of its own.
+bool DetectPromptOpensReasoning(const std::string& prompt,
+                                const OgaSequences* sequences,
+                                const ReasoningMarkers& markers) {
+  std::span<const int32_t> prompt_token_ids;
+  if (sequences != nullptr && sequences->Count() > 0) {
+    prompt_token_ids = {sequences->SequenceData(0), sequences->SequenceCount(0)};
+  }
+
+  return PromptOpensReasoning(prompt_token_ids, markers, prompt);
+}
+
+/// Token IDs `text` encodes to with the model's own tokenizer, or an empty sequence when it cannot be encoded.
+///
+/// Encoding is best-effort by design: a marker the tokenizer cannot represent leaves the splitter matching decoded
+/// text, which is what a model that publishes no marker IDs already does. Failing the turn instead would break
+/// reasoning models over a detail that has a working fallback.
+std::vector<int32_t> EncodeMarker(const std::string& text, GenAIModelInstance& model) {
+  try {
+    auto sequences = model.GetPreprocessor().Encode(text.c_str());
+    if (!sequences || sequences->Count() == 0) {
+      return {};
+    }
+
+    const auto* data = sequences->SequenceData(0);
+    const auto count = sequences->SequenceCount(0);
+    if (data == nullptr || count == 0) {
+      return {};
+    }
+
+    return {data, data + count};
+  } catch (...) {
+    return {};
+  }
+}
+
+}  // namespace
+
+ReasoningMarkers ResolveReasoningMarkers(const ToolCallContext& tool_ctx, GenAIModelInstance& model) {
+  const auto& tag_info = model.GetTagInfo();
+
+  ReasoningMarkers markers;
+  markers.start = tool_ctx.reasoning_start.empty() ? tag_info.bor_str : tool_ctx.reasoning_start;
+  markers.end = tool_ctx.reasoning_end.empty() ? tag_info.eor_str : tool_ctx.reasoning_end;
+
+  // A request may override the marker strings. The published IDs describe the model's own markers, so they are
+  // reused only when they decode to exactly the marker in effect; anything else is encoded with the model's
+  // tokenizer, which also covers overrides that are several tokens long.
+  auto encode = [&model](const std::string& text) { return EncodeMarker(text, model); };
+  const PublishedMarker published_start{tag_info.bor_id, tag_info.bor_str};
+  markers.start_token_is_published = UsesPublishedToken(markers.start, published_start);
+  markers.start_token_ids = ResolveMarkerTokenIds(markers.start, published_start, encode);
+  markers.end_token_ids = ResolveMarkerTokenIds(markers.end, {tag_info.eor_id, tag_info.eor_str}, encode);
+
+  return markers;
+}
 
 OnnxChatGenerator::~OnnxChatGenerator() = default;
 
@@ -25,17 +84,19 @@ OnnxChatGenerator::~OnnxChatGenerator() = default;
 OnnxChatGenerator::OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_params,
                                      std::unique_ptr<OgaGenerator> generator,
                                      std::unique_ptr<OgaTokenizerStream> stream,
-                                     std::unique_ptr<OgaTokenizerStream> stream_with_special,
                                      GenAIModelInstance& model,
                                      int prompt_token_count,
+                                     ReasoningMarkers reasoning_markers,
+                                     bool prompt_opens_reasoning,
                                      std::unique_ptr<OgaNamedTensors> named_tensors)
     : gen_params_(std::move(gen_params)),
       generator_(std::move(generator)),
       stream_(std::move(stream)),
-      stream_with_special_(std::move(stream_with_special)),
       named_tensors_(std::move(named_tensors)),
       model_(model),
-      prompt_token_count_(prompt_token_count) {}
+      prompt_token_count_(prompt_token_count),
+      reasoning_markers_(std::move(reasoning_markers)),
+      prompt_opens_reasoning_(prompt_opens_reasoning) {}
 
 // ---------------------------------------------------------------------------
 // ChatGenerator interface
@@ -54,11 +115,20 @@ bool OnnxChatGenerator::IsDone() const {
 
 void OnnxChatGenerator::GenerateNextToken() {
   if (cancelled_) {
+    current_token_.reset();
     return;
   }
 
+  current_token_.reset();
+
   try {
     generator_->GenerateNextToken();
+
+    // GetNextTokens returns the batch of next tokens; chat generation always uses batch size 1.
+    const auto next_tokens = generator_->GetNextTokens();
+    if (!next_tokens.empty()) {
+      current_token_ = next_tokens[0];
+    }
   } catch (const std::runtime_error& e) {
     // If cancelled while generating, the OGA engine throws when the session is terminated.
     // This is expected — not an error.
@@ -71,45 +141,41 @@ void OnnxChatGenerator::GenerateNextToken() {
 }
 
 std::string OnnxChatGenerator::Decode() {
-  if (cancelled_) {
+  if (cancelled_ || !current_token_.has_value()) {
     return "";
   }
 
-  // Get the most recently generated token ID.
-  // GetNextTokens returns the batch of next tokens; we use index 0 (batch size = 1).
-  auto next_tokens = generator_->GetNextTokens();
+  const auto token_id = *current_token_;
+  current_token_.reset();
 
-  if (next_tokens.empty()) {
-    return "";
+  // Fast path: if this token matches a known tag ID, return the pre-decoded string.
+  // Decode is always single-stream for normal tokens.
+  const auto& tag_info = model_.GetTagInfo();
+
+  if (tag_info.bot_id.has_value() && token_id == *tag_info.bot_id) {
+    stream_->Decode(token_id);
+    return tag_info.bot_str;
+  }
+  if (tag_info.eot_id.has_value() && token_id == *tag_info.eot_id) {
+    stream_->Decode(token_id);
+    return tag_info.eot_str;
+  }
+  if (tag_info.bor_id.has_value() && token_id == *tag_info.bor_id) {
+    stream_->Decode(token_id);
+    return tag_info.bor_str;
+  }
+  if (tag_info.eor_id.has_value() && token_id == *tag_info.eor_id) {
+    stream_->Decode(token_id);
+    return tag_info.eor_str;
   }
 
-  int32_t token_id = next_tokens[0];
-
-  // Decode through the normal tokenizer stream
+  // Single decode for all non-tag tokens.
   const char* token_text = stream_->Decode(token_id);
+  return token_text ? std::string(token_text) : "";
+}
 
-  // Also decode through the special-token stream to detect tool call and think tokens.
-  // If the special stream gives a different result and it's a known special token type
-  // that isn't an EOS token, surface the special representation instead.
-  // Matches C# OnnxChatGenerator.Decode behavior.
-  const char* special_text = stream_with_special_->Decode(token_id);
-
-  std::string token_str = token_text ? std::string(token_text) : "";
-
-  if (special_text != nullptr && token_text != nullptr && std::string(special_text) != token_str) {
-    std::string special_str(special_text);
-    bool is_tool_call_token = special_str.find("tool_call") != std::string::npos;
-    bool is_think_token = special_str.find("think") != std::string::npos;
-
-    const auto& eos_ids = model_.GetPreprocessor().GetEosTokenIds();
-    bool is_eos = std::find(eos_ids.begin(), eos_ids.end(), token_id) != eos_ids.end();
-
-    if (!is_eos && (is_tool_call_token || is_think_token)) {
-      return special_str;
-    }
-  }
-
-  return token_str;
+std::optional<int32_t> OnnxChatGenerator::CurrentTokenId() const {
+  return current_token_;
 }
 
 int OnnxChatGenerator::TokenCount() const {
@@ -136,26 +202,48 @@ void OnnxChatGenerator::Cancel() {
 // Continuous decoding: append new messages / rewind
 // ---------------------------------------------------------------------------
 
-int OnnxChatGenerator::AppendMessages(const std::vector<MessageItem>& new_messages,
+int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                                      const std::vector<TranscriptMessage>& full_messages,
                                       GenAIModelInstance& model,
-                                      const std::string& tools_json) {
-  if (new_messages.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages must not be empty");
+                                      const ToolCallContext& tool_ctx,
+                                      const SearchOptions& /*options*/) {
+  if (new_messages.empty() || full_messages.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
-  // Build prompt from only the new messages. ApplyChatTemplate with add_generation_prompt=true
-  // produces the correct continuation tokens (e.g. <|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n)
-  std::string prompt = BuildChatPrompt(new_messages, model, tools_json);
-  auto sequences = EncodePrompt(prompt, model);
-  int new_token_count = static_cast<int>(sequences->SequenceCount(0));
+  // Render and tokenize the authoritative full transcript once. Generated text is not guaranteed to round-trip
+  // through decode/encode to the same token IDs, so resident state is reusable only when it is an exact prefix.
+  std::string prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
+  auto full_sequences = EncodePrompt(prompt, model);
+  const auto full_count = full_sequences->SequenceCount(0);
+  const auto* full_data = full_sequences->SequenceData(0);
+  const std::span<const int32_t> full_prompt(full_data, full_count);
+  const std::span<const int32_t> resident(generator_->GetSequenceData(0), generator_->GetSequenceCount(0));
+  const auto suffix_start = chat_internal::FindUnmatchedPromptSuffix(resident, full_prompt);
+  if (!suffix_start.has_value()) {
+    throw RetainedPromptMismatchError();
+  }
+
+  const auto suffix = full_prompt.subspan(*suffix_start);
+  if (suffix.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "chat template produced no new tokens for a non-empty Generator continuation");
+  }
+
+  auto suffix_sequences = OgaSequences::Create();
+  suffix_sequences->Append(suffix.data(), suffix.size());
 
   try {
-    generator_->AppendTokenSequences(*sequences);
+    generator_->AppendTokenSequences(*suffix_sequences);
   } catch (const std::runtime_error& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to append token sequences: ") + e.what());
   }
 
-  return new_token_count;
+  // Re-probe: the appended segment ends with this turn's assistant generation prefix, so it — not the original
+  // prompt — determines whether generation resumes inside a template-opened reasoning block.
+  prompt_opens_reasoning_ = DetectPromptOpensReasoning(prompt, full_sequences.get(), reasoning_markers_);
+
+  return static_cast<int>(suffix.size());
 }
 
 void OnnxChatGenerator::RewindTo(int token_count) {
@@ -225,12 +313,17 @@ std::string OnnxChatGenerator::TransformMessagesForMedia(const std::vector<Messa
 // Factory
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(const std::vector<MessageItem>& messages,
+std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(const std::vector<TranscriptMessage>& messages,
                                                              const SearchOptions& options,
                                                              GenAIModelInstance& model,
                                                              const ToolCallContext& tool_ctx,
                                                              bool use_full_context) {
-  return CreateImpl(messages, options, model, tool_ctx, use_full_context, /*images=*/{}, /*audios=*/{});
+  if (messages.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
+  }
+
+  std::string prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  return CreateImpl(prompt, options, model, tool_ctx, use_full_context, /*images=*/{}, /*audios=*/{});
 }
 
 std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
@@ -241,51 +334,41 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
     const std::vector<const AudioItem*>& audios,
     const ToolCallContext& tool_ctx,
     bool use_full_context) {
+  if (messages.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
+  }
+
   if (images.empty() && audios.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "CreateWithMedia requires at least one image or audio input");
   }
-  return CreateImpl(messages, options, model, tool_ctx, use_full_context, images, audios);
+
+  if (!model.IsMultiModal()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image or audio input requires a multimodal model");
+  }
+
+  if (!model.GetPreprocessor().HasMultiModalProcessor()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model has no multimodal processor available for media input");
+  }
+
+  std::string messages_json = TransformMessagesForMedia(messages);
+  const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
+  std::string prompt =
+      model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+
+  return CreateImpl(prompt, options, model, tool_ctx, use_full_context, images, audios);
 }
 
-std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vector<MessageItem>& messages,
+std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::string& prompt,
                                                                  const SearchOptions& options,
                                                                  GenAIModelInstance& model,
                                                                  const ToolCallContext& tool_ctx,
                                                                  bool use_full_context,
                                                                  const std::vector<const ImageItem*>& images,
                                                                  const std::vector<const AudioItem*>& audios) {
-  if (messages.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
-  }
-
   const bool media_branch = !images.empty() || !audios.empty();
 
-  if (media_branch) {
-    if (!model.IsMultiModal()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "image or audio input requires a multimodal model");
-    }
-
-    if (!model.GetPreprocessor().HasMultiModalProcessor()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "model has no multimodal processor available for media input");
-    }
-  }
-
-  // 1. Build the chat prompt using the model's template.
-  //    Media: rewrite the last user message to insert media sentinels.
-  std::string prompt;
-  if (media_branch) {
-    std::string messages_json = TransformMessagesForMedia(messages);
-    const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-    prompt =
-        model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
-  } else {
-    prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
-  }
-
-  // 2. Token budgeting.
+  // 1. Token budgeting.
   //    Text path: encode the prompt up front so we know its token count.
   //    Media path: process inputs first and read the expanded input_ids shape.
   std::unique_ptr<OgaSequences> sequences;
@@ -348,55 +431,18 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
     input_token_count = static_cast<int>(input_shape.back());
   }
 
-  // 3. Create GeneratorParams from the model
+  // 2. Create GeneratorParams from the model
   auto gen_params = OgaGeneratorParams::Create(model.GetOgaModel());
 
-  // 4. Apply search options (temperature, top_p, max_length, etc.) and validate token budget.
+  // 3. Apply search options (temperature, top_p, max_length, etc.) and validate token budget.
   //    Media inputs use a larger default because preprocessing expands them into tokens.
-  int default_max_output = media_branch ? 3072 : 2048;
   ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
-                     use_full_context, default_max_output);
+                     use_full_context, GetDefaultMaxOutputTokens(media_branch));
 
-  // 5. Compute guidance for constrained decoding.
-  // Priority: user-specified guidance (from response_format) > auto-generated LARK grammar.
-  // Matches C# GetGuidance() — always compute, then guard application.
-  std::string guidance_type;
-  std::string guidance_data;
+  // 4. Apply constrained decoding for tool-only output or an explicit response format.
+  ApplyGuidanceOptions(tool_ctx, *gen_params);
 
-  if (!tool_ctx.guidance_type.empty() && !tool_ctx.guidance_data.empty()) {
-    // User specified guidance via response_format
-    guidance_type = tool_ctx.guidance_type;
-    guidance_data = tool_ctx.guidance_data;
-  } else {
-    // Auto-generate LARK grammar from tool definitions and reasoning state
-    std::string json_schema;
-    if (tool_ctx.HasTools()) {
-      json_schema = BuildToolJsonSchema(tool_ctx);
-    }
-
-    guidance_data = BuildLarkGrammar(tool_ctx, json_schema);
-    if (!guidance_data.empty()) {
-      guidance_type = "lark_grammar";
-    }
-  }
-
-  // Guard: Apply guidance only for tool-call-only mode (tool output requested, no text output). Text-only reasoning
-  // (cot_text_only) cannot use grammar guidance because a completed grammar signals EOS to the ORT GenAI generator —
-  // making IsDone() return true immediately on the next turn, breaking multi-turn continuous decoding. For
-  // tool-call-only mode the generator is typically invalidated after a successful call anyway, so this is acceptable.
-  // Reasoning content for text-only mode is handled via StripReasoningContent post-processing.
-  bool tool_call_only = tool_ctx.tool_output && !tool_ctx.text_output;
-
-  if (!guidance_type.empty() && !guidance_data.empty() && tool_call_only) {
-    try {
-      gen_params->SetGuidance(guidance_type.c_str(), guidance_data.c_str());
-    } catch (const std::runtime_error& e) {
-      // SetGuidance may not be supported by all models; continue without guidance
-      (void)e;
-    }
-  }
-
-  // 6. Create the Generator and feed it the prompt.
+  // 5. Create the Generator and feed it the prompt.
   //    Text path: append the encoded token sequences.
   //    Media path: process inputs via OgaMultiModalProcessor and feed the
   //    resulting named tensors via SetInputs (which extracts input_ids and
@@ -414,21 +460,22 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::vect
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to create generator: ") + e.what());
   }
 
-  // 7. Create two tokenizer streams:
-  //    - Normal stream: standard decoding (special tokens filtered)
-  //    - Special stream: includes special tokens (for tool call detection)
-
+  // 6. Create tokenizer stream (single-decode path).
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
-  auto stream_with_special = model.GetPreprocessor().CreateSpecialTokenizerStream();
+
+  // 7. Probe the prompt for a template-opened reasoning block so the caller's splitter starts in the right state.
+  auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);
+  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, sequences.get(), reasoning_markers);
 
   // `std::make_unique` constructs inside the library helper, which does not have
   // access to this class's private constructor.
   return std::unique_ptr<OnnxChatGenerator>(new OnnxChatGenerator(std::move(gen_params),
                                                                   std::move(generator),
                                                                   std::move(stream),
-                                                                  std::move(stream_with_special),
                                                                   model,
                                                                   input_token_count,
+                                                                  std::move(reasoning_markers),
+                                                                  prompt_opens_reasoning,
                                                                   std::move(named_tensors)));
 }
 

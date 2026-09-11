@@ -76,8 +76,8 @@ class TestRequestOptions:
                 top_p=0.9,
                 top_k=40,
                 max_output_tokens=128,
-                frequency_penalty=-0.5,
-                presence_penalty=1.25,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
                 seed=42,
                 early_stopping=True,
                 do_sample=False,
@@ -88,8 +88,8 @@ class TestRequestOptions:
         assert native["top_p"] == "0.9"
         assert native["top_k"] == "40"
         assert native["max_output_tokens"] == "128"
-        assert native["frequency_penalty"] == "-0.5"
-        assert native["presence_penalty"] == "1.25"
+        assert native["frequency_penalty"] == "0.0"
+        assert native["presence_penalty"] == "0.0"
         assert native["seed"] == "42"
         # Bools must be lowercase to match the C++ "true"/"false" literal.
         assert native["early_stopping"] == "true"

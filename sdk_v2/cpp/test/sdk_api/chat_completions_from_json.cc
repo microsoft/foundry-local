@@ -46,6 +46,7 @@ void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
 void from_json(const nlohmann::json& j, ChatCompletionResponseMessage& m) {
   m.role = j.value("role", std::string("assistant"));
   opt_str(j, "content", m.content);
+  opt_str(j, "reasoning_content", m.reasoning_content);
   opt_str(j, "refusal", m.refusal);
   opt(j, "tool_calls", m.tool_calls);
 }
@@ -69,6 +70,7 @@ void from_json(const nlohmann::json& j, ChatCompletionResponse& r) {
 void from_json(const nlohmann::json& j, ChatCompletionDelta& d) {
   opt_str(j, "role", d.role);
   opt_str(j, "content", d.content);
+  opt_str(j, "reasoning_content", d.reasoning_content);
   opt(j, "tool_calls", d.tool_calls);
 }
 

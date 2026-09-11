@@ -39,7 +39,7 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
 /// Translate response_format into guidance session options.
 void MapGuidance(const ChatCompletionRequest& req, Request& session_request);
 
-/// Map stop sequences to early_stopping option.
+/// Normalize OpenAI stop strings and store them in the internal request-options channel.
 void MapStopSequences(const ChatCompletionRequest& req, Request& session_request);
 
 /// Build a ChatCompletionResponse from an internal Response.
@@ -55,6 +55,12 @@ std::string FormatStreamingChunk(const std::string& content,
                                  const std::string& completion_id,
                                  int64_t created,
                                  const std::string& model_name);
+
+/// Format a streaming chunk with reasoning_content in the delta as JSON string.
+std::string FormatReasoningStreamingChunk(const std::string& reasoning_content,
+                                          const std::string& completion_id,
+                                          int64_t created,
+                                          const std::string& model_name);
 
 /// Format a streaming chunk with tool call data in delta.tool_calls.
 std::string FormatToolCallStreamingChunk(const std::vector<ChatCompletionToolCall>& tool_calls,

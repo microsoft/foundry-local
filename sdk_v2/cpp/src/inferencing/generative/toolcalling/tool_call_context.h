@@ -55,6 +55,9 @@ struct ToolCallContext {
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }
 
+  /// Whether two turns expose the same definitions to the model.
+  bool HasSameTools(const ToolCallContext& other) const { return tools_json == other.tools_json; }
+
   /// Whether the model has known tool call marker tokens.
   bool HasToolCallTokens() const {
     return !tool_call_start.empty() && !tool_call_end.empty();
