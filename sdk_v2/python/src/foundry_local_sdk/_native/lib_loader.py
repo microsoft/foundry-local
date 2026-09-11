@@ -232,8 +232,18 @@ def prepare_native_dependencies(foundry_local_dir: pathlib.Path) -> list:
     handles: list = []
 
     ort_name, genai_name = _native_binary_names()
-    ort_path = _resolve_ort_package_path(ort_name)
-    genai_path = _resolve_genai_package_path(genai_name)
+
+    # Development override: when using a locally built Foundry native library,
+    # prefer the ORT and GenAI DLLs copied beside it.
+    local_ort = foundry_local_dir / ort_name
+    local_genai = foundry_local_dir / genai_name
+
+    if local_ort.exists() and local_genai.exists():
+        ort_path = local_ort
+        genai_path = local_genai
+    else:
+        ort_path = _resolve_ort_package_path(ort_name)
+        genai_path = _resolve_genai_package_path(genai_name)
 
     if ort_path is None or genai_path is None:
         logger.info(

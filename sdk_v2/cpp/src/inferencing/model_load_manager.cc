@@ -279,6 +279,8 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
   loaded_models_.erase(it);
+  // Return unused regions retained by GenAI's long-lived device allocator.
+  Oga::ShrinkDeviceMemory();
   return true;
 }
 
