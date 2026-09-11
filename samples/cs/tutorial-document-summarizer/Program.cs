@@ -56,22 +56,30 @@ var chatClient = await model.GetChatClientAsync();
 // </init>
 
 // <summarization>
-var systemPrompt =
+var systemPrompt1 =
     "Summarize the following document into concise bullet points. " +
     "Focus on the key points and main ideas.";
 
+var systemPrompt2 =
+    "Summarize the following document in a single, concise paragraph. " +
+    "Capture the main argument and supporting points.";
+
+var systemPrompt3 =
+    "Extract the three most important takeaways from the following document. " +
+    "Number each takeaway and keep each to one or two sentences.";
+
 // <file_reading>
-var target = args.Length > 0 ? args[0] : "document.txt";
+var target = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "document.txt");
 // </file_reading>
 
 if (Directory.Exists(target))
 {
-    await SummarizeDirectoryAsync(chatClient, target, systemPrompt, ct);
+    await SummarizeDirectoryAsync(chatClient, target, systemPrompt1, ct);
 }
 else
 {
     Console.WriteLine($"--- {Path.GetFileName(target)} ---");
-    await SummarizeFileAsync(chatClient, target, systemPrompt, ct);
+    await SummarizeFileAsync(chatClient, target, systemPrompt1, ct);
 }
 // </summarization>
 
