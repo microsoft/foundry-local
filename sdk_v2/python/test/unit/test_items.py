@@ -10,6 +10,8 @@ exercise pure native struct round-trips through the cffi extension.
 from __future__ import annotations
 
 import gc
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +31,35 @@ from foundry_local_sdk.items import (
     ToolCallItem,
     ToolResultItem,
 )
+
+
+def _install_fake_tool_item_api(monkeypatch, setter_name):
+    captured = {}
+
+    class FakeFfi:
+        NULL = None
+
+        @staticmethod
+        def new(cdecl, initializer=None):
+            if cdecl == "flItem**":
+                return [None]
+            if cdecl == "char[]":
+                return initializer
+            return SimpleNamespace()
+
+    def create(_item_type, out):
+        out[0] = object()
+
+    def set_item(_ptr, data):
+        captured.update(vars(data))
+
+    item_api = SimpleNamespace(Create=create, Item_Release=lambda _ptr: None)
+    setattr(item_api, setter_name, set_item)
+    fake_api = SimpleNamespace(item=item_api, check_status=lambda _status: None)
+
+    monkeypatch.setitem(sys.modules, "foundry_local_sdk._native", SimpleNamespace(ffi=FakeFfi()))
+    monkeypatch.setitem(sys.modules, "foundry_local_sdk._native.api", SimpleNamespace(api=fake_api))
+    return captured
 
 
 class TestTextItem:
@@ -267,6 +298,24 @@ class TestToolCallItem:
     def test_repr_contains_class_name(self):
         assert "ToolCallItem" in repr(ToolCallItem("a", "b", "c"))
 
+    @pytest.mark.parametrize("argument_name", ["call_id", "name", "arguments"])
+    def test_embedded_nul_is_rejected(self, argument_name):
+        values = {"call_id": "call-1", "name": "tool", "arguments": "{}"}
+        values[argument_name] = "before\x00after"
+
+        with pytest.raises(ValueError, match=rf"^{argument_name} must not contain an embedded NUL character$"):
+            ToolCallItem(**values)
+
+    def test_empty_strings_are_preserved(self, monkeypatch):
+        captured = _install_fake_tool_item_api(monkeypatch, "SetToolCall")
+        item = ToolCallItem("", "", "")
+        assert item.call_id == ""
+        assert item.name == ""
+        assert item.arguments == ""
+        assert captured["call_id"] == b"\x00"
+        assert captured["name"] == b"\x00"
+        assert captured["arguments"] == b"\x00"
+
 
 class TestToolResultItem:
     def test_construct_and_attributes(self):
@@ -283,6 +332,22 @@ class TestToolResultItem:
 
     def test_repr_contains_class_name(self):
         assert "ToolResultItem" in repr(ToolResultItem("a", "b"))
+
+    @pytest.mark.parametrize("argument_name", ["call_id", "result"])
+    def test_embedded_nul_is_rejected(self, argument_name):
+        values = {"call_id": "call-1", "result": ""}
+        values[argument_name] = "before\x00after"
+
+        with pytest.raises(ValueError, match=rf"^{argument_name} must not contain an embedded NUL character$"):
+            ToolResultItem(**values)
+
+    def test_empty_strings_are_preserved(self, monkeypatch):
+        captured = _install_fake_tool_item_api(monkeypatch, "SetToolResult")
+        item = ToolResultItem("", "")
+        assert item.call_id == ""
+        assert item.result == ""
+        assert captured["call_id"] == b"\x00"
+        assert captured["result"] == b"\x00"
 
 
 class TestTensorItemNegative:

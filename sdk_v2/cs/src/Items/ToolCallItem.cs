@@ -25,8 +25,12 @@ public sealed class ToolCallItem : Item
     /// </summary>
     public string Arguments { get; }
 
+    /// <summary>
+    /// Create a tool call. <paramref name="arguments"/> is JSON object text for a function tool or raw
+    /// NUL-free UTF-8 text for a custom tool.
+    /// </summary>
     public ToolCallItem(string callId, string name, string arguments)
-        : base(ItemType.ToolCall)
+        : base(ValidateArguments(callId, name, arguments))
     {
         CallId = callId;
         Name = name;
@@ -52,6 +56,23 @@ public sealed class ToolCallItem : Item
             Marshal.FreeCoTaskMem(callIdNative);
             Marshal.FreeCoTaskMem(nameNative);
             Marshal.FreeCoTaskMem(argsNative);
+        }
+    }
+
+    private static ItemType ValidateArguments(string callId, string name, string arguments)
+    {
+        ValidateNativeString(callId, nameof(callId));
+        ValidateNativeString(name, nameof(name));
+        ValidateNativeString(arguments, nameof(arguments));
+        return ItemType.ToolCall;
+    }
+
+    private static void ValidateNativeString(string value, string paramName)
+    {
+        Detail.Throw.IfNull(value, paramName);
+        if (value.Contains('\0'))
+        {
+            throw new ArgumentException("Value must not contain an embedded NUL character.", paramName);
         }
     }
 

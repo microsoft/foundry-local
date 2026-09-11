@@ -417,8 +417,8 @@ Common session methods:
 | `BytesItem` | Raw binary blob (e.g. a base64-decoded payload). |
 | `ImageItem` | Image input for vision models. |
 | `AudioItem` | Audio input (uri or bytes + `format` +  `sample_rate` + `channels`). |
-| `ToolCallItem` | Emitted by the model when invoking a tool. Carries `call_id`, `name`, and `arguments` (JSON for function tools, raw text for custom tools). |
-| `ToolResultItem` | Caller-supplied tool result. Carries `call_id` and `content`. |
+| `ToolCallItem` | Emitted by the model when invoking a tool. Carries NUL-free `call_id`, `name`, and `arguments` (JSON object text for function tools, raw UTF-8 text for custom tools). |
+| `ToolResultItem` | Caller-supplied tool result. Carries NUL-free `call_id` and `result`; an empty result is valid. |
 | `TensorItem` | Multi-dimensional tensor. Used for embedding output. Exposes `dimensions`, `data_type` (`TensorDataType`), and `data`. |
 | `ItemQueue` | Streaming-input queue used with `AudioSession` for live PCM. The queue is itself an `Item` and is added to a `Request` with `transfer_ownership=False`. |
 
