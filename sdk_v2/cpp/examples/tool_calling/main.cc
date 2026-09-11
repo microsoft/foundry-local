@@ -120,17 +120,7 @@ void StreamingToolCalling(IModel& model) {
   // Tokens that belong inside a tool-call block are buffered internally and emitted
   // as a single ToolCallItem once the block closes, so the callback never sees raw
   // `<tool_call>...</tool_call>` markers as text.
-  session.SetStreamingCallback([](flStreamingCallbackData event) -> int {
-    const auto* item_api = detail::item_api();
-
-    flItem* raw_item = nullptr;
-    if (!item_api->ItemQueue_TryPop(event.item_queue, &raw_item)) {
-      std::cerr << "Callback invoked but no item in queue\n";
-      return 0;
-    }
-
-    Item item(*raw_item);  // takes ownership; ~Item releases.
-
+  session.SetStreamingCallback([](Item item) -> int {
     switch (item.GetType()) {
       case FOUNDRY_LOCAL_ITEM_TEXT:
         std::cout << item.GetText().text << std::flush;

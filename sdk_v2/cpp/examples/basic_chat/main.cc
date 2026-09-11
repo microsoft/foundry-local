@@ -55,7 +55,7 @@ void BasicChat(IModel& model) {
   // 5. Check finish reason and usage.
   if (response.GetFinishReason() == FOUNDRY_LOCAL_FINISH_STOP) {
     flUsage usage = response.GetUsage();
-    std::cout << "Tokens — prompt: " << usage.prompt_tokens
+    std::cout << "Tokens - prompt: " << usage.prompt_tokens
               << ", completion: " << usage.completion_tokens
               << ", total: " << usage.total_tokens << "\n";
   }
@@ -85,28 +85,17 @@ void StreamingChat(IModel& model) {
   // 1. Create a session for multi-turn chat.
   ChatSession session(model);
 
-  // 2. Set a streaming callback. Each invocation receives one item in the queue.
-  //    We pop the item from the queue and print any message content incrementally.
+  // 2. Set a streaming callback. Each invocation receives one owning Item.
+  //    We print any message content incrementally; the Item releases itself when the callback returns.
 
   // lambda can capture user data if needed (equivalent to the additional `void* user_data` parameter in the C API).
-  session.SetStreamingCallback([/*user_data*/](flStreamingCallbackData event) -> int {
-    const auto* item_api = detail::item_api();
-
-    flItem* raw_item = nullptr;
-    if (item_api->ItemQueue_TryPop(event.item_queue, &raw_item)) {
-      Item item(*raw_item);
-      // in this example we're streaming each token generated as simple text.
-      // what is streamed is flexible though given flItem is being used
-      if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
-        std::cout << item.GetText().text << std::flush;
-      } else {
-        std::cerr << "Unexpected item type" << std::endl;
-      }
-
-      // ~Item calls release.
+  session.SetStreamingCallback([/*user_data*/](Item item) -> int {
+    // in this example we're streaming each token generated as simple text.
+    // what is streamed is flexible though given Item is being used
+    if (item.GetType() == FOUNDRY_LOCAL_ITEM_TEXT) {
+      std::cout << item.GetText().text << std::flush;
     } else {
-      // should never happen. adding item to queue to callback should be 1:1.
-      std::cerr << "Callback invoked but no item in queue" << std::endl;
+      std::cerr << "Unexpected item type" << std::endl;
     }
 
     return 0;  // return non-zero to cancel
@@ -123,7 +112,7 @@ void StreamingChat(IModel& model) {
   // 4. The full response is still available after streaming completes.
   if (response.GetFinishReason() == FOUNDRY_LOCAL_FINISH_STOP) {
     flUsage usage = response.GetUsage();
-    std::cout << "Tokens — prompt: " << usage.prompt_tokens
+    std::cout << "Tokens - prompt: " << usage.prompt_tokens
               << ", completion: " << usage.completion_tokens
               << ", total: " << usage.total_tokens << "\n";
   }
