@@ -4,17 +4,29 @@
 
 #include "inferencing/session/session.h"
 
+#include <nlohmann/json.hpp>
+
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fl {
 
 /// A single parsed tool call extracted from generated text.
 struct ParsedToolCall {
+  ParsedToolCall() = default;
+  ParsedToolCall(std::string id_in, std::string name_in, std::string arguments_in)
+      : id(std::move(id_in)), name(std::move(name_in)), arguments(std::move(arguments_in)) {}
+
   std::string id;         // unique call ID (e.g., "call_abc123")
   std::string name;       // function name
-  std::string arguments;  // JSON string of arguments
+  std::string arguments;  // Existing semantic form: decoded string or compact JSON.
+  /// Parsed argument/parameter value, absent when neither member was emitted.
+  std::optional<nlohmann::json> parsed_arguments;
+  /// Exact source bytes for valid JSON; canonical JSON for repaired calls.
+  std::string argument_source;
 };
 
 /// Find a marker outside JSON string literals. Quote and escape state is

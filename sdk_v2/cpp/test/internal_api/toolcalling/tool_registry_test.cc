@@ -12,7 +12,9 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -322,12 +324,25 @@ TEST(ToolRegistryTest, SnapshotsAreConsistentWhileToolsAreRegisteredAndRemoved) 
       // The two tools that are never churned must be present, intact, and of the right kind in
       // every snapshot, regardless of what the writer is doing.
       EXPECT_GE(definitions.size(), 2u);
-      EXPECT_EQ(KindOf(registry, "stable_custom"), ToolKind::kCustom);
-      EXPECT_EQ(KindOf(registry, "stable_function"), ToolKind::kFunction);
+      std::set<std::string> names;
+      for (const auto& definition : definitions) {
+        EXPECT_TRUE(names.insert(definition.name).second) << definition.name;
+      }
 
-      auto custom = Find(registry, "stable_custom");
-      ASSERT_TRUE(custom.has_value());
+      const auto custom = std::find_if(definitions.begin(), definitions.end(),
+                                       [](const ToolDefinition& definition) {
+                                         return definition.name == "stable_custom";
+                                       });
+      ASSERT_NE(custom, definitions.end());
+      EXPECT_EQ(custom->kind, ToolKind::kCustom);
       EXPECT_EQ(custom->json_schema, kExpectedCustomSchema);
+
+      const auto function = std::find_if(definitions.begin(), definitions.end(),
+                                         [](const ToolDefinition& definition) {
+                                           return definition.name == "stable_function";
+                                         });
+      ASSERT_NE(function, definitions.end());
+      EXPECT_EQ(function->kind, ToolKind::kFunction);
 
       for (const auto& definition : definitions) {
         EXPECT_FALSE(definition.json_schema.empty());

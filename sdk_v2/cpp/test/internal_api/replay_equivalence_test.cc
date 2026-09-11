@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -113,12 +114,13 @@ ResponseChainContext StoredChainContext(const std::vector<ReplayTurn>& turns) {
 
 /// The messages the cold path builds: store the chain, reconstruct it, convert it, ingest it with the replay
 /// segments the converter recorded, and apply the request's own system prefix — exactly what ChatSession does.
-std::vector<TranscriptMessage> ColdMessages(const std::vector<ReplayTurn>& turns,
-                                            const ResponseCreateParams& next_params) {
+std::vector<TranscriptMessage> ColdMessages(
+    const std::vector<ReplayTurn>& turns, const ResponseCreateParams& next_params,
+    const std::unordered_map<std::string, ToolKind>& tool_kinds = {}) {
   auto context = StoredChainContext(turns);
   auto request = ResponseConverter::ToSessionRequest(next_params, &context);
 
-  auto ingest = IngestRequestItems(request.items, request.item_segment_starts);
+  auto ingest = IngestRequestItems(request.items, request.item_segment_starts, tool_kinds);
   const char* prefix = request.options.Find(kSystemPromptOption);
   return WithSystemPrompt(prefix != nullptr ? prefix : "", std::move(ingest.messages));
 }
@@ -400,6 +402,37 @@ TEST(ReplayEquivalenceTest, ToolResultContinuation) {
   second.live_output.AppendText("It is sunny.");
 
   ExpectWarmAndColdAgree({first, second}, "And tomorrow?");
+}
+
+TEST(ReplayEquivalenceTest, CustomTextAndJsonLookingPayloadsRemainWarmColdEquivalentThroughToolResult) {
+  for (const auto& payload : {std::string("print('hi')\n"), std::string(R"({"input":"text","z":1})")}) {
+    ReplayTurn first;
+    first.input_items = UserInputItem("Run it.");
+    first.output_items =
+        json::array({OutputFunctionCall("call_1", "run_python", payload)});
+    first.live_inputs = {UserMessage("Run it.")};
+    first.live_output.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+    first.live_output.AppendToolCall(
+        MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom));
+
+    ReplayTurn second;
+    second.input_items =
+        json::array({{{"type", "function_call_output"}, {"call_id", "call_1"}, {"output", "done"}}});
+    second.output_items = json::array({OutputMessage("Finished.")});
+    second.live_inputs = {TranscriptMessage::ToolResult("call_1", "done")};
+    second.live_output.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+    second.live_output.AppendText("Finished.");
+
+    ResponseCreateParams params;
+    params.model = "test-model";
+    params.input = "Continue.";
+    const std::unordered_map<std::string, ToolKind> kinds = {
+        {"run_python", ToolKind::kCustom}};
+
+    const auto warm = BuildChatMessagesJson(WarmMessages({first, second}, {UserMessage("Continue.")}));
+    const auto cold = BuildChatMessagesJson(ColdMessages({first, second}, params, kinds));
+    EXPECT_EQ(cold, warm) << payload;
+  }
 }
 
 TEST(ReplayEquivalenceTest, ReasoningOnlyTurnBetweenTwoRealTurnsDoesNotCollapseTheConversation) {

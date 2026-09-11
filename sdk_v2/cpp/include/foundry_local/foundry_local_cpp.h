@@ -466,6 +466,8 @@ struct MessageContent {
 struct ToolCallContent {
   std::string_view call_id;
   std::string_view name;
+  /// FUNCTION arguments are JSON. CUSTOM arguments are NUL-free UTF-8 text; a generated custom
+  /// payload containing an embedded NUL is invalid and is never truncated.
   std::string_view arguments;
 };
 
@@ -586,7 +588,8 @@ class Item {
   static Item AudioFromUri(const std::string& uri, const std::optional<std::string>& format = std::nullopt,
                            int sample_rate = 0, int channels = 0);
 
-  /// Create a tool call item.
+  /// Create a tool call item. Custom `arguments` must be NUL-free UTF-8 text; an embedded NUL is
+  /// invalid and is rejected rather than truncated.
   static Item ToolCall(const std::string& call_id, const std::string& name, const std::string& arguments);
 
   /// Create a tool result item.
@@ -920,7 +923,7 @@ class Manager {
 
 /// C++ wrapper for flToolDefinition. Sets the version field automatically.
 struct ToolDefinition {
-  std::string name;         ///< Tool name. Case-sensitive and unique within a session across kinds.
+  std::string name;         ///< Tool name. Must be non-empty, case-sensitive, and unique across kinds.
   std::string description;  ///< Tool description for model context.
   /// JSON schema defining the tool's arguments. Required for a function tool; must stay empty for a
   /// custom tool, whose schema is synthesized.
@@ -933,8 +936,9 @@ struct ToolDefinition {
   ToolDefinition(std::string name, std::string description, std::string json_schema)
       : name(std::move(name)), description(std::move(description)), json_schema(std::move(json_schema)) {}
 
-  /// Custom tool: the model is prompted with a synthesized single-string schema, and the arguments
-  /// of a generated call are delivered as the raw text the model produced.
+  /// Custom tool: the model is prompted with a synthesized single-string schema. Generated
+  /// arguments are delivered as NUL-free UTF-8 text; an embedded NUL is invalid and is never
+  /// truncated.
   static ToolDefinition Custom(std::string name, std::string description) {
     ToolDefinition definition(std::move(name), std::move(description), std::string{});
     definition.kind = FOUNDRY_LOCAL_TOOL_KIND_CUSTOM;

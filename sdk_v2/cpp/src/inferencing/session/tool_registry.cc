@@ -3,6 +3,7 @@
 #include "inferencing/session/tool_registry.h"
 
 #include "exception.h"
+#include "util/string_utils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -60,6 +61,17 @@ std::string ExtractCustomToolInput(const std::string& arguments) {
   // get<std::string>() resolves JSON escapes, so the payload comes back exactly as the model meant
   // it: line endings, tabs, trailing spaces and Unicode all intact.
   return it->get<std::string>();
+}
+
+void ValidateCustomToolPayload(const std::string& payload) {
+  if (payload.find('\0') != std::string::npos) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "custom tool payload must not contain embedded NUL bytes");
+  }
+
+  if (!IsValidUtf8(payload)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "custom tool payload must be valid UTF-8");
+  }
 }
 
 void ToolRegistry::Add(ToolDefinition tool_def) {
@@ -164,7 +176,7 @@ ToolDefinition ToolDefinitionFromC(const flToolDefinition& tool_def) {
   definition.json_schema = tool_def.json_schema ? tool_def.json_schema : "";
   definition.kind = kind;
 
-  if (definition.kind == ToolKind::kFunction && definition.name.empty()) {
+  if (tool_def.version >= kToolDefinitionKindVersion && definition.name.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a public function tool definition requires a name");
   }
 

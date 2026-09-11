@@ -103,6 +103,8 @@ bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind 
                                                                 bool stop_sequence_matched,
                                                                 bool host_output_limit_reached);
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
+std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
+    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot);
 
 }  // namespace chat_session_internal
 

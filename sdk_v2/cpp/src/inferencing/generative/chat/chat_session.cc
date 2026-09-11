@@ -209,6 +209,28 @@ bool AcceptVisibleText(AssistantTurnGuard& guard, const std::string& text, ILogg
 
 namespace chat_session_internal {
 
+std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
+    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot) {
+  const auto custom_tool =
+      std::find_if(session_snapshot.begin(), session_snapshot.end(),
+                   [](const ToolDefinition& tool) { return tool.kind == ToolKind::kCustom; });
+  if (custom_tool != session_snapshot.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "Custom tool definitions cannot be used with OpenAI JSON input");
+  }
+
+  if (tools_json.empty()) {
+    return {};
+  }
+
+  if (!session_snapshot.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "Tool definitions cannot be used with OpenAI JSON input; the JSON payload must be fully self-contained");
+  }
+
+  return {{{}, {}, std::move(tools_json), ToolKind::kFunction}};
+}
+
 flFinishReason ResolveGeneratedFinishReason(bool canceled,
                                             bool has_tool_calls,
                                             bool stop_sequence_matched,
@@ -766,7 +788,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       // `{"input": ...}` wrapper the model was prompted with. Unwrap once, here, so the stream, the
       // final response, and the transcript that later turns rebuild from all carry the same bytes.
       if (cached_tool_ctx_.IsCustomTool(call.name)) {
-        call.arguments = ExtractCustomToolInput(call.arguments);
+        call.arguments = ExtractCustomToolInput(call.argument_source);
+        ValidateCustomToolPayload(call.arguments);
       }
 
       if (streaming_callback) {
@@ -896,6 +919,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
 void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                              Response& response) {
+  // Consult mutable session state exactly once. JSON requests otherwise derive their complete tool
+  // context from their own payload, so later registration cannot alter this request's interpretation.
+  const auto session_tool_definitions = ToolDefinitions();
+
   // Parse the OpenAI chat completions request
   auto req_json = nlohmann::json::parse(request_json);
   auto req = req_json.get<ChatCompletionRequest>();
@@ -930,28 +957,13 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     }
   }
 
-  // Build tool call context
-  if (!tools_json.empty()) {
-    // we don't expect a Session to get re-used on this path so this should always be empty
-    if (ToolDefinitions().size() > 0) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-               "Tool definitions cannot be used with OpenAI JSON input; the JSON payload must be fully self-contained");
-    }
+  // Build a request-local tool definition. It must never enter the session registry: this payload
+  // is self-contained and concurrent registration must not alter either its prompt or call parsing.
+  const auto request_tool_definitions =
+      chat_session_internal::BuildJsonRequestToolDefinitions(std::move(tools_json),
+                                                             session_tool_definitions);
 
-    // Unnamed and function-shaped: this is a whole pre-serialized OpenAI tools array, not a tool
-    // that can be looked up or that a generated call resolves against.
-    AddToolDefinition({{}, {}, std::move(tools_json), ToolKind::kFunction});
-  }
-
-  auto tool_definitions = ToolDefinitions();
-  const auto custom_tool = std::find_if(tool_definitions.begin(), tool_definitions.end(),
-                                        [](const ToolDefinition& tool) { return tool.kind == ToolKind::kCustom; });
-  if (custom_tool != tool_definitions.end()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-             "Custom tool definitions cannot be used with OpenAI JSON input");
-  }
-
-  auto tool_ctx = BuildToolCallContext(internal_request, tool_definitions);
+  const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);
 
   // Merge session-level and per-request options once.
   auto effective_kvp = MergedOptions(internal_request.options);

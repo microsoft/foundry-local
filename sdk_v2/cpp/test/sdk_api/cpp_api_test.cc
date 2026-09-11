@@ -118,6 +118,17 @@ TEST(CppApiTest, ToolCallRoundTrip) {
   EXPECT_EQ(arguments, R"({"city":"Seattle"})");
 }
 
+TEST(CppApiTest, ToolCallRejectsEmbeddedNulInsteadOfTruncating) {
+  const std::string payload{"before\0after", 12};
+
+  try {
+    (void)foundry_local::Item::ToolCall("call_42", "custom", payload);
+    FAIL() << "expected embedded NUL rejection";
+  } catch (const foundry_local::Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
 TEST(CppApiTest, ToolDefinitionDefaultsToFunctionAndStampsTheCurrentVersion) {
   foundry_local::ToolDefinition function("get_weather", "Get the weather", R"({"type":"object"})");
   EXPECT_EQ(function.kind, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);

@@ -146,20 +146,21 @@ std::string StoredItemText(const nlohmann::json& item) {
 ///
 /// A hop's stored items are replayed as the hop recorded them, whether the call came from the model's own output or
 /// from the `input` array the caller sent for that hop. Either way the hop already ran: a caller-supplied call was
-/// validated strictly at the time, and a model-emitted call whose argument bytes were not a JSON object was already
-/// presented to the model as having none. Replay reproduces that rather than re-admitting bytes the strict
-/// caller-supplied path would now reject, which would fail a continuation of a conversation that already happened.
+/// validated strictly at the time. Preserve the original bytes until ingestion resolves the call against its
+/// immutable tool-kind snapshot: a custom payload may be arbitrary text, while a malformed function call degrades
+/// to an empty object as it did when first generated.
 std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
   std::string arguments;
   if (auto it = item.find("arguments"); it != item.end() && !it->is_null()) {
     arguments = it->is_string() ? it->get<std::string>() : it->dump();
   }
 
-  if (!ParseToolCallArguments(arguments).has_value()) {
-    arguments.clear();
-  }
-
-  return std::make_unique<ToolCallItem>(item.value("call_id", ""), item.value("name", ""), std::move(arguments));
+  auto replayed = std::make_unique<ToolCallItem>(
+      item.value("call_id", ""), item.value("name", ""),
+      ParseToolCallArguments(arguments).has_value() ? arguments : std::string{},
+      /*replayed_from_store=*/true);
+  replayed->replayed_arguments = std::move(arguments);
+  return replayed;
 }
 
 /// The text a message carrying only media renders as. The chat template requires every message to have at least one

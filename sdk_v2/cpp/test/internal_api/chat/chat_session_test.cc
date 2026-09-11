@@ -10,6 +10,7 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/session/request.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/text_item.h"
@@ -62,6 +63,31 @@ TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtT
                                          /*backend_finished=*/false));
   EXPECT_FALSE(DidHostOutputLimitTruncate(/*output_tokens=*/32, /*max_output_tokens=*/32,
                                           /*backend_finished=*/true));
+}
+
+TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
+  ToolRegistry registry;
+  const auto captured = registry.Definitions();
+
+  std::thread registration([&] {
+    registry.Add({"late_custom", "registered after capture", "", ToolKind::kCustom});
+  });
+  registration.join();
+
+  const std::string serialized_tools =
+      R"([{"type":"function","function":{"name":"payload_tool","parameters":{}}}])";
+  const auto local =
+      chat_session_internal::BuildJsonRequestToolDefinitions(serialized_tools, captured);
+
+  ASSERT_EQ(local.size(), 1u);
+  EXPECT_TRUE(local[0].name.empty());
+  EXPECT_EQ(local[0].json_schema, serialized_tools);
+  EXPECT_EQ(local[0].kind, ToolKind::kFunction);
+
+  // A fresh snapshot sees the custom registration and preserves the existing JSON-path rejection.
+  EXPECT_THROW(chat_session_internal::BuildJsonRequestToolDefinitions(
+                   serialized_tools, registry.Definitions()),
+               fl::Exception);
 }
 
 TEST(ChatSessionDecisionTest, ExactResidentPrefixSelectsOnlyTheUnmatchedFullPromptSuffix) {

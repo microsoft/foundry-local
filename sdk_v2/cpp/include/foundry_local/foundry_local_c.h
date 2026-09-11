@@ -271,13 +271,13 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR "creation_time"              ///< ISO-8601 UTC timestamp
 
 /* flModelInfo Int properties. Comments provide details on the type and expected values. */
-#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"  ///< optional bool (not set or -1=unknown, 0=false, 1=true)
-#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT "supports_reasoning"        ///< optional bool (not set or -1=unknown, 0=false, 1=true)
-#define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT "filesize_mb"                      ///< optional int32_t
-#define FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT "max_output_tokens"          ///< optional int32_t
-#define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"              ///< Unix timestamp. default=0
-#define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                  ///< bool (0=false, 1=true)
-#define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                ///< optional int64_t
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"          ///< optional bool (not set or -1=unknown, 0=false, 1=true)
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT "supports_reasoning"                ///< optional bool (not set or -1=unknown, 0=false, 1=true)
+#define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT "filesize_mb"                              ///< optional int32_t
+#define FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT "max_output_tokens"                  ///< optional int32_t
+#define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"                      ///< Unix timestamp. default=0
+#define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                          ///< bool (0=false, 1=true)
+#define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                        ///< optional int64_t
 #define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT "supports_hybrid_reasoning"  ///< optional bool
 
 #define FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR "input_modalities"    ///< optional, comma-separated
@@ -300,9 +300,9 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY "frequency_penalty"
 /// Float presence penalty. Currently only the neutral value 0 is supported.
 #define FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY "presence_penalty"
-#define FOUNDRY_LOCAL_PARAM_SEED "seed"                            ///< int. for reproducible outputs
-#define FOUNDRY_LOCAL_PARAM_EARLY_STOPPING "early_stopping"        ///< bool. whether to stop on stop sequence or only at max tokens
-#define FOUNDRY_LOCAL_PARAM_DO_SAMPLE "do_sample"                  ///< bool. whether to sample (false = greedy decoding)
+#define FOUNDRY_LOCAL_PARAM_SEED "seed"                      ///< int. for reproducible outputs
+#define FOUNDRY_LOCAL_PARAM_EARLY_STOPPING "early_stopping"  ///< bool. whether to stop on stop sequence or only at max tokens
+#define FOUNDRY_LOCAL_PARAM_DO_SAMPLE "do_sample"            ///< bool. whether to sample (false = greedy decoding)
 
 /* Request options */
 #define FOUNDRY_LOCAL_PARAM_TOOL_CHOICE "tool_choice"  ///< string: See flToolChoice for the typed enum.
@@ -503,6 +503,8 @@ typedef struct flToolCallData {
   const char* name;     ///< Tool name.
   /// Arguments for the call, shaped by the registered flToolDefinition with the same `name`:
   /// JSON for FOUNDRY_LOCAL_TOOL_KIND_FUNCTION, raw text for FOUNDRY_LOCAL_TOOL_KIND_CUSTOM.
+  /// A custom payload is NUL-free UTF-8 text. Supplied or generated custom payloads containing an
+  /// embedded NUL are invalid and are rejected rather than truncated.
   const char* arguments;
   /* V3 fields go here. Read only when version >= 3. */
 } flToolCallData;
@@ -598,18 +600,23 @@ typedef uint32_t flToolKind;
 
 /// Arguments are a JSON object conforming to the definition's `json_schema`, which is required.
 #define FOUNDRY_LOCAL_TOOL_KIND_FUNCTION 0u
-/// Arguments are raw text. `json_schema` must be NULL or empty — the implementation synthesizes
-/// the schema the model is prompted with, and delivers the model's payload verbatim.
+/// Arguments are NUL-free UTF-8 text. `json_schema` must be NULL or empty — the implementation
+/// synthesizes the schema the model is prompted with and delivers the model's payload verbatim.
+/// Supplied or generated payloads containing an embedded NUL are invalid and are never truncated.
 #define FOUNDRY_LOCAL_TOOL_KIND_CUSTOM 1u
 
 /// Versioned struct for a tool definition registered on a session.
 ///
-/// Fields up to and including `json_schema` are the version 1 prefix. A caller compiled against
-/// the 2.0 header allocates only that prefix, so the implementation reads nothing past it unless
-/// `version` is 2 or greater.
+/// Version 1 is the short prefix through `json_schema`. It retains its released compatibility:
+/// FUNCTION definitions may have an empty but non-NULL `name` for pre-serialized usage. A caller
+/// compiled against the 2.0 header allocates only that prefix, so the implementation reads nothing
+/// past it unless `version` is 2 or greater.
+///
+/// Version 2 appends `kind`. Public FUNCTION and CUSTOM definitions using version 2 must have a
+/// non-empty `name`.
 typedef struct flToolDefinition {
   uint32_t version;         ///< Set to FOUNDRY_LOCAL_API_VERSION. 0 is invalid.
-  const char* name;         ///< Tool name. Case-sensitive; must be unique within a session across kinds.
+  const char* name;         ///< Tool name. Case-sensitive; v2 names must be non-empty and unique across kinds.
   const char* description;  ///< Tool description for model context.
   /// JSON schema defining the tool's arguments. FUNCTION: required, must be valid JSON text.
   /// CUSTOM: must be NULL or empty.

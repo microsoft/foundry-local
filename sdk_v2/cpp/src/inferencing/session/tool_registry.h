@@ -48,6 +48,10 @@ inline constexpr const char* kCustomToolInputSchema =
 /// are the only faithful record of it.
 std::string ExtractCustomToolInput(const std::string& arguments);
 
+/// Validate text crossing the custom-tool payload boundary.
+/// @throws fl::Exception (FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) for embedded NUL or invalid UTF-8.
+void ValidateCustomToolPayload(const std::string& payload);
+
 /// Ordered set of the tool definitions registered on a session. Thread-safe.
 class ToolRegistry {
  public:
@@ -63,7 +67,8 @@ class ToolRegistry {
   /// does not apply to it and no generated call resolves against it.
   /// @throws fl::Exception (FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) if the name is already registered,
   ///         a function definition's schema is not valid JSON text, or a custom definition supplies
-  ///         a schema or has no name.
+  ///         a schema or has no name. Empty function names remain accepted for the internal
+  ///         pre-serialized path.
   void Add(ToolDefinition tool_def);
 
   /// Remove the definition registered under this exact name. Returns whether one was removed.

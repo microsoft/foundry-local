@@ -254,13 +254,21 @@ TEST(ToolDefinitionAbiTest, RejectsNullNameOrDescription) {
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(no_description));
 }
 
-TEST(ToolDefinitionAbiTest, PublicConversionRejectsEmptyFunctionToolName) {
+TEST(ToolDefinitionAbiTest, VersionOneAcceptsEmptyFunctionNameForReleasedPreSerializedCompatibility) {
   LegacyDefinition legacy(1, "", "d", "{}");
-  EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(legacy.AsCurrent()));
+  auto converted = ToolDefinitionFromC(legacy.AsCurrent());
+  EXPECT_EQ(converted.name, "");
+  EXPECT_EQ(converted.json_schema, "{}");
+  EXPECT_EQ(converted.kind, ToolKind::kFunction);
+}
 
+TEST(ToolDefinitionAbiTest, VersionTwoRejectsEmptyPublicToolNames) {
   auto current = CurrentDefinition(FOUNDRY_LOCAL_API_VERSION, "", "d", "{}",
                                    FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
   EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(current));
+
+  auto custom = CurrentDefinition(2, "", "d", nullptr, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
+  EXPECT_INVALID_ARGUMENT(ToolDefinitionFromC(custom));
 }
 
 TEST(ToolDefinitionAbiTest, RejectsNullSchemaForAFunctionToolAndAcceptsItForACustomTool) {

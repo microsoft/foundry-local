@@ -1414,6 +1414,33 @@ TEST(TranscriptCustomToolTest, SuppliedCustomCallAcceptsTextThatIsNotAJsonObject
   EXPECT_EQ(call.normalized_arguments, nlohmann::ordered_json({{"input", "print('hi')"}}));
 }
 
+TEST(TranscriptCustomToolTest, SuppliedAndGeneratedCustomCallsRejectEmbeddedNul) {
+  const std::string payload{"before\0after", 12};
+
+  try {
+    (void)MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+    FAIL() << "expected supplied custom payload rejection";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+
+  try {
+    (void)MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom);
+    FAIL() << "expected generated custom payload rejection";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(TranscriptCustomToolTest, SuppliedAndGeneratedCustomCallsRejectInvalidUtf8) {
+  const std::string payload{"\xC3\x28", 2};
+
+  EXPECT_THROW(MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom),
+               fl::Exception);
+  EXPECT_THROW(MakeGeneratedToolCall("call_1", "run_python", payload, ToolKind::kCustom),
+               fl::Exception);
+}
+
 TEST(TranscriptCustomToolTest, SuppliedFunctionCallStillRejectsNonObjectArguments) {
   EXPECT_THROW(MakeSuppliedToolCall("call_1", "get_weather", "not json", ToolKind::kFunction), fl::Exception);
 }

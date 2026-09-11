@@ -1052,6 +1052,11 @@ inline Item Item::AudioFromUri(const std::string& uri, const std::optional<std::
 
 inline Item Item::ToolCall(const std::string& call_id, const std::string& name,
                            const std::string& arguments) {
+  if (arguments.find('\0') != std::string::npos) {
+    throw Error("Tool call arguments must not contain embedded NUL characters",
+                FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+
   Item item(FOUNDRY_LOCAL_ITEM_TOOL_CALL);
   flToolCallData tc{FOUNDRY_LOCAL_API_VERSION, call_id.c_str(), name.c_str(), arguments.c_str()};
   Check(detail::item_api()->SetToolCall(item.handle_.get_mutable(), &tc));

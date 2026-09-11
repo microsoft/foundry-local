@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "internal_api/c_api_test_helpers.h"
+#include "items/tool_call_item.h"
 #include "utils/temp_path.h"
 
 #include <cstring>
@@ -1223,6 +1224,34 @@ TEST(CApiTest, ItemCreateToolCall) {
   EXPECT_STREQ(tc_out.arguments, R"({"city":"Seattle"})");
 
   item_api->Item_Release(item);
+}
+
+TEST(CApiTest, ItemSetToolCallRejectsInvalidUtf8Arguments) {
+  const flApi* api = GetApi();
+  const flItemApi* item_api = api->GetItemApi();
+  flItem* item = nullptr;
+  ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TOOL_CALL, &item)));
+
+  const char invalid_utf8[] = {'\xC3', '\x28', '\0'};
+  flToolCallData data{FOUNDRY_LOCAL_API_VERSION, "call_1", "custom", invalid_utf8};
+  StatusGuard status{item_api->SetToolCall(item, &data), api};
+  ASSERT_NE(status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+
+  item_api->Item_Release(item);
+}
+
+TEST(CApiTest, ItemGetToolCallRejectsInternalEmbeddedNulWithoutTruncating) {
+  const flApi* api = GetApi();
+  const flItemApi* item_api = api->GetItemApi();
+  fl::ToolCallItem item("call_1", "custom", std::string{"before\0after", 12});
+  flToolCallData output{};
+  output.version = FOUNDRY_LOCAL_API_VERSION;
+
+  StatusGuard status{item_api->GetToolCall(item.AsApiType(), &output), api};
+  ASSERT_NE(status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_EQ(output.arguments, nullptr);
 }
 
 TEST(CApiTest, ItemCreateToolResult) {

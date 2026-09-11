@@ -63,6 +63,7 @@ std::optional<nlohmann::ordered_json> ParseToolCallArguments(const std::string& 
 static std::optional<nlohmann::ordered_json> NormalizeToolCallArguments(ToolKind kind,
                                                                         const std::string& arguments) {
   if (kind == ToolKind::kCustom) {
+    ValidateCustomToolPayload(arguments);
     return nlohmann::ordered_json{{kCustomToolInputParameter, arguments}};
   }
 
@@ -305,8 +306,15 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
 
       TranscriptMessage message;
       message.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-      message.AppendToolCall(
-          MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind_of(call_item.name)));
+      const auto kind = kind_of(call_item.name);
+      if (call_item.replayed_from_store) {
+        message.AppendToolCall(MakeGeneratedToolCall(call_item.call_id, call_item.name,
+                                                     call_item.replayed_arguments, kind)
+                                   .call);
+      } else {
+        message.AppendToolCall(
+            MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind));
+      }
 
       // The same rule folds the call into the open assistant turn, so replayed content and its calls stay in one
       // message — and a call that opens a segment starts its own.
