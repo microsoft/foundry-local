@@ -307,6 +307,7 @@ Test stack pinned:
 |-------------------------------------------------------------------|-----------------------------------------------|
 | C++ addon scaffolding + error mapping                             | Implemented                                   |
 | `Manager`, `Catalog`, `Model`                                     | Implemented                                   |
+| BYOM catalog selection, mutable metadata, register/unregister     | Implemented                                   |
 | `Request`, `Response`, `ItemQueue`                                | Implemented                                   |
 | `Item` discriminated union + factories                            | Implemented (all 8 subtypes, both directions) |
 | `ChatSession` (non-streaming + streaming)                         | Implemented                                   |

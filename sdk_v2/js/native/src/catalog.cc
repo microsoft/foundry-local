@@ -5,6 +5,7 @@
 #include "addon_data.h"
 #include "errors.h"
 #include "model.h"
+#include "model_info.h"
 #include "promise_worker.h"
 
 #include <foundry_local/foundry_local_cpp.h>
@@ -19,8 +20,7 @@ namespace {
 
 // Wrap a ModelList (rvalue) into a JS array of Model handles, each pinning the
 // passed-in manager reference.
-Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml,
-                          Napi::ObjectReference manager) {
+Napi::Value WrapModelList(Napi::Env env, foundry_local::ModelList ml, Napi::ObjectReference manager) {
   auto list = std::make_shared<foundry_local::ModelList>(std::move(ml));
   const auto& models = *list;
   Napi::Array arr = Napi::Array::New(env, models.size());
@@ -86,6 +86,10 @@ Napi::Function Catalog::Init(Napi::Env env) {
           InstanceMethod("getModel", &Catalog::GetModel),
           InstanceMethod("getModelVariant", &Catalog::GetModelVariant),
           InstanceMethod("getLatestVersion", &Catalog::GetLatestVersion),
+          InstanceMethod("registerModel", &Catalog::RegisterModel),
+          InstanceMethod("registerModelSync", &Catalog::RegisterModelSync),
+          InstanceMethod("unregisterModel", &Catalog::UnregisterModel),
+          InstanceMethod("unregisterModelSync", &Catalog::UnregisterModelSync),
       });
 }
 
@@ -126,8 +130,9 @@ Napi::Value Catalog::GetName(const Napi::CallbackInfo& info) {
 Napi::Value Catalog::GetModels(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   Napi::ObjectReference mgr = CloneManager(manager_);
-  return CallChecked<Napi::Value>(
-      env, [&]() -> Napi::Value { return WrapModelList(env, impl_->GetModels(), std::move(mgr)); });
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    return WrapModelList(env, impl_->GetModels(), std::move(mgr));
+  });
 }
 
 Napi::Value Catalog::GetCachedModels(const Napi::CallbackInfo& info) {
@@ -178,9 +183,9 @@ Napi::Value Catalog::GetModelVersions(const Napi::CallbackInfo& info) {
   // GetModelVersions performs a fresh network FetchModelVersions query on every
   // call, so it must NOT run on the JS thread. Argument parsing/validation above
   // stays on the JS thread; only the network fetch is dispatched to the libuv
-  // worker. The Manager is pinned two ways: `owner` keeps it (and the ICatalog*
-  // it owns) alive across the worker, and `manager_pin` is a JS-thread-only
-  // clone the resolver uses to build the Model handles.
+  // worker. `owner` keeps the Manager ObjectWrap (and the ICatalog* it owns)
+  // alive across the worker, while `manager_pin` is a JS-thread-only clone the
+  // resolver uses to build the Model handles.
   auto* impl = impl_;
   auto manager_pin = std::make_shared<Napi::ObjectReference>(CloneManager(manager_));
   return PromiseWorker<foundry_local::ModelList>::Run(
@@ -239,6 +244,95 @@ Napi::Value Catalog::GetLatestVersion(const Napi::CallbackInfo& info) {
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto owned = impl_->GetLatestVersion(*arg);
     return WrapOwnedModelOrUndefined(env, std::move(owned), std::move(mgr));
+  });
+}
+
+namespace {
+
+NativeModelInfo* ExtractModelInfo(Napi::Env env, const Napi::Value& value) {
+  if (!value.IsObject()) return nullptr;
+  Napi::Object object = value.As<Napi::Object>();
+  auto* data = env.GetInstanceData<AddonData>();
+  if (data == nullptr || !object.InstanceOf(data->model_info_ctor.Value())) return nullptr;
+  return Napi::ObjectWrap<NativeModelInfo>::Unwrap(object);
+}
+
+bool ReadRegistrationArgs(const Napi::CallbackInfo& info, std::string& model_path, std::string& model_id,
+                          std::shared_ptr<foundry_local::ModelInfo>& metadata) {
+  Napi::Env env = info.Env();
+  if (info.Length() != 3 || !info[0].IsString() || !info[1].IsString()) {
+    Napi::TypeError::New(env, "registerModel(modelPath: string, modelId: string, metadata: ModelInfo)")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  NativeModelInfo* wrapper = ExtractModelInfo(env, info[2]);
+  if (wrapper == nullptr || (metadata = wrapper->Snapshot()) == nullptr) {
+    Napi::TypeError::New(env, "registerModel: metadata must be a non-disposed ModelInfo")
+        .ThrowAsJavaScriptException();
+    return false;
+  }
+  model_path = info[0].As<Napi::String>();
+  model_id = info[1].As<Napi::String>();
+  return true;
+}
+
+}  // namespace
+
+Napi::Value Catalog::RegisterModel(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string model_path;
+  std::string model_id;
+  std::shared_ptr<foundry_local::ModelInfo> metadata;
+  if (!ReadRegistrationArgs(info, model_path, model_id, metadata)) return env.Undefined();
+
+  auto* catalog = impl_;
+  auto manager_pin = std::make_shared<Napi::ObjectReference>(CloneManager(manager_));
+  return PromiseWorker<std::unique_ptr<foundry_local::IModel>>::Run(
+      env,
+      [catalog, model_path, model_id, metadata]() {
+        return catalog->RegisterModel(model_path, model_id, *metadata);
+      },
+      [manager_pin](Napi::Env env, std::unique_ptr<foundry_local::IModel>& model) -> Napi::Value {
+        return WrapOwnedModelOrUndefined(env, std::move(model), CloneManager(*manager_pin));
+      },
+      Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1));
+}
+
+Napi::Value Catalog::RegisterModelSync(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string model_path;
+  std::string model_id;
+  std::shared_ptr<foundry_local::ModelInfo> metadata;
+  if (!ReadRegistrationArgs(info, model_path, model_id, metadata)) return env.Undefined();
+  Napi::ObjectReference manager = CloneManager(manager_);
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    return WrapOwnedModelOrUndefined(env, impl_->RegisterModel(model_path, model_id, *metadata), std::move(manager));
+  });
+}
+
+Napi::Value Catalog::UnregisterModel(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() != 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "unregisterModel(aliasOrModelId: string)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  std::string alias_or_model_id = info[0].As<Napi::String>();
+  auto* catalog = impl_;
+  return PromiseWorkerVoid::Run(
+      env, [catalog, alias_or_model_id]() { catalog->UnregisterModel(alias_or_model_id); },
+      Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1));
+}
+
+Napi::Value Catalog::UnregisterModelSync(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() != 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "unregisterModelSync(aliasOrModelId: string)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  std::string alias_or_model_id = info[0].As<Napi::String>();
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    impl_->UnregisterModel(alias_or_model_id);
+    return env.Undefined();
   });
 }
 

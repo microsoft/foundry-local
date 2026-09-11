@@ -41,6 +41,10 @@ class Catalog : public Napi::ObjectWrap<Catalog> {
   Napi::Value GetModel(const Napi::CallbackInfo& info);
   Napi::Value GetModelVariant(const Napi::CallbackInfo& info);
   Napi::Value GetLatestVersion(const Napi::CallbackInfo& info);
+  Napi::Value RegisterModel(const Napi::CallbackInfo& info);
+  Napi::Value RegisterModelSync(const Napi::CallbackInfo& info);
+  Napi::Value UnregisterModel(const Napi::CallbackInfo& info);
+  Napi::Value UnregisterModelSync(const Napi::CallbackInfo& info);
 
   foundry_local::ICatalog* impl_ = nullptr;
   Napi::ObjectReference manager_;

@@ -28,7 +28,9 @@ public class FoundryLocalManager : IDisposable
     private readonly Configuration _config;
     private NativeConfig _nativeConfig = default!;
     private NativeManager _nativeManager = default!;
-    private Catalog? _catalog;
+    private readonly object _nativeLifetimeLock = new();
+    private Catalog? _publicCatalog;
+    private Catalog? _localCatalog;
     private readonly AsyncLock _lock = new();
     private int _disposed;
     private readonly ILogger _logger;
@@ -122,7 +124,18 @@ public class FoundryLocalManager : IDisposable
     /// <returns>The model catalog.</returns>
     public async Task<ICatalog> GetCatalogAsync(CancellationToken? ct = null)
     {
-        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(ct),
+        return await GetCatalogAsync(CatalogType.Public, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Get a catalog by type. Use <see cref="CatalogType.Local"/> to register caller-owned model assets.
+    /// </summary>
+    /// <param name="catalogType">Catalog type to retrieve.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <returns>The requested model catalog.</returns>
+    public async Task<ICatalog> GetCatalogAsync(CatalogType catalogType, CancellationToken? ct = null)
+    {
+        return await Utils.CallWithExceptionHandlingAsync(() => GetCatalogImplAsync(catalogType, ct),
                                                           "Error getting Catalog.", _logger).ConfigureAwait(false);
     }
 
@@ -331,23 +344,48 @@ public class FoundryLocalManager : IDisposable
         _ => FlLogLevel.Warning,
     };
 
-    private async Task<ICatalog> GetCatalogImplAsync(CancellationToken? ct = null)
+    private async Task<ICatalog> GetCatalogImplAsync(CatalogType catalogType, CancellationToken? ct = null)
     {
-        if (_catalog == null)
+        if (catalogType is not CatalogType.Public and not CatalogType.Local)
         {
-            using var disposable = await _lock.LockAsync().ConfigureAwait(false);
+            throw new ArgumentOutOfRangeException(nameof(catalogType), catalogType, "Unknown catalog type.");
+        }
 
-            if (_catalog == null)
+        var catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
+        if (catalog != null)
+        {
+            return catalog;
+        }
+
+        using var disposable = await _lock.LockAsync().ConfigureAwait(false);
+
+        catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
+        if (catalog == null)
+        {
+            catalog = await Task.Run(() =>
             {
-                _catalog = await Task.Run(() =>
+                lock (_nativeLifetimeLock)
                 {
-                    var nativeCatalog = _nativeManager.GetCatalog();
-                    return new Catalog(nativeCatalog, _logger);
-                }, ct ?? CancellationToken.None).ConfigureAwait(false);
+                    Detail.Throw.IfDisposed(Volatile.Read(ref _disposed) != 0, this);
+
+                    var nativeType = catalogType == CatalogType.Public ? FlCatalogType.Public : FlCatalogType.Local;
+                    var nativeCatalog = _nativeManager.GetCatalog(nativeType);
+                    return new Catalog(nativeCatalog, _logger, _nativeLifetimeLock,
+                                       () => Volatile.Read(ref _disposed) != 0);
+                }
+            }, ct ?? CancellationToken.None).ConfigureAwait(false);
+
+            if (catalogType == CatalogType.Public)
+            {
+                _publicCatalog = catalog;
+            }
+            else
+            {
+                _localCatalog = catalog;
             }
         }
 
-        return _catalog;
+        return catalog;
     }
 
     private async Task<EpDownloadResult> DownloadAndRegisterEpsAsyncImpl(
@@ -456,8 +494,11 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
-            _nativeManager?.Dispose();
-            _nativeConfig?.Dispose();
+            lock (_nativeLifetimeLock)
+            {
+                _nativeManager?.Dispose();
+                _nativeConfig?.Dispose();
+            }
             _lock.Dispose();
 
             // Allow CreateAsync to construct a fresh instance after dispose. The native singleton

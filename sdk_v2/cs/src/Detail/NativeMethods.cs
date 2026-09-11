@@ -33,7 +33,7 @@ using System.Runtime.InteropServices;
 // -----------------------------------------------------------------------
 public static partial class NativeMethods
 {
-    public const uint ApiVersion = 1;
+    public const uint ApiVersion = 2;
     public const string LibraryName = "foundry_local";
 
     // The first P/Invoke through this class can come from any of several entry
@@ -88,6 +88,12 @@ public enum FlDeviceType
     CPU = 1,
     GPU = 2,
     NPU = 3,
+}
+
+public enum FlCatalogType
+{
+    Public = 0,
+    Local = 1,
 }
 
 public enum FlTensorDataType
@@ -499,6 +505,10 @@ public delegate IntPtr FlApi_ManagerShutdownDelegate(IntPtr manager);
 [return: MarshalAs(UnmanagedType.U1)]
 public delegate bool FlApi_ManagerIsShutdownRequestedDelegate(IntPtr manager);
 
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlApi_ManagerGetCatalogByTypeDelegate(
+    IntPtr manager, FlCatalogType catalogType, out IntPtr outCatalog);
+
 // --- Item API (flItemApi) delegates ---
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -728,6 +738,17 @@ public delegate IntPtr FlCatalog_GetModelVersionsDelegate(IntPtr catalog, IntPtr
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlCatalog_GetNameDelegate(IntPtr catalog, out IntPtr outName);
 
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlCatalog_RegisterModelDelegate(IntPtr catalog,
+    [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string modelPath,
+    [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string modelId,
+    IntPtr metadata,
+    out IntPtr outModel);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlCatalog_UnregisterModelDelegate(IntPtr catalog,
+    [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string aliasOrModelId);
+
 // --- Model API (flModelApi) delegates ---
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -785,6 +806,21 @@ public delegate IntPtr FlModel_InfoGetStringPropertyDelegate(IntPtr info,
 public delegate long FlModel_InfoGetIntPropertyDelegate(IntPtr info,
     [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string key, long defaultValue);
 
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlModel_CreateModelInfoDelegate(out IntPtr outInfo);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate void FlModel_ReleaseModelInfoDelegate(IntPtr info);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlModel_InfoSetStringPropertyDelegate(IntPtr info,
+    [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string key,
+    [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string value);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlModel_InfoSetIntPropertyDelegate(IntPtr info,
+    [MarshalAs((UnmanagedType)48 /* LPUTF8Str */)] string key, long value);
+
 // -----------------------------------------------------------------------
 // Vtable structs — marshalled from the native function pointer tables.
 // Field order MUST match the C header exactly.
@@ -836,6 +872,9 @@ public struct FlApi
     // Manager shutdown
     public FlApi_ManagerShutdownDelegate ManagerShutdown;
     public FlApi_ManagerIsShutdownRequestedDelegate ManagerIsShutdownRequested;
+
+    // V2
+    public FlApi_ManagerGetCatalogByTypeDelegate ManagerGetCatalogByType;
 }
 
 /// <summary>Item API table — field order MUST match flItemApi in foundry_local_c.h.</summary>
@@ -952,6 +991,10 @@ public struct FlCatalogApi
     public FlCatalog_GetCachedModelsDelegate GetCachedModels;
     public FlCatalog_GetLoadedModelsDelegate GetLoadedModels;
     public FlCatalog_GetModelVersionsDelegate GetModelVersions;
+
+    // V2
+    public FlCatalog_RegisterModelDelegate RegisterModel;
+    public FlCatalog_UnregisterModelDelegate UnregisterModel;
 }
 
 /// <summary>Model API table — model operations and ModelInfo accessors.</summary>
@@ -988,6 +1031,12 @@ public struct FlModelApi
     public FlModel_InfoGetKvpDelegate InfoGetModelSettings;
     public FlModel_InfoGetStringPropertyDelegate InfoGetStringProperty;
     public FlModel_InfoGetIntPropertyDelegate InfoGetIntProperty;
+
+    // V2
+    public FlModel_CreateModelInfoDelegate CreateModelInfo;
+    public FlModel_ReleaseModelInfoDelegate ReleaseModelInfo;
+    public FlModel_InfoSetStringPropertyDelegate InfoSetStringProperty;
+    public FlModel_InfoSetIntPropertyDelegate InfoSetIntProperty;
 }
 
 // -----------------------------------------------------------------------
@@ -1010,6 +1059,15 @@ public static class ModelProperties
     public const string ToolCallEnd = "tool_call_end";
     public const string ReasoningStart = "reasoning_start";
     public const string ReasoningEnd = "reasoning_end";
+    public const string DeviceType = "device_type";
+    public const string ExecutionProvider = "execution_provider";
+    public const string EntityType = "entity_type";
+    public const string Author = "author";
+    public const string Quantization = "quantization";
+    public const string CreationTime = "creation_time";
+    public const string InputModalities = "input_modalities";
+    public const string OutputModalities = "output_modalities";
+    public const string Capabilities = "capabilities";
 
     // Int properties
     public const string SupportsToolCalling = "supports_tool_calling";
@@ -1018,6 +1076,8 @@ public static class ModelProperties
     public const string MaxOutputTokens = "max_output_tokens";
     public const string CreatedAtUnix = "created_at_unix";
     public const string IsTestModel = "is_test_model";
+    public const string ContextLength = "context_length";
+    public const string SupportsHybridReasoning = "supports_hybrid_reasoning";
 }
 
 public static class Parameters

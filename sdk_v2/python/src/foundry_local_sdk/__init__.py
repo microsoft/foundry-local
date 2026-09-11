@@ -10,11 +10,12 @@ from foundry_local_sdk.version import __version__
 from foundry_local_sdk.logging_helper import LogLevel
 from foundry_local_sdk.configuration import Configuration
 from foundry_local_sdk.foundry_local_manager import FoundryLocalManager
-from foundry_local_sdk.catalog import Catalog
+from foundry_local_sdk.catalog import Catalog, CatalogType
 from foundry_local_sdk.imodel import IModel
 from foundry_local_sdk.ep_types import EpInfo, EpDownloadResult
 from foundry_local_sdk.model_info import (
     ModelInfo,
+    ModelInfoBuilder,
     PromptTemplate,
     Runtime,
     Parameter,
@@ -73,9 +74,11 @@ __all__ = [
     "Configuration",
     "FoundryLocalManager",
     "Catalog",
+    "CatalogType",
     "IModel",
     "Model",
     "ModelInfo",
+    "ModelInfoBuilder",
     "PromptTemplate",
     "Runtime",
     "Parameter",

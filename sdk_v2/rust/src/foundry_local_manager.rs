@@ -15,7 +15,7 @@ use crate::detail::api::Api;
 use crate::detail::manager::{EpProgressCallback, NativeManager};
 use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
-use crate::types::{EpDownloadResult, EpInfo};
+use crate::types::{CatalogType, EpDownloadResult, EpInfo};
 
 /// Process-wide bookkeeping for the manager singleton.
 ///
@@ -185,7 +185,12 @@ impl FoundryLocalManager {
         )?);
 
         let catalog_ptr = native.catalog_ptr()?;
-        let catalog = Catalog::new(Arc::clone(&api), catalog_ptr, Arc::clone(&native))?;
+        let catalog = Catalog::new(
+            Arc::clone(&api),
+            catalog_ptr,
+            Arc::clone(&native),
+            CatalogType::Public,
+        )?;
 
         Ok(Arc::new(FoundryLocalManager {
             native,
@@ -208,7 +213,12 @@ impl FoundryLocalManager {
     ) -> Result<Arc<Self>> {
         let logger = config.take_logger();
         let catalog_ptr = native.catalog_ptr()?;
-        let catalog = Catalog::new(native.api(), catalog_ptr, Arc::clone(&native))?;
+        let catalog = Catalog::new(
+            native.api(),
+            catalog_ptr,
+            Arc::clone(&native),
+            CatalogType::Public,
+        )?;
 
         // The live native manager may already be running a web service (a prior
         // outer wrapper started it, then was dropped while a derived handle kept
@@ -229,6 +239,22 @@ impl FoundryLocalManager {
     /// Access the model catalog.
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    /// Get a catalog by source type. [`CatalogType::Public`] is equivalent to [`Self::catalog`].
+    pub fn get_catalog(&self, catalog_type: CatalogType) -> Result<Catalog> {
+        let ptr = self.native.catalog_ptr_by_type(catalog_type.as_native())?;
+        Catalog::new(
+            self.native.api(),
+            ptr,
+            Arc::clone(&self.native),
+            catalog_type,
+        )
+    }
+
+    /// Get the mutable catalog used for local model registration.
+    pub fn local_catalog(&self) -> Result<Catalog> {
+        self.get_catalog(CatalogType::Local)
     }
 
     /// Begin a graceful shutdown of the local engine.
