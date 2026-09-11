@@ -77,6 +77,16 @@ std::string GetOptionOrEmpty(const KeyValuePairs& options, const char* key) {
   return it != options.end() ? it->second : std::string{};
 }
 
+/// Use a model-published boundary ID only when its published text matches the configured marker.
+std::optional<int32_t> ResolveMarkerTokenId(const std::string& marker_text,
+                                            const PublishedMarker& published) {
+  if (!UsesPublishedToken(marker_text, published) || *published.id < 0) {
+    return std::nullopt;
+  }
+
+  return published.id;
+}
+
 /// Build the assistant transcript message for a completed generation. The generation events are already in the order
 /// the model produced them, so the transcript keeps visible text, reasoning, and calls interleaved exactly as emitted.
 ///
@@ -323,6 +333,15 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
     tool_ctx.tool_call_end = tag_info.eot_str;
   }
 
+  // Resolve each boundary independently. A matching model-published ID uses llguidance's exact numeric token syntax;
+  // an override or a boundary without an authoritative ID is rendered as a quoted literal.
+  if (tool_ctx.HasToolCallTokens()) {
+    tool_ctx.tool_call_start_token_id =
+        ResolveMarkerTokenId(tool_ctx.tool_call_start, {tag_info.bot_id, tag_info.bot_str});
+    tool_ctx.tool_call_end_token_id =
+        ResolveMarkerTokenId(tool_ctx.tool_call_end, {tag_info.eot_id, tag_info.eot_str});
+  }
+
   // Check if the model supports chain-of-thought reasoning
   const auto* reasoning_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT);
   if (reasoning_val && *reasoning_val == 1) {
@@ -351,6 +370,14 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
   }
   if (tool_ctx.reasoning_end.empty()) {
     tool_ctx.reasoning_end = tag_info.eor_str;
+  }
+
+  // Resolve reasoning boundaries independently from tool-call boundaries.
+  if (tool_ctx.HasReasoningTokens()) {
+    tool_ctx.reasoning_start_token_id =
+        ResolveMarkerTokenId(tool_ctx.reasoning_start, {tag_info.bor_id, tag_info.bor_str});
+    tool_ctx.reasoning_end_token_id =
+        ResolveMarkerTokenId(tool_ctx.reasoning_end, {tag_info.eor_id, tag_info.eor_str});
   }
 
   // Accumulate tool definitions from the session.
@@ -796,7 +823,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   //
   // A turn stopped at a tool call because the model kept talking afterwards is truncated mid-sequence with no turn
   // terminator, so its KV cache is no basis for the next turn either.
-  const bool grammar_was_active = ResolveTurnGuidanceOptions(cached_tool_ctx_).has_value();
+  const bool grammar_was_active =
+      ResolveTurnGuidanceOptions(cached_tool_ctx_, cached_generator_->PromptOpensReasoning()).has_value();
   const bool reasoning_was_active = cached_tool_ctx_.supports_reasoning;
   const bool discard_after_success =
       chat_session_internal::ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(

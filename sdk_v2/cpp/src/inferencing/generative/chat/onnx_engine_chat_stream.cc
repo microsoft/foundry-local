@@ -144,6 +144,7 @@ int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& n
   const std::span<const int32_t> full_prompt(data, static_cast<size_t>(count));
   const auto resident_tokens = engine_.ResidentTokens(conversation_);
   const auto suffix_start = chat_internal::FindUnmatchedPromptSuffix(resident_tokens, full_prompt);
+  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
 
   // Keep the previous decoder intact if admission fails. Once admitted, start a fresh stream so partial UTF-8/BPE
   // state from the prior turn cannot affect generated tokens; prompt tokens are never decoded.
@@ -155,12 +156,12 @@ int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& n
                "chat template produced no new tokens for a non-empty Engine continuation");
     }
 
-    engine_.BeginTurn(conversation_, suffix, options, tool_ctx);
+    engine_.BeginTurn(conversation_, suffix, options, tool_ctx, prompt_opens_reasoning);
     submitted_tokens = static_cast<int>(suffix.size());
   } else {
     auto replacement = engine_.CreateConversation(options, tool_ctx, count);
     try {
-      engine_.BeginTurn(replacement, full_prompt, options, tool_ctx);
+      engine_.BeginTurn(replacement, full_prompt, options, tool_ctx, prompt_opens_reasoning);
     } catch (...) {
       engine_.Close(replacement);
       throw;
@@ -175,7 +176,7 @@ int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& n
   // Public chat usage describes the complete logical prompt, not only the suffix admitted to a resident Engine
   // request. The suffix remains an internal KV-reuse optimization.
   prompt_token_count_ = count;
-  prompt_opens_reasoning_ = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
+  prompt_opens_reasoning_ = prompt_opens_reasoning;
   cancelled_ = false;
   return submitted_tokens;
 }
@@ -213,17 +214,18 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
   auto prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
   auto sequences = EncodePrompt(prompt, model);
   const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
+  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
   auto conversation = engine->CreateConversation(options, tool_ctx, prompt_token_count);
   try {
     const auto* data = sequences->SequenceData(0);
     engine->BeginTurn(conversation, std::span<const int32_t>(data, static_cast<size_t>(prompt_token_count)), options,
-                      tool_ctx);
+                      tool_ctx, prompt_opens_reasoning);
 
     auto result = std::unique_ptr<OnnxEngineChatStream>(
         new OnnxEngineChatStream(*engine, std::move(conversation), std::move(stream), model,
                                  prompt_token_count));
-    result->prompt_opens_reasoning_ = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
+    result->prompt_opens_reasoning_ = prompt_opens_reasoning;
     return result;
   } catch (...) {
     try {

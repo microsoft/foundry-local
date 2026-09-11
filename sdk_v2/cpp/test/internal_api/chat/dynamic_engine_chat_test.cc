@@ -335,9 +335,9 @@ TEST_F(DynamicEngineChatTest, CapacityTimeoutFailsOnlyNewestWaitingConversation)
   auto first = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
   auto second = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
   auto waiting = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
-  engine.BeginTurn(first, tokens, options, tool_context);
-  engine.BeginTurn(second, tokens, options, tool_context);
-  engine.BeginTurn(waiting, tokens, options, tool_context);
+  engine.BeginTurn(first, tokens, options, tool_context, false);
+  engine.BeginTurn(second, tokens, options, tool_context, false);
+  engine.BeginTurn(waiting, tokens, options, tool_context, false);
 
   auto wait_result = std::async(std::launch::async, [&]() {
     try {
@@ -370,7 +370,7 @@ TEST_F(DynamicEngineChatTest, EvictsOldestIdleConversation) {
   const auto prompt = EncodeUserPrompt("Populate several pages.", ModelInstance());
   auto run = [&]() {
     auto conversation = engine.CreateConversation(options, tool_context, static_cast<int>(prompt.size()));
-    engine.BeginTurn(conversation, prompt, options, tool_context);
+    engine.BeginTurn(conversation, prompt, options, tool_context, false);
     EXPECT_EQ(FinishConversation(engine, conversation), ReferenceTokens(prompt, 5));
     return conversation;
   };
@@ -378,11 +378,11 @@ TEST_F(DynamicEngineChatTest, EvictsOldestIdleConversation) {
   auto oldest = run();
   auto second = run();
   auto newest = run();
-  EXPECT_THROW(engine.BeginTurn(oldest, prompt, options, tool_context), OnnxChatEngine::ConversationEvictedError);
+  EXPECT_THROW(engine.BeginTurn(oldest, prompt, options, tool_context, false), OnnxChatEngine::ConversationEvictedError);
 
   auto retained = engine.ResidentTokens(second);
   retained.insert(retained.end(), prompt.begin(), prompt.end());
-  engine.BeginTurn(second, prompt, options, tool_context);
+  engine.BeginTurn(second, prompt, options, tool_context, false);
   EXPECT_EQ(FinishConversation(engine, second), ReferenceTokens(retained, 5));
   engine.Close(oldest);
   engine.Close(second);
@@ -421,18 +421,19 @@ TEST_F(DynamicEngineChatTest, EvictsIdleConversationWhileAnotherTurnIsGenerating
   const auto prompt = EncodeUserPrompt("Keep these pages separate.", ModelInstance());
   const auto prompt_size = static_cast<int>(prompt.size());
   auto idle = engine.CreateConversation(short_options, tool_context, prompt_size);
-  engine.BeginTurn(idle, prompt, short_options, tool_context);
+  engine.BeginTurn(idle, prompt, short_options, tool_context, false);
   EXPECT_EQ(FinishConversation(engine, idle), ReferenceTokens(prompt, 5));
 
   auto active = engine.CreateConversation(long_options, tool_context, prompt_size);
-  engine.BeginTurn(active, prompt, long_options, tool_context);
+  engine.BeginTurn(active, prompt, long_options, tool_context, false);
   ASSERT_TRUE(engine.WaitForToken(active).has_value());
   auto waiting = engine.CreateConversation(short_options, tool_context, prompt_size);
-  engine.BeginTurn(waiting, prompt, short_options, tool_context);
+  engine.BeginTurn(waiting, prompt, short_options, tool_context, false);
   EXPECT_EQ(FinishConversation(engine, waiting), ReferenceTokens(prompt, 5));
   EXPECT_LT(engine.SequenceLength(active), prompt.size() + 512)
       << "an idle slot must be reclaimed without waiting for the unrelated active turn to finish";
-  EXPECT_THROW(engine.BeginTurn(idle, prompt, short_options, tool_context), OnnxChatEngine::ConversationEvictedError);
+  EXPECT_THROW(engine.BeginTurn(idle, prompt, short_options, tool_context, false),
+               OnnxChatEngine::ConversationEvictedError);
 
   engine.Cancel(active);
   engine.Close(idle);
@@ -449,7 +450,7 @@ TEST_F(DynamicEngineChatTest, LateCancelAfterCompletedConversationRemovalIsNoOp)
   const auto tokens = EncodeUserPrompt("Reply OK.", ModelInstance());
 
   auto completed = engine.CreateConversation(options, tool_context, static_cast<int>(tokens.size()));
-  engine.BeginTurn(completed, tokens, options, tool_context);
+  engine.BeginTurn(completed, tokens, options, tool_context, false);
   while (!engine.IsTurnFinished(completed)) {
     (void)engine.WaitForToken(completed);
   }

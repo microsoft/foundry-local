@@ -5,8 +5,10 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import onnx
 from onnx import TensorProto, helper
+from onnx.reference import ReferenceEvaluator
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 
 
@@ -47,6 +49,7 @@ def create_model():
     end_max = constant("end_max", [2**63 - 1])
     flat_shape = constant("flat_shape", [-1])
     cache_shape = constant("cache_shape", [NUM_BLOCKS, BLOCK_SIZE, 1, 1])
+    zero_float = constant("zero_float", [0.0], TensorProto.FLOAT, scalar=True)
     masked_score = constant("masked_score", [-1.0e9], TensorProto.FLOAT, scalar=True)
     one_hot_values = constant("one_hot_values", [0.0, 20.0], TensorProto.FLOAT)
 
@@ -113,7 +116,9 @@ def create_model():
     causal_3d = node("Unsqueeze", [causal, axis1], "causal_3d")
     masked = node("Where", [causal_3d, scores, masked_score], "masked")
     weights = node("Softmax", [masked], "weights", axis=-1)
-    value_columns = node("Unsqueeze", [cached_values, axis2], "value_columns")
+    # Zero attention weights do not suppress NaNs in unwritten future KV slots.
+    causal_values = node("Where", [causal, cached_values, zero_float], "causal_values")
+    value_columns = node("Unsqueeze", [causal_values, axis2], "value_columns")
     attention = node("MatMul", [weights, value_columns], "attention")
     mean = node("Squeeze", [attention, axes12], "mean")
     length_float = node("Cast", [length], "length_float", to=TensorProto.FLOAT)
@@ -152,7 +157,35 @@ def create_model():
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=9)
     model.producer_name = "foundry-local-test-fixtures"
     onnx.checker.check_model(model, full_check=True)
+    check_poisoned_cache(model)
     onnx.save(model, ROOT / "decoder.onnx")
+
+
+def check_poisoned_cache(model):
+    evaluator = ReferenceEvaluator(model)
+    inputs = {
+        "input_ids": np.array([20, 30, 40, 50], dtype=np.int64),
+        "cumulative_sequence_lengths": np.array([0, 1, 4], dtype=np.int32),
+        "past_sequence_lengths": np.array([0, 0], dtype=np.int32),
+        "block_table": np.array([[7], [2]], dtype=np.int32),
+        "attention_metadata": np.zeros(3, dtype=np.int32),
+        "past_key_values.0.key": np.full((NUM_BLOCKS, BLOCK_SIZE, 1, 1), np.nan, dtype=np.float32),
+        "past_key_values.0.value": np.full((NUM_BLOCKS, BLOCK_SIZE, 1, 1), np.nan, dtype=np.float32),
+    }
+    outputs = evaluator.run(None, inputs)
+    np.testing.assert_array_equal(np.argmax(outputs[0], axis=-1), [30, 40, 87, 49])
+
+    inputs.update(
+        {
+            "input_ids": np.array([60], dtype=np.int64),
+            "cumulative_sequence_lengths": np.array([0, 1], dtype=np.int32),
+            "past_sequence_lengths": np.array([1], dtype=np.int32),
+            "block_table": np.array([[7]], dtype=np.int32),
+            "past_key_values.0.key": outputs[2],
+            "past_key_values.0.value": outputs[3],
+        }
+    )
+    np.testing.assert_array_equal(np.argmax(evaluator.run(None, inputs)[0], axis=-1), [97])
 
 
 def create_tokenizer():

@@ -57,7 +57,17 @@ void ApplyEngineTurnOptions(const EngineTurnOptionsPlan& plan, OgaTurnOptions& o
   }
 
   if (plan.guidance.has_value()) {
-    options.SetGuidance(plan.guidance->type.c_str(), plan.guidance->data.c_str());
+    try {
+      options.SetGuidance(plan.guidance->type.c_str(), plan.guidance->data.c_str());
+    } catch (const std::runtime_error& e) {
+      if (plan.guidance->user_specified) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "failed to apply requested response guidance: " + std::string(e.what()));
+      }
+
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "failed to apply required tool-call guidance: " + std::string(e.what()));
+    }
   }
 }
 
@@ -126,7 +136,8 @@ std::shared_ptr<OnnxChatEngine::Conversation> OnnxChatEngine::CreateConversation
 uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversation,
                                    std::span<const int32_t> input_ids,
                                    const SearchOptions& options,
-                                   const ToolCallContext& tool_ctx) {
+                                   const ToolCallContext& tool_ctx,
+                                   bool prompt_opens_reasoning) {
   if (input_ids.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Engine turn input must not be empty");
   }
@@ -136,7 +147,7 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
   auto ready = completion->get_future();
 
   Enqueue(
-      [this, conversation, tokens = std::move(tokens), options, tool_ctx, completion]() {
+      [this, conversation, tokens = std::move(tokens), options, tool_ctx, prompt_opens_reasoning, completion]() {
         auto& native = FindNative(conversation);
         auto turn_options = native.request->CreateTurnOptions();
         size_t existing_tokens = 0;
@@ -157,7 +168,8 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
           conversation->turn_has_progress = false;
         }
 
-        auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind());
+        auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind(),
+                                               prompt_opens_reasoning);
         if (plan.max_generated_tokens.has_value()) {
           // Validate only the limit the caller requested. When it is absent, leave the turn uncapped and let OGA
           // enforce the Request's model-context session limit.

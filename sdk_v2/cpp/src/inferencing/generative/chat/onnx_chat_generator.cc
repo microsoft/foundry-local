@@ -30,30 +30,6 @@ bool DetectPromptOpensReasoning(const std::string& prompt,
   return PromptOpensReasoning(prompt_token_ids, markers, prompt);
 }
 
-/// Token IDs `text` encodes to with the model's own tokenizer, or an empty sequence when it cannot be encoded.
-///
-/// Encoding is best-effort by design: a marker the tokenizer cannot represent leaves the splitter matching decoded
-/// text, which is what a model that publishes no marker IDs already does. Failing the turn instead would break
-/// reasoning models over a detail that has a working fallback.
-std::vector<int32_t> EncodeMarker(const std::string& text, GenAIModelInstance& model) {
-  try {
-    auto sequences = model.GetPreprocessor().Encode(text.c_str());
-    if (!sequences || sequences->Count() == 0) {
-      return {};
-    }
-
-    const auto* data = sequences->SequenceData(0);
-    const auto count = sequences->SequenceCount(0);
-    if (data == nullptr || count == 0) {
-      return {};
-    }
-
-    return {data, data + count};
-  } catch (...) {
-    return {};
-  }
-}
-
 }  // namespace
 
 ReasoningMarkers ResolveReasoningMarkers(const ToolCallContext& tool_ctx, GenAIModelInstance& model) {
@@ -66,7 +42,7 @@ ReasoningMarkers ResolveReasoningMarkers(const ToolCallContext& tool_ctx, GenAIM
   // A request may override the marker strings. The published IDs describe the model's own markers, so they are
   // reused only when they decode to exactly the marker in effect; anything else is encoded with the model's
   // tokenizer, which also covers overrides that are several tokens long.
-  auto encode = [&model](const std::string& text) { return EncodeMarker(text, model); };
+  auto encode = [&model](const std::string& text) { return model.EncodeText(text); };
   const PublishedMarker published_start{tag_info.bor_id, tag_info.bor_str};
   markers.start_token_is_published = UsesPublishedToken(markers.start, published_start);
   markers.start_token_ids = ResolveMarkerTokenIds(markers.start, published_start, encode);
@@ -439,8 +415,10 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::stri
   ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
                      use_full_context, GetDefaultMaxOutputTokens(media_branch));
 
-  // 4. Apply constrained decoding for tool-only output or an explicit response format.
-  ApplyGuidanceOptions(tool_ctx, *gen_params);
+  // 4. Build guidance from the actual rendered prompt state, then reuse that state to seed stream reasoning.
+  auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);
+  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, sequences.get(), reasoning_markers);
+  ApplyGuidanceOptions(tool_ctx, prompt_opens_reasoning, *gen_params);
 
   // 5. Create the Generator and feed it the prompt.
   //    Text path: append the encoded token sequences.
@@ -462,10 +440,6 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::stri
 
   // 6. Create tokenizer stream (single-decode path).
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
-
-  // 7. Probe the prompt for a template-opened reasoning block so the caller's splitter starts in the right state.
-  auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);
-  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, sequences.get(), reasoning_markers);
 
   // `std::make_unique` constructs inside the library helper, which does not have
   // access to this class's private constructor.

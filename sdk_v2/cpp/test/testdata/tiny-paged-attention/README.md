@@ -35,4 +35,7 @@ python generate-model.py
 ```
 
 Generation dependencies are not needed when building or running the C++ tests.
+The generator checks ragged batches and retained continuation with NaN-poisoned
+unused KV slots. Both attention scores and values must mask future positions:
+zero weights alone do not suppress uninitialized NaNs.
 The generator and its generated assets are covered by the repository's MIT license.

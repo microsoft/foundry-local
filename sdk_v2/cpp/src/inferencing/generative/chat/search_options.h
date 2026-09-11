@@ -23,6 +23,7 @@ struct ToolCallContext;
 struct TurnGuidanceOptions {
   std::string type;
   std::string data;
+  bool user_specified = false;
 };
 
 /// Caller-expressed sampling settings, normalized to a combination ORT GenAI accepts.
@@ -106,7 +107,8 @@ int ResolveMaxOutputTokens(const SearchOptions& options,
 int GetModelMaxContextLength(const GenAIConfig& config);
 
 /// Resolve the guidance configuration that should apply to a single tool-only turn.
-std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx);
+std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
+                                                              bool prompt_opens_reasoning);
 
 /// Normalize caller-expressed sampling settings for one turn. See SamplingPlan.
 /// Throws fl::Exception when a value is outside the range ORT GenAI accepts for any turn.
@@ -122,7 +124,8 @@ bool SupportsPerTurnSeed(ChatBackendKind backend_kind);
 /// Throws fl::Exception when the request asks for something this backend cannot honor per turn.
 EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
                                                  const ToolCallContext& tool_ctx,
-                                                 ChatBackendKind backend_kind);
+                                                 ChatBackendKind backend_kind,
+                                                 bool prompt_opens_reasoning);
 
 /// Apply search options to OgaGeneratorParams.
 /// Validates token budget (input + output vs model max_length from config).
@@ -151,6 +154,8 @@ int ApplySearchOptions(const SearchOptions& options,
                        int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
 
 /// Applies request-level grammar guidance to generator parameters when the tool context requires tool-only output.
-void ApplyGuidanceOptions(const ToolCallContext& tool_ctx, OgaGeneratorParams& gen_params);
+void ApplyGuidanceOptions(const ToolCallContext& tool_ctx,
+                          bool prompt_opens_reasoning,
+                          OgaGeneratorParams& gen_params);
 
 }  // namespace fl
