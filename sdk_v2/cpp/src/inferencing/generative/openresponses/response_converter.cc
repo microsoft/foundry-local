@@ -149,7 +149,8 @@ std::string StoredItemText(const nlohmann::json& item) {
 /// validated strictly at the time. Preserve the original bytes until ingestion resolves the call against its
 /// immutable tool-kind snapshot: a custom payload may be arbitrary text, while a malformed function call degrades
 /// to an empty object as it did when first generated.
-std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
+std::unique_ptr<ToolCallItem> MakeReplayedToolCall(
+    const nlohmann::json& item, std::optional<ToolKind> stored_kind = std::nullopt) {
   std::string arguments;
   if (auto it = item.find("arguments"); it != item.end() && !it->is_null()) {
     arguments = it->is_string() ? it->get<std::string>() : it->dump();
@@ -158,8 +159,9 @@ std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
   auto replayed = std::make_unique<ToolCallItem>(
       item.value("call_id", ""), item.value("name", ""),
       ParseToolCallArguments(arguments).has_value() ? arguments : std::string{},
-      /*replayed_from_store=*/true);
+      /*replayed_from_store=*/true, stored_kind.value_or(ToolKind::kFunction));
   replayed->replayed_arguments = std::move(arguments);
+  replayed->replayed_kind = stored_kind;
   return replayed;
 }
 
@@ -260,7 +262,8 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
 /// text after one — and a hop that somehow did is rejected by ValidateRenderableTurn rather than replayed with its
 /// text moved in front of the call. A hop that produced nothing replayable still emits the assistant boundary it
 /// committed live.
-static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items) {
+static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items,
+                                  const StoredToolKinds& stored_tool_kinds) {
   bool emitted = false;
 
   if (output_items.is_array()) {
@@ -272,7 +275,11 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
       const std::string type = entry.value("type", "");
 
       if (type == "function_call") {
-        request.AddOwnedItem(MakeReplayedToolCall(entry));
+        const auto name = entry.value("name", "");
+        const auto kind = stored_tool_kinds.find(name);
+        request.AddOwnedItem(MakeReplayedToolCall(
+            entry, kind == stored_tool_kinds.end() ? std::nullopt
+                                                   : std::optional<ToolKind>{kind->second}));
         emitted = true;
         continue;
       }
@@ -307,7 +314,7 @@ static void AddChainContextToRequest(Request& request, const ResponseChainContex
   for (const auto& hop : context) {
     request.BeginItemSegment();
     AddJsonItemsToRequest(request, hop.input_items);
-    AddHopOutputToRequest(request, hop.output_items);
+    AddHopOutputToRequest(request, hop.output_items, hop.output_tool_kinds);
   }
 }
 
@@ -801,6 +808,21 @@ std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(cons
   }
 
   return {std::move(output), output_text};
+}
+
+StoredToolKinds CollectToolCallKinds(const fl::Response& session_response) {
+  StoredToolKinds kinds;
+
+  for (const auto& item : session_response.items) {
+    if (item->type != FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      continue;
+    }
+
+    const auto& call = static_cast<const ToolCallItem&>(*item);
+    kinds.insert_or_assign(call.name, call.kind);
+  }
+
+  return kinds;
 }
 
 // ---------------------------------------------------------------------------

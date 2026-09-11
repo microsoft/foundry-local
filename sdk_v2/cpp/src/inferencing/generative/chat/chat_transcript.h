@@ -192,10 +192,9 @@ struct TranscriptIngest {
 /// assistant-turn boundary of a turn that produced nothing replayable, and dropping it would leave two user turns
 /// adjacent in the rebuilt conversation.
 ///
-/// @param tool_kinds Kind of each named tool for this request, snapshotted from the session's registry. A replayed
-///        call is normalized the same way the generated one was, so a custom tool's text payload round-trips
-///        instead of being rejected as malformed JSON. Names absent from the map are treated as kFunction, which is
-///        the behavior for sessions that register no custom tools.
+/// @param tool_kinds Kind of each named tool for this request, snapshotted from the session's registry. A stored
+///        call carrying its historical kind uses that value; older stored calls and caller-supplied calls resolve
+///        through this map. Names absent from both sources are treated as kFunction.
 TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::vector<size_t>& segment_starts,
                                     const std::unordered_map<std::string, ToolKind>& tool_kinds = {});
 

@@ -15,6 +15,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace fl {
@@ -118,6 +119,15 @@ class ResponseStore {
 
   /// Everything a completed response contributes to the store.
   struct StoredResponse {
+    StoredResponse(std::string response_id, std::string resolved_model_id,
+                   nlohmann::json response_json, nlohmann::json request_items,
+                   StoredToolKinds tool_kinds = {})
+        : id(std::move(response_id)),
+          model_id(std::move(resolved_model_id)),
+          response(std::move(response_json)),
+          input_items(std::move(request_items)),
+          output_tool_kinds(std::move(tool_kinds)) {}
+
     std::string id;
     /// Resolved model that produced it. A continuation must resolve to the same model; empty means unbound, which
     /// constrains nothing (only callers that do not participate in model routing store unbound responses).
@@ -126,6 +136,8 @@ class ResponseStore {
     nlohmann::json response;
     /// This hop's own request items — exactly what the /input_items endpoint returns.
     nlohmann::json input_items;
+    /// Original kinds of generated calls, retained outside the public response JSON for cold replay.
+    StoredToolKinds output_tool_kinds;
   };
 
   /// Outcome of ResponseStore::BeginResponse.
@@ -180,7 +192,8 @@ class ResponseStore {
   void Store(const std::string& response_id,
              nlohmann::json response,
              nlohmann::json input_items,
-             std::string model_id = {});
+             std::string model_id = {},
+             StoredToolKinds output_tool_kinds = {});
 
   /// Retrieve a stored response by ID. Returns nullopt if not found.
   std::optional<nlohmann::json> Get(const std::string& response_id);
@@ -257,6 +270,7 @@ class ResponseStore {
     std::string model_id;
     nlohmann::json response;
     nlohmann::json input_items;
+    StoredToolKinds output_tool_kinds;
     std::shared_ptr<const ReplayPrefix> replay_prefix;
     uint64_t insertion_sequence = 0;
   };

@@ -1241,6 +1241,24 @@ TEST(CApiTest, ItemSetToolCallRejectsInvalidUtf8Arguments) {
   item_api->Item_Release(item);
 }
 
+TEST(CApiTest, ItemSetToolCallObservesOnlyTheNulTerminatedPrefix) {
+  const flApi* api = GetApi();
+  const flItemApi* item_api = api->GetItemApi();
+  flItem* item = nullptr;
+  ASSERT_TRUE(IsOk(item_api->Create(FOUNDRY_LOCAL_ITEM_TOOL_CALL, &item)));
+
+  const char arguments[] = {'o', 'k', '\0', '\xC3', '\x28', '\0'};
+  flToolCallData data{FOUNDRY_LOCAL_API_VERSION, "call_1", "custom", arguments};
+  EXPECT_TRUE(IsOk(item_api->SetToolCall(item, &data)));
+
+  flToolCallData output{};
+  output.version = FOUNDRY_LOCAL_API_VERSION;
+  ASSERT_TRUE(IsOk(item_api->GetToolCall(item, &output)));
+  EXPECT_STREQ(output.arguments, "ok");
+
+  item_api->Item_Release(item);
+}
+
 TEST(CApiTest, ItemGetToolCallRejectsInternalEmbeddedNulWithoutTruncating) {
   const flApi* api = GetApi();
   const flItemApi* item_api = api->GetItemApi();

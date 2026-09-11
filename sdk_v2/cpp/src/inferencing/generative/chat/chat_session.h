@@ -7,6 +7,7 @@
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/session.h"
 #include "items/message_item.h"
@@ -105,6 +106,8 @@ bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind 
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
 std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
     std::string tools_json, const std::vector<ToolDefinition>& session_snapshot);
+void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
+                              const ToolCallContext& tool_ctx);
 
 }  // namespace chat_session_internal
 
@@ -170,6 +173,7 @@ class ChatSession : public Session {
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
+                              const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
                               bool canceled,
                               bool stop_sequence_matched,

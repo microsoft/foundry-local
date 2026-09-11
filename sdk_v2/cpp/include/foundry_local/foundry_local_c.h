@@ -503,8 +503,9 @@ typedef struct flToolCallData {
   const char* name;     ///< Tool name.
   /// Arguments for the call, shaped by the registered flToolDefinition with the same `name`:
   /// JSON for FOUNDRY_LOCAL_TOOL_KIND_FUNCTION, raw text for FOUNDRY_LOCAL_TOOL_KIND_CUSTOM.
-  /// A custom payload is NUL-free UTF-8 text. Supplied or generated custom payloads containing an
-  /// embedded NUL are invalid and are rejected rather than truncated.
+  /// This C field is a NUL-terminated UTF-8 string and therefore cannot represent embedded NUL
+  /// bytes. SetToolCall validates the observable prefix through the first NUL; bytes after that
+  /// terminator are outside the value supplied to the API.
   const char* arguments;
   /* V3 fields go here. Read only when version >= 3. */
 } flToolCallData;
@@ -797,7 +798,8 @@ struct flItemApi {
   /// Set AUDIO data from a versioned struct. Set data+data_size for bytes, or uri for URI-based.
   FL_API_STATUS(SetAudio, _In_ flItem* item, _In_ const flAudioData* audio);
 
-  /// Set content for a TOOL_CALL item from a versioned struct.
+  /// Set content for a TOOL_CALL item from a versioned struct. String fields are NUL-terminated;
+  /// `arguments` must contain valid UTF-8 through its first NUL.
   FL_API_STATUS(SetToolCall, _In_ flItem* item, _In_ const flToolCallData* tool_call);
   /// Set content for a TOOL_RESULT item from a versioned struct.
   FL_API_STATUS(SetToolResult, _In_ flItem* item, _In_ const flToolResultData* tool_result);

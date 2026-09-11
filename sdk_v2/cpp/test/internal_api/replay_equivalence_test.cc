@@ -19,6 +19,7 @@
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "inferencing/generative/openresponses/response_store.h"
 #include "inferencing/session/request.h"
+#include "items/tool_call_item.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -40,6 +41,7 @@ namespace {
 struct ReplayTurn {
   json input_items;                            // what the hop's request stored
   json output_items;                           // what the hop's response stored
+  StoredToolKinds output_tool_kinds;            // private metadata stored beside the wire response
   std::vector<TranscriptMessage> live_inputs;  // what a live session ingested for that turn
   TranscriptMessage live_output;               // the assistant message the live session committed
 };
@@ -103,7 +105,7 @@ ResponseChainContext StoredChainContext(const std::vector<ReplayTurn>& turns) {
     // Instructions are request-scoped; a stored hop never carries them into replay.
     response["instructions"] = "ignored — never replayed";
 
-    store.Store(id, std::move(response), turns[i].input_items);
+    store.Store(id, std::move(response), turns[i].input_items, {}, turns[i].output_tool_kinds);
     previous_id = id;
   }
 
@@ -414,6 +416,10 @@ TEST(ReplayEquivalenceTest, CustomTextAndJsonLookingPayloadsRemainWarmColdEquiva
     first.live_output.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
     first.live_output.AppendToolCall(
         MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom));
+    Response generated_response;
+    generated_response.items.push_back(std::make_unique<ToolCallItem>(
+        "call_1", "run_python", payload, /*replayed_from_store=*/false, ToolKind::kCustom));
+    first.output_tool_kinds = ResponseConverter::CollectToolCallKinds(generated_response);
 
     ReplayTurn second;
     second.input_items =
@@ -426,12 +432,12 @@ TEST(ReplayEquivalenceTest, CustomTextAndJsonLookingPayloadsRemainWarmColdEquiva
     ResponseCreateParams params;
     params.model = "test-model";
     params.input = "Continue.";
-    const std::unordered_map<std::string, ToolKind> kinds = {
-        {"run_python", ToolKind::kCustom}};
-
     const auto warm = BuildChatMessagesJson(WarmMessages({first, second}, {UserMessage("Continue.")}));
-    const auto cold = BuildChatMessagesJson(ColdMessages({first, second}, params, kinds));
-    EXPECT_EQ(cold, warm) << payload;
+    const auto absent_definition = BuildChatMessagesJson(ColdMessages({first, second}, params));
+    const auto changed_definition = BuildChatMessagesJson(
+        ColdMessages({first, second}, params, {{"run_python", ToolKind::kFunction}}));
+    EXPECT_EQ(absent_definition, warm) << payload;
+    EXPECT_EQ(changed_definition, warm) << payload;
   }
 }
 

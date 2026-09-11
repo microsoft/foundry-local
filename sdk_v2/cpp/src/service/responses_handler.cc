@@ -59,6 +59,7 @@ struct PublishRequest {
   std::string model_id;
   nlohmann::json response;
   nlohmann::json input_items;
+  StoredToolKinds output_tool_kinds;
 };
 
 /// Publish a completed response: store its metadata and cache its session as one indivisible step.
@@ -76,7 +77,7 @@ void PublishResponse(PublishRequest request) {
   const bool published = request.store.Commit(
       request.lease,
       ResponseStore::StoredResponse{request.response_id, request.model_id, std::move(request.response),
-                                    std::move(request.input_items)},
+                                    std::move(request.input_items), std::move(request.output_tool_kinds)},
       &admission);
 
   if (!published) {
@@ -404,6 +405,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
                                                          std::move(output), output_text, session_response.usage);
 
   nlohmann::json response_json = response;
+  auto output_tool_kinds = ResponseConverter::CollectToolCallKinds(session_response);
 
   if (params.store) {
     PublishResponse(PublishRequest{.store = ctx_.response_store,
@@ -415,7 +417,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
                                    .response_id = turn.response_id,
                                    .model_id = turn.model_id,
                                    .response = response_json,
-                                   .input_items = ResponseConverter::ToInputItems(req_json)});
+                                   .input_items = ResponseConverter::ToInputItems(req_json),
+                                   .output_tool_kinds = std::move(output_tool_kinds)});
   }
 
   return JsonResponse(Status::CODE_200, response_json);
@@ -710,6 +713,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       auto completed_response = ResponseConverter::BuildResponseObject(
           turn.response_id, turn.created_at, turn.model_name, params_copy, std::move(closed_items), full_text,
           bg_response.usage);
+      auto output_tool_kinds = ResponseConverter::CollectToolCallKinds(bg_response);
 
       // Publish first when storage was requested. If deletion invalidated the lease, PublishResponse throws and the
       // stream ends with response.failed rather than claiming an unstored descendant completed successfully.
@@ -724,7 +728,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
                                        .response_id = turn.response_id,
                                        .model_id = turn.model_id,
                                        .response = std::move(response_json),
-                                       .input_items = ResponseConverter::ToInputItems(req_copy)});
+                                       .input_items = ResponseConverter::ToInputItems(req_copy),
+                                       .output_tool_kinds = std::move(output_tool_kinds)});
       }
 
       StreamEvent completed;

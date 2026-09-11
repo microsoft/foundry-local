@@ -306,12 +306,13 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
 
       TranscriptMessage message;
       message.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-      const auto kind = kind_of(call_item.name);
       if (call_item.replayed_from_store) {
+        const auto kind = call_item.replayed_kind.value_or(kind_of(call_item.name));
         message.AppendToolCall(MakeGeneratedToolCall(call_item.call_id, call_item.name,
                                                      call_item.replayed_arguments, kind)
                                    .call);
       } else {
+        const auto kind = kind_of(call_item.name);
         message.AppendToolCall(
             MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind));
       }

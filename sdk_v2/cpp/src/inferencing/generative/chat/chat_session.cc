@@ -231,6 +231,20 @@ std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
   return {{{}, {}, std::move(tools_json), ToolKind::kFunction}};
 }
 
+void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
+                              const ToolCallContext& tool_ctx) {
+  for (auto& event : output.events) {
+    auto* call = std::get_if<ParsedToolCall>(&event);
+    if (call == nullptr || !tool_ctx.IsCustomTool(call->name)) {
+      continue;
+    }
+
+    auto arguments = ExtractCustomToolInput(call->argument_source);
+    ValidateCustomToolPayload(arguments);
+    call->arguments = std::move(arguments);
+  }
+}
+
 flFinishReason ResolveGeneratedFinishReason(bool canceled,
                                             bool has_tool_calls,
                                             bool stop_sequence_matched,
@@ -485,6 +499,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
 }
 
 void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
+                                         const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options,
                                          bool canceled,
                                          bool stop_sequence_matched,
@@ -530,8 +545,10 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
 
     flush_segments();
     auto& call = std::get<ParsedToolCall>(event);
+    const auto kind = tool_ctx.KindOf(call.name);
     response.items.push_back(std::make_unique<ToolCallItem>(std::move(call.id), std::move(call.name),
-                                                            std::move(call.arguments)));
+                                                            std::move(call.arguments),
+                                                            /*replayed_from_store=*/false, kind));
     has_tool_calls = true;
   }
   flush_segments();
@@ -764,6 +781,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.reasoning_end);
 
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
+    // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
+    // no caller-visible item or durable turn state may contain only its valid prefix.
+    chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
+
     for (auto& event : out.events) {
       if (auto* text = std::get_if<std::string>(&event)) {
         // A structured tool call is the end of the turn's visible text: a chat template renders an assistant turn as
@@ -784,16 +805,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       auto call = std::move(std::get<ParsedToolCall>(event));
       turn_guard.RecordToolCall();
 
-      // A custom tool's payload crosses the API boundary as raw text, not as the synthesized
-      // `{"input": ...}` wrapper the model was prompted with. Unwrap once, here, so the stream, the
-      // final response, and the transcript that later turns rebuild from all carry the same bytes.
-      if (cached_tool_ctx_.IsCustomTool(call.name)) {
-        call.arguments = ExtractCustomToolInput(call.argument_source);
-        ValidateCustomToolPayload(call.arguments);
-      }
-
       if (streaming_callback) {
-        streaming_callback->PushItem(std::make_unique<ToolCallItem>(call.id, call.name, call.arguments));
+        streaming_callback->PushItem(std::make_unique<ToolCallItem>(
+            call.id, call.name, call.arguments, /*replayed_from_store=*/false,
+            cached_tool_ctx_.KindOf(call.name)));
       }
       generated_events.push_back(std::move(call));
     }
@@ -874,7 +889,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     transcript_.ValidateGeneratedOutput(assistant_message);
   }
 
-  ProcessGeneratedOutput(std::move(generated_events), effective_options, request.canceled,
+  ProcessGeneratedOutput(std::move(generated_events), cached_tool_ctx_, effective_options, request.canceled,
                          stop_sequence_matched, host_output_limit_reached, response, prompt_tokens, total_tokens,
                          splitter.ReasoningTokenCount(), backend_finish_reason);
 
@@ -1125,7 +1140,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     backend_finish_reason = turn_usage->finish_reason;
   }
 
-  ProcessGeneratedOutput(std::move(generated_events), options, original_request.canceled,
+  ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options, original_request.canceled,
                          stop_sequence_matched, /*host_output_limit_reached=*/false, response, prompt_tokens,
                          total_tokens, splitter.ReasoningTokenCount(), backend_finish_reason);
 

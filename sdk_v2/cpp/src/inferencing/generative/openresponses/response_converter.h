@@ -62,6 +62,9 @@ std::string ExtractResponsesToolDefinitions(const ResponseCreateParams& params, 
 std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(const fl::Response& session_response,
                                                                             const std::string& msg_id_prefix = "msg");
 
+/// Capture generated tool kinds for the response store's private cold-replay sidecar.
+StoredToolKinds CollectToolCallKinds(const fl::Response& session_response);
+
 /// Build the complete typed Responses API response object.
 ///
 /// @param response_id    The response ID.
