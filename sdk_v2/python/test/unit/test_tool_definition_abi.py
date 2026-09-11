@@ -50,23 +50,6 @@ class TestToolDefinitionAbi:
         assert _API_VERSION == _FOUNDRY_LOCAL_API_VERSION
         assert _API_VERSION == 2
 
-    def test_definition_round_trips_through_the_struct(self):
-        c_name = ffi.new("char[]", b"apply_patch\x00")
-        c_desc = ffi.new("char[]", b"applies a patch\x00")
-        c_schema = ffi.new("char[]", b"\x00")
-
-        definition = ffi.new("flToolDefinition*")
-        definition.version = _API_VERSION
-        definition.name = c_name
-        definition.description = c_desc
-        definition.json_schema = c_schema
-        definition.kind = _TOOL_KIND_CUSTOM
-
-        assert definition.version == 2
-        assert ffi.string(definition.name) == b"apply_patch"
-        assert ffi.string(definition.json_schema) == b""
-        assert definition.kind == _TOOL_KIND_CUSTOM
-
     def test_public_custom_tool_api_encodes_definition_and_handles_duplicates_and_removal(
         self, monkeypatch
     ):

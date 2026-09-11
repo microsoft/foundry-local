@@ -49,11 +49,10 @@ ResponseStore::ResponseStore(int capacity, IResponseCacheCoordinator* cache, Sto
 void ResponseStore::Store(const std::string& response_id,
                           nlohmann::json response,
                           nlohmann::json input_items,
-                          std::string model_id,
-                          StoredToolKinds output_tool_kinds) {
+                          std::string model_id) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto state = PrepareStoreLocked({response_id, std::move(model_id), std::move(response),
-                                   std::move(input_items), std::move(output_tool_kinds)});
+  auto state =
+      PrepareStoreLocked({response_id, std::move(model_id), std::move(response), std::move(input_items)});
   DropEvictedArtifactsLocked(state);
   CommitStoreLocked(std::move(state));
 }
@@ -115,7 +114,6 @@ void ResponseStore::StoreLocked(StoredResponse response, MetadataState& state) {
                                  .model_id = std::move(response.model_id),
                                  .response = std::move(response.response),
                                  .input_items = std::move(response.input_items),
-                                 .output_tool_kinds = std::move(response.output_tool_kinds),
                                  .replay_prefix = std::move(replay_prefix),
                                  .insertion_sequence = state.next_insertion_sequence++});
   state.index[response.id] = state.entries.begin();
@@ -596,8 +594,6 @@ ResponseChainHop ResponseStore::ToReplayHop(const Entry& entry) {
   if (output != entry.response.end() && output->is_array()) {
     replay.output_items = *output;
   }
-  replay.output_tool_kinds = entry.output_tool_kinds;
-
   return replay;
 }
 

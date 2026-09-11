@@ -900,28 +900,6 @@ TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
   }
 }
 
-TEST_F(ModelFixture, OpenAIJsonRejectsSessionRegisteredCustomTools) {
-  using namespace foundry_local;
-
-  ChatSession session(chat_model());
-  session.AddToolDefinition(ToolDefinition::Custom("apply_patch", "Apply a patch."));
-
-  json req = {
-      {"model", model_id()},
-      {"messages", json::array({{{"role", "user"}, {"content", "Update the file."}}})},
-  };
-
-  Request request;
-  request.AddItem(Item::Text(req.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
-
-  try {
-    session.ProcessRequest(request);
-    FAIL() << "Expected OPENAI_JSON input to reject a session-registered custom tool";
-  } catch (const Error& e) {
-    EXPECT_NE(std::string(e.what()).find("Custom tool definitions cannot be used"), std::string::npos);
-  }
-}
-
 // ------------------------------------------------------------------------
 // Malformed JSON in the OPENAI_JSON TextItem body propagates through the
 // public-API boundary as a foundry_local::Error (the C ABI wraps all

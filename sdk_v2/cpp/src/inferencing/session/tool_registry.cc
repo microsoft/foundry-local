@@ -28,7 +28,7 @@ static_assert(sizeof(flToolKind) == sizeof(uint32_t), "flToolKind must be a fixe
 }  // namespace
 
 ToolRegistry::ToolRegistry(ToolRegistry&& other) {
-  std::lock_guard<std::mutex> lock(*other.mutex_);
+  std::lock_guard<std::mutex> lock(other.mutex_);
   definitions_ = std::move(other.definitions_);
 }
 
@@ -91,7 +91,7 @@ void ToolRegistry::Add(ToolDefinition tool_def) {
              "ToolDefinition.json_schema is not valid JSON for tool: " + tool_def.name);
   }
 
-  std::lock_guard<std::mutex> lock(*mutex_);
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // Unnamed entries are pre-serialized tools payloads rather than registrable tools, so uniqueness
   // does not apply to them. A session holds a handful of tools, so a scan beats a second index.
@@ -114,7 +114,7 @@ bool ToolRegistry::Remove(const std::string& name) {
     return false;
   }
 
-  std::lock_guard<std::mutex> lock(*mutex_);
+  std::lock_guard<std::mutex> lock(mutex_);
 
   const auto it = std::find_if(definitions_.begin(), definitions_.end(),
                                [&](const ToolDefinition& td) { return td.name == name; });
@@ -127,12 +127,12 @@ bool ToolRegistry::Remove(const std::string& name) {
 }
 
 void ToolRegistry::Clear() {
-  std::lock_guard<std::mutex> lock(*mutex_);
+  std::lock_guard<std::mutex> lock(mutex_);
   definitions_.clear();
 }
 
 std::vector<ToolDefinition> ToolRegistry::Definitions() const {
-  std::lock_guard<std::mutex> lock(*mutex_);
+  std::lock_guard<std::mutex> lock(mutex_);
   return definitions_;
 }
 

@@ -90,6 +90,18 @@ TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot)
                fl::Exception);
 }
 
+TEST(ChatSessionDecisionTest, EmptyJsonToolsIgnoreSessionFunctionAndCustomDefinitions) {
+  const std::vector<ToolDefinition> function_definitions{
+      {"lookup", "Look up a value.", R"({"type":"object"})", ToolKind::kFunction}};
+  const std::vector<ToolDefinition> custom_definitions{
+      {"apply_patch", "Apply a patch.", "", ToolKind::kCustom}};
+
+  EXPECT_TRUE(
+      chat_session_internal::BuildJsonRequestToolDefinitions({}, function_definitions).empty());
+  EXPECT_TRUE(
+      chat_session_internal::BuildJsonRequestToolDefinitions({}, custom_definitions).empty());
+}
+
 TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStreaming) {
   ToolCallContext context;
   context.tool_kinds = {{"custom", ToolKind::kCustom}};

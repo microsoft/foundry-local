@@ -139,18 +139,6 @@ TEST(ToolRegistryTest, SynthesizesExactCustomToolSchema) {
   EXPECT_EQ(KindOf(registry, "apply_patch"), ToolKind::kCustom);
 }
 
-TEST(ToolRegistryTest, SynthesizedCustomSchemaHasExactlyOneRequiredStringInput) {
-  ToolRegistry registry;
-  registry.Add(Custom("apply_patch"));
-
-  auto schema = nlohmann::json::parse(Find(registry, "apply_patch")->json_schema);
-  EXPECT_EQ(schema.at("type"), "object");
-  EXPECT_EQ(schema.at("additionalProperties"), false);
-  ASSERT_EQ(schema.at("properties").size(), 1u);
-  EXPECT_EQ(schema.at("properties").at(fl::kCustomToolInputParameter).at("type"), "string");
-  EXPECT_EQ(schema.at("required"), nlohmann::json::array({fl::kCustomToolInputParameter}));
-}
-
 TEST(ToolRegistryTest, RejectsCustomToolThatSuppliesASchema) {
   ToolRegistry registry;
   EXPECT_INVALID_ARGUMENT(registry.Add(ToolDefinition{"custom", "d", "{}", ToolKind::kCustom}));

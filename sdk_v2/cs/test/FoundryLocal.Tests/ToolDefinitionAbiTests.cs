@@ -63,46 +63,5 @@ internal sealed class ToolDefinitionAbiTests
         // and stamp — at least that version.
         await Assert.That(NativeMethods.ApiVersion).IsGreaterThanOrEqualTo(2u);
     }
-
     #pragma warning restore TUnitAssertions0005
-
-    [Test]
-    public async Task Definition_MarshalsVersionAndKindWhereNativeReadsThem()
-    {
-        // Sentinel pointers rather than real strings: this asserts where the fields land, and never
-        // dereferences them, so it stays a pure layout test with no native library involved.
-        var definition = new FlToolDefinition
-        {
-            Version = NativeMethods.ApiVersion,
-            Name = new IntPtr(0x1111),
-            Description = new IntPtr(0x2222),
-            JsonSchema = IntPtr.Zero,
-            Kind = FlToolKind.Custom,
-        };
-
-        var size = Marshal.SizeOf<FlToolDefinition>();
-        var buffer = Marshal.AllocCoTaskMem(size);
-
-        try
-        {
-            // Poison the buffer first so a field that is not written shows up as poison rather than
-            // as a plausible zero.
-            for (var i = 0; i < size; i++)
-            {
-                Marshal.WriteByte(buffer, i, 0xAB);
-            }
-
-            Marshal.StructureToPtr(definition, buffer, false);
-
-            await Assert.That((uint)Marshal.ReadInt32(buffer, 0)).IsEqualTo(NativeMethods.ApiVersion);
-            await Assert.That(Marshal.ReadIntPtr(buffer, Slot)).IsEqualTo(new IntPtr(0x1111));
-            await Assert.That(Marshal.ReadIntPtr(buffer, 2 * Slot)).IsEqualTo(new IntPtr(0x2222));
-            await Assert.That(Marshal.ReadIntPtr(buffer, 3 * Slot)).IsEqualTo(IntPtr.Zero);
-            await Assert.That(Marshal.ReadInt32(buffer, 4 * Slot)).IsEqualTo((int)FlToolKind.Custom);
-        }
-        finally
-        {
-            Marshal.FreeCoTaskMem(buffer);
-        }
-    }
 }

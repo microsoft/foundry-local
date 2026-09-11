@@ -19,7 +19,6 @@
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "inferencing/generative/openresponses/response_store.h"
 #include "inferencing/session/request.h"
-#include "items/tool_call_item.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -27,7 +26,6 @@
 #include <algorithm>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -41,7 +39,6 @@ namespace {
 struct ReplayTurn {
   json input_items;                            // what the hop's request stored
   json output_items;                           // what the hop's response stored
-  StoredToolKinds output_tool_kinds;            // private metadata stored beside the wire response
   std::vector<TranscriptMessage> live_inputs;  // what a live session ingested for that turn
   TranscriptMessage live_output;               // the assistant message the live session committed
 };
@@ -105,7 +102,7 @@ ResponseChainContext StoredChainContext(const std::vector<ReplayTurn>& turns) {
     // Instructions are request-scoped; a stored hop never carries them into replay.
     response["instructions"] = "ignored — never replayed";
 
-    store.Store(id, std::move(response), turns[i].input_items, {}, turns[i].output_tool_kinds);
+    store.Store(id, std::move(response), turns[i].input_items);
     previous_id = id;
   }
 
@@ -116,13 +113,12 @@ ResponseChainContext StoredChainContext(const std::vector<ReplayTurn>& turns) {
 
 /// The messages the cold path builds: store the chain, reconstruct it, convert it, ingest it with the replay
 /// segments the converter recorded, and apply the request's own system prefix — exactly what ChatSession does.
-std::vector<TranscriptMessage> ColdMessages(
-    const std::vector<ReplayTurn>& turns, const ResponseCreateParams& next_params,
-    const std::unordered_map<std::string, ToolKind>& tool_kinds = {}) {
+std::vector<TranscriptMessage> ColdMessages(const std::vector<ReplayTurn>& turns,
+                                            const ResponseCreateParams& next_params) {
   auto context = StoredChainContext(turns);
   auto request = ResponseConverter::ToSessionRequest(next_params, &context);
 
-  auto ingest = IngestRequestItems(request.items, request.item_segment_starts, tool_kinds);
+  auto ingest = IngestRequestItems(request.items, request.item_segment_starts);
   const char* prefix = request.options.Find(kSystemPromptOption);
   return WithSystemPrompt(prefix != nullptr ? prefix : "", std::move(ingest.messages));
 }
@@ -404,41 +400,6 @@ TEST(ReplayEquivalenceTest, ToolResultContinuation) {
   second.live_output.AppendText("It is sunny.");
 
   ExpectWarmAndColdAgree({first, second}, "And tomorrow?");
-}
-
-TEST(ReplayEquivalenceTest, CustomTextAndJsonLookingPayloadsRemainWarmColdEquivalentThroughToolResult) {
-  for (const auto& payload : {std::string("print('hi')\n"), std::string(R"({"input":"text","z":1})")}) {
-    ReplayTurn first;
-    first.input_items = UserInputItem("Run it.");
-    first.output_items =
-        json::array({OutputFunctionCall("call_1", "run_python", payload)});
-    first.live_inputs = {UserMessage("Run it.")};
-    first.live_output.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-    first.live_output.AppendToolCall(
-        MakeSuppliedToolCall("call_1", "run_python", payload, ToolKind::kCustom));
-    Response generated_response;
-    generated_response.items.push_back(std::make_unique<ToolCallItem>(
-        "call_1", "run_python", payload, /*replayed_from_store=*/false, ToolKind::kCustom));
-    first.output_tool_kinds = ResponseConverter::CollectToolCallKinds(generated_response);
-
-    ReplayTurn second;
-    second.input_items =
-        json::array({{{"type", "function_call_output"}, {"call_id", "call_1"}, {"output", "done"}}});
-    second.output_items = json::array({OutputMessage("Finished.")});
-    second.live_inputs = {TranscriptMessage::ToolResult("call_1", "done")};
-    second.live_output.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-    second.live_output.AppendText("Finished.");
-
-    ResponseCreateParams params;
-    params.model = "test-model";
-    params.input = "Continue.";
-    const auto warm = BuildChatMessagesJson(WarmMessages({first, second}, {UserMessage("Continue.")}));
-    const auto absent_definition = BuildChatMessagesJson(ColdMessages({first, second}, params));
-    const auto changed_definition = BuildChatMessagesJson(
-        ColdMessages({first, second}, params, {{"run_python", ToolKind::kFunction}}));
-    EXPECT_EQ(absent_definition, warm) << payload;
-    EXPECT_EQ(changed_definition, warm) << payload;
-  }
 }
 
 TEST(ReplayEquivalenceTest, ReasoningOnlyTurnBetweenTwoRealTurnsDoesNotCollapseTheConversation) {

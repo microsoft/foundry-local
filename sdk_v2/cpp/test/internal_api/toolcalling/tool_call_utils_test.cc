@@ -122,6 +122,13 @@ TEST(ParseToolCallsTest, ParametersKeyWorksAsAlternative) {
   EXPECT_NE(calls[0].arguments.find("b"), std::string::npos);
 }
 
+TEST(ParseToolCallsTest, ParametersKeyRequiresAdvertisedTool) {
+  const std::string text = R"(<tc>{"name":"unadvertised","parameters":{"a":"b"}}</tc>)";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("advertised"));
+
+  EXPECT_TRUE(calls.empty());
+}
+
 TEST(ParseToolCallsTest, SingleKeyToolCall) {
   std::string text =
       R"(<tc>{"exec_command":{"cmd":"grep -n test file.py"}}</tc>)";
@@ -295,6 +302,16 @@ TEST(ParseToolCallsTest, RecoversFunctionKeyAndMissingOuterBrace) {
   EXPECT_EQ(calls[0].arguments, R"({"cmd":"pwd"})");
 }
 
+TEST(ParseToolCallsTest, MissingOuterBracePreservesDuplicateCustomInputSource) {
+  const std::string arguments = R"({ "input":"first", "input":"second" })";
+  const std::string text = "<tc>{\"name\":\"run\",\"arguments\":" + arguments + "</tc>";
+  auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
+}
+
 TEST(ParseToolCallsTest, InvalidJsonReturnsEmpty) {
   std::string text = R"(<tc>not valid json</tc>)";
   auto calls = ParseToolCalls(text, "<tc>", "</tc>");
@@ -318,7 +335,8 @@ TEST(ParseToolCallsTest, StringArguments) {
   EXPECT_EQ(calls[0].name, "fn");
   // String arguments are kept as-is
   EXPECT_NE(calls[0].arguments.find("key"), std::string::npos);
-  EXPECT_EQ(calls[0].argument_source, R"("{\"key\": \"value\"}")");
+  const std::string expected_source = R"("{\"key\": \"value\"}")";
+  EXPECT_EQ(calls[0].argument_source, expected_source);
 }
 
 TEST(ParseToolCallsTest, PreservesExactArgumentValueSourceBytes) {
@@ -333,8 +351,8 @@ TEST(ParseToolCallsTest, PreservesExactArgumentValueSourceBytes) {
 }
 
 TEST(ParseToolCallsTest, ParametersPreserveExactSourceBytes) {
-  const auto calls =
-      ParseToolCalls(R"(<tc>{"name":"fn","parameters": { "b":2, "a":1 } }</tc>)", "<tc>", "</tc>");
+  const auto calls = ParseToolCalls(R"(<tc>{"name":"fn","parameters": { "b":2, "a":1 } }</tc>)",
+                                    "<tc>", "</tc>", AdvertisedTool("fn"));
 
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].argument_source, R"({ "b":2, "a":1 })");
@@ -364,6 +382,36 @@ TEST(ParseToolCallsTest, CustomNonWrapperKeepsExactSourceEndToEnd) {
   EXPECT_EQ(generated.call.arguments, arguments);
   EXPECT_EQ(generated.call.normalized_arguments,
             nlohmann::ordered_json({{kCustomToolInputParameter, arguments}}));
+}
+
+TEST(ParseToolCallsTest, RepairedArgsAliasPreservesDuplicateCustomInputSource) {
+  const std::string arguments = R"({ "input":"first", "input":"sec\u006fnd" })";
+  const auto calls = ParseToolCalls("<tc>{\"name\":\"run\",\"args\":" + arguments + "}</tc>",
+                                    "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
+}
+
+TEST(ParseToolCallsTest, RepairedSingletonPreservesDuplicateCustomInputSource) {
+  const std::string arguments = R"({ "input":"first", "input":"sec\u006fnd" })";
+  const auto calls =
+      ParseToolCalls("<tc>{\"run\":" + arguments + "}</tc>", "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
+}
+
+TEST(ParseToolCallsTest, RepairedMissingNameDirectMembersPreserveDuplicateCustomInputSource) {
+  const std::string arguments = R"({"input" : "first", "input":"sec\u006fnd" })";
+  const std::string text = R"(<tc><run","input" : "first", "input":"sec\u006fnd" }</tc>)";
+  const auto calls = ParseToolCalls(text, "<tc>", "</tc>", AdvertisedTool("run"));
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
 }
 
 // ========================================================================

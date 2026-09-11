@@ -211,16 +211,16 @@ namespace chat_session_internal {
 
 std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
     std::string tools_json, const std::vector<ToolDefinition>& session_snapshot) {
+  if (tools_json.empty()) {
+    return {};
+  }
+
   const auto custom_tool =
       std::find_if(session_snapshot.begin(), session_snapshot.end(),
                    [](const ToolDefinition& tool) { return tool.kind == ToolKind::kCustom; });
   if (custom_tool != session_snapshot.end()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "Custom tool definitions cannot be used with OpenAI JSON input");
-  }
-
-  if (tools_json.empty()) {
-    return {};
   }
 
   if (!session_snapshot.empty()) {

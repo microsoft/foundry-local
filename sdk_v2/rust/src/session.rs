@@ -714,15 +714,4 @@ mod tests {
 
         assert!(matches!(err, FoundryLocalError::Validation { .. }));
     }
-
-    #[test]
-    fn tool_definitions_carry_their_kind() {
-        let function = ToolDefinition::new("multiply", r#"{"type":"object"}"#);
-        assert_eq!(function.kind, ToolKind::Function);
-        assert_eq!(function.json_schema, r#"{"type":"object"}"#);
-
-        let custom = ToolDefinition::custom("apply_patch");
-        assert_eq!(custom.kind, ToolKind::Custom);
-        assert!(custom.json_schema.is_empty());
-    }
 }

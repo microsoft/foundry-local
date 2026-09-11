@@ -6,7 +6,6 @@
 
 #include "inferencing/session/types.h"
 
-#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -86,7 +85,7 @@ class ToolRegistry {
  private:
   std::vector<ToolDefinition> definitions_;
 
-  mutable std::unique_ptr<std::mutex> mutex_ = std::make_unique<std::mutex>();
+  mutable std::mutex mutex_;
 };
 
 /// Translate a caller-supplied flToolDefinition into the internal representation, reading only the
