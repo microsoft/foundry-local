@@ -1,0 +1,2 @@
+onnx==1.20.1
+tokenizers==0.22.2

@@ -66,6 +66,7 @@ void ApplyEngineTurnOptions(const EngineTurnOptionsPlan& plan, OgaTurnOptions& o
 struct OnnxChatEngine::NativeConversation {
   std::unique_ptr<OgaRequest> request;
   std::shared_ptr<Conversation> state;
+  bool admitted = false;
 };
 
 OnnxChatEngine::OnnxChatEngine(GenAIModelInstance& model, std::chrono::milliseconds capacity_wait_timeout)
@@ -408,6 +409,7 @@ void OnnxChatEngine::RouteEvents() {
       conversation->turn_has_progress = true;
       conversation->last_activity = std::chrono::steady_clock::now();
       if ((flags & OgaEngineEventFlag_Token) != 0) {
+        it->second->admitted = true;
         const auto token = event->Token();
         conversation->tokens.push_back(token);
         conversation->resident_tokens.push_back(token);
@@ -432,6 +434,25 @@ void OnnxChatEngine::RouteEvents() {
     if ((flags & OgaEngineEventFlag_Failed) != 0) {
       it->second->request->Close();
       conversations_.erase(it);
+    }
+  }
+
+  // A full resident batch can keep emitting tokens without a CapacityBlocked event. Service waiting admissions
+  // between those steps too, without confusing an in-progress initial prefill with a capacity-blocked request.
+  size_t resident_count = 0;
+  bool has_waiting_admission = false;
+  for (const auto& [_, native] : conversations_) {
+    if (native->admitted) {
+      ++resident_count;
+    } else {
+      std::lock_guard<std::mutex> lock(native->state->mutex);
+      has_waiting_admission |= native->state->turn_id != 0 && !native->state->turn_finished;
+    }
+  }
+
+  if (has_waiting_admission && resident_count >= model_.GetGenAIConfig().EngineMaxBatchSize().value_or(1)) {
+    if (!EvictDormantConversation()) {
+      ExpireCapacityBlockedConversation(/*new_admissions_only=*/true);
     }
   }
 }
@@ -465,11 +486,15 @@ bool OnnxChatEngine::EvictDormantConversation() {
   return true;
 }
 
-bool OnnxChatEngine::ExpireCapacityBlockedConversation() {
+bool OnnxChatEngine::ExpireCapacityBlockedConversation(bool new_admissions_only) {
   auto candidate = conversations_.end();
   uint64_t newest_admission = 0;
   const auto now = std::chrono::steady_clock::now();
   for (auto it = conversations_.begin(); it != conversations_.end(); ++it) {
+    if (new_admissions_only && it->second->admitted) {
+      continue;
+    }
+
     const auto& conversation = it->second->state;
     std::lock_guard<std::mutex> lock(conversation->mutex);
     if (!conversation->turn_finished && !conversation->turn_has_progress &&

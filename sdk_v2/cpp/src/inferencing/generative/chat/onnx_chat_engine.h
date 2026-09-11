@@ -105,7 +105,7 @@ class OnnxChatEngine {
   void WorkerLoop(std::promise<void> initialized);
   void RouteEvents();
   bool EvictDormantConversation();
-  bool ExpireCapacityBlockedConversation();
+  bool ExpireCapacityBlockedConversation(bool new_admissions_only = false);
   void FailAll(std::exception_ptr error);
   NativeConversation& FindNative(const std::shared_ptr<Conversation>& conversation);
 

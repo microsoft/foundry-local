@@ -9,7 +9,6 @@
 #   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
 #   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
 #   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
-#   linuxCuda      – Use CUDA GenAI + GPU ORT for the test-only Linux Engine lane
 
 parameters:
 - name: ortVersion
@@ -20,9 +19,6 @@ parameters:
   type: string
   default: ''
 - name: includeWinml
-  type: boolean
-  default: false
-- name: linuxCuda
   type: boolean
   default: false
 
@@ -89,10 +85,6 @@ steps:
         @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
         @{ key = 'ort'; id = 'Microsoft.ML.OnnxRuntime'; version = '${{ parameters.ortVersion }}' }
       )
-      if ($${{ parameters.linuxCuda }}) {
-        $packages[0].id = 'Microsoft.ML.OnnxRuntimeGenAI.Cuda'
-        $packages[1].id = 'Microsoft.ML.OnnxRuntime.Gpu.Linux'
-      }
       if ($${{ parameters.includeWinml }}) {
         $packages += @{
           key = 'winml'
@@ -136,17 +128,6 @@ steps:
         $packageDir = Join-Path $packagesDir "$($pkg.id.ToLowerInvariant())/$($pkg.version)"
         if (-not (Test-Path $packageDir)) {
           throw "Restored package directory not found: $packageDir"
-        }
-        # GPU ORT publishes its headers under buildTransitive; the SDK's
-        # FindOnnxRuntime.cmake consumes the standard build/native layout.
-        if ($${{ parameters.linuxCuda }} -and $pkg.key -eq 'ort') {
-          $headers = Join-Path $packageDir 'buildTransitive/native/include'
-          if (-not (Test-Path (Join-Path $headers 'onnxruntime_c_api.h'))) {
-            throw "GPU ORT headers not found at $headers"
-          }
-          $native = Join-Path $packageDir 'build/native'
-          New-Item -ItemType Directory -Force -Path $native | Out-Null
-          Copy-Item -Path $headers -Destination $native -Recurse -Force
         }
         $archive = Join-Path $cacheDir "$($pkg.key).zip"
         Compress-Archive -Path "$packageDir/*" -DestinationPath $archive -Force

@@ -21,26 +21,24 @@ The integration test suite must never pull a multi-GB model over the network dur
 
 ## Dynamic Engine lane
 
-Engine-capable builds compile `DynamicEngineChatTest`. Set `FOUNDRY_LOCAL_DYNAMIC_ENGINE_TEST_MODEL_PATH` to a
-pre-staged model directory whose `genai_config.json` defines `engine.dynamic_batching` to run generation,
-continuation, concurrency, capacity, cancellation-recovery, and unload coverage. The fixture stages writable metadata
-without modifying the shared model and sets `max_batch_size` to two. Required lanes must also set
-`FOUNDRY_LOCAL_DYNAMIC_ENGINE_TEST_REQUIRED=1` and configure with
-`FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON`; the former converts a missing model fixture into a test failure, and
-the latter rejects a GenAI package that cannot compile the suite. Current GenAI 0.15.2 builds exclude these tests, so
-an Engine lane must use a newer package and a real pre-staged paged-KV model rather than relying on skips.
+Engine-capable builds compile and run `DynamicEngineChatTest` using the checked-in
+`sdk_v2/cpp/test/testdata/tiny-paged-attention` model. The ordinary CMake testdata rule stages the assets, and
+`test::GetTestDataPath` locates them. Missing assets fail suite setup; no model environment variables, GPU,
+credentials, shared cache, or downloads are needed. The reproducible generator is beside the model, but generation
+dependencies are not required to build or run tests.
+
+This small CPU decoder performs causal attention through real paged KV reads and writes using standard ONNX
+operators. Its deterministic output is checked against an independent integer reference, including across retained
+turns and isolated concurrent requests. It covers SDK dispatch, paging, eviction/replay, cancellation, usage, and
+unload, not CUDA kernel correctness or trained-model quality.
 
 The packaging pipeline includes the unconditional `cpp_test_engine` stage from
-`.pipelines/v2/templates/stages-test-engine.yml`. It uses the Linux A10 GPU pool, test-only CUDA NuGet packages,
-and the SHA-256-pinned paged Qwen fixture in `foundrylocalmodels/staging/paged-attention`. The existing
-`FoundryLocalCore-SP` service connection needs read access to those blobs, and the pipeline needs permission to use
-`onnxruntime-Linux-GPU-A10`. These are required resources: do not bypass failures with skips or `continueOnError`.
-The job runs directly on the GPU pool's existing image; it does not build or launch a custom container.
-The image must provide the compiler and CUDA libraries (CUDA 13 for GPU ORT, CUDA 12 for GenAI, driver 580 or newer).
-Missing runtime dependencies fail explicitly. Tests stage their own metadata without modifying the source model.
-Missing Engine capability, missing/changed model files, missing lifecycle tests, skipped tests, and test failures all
-fail the lane. Its binaries are not published as SDK artifacts and its GenAI pin is independent of the shipping/release
-dependency pins.
+`.pipelines/v2/templates/stages-test-engine.yml`. It runs on the existing `onnxruntime-Ubuntu2404-AMD-CPU` pool image
+without a custom container and uses standard CPU NuGet packages with a test-only Engine-capable GenAI pin.
+`FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON` rejects packages that cannot compile the suite. The XML gate rejects
+missing lifecycle cases, skipped/disabled/unexecuted tests, and failures. Do not bypass failures with skips or
+`continueOnError`. Its binaries are not published as SDK artifacts, and shipping/release dependency pins are unchanged.
+Generator-only builds can still exclude the suite; the unconditional Engine lane supplies the required coverage.
 
 ## Debugging skips in CI
 

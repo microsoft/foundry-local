@@ -1,5 +1,5 @@
-# Real-model Engine gate, independent of the Generator/release packaging matrix.
-# The paged Qwen fixture is also used by onnxruntime-genai's Engine integration CI.
+# CPU paged-attention Engine gate, independent of the Generator/release packaging matrix.
+# Model assets are checked in and staged by the normal C++ testdata build rule.
 parameters:
 - name: buildConfig
   type: string
@@ -11,13 +11,15 @@ parameters:
 
 stages:
 - stage: cpp_test_engine
-  displayName: 'C++ Engine: CUDA lifecycle tests'
+  displayName: 'C++ Engine: CPU paged-attention lifecycle tests'
   dependsOn: []
   jobs:
   - job: test
     timeoutInMinutes: 120
+    workspace:
+      clean: all
     pool:
-      name: onnxruntime-Linux-GPU-A10
+      name: onnxruntime-Ubuntu2404-AMD-CPU
       os: linux
     steps:
     - checkout: self
@@ -32,36 +34,9 @@ stages:
       parameters:
         ortVersion: ${{ parameters.ortVersion }}
         genaiVersion: ${{ parameters.genaiVersion }}
-        linuxCuda: true
-
-    - task: AzureCLI@2
-      displayName: 'Stage and verify the real paged-KV model'
-      inputs:
-        azureSubscription: 'FoundryLocalCore-SP'
-        scriptType: bash
-        scriptLocation: inlineScript
-        inlineScript: |
-          set -euo pipefail
-          model_root="$(Build.BinariesDirectory)/engine-model"
-          mkdir -p "$model_root"
-          az storage blob download-batch \
-            --account-name foundrylocalmodels \
-            --source staging \
-            --pattern 'paged-attention/qwen2.5-0.5b-instruct/*' \
-            --destination "$model_root" \
-            --auth-mode login --overwrite true --only-show-errors
-          cd "$model_root/paged-attention/qwen2.5-0.5b-instruct"
-          sha256sum --check <<'SHA256'
-          2d2b99a2a2d8049fd921d4483fb05f4fad22603f058fc1dffd5f73f9a36e148c  genai_config.json
-          0d83e2d70d043d8b1723ae1d94619bc191b14b459bada10fda20a9d314ce53c5  model.onnx
-          ad98abcb190a2085bca70110df04b04128c405fda8e0a526e2b7850d4d36a184  model.onnx.data
-          9c5ae00e602b8860cbd784ba82a8aa14e8feecec692e7076590d014d7b7fdafa  tokenizer.json
-          60bf17d6543b028dbd97ac7f4847418c96502006b80b4b1c57427c241c818224  tokenizer_config.json
-          SHA256
 
     - bash: |
         set -euo pipefail
-        nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
         git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
         python -m venv "$ENGINE_VENV"
         python="$ENGINE_VENV/bin/python"
@@ -77,24 +52,14 @@ stages:
             "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON"
         build="$PWD/build/Linux/$BUILD_CONFIG"
         bin="$build/bin"
-        cp "$build/_deps/genailib-src/runtimes/linux-x64/native/libonnxruntime-genai-cuda.so" "$bin/"
-        cp "$build/_deps/ortlib-src/runtimes/linux-x64/native/libonnxruntime_providers_cuda.so" "$bin/"
         export LD_LIBRARY_PATH="$bin:${LD_LIBRARY_PATH:-}"
-        for library in "$bin/libonnxruntime-genai-cuda.so" "$bin/libonnxruntime_providers_cuda.so"; do
-          dependencies=$(ldd "$library")
-          printf '%s\n' "$dependencies"
-          if [[ "$dependencies" == *"not found"* ]]; then
-            echo "GPU pool image is missing a dependency required by $library" >&2
-            exit 1
-          fi
-        done
         results="$build/TestResults"
         mkdir -p "$results"
         cd "$bin"
         timeout --signal=TERM --kill-after=30s 10m ./foundry_local_tests \
           --gtest_filter="DynamicEngineChatTest.*" \
           --gtest_output="xml:$results/dynamic-engine.xml"
-      displayName: 'Build and run Engine tests on the GPU pool image'
+      displayName: 'Build and run Engine tests with the checked-in CPU fixture'
       workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
       env:
         VCPKG_ROOT: $(Build.BinariesDirectory)/engine-vcpkg
@@ -102,8 +67,6 @@ stages:
         NUGET_CACHE: $(Build.BinariesDirectory)/nuget_packages
         ENGINE_GENAI_VERSION: ${{ parameters.genaiVersion }}
         BUILD_CONFIG: ${{ parameters.buildConfig }}
-        FOUNDRY_LOCAL_DYNAMIC_ENGINE_TEST_REQUIRED: '1'
-        FOUNDRY_LOCAL_DYNAMIC_ENGINE_TEST_MODEL_PATH: $(Build.BinariesDirectory)/engine-model/paged-attention/qwen2.5-0.5b-instruct
         TF_BUILD: 'true'
 
     # GTest succeeds when a filter selects zero tests or every test skips.
@@ -122,9 +85,13 @@ stages:
           $cases = @($suite.testcase)
           $required = @(
             'RetainedContinuationReportsFreshPromptUsageParity',
+            'RetainedSuffixReadsPriorPagedAttentionState',
             'MismatchedResidentPromptIsReplacedAndMatchesFreshReplay',
             'RunsTwoConcurrentSessions',
             'CapacityTimeoutFailsOnlyNewestWaitingConversation',
+            'EvictsOldestIdleConversation',
+            'EvictedSessionReplaysCommittedHistory',
+            'EvictsIdleConversationWhileAnotherTurnIsGenerating',
             'LateCancelAfterCompletedConversationRemovalIsNoOp',
             'CancellationRebuildsCommittedHistoryWithinBudget',
             'UnloadsAfterSessionsClose'
@@ -146,6 +113,6 @@ stages:
       inputs:
         testResultsFormat: JUnit
         testResultsFiles: '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/TestResults/dynamic-engine.xml'
-        testRunTitle: 'C++ dynamic Engine (CUDA, paged Qwen)'
+        testRunTitle: 'C++ dynamic Engine (CPU, tiny paged attention)'
         failTaskOnFailedTests: true
         failTaskOnMissingResultsFile: true
