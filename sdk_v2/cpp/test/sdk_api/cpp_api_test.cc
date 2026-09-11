@@ -10,6 +10,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 TEST(CppApiTest, TextItemDefaultRoundTrip) {
@@ -118,15 +119,28 @@ TEST(CppApiTest, ToolCallRoundTrip) {
   EXPECT_EQ(arguments, R"({"city":"Seattle"})");
 }
 
-TEST(CppApiTest, ToolCallRejectsEmbeddedNulInsteadOfTruncating) {
-  const std::string payload{"before\0after", 12};
+TEST(CppApiTest, ToolItemsRejectEmbeddedNulInsteadOfTruncating) {
+  const std::string invalid{"before\0after", 12};
 
-  try {
-    (void)foundry_local::Item::ToolCall("call_42", "custom", payload);
-    FAIL() << "expected embedded NUL rejection";
-  } catch (const foundry_local::Error& error) {
-    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  for (const auto& make_item : std::vector<std::function<foundry_local::Item()>>{
+           [&] { return foundry_local::Item::ToolCall(invalid, "custom", "payload"); },
+           [&] { return foundry_local::Item::ToolCall("call_42", invalid, "payload"); },
+           [&] { return foundry_local::Item::ToolCall("call_42", "custom", invalid); },
+           [&] { return foundry_local::Item::ToolResult(invalid, "done"); },
+           [&] { return foundry_local::Item::ToolResult("call_42", invalid); },
+       }) {
+    try {
+      (void)make_item();
+      FAIL() << "expected embedded NUL rejection";
+    } catch (const foundry_local::Error& error) {
+      EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
   }
+}
+
+TEST(CppApiTest, ToolItemsPreserveValidEmptyStrings) {
+  EXPECT_NO_THROW((void)foundry_local::Item::ToolCall("", "", ""));
+  EXPECT_NO_THROW((void)foundry_local::Item::ToolResult("", ""));
 }
 
 TEST(CppApiTest, ToolDefinitionDefaultsToFunctionAndStampsTheCurrentVersion) {
