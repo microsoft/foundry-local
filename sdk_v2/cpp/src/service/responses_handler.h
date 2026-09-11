@@ -6,6 +6,10 @@
 
 #include "service/handler_utils.h"
 
+#include "inferencing/generative/openresponses/response_chain.h"
+#include "inferencing/generative/openresponses/response_store.h"
+
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -20,6 +24,17 @@ class GenAIModelInstance;
 namespace responses {
 struct ResponseCreateParams;
 }  // namespace responses
+
+/// Identity of one response being produced.
+struct ResponseTurn {
+  std::string response_id;
+  int64_t created_at = 0;
+  /// The model as the caller named it. Echoed in the response object.
+  std::string model_name;
+  /// The resolved catalog model id. Bound to the stored response so a later continuation must resolve to the same
+  /// model whichever alias it uses.
+  std::string model_id;
+};
 
 // ========================================================================
 // Handler: POST /v1/responses — OpenAI Responses API
@@ -45,25 +60,30 @@ class ResponsesHandler : public HttpRequestHandler {
   std::shared_ptr<OutgoingResponse> ResolveModel(const std::string& model_name,
                                                  Model*& model, GenAIModelInstance*& loaded);
 
-  /// Load previous response context when chaining via previous_response_id.
-  /// The json storage objects are passed by reference because the output pointers alias into them.
-  void LoadPreviousContext(const responses::ResponseCreateParams& params,
-                           const nlohmann::json*& previous_input,
-                           const nlohmann::json*& previous_output,
-                           nlohmann::json& prev_input_storage,
-                           nlohmann::json& prev_output_storage);
+  /// Open the store lease for this request, validating the conversation named by `previous_response_id` against the
+  /// model that will run it. Returns an error response when the chain is gone or belongs to another model.
+  std::shared_ptr<OutgoingResponse> BeginResponse(const responses::ResponseCreateParams& params,
+                                                  const std::string& model_id, ResponseLease& lease);
+
+  /// Reconstruct the full replay context for a chained request by walking `previous_response_id` to the root.
+  /// Only called when no cached session is available — a live session already holds the conversation.
+  /// Returns an error response when the chain cannot be reconstructed, nullptr on success.
+  std::shared_ptr<OutgoingResponse> LoadPreviousContext(const responses::ResponseCreateParams& params,
+                                                        ResponseChainContext& context_storage,
+                                                        const ResponseChainContext*& previous_context);
+
+  /// Check out the session cached for this request's conversation, or nullptr when there is none.
+  std::unique_ptr<ChatSession> CheckOutCachedSession(const responses::ResponseCreateParams& params);
 
   // --- Inference dispatch ---
 
   std::shared_ptr<OutgoingResponse> HandleNonStreaming(std::unique_ptr<ChatSession> session, Request& session_request,
-                                                       const std::string& model_name, const std::string& response_id,
-                                                       int64_t created_at,
+                                                       const ResponseTurn& turn, ResponseLease lease,
                                                        const responses::ResponseCreateParams& params,
                                                        const nlohmann::json& req_json);
 
   std::shared_ptr<OutgoingResponse> HandleStreaming(std::unique_ptr<ChatSession> session, Request session_request,
-                                                    const std::string& model_name, const std::string& response_id,
-                                                    int64_t created_at,
+                                                    const ResponseTurn& turn, ResponseLease lease,
                                                     const responses::ResponseCreateParams& params,
                                                     const nlohmann::json& req_json);
 

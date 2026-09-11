@@ -9,6 +9,59 @@
 
 namespace fl {
 
+std::string EscapeLarkLiteral(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 2);
+  out.push_back('"');
+
+  for (const char c : text) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
+        break;
+      default:
+        if (const auto byte = static_cast<unsigned char>(c); byte < 0x20) {
+          static constexpr char kHex[] = "0123456789abcdef";
+          out += "\\u00";
+          out.push_back(kHex[byte >> 4]);
+          out.push_back(kHex[byte & 0x0f]);
+        } else {
+          out.push_back(c);
+        }
+        break;
+    }
+  }
+
+  out.push_back('"');
+  return out;
+}
+
+std::string RenderLarkMarker(const std::string& marker_text, std::optional<int32_t> token_id) {
+  if (token_id.has_value() && *token_id >= 0) {
+    return "<[" + std::to_string(*token_id) + "]>";
+  }
+
+  return EscapeLarkLiteral(marker_text);
+}
+
 std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   // Create a JSON schema from tools for use with ORT GenAI's SetGuidance.
   //
@@ -184,14 +237,15 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
 }
 
 std::string BuildLarkGrammar(const ToolCallContext& ctx,
-                             const std::string& json_schema) {
+                             const std::string& json_schema,
+                             bool prompt_opens_reasoning) {
   // Legend:
   //
   // 1. cot = chain-of-thought output with newline at the end
   // 2. THINK_TEXT = chain-of-thought text output
   // 3. output = output row (text and/or tool call)
   // 4. TEXT = text output
-  // 5. toolcall = tool call output (with known ids)
+  // 5. toolcall = tool call output (with configured boundary markers)
   // 6. functioncall = JSON schemas for each registered tool
   //
   // Cases:
@@ -199,20 +253,20 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // | Case | Description                                                                                        |
   // |------|----------------------------------------------------------------------------------------------------|
   // |  1   | Return text only                                                                                   |
-  // |  2   | Return tool call only (known tool call token ids)                                                  |
-  // |  3   | Return tool call only (unknown tool call token ids)                                                |
-  // |  4   | Return text or tool call (known tool call token ids)                                               |
-  // |  5   | Return text or tool call (unknown tool call token ids)                                             |
-  // |  6   | Return chain-of-thought + text only (known think token ids)                                        |
-  // |  7   | Return chain-of-thought + text only (unknown think token ids)                                      |
-  // |  8   | Return chain-of-thought + tool call only (known think token ids, known tool call token ids)        |
-  // |  9   | Return chain-of-thought + tool call only (unknown think token ids, known tool call token ids)      |
-  // |  10  | Return chain-of-thought + tool call only (known think token ids, unknown tool call token ids)      |
-  // |  11  | Return chain-of-thought + tool call only (unknown think token ids, unknown tool call token ids)    |
-  // |  12  | Return chain-of-thought + text or tool call (known think token ids, known tool call token ids)     |
-  // |  13  | Return chain-of-thought + text or tool call (unknown think token ids, known tool call token ids)   |
-  // |  14  | Return chain-of-thought + text or tool call (known think token ids, unknown tool call token ids)   |
-  // |  15  | Return chain-of-thought + text or tool call (unknown think token ids, unknown tool call token ids) |
+  // |  2   | Return tool call only (configured tool-call markers)                                               |
+  // |  3   | Return tool call only (no configured tool-call markers)                                            |
+  // |  4   | Return text or tool call (configured tool-call markers)                                            |
+  // |  5   | Return text or tool call (no configured tool-call markers)                                         |
+  // |  6   | Return chain-of-thought + text only (configured reasoning markers)                                 |
+  // |  7   | Return chain-of-thought + text only (no configured reasoning markers)                              |
+  // |  8   | Return chain-of-thought + tool call only (both marker pairs configured)                            |
+  // |  9   | Return chain-of-thought + tool call only (only tool-call markers configured)                       |
+  // |  10  | Return chain-of-thought + tool call only (only reasoning markers configured)                       |
+  // |  11  | Return chain-of-thought + tool call only (no marker pairs configured)                              |
+  // |  12  | Return chain-of-thought + text or tool call (both marker pairs configured)                         |
+  // |  13  | Return chain-of-thought + text or tool call (only tool-call markers configured)                    |
+  // |  14  | Return chain-of-thought + text or tool call (only reasoning markers configured)                    |
+  // |  15  | Return chain-of-thought + text or tool call (no marker pairs configured)                           |
   //
   // Grammar patterns for each case:
   //
@@ -221,104 +275,104 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // start: TEXT
   // TEXT: /[^{<](.|\\n)*/
   //
-  // 2. Return tool call only (known tool call token ids)
+  // 2. Return tool call only (configured tool-call markers)
   //
   // start: toolcall
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: <[123]> functioncall <[124]>
   // functioncall: %json { <schemas for each tool> }
   //
-  // 3. Return tool call only (unknown tool call token ids)
+  // 3. Return tool call only (no configured tool-call markers)
   //
   // start: functioncall
   // functioncall: %json { <schemas for each tool> }
   //
-  // 4. Return text or tool call (known tool call token ids)
+  // 4. Return text or tool call (configured tool-call markers)
   //
   // start: TEXT | toolcall
   // TEXT: /[^{<](.|\\n)*/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: "<tool_call>" functioncall "</tool_call>"
   // functioncall: %json { <schemas for each tool> }
   //
-  // 5. Return text or tool call (unknown tool call token ids)
+  // 5. Return text or tool call (no configured tool-call markers)
   //
   // start: TEXT | functioncall
   // TEXT: /[^{<](.|\\n)*/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 6. Return chain-of-thought + text only (known think token ids)
+  // 6. Return chain-of-thought + text only (configured reasoning markers)
   //
   // start: cot TEXT
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // TEXT: /[^{<](.|\\n)*/
   //
-  // 7. Return chain-of-thought + text only (unknown think token ids)
+  // 7. Return chain-of-thought + text only (no configured reasoning markers)
   //
   // start: cot TEXT
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
   // TEXT: /[^{<](.|\\n)*/
   //
-  // 8. Return chain-of-thought + tool call only (known think token ids, known tool call token ids)
+  // 8. Return chain-of-thought + tool call only (both marker pairs configured)
   //
   // start: cot toolcall
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: <[123]> functioncall <[124]>
   // functioncall: %json { <schemas for each tool> }
   //
-  // 9. Return chain-of-thought + tool call only (unknown think token ids, known tool call token ids)
+  // 9. Return chain-of-thought + tool call only (only tool-call markers configured)
   //
   // start: cot toolcall
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: "<tool_call>" functioncall "</tool_call>"
   // functioncall: %json { <schemas for each tool> }
   //
-  // 10. Return chain-of-thought + tool call only (known think token ids, unknown tool call token ids)
+  // 10. Return chain-of-thought + tool call only (only reasoning markers configured)
   //
   // start: cot functioncall
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 11. Return chain-of-thought + tool call only (unknown think token ids, unknown tool call token ids)
+  // 11. Return chain-of-thought + tool call only (no marker pairs configured)
   //
   // start: cot functioncall
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 12. Return chain-of-thought + text or tool call (known think token ids, known tool call token ids)
+  // 12. Return chain-of-thought + text or tool call (both marker pairs configured)
   //
   // start: cot output
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // output: TEXT | toolcall
   // TEXT: /[^{<](.|\\n)*/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: <[123]> functioncall <[124]>
   // functioncall: %json { <schemas for each tool> }
   //
-  // 13. Return chain-of-thought + text or tool call (unknown think token ids, known tool call token ids)
+  // 13. Return chain-of-thought + text or tool call (only tool-call markers configured)
   //
   // start: cot output
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
   // output: TEXT | toolcall
   // TEXT: /[^{<](.|\\n)*/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: "<tool_call>" functioncall "</tool_call>"
   // functioncall: %json { <schemas for each tool> }
   //
-  // 14. Return chain-of-thought + text or tool call (known think token ids, unknown tool call token ids)
+  // 14. Return chain-of-thought + text or tool call (only reasoning markers configured)
   //
   // start: cot output
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // output: TEXT | functioncall
   // TEXT: /[^{<](.|\\n)*/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 15. Return chain-of-thought + text or tool call (unknown think token ids, unknown tool call token ids)
+  // 15. Return chain-of-thought + text or tool call (no marker pairs configured)
   //
   // start: cot output
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
@@ -332,6 +386,10 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // (e.g. is less than). While the rule does not permit empty thinking, that is a rare occurrence.
   // There is usually some reasoning done even if it is little. Without such a restrictive grammar, models
   // such as Phi-4 mini reasoning fall out of distribution.
+  //
+  // Marker IDs use llguidance's exact numeric-token syntax (`<[ID]>`). A marker without one authoritative token
+  // ID uses quoted literal bytes, which may tokenize to multiple IDs. Named `<token_name>` syntax is only for
+  // tokenizer special tokens and is not inferred from marker text.
   if (!ctx.text_output && !ctx.tool_output) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "neither text output nor tool calling output are enabled — "
@@ -342,9 +400,11 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   bool known_think_tokens = ctx.HasReasoningTokens();
   bool reasoning_enabled = ctx.supports_reasoning;
 
-  // For unknown think tokens, use literal Lark grammar string tokens
-  std::string reasoning_start = known_think_tokens ? ctx.reasoning_start : "\"<think>\"";
-  std::string reasoning_end = known_think_tokens ? ctx.reasoning_end : "\"</think>\"";
+  // Known boundaries use an exact numeric token ID when available; all others use literal bytes.
+  std::string reasoning_start =
+      known_think_tokens ? RenderLarkMarker(ctx.reasoning_start, ctx.reasoning_start_token_id) : "\"<think>\"";
+  std::string reasoning_end =
+      known_think_tokens ? RenderLarkMarker(ctx.reasoning_end, ctx.reasoning_end_token_id) : "\"</think>\"";
 
   // Set rows for grammar
   std::ostringstream grammar;
@@ -371,7 +431,15 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
 
   // Add grammar for chain-of-thought output
   if (reasoning_enabled) {
-    grammar << "cot: " << reasoning_start << " THINK_TEXT " << reasoning_end << " \"\\n\"\n";
+    if (prompt_opens_reasoning) {
+      // The rendered prompt already ends with the reasoning opener (see PromptOpensReasoning in
+      // reasoning_stream_splitter.h), so generation starts inside reasoning. The model neither emits nor can be
+      // asked to emit the opener again — omitting it here is required, not just an optimization: a grammar that
+      // still demanded the opener as the first production would be unsatisfiable against this prompt.
+      grammar << "cot: THINK_TEXT " << reasoning_end << " \"\\n\"\n";
+    } else {
+      grammar << "cot: " << reasoning_start << " THINK_TEXT " << reasoning_end << " \"\\n\"\n";
+    }
     grammar << "THINK_TEXT: /[^<]+/\n";
   }
 
@@ -388,8 +456,8 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // Add grammar for tool output
   if (ctx.tool_output) {
     if (known_tool_tokens) {
-      grammar << "toolcall: " << ctx.tool_call_start
-              << " functioncall " << ctx.tool_call_end << "\n";
+      grammar << "toolcall: " << RenderLarkMarker(ctx.tool_call_start, ctx.tool_call_start_token_id)
+              << " functioncall " << RenderLarkMarker(ctx.tool_call_end, ctx.tool_call_end_token_id) << "\n";
     }
 
     grammar << "functioncall: %json " << json_schema << "\n";

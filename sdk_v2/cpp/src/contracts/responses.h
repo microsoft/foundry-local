@@ -68,13 +68,20 @@ struct InputMessage {
   static InputMessage AssistantMessage(const std::string& text);
 };
 
+struct FunctionCallInputItem {
+  std::string type = "function_call";
+  std::string call_id;
+  std::string name;
+  std::string arguments;
+};
+
 struct FunctionCallResultInputItem {
   std::string type = "function_call_output";
   std::string call_id;
   std::string output;
 };
 
-using InputItem = std::variant<InputMessage, FunctionCallResultInputItem>;
+using InputItem = std::variant<InputMessage, FunctionCallInputItem, FunctionCallResultInputItem>;
 
 // ---------------------------------------------------------------------------
 // Tool calling types (AD-010)
@@ -336,6 +343,7 @@ void from_json(const nlohmann::json& j, InputImageContent& c);
 void from_json(const nlohmann::json& j, InputFileContent& c);
 void from_json(const nlohmann::json& j, InputAudioContent& c);
 void from_json(const nlohmann::json& j, InputMessage& m);
+void from_json(const nlohmann::json& j, FunctionCallInputItem& f);
 void from_json(const nlohmann::json& j, FunctionCallResultInputItem& f);
 
 // --- Tool types from_json ---

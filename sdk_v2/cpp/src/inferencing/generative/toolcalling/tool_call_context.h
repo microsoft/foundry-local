@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
 namespace fl {
@@ -42,6 +44,11 @@ struct ToolCallContext {
     return !reasoning_start.empty() && !reasoning_end.empty();
   }
 
+  /// Exact token IDs for reasoning boundaries when each marker resolves authoritatively to one nonnegative ID.
+  /// llguidance renders these as numeric `<[ID]>` terminals. Unresolved or multi-token markers remain literals.
+  std::optional<int32_t> reasoning_start_token_id;
+  std::optional<int32_t> reasoning_end_token_id;
+
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
 
@@ -55,10 +62,18 @@ struct ToolCallContext {
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }
 
+  /// Whether two turns expose the same definitions to the model.
+  bool HasSameTools(const ToolCallContext& other) const { return tools_json == other.tools_json; }
+
   /// Whether the model has known tool call marker tokens.
   bool HasToolCallTokens() const {
     return !tool_call_start.empty() && !tool_call_end.empty();
   }
+
+  /// Exact token IDs for tool-call boundaries when each marker resolves authoritatively to one nonnegative ID.
+  /// Start and end are resolved independently; unresolved or multi-token markers remain quoted literals.
+  std::optional<int32_t> tool_call_start_token_id;
+  std::optional<int32_t> tool_call_end_token_id;
 };
 
 }  // namespace fl

@@ -7,6 +7,7 @@
 
 #include "exception.h"
 #include "inferencing/generative/openresponses/response_store.h"
+#include "inferencing/session/session_manager.h"
 #include "service/audio_transcriptions_handler.h"
 #include "service/chat_completions_handler.h"
 #include "service/embeddings_handler.h"
@@ -177,11 +178,26 @@ class ShutdownHandler : public HttpRequestHandler {
 // ========================================================================
 
 struct WebService::Impl {
+  /// Keeps the session cache in step with response deletion. ResponseStore calls Drop() while holding its own lock,
+  /// so this must never call back into the store; SessionManager does not.
+  ///
+  /// Declared before `response_store` so it outlives it — the store may use it until it is destroyed.
+  class SessionCacheCoordinator final : public IResponseCacheCoordinator {
+   public:
+    explicit SessionCacheCoordinator(SessionManager& manager) : manager_(manager) {}
+
+    void Drop(const std::string& response_id) noexcept override { manager_.EvictCached(response_id); }
+
+   private:
+    SessionManager& manager_;
+  };
+
   std::vector<std::shared_ptr<oatpp::network::Server>> servers;
   std::vector<std::thread> listener_threads;
   std::vector<std::shared_ptr<oatpp::network::ServerConnectionProvider>> providers;
   std::shared_ptr<oatpp::web::server::HttpConnectionHandler> connection_handler;
   std::shared_ptr<oatpp::web::server::HttpRouter> router;
+  SessionCacheCoordinator session_cache;
   ResponseStore response_store;
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
@@ -208,7 +224,9 @@ struct WebService::Impl {
   Impl(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
        ITelemetry& telemetry, std::function<void()> shutdown_callback)
-      : shutdown_callback(std::move(shutdown_callback)),
+      : session_cache(session_manager),
+        response_store(ResponseStore::kDefaultCapacity, &session_cache),
+        shutdown_callback(std::move(shutdown_callback)),
         context(std::make_unique<ServiceContext>(
             ServiceContext{catalog,
                            logger,

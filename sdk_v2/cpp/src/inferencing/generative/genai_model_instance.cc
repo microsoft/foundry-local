@@ -3,6 +3,7 @@
 #include "inferencing/generative/genai_model_instance.h"
 #include "exception.h"
 #include "inferencing/execution_provider.h"
+#include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "util/key_value_pairs.h"
 #include "utils.h"
 
@@ -69,11 +70,32 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to create preprocessor for model ", model_id_, ": ", e.what());
   }
+
+  if (IsMultiModal() && genai_config_.GetChatBackendKind() == ChatBackendKind::kEngine) {
+    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "model ", model_id_,
+                     " declares an Engine backend, but Engine is not supported for multimodal models");
+  }
+
+  if (genai_config_.GetChatBackendKind() == ChatBackendKind::kEngine) {
+#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
+    try {
+      chat_engine_ = std::make_unique<OnnxChatEngine>(*this);
+    } catch (const std::runtime_error& e) {
+      FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                       "failed to create chat engine for model ", model_id_, ": ", e.what());
+    }
+#else
+    FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
+                     "model ", model_id_,
+                     " requires the ORT GenAI dynamic Engine API, but this build does not provide it");
+#endif
+  }
 }
 
 // Destructor: unique_ptr members are destroyed in reverse declaration order.
 // OGA objects have custom operator delete that calls OgaDestroy* functions.
-// Destruction order: preprocessor → oga_model (correct: dependents first).
+// Destruction order: chat engine → preprocessor → OGA model (correct: dependents first).
 GenAIModelInstance::~GenAIModelInstance() = default;
 
 // ---------------------------------------------------------------------------
@@ -117,7 +139,11 @@ const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
     // Get tag IDs from the tokenizer (reads from config, with fallback vocab lookup).
     // These throw if the model doesn't define the token, so we catch and leave as nullopt.
     auto try_get_id = [](auto&& getter) -> std::optional<int32_t> {
-      try { return getter(); } catch (...) { return std::nullopt; }
+      try {
+        return getter();
+      } catch (...) {
+        return std::nullopt;
+      }
     };
     tag_info_.bot_id = try_get_id([&] { return tokenizer->GetBotTokenId(); });
     tag_info_.eot_id = try_get_id([&] { return tokenizer->GetEotTokenId(); });
@@ -141,6 +167,25 @@ const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
   });
 
   return tag_info_;
+}
+
+std::vector<int32_t> GenAIModelInstance::EncodeText(const std::string& text) {
+  try {
+    auto sequences = GetPreprocessor().Encode(text.c_str());
+    if (!sequences || sequences->Count() == 0) {
+      return {};
+    }
+
+    const auto* data = sequences->SequenceData(0);
+    const auto count = sequences->SequenceCount(0);
+    if (data == nullptr || count == 0) {
+      return {};
+    }
+
+    return {data, data + count};
+  } catch (...) {
+    return {};
+  }
 }
 
 }  // namespace fl

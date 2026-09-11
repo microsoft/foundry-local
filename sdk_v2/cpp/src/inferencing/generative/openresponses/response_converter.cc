@@ -61,6 +61,7 @@ static_assert(sizeof(ResponseObject) == 832,
 }  // namespace fl
 
 #include "exception.h"
+#include "inferencing/generative/chat/chat_transcript.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
@@ -87,11 +88,113 @@ std::string GenerateId(const std::string& prefix) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: add items from a JSON array to a session request
+// Helper: replay JSON items into a session request
 // (used for previous context from the store, which is JSON)
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// What a stored message contributes to replay.
+struct StoredMessageContent {
+  std::string text;
+  /// The message carried image or audio parts. Their bytes are not stored and cannot be replayed, but the turn
+  /// itself still happened and must not vanish from the rebuilt conversation.
+  bool has_media = false;
+};
+
+/// Read a stored item's content, whether it is a plain string or an array of content parts.
+/// Only text-bearing parts contribute text; any other part shape contributes nothing.
+StoredMessageContent ReadStoredContent(const nlohmann::json& item) {
+  StoredMessageContent content;
+
+  const auto field = item.find("content");
+  if (field == item.end()) {
+    return content;
+  }
+
+  if (field->is_string()) {
+    content.text = field->get<std::string>();
+    return content;
+  }
+
+  if (!field->is_array()) {
+    return content;
+  }
+
+  for (const auto& part : *field) {
+    if (!part.is_object()) {
+      continue;
+    }
+
+    const std::string part_type = part.value("type", "");
+    if (part_type == "input_text" || part_type == "text" || part_type == "output_text") {
+      content.text += part.value("text", "");
+    } else if (part_type == "input_image" || part_type == "input_audio") {
+      content.has_media = true;
+    }
+  }
+
+  return content;
+}
+
+/// The visible text of a stored item.
+std::string StoredItemText(const nlohmann::json& item) {
+  return ReadStoredContent(item).text;
+}
+
+/// Rebuild a stored `function_call` item.
+///
+/// A hop's stored items are replayed as the hop recorded them, whether the call came from the model's own output or
+/// from the `input` array the caller sent for that hop. Either way the hop already ran: a caller-supplied call was
+/// validated strictly at the time, and a model-emitted call whose argument bytes were not a JSON object was already
+/// presented to the model as having none. Replay reproduces that rather than re-admitting bytes the strict
+/// caller-supplied path would now reject, which would fail a continuation of a conversation that already happened.
+std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
+  std::string arguments;
+  if (auto it = item.find("arguments"); it != item.end() && !it->is_null()) {
+    arguments = it->is_string() ? it->get<std::string>() : it->dump();
+  }
+
+  if (!ParseToolCallArguments(arguments).has_value()) {
+    arguments.clear();
+  }
+
+  return std::make_unique<ToolCallItem>(item.value("call_id", ""), item.value("name", ""), std::move(arguments));
+}
+
+/// The text a message carrying only media renders as. The chat template requires every message to have at least one
+/// text part, so both the typed input path and stored-conversation replay use this single space.
+constexpr const char* kMediaOnlyPlaceholder = " ";
+
+/// An assistant message whose content is the empty string.
+///
+/// A live session commits an assistant message for every turn it completes, including a turn whose entire output was
+/// hidden reasoning or that was truncated before any visible text. Replay has to reproduce that boundary or the
+/// rebuilt conversation shows two user turns in a row and the model sees a different prompt than it did live.
+std::unique_ptr<MessageItem> MakeAssistantTurnBoundary() {
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>(std::string{}));
+  return std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts));
+}
+
+/// The transcript role a Responses message role maps to.
+///
+/// `developer` is the Responses API's name for what a chat template calls `system`, and no package template knows
+/// the newer name. Both the typed input path and stored-conversation replay go through here, so the same message
+/// reaches the model as the same role whether the session was still cached or the chain was rebuilt.
+flMessageRole ReplayRole(const std::string& role) {
+  const auto mapped = Utils::StringToRole(role);
+  return mapped == FOUNDRY_LOCAL_ROLE_DEVELOPER ? FOUNDRY_LOCAL_ROLE_SYSTEM : mapped;
+}
+
+}  // namespace
+
+/// Replay a hop's own input items — the request the caller sent for that hop, in the shape they sent it.
 static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items) {
+  if (!items.is_array()) {
+    return;
+  }
+
   for (const auto& entry : items) {
     if (!entry.is_object()) {
       continue;
@@ -107,9 +210,13 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     }
 
     if (type == "function_call") {
-      request.AddOwnedItem(std::make_unique<ToolCallItem>(entry.value("call_id", ""),
-                                                          entry.value("name", ""),
-                                                          entry.value("arguments", "")));
+      request.AddOwnedItem(MakeReplayedToolCall(entry));
+      continue;
+    }
+
+    if (type == "reasoning") {
+      // The text is private, but the assistant turn that produced it happened. Keep the boundary only.
+      request.AddOwnedItem(MakeAssistantTurnBoundary());
       continue;
     }
 
@@ -117,36 +224,89 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
       continue;
     }
 
-    std::string text_content;
-    if (entry.contains("content")) {
-      const auto& content = entry["content"];
-      if (content.is_string()) {
-        text_content = content.get<std::string>();
-      } else if (content.is_array()) {
-        for (const auto& part : content) {
-          if (part.is_object()) {
-            std::string part_type = part.value("type", "");
-            if (part_type == "input_text" || part_type == "text" ||
-                part_type == "output_text") {
-              text_content += part.value("text", "");
-            }
-          }
-        }
+    auto r = ReplayRole(role);
+
+    auto content = ReadStoredContent(entry);
+    if (content.text.empty() && content.has_media) {
+      // A media-only message. The placeholder is not an invention standing in for the image: it is exactly what the
+      // live path recorded for this turn. A media-only message has no text of its own, so AddTypedInputItems gives
+      // it this single space to satisfy the chat template, and that space — not the bytes — is what reached the
+      // transcript. Replaying it therefore reproduces the live record verbatim.
+      //
+      // The bytes are absent on both sides: a media turn drops its generator, so the very next turn of the live
+      // session also rebuilds its prompt from a transcript that never held them. Dropping the message instead would
+      // silently remove a user turn the model saw; failing here would make the cold path reject a continuation the
+      // warm path serves.
+      content.text = kMediaOnlyPlaceholder;
+    }
+
+    if (content.text.empty()) {
+      // An assistant message with nothing to say is still an assistant turn; any other role carries nothing.
+      if (r == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+        request.AddOwnedItem(MakeAssistantTurnBoundary());
       }
-    }
-
-    auto r = Utils::StringToRole(role);
-    if (r == FOUNDRY_LOCAL_ROLE_DEVELOPER) {
-      r = FOUNDRY_LOCAL_ROLE_SYSTEM;
-    }
-
-    if (text_content.empty()) {
-      // Skip messages with no extractable text content.
       continue;
     }
 
-    auto i = std::make_unique<MessageItem>(r, text_content);
-    request.AddOwnedItem(std::move(i));
+    request.AddOwnedItem(std::make_unique<MessageItem>(r, std::move(content.text)));
+  }
+}
+
+/// Replay one hop's output items as exactly one assistant turn.
+///
+/// The items are emitted in the order the model produced them, so the record never reorders what happened. That
+/// order is also representable: generation ends a turn at its first tool call, so a stored hop cannot hold visible
+/// text after one — and a hop that somehow did is rejected by ValidateRenderableTurn rather than replayed with its
+/// text moved in front of the call. A hop that produced nothing replayable still emits the assistant boundary it
+/// committed live.
+static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items) {
+  bool emitted = false;
+
+  if (output_items.is_array()) {
+    for (const auto& entry : output_items) {
+      if (!entry.is_object()) {
+        continue;
+      }
+
+      const std::string type = entry.value("type", "");
+
+      if (type == "function_call") {
+        request.AddOwnedItem(MakeReplayedToolCall(entry));
+        emitted = true;
+        continue;
+      }
+
+      if (type == "reasoning") {
+        // Never replayed: the boundary below already records that the turn happened.
+        continue;
+      }
+
+      std::string text = StoredItemText(entry);
+      if (text.empty()) {
+        continue;
+      }
+
+      // Output items are this service's own assistant turn by construction, so the role is not re-derived from the
+      // stored item — a stray role would split the turn the hop grouping exists to keep together.
+      request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(text)));
+      emitted = true;
+    }
+  }
+
+  if (!emitted) {
+    request.AddOwnedItem(MakeAssistantTurnBoundary());
+  }
+}
+
+/// Replay a whole reconstructed chain, hop by hop.
+///
+/// Each hop is one recorded turn and becomes one replay segment, so ingestion regroups a hop's assistant output
+/// exactly as the live session committed it and never merges two hops into a single assistant message.
+static void AddChainContextToRequest(Request& request, const ResponseChainContext& context) {
+  for (const auto& hop : context) {
+    request.BeginItemSegment();
+    AddJsonItemsToRequest(request, hop.input_items);
+    AddHopOutputToRequest(request, hop.output_items);
   }
 }
 
@@ -325,7 +485,9 @@ std::unique_ptr<AudioItem> MakeAudioItemFromInputAudio(const InputAudioContent& 
 static void AddTypedInputItems(Request& request,
                                const std::vector<InputItem>& input_items) {
   for (const auto& input_item : input_items) {
-    if (auto* fc_result = std::get_if<FunctionCallResultInputItem>(&input_item)) {
+    if (auto* fc = std::get_if<FunctionCallInputItem>(&input_item)) {
+      request.AddOwnedItem(std::make_unique<ToolCallItem>(fc->call_id, fc->name, fc->arguments));
+    } else if (auto* fc_result = std::get_if<FunctionCallResultInputItem>(&input_item)) {
       auto i = std::make_unique<ToolResultItem>(fc_result->call_id, fc_result->output);
       request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
@@ -348,23 +510,27 @@ static void AddTypedInputItems(Request& request,
         }
       }
 
-      // Empty messages (no usable content) are silently skipped to match
-      // the prior behaviour — callers occasionally send messages with only
-      // tool-call follow-ups and no text.
+      // A message with no replayable content is normally nothing to say. An assistant message is the exception: it
+      // is the boundary of a turn whose output did not survive replay (a reasoning-only turn, or one truncated
+      // before any visible text), and the live session commits that boundary.
       if (parts.empty()) {
+        if (ReplayRole(msg->role) == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+          request.AddOwnedItem(MakeAssistantTurnBoundary());
+        }
+
         continue;
       }
 
       // The chat template requires every message to carry at least one
       // text part. A pure-image message (e.g. "input_image" with no
       // accompanying "input_text") would render as an empty content
-      // string. Inject a single space so the template still renders the
+      // string. Inject the placeholder so the template still renders the
       // message and the model receives the image sentinel.
       if (!has_text) {
-        parts.push_back(std::make_unique<TextItem>(" "));
+        parts.push_back(std::make_unique<TextItem>(kMediaOnlyPlaceholder));
       }
 
-      auto i = std::make_unique<MessageItem>(Utils::StringToRole(msg->role), std::move(parts));
+      auto i = std::make_unique<MessageItem>(ReplayRole(msg->role), std::move(parts));
       request.AddOwnedItem(std::move(i));
     }
   }
@@ -374,24 +540,24 @@ static void AddTypedInputItems(Request& request,
 // ToSessionRequest — typed params version
 // ---------------------------------------------------------------------------
 
-Request ToSessionRequest(const ResponseCreateParams& params,
-                         const nlohmann::json* previous_input,
-                         const nlohmann::json* previous_output) {
+Request ToSessionRequest(const ResponseCreateParams& params, const ResponseChainContext* previous_context) {
   Request request;
 
-  // Instructions → system message
+  // `instructions` is request-scoped: it applies to this turn only and is never carried across a chain. It travels
+  // as the session's system prefix rather than as a message, so it can neither accumulate a copy per hop nor be
+  // reconstructed from storage — the value this request carries is the only one the prompt ever shows.
   if (params.instructions.has_value() && !params.instructions->empty()) {
-    auto i = std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_SYSTEM, *params.instructions);
-    request.AddOwnedItem(std::move(i));
+    request.options[kSystemPromptOption] = *params.instructions;
   }
 
-  // Add previous context (for conversation chaining via previous_response_id)
-  if (previous_input && previous_input->is_array()) {
-    AddJsonItemsToRequest(request, *previous_input);
-  }
+  // Add previous context (for conversation chaining via previous_response_id). The caller supplies a fully
+  // reconstructed chain, so replayed tool results always find the call they answer.
+  if (previous_context != nullptr) {
+    AddChainContextToRequest(request, *previous_context);
 
-  if (previous_output && previous_output->is_array()) {
-    AddJsonItemsToRequest(request, *previous_output);
+    // This request's own input is a segment of its own: it is the turn being started, not part of the last
+    // recorded one.
+    request.BeginItemSegment();
   }
 
   // Parse current input — variant dispatch
@@ -796,17 +962,10 @@ FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
 nlohmann::json ToInputItems(const nlohmann::json& req_json) {
   nlohmann::json items = nlohmann::json::array();
 
-  // Instructions → system message item
-  if (req_json.contains("instructions") && req_json["instructions"].is_string()) {
-    items.push_back({
-        {"type", "message"},
-        {"id", GenerateId("msg")},
-        {"role", "system"},
-        {"status", "completed"},
-        {"content", req_json["instructions"].get<std::string>()},
-    });
-  }
-
+  // `instructions` is deliberately not synthesized into a stored item. It is request-scoped state, not something the
+  // caller put in `input`: storing it made /input_items report an item the caller never sent, and made chain replay
+  // guess — by comparing content — which stored system message was ours. The current request supplies its own
+  // instructions on every turn, so nothing is lost by not recording them.
   if (!req_json.contains("input")) {
     return items;
   }
@@ -825,6 +984,16 @@ nlohmann::json ToInputItems(const nlohmann::json& req_json) {
     for (const auto& item : input) {
       if (item.is_object()) {
         nlohmann::json stored = item;
+
+        if (stored.value("type", "") == "function_call") {
+          if (auto arguments = stored.find("arguments"); arguments != stored.end()) {
+            if (arguments->is_object()) {
+              *arguments = arguments->dump();
+            } else if (arguments->is_null()) {
+              *arguments = "";
+            }
+          }
+        }
 
         if (!stored.contains("id") || !stored["id"].is_string() ||
             stored["id"].get<std::string>().empty()) {

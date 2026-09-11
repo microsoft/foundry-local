@@ -198,8 +198,10 @@ TEST_F(ModelFixture, ChatMultiTurnSession) {
   EXPECT_NE(r2.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_NE(r2.GetFinishReason(), FOUNDRY_LOCAL_FINISH_ERROR);
   expect_contains_soft(t2, "5", "Turn 2");
-  EXPECT_GT(r2.GetUsage().prompt_tokens, 0);
-  EXPECT_GT(r2.GetUsage().completion_tokens, 0);
+  const auto r2_usage = r2.GetUsage();
+  EXPECT_GT(r2_usage.prompt_tokens, r1.GetUsage().total_tokens);
+  EXPECT_GT(r2_usage.completion_tokens, 0);
+  EXPECT_EQ(r2_usage.total_tokens, r2_usage.prompt_tokens + r2_usage.completion_tokens);
   EXPECT_EQ(session.TurnCount(), 2u);
   std::cout << "Turn 2: " << t2 << "\n";
 

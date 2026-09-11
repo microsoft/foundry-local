@@ -39,7 +39,7 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
 /// Translate response_format into guidance session options.
 void MapGuidance(const ChatCompletionRequest& req, Request& session_request);
 
-/// Map stop sequences to early_stopping option.
+/// Normalize OpenAI stop strings and store them in the internal request-options channel.
 void MapStopSequences(const ChatCompletionRequest& req, Request& session_request);
 
 /// Build a ChatCompletionResponse from an internal Response.

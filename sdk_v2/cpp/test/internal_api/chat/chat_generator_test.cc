@@ -71,7 +71,7 @@ class ChatGeneratorTest : public ::testing::Test {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatGeneratorTest, CreateSucceeds) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Say hello."}};
   SearchOptions opts;
   opts.max_output_tokens = 32;
@@ -83,7 +83,7 @@ TEST_F(ChatGeneratorTest, CreateSucceeds) {
 }
 
 TEST_F(ChatGeneratorTest, CreateWithEmptyMessagesThrows) {
-  std::vector<MessageItem> messages;
+  std::vector<TranscriptMessage> messages;
   SearchOptions opts;
 
   EXPECT_THROW(
@@ -96,7 +96,7 @@ TEST_F(ChatGeneratorTest, CreateWithEmptyMessagesThrows) {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatGeneratorTest, GenerateAllProducesOutput) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "What is 2+2? Answer with just the number."}};
   SearchOptions opts;
   opts.max_output_tokens = 32;
@@ -112,7 +112,7 @@ TEST_F(ChatGeneratorTest, GenerateAllProducesOutput) {
 }
 
 TEST_F(ChatGeneratorTest, TokenByTokenMatchesGenerateAll) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Count to 3."}};
   SearchOptions opts;
   opts.max_output_tokens = 64;
@@ -149,7 +149,7 @@ TEST_F(ChatGeneratorTest, TokenByTokenMatchesGenerateAll) {
 }
 
 TEST_F(ChatGeneratorTest, TokenCountIncreases) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Tell me a short joke."}};
   SearchOptions opts;
   opts.max_output_tokens = 64;
@@ -166,11 +166,11 @@ TEST_F(ChatGeneratorTest, TokenCountIncreases) {
 
 TEST_F(ChatGeneratorTest, SystemPromptInfluencesOutput) {
   // Without system prompt
-  std::vector<MessageItem> msgs_no_system = {
+  std::vector<TranscriptMessage> msgs_no_system = {
       {FOUNDRY_LOCAL_ROLE_USER, "What are you?"}};
 
   // With system prompt
-  std::vector<MessageItem> msgs_with_system = {
+  std::vector<TranscriptMessage> msgs_with_system = {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a pirate. Always respond in pirate speak."},
       {FOUNDRY_LOCAL_ROLE_USER, "What are you?"}};
 
@@ -209,7 +209,7 @@ TEST_F(ChatGeneratorTest, SystemPromptInfluencesOutput) {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatGeneratorTest, CancelStopsGeneration) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Write a very long essay about the history of mathematics."}};
   SearchOptions opts;
   opts.max_output_tokens = 1024;
@@ -227,7 +227,7 @@ TEST_F(ChatGeneratorTest, CancelStopsGeneration) {
 }
 
 TEST_F(ChatGeneratorTest, CancelFromAnotherThread) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Write a very long essay about quantum physics and string theory."}};
   SearchOptions opts;
   opts.max_output_tokens = 512;
@@ -264,7 +264,7 @@ TEST_F(ChatGeneratorTest, CancelFromAnotherThread) {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatGeneratorTest, RespectsMaxOutputTokens) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_USER, "Tell me everything you know about dogs."}};
   SearchOptions opts;
   opts.max_output_tokens = 16;  // Very small limit
@@ -287,7 +287,7 @@ TEST_F(ChatGeneratorTest, RespectsMaxOutputTokens) {
 // ---------------------------------------------------------------------------
 
 TEST_F(ChatGeneratorTest, MultiTurnConversation) {
-  std::vector<MessageItem> messages = {
+  std::vector<TranscriptMessage> messages = {
       {FOUNDRY_LOCAL_ROLE_SYSTEM, "You are a helpful math assistant. Be brief."},
       {FOUNDRY_LOCAL_ROLE_USER, "What is 2+2?"},
       {FOUNDRY_LOCAL_ROLE_ASSISTANT, "4"},

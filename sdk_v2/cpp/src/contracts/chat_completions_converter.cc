@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
 
+#include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -81,22 +82,49 @@ std::string MapFinishReason(flFinishReason reason) {
 
 void BuildRequestItems(const ChatCompletionRequest& req, Request& session_request) {
   for (const auto& msg : req.messages) {
-    if (!msg.content || msg.content->empty()) {
-      // ignore empty messages
+    auto role = Utils::StringToRole(msg.role);
+
+    if (role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      // A tool result may legitimately be an empty string; the call ID is what correlates it with its call.
+      session_request.AddOwnedItem(
+          std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""), msg.content.value_or("")));
       continue;
     }
 
-    // add a MessageItem or ToolResultItem depending on the role.
-    auto role = Utils::StringToRole(msg.role);
+    const std::string content = msg.content.value_or("");
+    if (!content.empty()) {
+      session_request.AddOwnedItem(std::make_unique<MessageItem>(role, content, msg.name.value_or("")));
+    }
 
-    switch (role) {
-      case FOUNDRY_LOCAL_ROLE_TOOL:
-        session_request.AddOwnedItem(std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""),
-                                                                      msg.content.value_or("")));
-        break;
+    if (role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      continue;
+    }
 
-      default:
-        session_request.AddOwnedItem(std::make_unique<MessageItem>(role, msg.content.value_or("")));
+    // A reasoning-only response has no model-visible text to replay, but its assistant role still separates the
+    // messages on either side. Carry that boundary as an empty visible text part; reasoning itself remains private.
+    if (content.empty() && msg.reasoning_content.has_value() && !msg.reasoning_content->empty()) {
+      auto boundary = std::make_unique<MessageItem>();
+      boundary->role = role;
+      boundary->name = msg.name.value_or("");
+      boundary->content.push_back(MessagePart::Own(std::make_unique<TextItem>("")));
+      session_request.AddOwnedItem(std::move(boundary));
+    }
+
+    // Assistant messages that issue tool calls usually have null content. When such a message also carries a
+    // participant name, emit a content-free MessageItem to carry it: the transcript folds the calls below into that
+    // message, so the name reaches the template without fabricating a text part the caller never sent.
+    if (content.empty() && (!msg.reasoning_content.has_value() || msg.reasoning_content->empty()) &&
+        !msg.tool_calls.empty() && msg.name.has_value() && !msg.name->empty()) {
+      auto named = std::make_unique<MessageItem>();
+      named->role = role;
+      named->name = *msg.name;
+      session_request.AddOwnedItem(std::move(named));
+    }
+
+    // Emit the calls as items directly after any visible text so the transcript keeps them on one assistant message.
+    for (const auto& call : msg.tool_calls) {
+      session_request.AddOwnedItem(
+          std::make_unique<ToolCallItem>(call.id, call.function.name, call.function.arguments));
     }
   }
 }
@@ -217,11 +245,7 @@ void MapStopSequences(const ChatCompletionRequest& req, Request& session_request
     return;
   }
 
-  const auto& stop = *req.stop;
-  if ((stop.is_string() && !stop.get<std::string>().empty()) ||
-      (stop.is_array() && !stop.empty())) {
-    session_request.options["early_stopping"] = "true";
-  }
+  StoreStopStringsOption(NormalizeOpenAiStopStrings(*req.stop), session_request.options);
 }
 
 ChatCompletionResponse BuildResponse(const Response& response,

@@ -86,7 +86,7 @@ class SessionManager : public ISessionManager {
   /// Used by the DELETE /v1/responses/{id} path: the response store entry is gone, so
   /// the cached session must also go — otherwise it pins the model loaded and a
   /// subsequent client-side unload fails with "session(s) still using it".
-  bool EvictCached(const std::string& key);
+  bool EvictCached(const std::string& key) noexcept;
 
   /// Number of sessions currently in the cache.
   size_t CacheSize() const;

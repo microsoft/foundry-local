@@ -946,7 +946,7 @@ struct SearchOptions {
   std::optional<float> frequency_penalty;  ///< Currently only the neutral value 0 is supported.
   std::optional<float> presence_penalty;   ///< Currently only the neutral value 0 is supported.
   std::optional<int> seed;                 ///< Random seed for reproducibility.
-  std::optional<bool> early_stopping;      ///< Stop on stop-sequence match.
+  std::optional<bool> early_stopping;      ///< Beam-search policy; true is unsupported by Engine backends.
   std::optional<bool> do_sample;           ///< Whether to sample (false = greedy).
 };
 
@@ -1064,8 +1064,8 @@ class ChatSession : public Session {
   /// Get the number of completed turns.
   size_t TurnCount() const;
 
-  /// Undo the last `count` turns: rewinds the generator and removes the turns'
-  /// input messages and assistant replies from history.
+  /// Undo the last `count` turns and remove their input messages and assistant replies from history.
+  /// Retained inference state is reused when it can be restored safely; otherwise it is rebuilt on the next request.
   void UndoTurns(size_t count);
 };
 

@@ -96,6 +96,34 @@ TEST_F(ResponsesVisionIntegrationTest, DataUrlImageProducesOutput) {
   EXPECT_GT(response["usage"]["output_tokens"].get<int>(), 0);
 }
 
+TEST_F(ResponsesVisionIntegrationTest, ImageOnlyMessageProducesOutput) {
+  auto client = MakeClient();
+  client.set_read_timeout(600, 0);
+
+  json request_body = {
+      {"model", vision_model_id()},
+      {"input", json::array({
+                    {{"role", "user"},
+                     {"content", json::array({
+                                     {{"type", "input_image"},
+                                      {"detail", "low"},
+                                      {"image_url", std::string("data:image/png;base64,") + kTinyPngBase64}},
+                                 })}},
+                })},
+      {"max_output_tokens", 128},
+      {"temperature", 0},
+      {"store", false},
+  };
+
+  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
+  ASSERT_EQ(result->status, 200) << result->body;
+
+  json response = json::parse(result->body);
+  EXPECT_EQ(response["status"], "completed") << response.dump(2);
+  EXPECT_FALSE(response.value("output_text", "").empty());
+}
+
 TEST_F(ResponsesVisionIntegrationTest, ImageDataProducesOutput) {
   auto client = MakeClient();
   client.set_read_timeout(600, 0);
@@ -196,4 +224,91 @@ TEST_F(ResponsesVisionIntegrationTest, TwoImagesProduceOutput) {
   ASSERT_TRUE(response.contains("usage"));
   EXPECT_GT(response["usage"]["input_tokens"].get<int>(), 0);
   EXPECT_GT(response["usage"]["output_tokens"].get<int>(), 0);
+}
+
+// ----------------------------------------------------------------------
+// Media policy: conversation-scoped, and independent of cache residency.
+// ----------------------------------------------------------------------
+
+TEST_F(ResponsesVisionIntegrationTest, ImageWithDeclaredToolsIsRejected) {
+  auto client = MakeClient();
+
+  // The model could answer an image turn with a tool call, and the turn carrying that call's result could no longer
+  // show it the image. The combination is rejected before any generation happens.
+  json request_body = {
+      {"model", vision_model_id()},
+      {"input", json::array({
+                    {{"role", "user"},
+                     {"content", json::array({
+                                     {{"type", "input_text"}, {"text", "What is in this image?"}},
+                                     {{"type", "input_image"},
+                                      {"detail", "low"},
+                                      {"image_data", kTinyPngBase64},
+                                      {"media_type", "image/png"}},
+                                 })}},
+                })},
+      {"tools", json::array({{{"type", "function"},
+                              {"name", "get_weather"},
+                              {"description", "Get the weather"},
+                              {"parameters", {{"type", "object"}, {"properties", json::object()}}}}})},
+      {"max_output_tokens", 64},
+      {"store", false},
+  };
+
+  auto result = client.Post("/v1/responses", request_body.dump(), "application/json");
+  ASSERT_TRUE(result) << "HTTP request failed: " << httplib::to_string(result.error());
+  EXPECT_EQ(result->status, 400) << "media + declared tools must be a client error: " << result->body;
+  EXPECT_NE(result->body.find("tool definitions"), std::string::npos) << result->body;
+}
+
+TEST_F(ResponsesVisionIntegrationTest, ImageOnAContinuationIsRejected) {
+  auto client = MakeClient();
+  client.set_read_timeout(600, 0);
+
+  json first = {
+      {"model", vision_model_id()},
+      {"input", "Say 'ok'."},
+      {"store", true},
+      {"max_output_tokens", 64},
+      {"temperature", 0},
+  };
+
+  auto first_result = client.Post("/v1/responses", first.dump(), "application/json");
+  ASSERT_TRUE(first_result) << "HTTP request failed";
+  ASSERT_EQ(first_result->status, 200) << first_result->body;
+  const std::string first_id = json::parse(first_result->body)["id"].get<std::string>();
+
+  auto send_image_continuation = [&]() {
+    json body = {
+        {"model", vision_model_id()},
+        {"previous_response_id", first_id},
+        {"input", json::array({
+                      {{"role", "user"},
+                       {"content", json::array({
+                                       {{"type", "input_text"}, {"text", "And this image?"}},
+                                       {{"type", "input_image"},
+                                        {"detail", "low"},
+                                        {"image_data", kTinyPngBase64},
+                                        {"media_type", "image/png"}},
+                                   })}},
+                  })},
+        {"max_output_tokens", 64},
+        {"store", false},
+    };
+    return client.Post("/v1/responses", body.dump(), "application/json");
+  };
+
+  // Warm: the session cached under first_id still holds the conversation.
+  auto warm = send_image_continuation();
+  ASSERT_TRUE(warm) << "HTTP request failed";
+  EXPECT_EQ(warm->status, 400) << "media on a continuation must be a client error: " << warm->body;
+  EXPECT_NE(warm->body.find("first turn of a conversation"), std::string::npos) << warm->body;
+
+  // Cold: that request checked the session out and the failure did not put it back, so this one rebuilds the chain
+  // from the store. The rejection must be identical.
+  auto cold = send_image_continuation();
+  ASSERT_TRUE(cold) << "HTTP request failed";
+  EXPECT_EQ(cold->status, warm->status) << "warm and cold must reject a media continuation identically: "
+                                        << cold->body;
+  EXPECT_NE(cold->body.find("first turn of a conversation"), std::string::npos) << cold->body;
 }

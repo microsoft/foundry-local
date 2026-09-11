@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 #include "contracts/responses.h"
+
+#include "exception.h"
 #include "util/json_helpers.h"
 
 #include <type_traits>
@@ -143,7 +145,11 @@ void from_json(const nlohmann::json& j, InputMessage& m) {
       for (const auto& part : content) {
         std::string type = part.value("type", "");
 
-        if (type == "input_text") {
+        // `output_text` is the shape the Responses API emits for assistant messages, so a caller replaying a
+        // conversation statelessly echoes it back verbatim; `text` is the shape used by stored items. Both carry a
+        // `text` field and are accepted as input text, matching what chain reconstruction already replays — without
+        // them, typed replay would silently drop every assistant turn's visible answer.
+        if (type == "input_text" || type == "output_text" || type == "text") {
           m.content.push_back(part.get<InputTextContent>());
         } else if (type == "input_image") {
           m.content.push_back(part.get<InputImageContent>());
@@ -154,6 +160,25 @@ void from_json(const nlohmann::json& j, InputMessage& m) {
         }
         // Unknown types silently skipped
       }
+    }
+  }
+}
+
+void from_json(const nlohmann::json& j, FunctionCallInputItem& f) {
+  f.type = j.value("type", "function_call");
+  f.call_id = j.at("call_id").get<std::string>();
+  f.name = j.at("name").get<std::string>();
+
+  // Arguments are a JSON string on the wire. Objects are accepted too and re-serialized to their canonical bytes,
+  // matching the Chat Completions path so the same tool-call payload works on either API.
+  if (auto arguments = j.find("arguments"); arguments != j.end() && !arguments->is_null()) {
+    if (arguments->is_string()) {
+      f.arguments = arguments->get<std::string>();
+    } else if (arguments->is_object()) {
+      f.arguments = arguments->dump();
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "function_call arguments must be a JSON string or object");
     }
   }
 }
@@ -250,6 +275,17 @@ void from_json(const nlohmann::json& j, ResponseCreateParams& p) {
 
         if (type == "function_call_output") {
           items.push_back(entry.get<FunctionCallResultInputItem>());
+        } else if (type == "function_call") {
+          // Assistant tool calls are replayed as input when the caller chains turns without server-side storage.
+          items.push_back(entry.get<FunctionCallInputItem>());
+        } else if (type == "reasoning") {
+          // Reasoning text is private and is never fed back to the model. The assistant turn that produced it still
+          // happened, so it replays as an empty assistant message: dropping the item outright would leave two user
+          // turns next to each other and a different prompt than the live session builds. When the same turn also
+          // carried visible text or a call, this boundary merges into that assistant message and changes nothing.
+          InputMessage boundary;
+          boundary.role = "assistant";
+          items.push_back(std::move(boundary));
         } else {
           // Default: message item
           items.push_back(entry.get<InputMessage>());

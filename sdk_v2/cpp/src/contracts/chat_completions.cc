@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "contracts/chat_completions.h"
 
+#include "exception.h"
 #include "util/json_helpers.h"
 
 namespace fl {
@@ -9,6 +10,58 @@ namespace fl {
 // ========================================================================
 // Request deserialization (from_json)
 // ========================================================================
+
+void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f) {
+  if (!j.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[].function must be an object");
+  }
+
+  auto name = j.find("name");
+  if (name == j.end() || !name->is_string() || name->get<std::string>().empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[].function.name must be a non-empty string");
+  }
+
+  f.name = name->get<std::string>();
+
+  // Arguments are a JSON string on the wire. Objects are accepted too and re-serialized, matching how generated
+  // tool calls are parsed elsewhere; either way the raw bytes are what the transcript keeps.
+  if (auto arguments = j.find("arguments"); arguments != j.end() && !arguments->is_null()) {
+    if (arguments->is_string()) {
+      f.arguments = arguments->get<std::string>();
+    } else if (arguments->is_object()) {
+      f.arguments = arguments->dump();
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "tool_calls[].function.arguments must be a JSON string or object");
+    }
+  }
+}
+
+void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
+  if (!j.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[] entry must be an object");
+  }
+
+  auto id = j.find("id");
+  if (id == j.end() || !id->is_string() || id->get<std::string>().empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[].id must be a non-empty string");
+  }
+
+  tc.id = id->get<std::string>();
+  tc.type = j.value("type", "function");
+
+  if (tc.type != "function") {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported tool call type '" + tc.type + "'");
+  }
+
+  auto function = j.find("function");
+  if (function == j.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[] entry requires a function object");
+  }
+
+  tc.function = function->get<ChatCompletionFunctionCall>();
+  opt_int(j, "index", tc.index);
+}
 
 void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
   m.role = j.at("role").get<std::string>();
@@ -37,9 +90,14 @@ void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
 
   opt_str(j, "name", m.name);
   opt_str(j, "tool_call_id", m.tool_call_id);
+  opt_str(j, "reasoning_content", m.reasoning_content);
 
   if (j.contains("tool_calls") && !j["tool_calls"].is_null()) {
-    m.tool_calls = j["tool_calls"];
+    if (!j["tool_calls"].is_array()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "message tool_calls must be an array");
+    }
+
+    m.tool_calls = j["tool_calls"].get<std::vector<ChatCompletionToolCall>>();
   }
 }
 

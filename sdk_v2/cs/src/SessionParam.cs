@@ -35,7 +35,7 @@ internal static class SessionParam
     /// <summary>Random seed for reproducible outputs. Int.</summary>
     public const string Seed = "seed";
 
-    /// <summary>Whether to stop on stop sequence or only at max tokens. Bool ("true"/"false").</summary>
+    /// <summary>Legacy beam-search policy; unsupported by Engine backends. Bool ("true"/"false").</summary>
     public const string EarlyStopping = "early_stopping";
 
     /// <summary>Whether to sample (false = greedy). Bool ("true"/"false").</summary>

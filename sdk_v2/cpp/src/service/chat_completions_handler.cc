@@ -44,6 +44,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
 
   try {
     req = req_json.get<ChatCompletionRequest>();
+  } catch (const fl::Exception& ex) {
+    // Contract validation (tool call shape, unsupported tool kinds) rejects malformed client payloads.
+    return ErrorResponse(StatusForException(ex), "Invalid request", ex.what());
   } catch (const nlohmann::json::exception& ex) {
     return ErrorResponse(Status::CODE_400, "Invalid request", ex.what());
   }
@@ -166,6 +169,20 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
       tracker.SetStatus(ActionStatus::kSuccess);
       return response;
     }
+  } catch (const fl::Exception& ex) {
+    tracker.RecordException(ex);
+    const auto status = StatusForException(ex);
+
+    if (status.code == Status::CODE_400.code) {
+      // An incoherent conversation — an unknown or duplicate tool call ID, or tool arguments that are not a JSON
+      // object — is the caller's mistake, not a service failure.
+      tracker.SetStatus(ActionStatus::kClientError);
+      ctx_.logger.Log(LogLevel::Warning, fmt::format("Chat completion request rejected: {}", ex.what()));
+      return ErrorResponse(status, "Invalid request", ex.what());
+    }
+
+    ctx_.logger.Log(LogLevel::Error, fmt::format("Chat completion inference failed: {}", ex.what()));
+    return ErrorResponse(status, "Inference failed", ex.what());
   } catch (const std::exception& ex) {
     tracker.RecordException(ex);
     ctx_.logger.Log(LogLevel::Error, fmt::format("Chat completion inference failed: {}", ex.what()));
@@ -261,8 +278,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
       body_ptr->Push("data: [DONE]\n\n");
     } catch (const std::exception& ex) {
+      // The status line is already sent, so a rejected request can only be reported in the event payload. Keep the
+      // error type honest so the caller can tell a client mistake from a service failure.
+      const auto* request_error = dynamic_cast<const fl::Exception*>(&ex);
+      const char* error_type = request_error != nullptr ? ErrorTypeForStatus(StatusForException(*request_error))
+                                                        : "server_error";
       nlohmann::json err = {
-          {"error", {{"message", ex.what()}, {"type", "server_error"}, {"param", nullptr}, {"code", nullptr}}},
+          {"error", {{"message", ex.what()}, {"type", error_type}, {"param", nullptr}, {"code", nullptr}}},
       };
       body_ptr->Push("data: " + err.dump() + "\n\n");
     }

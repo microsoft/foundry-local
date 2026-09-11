@@ -48,10 +48,12 @@ class ToolCallStreamAccumulator {
   };
 
   ToolCallStreamAccumulator(std::string start_marker, std::string end_marker,
-                            std::string tools_json = {})
+                            std::string tools_json = {},
+                            std::string reasoning_end_marker = {})
       : start_marker_(std::move(start_marker)),
         end_marker_(std::move(end_marker)),
-        tools_json_(std::move(tools_json)) {}
+        tools_json_(std::move(tools_json)),
+        reasoning_end_marker_(std::move(reasoning_end_marker)) {}
 
   /// Feed a chunk into the accumulator. Returns ordered visible-text and completed-tool-call events.
   Output Push(const std::string& chunk) {
@@ -104,92 +106,116 @@ class ToolCallStreamAccumulator {
     out.events.emplace_back(std::move(text));
   }
 
+  bool EmitParsedBlock(Output& out, const std::string& block) const {
+    auto parsed = ParseToolCalls(block, start_marker_, end_marker_, tools_json_);
+    if (parsed.empty()) {
+      return false;
+    }
+
+    for (auto& call : parsed) {
+      out.events.emplace_back(std::move(call));
+    }
+    return true;
+  }
+
   void Drain(Output& out, bool flushing) {
     while (true) {
-      const std::string& marker = inside_tool_call_ ? end_marker_ : start_marker_;
+      if (inside_tool_call_) {
+        tool_call_buffer_ += buffer_;
+        buffer_.clear();
+        const size_t payload_start = start_marker_.size();
+        const size_t nested_start =
+            FindMarkerOutsideJsonString(tool_call_buffer_, start_marker_, payload_start);
+        const size_t end =
+            FindMarkerOutsideJsonString(tool_call_buffer_, end_marker_, payload_start);
 
-      size_t found = buffer_.find(marker);
+        if (nested_start != std::string::npos &&
+            (end == std::string::npos || nested_start < end)) {
+          std::string remainder = tool_call_buffer_.substr(nested_start + start_marker_.size());
+          EmitVisible(out, tool_call_buffer_.substr(0, nested_start));
+          tool_call_buffer_ = start_marker_;
+          buffer_ = std::move(remainder);
+          continue;
+        }
 
-      if (found != std::string::npos) {
-        if (inside_tool_call_) {
-          // Closing marker: take everything up to and including the marker, parse it as one tool-call block,
-          // and emit any tool calls it contained.
-          tool_call_buffer_ += buffer_.substr(0, found + marker.size());
-          buffer_.erase(0, found + marker.size());
+        if (end != std::string::npos) {
+          const size_t block_end = end + end_marker_.size();
+          std::string block = tool_call_buffer_.substr(0, block_end);
+          buffer_ = tool_call_buffer_.substr(block_end);
 
-          auto parsed = ParseToolCalls(tool_call_buffer_, start_marker_, end_marker_, tools_json_);
-          if (parsed.empty()) {
-            // A marker-shaped block that cannot be parsed is model text, not a tool call. Preserve it rather than
-            // silently dropping generated output.
-            EmitVisible(out, tool_call_buffer_);
-          } else {
-            for (auto& pc : parsed) {
-              out.events.emplace_back(std::move(pc));
-            }
+          if (!EmitParsedBlock(out, block)) {
+            EmitVisible(out, std::move(block));
           }
 
           tool_call_buffer_.clear();
           inside_tool_call_ = false;
-        } else {
-          // Opening marker: emit prefix as visible text, then start buffering the tool-call block (including the
-          // marker — ParseToolCalls expects the full `<tool_call>...</tool_call>` substring).
-          if (found > 0) {
-            EmitVisible(out, buffer_.substr(0, found));
-          }
-          tool_call_buffer_ = buffer_.substr(found, marker.size());
-          buffer_.erase(0, found + marker.size());
-          inside_tool_call_ = true;
+          continue;
         }
+
+        if (flushing) {
+          const size_t wrong_end = reasoning_end_marker_.empty()
+                                       ? std::string::npos
+                                       : FindMarkerOutsideJsonString(
+                                             tool_call_buffer_, reasoning_end_marker_, payload_start);
+          if (wrong_end != std::string::npos) {
+            std::string suffix =
+                tool_call_buffer_.substr(wrong_end + reasoning_end_marker_.size());
+            if (suffix.find_first_not_of(" \t\r\n") != std::string::npos) {
+              // A transcript cannot represent visible text after a tool call without reordering it. Keep the whole
+              // model output visible instead of recovering a call that would force the suffix to be discarded.
+              EmitVisible(out, std::move(tool_call_buffer_));
+            } else {
+              std::string candidate = tool_call_buffer_.substr(0, wrong_end) + end_marker_;
+              if (EmitParsedBlock(out, candidate)) {
+                EmitVisible(out, std::move(suffix));
+              } else {
+                EmitVisible(out, std::move(tool_call_buffer_));
+              }
+            }
+          } else {
+            EmitVisible(out, std::move(tool_call_buffer_));
+          }
+
+          tool_call_buffer_.clear();
+          buffer_.clear();
+          inside_tool_call_ = false;
+          return;
+        }
+
+        return;
+      }
+
+      const std::string& marker = start_marker_;
+
+      size_t found = buffer_.find(marker);
+
+      if (found != std::string::npos) {
+        // Opening marker: emit prefix as visible text, then start buffering the tool-call block (including the
+        // marker — ParseToolCalls expects the full `<tool_call>...</tool_call>` substring).
+        if (found > 0) {
+          EmitVisible(out, buffer_.substr(0, found));
+        }
+        tool_call_buffer_ = buffer_.substr(found, marker.size());
+        buffer_.erase(0, found + marker.size());
+        inside_tool_call_ = true;
 
         continue;  // re-scan the remaining buffer for the next marker
       }
 
       // No full marker.
       if (flushing) {
-        if (inside_tool_call_) {
-          std::string incomplete = tool_call_buffer_ + buffer_;
-          std::string candidate = incomplete;
-          if (const size_t stray_reasoning_end = candidate.find("</think>");
-              stray_reasoning_end != std::string::npos) {
-            candidate.erase(stray_reasoning_end);
-          }
-          candidate += end_marker_;
-          auto parsed = ParseToolCalls(candidate, start_marker_, end_marker_, tools_json_);
-          if (parsed.empty()) {
-            EmitVisible(out, std::move(incomplete));
-          } else {
-            for (auto& pc : parsed) {
-              out.events.emplace_back(std::move(pc));
-            }
-          }
-          tool_call_buffer_.clear();
-          inside_tool_call_ = false;
-        } else {
-          EmitVisible(out, buffer_);
-        }
+        EmitVisible(out, buffer_);
         buffer_.clear();
         return;
       }
 
-      if (inside_tool_call_) {
-        // Inside a tool-call block: every byte belongs to the block. Append to the tool-call buffer and hold back
-        // only the longest suffix that could still grow into the end marker.
-        size_t hold = LongestSuffixThatIsPrefixOf(buffer_, marker);
-        size_t safe = buffer_.size() - hold;
+      // Outside: emit visible text, but hold back the longest suffix that could still grow into the start marker.
+      size_t hold = LongestSuffixThatIsPrefixOf(buffer_, marker);
+      size_t safe = buffer_.size() - hold;
 
-        if (safe > 0) {
-          tool_call_buffer_.append(buffer_, 0, safe);
-          buffer_.erase(0, safe);
-        }
-      } else {
-        // Outside: emit visible text, but hold back the longest suffix that could still grow into the start marker.
-        size_t hold = LongestSuffixThatIsPrefixOf(buffer_, marker);
-        size_t safe = buffer_.size() - hold;
-
-        if (safe > 0) {
-          EmitVisible(out, buffer_.substr(0, safe));
-          buffer_.erase(0, safe);
-        }
+      if (safe > 0) {
+        EmitVisible(out, buffer_.substr(0, safe));
+        buffer_.erase(0, safe);
       }
 
       return;
@@ -213,6 +239,7 @@ class ToolCallStreamAccumulator {
   std::string start_marker_;
   std::string end_marker_;
   std::string tools_json_;
+  std::string reasoning_end_marker_;
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;

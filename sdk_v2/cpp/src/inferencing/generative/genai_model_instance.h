@@ -9,15 +9,19 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
 struct OgaModel;
 
 namespace fl {
+
+class OnnxChatEngine;
 
 /// A model that has been loaded into the ORT GenAI runtime.
 /// Owns the OgaModel and its preprocessing resources.
@@ -50,9 +54,19 @@ class GenAIModelInstance {
   };
   const TagInfo& GetTagInfo();
 
+  /// Token IDs `text` encodes to with this model's tokenizer, or an empty sequence when it cannot be encoded.
+  /// Encoding is best-effort by design: a marker the tokenizer cannot represent leaves callers matching decoded
+  /// text instead of token IDs, which is the same fallback a model that publishes no marker IDs already uses.
+  std::vector<int32_t> EncodeText(const std::string& text);
+
   /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();
   Preprocessor& GetPreprocessor();
+#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
+  OnnxChatEngine* GetChatEngine() { return chat_engine_.get(); }
+#else
+  OnnxChatEngine* GetChatEngine() { return nullptr; }
+#endif
 
   /// Get the last-activity timestamp.
   std::chrono::steady_clock::time_point LastActivity() const { return last_activity_; }
@@ -79,6 +93,9 @@ class GenAIModelInstance {
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
   std::unique_ptr<Preprocessor> preprocessor_;
+#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
+  std::unique_ptr<OnnxChatEngine> chat_engine_;
+#endif
   TagInfo tag_info_;
   std::once_flag tag_info_init_flag_;
   std::chrono::steady_clock::time_point last_activity_;

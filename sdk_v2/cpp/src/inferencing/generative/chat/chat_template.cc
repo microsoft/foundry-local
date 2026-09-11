@@ -11,7 +11,70 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+
 namespace fl {
+
+namespace chat_internal {
+
+std::optional<size_t> FindUnmatchedPromptSuffix(std::span<const int32_t> resident_tokens,
+                                                std::span<const int32_t> full_prompt) noexcept {
+  if (resident_tokens.size() > full_prompt.size() ||
+      !std::equal(resident_tokens.begin(), resident_tokens.end(), full_prompt.begin())) {
+    return std::nullopt;
+  }
+
+  return resident_tokens.size();
+}
+
+}  // namespace chat_internal
+
+namespace {
+
+nlohmann::ordered_json BuildToolCallsJson(const TranscriptMessage& message) {
+  auto tool_calls = nlohmann::ordered_json::array();
+
+  for (const auto* call : message.ToolCalls()) {
+    nlohmann::ordered_json entry;
+    entry["id"] = call->call_id;
+    entry["type"] = "function";
+    // Always the normalized object: the transcript guarantees it, so projecting a committed conversation cannot fail.
+    entry["function"] = nlohmann::ordered_json{{"name", call->name}, {"arguments", call->normalized_arguments}};
+    tool_calls.push_back(std::move(entry));
+  }
+
+  return tool_calls;
+}
+
+nlohmann::ordered_json BuildMessageJson(const TranscriptMessage& message) {
+  nlohmann::ordered_json entry;
+  entry["role"] = Utils::RoleToString(message.role);
+  entry["content"] = message.VisibleText();
+
+  if (!message.name.empty()) {
+    entry["name"] = message.name;
+  }
+
+  if (message.role == FOUNDRY_LOCAL_ROLE_TOOL) {
+    if (!message.tool_call_id.empty()) {
+      entry["tool_call_id"] = message.tool_call_id;
+    }
+
+    return entry;
+  }
+
+  if (!message.HasToolCalls()) {
+    return entry;
+  }
+
+  // Reasoning is never projected back into a prompt, not even alongside the calls it produced. It is the model's
+  // private scratchpad: it is typed, stored, and surfaced to the caller, but a conversation replayed from storage
+  // cannot reproduce it, so replaying it here would make a warm session and a rebuilt one send different prompts.
+  entry["tool_calls"] = BuildToolCallsJson(message);
+  return entry;
+}
+
+}  // namespace
 
 std::string RenderMessageForPrompt(const MessageItem& msg) {
   if (msg.IsSimpleText()) {
@@ -41,21 +104,23 @@ std::string RenderMessageForPrompt(const MessageItem& msg) {
   return text;
 }
 
-std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
+std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages) {
+  auto messages_json = nlohmann::ordered_json::array();
+  for (const auto& message : messages) {
+    messages_json.push_back(BuildMessageJson(message));
+  }
+
+  return messages_json.dump();
+}
+
+std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json) {
   if (messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
-  // Build messages JSON array matching the format expected by the chat template.
-  // Format: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}, ...]
-  nlohmann::json messages_json = nlohmann::json::array();
-  for (const auto& msg : messages) {
-    messages_json.push_back({{"role", Utils::RoleToString(msg.role)}, {"content", RenderMessageForPrompt(msg)}});
-  }
-
-  std::string messages_str = messages_json.dump();
+  std::string messages_str = BuildChatMessagesJson(messages);
   const char* tools_ptr = tools_json.empty() ? nullptr : tools_json.c_str();
 
   // ApplyChatTemplate uses the model's built-in template (template_str=nullptr) and appends the assistant

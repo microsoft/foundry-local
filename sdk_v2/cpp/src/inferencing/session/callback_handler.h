@@ -3,8 +3,10 @@
 #pragma once
 
 #include <cassert>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include <fmt/format.h>
@@ -61,6 +63,15 @@ struct CallbackHandler {
     queue_->Push(std::move(item));
   }
 
+  /// Wait until every currently queued callback has returned without closing the queue.
+  /// The producer may publish more items afterward; unlike Drain(), this is not a terminal operation.
+  void DrainPending() {
+    std::unique_lock<std::mutex> lock(callback_mutex_);
+    callback_cv_.wait(lock, [this] {
+      return !callback_in_progress_ && queue_->Size() == 0;
+    });
+  }
+
   /// Mark the queue as finished, wait for the worker to drain all
   /// remaining items, and join the worker thread. Idempotent.
   void Drain() {
@@ -79,6 +90,8 @@ struct CallbackHandler {
       // Fire the callback for each available item.
       // The callback pops from the queue — that is the established contract.
       while (queue_->Size() > 0) {
+        SetCallbackInProgress(true);
+
         try {
           if (fn_(data_, user_data_) != 0) {
             request_.canceled = true;
@@ -88,13 +101,17 @@ struct CallbackHandler {
                       fmt::format("streaming callback threw an exception; cancelling request: {}",
                                   e.what()));
           DisableAfterException();
+          SetCallbackInProgress(false);
           return;
         } catch (...) {
           logger_.Log(LogLevel::Warning,
                       "streaming callback threw a non-std exception; cancelling request");
           DisableAfterException();
+          SetCallbackInProgress(false);
           return;
         }
+
+        SetCallbackInProgress(false);
       }
 
       // Exit once the queue is finished and fully drained.
@@ -113,6 +130,17 @@ struct CallbackHandler {
     }
   }
 
+  void SetCallbackInProgress(bool value) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      callback_in_progress_ = value;
+    }
+
+    if (!value) {
+      callback_cv_.notify_all();
+    }
+  }
+
   const Request& request_;
   CallbackFn fn_;
   void* user_data_;
@@ -120,6 +148,9 @@ struct CallbackHandler {
   flStreamingCallbackData data_{};
   std::unique_ptr<ItemQueue> queue_;
 
+  std::mutex callback_mutex_;
+  std::condition_variable callback_cv_;
+  bool callback_in_progress_ = false;
   std::thread worker_;
 };
 

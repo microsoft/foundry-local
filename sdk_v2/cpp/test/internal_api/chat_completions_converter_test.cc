@@ -6,6 +6,10 @@
 //
 #include "contracts/chat_completions_converter.h"
 
+#include "exception.h"
+#include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/chat_transcript.h"
+#include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
@@ -15,10 +19,26 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <utility>
 
 using namespace fl;
 using namespace fl::chat_completions;
 using json = nlohmann::json;
+
+namespace {
+
+template <typename Fn>
+void ExpectInvalidArgument(Fn&& fn, const std::string& message_fragment) {
+  try {
+    fn();
+    FAIL() << "Expected fl::Exception";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(e.what()).find(message_fragment), std::string::npos) << e.what();
+  }
+}
+
+}  // namespace
 
 // ========================================================================
 // GenerateCompletionId
@@ -178,6 +198,7 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_SkipsEmptyContent) {
   ChatCompletionRequest req;
   req.messages.push_back({"user", std::nullopt, {}, {}, {}});     // null content
   req.messages.push_back({"user", std::string(""), {}, {}, {}});  // empty string
+  req.messages.push_back({"assistant", std::string(""), {}, {}, {}});  // empty assistant without reasoning
   req.messages.push_back({"user", std::string("Real message"), {}, {}, {}});
 
   Request session_request;
@@ -187,6 +208,31 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_SkipsEmptyContent) {
   ASSERT_EQ(session_request.items.size(), 1u);
   auto* msg = static_cast<MessageItem*>(session_request.items[0]);
   EXPECT_EQ(msg->GetSimpleText(), "Real message");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPreservesAnEmptyRoleBoundary) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = std::string("");
+  assistant.reasoning_content = "private scratchpad";
+  req.messages.push_back(std::move(assistant));
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 1u);
+  ASSERT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  const auto* boundary = static_cast<const MessageItem*>(session_request.items[0]);
+  EXPECT_EQ(boundary->role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(boundary->GetSimpleText(), "");
+
+  const auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[0].VisibleText().empty());
+  EXPECT_TRUE(messages[0].ReasoningText().empty());
+  EXPECT_EQ(BuildChatMessagesJson(messages), R"([{"role":"assistant","content":""}])");
 }
 
 TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolRoleCreatesToolResultItem) {
@@ -222,6 +268,147 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolRoleMissingCallId) {
   ASSERT_EQ(session_request.items.size(), 1u);
   auto* tr = static_cast<ToolResultItem*>(session_request.items[0]);
   EXPECT_EQ(tr->call_id, "");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolRoleKeepsEmptyResult) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage tool_msg;
+  tool_msg.role = "tool";
+  tool_msg.content = std::string("");
+  tool_msg.tool_call_id = "call_1";
+  req.messages.push_back(tool_msg);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 1u);
+  auto* tr = static_cast<ToolResultItem*>(session_request.items[0]);
+  EXPECT_EQ(tr->call_id, "call_1");
+  EXPECT_EQ(tr->result, "");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_AssistantToolCallsWithNullContent) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  assistant.tool_calls.push_back({"call_2", "function", {"get_time", "{}"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 2u);
+  ASSERT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+
+  auto* first = static_cast<ToolCallItem*>(session_request.items[0]);
+  EXPECT_EQ(first->call_id, "call_1");
+  EXPECT_EQ(first->name, "get_weather");
+  EXPECT_EQ(first->arguments, R"({"city":"Seattle"})");
+
+  auto* second = static_cast<ToolCallItem*>(session_request.items[1]);
+  EXPECT_EQ(second->call_id, "call_2");
+  EXPECT_EQ(second->name, "get_time");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_AssistantContentPrecedesItsToolCalls) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = "Let me check.";
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 2u);
+  ASSERT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(static_cast<MessageItem*>(session_request.items[0])->GetSimpleText(), "Let me check.");
+  EXPECT_EQ(session_request.items[1]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_PropagatesParticipantName) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage user;
+  user.role = "user";
+  user.content = "Hello";
+  user.name = "alice";
+  req.messages.push_back(user);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 1u);
+  auto* msg = static_cast<MessageItem*>(session_request.items[0]);
+  EXPECT_EQ(msg->name, "alice");
+
+  // And it survives into the transcript projection the chat template consumes.
+  auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].name, "alice");
+  EXPECT_EQ(BuildChatMessagesJson(messages), R"([{"role":"user","content":"Hello","name":"alice"}])");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_PreservesNameOnToolCallOnlyAssistantMessage) {
+  // An assistant message that only issues tool calls has null content, so its name has nowhere to live on a
+  // ToolCallItem. A content-free MessageItem carries it without fabricating text the caller never sent.
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.name = "weather_bot";
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 2u);
+  ASSERT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+
+  auto* named = static_cast<MessageItem*>(session_request.items[0]);
+  EXPECT_EQ(named->name, "weather_bot");
+  EXPECT_TRUE(named->content.empty());
+  EXPECT_EQ(session_request.items[1]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+
+  // The transcript folds the call into the named message, so the name reaches the template alongside tool_calls.
+  auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].name, "weather_bot");
+  ASSERT_EQ(messages[0].ToolCalls().size(), 1u);
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"([{"role":"assistant","content":"","name":"weather_bot","tool_calls":)"
+            R"([{"id":"call_1","type":"function","function":{"name":"get_weather",)"
+            R"("arguments":{"city":"Seattle"}}}]}])");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_UnnamedToolCallOnlyAssistantMessageAddsNoMessageItem) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 1u);
+  EXPECT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolCallsOnNonAssistantRoleAreIgnored) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage user;
+  user.role = "user";
+  user.content = "Hello";
+  user.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  req.messages.push_back(user);
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  ASSERT_EQ(session_request.items.size(), 1u);
+  EXPECT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
 }
 
 // ========================================================================
@@ -508,46 +695,94 @@ TEST(ChatCompletionsConverterTest, MapStopSequences_NoStop_NoOp) {
   MapStopSequences(req, session_request);
 
   EXPECT_EQ(session_request.options.Find("early_stopping"), nullptr);
+  EXPECT_EQ(session_request.options.Find(kInternalStopStringsOptionKey), nullptr);
 }
 
-TEST(ChatCompletionsConverterTest, MapStopSequences_StringStop) {
+TEST(ChatCompletionsConverterTest, MapStopSequences_StringStopStoresNormalizedPayload) {
   ChatCompletionRequest req;
   req.stop = json("END");
 
   Request session_request;
   MapStopSequences(req, session_request);
 
-  EXPECT_STREQ(session_request.options.Find("early_stopping"), "true");
+  EXPECT_EQ(session_request.options.Find("early_stopping"), nullptr);
+  EXPECT_EQ(LoadStopStringsOption(session_request.options), (std::vector<std::string>{"END"}));
 }
 
-TEST(ChatCompletionsConverterTest, MapStopSequences_ArrayStop) {
+TEST(ChatCompletionsConverterTest, MapStopSequences_ArrayStopStoresNormalizedPayload) {
   ChatCompletionRequest req;
   req.stop = json::parse(R"(["END", "STOP"])");
 
   Request session_request;
   MapStopSequences(req, session_request);
 
-  EXPECT_STREQ(session_request.options.Find("early_stopping"), "true");
-}
-
-TEST(ChatCompletionsConverterTest, MapStopSequences_EmptyString_NoEarlyStopping) {
-  ChatCompletionRequest req;
-  req.stop = json("");
-
-  Request session_request;
-  MapStopSequences(req, session_request);
-
   EXPECT_EQ(session_request.options.Find("early_stopping"), nullptr);
+  EXPECT_EQ(LoadStopStringsOption(session_request.options), (std::vector<std::string>{"END", "STOP"}));
 }
 
-TEST(ChatCompletionsConverterTest, MapStopSequences_EmptyArray_NoEarlyStopping) {
+TEST(ChatCompletionsConverterTest, MapStopSequences_TypeMustBeStringOrArray) {
+  ExpectInvalidArgument(
+      []() {
+        ChatCompletionRequest req;
+        req.stop = json(123);
+        Request session_request;
+        MapStopSequences(req, session_request);
+      },
+      "must be a string or array of strings");
+}
+
+TEST(ChatCompletionsConverterTest, MapStopSequences_ArrayMembersMustBeStrings) {
+  ExpectInvalidArgument(
+      []() {
+        ChatCompletionRequest req;
+        req.stop = json::array({"END", 42});
+        Request session_request;
+        MapStopSequences(req, session_request);
+      },
+      "stop[1] must be a string");
+}
+
+TEST(ChatCompletionsConverterTest, MapStopSequences_RejectsEmptyString) {
+  ExpectInvalidArgument(
+      []() {
+        ChatCompletionRequest req;
+        req.stop = json("");
+        Request session_request;
+        MapStopSequences(req, session_request);
+      },
+      "must not be empty");
+}
+
+TEST(ChatCompletionsConverterTest, MapStopSequences_EmptyArrayIsNoOp) {
   ChatCompletionRequest req;
   req.stop = json::array();
-
   Request session_request;
+
   MapStopSequences(req, session_request);
 
-  EXPECT_EQ(session_request.options.Find("early_stopping"), nullptr);
+  EXPECT_EQ(session_request.options.Find(kInternalStopStringsOptionKey), nullptr);
+}
+
+TEST(ChatCompletionsConverterTest, MapStopSequences_RejectsEmbeddedNul) {
+  ExpectInvalidArgument(
+      []() {
+        ChatCompletionRequest req;
+        req.stop = json(std::string("A\0B", 3));
+        Request session_request;
+        MapStopSequences(req, session_request);
+      },
+      "embedded NUL");
+}
+
+TEST(ChatCompletionsConverterTest, MapStopSequences_RejectsMoreThanFourStops) {
+  ExpectInvalidArgument(
+      []() {
+        ChatCompletionRequest req;
+        req.stop = json::array({"a", "b", "c", "d", "e"});
+        Request session_request;
+        MapStopSequences(req, session_request);
+      },
+      "at most 4 strings");
 }
 
 // ========================================================================
@@ -767,6 +1002,41 @@ TEST(ChatCompletionsConverterTest, BuildResponse_ReasoningOnlyPopulatesReasoning
   EXPECT_TRUE(result.choices[0].message.content->empty());
 }
 
+TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsAdjacentMessageRolesAndHidesReasoning) {
+  Response response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+  response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+
+  const auto completion = BuildResponse(response, "id", 0, "m");
+  ASSERT_EQ(completion.choices.size(), 1u);
+
+  const json replay_json = {
+      {"model", "m"},
+      {"messages",
+       json::array({{{"role", "user"}, {"content", "before"}},
+                    json(completion.choices[0].message),
+                    {{"role", "user"}, {"content", "after"}}})}};
+  const auto replay = replay_json.get<ChatCompletionRequest>();
+
+  Request session_request;
+  BuildRequestItems(replay, session_request);
+
+  const auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(messages[2].role, FOUNDRY_LOCAL_ROLE_USER);
+  EXPECT_TRUE(messages[1].VisibleText().empty());
+  EXPECT_TRUE(messages[1].ReasoningText().empty());
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"([{"role":"user","content":"before"},)"
+            R"({"role":"assistant","content":""},)"
+            R"({"role":"user","content":"after"}])");
+}
+
 TEST(ChatCompletionsConverterTest, BuildResponse_InterleavedReasoningPopulatesBothFields) {
   Response response;
   std::vector<std::unique_ptr<Item>> parts;
@@ -866,4 +1136,94 @@ TEST(ChatCompletionsConverterTest, FormatReasoningStreamingChunk_DoesNotContainC
   EXPECT_TRUE(delta.contains("reasoning_content"));
   EXPECT_FALSE(delta.contains("content"));
   EXPECT_FALSE(delta.contains("role"));
+}
+
+// ========================================================================
+// Assistant-turn ordering invariant on a Chat Completions payload.
+//
+// A chat completion carries the assistant reply as `content` plus a `tool_calls` array — the same schema the
+// transcript projection uses, with the same limitation. These pin that the limitation is handled explicitly on this
+// endpoint too, rather than by quietly moving text in front of the call it followed.
+// ========================================================================
+
+TEST(ChatCompletionsConverterTest, AssistantContentBeforeItsToolCallsIsAccepted) {
+  ChatCompletionRequest req;
+  req.messages.push_back({"user", std::string("Weather in Seattle?"), {}, {}, {}});
+
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = std::string("Let me check.");
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  req.messages.push_back({"tool", std::string("sunny"), {}, std::string("call_1"), {}});
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_FALSE(messages[1].HasVisibleTextAfterToolCall());
+
+  const ChatTranscript payload_transcript;
+  EXPECT_NO_THROW(payload_transcript.ValidateInputs(messages));
+}
+
+TEST(ChatCompletionsConverterTest, AnAssistantMessageContinuingAnUnansweredCallIsRejected) {
+  // Two assistant messages in a row, the first carrying an unanswered call. They are one assistant turn to any chat
+  // template, and that turn would have to report the second message's text before the call — so it is refused.
+  ChatCompletionRequest req;
+  req.messages.push_back({"user", std::string("Weather in Seattle?"), {}, {}, {}});
+
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = std::string("Let me check.");
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  req.messages.push_back({"assistant", std::string("One moment."), {}, {}, {}});
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 2u);
+  EXPECT_TRUE(messages[1].HasVisibleTextAfterToolCall());
+
+  const ChatTranscript payload_transcript;
+  try {
+    payload_transcript.ValidateInputs(messages);
+    FAIL() << "expected the ordering invariant to reject the payload";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("visible text after a tool call"), std::string::npos) << ex.what();
+  }
+}
+
+TEST(ChatCompletionsConverterTest, AnAssistantReplyAfterAToolResultStaysItsOwnTurn) {
+  // The ordinary multi-turn tool exchange: the tool result separates the two assistant turns, so nothing merges and
+  // nothing is rejected.
+  ChatCompletionRequest req;
+  req.messages.push_back({"user", std::string("Weather in Seattle?"), {}, {}, {}});
+
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = std::string("Let me check.");
+  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  req.messages.push_back(assistant);
+
+  req.messages.push_back({"tool", std::string("sunny"), {}, std::string("call_1"), {}});
+  req.messages.push_back({"assistant", std::string("It is sunny."), {}, {}, {}});
+  req.messages.push_back({"user", std::string("And tomorrow?"), {}, {}, {}});
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 5u);
+  EXPECT_EQ(messages[3].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(messages[3].VisibleText(), "It is sunny.");
+
+  const ChatTranscript payload_transcript;
+  EXPECT_NO_THROW(payload_transcript.ValidateInputs(messages));
 }

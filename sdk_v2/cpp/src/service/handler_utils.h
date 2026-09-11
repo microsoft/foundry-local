@@ -4,6 +4,8 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
+#include "exception.h"
+
 #include <nlohmann/json.hpp>
 
 #include <oatpp/web/protocol/http/outgoing/Body.hpp>
@@ -50,6 +52,20 @@ inline std::shared_ptr<HttpRequestHandler::OutgoingResponse> ErrorResponse(const
 
   nlohmann::json body = {{"error", error_obj}};
   return JsonResponse(status, body);
+}
+
+/// Map a failure raised during request handling to an HTTP status.
+///
+/// The inference path validates what the caller sent: tool results must reference an outstanding call, call IDs must
+/// be unique, and supplied tool-call arguments must be a JSON object. Those rejections are client mistakes, so they
+/// surface as 400 invalid_request_error. Every other failure is a service failure and stays a 500.
+inline Status StatusForException(const fl::Exception& ex) {
+  return ex.code() == FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT ? Status::CODE_400 : Status::CODE_500;
+}
+
+/// The OpenAI error `type` matching an HTTP status.
+inline const char* ErrorTypeForStatus(const Status& status) {
+  return status.code >= 500 ? "server_error" : "invalid_request_error";
 }
 
 /// Generate a random ID with the given prefix (e.g. "chatcmpl").

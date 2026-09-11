@@ -16,10 +16,15 @@
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
+#include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/chat_transcript.h"
+#include "inferencing/generative/openresponses/response_store.h"
+#include "items/tool_result_item.h"
 
 using namespace fl;
 using namespace fl::responses;
 using namespace fl::ResponseConverter;
+using json = nlohmann::json;
 
 // ========================================================================
 // Helper: minimal ResponseCreateParams for echo tests
@@ -305,17 +310,57 @@ TEST(ResponseConverterTest, ToInputItems_StringInput) {
   EXPECT_FALSE(items[0]["id"].get<std::string>().empty());
 }
 
-TEST(ResponseConverterTest, ToInputItems_WithInstructions) {
+TEST(ResponseConverterTest, ToInputItems_InstructionsAreNotStoredAsAnItem) {
+  // /input_items reports what the caller put in `input`. Instructions are request-scoped state, not an input item,
+  // and synthesizing one made the endpoint report something the caller never sent.
   nlohmann::json req = {{"instructions", "Be concise"}, {"input", "Hi"}};
   auto items = ToInputItems(req);
 
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0]["role"], "user");
+  EXPECT_EQ(items[0]["content"], "Hi");
+}
+
+TEST(ResponseConverterTest, ToInputItems_InstructionsOnlyRequestStoresNothing) {
+  nlohmann::json req = {{"instructions", "Be concise"}};
+  EXPECT_TRUE(ToInputItems(req).empty());
+}
+
+TEST(ResponseConverterTest, ToInputItems_CallerSystemMessageIsStoredVerbatim) {
+  // A caller system message is ordinary conversation content and is stored exactly as sent, even when its text
+  // happens to match the request's instructions.
+  nlohmann::json req = {
+      {"instructions", "Be concise"},
+      {"input", nlohmann::json::array({
+                    {{"type", "message"}, {"role", "system"}, {"content", "Be concise"}},
+                    {{"type", "message"}, {"role", "user"}, {"content", "Hi"}},
+                })},
+  };
+
+  auto items = ToInputItems(req);
+
   ASSERT_EQ(items.size(), 2u);
-  // First item is the system message from instructions
   EXPECT_EQ(items[0]["role"], "system");
   EXPECT_EQ(items[0]["content"], "Be concise");
-  // Second is the user input
-  EXPECT_EQ(items[1]["role"], "user");
   EXPECT_EQ(items[1]["content"], "Hi");
+}
+
+TEST(ResponseConverterTest, ToInputItems_ReasoningItemIsStoredVerbatim) {
+  // /input_items must keep reporting a reasoning item the caller echoed back, unchanged.
+  nlohmann::json req = {
+      {"input", nlohmann::json::array({
+                    {{"type", "reasoning"},
+                     {"id", "rs_1"},
+                     {"summary", nlohmann::json::array({{{"type", "summary_text"}, {"text", "private"}}})}},
+                })},
+  };
+
+  auto items = ToInputItems(req);
+
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0]["type"], "reasoning");
+  EXPECT_EQ(items[0]["id"], "rs_1");
+  EXPECT_EQ(items[0]["summary"][0]["text"], "private");
 }
 
 TEST(ResponseConverterTest, ToInputItems_ArrayInput_PreservesObjects) {
@@ -887,4 +932,606 @@ TEST(ResponseConverterTest, ToSessionRequest_ZeroPenaltiesAreNoOps) {
 
   EXPECT_EQ(req.options.Find("presence_penalty"), nullptr);
   EXPECT_EQ(req.options.Find("frequency_penalty"), nullptr);
+}
+
+// ========================================================================
+// ToSessionRequest — tool call replay
+//
+// A caller continues a tool-calling conversation either by chaining to a
+// stored response (previous_output carries `function_call` entries) or by
+// sending the call back in the request `input`. Both forms must survive as
+// ToolCallItems so the session can correlate the results that follow.
+// ========================================================================
+
+TEST(ResponseConverterTest, ToSessionRequest_StoredReplayPreservesFunctionCalls) {
+  ResponseCreateParams params;
+  params.model = "test-model";
+
+  std::vector<InputItem> input;
+  FunctionCallResultInputItem result;
+  result.call_id = "call_1";
+  result.output = "sunny";
+  input.push_back(result);
+  params.input = std::move(input);
+
+  ResponseChainContext previous_context{
+      ResponseChainHop{nlohmann::json::array(), nlohmann::json::parse(R"([
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Let me check."}]},
+    {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"Seattle\"}"}
+  ])")}};
+
+  auto request = ToSessionRequest(params, &previous_context);
+
+  ASSERT_EQ(request.items.size(), 3u);
+  EXPECT_EQ(request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+
+  ASSERT_EQ(request.items[1]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+  auto* call = static_cast<ToolCallItem*>(request.items[1]);
+  EXPECT_EQ(call->call_id, "call_1");
+  EXPECT_EQ(call->name, "get_weather");
+  EXPECT_EQ(call->arguments, R"({"city":"Seattle"})");
+
+  ASSERT_EQ(request.items[2]->type, FOUNDRY_LOCAL_ITEM_TOOL_RESULT);
+  auto* tool_result = static_cast<ToolResultItem*>(request.items[2]);
+  EXPECT_EQ(tool_result->call_id, "call_1");
+  EXPECT_EQ(tool_result->result, "sunny");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_FunctionCallInputItemBecomesToolCallItem) {
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"Seattle\"}"},
+      {"type": "function_call_output", "call_id": "call_1", "output": ""}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 2u);
+
+  ASSERT_EQ(request.items[0]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+  auto* call = static_cast<ToolCallItem*>(request.items[0]);
+  EXPECT_EQ(call->call_id, "call_1");
+  EXPECT_EQ(call->name, "get_weather");
+  EXPECT_EQ(call->arguments, R"({"city":"Seattle"})");
+
+  ASSERT_EQ(request.items[1]->type, FOUNDRY_LOCAL_ITEM_TOOL_RESULT);
+  auto* tool_result = static_cast<ToolResultItem*>(request.items[1]);
+  EXPECT_EQ(tool_result->call_id, "call_1");
+  EXPECT_EQ(tool_result->result, "");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_ReconstructedChainCorrelatesCallAndResultAfterCacheMiss) {
+  // The session cache dropped the conversation, so the whole chain is rebuilt from the store and replayed. The
+  // assistant tool call must reach the request ahead of the result that answers it, and the new user turn last.
+  ResponseStore store;
+
+  json first_response;
+  first_response["id"] = "resp_1";
+  first_response["previous_response_id"] = nullptr;
+  first_response["output"] = json::array({{{"type", "function_call"},
+                                           {"call_id", "call_1"},
+                                           {"name", "get_weather"},
+                                           {"arguments", R"({"city":"Seattle"})"}}});
+  store.Store("resp_1", first_response,
+              json::array({{{"type", "message"}, {"role", "user"}, {"content", "weather?"}}}));
+
+  json second_response;
+  second_response["id"] = "resp_2";
+  second_response["previous_response_id"] = "resp_1";
+  second_response["output"] =
+      json::array({{{"type", "message"}, {"role", "assistant"}, {"content", "It is sunny."}}});
+  store.Store("resp_2", second_response,
+              json::array({{{"type", "function_call_output"}, {"call_id", "call_1"}, {"output", "sunny"}}}));
+
+  auto context = store.BuildChainContext("resp_2");
+  ASSERT_TRUE(context.has_value());
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("And tomorrow?");
+
+  auto request = ToSessionRequest(params, &(*context));
+
+  ASSERT_EQ(request.items.size(), 5u);
+  EXPECT_EQ(request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+
+  ASSERT_EQ(request.items[1]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+  EXPECT_EQ(static_cast<ToolCallItem*>(request.items[1])->call_id, "call_1");
+  EXPECT_EQ(static_cast<ToolCallItem*>(request.items[1])->arguments, R"({"city":"Seattle"})");
+
+  ASSERT_EQ(request.items[2]->type, FOUNDRY_LOCAL_ITEM_TOOL_RESULT);
+  EXPECT_EQ(static_cast<ToolResultItem*>(request.items[2])->call_id, "call_1");
+
+  EXPECT_EQ(request.items[3]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+  EXPECT_EQ(static_cast<MessageItem*>(request.items[4])->GetSimpleText(), "And tomorrow?");
+
+  // The replayed context is coherent: the transcript accepts it, with the call already answered.
+  auto messages = BuildTranscriptMessages(request.items);
+  ChatTranscript transcript;
+  EXPECT_NO_THROW(transcript.ValidateInputs(messages));
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_ReplayedCallWithUnusableArgumentsIsNormalizedNotRejected) {
+  // The service replaying its own earlier output must not fail because the model once emitted argument bytes that
+  // are not a JSON object — the model was already shown that call as having no arguments.
+  ResponseChainContext previous_context{
+      ResponseChainHop{nlohmann::json::parse(R"([{"type": "message", "role": "user", "content": "weather?"}])"),
+                       nlohmann::json::parse(R"([
+    {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "[1,2]"}
+  ])")},
+      ResponseChainHop{
+          nlohmann::json::parse(R"([{"type": "function_call_output", "call_id": "call_1", "output": "sunny"}])"),
+          nlohmann::json::parse(R"([{"type": "message", "role": "assistant", "content": "It is sunny."}])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("And tomorrow?");
+
+  Request request;
+  ASSERT_NO_THROW(request = ToSessionRequest(params, &previous_context));
+
+  ASSERT_EQ(request.items.size(), 5u);
+  ASSERT_EQ(request.items[1]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+  EXPECT_EQ(static_cast<ToolCallItem*>(request.items[1])->arguments, "");
+
+  // The replayed conversation is coherent and the strict transcript path accepts it.
+  auto messages = BuildTranscriptMessages(request.items);
+  ChatTranscript transcript;
+  EXPECT_NO_THROW(transcript.ValidateInputs(messages));
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_CallerSuppliedUnusableArgumentsAreStillRejected) {
+  // The same bytes arriving in the request `input` are a client error, not a replay of our own output.
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "[1,2]"}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 1u);
+  EXPECT_EQ(static_cast<ToolCallItem*>(request.items[0])->arguments, "[1,2]");
+  EXPECT_THROW(BuildTranscriptMessages(request.items), fl::Exception);
+}
+
+// ========================================================================
+// Typed stateless replay — a caller resending the whole conversation in
+// `input` instead of chaining via previous_response_id must reach the same
+// prompt as chain reconstruction does.
+// ========================================================================
+
+TEST(ResponseConverterTest, ToSessionRequest_TypedReplayPreservesAssistantOutputTextAndToolExchange) {
+  // Exactly what the Responses API emitted on earlier turns, echoed back by the caller: an assistant message with
+  // `output_text` parts, the function_call it issued, and the function_call_output answering it.
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
+      {"role": "assistant", "content": [{"type": "output_text", "text": "Hello there."}]},
+      {"role": "user", "content": [{"type": "input_text", "text": "Weather in Seattle?"}]},
+      {"role": "assistant", "content": [{"type": "output_text", "text": "Let me check."}]},
+      {"type": "function_call", "call_id": "call_1", "name": "get_weather",
+       "arguments": "{\"city\":\"Seattle\"}"},
+      {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+      {"role": "user", "content": [{"type": "input_text", "text": "And tomorrow?"}]}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 7u);
+  EXPECT_EQ(static_cast<MessageItem*>(request.items[1])->GetSimpleText(), "Hello there.");
+  EXPECT_EQ(static_cast<MessageItem*>(request.items[3])->GetSimpleText(), "Let me check.");
+  ASSERT_EQ(request.items[4]->type, FOUNDRY_LOCAL_ITEM_TOOL_CALL);
+  ASSERT_EQ(request.items[5]->type, FOUNDRY_LOCAL_ITEM_TOOL_RESULT);
+
+  // The transcript folds the call into the adjacent assistant message and correlates the result with it.
+  auto messages = BuildTranscriptMessages(request.items);
+  ChatTranscript transcript;
+  EXPECT_NO_THROW(transcript.ValidateInputs(messages));
+
+  // Exact template input: the prior text-only assistant turn survives, and so does the tool exchange.
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"([{"role":"user","content":"Hi"},)"
+            R"({"role":"assistant","content":"Hello there."},)"
+            R"({"role":"user","content":"Weather in Seattle?"},)"
+            R"({"role":"assistant","content":"Let me check.","tool_calls":[{"id":"call_1","type":"function",)"
+            R"("function":{"name":"get_weather","arguments":{"city":"Seattle"}}}]},)"
+            R"({"role":"tool","content":"sunny","tool_call_id":"call_1"},)"
+            R"({"role":"user","content":"And tomorrow?"}])");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_TypedReplayMatchesChainReconstruction) {
+  // The same conversation replayed two ways must produce the same prompt input.
+  ResponseStore store;
+
+  json first;
+  first["id"] = "resp_1";
+  first["previous_response_id"] = nullptr;
+  first["output"] = json::array({{{"type", "message"},
+                                  {"role", "assistant"},
+                                  {"content", json::array({{{"type", "output_text"}, {"text", "Let me check."}}})}},
+                                 {{"type", "function_call"},
+                                  {"call_id", "call_1"},
+                                  {"name", "get_weather"},
+                                  {"arguments", R"({"city":"Seattle"})"}}});
+  store.Store("resp_1", first,
+              json::array({{{"type", "message"}, {"role", "user"}, {"content", "Weather in Seattle?"}}}));
+
+  auto context = store.BuildChainContext("resp_1");
+  ASSERT_TRUE(context.has_value());
+
+  ResponseCreateParams chained;
+  chained.model = "test-model";
+  {
+    std::vector<InputItem> items;
+    FunctionCallResultInputItem result;
+    result.call_id = "call_1";
+    result.output = "sunny";
+    items.push_back(result);
+    chained.input = std::move(items);
+  }
+
+  auto chained_request = ToSessionRequest(chained, &(*context));
+
+  auto stateless_body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Weather in Seattle?"}]},
+      {"role": "assistant", "content": [{"type": "output_text", "text": "Let me check."}]},
+      {"type": "function_call", "call_id": "call_1", "name": "get_weather",
+       "arguments": "{\"city\":\"Seattle\"}"},
+      {"type": "function_call_output", "call_id": "call_1", "output": "sunny"}
+    ]
+  })");
+  auto stateless_params = stateless_body.get<ResponseCreateParams>();
+  auto stateless_request = ToSessionRequest(stateless_params);
+
+  EXPECT_EQ(BuildChatMessagesJson(BuildTranscriptMessages(stateless_request.items)),
+            BuildChatMessagesJson(BuildTranscriptMessages(chained_request.items)));
+}
+
+TEST(ResponseConverterTest, StoredFunctionCallArgumentsAreCanonicalizedForChainReplay) {
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"type":"function_call","call_id":"call_1","name":"get_weather","arguments":{"city":"Seattle"}}
+    ]
+  })");
+
+  auto stored_items = ToInputItems(body);
+  ASSERT_EQ(stored_items.size(), 1u);
+  ASSERT_TRUE(stored_items.front()["arguments"].is_string());
+  EXPECT_EQ(stored_items.front()["arguments"], R"({"city":"Seattle"})");
+
+  ResponseStore store;
+  nlohmann::json response = {
+      {"id", "resp_1"},
+      {"previous_response_id", nullptr},
+      {"output", nlohmann::json::array()},
+  };
+  store.Store("resp_1", response, stored_items);
+
+  auto context = store.BuildChainContext("resp_1");
+  ASSERT_TRUE(context.has_value());
+
+  ResponseCreateParams next;
+  next.model = "test-model";
+  next.input = std::vector<InputItem>{};
+  auto request = ToSessionRequest(next, &*context);
+
+  // The replayed call, then the hop's assistant boundary: the stored response produced no output, and the live
+  // session still committed an assistant message for that turn.
+  ASSERT_EQ(request.items.size(), 2u);
+  auto* call = static_cast<ToolCallItem*>(request.items.front());
+  EXPECT_EQ(call->call_id, "call_1");
+  EXPECT_EQ(call->name, "get_weather");
+  EXPECT_EQ(call->arguments, R"({"city":"Seattle"})");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_TypedReplayAcceptsStoredTextPartShape) {
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [{"role": "assistant", "content": [{"type": "text", "text": "Stored shape."}]}]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 1u);
+  EXPECT_EQ(static_cast<MessageItem*>(request.items[0])->GetSimpleText(), "Stored shape.");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_TypedReplayStillSkipsUnknownContentTypes) {
+  // Policy is unchanged for content types we do not model: they are skipped, not coerced into text.
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [{"role": "user", "content": [
+      {"type": "some_future_part", "text": "ignored"},
+      {"type": "input_text", "text": "kept"}
+    ]}]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 1u);
+  EXPECT_EQ(static_cast<MessageItem*>(request.items[0])->GetSimpleText(), "kept");
+}
+
+// ========================================================================
+// Chain replay — per-hop assistant-turn grouping
+//
+// A hop's output is exactly one assistant turn. These pin what the converter
+// emits for each output shape, including the shapes that produce nothing
+// replayable.
+// ========================================================================
+
+TEST(ResponseConverterTest, HopOutputTextCallTextEmitsOneOrderedAssistantTurn) {
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Weather in Seattle?"}])"),
+      nlohmann::json::parse(R"([
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Let me check."}]},
+        {"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Seattle\"}"},
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":" One moment."}]}
+      ])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Thanks.");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  ASSERT_EQ(messages[1].entries.size(), 3u);
+  EXPECT_EQ(messages[1].entries[0].text, "Let me check.");
+  EXPECT_EQ(messages[1].entries[1].kind, TranscriptEntry::Kind::kToolCall);
+  EXPECT_EQ(messages[1].entries[2].text, " One moment.");
+}
+
+TEST(ResponseConverterTest, HopOutputWithOnlyReasoningEmitsAnEmptyAssistantBoundary) {
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
+      nlohmann::json::parse(
+          R"([{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"private"}]}])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Well?");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "");
+  EXPECT_EQ(messages[2].role, FOUNDRY_LOCAL_ROLE_USER);
+}
+
+TEST(ResponseConverterTest, HopOutputWithReasoningAndTextReplaysOnlyTheText) {
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
+      nlohmann::json::parse(R"([
+        {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"private"}]},
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answer."}]}
+      ])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Thanks.");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].VisibleText(), "Answer.");
+  EXPECT_EQ(messages[1].ReasoningText(), "");
+}
+
+TEST(ResponseConverterTest, EveryHopContributesExactlyOneAssistantTurn) {
+  ResponseChainContext context{
+      ResponseChainHop{nlohmann::json::parse(R"([{"type":"message","role":"user","content":"one"}])"),
+                       nlohmann::json::array()},
+      ResponseChainHop{nlohmann::json::parse(R"([{"type":"message","role":"user","content":"two"}])"),
+                       nlohmann::json::parse(
+                           R"([{"type":"reasoning","id":"rs_1","summary":[]}])")},
+      ResponseChainHop{nlohmann::json::parse(R"([{"type":"message","role":"user","content":"three"}])"),
+                       nlohmann::json::parse(
+                           R"([{"type":"message","role":"assistant","content":"done"}])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("four");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 7u);
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"([{"role":"user","content":"one"},)"
+            R"({"role":"assistant","content":""},)"
+            R"({"role":"user","content":"two"},)"
+            R"({"role":"assistant","content":""},)"
+            R"({"role":"user","content":"three"},)"
+            R"({"role":"assistant","content":"done"},)"
+            R"({"role":"user","content":"four"}])");
+}
+
+TEST(ResponseConverterTest, StoredReasoningInputItemReplaysAsAnAssistantBoundary) {
+  // ToInputItems stores whatever the caller sent, including a `reasoning` item echoed back from an earlier turn.
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([
+        {"type":"message","role":"user","content":"Think about it."},
+        {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"private"}]}
+      ])"),
+      nlohmann::json::parse(R"([{"type":"message","role":"assistant","content":"Answer."}])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Thanks.");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  // The stored reasoning item and the hop's own output are one contiguous assistant run, so they merge.
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(messages[1].VisibleText(), "Answer.");
+  EXPECT_EQ(messages[1].ReasoningText(), "");
+}
+
+TEST(ResponseConverterTest, StoredAssistantInputMessageWithNoTextIsAnAssistantBoundary) {
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([
+        {"type":"message","role":"user","content":"Say nothing."},
+        {"type":"message","role":"assistant","content":""},
+        {"type":"message","role":"user","content":"Still there?"}
+      ])"),
+      nlohmann::json::array()}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Hello?");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  // user / assistant boundary / user from the stored input, then the hop's own empty output boundary, then the new
+  // user turn.
+  ASSERT_EQ(messages.size(), 5u);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[2].VisibleText(), "Still there?");
+  EXPECT_EQ(messages[3].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[3].entries.empty());
+  EXPECT_EQ(messages[4].VisibleText(), "Hello?");
+}
+
+TEST(ResponseConverterTest, StoredNonAssistantMessageWithNoTextIsStillSkipped) {
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([
+        {"type":"message","role":"user","content":""},
+        {"type":"message","role":"user","content":"Hello"}
+      ])"),
+      nlohmann::json::parse(R"([{"type":"message","role":"assistant","content":"Hi"}])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::vector<InputItem>{};
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 2u);
+  EXPECT_EQ(messages[0].VisibleText(), "Hello");
+  EXPECT_EQ(messages[1].VisibleText(), "Hi");
+}
+
+TEST(ResponseConverterTest, TypedReasoningInputItemBecomesAnAssistantBoundary) {
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Think about it."}]},
+      {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "private"}]},
+      {"role": "user", "content": [{"type": "input_text", "text": "Well?"}]}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(BuildChatMessagesJson(messages),
+            R"([{"role":"user","content":"Think about it."},)"
+            R"({"role":"assistant","content":""},)"
+            R"({"role":"user","content":"Well?"}])");
+}
+
+TEST(ResponseConverterTest, TypedReasoningItemNextToVisibleOutputAddsNothing) {
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Think about it."}]},
+      {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "private"}]},
+      {"role": "assistant", "content": [{"type": "output_text", "text": "Answer."}]},
+      {"role": "user", "content": [{"type": "input_text", "text": "Thanks."}]}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].VisibleText(), "Answer.");
+  EXPECT_EQ(messages[1].ReasoningText(), "");
+}
+
+TEST(ResponseConverterTest, TypedEmptyUserMessageIsStillSkipped) {
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"role": "user", "content": []},
+      {"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+
+  ASSERT_EQ(request.items.size(), 1u);
+  EXPECT_EQ(static_cast<MessageItem*>(request.items[0])->GetSimpleText(), "Hello");
+}
+
+TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsCollapseToOneBoundary) {
+  // A reasoning-only turn can surface as several reasoning items. They are one assistant turn, not several.
+  auto body = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Think about it."}]},
+      {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "first"}]},
+      {"type": "reasoning", "id": "rs_2", "summary": [{"type": "summary_text", "text": "second"}]},
+      {"role": "user", "content": [{"type": "input_text", "text": "Well?"}]}
+    ]
+  })");
+
+  auto params = body.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[1].entries.empty());
+}
+
+TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsStillEmitsOneBoundary) {
+  ResponseChainContext context{ResponseChainHop{
+      nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
+      nlohmann::json::parse(R"([
+        {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"first"}]},
+        {"type":"reasoning","id":"rs_2","summary":[{"type":"summary_text","text":"second"}]}
+      ])")}};
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Well?");
+
+  auto request = ToSessionRequest(params, &context);
+  auto messages = BuildTranscriptMessages(request.items);
+
+  ASSERT_EQ(messages.size(), 3u);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(messages[1].entries.empty());
 }

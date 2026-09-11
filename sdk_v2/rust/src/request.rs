@@ -56,7 +56,7 @@ pub struct SearchOptions {
     pub presence_penalty: Option<f32>,
     /// Random seed for reproducible sampling.
     pub seed: Option<i64>,
-    /// Stop as soon as a stop-sequence is matched.
+    /// Legacy beam-search policy; unsupported by Engine backends.
     pub early_stopping: Option<bool>,
     /// Whether to sample (`false` = greedy decoding).
     pub do_sample: Option<bool>,

@@ -380,7 +380,7 @@ Common session methods:
 | `Response` | Owns an `flResponse*`. Iterable over output items. Exposes `item_count`, `get_item(i)`, `finish_reason` (`FinishReason` enum), and `get_usage()` (`TokenUsage`). Read item data **inside** the response's `with` block — items returned by `get_item` borrow the response's handle. |
 | `FinishReason` | `NONE`, `ERROR`, `STOP`, `LENGTH`, `TOOL_CALLS`. |
 | `TokenUsage` | `prompt_tokens`, `completion_tokens`, `total_tokens`. |
-| `RequestOptions` | Typed inference options passed to `set_options`. Wraps `search: SearchOptions` (sampling params: `temperature`, `top_p`, `top_k`, `max_output_tokens`, `frequency_penalty` and `presence_penalty`—currently zero only—`seed`, `early_stopping`, `do_sample`), `tool_choice: ToolChoice | None` (`AUTO`/`NONE`/`REQUIRED`), and `additional_options: dict[str, str]` as the passthrough escape hatch. |
+| `RequestOptions` | Typed inference options passed to `set_options`. Wraps `search: SearchOptions` (sampling params: `temperature`, `top_p`, `top_k`, `max_output_tokens`, `frequency_penalty` and `presence_penalty`—currently zero only—`seed`, legacy Generator-only beam-search `early_stopping`, and `do_sample`), `tool_choice: ToolChoice | None` (`AUTO`/`NONE`/`REQUIRED`), and `additional_options: dict[str, str]` as the passthrough escape hatch. |
 
 ### Items
 
