@@ -196,7 +196,7 @@
 		const nextModelAlias = normalizeModelAlias(model.alias);
 		if (currentModelAlias === nextModelAlias) return;
 
-		const params = new URLSearchParams();
+		const params = buildFilterSearchParams();
 		params.set(MODEL_QUERY_PARAM, model.alias);
 		goto(buildModelsUrl(params), { noScroll: true, keepFocus: true });
 	}
