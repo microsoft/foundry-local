@@ -35,9 +35,9 @@ public static partial class NativeMethods
 {
     // The API version this binding is built against. It is both the version requested from
     // FoundryLocalGetApi and the version stamped on every versioned struct handed to the native
-    // library, so the two can never disagree. A runtime older than this returns null from
-    // FoundryLocalGetApi and the binding fails at initialization rather than silently downgrading
-    // to a table that does not understand the structs it will be given.
+    // library, so the two can never disagree. A runtime that does not provide this API table returns
+    // null from FoundryLocalGetApi, and the binding fails at initialization rather than silently
+    // downgrading to a table that does not understand the structs it will be given.
     public const uint ApiVersion = 2;
     public const string LibraryName = "foundry_local";
 

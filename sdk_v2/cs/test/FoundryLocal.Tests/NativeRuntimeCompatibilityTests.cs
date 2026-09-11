@@ -19,9 +19,9 @@ internal sealed class NativeRuntimeCompatibilityTests
         var message = Api.CreateIncompatibleRuntimeMessage(loadedRuntimeVersion);
 
         await Assert.That(message).IsEqualTo(
-            "FoundryLocalGetApi returned null: loaded native Foundry Local runtime version "
-            + "'0.5.0-test' is incompatible with this build of the SDK. Required C API version: "
-            + $"{NativeMethods.ApiVersion}. Update the native Foundry Local runtime ({NativeMethods.LibraryName} "
-            + "and the libraries shipped with it).");
+            $"FoundryLocalGetApi({NativeMethods.ApiVersion}) returned null. The loaded native Foundry Local runtime "
+            + "reports product version '0.5.0-test', but this SDK requires C API table version "
+            + $"{NativeMethods.ApiVersion}. Update the native runtime ({NativeMethods.LibraryName} and the libraries "
+            + "shipped with it).");
     }
 }

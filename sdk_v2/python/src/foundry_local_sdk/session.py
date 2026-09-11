@@ -491,7 +491,8 @@ class ChatSession(Session):
         """Register a function tool so the model can request tool calls. Returns self (fluent).
 
         ``json_schema`` is required and must be valid JSON. Names are case-sensitive and must be
-        unique within the session across kinds.
+        unique within the session across kinds. All string arguments must not contain embedded NUL
+        characters.
         """
         return self._add_tool_definition(name, description, json_schema, _TOOL_KIND_FUNCTION)
 
@@ -500,7 +501,8 @@ class ChatSession(Session):
 
         The schema the model is prompted with is synthesized natively, so none is supplied here, and
         the ``arguments`` of a generated tool call carry the raw text the model produced rather than
-        a JSON object. Returns self (fluent).
+        a JSON object. The name and description must not contain embedded NUL characters. Returns
+        self (fluent).
         """
         return self._add_tool_definition(name, description, "", _TOOL_KIND_CUSTOM)
 
@@ -509,6 +511,10 @@ class ChatSession(Session):
     ) -> "ChatSession":
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
+
+        self._validate_native_string(name, "name")
+        self._validate_native_string(description, "description")
+        self._validate_native_string(json_schema, "json_schema")
 
         # Keep cffi temporaries as named locals so they outlive the native call.
         c_name = ffi.new("char[]", name.encode("utf-8") + b"\x00")
@@ -529,15 +535,24 @@ class ChatSession(Session):
         """Remove a previously-added tool definition by name.
 
         Returns True if a matching tool was found and removed, False if no tool with that
-        name was registered. Useful when the available tool set changes mid-conversation.
+        name was registered. Useful when the available tool set changes mid-conversation. The name
+        must not contain embedded NUL characters.
         """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
+        self._validate_native_string(name, "name")
         c_name = ffi.new("char[]", name.encode("utf-8") + b"\x00")
         out_removed = ffi.new("bool*")
         api.check_status(api.inference.Session_RemoveToolDefinition(self._ptr, c_name, out_removed))
         return bool(out_removed[0])
+
+    @staticmethod
+    def _validate_native_string(value: str, argument_name: str) -> None:
+        if not isinstance(value, str):
+            raise TypeError(f"{argument_name} must be a string")
+        if "\x00" in value:
+            raise ValueError(f"{argument_name} must not contain an embedded NUL character")
 
     @property
     def turn_count(self) -> int:

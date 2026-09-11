@@ -133,3 +133,43 @@ class TestToolDefinitionAbi:
             # This fabricated unit-test handle is not owned by the native runtime.
             session._ptr = None
             session._closed = True
+
+    @pytest.mark.parametrize(
+        ("operation", "argument_name"),
+        [
+            (lambda session: session.add_tool_definition("bad\x00name", "description", "{}"), "name"),
+            (lambda session: session.add_tool_definition("name", "bad\x00description", "{}"), "description"),
+            (lambda session: session.add_tool_definition("name", "description", "{\x00}"), "json_schema"),
+            (lambda session: session.add_custom_tool_definition("bad\x00name", "description"), "name"),
+            (lambda session: session.add_custom_tool_definition("name", "bad\x00description"), "description"),
+            (lambda session: session.remove_tool_definition("bad\x00name"), "name"),
+        ],
+    )
+    def test_public_tool_apis_reject_embedded_nul_before_native_call(
+        self, monkeypatch, operation, argument_name
+    ):
+        native_api_module = importlib.import_module("foundry_local_sdk._native.api")
+
+        def unexpected_native_call(*_args):
+            pytest.fail("native API must not be called for an argument containing NUL")
+
+        fake_api = SimpleNamespace(
+            inference=SimpleNamespace(
+                Session_AddToolDefinition=unexpected_native_call,
+                Session_RemoveToolDefinition=unexpected_native_call,
+            )
+        )
+        monkeypatch.setattr(native_api_module, "api", fake_api)
+
+        session = ChatSession.__new__(ChatSession)
+        session._closed = False
+        session._ptr = ffi.cast("flSession *", 1)
+        session._stream_thread = None
+        session._stream_request = None
+
+        try:
+            with pytest.raises(ValueError, match=rf"^{argument_name} must not contain an embedded NUL character$"):
+                operation(session)
+        finally:
+            session._ptr = None
+            session._closed = True

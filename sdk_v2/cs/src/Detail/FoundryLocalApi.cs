@@ -94,10 +94,10 @@ internal static class Api
 
     internal static string CreateIncompatibleRuntimeMessage(string loadedRuntimeVersion)
     {
-        return "FoundryLocalGetApi returned null: loaded native Foundry Local runtime version "
-            + $"'{loadedRuntimeVersion}' is incompatible with this build of the SDK. Required C API version: "
-            + $"{NativeMethods.ApiVersion}. Update the native Foundry Local runtime ({NativeMethods.LibraryName} "
-            + "and the libraries shipped with it).";
+        return $"FoundryLocalGetApi({NativeMethods.ApiVersion}) returned null. The loaded native Foundry Local runtime "
+            + $"reports product version '{loadedRuntimeVersion}', but this SDK requires C API table version "
+            + $"{NativeMethods.ApiVersion}. Update the native runtime ({NativeMethods.LibraryName} and the libraries "
+            + "shipped with it).";
     }
 
     internal static void CheckStatus(IntPtr status)

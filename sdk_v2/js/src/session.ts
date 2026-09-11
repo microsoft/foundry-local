@@ -54,6 +54,12 @@ export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
 }
 
+function rejectEmbeddedNul(value: unknown, argumentName: string): void {
+  if (typeof value === "string" && value.includes("\0")) {
+    throw new TypeError(`${argumentName} must not contain an embedded NUL character`);
+  }
+}
+
 function modelToNativeChatSession(model: IModel): NativeChatSession {
   if (!(model instanceof Model)) {
     throw new TypeError("ChatSession: expected a Model as the first argument");
@@ -112,11 +118,7 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  * directly). The promise settles only after the consumer has fully drained
  * the iterator, mirroring native finalize-on-drain semantics.
  */
-function streamItems(
-  native: NativeSession,
-  request: Request,
-  signal: AbortSignal | undefined,
-): StreamingResponse {
+function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
   const queue: Item[] = [];
   let waiter: (() => void) | null = null;
   let done = false;
@@ -142,11 +144,7 @@ function streamItems(
   }
 
   const mapError = (err: unknown): unknown => {
-    if (
-      signal?.aborted === true &&
-      isFoundryLocalError(err) &&
-      err.code === FlErrorCode.OperationCancelled
-    ) {
+    if (signal?.aborted === true && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
       (err as { name: string }).name = "AbortError";
     }
     return err;
@@ -373,9 +371,15 @@ export class ChatSession extends Session {
    * session. Mirrors `foundry_local::ChatSession::AddToolDefinition`.
    *
    * Names are case-sensitive and must be unique within the session across kinds; re-registering a
-   * name throws until the existing definition is removed.
+   * name throws until the existing definition is removed. Names, descriptions, and function-tool
+   * schemas must not contain embedded NUL characters.
    */
   addToolDefinition(definition: ToolDefinition): this {
+    rejectEmbeddedNul(definition.name, "definition.name");
+    rejectEmbeddedNul(definition.description, "definition.description");
+    if ("jsonSchema" in definition) {
+      rejectEmbeddedNul(definition.jsonSchema, "definition.jsonSchema");
+    }
     this.#nativeChat.addToolDefinition(definition);
     return this;
   }
@@ -400,9 +404,11 @@ export class ChatSession extends Session {
   /**
    * Remove a previously registered tool definition by name. Returns `true`
    * if a tool with that name existed and was removed, `false` otherwise.
-   * Mirrors `foundry_local::ChatSession::RemoveToolDefinition`.
+   * The name must not contain embedded NUL characters. Mirrors
+   * `foundry_local::ChatSession::RemoveToolDefinition`.
    */
   removeToolDefinition(name: string): boolean {
+    rejectEmbeddedNul(name, "name");
     return this.#nativeChat.removeToolDefinition(name);
   }
 

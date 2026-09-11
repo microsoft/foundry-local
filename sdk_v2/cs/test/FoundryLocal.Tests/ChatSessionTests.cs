@@ -664,9 +664,9 @@ internal sealed class ChatSessionTests
     {
         using var session = new ChatSession(model!);
 
-        // A custom tool carries no schema: the one the model is prompted with is synthesized
-        // natively, because neither the chat template nor the tool-call grammar knows the custom
-        // shape. It registers alongside function tools and returns the session for chaining.
+        // A custom tool carries no caller-supplied schema: the native layer synthesizes the
+        // representation shown to the model. It registers alongside function tools and returns the
+        // session for chaining.
         var returned = session.AddCustomToolDefinition("apply_patch", "Applies a patch to a file.");
         await Assert.That(ReferenceEquals(returned, session)).IsTrue();
 

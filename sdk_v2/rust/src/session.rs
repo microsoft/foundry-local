@@ -405,7 +405,8 @@ impl ChatSession {
     ///
     /// Names are case-sensitive and unique across kinds; re-registering a name fails until the
     /// existing definition is removed. A [`ToolKind::Custom`] definition must leave `json_schema`
-    /// empty — supplying one is rejected natively rather than quietly discarded.
+    /// empty — supplying one is rejected natively rather than quietly discarded. Names,
+    /// descriptions, and schemas cannot contain an interior NUL byte.
     pub async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<()> {
         let inner = Arc::clone(&self.session.inner);
         spawn_blocking(move || {
@@ -423,7 +424,8 @@ impl ChatSession {
         .await
     }
 
-    /// Remove a previously-registered tool by name. Returns whether one was removed.
+    /// Remove a previously-registered tool by name. Returns whether one was removed. The name
+    /// cannot contain an interior NUL byte.
     pub async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool> {
         let inner = Arc::clone(&self.session.inner);
         let name = name.into();
