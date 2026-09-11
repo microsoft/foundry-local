@@ -1,0 +1,39 @@
+// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+package com.microsoft.foundry.local;
+
+import static org.junit.jupiter.api.Assertions.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+class NativeContractTest {
+    @TempDir Path temporary;
+
+    @Test void matchesPackaged64BitStructSizes() {
+        assertEquals(16, new NativeApi.CallbackData().size());
+        assertEquals(72, new NativeApi.AudioData().size());
+        assertEquals(48, new NativeApi.BytesData().size());
+        assertEquals(64, new NativeApi.SegmentData().size());
+        assertEquals(48, new NativeApi.ResultData().size());
+    }
+
+    @Test void runtimeDirectoryMustContainTheCurrentPlatformLibrary() {
+        IllegalArgumentException error =
+                assertThrows(IllegalArgumentException.class, () -> NativeApi.findFoundryLibrary(temporary));
+        assertTrue(error.getMessage().contains("Foundry Local native library"));
+    }
+
+    @Test void resolvesTheCurrentPlatformLibraryWithoutAReleaseSpecificHashLock() throws Exception {
+        Path library = temporary.resolve(NativeApi.foundryLibraryName());
+        Files.createFile(library);
+        assertEquals(library, NativeApi.findFoundryLibrary(temporary));
+    }
+
+    @Test void callbackLifecycleReentrancyIsRejected() {
+        NativeApi.IN_CALLBACK.set(true);
+        try { assertThrows(IllegalStateException.class, NativeApi::outsideCallback); }
+        finally { NativeApi.IN_CALLBACK.remove(); }
+    }
+
+}

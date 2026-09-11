@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build and test all sdk_v2 SDKs (C++, C#, Python, JS) in one shot.
+    Build and test all sdk_v2 SDKs (C++, C#, Python, JS, Java) in one shot.
 
 .DESCRIPTION
     The simple developer "build and run all tests" one-shot script for sdk_v2.
@@ -10,16 +10,17 @@
       2. C#     — dotnet test (builds via project references)
       3. Python — pip install -e . then pytest
       4. JS     — npm install + npm run build + npm test
+      5. Java   — mvn test
 
     Each SDK runs in its own step. The script stops on the first failure
     unless -ContinueOnError is supplied, and prints a per-SDK pass/fail
     summary at the end.
 
 .PARAMETER Skip
-    SDKs to skip. Any of: cpp, cs, python, js.
+    SDKs to skip. Any of: cpp, cs, python, js, java.
 
 .PARAMETER Only
-    Run only the named SDKs. Overrides -Skip. Any of: cpp, cs, python, js.
+    Run only the named SDKs. Overrides -Skip. Any of: cpp, cs, python, js, java.
 
 .PARAMETER ContinueOnError
     Keep going after a failure instead of aborting on the first one.
@@ -39,9 +40,9 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('cpp', 'cs', 'python', 'js')]
+    [ValidateSet('cpp', 'cs', 'python', 'js', 'java')]
     [string[]] $Skip = @(),
-    [ValidateSet('cpp', 'cs', 'python', 'js')]
+    [ValidateSet('cpp', 'cs', 'python', 'js', 'java')]
     [string[]] $Only,
     [switch] $ContinueOnError,
     [switch] $SkipCppTests
@@ -57,9 +58,10 @@ $cppDir    = Join-Path $sdkRoot 'cpp'
 $csDir     = Join-Path $sdkRoot 'cs'
 $pythonDir = Join-Path $sdkRoot 'python'
 $jsDir     = Join-Path $sdkRoot 'js'
+$javaDir   = Join-Path $sdkRoot 'java'
 
 # Resolve which SDKs to run.
-$all = @('cpp', 'cs', 'python', 'js')
+$all = @('cpp', 'cs', 'python', 'js', 'java')
 if ($Only) {
     $targets = $all | Where-Object { $_ -in $Only }
 } else {
@@ -222,6 +224,33 @@ print(sys.executable)
 
                 npm test
                 if ($LASTEXITCODE -ne 0) { throw "npm test exit $LASTEXITCODE" }
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    if ('java' -in $targets) {
+        Invoke-Step 'java' {
+            Push-Location $javaDir
+            try {
+                mvn --batch-mode --no-transfer-progress clean verify
+                if ($LASTEXITCODE -ne 0) { throw "mvn clean verify exit $LASTEXITCODE" }
+
+                $mainJar = @(Get-ChildItem target -Filter 'foundry-local-sdk-*.jar' -File |
+                    Where-Object { $_.Name -notlike '*-sources.jar' })
+                $sourceJar = @(Get-ChildItem target -Filter 'foundry-local-sdk-*-sources.jar' -File)
+                if ($mainJar.Count -ne 1 -or $sourceJar.Count -ne 1) {
+                    throw "Expected one SDK JAR and one sources JAR."
+                }
+
+                $entries = @(jar tf $mainJar[0].FullName)
+                if ($LASTEXITCODE -ne 0) { throw "jar inspection exit $LASTEXITCODE" }
+                foreach ($required in @('META-INF/LICENSE', 'META-INF/THIRD_PARTY_NOTICES.md')) {
+                    if ($required -notin $entries) {
+                        throw "Missing $required from $($mainJar[0].Name)"
+                    }
+                }
             } finally {
                 Pop-Location
             }

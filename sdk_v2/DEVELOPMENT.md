@@ -2,7 +2,7 @@
 
 A first-time contributor should be able to install the tools listed below,
 clone the repo, then run the one-shot build/test script from this directory
-and watch all four SDKs go green:
+and watch all five SDKs go green:
 
 ```powershell
 pwsh ./build_and_test_all.ps1
@@ -12,7 +12,7 @@ If that passes, your machine is correctly configured.
 
 ## Prerequisites
 
-All four SDKs (C++, C#, Python, JS/TS) build on **Windows**, **Linux**, and
+All five SDKs (C++, C#, Python, JS/TS, Java) build on **Windows**, **Linux**, and
 **macOS**. WinML 2.x hardware acceleration is bundled automatically on Windows.
 
 ### All platforms
@@ -25,6 +25,8 @@ All four SDKs (C++, C#, Python, JS/TS) build on **Windows**, **Linux**, and
 | Python           | 3.11–3.14, **64-bit** | Required by `build.py` and for the Python SDK. 32-bit Python will not work.   |
 | .NET SDK         | 9.0             | The SDK targets `net8.0;net9.0;netstandard2.0`; the test project additionally targets `net462` on Windows (via the .NET Framework Targeting Pack from VS); samples target `net9.0`. The single package bundles WinML 2.x on Windows — its OS-version floor is enforced by the native runtime (`LoadLibraryW` + `RtlGetVersion` in `winml_ep_bootstrapper.cc`), not by a .NET TFM. |
 | Node.js          | 20 LTS or newer | Brings `npm`. The JS SDK declares `"engines": { "node": ">=20" }`.                    |
+| JDK              | 17 or newer     | Required for the Java SDK. Use a 64-bit JVM matching the native runtime architecture. |
+| Maven            | 3.9 or newer    | Builds and tests the Java SDK.                                                        |
 | PowerShell       | 7+ (`pwsh`)     | The one-shot script and `samples/js/test-v2.ps1` are written for PowerShell 7.        |
 
 ### Windows-only
@@ -68,6 +70,7 @@ install per-SDK package dependencies on first run:
 | C#     | `dotnet test Microsoft.AI.Foundry.Local.SDK.sln -c Release` — restores NuGet packages on demand. |
 | Python | `python -m pip install -e .[dev]` (compiles the cffi extension; needs MSVC/Clang) → `python -m pytest test/`. |
 | JS     | `npm install` (runs `node-gyp` against the C++ build output) → `npm run build` → `npm test` (vitest). |
+| Java   | `mvn test` — restores JNA/JUnit, compiles the Java 17 SDK, and runs unit tests. Native ASR tests are opt-in. |
 
 ## Common knobs
 
