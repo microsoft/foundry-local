@@ -146,7 +146,7 @@ Structs passed across the boundary (`flToolDefinition`, `flTensorData`, `flMessa
 
 * The caller stamps the version of the header it was compiled against and allocates a struct of that header's size, so a caller from an older header owns *fewer bytes* than the current struct declares.
 * The implementation must decide what it may read from the stamped `version` alone, **before** touching any field past the prefix that version guarantees. Reading a newly appended field from an old caller's struct is an out-of-bounds read, not merely a stale value.
-* A missing field means "the default that preserved the old behavior" — e.g. an `flToolDefinition` stamped version 1 or 2 has no `kind` and is treated as `FOUNDRY_LOCAL_TOOL_KIND_FUNCTION`.
+* A missing field means "the default that preserved the old behavior" — e.g. an `flToolDefinition` stamped version 1 has no `kind` and is treated as `FOUNDRY_LOCAL_TOOL_KIND_FUNCTION`.
 * Bindings stamp the same version they request from `FoundryLocalGetApi`. A binding that fills in a field added in version N therefore requires a runtime of at least version N and must fail loudly against an older one rather than negotiate down to a table that would ignore the field.
 * A discriminant carried in a versioned struct is a fixed-width integer typedef with named constants, not a C enum — an enum's underlying type is implementation-defined, so its width could differ between the library and a binding that mirrors the struct.
 
