@@ -38,8 +38,8 @@
   - [RequestOptions](#requestoptions)
   - [Response](#response)
   - [FinishReason](#finishreason)
-  - [ToolKind](#toolkind)
   - [ToolDefinition](#tooldefinition)
+  - [CustomToolDefinition](#customtooldefinition)
 - [Types](#types)
   - [ModelInfo](#modelinfo)
   - [ChatResponseFormat](#chatresponseformat)
@@ -431,6 +431,7 @@ impl Deref for ChatSession { type Target = Session; }
 |--------|-----------|-------------|
 | `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion` or `vision-language-chat`. |
 | `add_tool_definition` | `async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<(), FoundryLocalError>` | Register a tool for the lifetime of the session. |
+| `add_custom_tool_definition` | `async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<(), FoundryLocalError>` | Register a custom text tool for the lifetime of the session. |
 | `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |
 | `turn_count` | `fn turn_count(&self) -> usize` | The number of completed conversation turns. |
 | `undo_turns` | `async fn undo_turns(&self, count: usize) -> Result<(), FoundryLocalError>` | Rewind the last `count` turns. |
@@ -678,22 +679,6 @@ re-exported as [`ChatFinishReason`](#re-exported-openai-types).)
 pub enum FinishReason { None, Error, Stop, Length, ToolCalls }
 ```
 
-### ToolKind
-
-How a tool's arguments are shaped.
-
-```rust
-pub enum ToolKind {
-    Function,
-    Custom,
-}
-```
-
-`Function` tools require a JSON schema and produce arguments as a JSON object
-conforming to that schema. `Custom` tools carry no schema; their schema is
-synthesized natively, and generated calls contain the model's raw text payload.
-`Function` is the default.
-
 ### ToolDefinition
 
 A tool the model may call, registered on a [`ChatSession`](#chatsession).
@@ -703,15 +688,27 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: Option<String>,
     pub json_schema: String,
-    pub kind: ToolKind,
 }
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A function tool with a name and JSON-schema parameters. |
-| `custom` | `fn custom(name: impl Into<String>) -> ToolDefinition` | A custom tool with no schema whose generated calls carry raw text arguments. |
+| `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A tool with a name and JSON-schema parameters. |
 | `with_description` | `fn with_description(mut self, description: impl Into<String>) -> ToolDefinition` | Attach a description (builder-style). |
+
+### CustomToolDefinition
+
+A custom text tool registered on a [`ChatSession`](#chatsession). Its fields are private so future
+additive metadata does not break downstream construction.
+
+```rust
+pub struct CustomToolDefinition { /* private fields */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(name: impl Into<String>) -> CustomToolDefinition` | Create a custom text tool with no caller-supplied schema. |
+| `with_description` | `fn with_description(mut self, description: impl Into<String>) -> CustomToolDefinition` | Attach a description (builder-style). |
 
 ---
 

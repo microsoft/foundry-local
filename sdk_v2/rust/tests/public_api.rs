@@ -29,22 +29,23 @@ fn native_errors_expose_stable_and_unknown_codes() {
 }
 
 #[test]
-fn tool_definitions_can_be_built_for_both_kinds() {
-    use foundry_local_sdk::{ToolDefinition, ToolKind};
+fn tool_definitions_preserve_the_published_struct_shape() {
+    use foundry_local_sdk::{CustomToolDefinition, ToolDefinition};
 
-    // The pre-existing function-tool constructor is unchanged and still defaults to Function.
+    let literal = ToolDefinition {
+        name: "literal".to_string(),
+        description: None,
+        json_schema: r#"{"type":"object"}"#.to_string(),
+    };
+    assert_eq!(literal.name, "literal");
+
     let function = ToolDefinition::new("multiply", r#"{"type":"object"}"#)
         .with_description("Multiplies two numbers.");
-    assert_eq!(function.kind, ToolKind::Function);
     assert_eq!(function.json_schema, r#"{"type":"object"}"#);
     assert_eq!(
         function.description.as_deref(),
         Some("Multiplies two numbers.")
     );
 
-    // A custom tool carries no schema — the one the model sees is synthesized natively.
-    let custom = ToolDefinition::custom("apply_patch").with_description("Applies a patch.");
-    assert_eq!(custom.kind, ToolKind::Custom);
-    assert!(custom.json_schema.is_empty());
-    assert_eq!(ToolKind::default(), ToolKind::Function);
+    let _custom = CustomToolDefinition::new("apply_patch").with_description("Applies a patch.");
 }

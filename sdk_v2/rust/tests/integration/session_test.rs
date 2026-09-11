@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use foundry_local_sdk::{
-    ChatSession, EmbeddingsSession, FinishReason, FoundryLocalError, Item, MessageRole, Model,
-    NativeErrorCode, Request, RequestOptions, SearchOptions, ToolDefinition,
+    ChatSession, CustomToolDefinition, EmbeddingsSession, FinishReason, FoundryLocalError, Item,
+    MessageRole, Model, NativeErrorCode, Request, RequestOptions, SearchOptions, ToolDefinition,
 };
 use tokio_stream::StreamExt;
 
@@ -219,15 +219,15 @@ async fn should_register_function_and_custom_tool_definitions() {
     // A custom tool carries no schema — the native side synthesizes the one the model is prompted
     // with. This is the path that requires an API version 2 runtime.
     session
-        .add_tool_definition(
-            ToolDefinition::custom("apply_patch").with_description("Applies a patch."),
+        .add_custom_tool_definition(
+            CustomToolDefinition::new("apply_patch").with_description("Applies a patch."),
         )
         .await
         .expect("registering a custom tool should succeed");
 
     // Names are unique across kinds until the existing definition is removed.
     let duplicate = session
-        .add_tool_definition(ToolDefinition::custom("multiply"))
+        .add_custom_tool_definition(CustomToolDefinition::new("multiply"))
         .await
         .expect_err("a duplicate name must be rejected");
     assert_eq!(
@@ -240,25 +240,9 @@ async fn should_register_function_and_custom_tool_definitions() {
         .await
         .expect("remove should succeed"));
     session
-        .add_tool_definition(ToolDefinition::custom("multiply"))
+        .add_custom_tool_definition(CustomToolDefinition::new("multiply"))
         .await
         .expect("re-registering a removed name should succeed");
-
-    // A schema on a custom tool is reported rather than quietly dropped.
-    let mut invalid = ToolDefinition::custom("bad_custom");
-    invalid.json_schema = r#"{"type":"object"}"#.to_string();
-    let rejected = session
-        .add_tool_definition(invalid)
-        .await
-        .expect_err("a custom tool carrying a schema must be rejected");
-    assert_eq!(
-        rejected.native_code(),
-        Some(NativeErrorCode::InvalidArgument)
-    );
-    assert!(rejected
-        .native_message()
-        .unwrap_or_default()
-        .contains("json_schema"));
 
     drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
