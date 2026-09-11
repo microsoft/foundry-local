@@ -946,9 +946,15 @@ struct ToolDefinition {
   }
 
   /// Convert to the C struct for passing across the ABI boundary.
-  flToolDefinition ToC() const noexcept {
+  flToolDefinition ToC() const {
     static_assert(FOUNDRY_LOCAL_API_VERSION == 2,
                   "flToolDefinition may have new fields; initialize them here before updating this assertion");
+    if (name.find('\0') != std::string::npos || description.find('\0') != std::string::npos ||
+        json_schema.find('\0') != std::string::npos) {
+      throw Error("Tool definition fields must not contain embedded NUL characters",
+                  FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
+
     // Zero-initialized and assigned by name rather than aggregate-initialized, so a field appended
     // to flToolDefinition in a future version defaults to zero (the value that preserves the older
     // behavior) instead of being left uninitialized.

@@ -167,6 +167,25 @@ TEST(CppApiTest, ToolDefinitionCustomFactoryEmitsAnExplicitKindAndNoSchema) {
   EXPECT_EQ(c_def.kind, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
 }
 
+TEST(CppApiTest, ToolDefinitionsRejectEmbeddedNulInsteadOfTruncating) {
+  const std::string invalid{"before\0after", 12};
+
+  for (const auto& definition : std::vector<foundry_local::ToolDefinition>{
+           {invalid, "description", "{}"},
+           {"tool", invalid, "{}"},
+           {"tool", "description", invalid},
+           foundry_local::ToolDefinition::Custom(invalid, "description"),
+           foundry_local::ToolDefinition::Custom("tool", invalid),
+       }) {
+    try {
+      (void)definition.ToC();
+      FAIL() << "expected embedded NUL rejection";
+    } catch (const foundry_local::Error& error) {
+      EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
+  }
+}
+
 TEST(CppApiTest, ToolResultRoundTrip) {
   auto tr = foundry_local::Item::ToolResult("call_42", "72 degrees");
   EXPECT_EQ(tr.GetType(), FOUNDRY_LOCAL_ITEM_TOOL_RESULT);

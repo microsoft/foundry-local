@@ -270,7 +270,6 @@ class JsonSourceScanner {
 void SetArguments(ParsedToolCall& tool_call,
                   const nlohmann::json& arguments,
                   const std::optional<std::string_view>& source) {
-  tool_call.parsed_arguments = arguments;
   tool_call.argument_source = source.has_value() ? std::string(*source) : arguments.dump();
   tool_call.arguments = arguments.is_string() ? arguments.get<std::string>() : arguments.dump();
 }

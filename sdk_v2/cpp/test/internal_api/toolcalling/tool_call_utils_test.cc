@@ -319,8 +319,6 @@ TEST(ParseToolCallsTest, StringArguments) {
   // String arguments are kept as-is
   EXPECT_NE(calls[0].arguments.find("key"), std::string::npos);
   EXPECT_EQ(calls[0].argument_source, R"("{\"key\": \"value\"}")");
-  ASSERT_TRUE(calls[0].parsed_arguments.has_value());
-  EXPECT_TRUE(calls[0].parsed_arguments->is_string());
 }
 
 TEST(ParseToolCallsTest, PreservesExactArgumentValueSourceBytes) {
@@ -331,8 +329,6 @@ TEST(ParseToolCallsTest, PreservesExactArgumentValueSourceBytes) {
 
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].argument_source, arguments);
-  ASSERT_TRUE(calls[0].parsed_arguments.has_value());
-  EXPECT_EQ(calls[0].parsed_arguments->at("input"), "a");
   EXPECT_NE(calls[0].arguments, arguments);
 }
 

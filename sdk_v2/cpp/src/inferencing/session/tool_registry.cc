@@ -176,7 +176,7 @@ ToolDefinition ToolDefinitionFromC(const flToolDefinition& tool_def) {
   definition.kind = kind;
 
   if (tool_def.version >= kToolDefinitionKindVersion && definition.name.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a public function tool definition requires a name");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a public tool definition requires a name");
   }
 
   return definition;
