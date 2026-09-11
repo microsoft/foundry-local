@@ -73,7 +73,7 @@ var configuration = new Configuration(
 
 try (var manager = new FoundryLocalManager(configuration)) {
     var model = manager.catalog()
-            .getModel("nemotron-3.5-asr-streaming-0.6b-generic-cpu:3");
+            .getModel("nemotron-speech-streaming-en-0.6b-generic-cpu:3");
 
     if (!model.isCached()) {
         throw new IllegalStateException("Download and review the model separately");
@@ -136,6 +136,9 @@ mvn -f sdk_v2\java\pom.xml test `
   -Dfoundry.test.cache=<absolute-model-cache> `
   -Dfoundry.test.wav=<absolute-wav-file>
 ```
+
+CI may provide the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
+`FOUNDRY_TEST_DATA_DIR`, and `FOUNDRY_TEST_WAV` environment variables.
 
 The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager

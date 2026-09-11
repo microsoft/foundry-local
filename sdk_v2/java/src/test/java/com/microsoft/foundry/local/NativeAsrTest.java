@@ -15,10 +15,10 @@ class NativeAsrTest {
     @TempDir Path temporary;
 
     @Test void realAsrOwnershipCancellationAndRepeatedSessions() throws Exception {
-        String runtime = System.getProperty("foundry.test.runtime");
-        String cache = System.getProperty("foundry.test.cache");
-        String wav = System.getProperty("foundry.test.wav");
-        assumeTrue(runtime != null && cache != null && wav != null, "Set the three foundry.test.* properties");
+        String runtime = setting("foundry.test.runtime", "FOUNDRY_LOCAL_NATIVE_BIN_DIR");
+        String cache = setting("foundry.test.cache", "FOUNDRY_TEST_DATA_DIR");
+        String wav = setting("foundry.test.wav", "FOUNDRY_TEST_WAV");
+        assumeTrue(runtime != null && cache != null && wav != null, "Configure the native test runtime, cache, and WAV");
         Configuration config = new Configuration("java-asr-test", Path.of(runtime), Path.of(cache), temporary);
         Model borrowed;
         AtomicInteger callbacks = new AtomicInteger();
@@ -27,7 +27,7 @@ class NativeAsrTest {
             assertThrows(IllegalStateException.class, () -> new FoundryLocalManager(config));
             assertThrows(IllegalArgumentException.class, () -> manager.catalog().getModel("nemotron"));
             borrowed = manager.catalog().getModel(System.getProperty("foundry.test.model",
-                    "nemotron-3.5-asr-streaming-0.6b-generic-cpu:3"));
+                    "nemotron-speech-streaming-en-0.6b-generic-cpu:3"));
             CancellationToken cancelled = new CancellationToken();
             cancelled.cancel();
             FoundryLocalException download = assertThrows(FoundryLocalException.class,
@@ -97,5 +97,13 @@ class NativeAsrTest {
             assertFalse(manager.runtimeVersion().isBlank());
         }
         System.err.println("native-test: manager recreated and closed");
+    }
+
+    private static String setting(String property, String environmentVariable) {
+        String value = System.getProperty(property);
+        if (value == null) {
+            value = System.getenv(environmentVariable);
+        }
+        return value == null || value.isBlank() ? null : value;
     }
 }
