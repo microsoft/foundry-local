@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace fl;
@@ -251,6 +252,57 @@ TEST(ToolCallStreamAccumulatorTest, CompletedMalformedToolCallBecomesVisible) {
   auto outs = RunChunks(acc, {"before <tool_call>not json</tool_call> after"});
 
   EXPECT_EQ(CollectVisible(outs), "before <tool_call>not json</tool_call> after");
+  EXPECT_TRUE(CollectCalls(outs).empty());
+}
+
+TEST(ToolCallStreamAccumulatorTest, RecoveredMissingOuterBracePreservesDuplicateCustomInputSource) {
+  const std::string tools =
+      R"([{"type":"function","name":"run","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+  const std::string arguments = R"({ "input":"first", "input":"second" })";
+  const std::string generated =
+      "<tool_call>{\"name\":\"run\",\"arguments\":" + arguments + "</tool_call>";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].argument_source, arguments);
+  EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), arguments);
+}
+
+TEST(ToolCallStreamAccumulatorTest, RepairedCustomShapesPreserveDuplicateInputSource) {
+  const std::string tools =
+      R"([{"type":"function","name":"run","parameters":{"type":"object"}}])";
+  const std::string arguments = R"({ "input":"first", "input":"sec\u006fnd" })";
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"<tool_call>{\"name\":\"run\",\"args\":" + arguments + "}</tool_call>", arguments},
+      {"<tool_call>{\"run\":" + arguments + "}</tool_call>", arguments},
+      {R"(<tool_call><run","input":"first", "input":"sec\u006fnd" }</tool_call>)",
+       R"({"input":"first", "input":"sec\u006fnd" })"},
+  };
+
+  for (const auto& [generated, expected_source] : cases) {
+    ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+    auto outs = RunChunks(acc, {generated});
+
+    EXPECT_TRUE(CollectVisible(outs).empty()) << generated;
+    auto calls = CollectCalls(outs);
+    ASSERT_EQ(calls.size(), 1u) << generated;
+    EXPECT_EQ(calls[0].argument_source, expected_source);
+    EXPECT_EQ(ExtractCustomToolInput(calls[0].argument_source), expected_source);
+  }
+}
+
+TEST(ToolCallStreamAccumulatorTest, UnadvertisedParametersCallBecomesVisible) {
+  const std::string tools =
+      R"([{"type":"function","name":"advertised","parameters":{"type":"object"}}])";
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>", tools);
+  const std::string generated =
+      R"(<tool_call>{"name":"unadvertised","parameters":{"value":1}}</tool_call>)";
+  auto outs = RunChunks(acc, {generated});
+
+  EXPECT_EQ(CollectVisible(outs), generated);
   EXPECT_TRUE(CollectCalls(outs).empty());
 }
 

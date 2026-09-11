@@ -443,6 +443,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn to_cstring_rejects_interior_nul() {
+        let error = to_cstring("before\0after").expect_err("interior NUL must be rejected");
+
+        assert!(matches!(error, FoundryLocalError::Validation { .. }));
+        assert!(error.to_string().contains("interior NUL byte"));
+    }
+
+    #[test]
     fn map_error_preserves_all_native_codes_and_messages() {
         let cases = [
             (FOUNDRY_LOCAL_OK, NativeErrorCode::Ok),

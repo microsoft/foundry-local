@@ -336,7 +336,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
     // turn before applying this request's tools so the request stays self-contained.
     session->ClearToolDefinitions();
     if (!tools_json.empty()) {
-      session->AddToolDefinition({{}, {}, std::move(tools_json)});
+      // Unnamed and function-shaped: a whole pre-serialized tools array rather than a registrable
+      // tool. It is not name-indexed, so no generated call resolves against it.
+      session->AddToolDefinition({{}, {}, std::move(tools_json), fl::ToolKind::kFunction});
     }
 
     if (params.stream) {

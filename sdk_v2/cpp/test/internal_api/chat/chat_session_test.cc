@@ -10,6 +10,7 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/session/request.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/text_item.h"
@@ -62,6 +63,109 @@ TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtT
                                          /*backend_finished=*/false));
   EXPECT_FALSE(DidHostOutputLimitTruncate(/*output_tokens=*/32, /*max_output_tokens=*/32,
                                           /*backend_finished=*/true));
+}
+
+TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
+  ToolRegistry registry;
+  const auto captured = registry.Definitions();
+
+  std::thread registration([&] {
+    registry.Add({"late_custom", "registered after capture", "", ToolKind::kCustom});
+  });
+  registration.join();
+
+  const std::string serialized_tools =
+      R"([{"type":"function","function":{"name":"payload_tool","parameters":{}}}])";
+  const auto local =
+      chat_session_internal::BuildJsonRequestToolDefinitions(serialized_tools, captured);
+
+  ASSERT_EQ(local.size(), 1u);
+  EXPECT_TRUE(local[0].name.empty());
+  EXPECT_EQ(local[0].json_schema, serialized_tools);
+  EXPECT_EQ(local[0].kind, ToolKind::kFunction);
+
+  // A fresh snapshot sees the custom registration and preserves the existing JSON-path rejection.
+  EXPECT_THROW(chat_session_internal::BuildJsonRequestToolDefinitions(
+                   serialized_tools, registry.Definitions()),
+               fl::Exception);
+}
+
+TEST(ChatSessionDecisionTest, EmptyJsonToolsIgnoreSessionFunctionAndCustomDefinitions) {
+  const std::vector<ToolDefinition> function_definitions{
+      {"lookup", "Look up a value.", R"({"type":"object"})", ToolKind::kFunction}};
+  const std::vector<ToolDefinition> custom_definitions{
+      {"apply_patch", "Apply a patch.", "", ToolKind::kCustom}};
+
+  EXPECT_TRUE(
+      chat_session_internal::BuildJsonRequestToolDefinitions({}, function_definitions).empty());
+  EXPECT_TRUE(
+      chat_session_internal::BuildJsonRequestToolDefinitions({}, custom_definitions).empty());
+}
+
+TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStreaming) {
+  ToolCallContext context;
+  context.tool_kinds = {{"custom", ToolKind::kCustom}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall valid{"call_1", "custom", R"({"input":"valid"})"};
+  valid.argument_source = valid.arguments;
+  output.events.emplace_back(std::move(valid));
+
+  ParsedToolCall invalid{"call_2", "custom", R"({"input":"invalid\u0000payload"})"};
+  invalid.argument_source = invalid.arguments;
+  output.events.emplace_back(std::move(invalid));
+
+  size_t streamed_calls = 0;
+  EXPECT_THROW(
+      {
+        chat_session_internal::NormalizeToolOutputBatch(output, context);
+        for (const auto& event : output.events) {
+          if (std::holds_alternative<ParsedToolCall>(event)) {
+            ++streamed_calls;
+          }
+        }
+      },
+      fl::Exception);
+  EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, InvalidLaterFunctionCallPreventsTheWholeBatchFromStreaming) {
+  ToolCallContext context;
+  context.tool_kinds = {{"first", ToolKind::kFunction}, {"second", ToolKind::kFunction}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall valid{"call_1", "first", R"({"value":1})"};
+  valid.argument_source = valid.arguments;
+  output.events.emplace_back(std::move(valid));
+
+  ParsedToolCall invalid{"call_2", "second", std::string("before\0after", 12)};
+  invalid.argument_source = R"("before\u0000after")";
+  output.events.emplace_back(std::move(invalid));
+
+  size_t streamed_calls = 0;
+  EXPECT_THROW(
+      {
+        chat_session_internal::NormalizeToolOutputBatch(output, context);
+        for (const auto& event : output.events) {
+          if (std::holds_alternative<ParsedToolCall>(event)) {
+            ++streamed_calls;
+          }
+        }
+      },
+      fl::Exception);
+  EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, FunctionCallNameMustBeNulFreeUtf8) {
+  ToolCallContext context;
+  context.tool_kinds = {{"tool", ToolKind::kFunction}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall invalid{"call_1", std::string("tool\0hidden", 11), R"({"value":1})"};
+  invalid.argument_source = invalid.arguments;
+  output.events.emplace_back(std::move(invalid));
+
+  EXPECT_THROW(chat_session_internal::NormalizeToolOutputBatch(output, context), fl::Exception);
 }
 
 TEST(ChatSessionDecisionTest, ExactResidentPrefixSelectsOnlyTheUnmatchedFullPromptSuffix) {

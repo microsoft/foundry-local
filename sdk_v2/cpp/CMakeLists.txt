@@ -265,6 +265,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
     src/inferencing/session/session_manager.cc
+    src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc

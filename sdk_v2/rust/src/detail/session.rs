@@ -351,11 +351,15 @@ impl NativeSession {
     }
 
     /// Register a tool definition for the lifetime of the session.
+    ///
+    /// `json_schema` is required for a function tool and must be empty for a custom tool, whose
+    /// schema is synthesized natively.
     pub(crate) fn add_tool_definition(
         &self,
         name: &str,
         description: Option<&str>,
         json_schema: &str,
+        kind: flToolKind,
     ) -> Result<()> {
         let _guard = self.lock_ops();
         let name_c = super::api::to_cstring(name)?;
@@ -368,6 +372,7 @@ impl NativeSession {
             name: name_c.as_ptr(),
             description: desc_c.as_ptr(),
             json_schema: schema_c.as_ptr(),
+            kind,
         };
         let status =
             unsafe { (self.api.inference_api().Session_AddToolDefinition)(self.ptr, &def) };

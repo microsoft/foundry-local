@@ -348,7 +348,7 @@ pub struct ToolCall {
     pub call_id: String,
     /// The name of the tool/function to invoke.
     pub name: String,
-    /// The call arguments, as a JSON string.
+    /// JSON object text for a function tool, or raw NUL-free UTF-8 text for a custom tool.
     pub arguments: String,
 }
 

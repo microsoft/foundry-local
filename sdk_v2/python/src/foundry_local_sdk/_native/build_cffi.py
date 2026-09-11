@@ -327,11 +327,16 @@ typedef struct flStreamingCallbackData {
     flItemQueue* item_queue;
 } flStreamingCallbackData;
 
+typedef uint32_t flToolKind;
+#define FOUNDRY_LOCAL_TOOL_KIND_FUNCTION ...
+#define FOUNDRY_LOCAL_TOOL_KIND_CUSTOM ...
+
 typedef struct flToolDefinition {
     uint32_t version;
     const char* name;
     const char* description;
     const char* json_schema;
+    flToolKind kind;
 } flToolDefinition;
 
 /* -----------------------------------------------------------------------

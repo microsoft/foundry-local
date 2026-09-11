@@ -120,6 +120,77 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
   });
 });
 
+describe.skipIf(!haveTestModelCache)("ChatSession tool registration", () => {
+  let fixture: RealModelManagerFixture | undefined;
+  let session: ChatSession | undefined;
+
+  beforeAll(async () => {
+    fixture = await setupRealModelManager();
+  }, 5 * 60_000);
+
+  afterAll(() => {
+    teardownRealModelManager(fixture);
+  });
+
+  beforeEach(() => {
+    if (fixture === undefined) throw new Error("fixture missing");
+    session = new ChatSession(fixture.model);
+  });
+
+  afterEach(() => {
+    session?.dispose();
+    session = undefined;
+  });
+
+  it("registers a function tool and a custom tool", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    session.addToolDefinition({
+      name: "multiply_numbers",
+      description: "Multiplies two numbers.",
+      jsonSchema: JSON.stringify({ type: "object", properties: { first: { type: "integer" } } }),
+    });
+    // A custom tool carries no schema — the one the model sees is synthesized natively.
+    expect(session.addCustomToolDefinition({ name: "apply_patch", description: "Applies a patch." })).toBe(session);
+    session.addToolDefinition({ name: "run_shell", description: "Runs a command.", kind: "custom" });
+  });
+
+  it("rejects a duplicate name across kinds and allows re-adding after removal", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    session.addCustomToolDefinition({ name: "apply_patch", description: "Applies a patch." });
+
+    expect(() => session?.addCustomToolDefinition({ name: "apply_patch", description: "again" })).toThrow();
+    expect(() => session?.addToolDefinition({ name: "apply_patch", description: "d", jsonSchema: "{}" })).toThrow();
+
+    // Names are case-sensitive, so a differently-cased name is a different tool.
+    session.addCustomToolDefinition({ name: "Apply_Patch", description: "Different tool." });
+
+    expect(session.removeToolDefinition("apply_patch")).toBe(true);
+    expect(session.removeToolDefinition("apply_patch")).toBe(false);
+    session.addToolDefinition({ name: "apply_patch", description: "Now a function.", jsonSchema: "{}" });
+  });
+
+  it("rejects a custom tool that supplies a schema and a function tool with an invalid schema", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    expect(() =>
+      // @ts-expect-error — exercising the native guard against a schema on a custom tool
+      session?.addToolDefinition({ name: "custom", description: "d", jsonSchema: "{}", kind: "custom" }),
+    ).toThrow();
+    expect(() => session?.addToolDefinition({ name: "broken", description: "d", jsonSchema: "{not json" })).toThrow();
+  });
+
+  it("rejects an unknown tool kind", () => {
+    if (session === undefined) throw new Error("fixture missing");
+    expect(() =>
+      session?.addToolDefinition({
+        name: "weird",
+        description: "d",
+        // @ts-expect-error — exercising the native guard against unknown tool kinds
+        kind: "grammar",
+      }),
+    ).toThrow(TypeError);
+  });
+});
+
 describe("ChatSession constructor type guard", () => {
   it("throws TypeError when constructed with a non-Model argument", () => {
     expect(() => new ChatSession({} as never)).toThrow(TypeError);
