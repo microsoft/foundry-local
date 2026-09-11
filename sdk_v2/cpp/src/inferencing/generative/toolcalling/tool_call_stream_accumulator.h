@@ -279,7 +279,10 @@ class ToolCallStreamAccumulator {
               }
             }
           } else {
-            EmitVisible(out, std::move(tool_call_buffer_));
+            std::string candidate = tool_call_buffer_ + end_marker_;
+            if (!EmitParsedBlock(out, candidate)) {
+              EmitVisible(out, std::move(tool_call_buffer_));
+            }
           }
 
           tool_call_buffer_.clear();

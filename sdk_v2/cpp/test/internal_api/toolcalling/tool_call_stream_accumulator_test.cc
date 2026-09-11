@@ -234,6 +234,18 @@ TEST(ToolCallStreamAccumulatorTest, UnterminatedToolCallBecomesVisibleOnFlush) {
   EXPECT_FALSE(acc.InsideToolCall()) << "Flush should leave accumulator in outside state";
 }
 
+TEST(ToolCallStreamAccumulatorTest, FlushRecoversCompleteCallWithoutClosingMarker) {
+  ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
+  auto outs = RunChunks(acc, {R"(<tool_call>{"name":"complete","arguments":{"value":1}})"});
+
+  EXPECT_TRUE(CollectVisible(outs).empty());
+  auto calls = CollectCalls(outs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls[0].name, "complete");
+  EXPECT_EQ(calls[0].arguments, R"({"value":1})");
+  EXPECT_FALSE(acc.InsideToolCall());
+}
+
 TEST(ToolCallStreamAccumulatorTest, CompletedMalformedToolCallBecomesVisible) {
   ToolCallStreamAccumulator acc("<tool_call>", "</tool_call>");
   auto outs = RunChunks(acc, {"before <tool_call>not json</tool_call> after"});
