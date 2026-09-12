@@ -28,6 +28,8 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
     - template: steps-build-java.yml
       parameters:
         rid: 'win-x64'
@@ -59,6 +61,8 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
     - template: steps-build-java.yml
       parameters:
         rid: 'win-arm64'
@@ -89,6 +93,8 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
     - template: steps-build-java.yml
       parameters:
         rid: 'linux-x64'
@@ -120,6 +126,8 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
     - template: steps-build-java.yml
       parameters:
         rid: 'linux-arm64'
@@ -152,6 +160,8 @@ stages:
     - checkout: self
       clean: true
     - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
     - template: steps-build-java.yml
       parameters:
         rid: 'osx-arm64'

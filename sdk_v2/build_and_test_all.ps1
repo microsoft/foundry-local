@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Build and test all sdk_v2 SDKs (C++, C#, Python, JS, Java) in one shot.
+    Build and test the C++, C#, Python, JS, and Java SDKs in one shot.
 
 .DESCRIPTION
-    The simple developer "build and run all tests" one-shot script for sdk_v2.
+    The developer "build and run tests" script for the five SDKs listed below.
 
     Order:
       1. C++    — python build.py (configure + build + test)
@@ -271,6 +271,6 @@ if ($failed) {
     Write-Host "FAILED: $($failed.Sdk -join ', ')" -ForegroundColor Red
     exit 1
 } else {
-    Write-Host "All SDKs passed." -ForegroundColor Green
+    Write-Host "Selected SDKs passed." -ForegroundColor Green
     exit 0
 }

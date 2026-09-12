@@ -117,6 +117,19 @@ final class NativeApi {
         }
     }
 
+    static Throwable preserveFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        if (first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    static void rethrow(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        throw new AssertionError(failure);
+    }
+
     static String target() {
         String arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT);
         String cpu = switch (arch) {

@@ -74,31 +74,30 @@ public final class FoundryLocalManager implements AutoCloseable {
         NativeApi.outsideCallback();
         synchronized (this) {
             if (handle == null) return;
-            RuntimeException failure = null;
+            Throwable failure = null;
             for (AudioSession session : new ArrayList<>(sessions)) {
                 try {
                     session.close();
-                } catch (RuntimeException e) {
-                    if (failure == null) failure = e;
-                    else failure.addSuppressed(e);
+                } catch (RuntimeException | Error e) {
+                    failure = NativeApi.preserveFailure(failure, e);
                 }
             }
             try {
                 api.check(api.root.pointer(NativeApi.Root.MANAGER_SHUTDOWN, handle));
-            } catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            }
+            try {
+                api.root.call(NativeApi.Root.MANAGER_RELEASE, handle);
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
             } finally {
-                try {
-                    api.root.call(NativeApi.Root.MANAGER_RELEASE, handle);
-                } finally {
-                    handle = null;
-                    synchronized (FoundryLocalManager.class) {
-                        active = false;
-                    }
+                handle = null;
+                synchronized (FoundryLocalManager.class) {
+                    active = false;
                 }
             }
-            if (failure != null) throw failure;
+            NativeApi.rethrow(failure);
         }
     }
 }

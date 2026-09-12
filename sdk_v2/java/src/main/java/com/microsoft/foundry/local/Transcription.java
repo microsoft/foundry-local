@@ -74,8 +74,13 @@ public final class Transcription implements AutoCloseable {
                     callback,
                     null));
         } catch (RuntimeException | Error e) {
-            api.inference.call(NativeApi.InferenceApi.REQUEST_RELEASE, request);
-            request = null;
+            try {
+                api.inference.call(NativeApi.InferenceApi.REQUEST_RELEASE, request);
+            } catch (RuntimeException | Error cleanupFailure) {
+                e.addSuppressed(cleanupFailure);
+            } finally {
+                request = null;
+            }
             throw e;
         }
         worker = new Thread(this::run, "foundry-java-asr");
@@ -136,8 +141,11 @@ public final class Transcription implements AutoCloseable {
             if (firstInputNanos == 0) firstInputNanos = System.nanoTime();
             submittedBytes += bytes.length;
         } finally {
-            if (item != null) api.item.call(NativeApi.ItemApi.RELEASE, item);
-            if (!ownsBuffer) freeBuffer(address);
+            try {
+                if (item != null) api.item.call(NativeApi.ItemApi.RELEASE, item);
+            } finally {
+                if (!ownsBuffer) freeBuffer(address);
+            }
         }
     }
 
@@ -165,12 +173,22 @@ public final class Transcription implements AutoCloseable {
     public synchronized void cancel() {
         NativeApi.outsideCallback();
         if (closed || !completion.cancel()) return;
-        api.check(api.inference.pointer(NativeApi.InferenceApi.REQUEST_CANCEL, request));
+        Throwable failure = null;
+        try {
+            api.check(api.inference.pointer(NativeApi.InferenceApi.REQUEST_CANCEL, request));
+        } catch (RuntimeException | Error e) {
+            failure = e;
+        }
         if (queue != null && !finished) {
-            api.item.call(NativeApi.ItemApi.QUEUE_MARK_FINISHED, queue);
-            finished = true;
+            try {
+                api.item.call(NativeApi.ItemApi.QUEUE_MARK_FINISHED, queue);
+                finished = true;
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            }
         }
         notifyAll();
+        NativeApi.rethrow(failure);
     }
 
     public boolean isDone() { return completion.result.isDone(); }
@@ -361,6 +379,7 @@ public final class Transcription implements AutoCloseable {
     @Override public void close() {
         NativeApi.outsideCallback();
         boolean interrupted = false;
+        Throwable failure = null;
         synchronized (this) {
             while (closing && !closed) {
                 try { wait(); }
@@ -370,7 +389,11 @@ public final class Transcription implements AutoCloseable {
                 if (interrupted) Thread.currentThread().interrupt();
                 return;
             }
-            cancel();
+            try {
+                cancel();
+            } catch (RuntimeException | Error e) {
+                failure = e;
+            }
             closing = true;
         }
         while (worker.isAlive()) {
@@ -388,8 +411,14 @@ public final class Transcription implements AutoCloseable {
                         session.handle,
                         null,
                         null));
-            } finally {
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            }
+            try {
                 api.inference.call(NativeApi.InferenceApi.REQUEST_RELEASE, request);
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            } finally {
                 synchronized (this) {
                     request = null;
                     queue = null;
@@ -398,7 +427,12 @@ public final class Transcription implements AutoCloseable {
                     notifyAll();
                 }
             }
-            if (!buffers.isEmpty()) throw new IllegalStateException("Native request did not release all PCM buffers");
+            if (!buffers.isEmpty()) {
+                failure = NativeApi.preserveFailure(
+                        failure,
+                        new IllegalStateException("Native request did not release all PCM buffers"));
+            }
+            NativeApi.rethrow(failure);
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
             Reference.reachabilityFence(callback);

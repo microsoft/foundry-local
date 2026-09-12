@@ -2,7 +2,7 @@
 
 A first-time contributor should be able to install the tools listed below,
 clone the repo, then run the one-shot build/test script from this directory
-and watch all five SDKs go green:
+and watch the five SDKs covered by the script go green:
 
 ```powershell
 pwsh ./build_and_test_all.ps1
@@ -10,10 +10,14 @@ pwsh ./build_and_test_all.ps1
 
 If that passes, your machine is correctly configured.
 
+The Rust SDK uses its own Cargo workflow and is not included in this
+convenience script.
+
 ## Prerequisites
 
-All five SDKs (C++, C#, Python, JS/TS, Java) build on **Windows**, **Linux**, and
-**macOS**. WinML 2.x hardware acceleration is bundled automatically on Windows.
+The five SDKs covered by this script (C++, C#, Python, JS/TS, Java) build on
+**Windows**, **Linux**, and **macOS**. WinML 2.x hardware acceleration is
+bundled automatically on Windows.
 
 ### All platforms
 

@@ -36,4 +36,13 @@ class NativeContractTest {
         finally { NativeApi.IN_CALLBACK.remove(); }
     }
 
+    @Test void cleanupPreservesTheFirstFailureAndSuppressesLaterFailures() {
+        IllegalStateException first = new IllegalStateException("transcription");
+        IllegalArgumentException second = new IllegalArgumentException("session");
+        assertSame(first, NativeApi.preserveFailure(first, second));
+        assertArrayEquals(new Throwable[] {second}, first.getSuppressed());
+        assertSame(second, NativeApi.preserveFailure(null, second));
+        assertSame(first, assertThrows(IllegalStateException.class, () -> NativeApi.rethrow(first)));
+    }
+
 }

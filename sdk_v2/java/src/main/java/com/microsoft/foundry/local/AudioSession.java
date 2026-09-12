@@ -46,10 +46,22 @@ public final class AudioSession implements AutoCloseable {
         NativeApi.outsideCallback();
         synchronized (model.owner) {
             if (handle == null) return;
-            if (active != null) active.close();
-            api.inference.call(NativeApi.InferenceApi.SESSION_RELEASE, handle);
-            handle = null;
-            model.owner.sessions.remove(this);
+            Throwable failure = null;
+            try {
+                if (active != null) active.close();
+            } catch (RuntimeException | Error e) {
+                failure = e;
+            }
+            try {
+                api.inference.call(NativeApi.InferenceApi.SESSION_RELEASE, handle);
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            } finally {
+                active = null;
+                handle = null;
+                model.owner.sessions.remove(this);
+            }
+            NativeApi.rethrow(failure);
         }
     }
 }
