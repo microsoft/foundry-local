@@ -17,15 +17,18 @@
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "model.h"
 #include "util/scope_guard.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <fmt/format.h>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 namespace fl {
@@ -93,7 +96,11 @@ std::optional<int32_t> ResolveMarkerTokenId(const std::string& marker_text,
 /// The turn's output has already been streamed to the caller by the time this runs, so a model that emitted argument
 /// bytes that are not a JSON object must not fail the request. The raw bytes are kept verbatim on the call (and on
 /// the response items), the normalized form degrades to an empty object, and the defect is logged.
-TranscriptMessage MakeAssistantMessage(const std::vector<GeneratedOutputEvent>& events, ILogger& logger) {
+///
+/// `tool_ctx` supplies the kinds this turn was prompted with, so a custom tool's call is recorded as such and its
+/// already-unwrapped text payload is rewrapped for template projection rather than being read as malformed JSON.
+TranscriptMessage MakeAssistantMessage(const std::vector<GeneratedOutputEvent>& events, const ToolCallContext& tool_ctx,
+                                       ILogger& logger) {
   TranscriptMessage assistant;
   assistant.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
 
@@ -108,7 +115,7 @@ TranscriptMessage MakeAssistantMessage(const std::vector<GeneratedOutputEvent>& 
     }
 
     const auto& parsed = std::get<ParsedToolCall>(event);
-    auto generated = MakeGeneratedToolCall(parsed.id, parsed.name, parsed.arguments);
+    auto generated = MakeGeneratedToolCall(parsed.id, parsed.name, parsed.arguments, tool_ctx.KindOf(parsed.name));
 
     if (!generated.arguments_usable) {
       logger.Log(LogLevel::Warning,
@@ -121,6 +128,22 @@ TranscriptMessage MakeAssistantMessage(const std::vector<GeneratedOutputEvent>& 
   }
 
   return assistant;
+}
+
+/// Name-to-kind index over a snapshot of tool definitions. Unnamed entries are whole pre-serialized tools payloads
+/// rather than registrable tools (see ToolRegistry::Add), so they are deliberately absent: no generated call
+/// resolves against them.
+std::unordered_map<std::string, ToolKind> KindsByName(const std::vector<ToolDefinition>& definitions) {
+  std::unordered_map<std::string, ToolKind> kinds;
+  kinds.reserve(definitions.size());
+
+  for (const auto& td : definitions) {
+    if (!td.name.empty()) {
+      kinds.emplace(td.name, td.kind);
+    }
+  }
+
+  return kinds;
 }
 
 ReasoningStreamSplitter CreateReasoningSplitter(const ToolCallContext& tool_ctx,
@@ -185,6 +208,45 @@ bool AcceptVisibleText(AssistantTurnGuard& guard, const std::string& text, ILogg
 }  // namespace
 
 namespace chat_session_internal {
+
+std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
+    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot) {
+  if (tools_json.empty()) {
+    return {};
+  }
+
+  const auto custom_tool =
+      std::find_if(session_snapshot.begin(), session_snapshot.end(),
+                   [](const ToolDefinition& tool) { return tool.kind == ToolKind::kCustom; });
+  if (custom_tool != session_snapshot.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "Custom tool definitions cannot be used with OpenAI JSON input");
+  }
+
+  if (!session_snapshot.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+             "Tool definitions cannot be used with OpenAI JSON input; the JSON payload must be fully self-contained");
+  }
+
+  return {{{}, {}, std::move(tools_json), ToolKind::kFunction}};
+}
+
+void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
+                              const ToolCallContext& tool_ctx) {
+  for (auto& event : output.events) {
+    auto* call = std::get_if<ParsedToolCall>(&event);
+    if (call == nullptr) {
+      continue;
+    }
+
+    if (tool_ctx.IsCustomTool(call->name)) {
+      call->arguments = ExtractCustomToolInput(call->argument_source);
+    }
+
+    ValidateToolCallText(call->name, "tool call name");
+    ValidateToolCallText(call->arguments, "tool call arguments");
+  }
+}
 
 flFinishReason ResolveGeneratedFinishReason(bool canceled,
                                             bool has_tool_calls,
@@ -293,7 +355,8 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
-ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const {
+ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
+                                                  const std::vector<ToolDefinition>& definitions) const {
   ToolCallContext tool_ctx;
 
   tool_ctx.tool_call_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
@@ -385,10 +448,16 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
   // 1. Individual AddToolDefinition calls (name + description + parameters schema)
   // 2. ChatCompletions converter (pre-serialized full OpenAI tools JSON array, no name)
   // We need to produce a JSON array in OpenAI tools format for the chat template.
+  // Custom tools are already normalized by the registry into a function-shaped schema, so the
+  // template and the guidance grammar only ever see function tools. Their kinds are carried on the
+  // context, so this turn's output is read back with exactly the tool set that shaped its prompt
+  // even if the session's registry changes underneath.
   nlohmann::json tools_array = nlohmann::json::array();
   bool has_preserialized = false;
 
-  for (const auto& td : ToolDefinitions()) {
+  tool_ctx.tool_kinds = KindsByName(definitions);
+
+  for (const auto& td : definitions) {
     if (!td.name.empty()) {
       // Individual tool: wrap in OpenAI format
       nlohmann::json tool;
@@ -433,6 +502,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request) const 
 }
 
 void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
+                                         const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options,
                                          bool canceled,
                                          bool stop_sequence_matched,
@@ -478,8 +548,10 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
 
     flush_segments();
     auto& call = std::get<ParsedToolCall>(event);
+    const auto kind = tool_ctx.KindOf(call.name);
     response.items.push_back(std::make_unique<ToolCallItem>(std::move(call.id), std::move(call.name),
-                                                            std::move(call.arguments)));
+                                                            std::move(call.arguments),
+                                                            /*replayed_from_store=*/false, kind));
     has_tool_calls = true;
   }
   flush_segments();
@@ -513,9 +585,22 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     }
   }
 
+  // One snapshot of the session's tools for this whole turn, taken before anything reads them. The registry is safe
+  // to mutate from another thread while a request generates, so taking it once is what makes a turn
+  // self-consistent: the calls it replays, the prompt it builds, and the calls it produces are all resolved against
+  // the same tool set.
+  //
+  // A turn appended to a cached generator does not rebuild the prompt and so keeps the kinds from the turn that
+  // did. That stays consistent because a turn carrying tool activity always invalidates the cached generator
+  // below, so any turn that actually replays a call is also the turn that rebuilds the prompt from this snapshot.
+  auto turn_tool_ctx = BuildToolCallContext(request, ToolDefinitions());
+
   // Collect this turn's input messages locally — nothing reaches the transcript until the turn commits. Replay
   // segment boundaries travel with the items so a reconstructed conversation regroups exactly as it was committed.
-  auto ingest = IngestRequestItems(request.items, request.item_segment_starts);
+  //
+  // Replayed tool calls are normalized with this turn's kinds: a custom tool's call comes back as the text payload
+  // this session handed out, so it must be rewrapped rather than rejected as malformed JSON.
+  auto ingest = IngestRequestItems(request.items, request.item_segment_starts, turn_tool_ctx.tool_kinds);
   auto inputs = std::move(ingest.messages);
 
   // Reject bad tool-call correlation before any generator work: a rejected turn must cost nothing and leave no
@@ -528,7 +613,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // request after the session cache dropped it, so a continuation is rejected identically either way.
   auto media = CollectMediaInput(request);
   const bool media_turn = !media.Empty();
-  auto turn_tool_ctx = BuildToolCallContext(request);
   ValidateMediaTurn(media, inputs,
                     {.session_has_history = !transcript_.Empty(), .tools_declared = turn_tool_ctx.HasTools()});
 
@@ -700,6 +784,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.reasoning_end);
 
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
+    // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
+    // no caller-visible item or durable turn state may contain only its valid prefix.
+    chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
+
     for (auto& event : out.events) {
       if (auto* text = std::get_if<std::string>(&event)) {
         // A structured tool call is the end of the turn's visible text: a chat template renders an assistant turn as
@@ -719,8 +807,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
       auto call = std::move(std::get<ParsedToolCall>(event));
       turn_guard.RecordToolCall();
+
       if (streaming_callback) {
-        streaming_callback->PushItem(std::make_unique<ToolCallItem>(call.id, call.name, call.arguments));
+        streaming_callback->PushItem(std::make_unique<ToolCallItem>(
+            call.id, call.name, call.arguments, /*replayed_from_store=*/false,
+            cached_tool_ctx_.KindOf(call.name)));
       }
       generated_events.push_back(std::move(call));
     }
@@ -792,7 +883,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     backend_finish_reason = turn_usage->finish_reason;
   }
 
-  auto assistant_message = MakeAssistantMessage(generated_events, logger_);
+  auto assistant_message = MakeAssistantMessage(generated_events, cached_tool_ctx_, logger_);
   const bool generated_tool_calls = assistant_message.HasToolCalls();
 
   if (!request.canceled) {
@@ -801,7 +892,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     transcript_.ValidateGeneratedOutput(assistant_message);
   }
 
-  ProcessGeneratedOutput(std::move(generated_events), effective_options, request.canceled,
+  ProcessGeneratedOutput(std::move(generated_events), cached_tool_ctx_, effective_options, request.canceled,
                          stop_sequence_matched, host_output_limit_reached, response, prompt_tokens, total_tokens,
                          splitter.ReasoningTokenCount(), backend_finish_reason);
 
@@ -846,6 +937,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
 void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                              Response& response) {
+  // Consult mutable session state exactly once. JSON requests otherwise derive their complete tool
+  // context from their own payload, so later registration cannot alter this request's interpretation.
+  const auto session_tool_definitions = ToolDefinitions();
+
   // Parse the OpenAI chat completions request
   auto req_json = nlohmann::json::parse(request_json);
   auto req = req_json.get<ChatCompletionRequest>();
@@ -880,18 +975,13 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     }
   }
 
-  // Build tool call context
-  if (!tools_json.empty()) {
-    // we don't expect a Session to get re-used on this path so this should always be empty
-    if (ToolDefinitions().size() > 0) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-               "Tool definitions cannot be used with OpenAI JSON input; the JSON payload must be fully self-contained");
-    }
+  // Build a request-local tool definition. It must never enter the session registry: this payload
+  // is self-contained and concurrent registration must not alter either its prompt or call parsing.
+  const auto request_tool_definitions =
+      chat_session_internal::BuildJsonRequestToolDefinitions(std::move(tools_json),
+                                                             session_tool_definitions);
 
-    AddToolDefinition({{}, {}, std::move(tools_json)});
-  }
-
-  auto tool_ctx = BuildToolCallContext(internal_request);
+  const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);
 
   // Merge session-level and per-request options once.
   auto effective_kvp = MergedOptions(internal_request.options);
@@ -899,7 +989,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Collect transcript messages from the internal request for the generator.
   // The session transcript is not used here — everything comes from the parsed JSON input.
-  auto messages = BuildTranscriptMessages(internal_request.items);
+  // The context above already snapshotted the kinds that shape this prompt, so replayed calls in the payload are
+  // normalized with exactly the kinds the produced calls are read back with.
+  auto messages = BuildTranscriptMessages(internal_request.items, tool_ctx.tool_kinds);
 
   // The payload is self-contained, so correlate its tool calls and results against an empty transcript. This gives
   // the same stable errors a session turn would produce for a history the model cannot interpret.
@@ -970,6 +1062,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
       auto call = std::move(std::get<ParsedToolCall>(event));
       turn_guard.RecordToolCall();
+
       if (is_streaming) {
         ChatCompletionToolCall streamed;
         streamed.index = next_tool_call_index++;
@@ -1050,7 +1143,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     backend_finish_reason = turn_usage->finish_reason;
   }
 
-  ProcessGeneratedOutput(std::move(generated_events), options, original_request.canceled,
+  ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options, original_request.canceled,
                          stop_sequence_matched, /*host_output_limit_reached=*/false, response, prompt_tokens,
                          total_tokens, splitter.ReasoningTokenCount(), backend_finish_reason);
 

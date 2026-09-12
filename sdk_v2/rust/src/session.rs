@@ -17,6 +17,7 @@ use std::task::{Context, Poll};
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use crate::detail::api::{Api, Kvps};
+use crate::detail::ffi::{FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION};
 use crate::detail::model::Model;
 use crate::detail::session::{run_item_streaming, NativeItemQueue, NativeRequest, NativeSession};
 use crate::detail::task::spawn_blocking;
@@ -310,6 +311,32 @@ impl ToolDefinition {
     }
 }
 
+/// A custom text tool the model may call, registered on a [`ChatSession`].
+///
+/// Unlike a [`ToolDefinition`], a custom tool has no caller-supplied schema. The native runtime
+/// synthesizes the model-facing schema, and generated calls contain the model's raw text payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomToolDefinition {
+    name: String,
+    description: Option<String>,
+}
+
+impl CustomToolDefinition {
+    /// Create a custom text tool with the given unique name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+        }
+    }
+
+    /// Attach a description (builder-style).
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
 /// Reject a model whose task is not one of `allowed` before a typed session is
 /// created.
 ///
@@ -376,6 +403,10 @@ impl ChatSession {
     }
 
     /// Register a [`ToolDefinition`] for the lifetime of the session.
+    ///
+    /// Names are case-sensitive and unique across all tool types; re-registering a name fails until
+    /// the existing definition is removed. Names, descriptions, and schemas cannot contain an
+    /// interior NUL byte.
     pub async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<()> {
         let inner = Arc::clone(&self.session.inner);
         spawn_blocking(move || {
@@ -383,12 +414,31 @@ impl ChatSession {
                 &definition.name,
                 definition.description.as_deref(),
                 &definition.json_schema,
+                FOUNDRY_LOCAL_TOOL_KIND_FUNCTION,
             )
         })
         .await
     }
 
-    /// Remove a previously-registered tool by name. Returns whether one was removed.
+    /// Register a [`CustomToolDefinition`] for the lifetime of the session.
+    ///
+    /// Names are case-sensitive and unique across all tool types. Names and descriptions cannot
+    /// contain an interior NUL byte.
+    pub async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<()> {
+        let inner = Arc::clone(&self.session.inner);
+        spawn_blocking(move || {
+            inner.add_tool_definition(
+                &definition.name,
+                definition.description.as_deref(),
+                "",
+                FOUNDRY_LOCAL_TOOL_KIND_CUSTOM,
+            )
+        })
+        .await
+    }
+
+    /// Remove a previously-registered tool by name. Returns whether one was removed. The name
+    /// cannot contain an interior NUL byte.
     pub async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool> {
         let inner = Arc::clone(&self.session.inner);
         let name = name.into();

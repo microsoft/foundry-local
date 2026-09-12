@@ -50,6 +50,12 @@ option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
+option(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS
+       "Fail configuration unless the ORT GenAI dynamic Engine tests can be built"
+       OFF)
+if(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS AND NOT FOUNDRY_LOCAL_BUILD_TESTS)
+    message(FATAL_ERROR "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS requires FOUNDRY_LOCAL_BUILD_TESTS=ON")
+endif()
 
 # Optional 1DS ingestion token override. Override only via environment so it does
 # not appear in CMake cache files.
@@ -147,6 +153,10 @@ unset(CMAKE_REQUIRED_LIBRARIES)
 if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
     message(STATUS "ORT GenAI dynamic Engine API: enabled")
 else()
+    if(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS)
+        message(FATAL_ERROR
+            "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS requires an ORT GenAI package with the dynamic Engine API")
+    endif()
     message(STATUS "ORT GenAI dynamic Engine API: unavailable; using Generator backend")
 endif()
 find_package(OnnxRuntime REQUIRED)
@@ -255,6 +265,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
     src/inferencing/session/session_manager.cc
+    src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc

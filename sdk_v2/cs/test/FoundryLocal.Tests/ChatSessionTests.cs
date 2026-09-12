@@ -11,6 +11,9 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
+using FlToolKind = Microsoft.AI.Foundry.Local.Detail.Interop.FlToolKind;
+using NativeSession = Microsoft.AI.Foundry.Local.Detail.Native.Session;
+
 #pragma warning disable CA2000 // Items are transferred to Request via AddItem
 
 [SkipUnlessIntegration]
@@ -649,5 +652,109 @@ internal sealed class ChatSessionTests
         await Assert.That(finalContent).IsNotNull();
         await Assert.That(finalContent!).Contains("42");
         Console.WriteLine($"Final response: {finalContent}");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Tool registration. These exercise the registry the session keeps rather than generation, so
+    // they need a loaded model (a session cannot exist without one) but never run a turn.
+    // ---------------------------------------------------------------------------------------------
+
+    [Test]
+    public async Task CustomToolDefinition_DuplicateNameAcrossKinds_IsRejected()
+    {
+        using var session = new ChatSession(model!);
+
+        // A custom tool carries no caller-supplied schema: the native layer synthesizes the
+        // representation shown to the model. It registers alongside function tools and returns the
+        // session for chaining.
+        var returned = session.AddCustomToolDefinition("apply_patch", "Applies a patch to a file.");
+        await Assert.That(ReferenceEquals(returned, session)).IsTrue();
+
+        FoundryLocalException? duplicateCustom = null;
+        try
+        {
+            session.AddCustomToolDefinition("apply_patch", "Applies a patch, again.");
+        }
+        catch (FoundryLocalException ex)
+        {
+            duplicateCustom = ex;
+        }
+
+        await Assert.That(duplicateCustom).IsNotNull();
+        await Assert.That(duplicateCustom!.ErrorCode).IsEqualTo(FoundryLocalErrorCode.InvalidArgument);
+        await Assert.That(duplicateCustom!.Message).Contains("already registered");
+
+        // Uniqueness is across kinds, not per kind: a function tool cannot take the name either.
+        FoundryLocalException? duplicateFunction = null;
+        try
+        {
+            session.AddToolDefinition("apply_patch", "A function of the same name.", "{}");
+        }
+        catch (FoundryLocalException ex)
+        {
+            duplicateFunction = ex;
+        }
+
+        await Assert.That(duplicateFunction).IsNotNull();
+        await Assert.That(duplicateFunction!.ErrorCode).IsEqualTo(FoundryLocalErrorCode.InvalidArgument);
+
+        // Names are case-sensitive, so a differently-cased name is a different tool and registers.
+        session.AddCustomToolDefinition("Apply_Patch", "A different tool.");
+    }
+
+    [Test]
+    public async Task CustomToolDefinition_RemoveThenReAdd_Succeeds()
+    {
+        using var session = new ChatSession(model!);
+
+        session.AddCustomToolDefinition("apply_patch", "Applies a patch to a file.");
+
+        await Assert.That(session.RemoveToolDefinition("apply_patch")).IsTrue();
+        await Assert.That(session.RemoveToolDefinition("apply_patch")).IsFalse();
+
+        // Removal frees the name outright — nothing about the removed tool's kind is remembered, so
+        // the name can come back as a function tool.
+        session.AddToolDefinition(
+            "apply_patch",
+            "Now a function tool.",
+            /*lang=json,strict*/
+            """{ "type": "object", "properties": { "patch": { "type": "string" } } }""");
+
+        await Assert.That(session.RemoveToolDefinition("apply_patch")).IsTrue();
+
+        session.AddCustomToolDefinition("apply_patch", "Custom again.");
+    }
+
+    [Test]
+    public async Task CustomToolDefinition_WithSchema_IsRejected()
+    {
+        // The public surface cannot express this: AddCustomToolDefinition takes no schema. The
+        // rejection is native, so it is reached here through the binding overload the public method
+        // itself calls, which is the layer a caller outside this SDK would have to go through.
+        using var native = new NativeSession(((Model)model!).NativeModel);
+
+        FoundryLocalException? caught = null;
+        try
+        {
+            native.AddToolDefinition(
+                "apply_patch",
+                "Applies a patch to a file.",
+                """{ "type": "object" }""",
+                FlToolKind.Custom);
+        }
+        catch (FoundryLocalException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ErrorCode).IsEqualTo(FoundryLocalErrorCode.InvalidArgument);
+        await Assert.That(caught!.Message).Contains("json_schema");
+
+        // The same name and kind register once the schema is gone, so the rejection is about the
+        // schema rather than the kind, and the failed attempt registered nothing.
+        native.AddToolDefinition("apply_patch", "Applies a patch to a file.", string.Empty, FlToolKind.Custom);
+
+        await Assert.That(native.RemoveToolDefinition("apply_patch")).IsTrue();
     }
 }

@@ -34,6 +34,12 @@ stages:
     genaiVersion: ${{ parameters.genaiVersion }}
     winmlVersion: ${{ parameters.winmlVersion }}
 
+# Test-only CUDA runtime; never replaces the native packaging artifacts.
+- template: stages-test-engine.yml
+  parameters:
+    buildConfig: ${{ parameters.buildConfig }}
+    ortVersion: ${{ parameters.ortVersion }}
+
 # ── C# SDK ──
 - template: stages-cs.yml
 

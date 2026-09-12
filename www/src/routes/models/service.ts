@@ -102,6 +102,14 @@ export class FoundryModelService {
 		return FoundryModelService.ACCELERATION_DISPLAY_NAMES[acceleration] || acceleration;
 	}
 
+	getMetadataDisplayName(value: string): string {
+		return value
+			.split(/[-_\s]+/)
+			.filter(Boolean)
+			.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+			.join(' ');
+	}
+
 	// License URL mapping patterns
 	private static readonly LICENSE_URL_PATTERNS: Array<{ pattern: string; url: string; checkVersion?: boolean }> = [
 		{ pattern: 'mit', url: 'https://opensource.org/licenses/MIT' },
@@ -424,12 +432,7 @@ export class FoundryModelService {
 					return false;
 				}
 
-				// Prompt template validation: filter out models without prompt templates
-				// UNLESS they start with "gpt-oss-" OR have a task type of chat-completion
-				// Some models may not have promptTemplate but are still valid chat models
-				if (!this.isValidChatModel(model)) {
-					return false;
-				}				// Platform-specific filtering: ARM64 with INT8 quantization
+				// Platform-specific filtering: ARM64 with INT8 quantization
 				if (this.isArm64Platform()) {
 					// Extract model name without version
 					const baseName = model.name.split(':')[0];
@@ -440,39 +443,6 @@ export class FoundryModelService {
 
 				return true;
 			});
-	}
-
-	// Helper to validate if a model is a valid chat model for prompt template filtering
-	private isValidChatModel(model: FoundryModel): boolean {
-		const normalizedTaskType =
-			typeof model.taskType === 'string' ? model.taskType.toLowerCase() : '';
-		const normalizedName = model.name.toLowerCase();
-		
-		// Allow speech-to-text / whisper models (they don't have prompt templates but are valid)
-		if (normalizedTaskType.includes('automatic-speech-recognition') || 
-			normalizedTaskType.includes('speech-to-text') ||
-			normalizedName.includes('whisper')) {
-			return true;
-		}
-		
-		const validTaskTypeKeywords = [
-			'chat',
-			'completion',
-			'text-generation',
-			'text generation',
-			'instruct',
-			'instruction',
-			'reasoning'
-		];
-		const hasValidTaskType =
-			normalizedTaskType.length > 0 &&
-			validTaskTypeKeywords.some((keyword) => normalizedTaskType.includes(keyword));
-
-		return (
-			model.name.startsWith('gpt-oss-') ||
-			!!model.promptTemplate ||
-			hasValidTaskType
-		);
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -535,9 +505,6 @@ export class FoundryModelService {
 			tags.push(...entity.annotations.labels.map((l: string) => `label:${l}`));
 		}
 
-		// Extract prompt template
-		const promptTemplate = entity.annotations?.tags?.promptTemplate || null;
-
 		// Extract tool calling support
 		const supportsToolCalling = entity.annotations?.tags?.supportsToolCalling === 'true';
 
@@ -568,8 +535,22 @@ export class FoundryModelService {
 		// Extract min FL version
 		const minFLVersion = entity.properties?.minFLVersion || undefined;
 
-		// Extract task type
-		const taskType = entity.annotations?.tags?.task || 'chat-completion';
+		// Extract task type and capabilities
+		const rawTaskType = entity.annotations?.tags?.task;
+		const taskType =
+			typeof rawTaskType === 'string' && rawTaskType.trim() ? rawTaskType.trim() : undefined;
+		const rawCapabilities = entity.annotations?.tags?.capabilities;
+		const capabilities =
+			typeof rawCapabilities === 'string'
+				? [
+						...new Set(
+							rawCapabilities
+								.split(',')
+								.map((value) => value.trim())
+								.filter(Boolean)
+						)
+					]
+				: [];
 
 		// Extract license
 		const license = entity.annotations?.tags?.license || entity.properties?.license || undefined;
@@ -594,6 +575,7 @@ export class FoundryModelService {
 			framework: modelType,
 			license: license || licenseDescription,
 			taskType: taskType,
+			capabilities,
 			modelSize: this.formatModelSize(fileSizeBytes),
 			inputFormat: entity.properties?.inputFormat,
 			outputFormat: entity.properties?.outputFormat,
@@ -612,7 +594,6 @@ export class FoundryModelService {
 			device: device,
 			fileSizeBytes: fileSizeBytes,
 			vRamFootprintBytes: vRamFootprintBytes,
-			promptTemplate: promptTemplate,
 			supportsToolCalling: supportsToolCalling,
 			alias: alias,
 			isTestModel: isTestModel,
@@ -886,6 +867,11 @@ export class FoundryModelService {
 			// Combine tags from all variants
 			const tags = [...new Set(uniqueVariants.flatMap((v) => v.tags))].sort();
 
+			// Combine capabilities from all variants
+			const capabilities = [
+				...new Set(uniqueVariants.flatMap((variant) => variant.capabilities))
+			].sort();
+
 			// Sum download counts
 			const totalDownloads = uniqueVariants.reduce((sum, v) => sum + (v.downloadCount || 0), 0);
 
@@ -939,6 +925,7 @@ export class FoundryModelService {
 				framework: primaryModel.framework,
 				license: primaryModel.license,
 				taskType: primaryModel.taskType,
+				capabilities,
 				modelSize: primaryModel.modelSize,
 				fileSizeBytes: maxFileSizeBytes,
 				variants: uniqueVariants,

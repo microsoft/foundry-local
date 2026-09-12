@@ -16,7 +16,9 @@ import os
 from foundry_local_sdk._native.lib_loader import find_library, prepare_native_dependencies
 from foundry_local_sdk.exception import FoundryLocalException
 
-# FOUNDRY_LOCAL_API_VERSION = 2 (from foundry_local_c.h)
+# FOUNDRY_LOCAL_API_VERSION = 2 (from foundry_local_c.h). Versioned payload structs retain the
+# minimum version required by their own layouts; flToolDefinition uses version 2 for its `kind`
+# field (see session.py).
 _FOUNDRY_LOCAL_API_VERSION: int = 2
 
 _lib_path = find_library()

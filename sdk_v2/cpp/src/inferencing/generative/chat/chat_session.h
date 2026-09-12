@@ -7,6 +7,7 @@
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/session.h"
 #include "items/message_item.h"
@@ -54,12 +55,12 @@ bool PushDecodedFragment(const std::string& fragment,
     return false;
   }
 
-  auto filtered = stop_filter->PushWithTokenAlignment(fragment);
-  if (!filtered.text.empty()) {
-    if (filtered.token_aligned && token_id.has_value()) {
-      process_segments(splitter.Push(*token_id, std::move(filtered.text)));
+  auto filtered = stop_filter->PushWithTokenAlignment(fragment, token_id);
+  for (auto& safe_fragment : filtered.fragments) {
+    if (safe_fragment.token_id.has_value()) {
+      process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
     } else {
-      process_segments(splitter.Push(filtered.text));
+      process_segments(splitter.Push(safe_fragment.text));
     }
   }
 
@@ -71,9 +72,13 @@ void FlushDecodedStream(StopStringFilter* stop_filter,
                         ReasoningStreamSplitter& splitter,
                         SegmentProcessor&& process_segments) {
   if (stop_filter != nullptr && !stop_filter->matched()) {
-    auto tail = stop_filter->Flush();
-    if (!tail.empty()) {
-      process_segments(splitter.Push(tail));
+    auto tail = stop_filter->FlushWithTokenAlignment();
+    for (auto& safe_fragment : tail.fragments) {
+      if (safe_fragment.token_id.has_value()) {
+        process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
+      } else {
+        process_segments(splitter.Push(safe_fragment.text));
+      }
     }
   }
 
@@ -99,6 +104,10 @@ bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind 
                                                                 bool stop_sequence_matched,
                                                                 bool host_output_limit_reached);
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
+std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
+    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot);
+void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
+                              const ToolCallContext& tool_ctx);
 
 }  // namespace chat_session_internal
 
@@ -156,11 +165,15 @@ class ChatSession : public Session {
   /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
 
-  /// Build tool calling context from request parameters and session tool definitions.
-  ToolCallContext BuildToolCallContext(const Request& request) const;
+  /// Build tool calling context from request parameters and a snapshot of the session's tool definitions.
+  ///
+  /// The snapshot is supplied by the caller rather than read here so that one turn resolves its replayed calls, its
+  /// prompt, and its produced calls against the same tool set.
+  ToolCallContext BuildToolCallContext(const Request& request, const std::vector<ToolDefinition>& definitions) const;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
+                              const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
                               bool canceled,
                               bool stop_sequence_matched,

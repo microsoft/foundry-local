@@ -50,6 +50,7 @@ export class Request {
       // check fires and routes through the borrow path (take_ownership=false).
       this.#native.addItem(unwrapNativeItemQueue(item));
     } else {
+      rejectToolPayloadNul(item);
       rejectSharedArrayBuffer(item);
       this.#native.addItem(item);
     }
@@ -90,6 +91,28 @@ export function unwrapNativeRequest(request: Request): NativeRequest {
     throw new TypeError("Session.processRequest: argument is not a valid Request");
   }
   return n;
+}
+
+function rejectToolPayloadNul(item: Item): void {
+  const fields =
+    item.type === "toolCall"
+      ? ([
+          ["callId", item.callId],
+          ["name", item.name],
+          ["arguments", item.arguments],
+        ] as const)
+      : item.type === "toolResult"
+        ? ([
+            ["callId", item.callId],
+            ["result", item.result],
+          ] as const)
+        : [];
+
+  for (const [name, value] of fields) {
+    if (value.includes("\0")) {
+      throw new TypeError(`${name} must not contain an embedded NUL character`);
+    }
+  }
 }
 
 // Raw-bytes Item inputs are pinned zero-copy by the native addon. We only
