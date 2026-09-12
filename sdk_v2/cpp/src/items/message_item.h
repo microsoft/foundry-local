@@ -128,13 +128,6 @@ struct MessageItem : Item {
   // Storage for pointers returned by GetApiData. Mutable so a const message
   // can serve API-level reads.
   mutable std::vector<const flItem*> api_part_ptrs_;
-
-  // Clone a part item into a self-owned unique_ptr. For IMAGE/AUDIO parts,
-  // byte buffers are deep-copied into independently-owned storage so the
-  // clone has no dependency on the source's lifetime. Implementation lives
-  // out-of-line (see message_item.cc) to avoid pulling every concrete item
-  // header into this one.
-  static std::unique_ptr<Item> CloneApiPart(const Item& src);
 };
 
 }  // namespace fl

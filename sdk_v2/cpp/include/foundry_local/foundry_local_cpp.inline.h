@@ -1270,6 +1270,21 @@ inline void ChatSession::UndoTurns(size_t count) {
   Check(detail::inference_api()->Session_UndoTurns(handle_.get_mutable(), count));
 }
 
+inline RequestPreflight ChatSession::PreflightRequest(const Request& request) const {
+  flRequestPreflight preflight{};
+  preflight.version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION;
+  Check(detail::inference_api()->Session_PreflightRequest(handle_.get(), request.native_handle(), &preflight));
+
+  return {
+      preflight.prompt_tokens,
+      preflight.output_reserve_tokens,
+      preflight.required_tokens,
+      preflight.context_limit_tokens,
+      preflight.fits != 0,
+      preflight.deficit_tokens,
+  };
+}
+
 // ===========================================================================
 // AudioSession
 // ===========================================================================

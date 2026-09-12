@@ -334,12 +334,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
     // Sessions can be reused via previous_response_id; clear any stale tool defs from the prior
     // turn before applying this request's tools so the request stays self-contained.
-    session->ClearToolDefinitions();
+    std::vector<fl::ToolDefinition> tool_definitions;
     if (!tools_json.empty()) {
       // Unnamed and function-shaped: a whole pre-serialized tools array rather than a registrable
       // tool. It is not name-indexed, so no generated call resolves against it.
-      session->AddToolDefinition({{}, {}, std::move(tools_json), fl::ToolKind::kFunction});
+      tool_definitions.push_back({{}, {}, std::move(tools_json), fl::ToolKind::kFunction});
     }
+    session->SetToolDefinitions(std::move(tool_definitions));
 
     if (params.stream) {
       ctx_.logger.Log(LogLevel::Debug,

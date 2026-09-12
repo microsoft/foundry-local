@@ -58,6 +58,7 @@ export {
   type ToolKind,
   type StreamOptions,
   type StreamingResponse,
+  type RequestPreflight,
 } from "./session.js";
 export { Request, type RequestOptions, type RequestToolChoice, type SearchOptions } from "./request.js";
 export type { Response, FinishReason, TokenUsage } from "./response.js";

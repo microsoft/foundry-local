@@ -291,6 +291,8 @@ set(FOUNDRY_LOCAL_SOURCES
     src/model_info.cc
     src/inferencing/model_load_manager.cc
     src/inferencing/generative/chat/onnx_chat_generator.cc
+    src/inferencing/generative/chat/prepared_chat_prompt.cc
+    src/inferencing/generative/chat/request_budget.cc
     src/model.cc
     src/inferencing/generative/openresponses/response_converter.cc
     src/inferencing/generative/openresponses/response_store.cc
@@ -466,14 +468,14 @@ configure_file(
 add_library(foundry_local_objects OBJECT ${FOUNDRY_LOCAL_SOURCES})
 set_target_properties(foundry_local_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
 foundry_local_configure_target(foundry_local_objects PUBLIC)
-# FL_STATIC_LIBRARY makes FL_EXPORT empty on Windows so the two exported entry
-# points compile without __declspec(dllimport/dllexport). The DLL gets its
+# FL_STATIC_LIBRARY makes FL_EXPORT empty on Windows so exported entry points
+# compile without __declspec(dllimport/dllexport). The DLL gets its
 # exports from the .def file instead.
 target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
 
 # --------------------------------------------------------------------------
 # Shared library — for releases and public API consumers.
-# On Windows a .def file exports the two public entry points, replacing
+# On Windows a .def file exports the two public entry points and the private Node getter, replacing
 # __declspec(dllexport) so the objects can be compiled once.
 # --------------------------------------------------------------------------
 add_library(foundry_local SHARED)

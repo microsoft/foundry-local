@@ -62,6 +62,9 @@
  * ----------------------------------------------------------------------- */
 #define FOUNDRY_LOCAL_API_VERSION 2
 
+/// Minimum supported `flRequestPreflight::version`.
+#define FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION 2
+
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
  * ----------------------------------------------------------------------- */
@@ -167,7 +170,7 @@ typedef flStatus* flStatusPtr;
 #endif
 
 /* -----------------------------------------------------------------------
- * Exported symbols — these are the ONLY symbols the library exports
+ * Supported public exports — these are the only symbols consumers may use
  * ----------------------------------------------------------------------- */
 
 /** Get the API function table for the requested version. Returns NULL if unsupported.
@@ -376,6 +379,31 @@ typedef struct flUsage {
   int64_t total_tokens;
   /* V3 fields go here. Read only when version >= 3. */
 } flUsage;
+
+/// Exact token-budget preflight for a request in the current session state.
+/// `output_reserve_tokens` is the explicit cap reserved for generated output. The current package
+/// schema has no distinct generation-default field. When no explicit cap is supplied, the server
+/// falls back to 2048 tokens for text requests and 3072 tokens for media requests. A future
+/// supported positive package default would take precedence over that server fallback. Callers,
+/// including Toolkit, may explicitly choose their own cap.
+///
+/// Preflight is not submit-time enforcement. After compaction or any other request mutation,
+/// callers must rerun preflight on the final rebuilt/private request immediately before submitting
+/// that request.
+///
+/// The caller initializes `version` to a supported value in the inclusive range
+/// [FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION, FOUNDRY_LOCAL_API_VERSION].
+/// The V2 implementation writes only fields known to V2.
+typedef struct flRequestPreflight {
+  uint32_t version;               ///< Set to a supported version in the documented range.
+  int64_t prompt_tokens;          ///< Exact number of prompt tokens after request preparation.
+  int64_t output_reserve_tokens;  ///< Tokens reserved for generated output.
+  int64_t required_tokens;        ///< Total tokens required: prompt plus output reserve.
+  int64_t context_limit_tokens;   ///< Model context-window limit.
+  int64_t fits;                   ///< 1 if required_tokens fits within the context limit; otherwise 0.
+  int64_t deficit_tokens;         ///< Tokens over budget, or 0 when fits is 1.
+  /* V3 fields go here. Read only when version >= 3. */
+} flRequestPreflight;
 
 /// Information about a discoverable execution provider.
 /// Returned by Manager_GetDiscoverableEps. Storage is owned by the Manager; the
@@ -647,8 +675,8 @@ typedef int (*flEpProgressCallback)(_In_z_ const char* ep_name, float value, _In
  * API function tables
  *
  * The library exposes its functionality through versioned structs of
- * function pointers. Only three symbols are exported from the shared
- * library; everything else is accessed through these tables.
+ * function pointers. Only two supported public symbols are exported from
+ * the shared library; everything else is accessed through these tables.
  *
  * To maintain ABI compatibility, append new entries at the end of each
  * struct. Never remove or reorder existing entries.
@@ -953,7 +981,27 @@ struct flInferenceApi {
   FL_API_STATUS(Session_UndoTurns, _In_ flSession* session, size_t count);
 
   // End V1
+
+  /// Compute the exact token budget for a chat request without mutating the request or session.
+  /// The session handle is generic at the ABI boundary; non-chat sessions are rejected.
+  /// After compaction or any other request mutation, rerun this on the final rebuilt/private
+  /// request immediately before submitting that request.
+  /// The caller initializes `out_preflight->version` to a supported value in the inclusive range
+  /// [FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION, FOUNDRY_LOCAL_API_VERSION].
+  /// The V2 implementation writes only fields known to V2.
+  FL_API_STATUS(Session_PreflightRequest, _In_ const flSession* session, _In_ const flRequest* request,
+                _Inout_ flRequestPreflight* out_preflight);
+
+  // End V2
 };
+
+#ifdef __cplusplus
+static_assert(offsetof(flInferenceApi, Session_UndoTurns) == 21 * sizeof(void*),
+              "flInferenceApi V1 layout changed");
+static_assert(offsetof(flInferenceApi, Session_PreflightRequest) == 22 * sizeof(void*),
+              "Session_PreflightRequest must remain at vtable offset 22");
+static_assert(sizeof(flInferenceApi) == 23 * sizeof(void*), "flInferenceApi V2 layout changed");
+#endif
 
 /* --- Configuration API ------------------------------------------------- */
 struct flConfigurationApi {

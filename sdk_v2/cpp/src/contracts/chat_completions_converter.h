@@ -18,8 +18,8 @@ namespace chat_completions {
 /// Generate a random completion ID (e.g. "chatcmpl-abc123def").
 std::string GenerateCompletionId();
 
-/// Apply catalog model defaults to request fields the user didn't set.
-/// Reads directly from the model's model_settings map.
+/// Apply supported catalog sampling defaults to request fields the user didn't set.
+/// Output limits are request inputs and are not inferred from catalog model_settings.
 void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model_settings);
 
 /// Map flFinishReason to OpenAI finish_reason string ("stop", "length", "tool_calls").

@@ -38,18 +38,8 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     }
   };
 
-  auto apply_default_int = [&](const char* key, std::optional<int>& field) {
-    if (!field.has_value()) {
-      const char* val = model_settings.Find(key);
-      if (val) {
-        field = std::stoi(val);
-      }
-    }
-  };
-
   apply_default_float("temperature", req.temperature);
   apply_default_float("top_p", req.top_p);
-  apply_default_int("max_tokens", req.max_tokens);
 
   // top_k and random_seed go through metadata (matches C# behavior)
   if (!req.metadata.has_value()) {

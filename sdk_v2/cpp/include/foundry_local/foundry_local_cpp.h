@@ -994,6 +994,21 @@ struct RequestOptions {
                                             ///< Typed fields take precedence on key collision.
 };
 
+/// Exact token-budget preflight for a request in the current session state.
+/// `output_reserve_tokens` is the explicit cap reserved for generated output. The current package
+/// schema has no distinct generation-default field. When no explicit cap is supplied, the server
+/// falls back to 2048 tokens for text requests and 3072 tokens for media requests. A future
+/// supported positive package default would take precedence over that server fallback. Callers,
+/// including Toolkit, may explicitly choose their own cap.
+struct RequestPreflight {
+  int64_t prompt_tokens;
+  int64_t output_reserve_tokens;
+  int64_t required_tokens;
+  int64_t context_limit_tokens;
+  bool fits;
+  int64_t deficit_tokens;
+};
+
 // ===========================================================================
 // Inference — Request, Response, Session
 // ===========================================================================
@@ -1056,6 +1071,7 @@ class Response {
 
 namespace detail {
 struct StreamingCallbackHelper;
+class NodeAddonAccess;
 }  // namespace detail
 
 /// Wrapper for an opaque flSession. Created from a loaded IModel.
@@ -1104,6 +1120,14 @@ class ChatSession : public Session {
   /// Undo the last `count` turns and remove their input messages and assistant replies from history.
   /// Retained inference state is reused when it can be restored safely; otherwise it is rebuilt on the next request.
   void UndoTurns(size_t count);
+
+  /// Compute the exact token budget for a request without mutating the request or session.
+  /// After compaction or any other request mutation, rerun this on the final rebuilt/private
+  /// Request immediately before submitting that Request.
+  RequestPreflight PreflightRequest(const Request& request) const;
+
+ private:
+  friend class detail::NodeAddonAccess;
 };
 
 /// Session for automatic-speech-recognition (transcription) models.

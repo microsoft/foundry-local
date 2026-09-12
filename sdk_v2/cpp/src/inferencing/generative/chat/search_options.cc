@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace fl {
 
@@ -48,26 +49,48 @@ void ValidatePenalties(const SearchOptions& options) {
 
 }  // namespace
 
-int ResolveMaxOutputTokens(const SearchOptions& options, int default_max_output_tokens) {
-  const int max_output = options.max_output_tokens.value_or(default_max_output_tokens);
-  if (max_output < 1) {
+int ResolveOutputLimit(const SearchOptions& options, bool has_media) {
+  if (options.max_output_tokens.has_value()) {
+    if (*options.max_output_tokens < 1) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
+    }
+
+    return *options.max_output_tokens;
+  }
+
+  // GenAIConfig currently exposes only total-context limits. There is no package generation
+  // default to consult between the request and the host fallback.
+  return has_media ? kDefaultChatMediaMaxOutputTokens : kDefaultChatTextMaxOutputTokens;
+}
+
+namespace {
+
+int RequireResolvedMaxOutputTokens(const SearchOptions& options) {
+  if (!options.max_output_tokens.has_value()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "max_output_tokens must be resolved before backend submission");
+  }
+
+  if (*options.max_output_tokens < 1) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
   }
 
-  return max_output;
+  return *options.max_output_tokens;
 }
 
-int GetModelMaxContextLength(const GenAIConfig& config) {
-  int model_max_length = 0;
-  if (config.search.has_value()) {
-    model_max_length = config.search->max_length;
+}  // namespace
+
+int64_t GetModelMaxContextLength(const GenAIConfig& config) {
+  if (config.model.has_value() && config.model->context_length > 0) {
+    return config.model->context_length;
   }
 
-  if (model_max_length <= 0) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
+  if (config.search.has_value() && config.search->max_length > 0) {
+    return config.search->max_length;
   }
 
-  return model_max_length;
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+           "model genai_config.json must define a positive model.context_length or search.max_length");
 }
 
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
@@ -172,10 +195,7 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
   }
 
   EngineTurnOptionsPlan plan;
-  if (options.max_output_tokens.has_value() && *options.max_output_tokens < 1) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "max_output_tokens must be >= 1");
-  }
-  plan.max_generated_tokens = options.max_output_tokens;
+  plan.max_generated_tokens = RequireResolvedMaxOutputTokens(options);
   plan.sampling = ResolveSamplingPlan(options);
 
   // Negative seeds preserve classic ORT GenAI's nondeterministic behavior and require no per-turn seed support.
@@ -210,25 +230,27 @@ void ApplyGuidanceOptions(const ToolCallContext& tool_ctx,
   }
 }
 
-int ApplySearchOptions(const SearchOptions& options,
-                       int input_token_count,
-                       const GenAIConfig& config,
-                       OgaGeneratorParams& gen_params,
-                       ExecutionProvider ep,
-                       bool use_full_context,
-                       int default_max_output_tokens) {
+int64_t ApplySearchOptions(const SearchOptions& options,
+                           int64_t input_token_count,
+                           const GenAIConfig& config,
+                           OgaGeneratorParams& gen_params,
+                           ExecutionProvider ep,
+                           bool use_full_context,
+                           bool has_media) {
   ValidatePenalties(options);
 
-  const int model_max_length = GetModelMaxContextLength(config);
+  const int64_t model_max_length = GetModelMaxContextLength(config);
 
-  // genai_config.json's search.max_length (read above) is the source of truth for the total input+output budget.
-  // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
-  // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
-  // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
-  const int max_output = ResolveMaxOutputTokens(options, default_max_output_tokens);
+  // Prepared chat requests already carry an explicit resolved value. Direct internal callers
+  // use the same canonical resolver rather than a backend-specific fallback.
+  const int max_output = ResolveOutputLimit(options, has_media);
 
   // Validate token budget: input + output must not exceed model's max_length
-  int total_required = input_token_count + max_output;
+  if (input_token_count > (std::numeric_limits<int64_t>::max)() - max_output) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "request token budget overflow");
+  }
+
+  const int64_t total_required = input_token_count + max_output;
   if (total_required > model_max_length) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "request requires " + std::to_string(total_required) + " total tokens (" +
@@ -240,9 +262,8 @@ int ApplySearchOptions(const SearchOptions& options,
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window
   // so the sequence can grow across turns.
-  int effective_max_length = use_full_context
-                                 ? model_max_length
-                                 : std::min(model_max_length, total_required);
+  const int64_t effective_max_length =
+      use_full_context ? model_max_length : std::min(model_max_length, total_required);
   gen_params.SetSearchOption("max_length", static_cast<double>(effective_max_length));
 
   // One shared normalization for every backend: the same combination is forwarded to a classic generator, to an
@@ -312,7 +333,11 @@ SearchOptions SearchOptions::FromParameters(const KeyValuePairs& params) {
   auto try_float = [&](const std::string& key) -> std::optional<float> {
     auto it = params.find(key);
     if (it != params.end()) {
-      return std::stof(it->second);
+      try {
+        return std::stof(it->second);
+      } catch (const std::exception&) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, key + " must be a valid number");
+      }
     }
 
     return std::nullopt;
@@ -321,7 +346,11 @@ SearchOptions SearchOptions::FromParameters(const KeyValuePairs& params) {
   auto try_int = [&](const std::string& key) -> std::optional<int> {
     auto it = params.find(key);
     if (it != params.end()) {
-      return std::stoi(it->second);
+      try {
+        return std::stoi(it->second);
+      } catch (const std::exception&) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, key + " must be a valid integer");
+      }
     }
 
     return std::nullopt;

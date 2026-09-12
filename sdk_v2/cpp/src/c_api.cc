@@ -7,7 +7,10 @@
 
 #include "c_api_types.h"
 #include "catalog.h"
+#include "ep_detection/ep_bootstrapper.h"
 #include "exception.h"
+#include "inferencing/generative/chat/chat_session.h"
+#include "node_private_api.h"
 #include "version.h"
 #include "util/string_utils.h"
 #include "items/audio_item.h"
@@ -21,7 +24,7 @@
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
 #include "manager.h"
-#include "ep_detection/ep_bootstrapper.h"
+#include "version.h"
 
 #include <cstddef>
 #include <functional>
@@ -1903,6 +1906,79 @@ FL_API_STATUS_IMPL(Session_UndoTurnsImpl, flSession* session, size_t count) {
   API_IMPL_END
 }
 
+static void WriteRequestPreflight(const fl::RequestBudget& result, flRequestPreflight& out_preflight) {
+  out_preflight.prompt_tokens = result.prompt_tokens;
+  out_preflight.output_reserve_tokens = result.output_reserve_tokens;
+  out_preflight.required_tokens = result.required_tokens;
+  out_preflight.context_limit_tokens = result.context_limit_tokens;
+  out_preflight.fits = result.fits ? 1 : 0;
+  out_preflight.deficit_tokens = result.deficit_tokens;
+}
+
+FL_API_STATUS_IMPL(Session_PreflightRequestImpl, const flSession* session, const flRequest* request,
+                   flRequestPreflight* out_preflight) {
+  API_IMPL_BEGIN
+  if (!session || !request || !out_preflight) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  if (AsImpl(session)->Type() != fl::SessionType::kChat) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+  if (!fl::detail::IsRequestPreflightVersionSupported(out_preflight->version)) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_preflight->version is not supported");
+  }
+
+  const auto result = AsImpl<fl::ChatSession>(session)->PreflightRequest(*AsImpl(request));
+  WriteRequestPreflight(result, *out_preflight);
+  return nullptr;
+  API_IMPL_END
+}
+
+static FL_API_STATUS_IMPL(Node_Session_CaptureRequestPreflightImpl, const flSession* session,
+                          const flRequest* request, flRequestPreflightOperation** out_operation) {
+  API_IMPL_BEGIN
+  if (!out_operation) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null out_operation");
+  }
+
+  *out_operation = nullptr;
+  if (!session || !request) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null session or request");
+  }
+  if (AsImpl(session)->Type() != fl::SessionType::kChat) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+
+  auto operation = AsImpl<fl::ChatSession>(session)->CaptureRequestPreflight(*AsImpl(request));
+  *out_operation = reinterpret_cast<flRequestPreflightOperation*>(operation.release());
+  return nullptr;
+  API_IMPL_END
+}
+
+static FL_API_STATUS_IMPL(Node_RequestPreflightOperation_ExecuteImpl,
+                          flRequestPreflightOperation* operation,
+                          flRequestPreflight* out_preflight) {
+  API_IMPL_BEGIN
+  if (!operation || !out_preflight) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  if (!fl::detail::IsRequestPreflightVersionSupported(out_preflight->version)) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_preflight->version is not supported");
+  }
+
+  auto* impl = reinterpret_cast<fl::Session::RequestPreflightOperation*>(operation);
+  const auto result = impl->Execute();
+  WriteRequestPreflight(result, *out_preflight);
+  return nullptr;
+  API_IMPL_END
+}
+
+static void FL_API_CALL Node_RequestPreflightOperation_ReleaseImpl(
+    flRequestPreflightOperation* operation) FL_NO_EXCEPTION {
+  delete reinterpret_cast<fl::Session::RequestPreflightOperation*>(operation);
+}
+
 static const flInferenceApi g_inference_api = {
     Request_CreateImpl,
     Request_ReleaseImpl,
@@ -1926,10 +2002,20 @@ static const flInferenceApi g_inference_api = {
     Session_RemoveToolDefinitionImpl,
     Session_GetTurnCountImpl,
     Session_UndoTurnsImpl,
+    Session_PreflightRequestImpl,
 };
 
-static_assert(offsetof(flInferenceApi, Session_UndoTurns) / sizeof(void*) == 21,
-              "Size of version 1 Inference API cannot change");
+static_assert(offsetof(flInferenceApi, Session_UndoTurns) == 21 * sizeof(void*),
+              "flInferenceApi version 1 layout changed");
+static_assert(offsetof(flInferenceApi, Session_PreflightRequest) == 22 * sizeof(void*),
+              "Session_PreflightRequest must remain at vtable offset 22");
+static_assert(sizeof(flInferenceApi) == 23 * sizeof(void*), "flInferenceApi version 2 layout changed");
+
+static const flNodePrivateApi g_node_private_api = {
+    Node_Session_CaptureRequestPreflightImpl,
+    Node_RequestPreflightOperation_ExecuteImpl,
+    Node_RequestPreflightOperation_ReleaseImpl,
+};
 
 // ========================================================================
 // Sub-API accessors
@@ -1994,7 +2080,7 @@ static_assert(offsetof(flApi, Manager_GetCatalogByType) / sizeof(void*) == 29,
               "Size of version 2 API cannot change");
 
 // ========================================================================
-// Exported symbols — the ONLY symbols the library exports
+// Supported public exports. The private Node getter below is lockstep-only and not part of the SDK contract.
 // ========================================================================
 
 extern "C" {
@@ -2009,6 +2095,15 @@ FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EX
 
 FL_EXPORT const char* FL_API_CALL FoundryLocalGetVersionString(void) FL_NO_EXCEPTION {
   return FOUNDRY_LOCAL_VERSION;
+}
+
+FL_EXPORT const flNodePrivateApi* FL_API_CALL FoundryLocalGetNodePrivateApi(
+    uint32_t version, uint32_t size) FL_NO_EXCEPTION {
+  if (version != FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION || size != sizeof(flNodePrivateApi)) {
+    return nullptr;
+  }
+
+  return &g_node_private_api;
 }
 
 }  // extern "C"

@@ -6,6 +6,7 @@
 
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/generative/chat/chat_template.h"
+#include "c_api_types.h"
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/chat/search_options.h"
@@ -13,6 +14,7 @@
 #include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
+#include "items/item_queue.h"
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
@@ -20,16 +22,21 @@
 #include "logger.h"
 #include "model.h"
 #include "internal_api/null_session_manager.h"
+#include "internal_api/c_api_test_helpers.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "utils/string_utils.h"
 #include "utils/temp_path.h"
+#include "node_private_api.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <limits>
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -403,6 +410,12 @@ class ChatSessionTest : public ::testing::Test {
 
   GenAIModelInstance& GetModel() { return *model_; }
   const Model& GetCatalogModel() { return catalog_model_; }
+  Model MakeCatalogModelWithMaxTokensSetting() {
+    ModelInfo info;
+    info.task = "chat-completion";
+    info.model_settings.Add("max_tokens", "1024");
+    return Model::FromModelInfo(std::move(info), "", svc_.download_manager, svc_.model_load_manager);
+  }
 
   static inline std::unique_ptr<StderrLogger> logger_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
@@ -457,6 +470,293 @@ std::string GetAssistantText(const Response& response) {
 // ===========================================================================
 // Session::Run (integration — requires loaded model)
 // ===========================================================================
+
+TEST_F(ChatSessionTest, RebuiltRequestIsPreflightedImmediatelyBeforeSubmitWithPromptCountParity) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  Request candidate;
+  candidate.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Count this prepared prompt."));
+  candidate.options.Add("max_output_tokens", "8");
+  candidate.options.Add("temperature", "0");
+
+  const auto candidate_preflight = session.PreflightRequest(candidate);
+  EXPECT_GT(candidate_preflight.prompt_tokens, 0);
+  EXPECT_EQ(candidate_preflight.output_reserve_tokens, 8);
+  EXPECT_EQ(candidate_preflight.required_tokens, candidate_preflight.prompt_tokens + 8);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_EQ(session.MessageCount(), 0u);
+
+  Request final_request;
+  final_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Count this prepared prompt."));
+  final_request.options.Add("max_output_tokens", "8");
+  final_request.options.Add("temperature", "0");
+  const auto final_preflight = session.PreflightRequest(final_request);
+
+  const auto* api = fl::test::GetApi();
+  flRequestPreflight c_preflight{};
+  c_preflight.version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION;
+  ASSERT_FL_OK(api, api->GetInferenceApi()->Session_PreflightRequest(
+                        AsHandle<flSession>(&session), AsHandle<flRequest>(&final_request), &c_preflight));
+  EXPECT_EQ(c_preflight.prompt_tokens, final_preflight.prompt_tokens);
+  EXPECT_EQ(c_preflight.output_reserve_tokens, final_preflight.output_reserve_tokens);
+  EXPECT_EQ(c_preflight.required_tokens, final_preflight.required_tokens);
+  EXPECT_EQ(c_preflight.context_limit_tokens, final_preflight.context_limit_tokens);
+  EXPECT_EQ(c_preflight.fits != 0, final_preflight.fits);
+  EXPECT_EQ(c_preflight.deficit_tokens, final_preflight.deficit_tokens);
+
+  Response response;
+  session.ProcessRequest(final_request, response);
+  EXPECT_EQ(final_preflight.prompt_tokens, candidate_preflight.prompt_tokens);
+  EXPECT_EQ(response.usage.prompt_tokens, final_preflight.prompt_tokens);
+}
+
+TEST_F(ChatSessionTest, CapturedPreflightIsolatedFromLaterRequestAndSessionMutations) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  KeyValuePairs initial_session_options;
+  initial_session_options.Add("max_output_tokens", "7");
+  session.SetSessionOptions(initial_session_options);
+  session.AddToolDefinition(
+      {"lookup", "Look up a value", R"({"type":"object","properties":{"key":{"type":"string"}}})"});
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Original captured text."));
+  request.options.Add("temperature", "0");
+
+  const auto expected = session.PreflightRequest(request);
+  auto operation = session.CaptureRequestPreflight(request);
+
+  auto& message = static_cast<MessageItem&>(*request.items.front());
+  auto& text = static_cast<TextItem&>(*message.content.front().owned);
+  text.text = "A substantially different request after capture.";
+  request.options.Add("max_output_tokens", "11");
+
+  KeyValuePairs changed_session_options;
+  changed_session_options.Add("max_output_tokens", "13");
+  session.SetSessionOptions(changed_session_options);
+  session.SetToolDefinitions({
+      {"replacement", "A different tool", R"({"type":"object","properties":{}})"},
+  });
+
+  Request transcript_request;
+  transcript_request.AddOwnedItem(MakeMessage(
+      FOUNDRY_LOCAL_ROLE_USER, "Reply with the single word ok."));
+  transcript_request.options.Add("max_output_tokens", "4");
+  transcript_request.options.Add("temperature", "0");
+  transcript_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "none");
+  Response transcript_response;
+  session.ProcessRequest(transcript_request, transcript_response);
+
+  const auto captured = operation->Execute();
+  EXPECT_EQ(captured.prompt_tokens, expected.prompt_tokens);
+  EXPECT_EQ(captured.output_reserve_tokens, 7);
+  EXPECT_EQ(captured.required_tokens, expected.required_tokens);
+  EXPECT_EQ(captured.context_limit_tokens, expected.context_limit_tokens);
+  EXPECT_EQ(captured.fits, expected.fits);
+  EXPECT_EQ(captured.deficit_tokens, expected.deficit_tokens);
+
+  const auto after_mutations = session.PreflightRequest(request);
+  EXPECT_EQ(after_mutations.output_reserve_tokens, 11);
+  EXPECT_NE(after_mutations.prompt_tokens, captured.prompt_tokens);
+}
+
+TEST_F(ChatSessionTest, CapturedPreflightOperationAllowsOnlyOneExecutionAttempt) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Count this once."));
+  request.options.Add("max_output_tokens", "4");
+
+  const auto* api = fl::test::GetApi();
+  static_assert(sizeof(flNodePrivateApi) <= std::numeric_limits<uint32_t>::max());
+  const auto* private_api = FoundryLocalGetNodePrivateApi(
+      FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION, static_cast<uint32_t>(sizeof(flNodePrivateApi)));
+  ASSERT_NE(private_api, nullptr);
+
+  flRequestPreflightOperation* operation = nullptr;
+  ASSERT_FL_OK(api, private_api->Session_CaptureRequestPreflight(
+                        AsHandle<flSession>(&session), AsHandle<flRequest>(&request), &operation));
+  ASSERT_NE(operation, nullptr);
+
+  flRequestPreflight unsupported{};
+  unsupported.version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION - 1;
+  fl::test::StatusGuard unsupported_status{
+      private_api->RequestPreflightOperation_Execute(operation, &unsupported), api};
+  ASSERT_NE(unsupported_status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(unsupported_status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+
+  flRequestPreflight result{};
+  result.version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION;
+  ASSERT_FL_OK(api, private_api->RequestPreflightOperation_Execute(operation, &result));
+  EXPECT_GT(result.prompt_tokens, 0);
+
+  fl::test::StatusGuard repeated_status{
+      private_api->RequestPreflightOperation_Execute(operation, &result), api};
+  ASSERT_NE(repeated_status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(repeated_status.s), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  private_api->RequestPreflightOperation_Release(operation);
+}
+
+TEST_F(ChatSessionTest, CapturedPreflightForTextOnlyModelRejectsMediaBeforeReadingBackingFile) {
+  auto temp = fl::test::TempPath::CreateTempFile("foundry_local_preflight_text_model_image_");
+  const auto& path = temp.path();
+  {
+    const std::vector<std::uint8_t> initial_bytes = {1, 2, 3};
+    std::ofstream output(path, std::ios::binary);
+    ASSERT_TRUE(output);
+    output.write(reinterpret_cast<const char*>(initial_bytes.data()),
+                 static_cast<std::streamsize>(initial_bytes.size()));
+    ASSERT_TRUE(output);
+  }
+
+  ModelInfo vision_info;
+  vision_info.task = "vision-language-chat";
+  auto vision_catalog = Model::FromModelInfo(
+      std::move(vision_info), "", svc_.download_manager, svc_.model_load_manager);
+  ChatSession session(vision_catalog, GetModel(), *logger_, null_telemetry_);
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<ImageItem>(path.string(), "png"));
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(
+      FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+
+  auto operation = session.CaptureRequestPreflight(request);
+  ASSERT_TRUE(std::filesystem::remove(path));
+
+  // Model/request capability checks are intentionally cheaper than media I/O. Although the catalog metadata lets
+  // capture accept this image request, the loaded fixture is text-only, so execution must reject its real capability
+  // before ImageItem::ReadBytes can report that the backing file was removed.
+  try {
+    operation->Execute();
+    FAIL() << "Expected the text-only model to reject image input";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    const std::string expected = "image or audio input requires a multimodal model";
+    const std::string actual = ex.what();
+    ASSERT_GE(actual.size(), expected.size());
+    EXPECT_EQ(actual.substr(actual.size() - expected.size()), expected);
+  }
+}
+
+TEST_F(ChatSessionTest, CapturingItemQueueRejectsWithoutConsumingIt) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto queue = std::make_unique<ItemQueue>();
+  queue->Push(std::make_unique<TextItem>("queued"));
+  auto* queue_view = queue.get();
+
+  Request request;
+  request.AddOwnedItem(std::move(queue));
+
+  EXPECT_THROW(session.CaptureRequestPreflight(request), fl::Exception);
+  EXPECT_EQ(queue_view->Size(), 1u);
+}
+
+TEST_F(ChatSessionTest, OmittedTypedLimitRepreflightOfRebuiltCandidatePreservesBudgetAndState) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  Request candidate;
+  candidate.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "first"));
+  const auto candidate_preflight = session.PreflightRequest(candidate);
+
+  Request rebuilt;
+  rebuilt.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "first"));
+  const auto rebuilt_preflight = session.PreflightRequest(rebuilt);
+
+  EXPECT_GT(candidate_preflight.prompt_tokens, 0);
+  EXPECT_EQ(candidate_preflight.output_reserve_tokens, 2048);
+  EXPECT_EQ(rebuilt_preflight.prompt_tokens, candidate_preflight.prompt_tokens);
+  EXPECT_EQ(rebuilt_preflight.output_reserve_tokens, candidate_preflight.output_reserve_tokens);
+  EXPECT_EQ(rebuilt_preflight.required_tokens, candidate_preflight.required_tokens);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_EQ(session.MessageCount(), 0u);
+}
+
+TEST_F(ChatSessionTest, CatalogMaxTokensDoesNotChangeOmittedTypedOrOpenAIJsonPreflightLimits) {
+  auto catalog_model = MakeCatalogModelWithMaxTokensSetting();
+  ChatSession session(catalog_model, GetModel(), *logger_, null_telemetry_);
+  Request typed_request;
+  typed_request.AddOwnedItem(MakeMessage(
+      FOUNDRY_LOCAL_ROLE_USER, "Prepare this typed request without generation."));
+
+  const nlohmann::json request_json = {
+      {"model", GetModel().ModelId()},
+      {"messages", nlohmann::json::array({
+                       {{"role", "user"}, {"content", "Prepare this request without generation."}},
+                   })},
+      {"temperature", 0},
+  };
+
+  Request openai_request;
+  openai_request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  // The tiny test model has a 512-token context, so submitting this 2048-token fallback
+  // to generation would be rejected. Preflight exercises the shared prepared-request seam
+  // without generating the fallback-sized completion.
+  const auto typed_preflight = session.PreflightRequest(typed_request);
+  const auto openai_preflight = session.PreflightRequest(openai_request);
+
+  EXPECT_EQ(typed_preflight.output_reserve_tokens, 2048);
+  EXPECT_EQ(openai_preflight.output_reserve_tokens, typed_preflight.output_reserve_tokens);
+  EXPECT_EQ(openai_preflight.required_tokens, openai_preflight.prompt_tokens + 2048);
+  EXPECT_FALSE(openai_preflight.fits);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_EQ(session.MessageCount(), 0u);
+}
+
+TEST_F(ChatSessionTest, SessionOutputLimitWinsWhenOpenAIJsonOmitsWireLimit) {
+  auto catalog_model = MakeCatalogModelWithMaxTokensSetting();
+  ChatSession session(catalog_model, GetModel(), *logger_, null_telemetry_);
+  const nlohmann::json request_json = {
+      {"model", GetModel().ModelId()},
+      {"messages", nlohmann::json::array({
+                       {{"role", "user"}, {"content", "Prepare this request without generation."}},
+                   })},
+  };
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  request.options.Add("max_output_tokens", "17");
+
+  const auto preflight = session.PreflightRequest(request);
+
+  EXPECT_EQ(preflight.output_reserve_tokens, 17);
+  EXPECT_EQ(preflight.required_tokens, preflight.prompt_tokens + 17);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_EQ(session.MessageCount(), 0u);
+}
+
+TEST_F(ChatSessionTest, OpenAIJsonPreflightUsesConvertedRequestWithoutMutatingSessionTools) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  nlohmann::json request_json = {
+      {"model", GetModel().ModelId()},
+      {"messages", nlohmann::json::array({
+                       {{"role", "user"}, {"content", "Look up the current value."}},
+                   })},
+      {"max_completion_tokens", 16},
+      {"temperature", 0.25},
+      {"tools", nlohmann::json::array({
+                    {{"type", "function"},
+                     {"function",
+                      {{"name", "lookup"},
+                       {"description", "Look up a value"},
+                       {"parameters",
+                        {{"type", "object"},
+                         {"properties", {{"key", {{"type", "string"}}}}},
+                         {"required", nlohmann::json::array({"key"})}}}}}},
+                })},
+      {"tool_choice", "auto"}};
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  const auto preflight = session.PreflightRequest(request);
+
+  EXPECT_GT(preflight.prompt_tokens, 0);
+  EXPECT_EQ(preflight.output_reserve_tokens, 16);
+  EXPECT_EQ(preflight.required_tokens, preflight.prompt_tokens + 16);
+  EXPECT_TRUE(session.ToolDefinitions().empty());
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_EQ(session.MessageCount(), 0u);
+}
 
 TEST_F(ChatSessionTest, RunBasic) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);

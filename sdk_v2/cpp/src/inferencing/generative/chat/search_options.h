@@ -45,10 +45,10 @@ struct SamplingPlan {
 };
 
 /// Per-turn Engine settings for the newer ORT GenAI `OgaTurnOptions` surface.
-/// Only fields upstream actually implements are represented; anything absent stays at the model's own default for
-/// that turn (upstream: "an unset option means use the model-configured default for this Turn").
+/// The output limit is mandatory after request preparation. Optional sampling fields stay at the
+/// model's own default for that turn when absent.
 struct EngineTurnOptionsPlan {
-  std::optional<int> max_generated_tokens;
+  int max_generated_tokens = 0;
   SamplingPlan sampling;
   std::optional<int> seed;
   std::vector<std::string> stop_sequences;
@@ -94,17 +94,16 @@ struct SearchOptions {
 inline constexpr int kDefaultChatTextMaxOutputTokens = 2048;
 inline constexpr int kDefaultChatMediaMaxOutputTokens = 3072;
 
-/// Return the host default for classic Generator and media turns. Engine text turns remain unset unless specified.
-constexpr int GetDefaultMaxOutputTokens(bool has_media) noexcept {
-  return has_media ? kDefaultChatMediaMaxOutputTokens : kDefaultChatTextMaxOutputTokens;
-}
+/// Resolve the request output limit from the package schema and host fallback policy.
+///
+/// The current GenAIConfig schema has no distinct package generation default:
+/// model.context_length and search.max_length are total-context limits. Neither participates
+/// in this resolution. If a distinct generation field is added later, it belongs between the
+/// explicit request value and the text/media fallback here.
+int ResolveOutputLimit(const SearchOptions& options, bool has_media);
 
-/// Return the explicit or caller-selected default output-token limit.
-int ResolveMaxOutputTokens(const SearchOptions& options,
-                           int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
-
-/// Return the model's total context window from genai_config.json.
-int GetModelMaxContextLength(const GenAIConfig& config);
+/// Return positive model.context_length, falling back to positive search.max_length for legacy artifacts.
+int64_t GetModelMaxContextLength(const GenAIConfig& config);
 
 /// Resolve the guidance configuration that should apply to a single tool-only turn.
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
@@ -121,7 +120,8 @@ bool ShouldForwardStopSequencesToEngine(ChatBackendKind backend_kind);
 bool SupportsPerTurnSeed(ChatBackendKind backend_kind);
 
 /// Resolve SearchOptions + ToolCallContext into the per-turn Engine settings used by newer OGA headers.
-/// Throws fl::Exception when the request asks for something this backend cannot honor per turn.
+/// max_output_tokens must already have been resolved during request preparation.
+/// Throws fl::Exception when the request is unresolved or asks for something this backend cannot honor per turn.
 EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
                                                  const ToolCallContext& tool_ctx,
                                                  ChatBackendKind backend_kind,
@@ -134,7 +134,7 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
 ///
 /// @param options            Search options extracted from the request
 /// @param input_token_count  Number of tokens in the encoded prompt
-/// @param config             Model's GenAI config (for search.max_length)
+/// @param config             Model's GenAI config (model.context_length, then search.max_length fallback)
 /// @param gen_params         ORT GenAI generator params to configure
 /// @param ep                 Resolved execution provider. Used to enable chunked prefill by default
 ///                           on providers that benefit from it (CUDA, NvTensorRtRtx, WebGPU, CPU).
@@ -143,15 +143,14 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
 ///                           ORT GenAI determines whether the model consumes this option.
 /// @param use_full_context   When true, set max_length to the model's full context window
 ///                           instead of input+output. Used for continuous decoding (cached generators).
-/// @param default_max_output_tokens  Default applied when the request does not specify
-///                                   max_output_tokens. C# uses 2048 for text, 3072 for vision.
-int ApplySearchOptions(const SearchOptions& options,
-                       int input_token_count,
-                       const GenAIConfig& config,
-                       OgaGeneratorParams& gen_params,
-                       ExecutionProvider ep,
-                       bool use_full_context = false,
-                       int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
+/// @param has_media          Whether to use the media fallback when called outside prepared-request submission.
+int64_t ApplySearchOptions(const SearchOptions& options,
+                           int64_t input_token_count,
+                           const GenAIConfig& config,
+                           OgaGeneratorParams& gen_params,
+                           ExecutionProvider ep,
+                           bool use_full_context = false,
+                           bool has_media = false);
 
 /// Applies request-level grammar guidance to generator parameters when the tool context requires tool-only output.
 void ApplyGuidanceOptions(const ToolCallContext& tool_ctx,
