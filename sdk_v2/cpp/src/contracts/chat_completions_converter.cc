@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
 
+#include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -9,11 +10,37 @@
 #include "items/tool_result_item.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <random>
 #include <sstream>
+#include <utility>
 
 namespace fl {
 namespace chat_completions {
+
+namespace {
+
+/// Core definition for one declared tool, whichever kind it is. A custom tool contributes no
+/// schema: the registry synthesizes it, which is what keeps the raw payload out of function
+/// argument handling.
+ToolDefinition ToCoreDefinition(const ChatCompletionTool& tool) {
+  if (tool.IsCustom()) {
+    return tools::MakeCustomTool(tool.custom->name, tool.custom->description.value_or(""),
+                                 tool.custom->description.has_value());
+  }
+
+  return tools::MakeFunctionTool(tool.function.name, tool.function.description.value_or(""),
+                                 tool.function.parameters.has_value() ? tool.function.parameters->dump()
+                                                                      : std::string{},
+                                 tool.function.description.has_value(), tool.function.parameters.has_value(),
+                                 tool.function.strict);
+}
+
+ToolKind ForcedChoiceKind(const ChatCompletionToolChoice& choice) {
+  return choice.kind == ChatCompletionToolChoice::Kind::kCustom ? ToolKind::kCustom : ToolKind::kFunction;
+}
+
+}  // namespace
 
 std::string GenerateCompletionId() {
   static thread_local std::mt19937 rng(std::random_device{}());
@@ -122,52 +149,54 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
     }
 
     // Emit the calls as items directly after any visible text so the transcript keeps them on one assistant message.
+    //
+    // A custom call contributes its raw text payload, not JSON arguments. The item carries those bytes unchanged and
+    // the transcript rewraps them as {"input": ...} for template projection only, using the kind the session's
+    // definition snapshot records for the name — so nothing here has to guess what kind a call was.
     for (const auto& call : msg.tool_calls) {
-      session_request.AddOwnedItem(
-          std::make_unique<ToolCallItem>(call.id, call.function.name, call.function.arguments));
+      const auto kind = call.IsCustom() ? ToolKind::kCustom : ToolKind::kFunction;
+      session_request.AddOwnedItem(std::make_unique<ToolCallItem>(
+          call.id, call.Name(), call.Payload(), /*replayed_from_store=*/false, kind, kind));
     }
   }
 }
 
-std::string ExtractToolDefinitions(ChatCompletionRequest& req, Request& session_request) {
-  std::string tools_json;
+std::vector<ToolDefinition> ExtractToolDefinitions(const ChatCompletionRequest& req, Request& session_request) {
+  std::vector<ToolDefinition> definitions;
 
-  // it's cheaper to re-serialize than to re-parse the full request to get the tools JSON.
-  if (req.tools.has_value() && !req.tools->empty()) {
-    tools_json = nlohmann::json(*req.tools).dump();
-  }
-
-  // Extract tool_choice → controls text_output / tool_output in ChatSession
-  if (req.tool_choice.has_value()) {
-    const auto& tc = *req.tool_choice;
-
-    if (tc.is_string()) {
-      session_request.options["tool_choice"] = tc.get<std::string>();
-    } else if (tc.is_object() && tc.contains("type") && tc["type"] == "function") {
-      // {"type": "function", "function": {"name": "..."}} → filter to named function + "required"
-      session_request.options["tool_choice"] = "required";
-
-      // Filter tools to only the specified function (matches C# SetToolChoice behavior)
-      if (tc.contains("function") && tc["function"].contains("name")) {
-        std::string target_name = tc["function"]["name"].get<std::string>();
-
-        if (req.tools.has_value()) {
-          std::vector<ChatCompletionTool> filtered;
-          for (const auto& tool : *req.tools) {
-            if (tool.function.name == target_name) {
-              filtered.push_back(tool);
-            }
-          }
-
-          if (!filtered.empty()) {
-            tools_json = nlohmann::json(filtered).dump();
-          }
-        }
-      }
+  if (req.tools.has_value()) {
+    definitions.reserve(req.tools->size());
+    for (const auto& tool : *req.tools) {
+      definitions.push_back(ToCoreDefinition(tool));
     }
   }
 
-  return tools_json;
+  // tool_choice → controls text_output / tool_output in ChatSession. Unrepresentable choices were
+  // already rejected while the request was read, so only valid ones reach here.
+  if (req.tool_choice.has_value()) {
+    const auto& choice = *req.tool_choice;
+    session_request.options["tool_choice"] = choice.ModeString();
+
+    if (choice.IsForced()) {
+      tools::NarrowToForcedTool(definitions, choice.name, ForcedChoiceKind(choice));
+    }
+  }
+
+  if (definitions.empty() && req.tool_choice.has_value() &&
+      req.tool_choice->kind == ChatCompletionToolChoice::Kind::kRequired) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool_choice 'required' requires at least one declared tool");
+  }
+
+  return definitions;
+}
+
+ChatCompletionToolCall MakeToolCall(std::string call_id, std::string name, std::string payload, ToolKind kind) {
+  if (kind == ToolKind::kCustom) {
+    return ChatCompletionToolCall::MakeCustom(std::move(call_id), std::move(name), std::move(payload));
+  }
+
+  return ChatCompletionToolCall::MakeFunction(std::move(call_id), std::move(name), std::move(payload));
 }
 
 void MapRequestParameters(const ChatCompletionRequest& req, Request& session_request) {
@@ -277,12 +306,7 @@ ChatCompletionResponse BuildResponse(const Response& response,
       }
     } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
       auto& tc_item = static_cast<ToolCallItem&>(*item);
-      ChatCompletionToolCall tc;
-      tc.id = tc_item.call_id;
-      tc.type = "function";
-      tc.function.name = tc_item.name;
-      tc.function.arguments = tc_item.arguments;
-      tool_calls.push_back(std::move(tc));
+      tool_calls.push_back(MakeToolCall(tc_item.call_id, tc_item.name, tc_item.arguments, tc_item.kind));
     }
   }
 

@@ -74,19 +74,19 @@ TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot)
   });
   registration.join();
 
-  const std::string serialized_tools =
-      R"([{"type":"function","function":{"name":"payload_tool","parameters":{}}}])";
+  std::vector<ToolDefinition> definitions{
+      {"payload_tool", {}, "{}", ToolKind::kFunction}};
   const auto local =
-      chat_session_internal::BuildJsonRequestToolDefinitions(serialized_tools, captured);
+      chat_session_internal::BuildJsonRequestToolDefinitions(definitions, captured);
 
   ASSERT_EQ(local.size(), 1u);
-  EXPECT_TRUE(local[0].name.empty());
-  EXPECT_EQ(local[0].json_schema, serialized_tools);
+  EXPECT_EQ(local[0].name, "payload_tool");
+  EXPECT_EQ(local[0].json_schema, "{}");
   EXPECT_EQ(local[0].kind, ToolKind::kFunction);
 
-  // A fresh snapshot sees the custom registration and preserves the existing JSON-path rejection.
+  // A fresh snapshot sees the custom registration and preserves JSON request isolation.
   EXPECT_THROW(chat_session_internal::BuildJsonRequestToolDefinitions(
-                   serialized_tools, registry.Definitions()),
+                   definitions, registry.Definitions()),
                fl::Exception);
 }
 
@@ -97,9 +97,29 @@ TEST(ChatSessionDecisionTest, EmptyJsonToolsIgnoreSessionFunctionAndCustomDefini
       {"apply_patch", "Apply a patch.", "", ToolKind::kCustom}};
 
   EXPECT_TRUE(
-      chat_session_internal::BuildJsonRequestToolDefinitions({}, function_definitions).empty());
+      chat_session_internal::BuildJsonRequestToolDefinitions(
+          std::vector<ToolDefinition>{}, function_definitions)
+          .empty());
   EXPECT_TRUE(
-      chat_session_internal::BuildJsonRequestToolDefinitions({}, custom_definitions).empty());
+      chat_session_internal::BuildJsonRequestToolDefinitions(
+          std::vector<ToolDefinition>{}, custom_definitions)
+          .empty());
+}
+
+TEST(ChatSessionDecisionTest, SupportedStrictFalseSurvivesPromptSerialization) {
+  std::vector<ToolDefinition> definitions{
+      {"strict_false", "", R"({"type":"object"})", ToolKind::kFunction, false, true, false},
+      {"unspecified", "", "{}", ToolKind::kFunction, false, false}};
+  ToolCallContext context;
+
+  chat_session_internal::PopulateToolDefinitions(definitions, context);
+
+  const auto tools = nlohmann::json::parse(context.tools_json);
+  EXPECT_EQ(tools[0], nlohmann::json::parse(
+                          R"({"type":"function","function":{"name":"strict_false",)"
+                          R"("parameters":{"type":"object"},"strict":false}})"));
+  EXPECT_FALSE(tools[1]["function"].contains("strict"));
+  EXPECT_FALSE(tools[1]["function"].contains("parameters"));
 }
 
 TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStreaming) {
@@ -127,6 +147,32 @@ TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStr
       },
       fl::Exception);
   EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, CustomBatchNormalizationUsesTheCompleteArgumentSource) {
+  ToolCallContext context;
+  context.tool_kinds = {{"custom", ToolKind::kCustom}};
+
+  ToolCallStreamAccumulator::Output output;
+
+  ParsedToolCall wrapper{"call_1", "custom", "parser projection"};
+  wrapper.argument_source = R"({"input":"plain text"})";
+  output.events.emplace_back(std::move(wrapper));
+
+  ParsedToolCall extra_member{"call_2", "custom", "parser projection"};
+  extra_member.argument_source = R"({"input":"plain text","extra":true})";
+  output.events.emplace_back(std::move(extra_member));
+
+  ParsedToolCall json_string{"call_3", "custom", "parser projection"};
+  json_string.argument_source = R"({"input":"{\"looks\":\"json\"}"})";
+  output.events.emplace_back(std::move(json_string));
+
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events[0]).arguments, "plain text");
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events[1]).arguments,
+            R"({"input":"plain text","extra":true})");
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events[2]).arguments, R"({"looks":"json"})");
 }
 
 TEST(ChatSessionDecisionTest, InvalidLaterFunctionCallPreventsTheWholeBatchFromStreaming) {

@@ -2,12 +2,15 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
 #include "items/item.h"
 #include "util/key_value_pairs.h"
 
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace fl {
@@ -25,6 +28,9 @@ inline constexpr const char* kSystemPromptOption = "system_prompt";
 struct Request {
   std::vector<Item*> items;  // all items (borrowed pointers)
   KeyValuePairs options;
+  /// Request-local definitions already validated by an HTTP adapter. Used only to carry Chat
+  /// declarations across the asynchronous streaming boundary without parsing or registering twice.
+  std::optional<std::vector<ToolDefinition>> prepared_tool_definitions;
 
   /// Start indices, into `items`, of the replay segments the producer knows about. Ascending, and empty means the
   /// whole list is one segment.
@@ -50,6 +56,7 @@ struct Request {
   Request(Request&& other) noexcept
       : items(std::move(other.items)),
         options(std::move(other.options)),
+        prepared_tool_definitions(std::move(other.prepared_tool_definitions)),
         item_segment_starts(std::move(other.item_segment_starts)),
         canceled(other.canceled.load(std::memory_order_relaxed)),
         owned_items(std::move(other.owned_items)) {}
@@ -57,6 +64,7 @@ struct Request {
   Request& operator=(Request&& other) noexcept {
     items = std::move(other.items);
     options = std::move(other.options);
+    prepared_tool_definitions = std::move(other.prepared_tool_definitions);
     item_segment_starts = std::move(other.item_segment_starts);
     canceled.store(other.canceled.load(std::memory_order_relaxed), std::memory_order_relaxed);
     owned_items = std::move(other.owned_items);

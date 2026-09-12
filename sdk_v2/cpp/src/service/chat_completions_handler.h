@@ -32,7 +32,8 @@ class ChatCompletionsHandler : public HttpRequestHandler {
   /// Parse JSON body and deserialize into ChatCompletionRequest. Validates required fields.
   /// Returns an error response on failure, nullptr on success.
   std::shared_ptr<OutgoingResponse> ParseAndValidateRequest(const std::string& body,
-                                                            ChatCompletionRequest& req);
+                                                            ChatCompletionRequest& req,
+                                                            Request& prepared_request);
 
   /// Look up model in catalog and verify it's loaded. Sets output pointers.
   /// Returns an error response on failure, nullptr on success.

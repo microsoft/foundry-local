@@ -14,9 +14,12 @@
 //   python sdk_v2/cpp/scripts/run_sanitizer_tests.py --unit-only --gtest_filter "ToolDefinitionAbiTest.*"
 //
 #include "exception.h"
+#include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/session/tool_registry.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -260,6 +263,26 @@ TEST(ToolDefinitionAbiTest, VersionOneAcceptsEmptyFunctionNameForReleasedPreSeri
   EXPECT_EQ(converted.name, "");
   EXPECT_EQ(converted.json_schema, "{}");
   EXPECT_EQ(converted.kind, ToolKind::kFunction);
+}
+
+TEST(ToolDefinitionAbiTest, VersionOnePreSerializedArrayReachesProductionToolContext) {
+  constexpr const char* legacy_tools =
+      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":"object"}}}])";
+  LegacyDefinition legacy(1, "", "", legacy_tools);
+
+  fl::ToolRegistry registry;
+  registry.Add(ToolDefinitionFromC(legacy.AsCurrent()));
+  registry.Add({"modern", "modern tool", R"({"type":"object"})", ToolKind::kFunction});
+
+  fl::ToolCallContext context;
+  fl::chat_session_internal::PopulateToolDefinitions(registry.Definitions(), context);
+
+  const auto serialized = nlohmann::json::parse(context.tools_json);
+  ASSERT_EQ(serialized.size(), 2u);
+  EXPECT_EQ(serialized[0]["function"]["name"], "legacy");
+  EXPECT_EQ(serialized[1]["function"]["name"], "modern");
+  EXPECT_FALSE(context.tool_kinds.contains(""));
+  EXPECT_EQ(context.tool_kinds.at("modern"), ToolKind::kFunction);
 }
 
 TEST(ToolDefinitionAbiTest, VersionTwoRejectsEmptyPublicToolNames) {

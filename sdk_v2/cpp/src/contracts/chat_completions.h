@@ -19,20 +19,42 @@ namespace fl {
 // extended by ChatCompletionCreateRequestExtended (metadata field).
 // ========================================================================
 
-// --- Shared types (used by both requests and responses) ---
+// --- Tool call types (shared by request transcripts and responses) ---
 
-/// A function call in a tool call. JSON keys: "name", "arguments"
+/// A function call's payload. JSON keys: "name", "arguments"
 struct ChatCompletionFunctionCall {
   std::string name;
-  std::string arguments;
+  std::string arguments;  // JSON object, as a string
 };
 
-/// A tool call issued by the assistant. JSON keys: "id", "type", "function"
+/// A custom tool call's payload. JSON keys: "name", "input"
+struct ChatCompletionCustomCall {
+  std::string name;
+  std::string input;  // raw text, exactly as the model produced it
+};
+
+/// A tool call. JSON keys: "id", "type", "function" | "custom"
+///
+/// The same shape appears in an assistant message the client echoes back and in the calls a
+/// response reports, so both directions share one type. `type` selects which payload member is
+/// meaningful: a function call carries JSON `arguments`, a custom call carries raw `input`.
 struct ChatCompletionToolCall {
   std::string id;
-  std::string type = "function";
+  std::string type = "function";  // "function" or "custom"
   ChatCompletionFunctionCall function;
+  std::optional<ChatCompletionCustomCall> custom;
   std::optional<int> index;  // streaming only — distinguishes parallel tool calls
+
+  bool IsCustom() const { return custom.has_value(); }
+
+  /// The called tool's name, whichever kind of call this is.
+  const std::string& Name() const { return custom.has_value() ? custom->name : function.name; }
+
+  /// The payload the tool receives: JSON arguments for a function, raw text for a custom tool.
+  const std::string& Payload() const { return custom.has_value() ? custom->input : function.arguments; }
+
+  static ChatCompletionToolCall MakeFunction(std::string id, std::string name, std::string arguments);
+  static ChatCompletionToolCall MakeCustom(std::string id, std::string name, std::string input);
 };
 
 // --- Request types ---
@@ -53,10 +75,12 @@ struct ChatCompletionMessage {
         tool_calls(std::move(tool_calls_in)),
         reasoning_content(std::move(reasoning_content_in)) {}
 
-  std::string role;                                // "system", "user", "assistant", "tool"
-  std::optional<std::string> content;              // nullable for assistant messages with tool_calls
-  std::optional<std::string> name;                 // optional sender name
-  std::optional<std::string> tool_call_id;         // for role="tool": the tool call this is responding to
+  std::string role;                         // "system", "user", "assistant", "tool"
+  std::optional<std::string> content;       // nullable for assistant messages with tool_calls
+  std::optional<std::string> name;          // optional sender name
+  std::optional<std::string> tool_call_id;  // for role="tool": the tool call this is responding to
+  // Parsed into the same typed shape the response side emits, so a transcript round-trips through
+  // one representation and a custom call keeps its raw text instead of being read as JSON arguments.
   std::vector<ChatCompletionToolCall> tool_calls;  // for role="assistant": the calls this message issued
   std::optional<std::string> reasoning_content;    // replay marker only; never projected into the model prompt
 };
@@ -69,10 +93,44 @@ struct ChatCompletionFunctionDef {
   std::optional<bool> strict;
 };
 
-/// A tool available to the model. JSON keys: "type", "function"
+/// Custom (free-form) tool definition, nested under "custom". JSON keys: "name", "description", "format"
+///
+/// A custom tool takes a single raw text payload rather than a JSON argument object.
+struct ChatCompletionCustomToolDef {
+  std::string name;
+  std::optional<std::string> description;
+  nlohmann::json format = {{"type", "text"}};
+};
+
+/// A tool available to the model. JSON keys: "type", "function" | "custom"
+/// `type` selects which member carries the definition; the other is meaningless.
 struct ChatCompletionTool {
-  std::string type = "function";  // currently only "function"
+  std::string type = "function";  // "function" or "custom"
   ChatCompletionFunctionDef function;
+  std::optional<ChatCompletionCustomToolDef> custom;
+
+  bool IsCustom() const { return custom.has_value(); }
+
+  /// The declared name, whichever kind of tool this is.
+  const std::string& Name() const { return custom.has_value() ? custom->name : function.name; }
+};
+
+/// Parsed "tool_choice": the mode strings "auto"/"none"/"required", or an object forcing one named
+/// tool — {"type":"function","function":{"name":..}} / {"type":"custom","custom":{"name":..}}.
+struct ChatCompletionToolChoice {
+  enum class Kind { kAuto,
+                    kNone,
+                    kRequired,
+                    kFunction,
+                    kCustom };
+
+  Kind kind = Kind::kAuto;
+  std::string name;  // forced tool name; empty unless kind is kFunction or kCustom
+
+  bool IsForced() const { return kind == Kind::kFunction || kind == Kind::kCustom; }
+
+  /// The session-option value: "auto", "none" or "required". Forcing a tool implies "required".
+  std::string ModeString() const;
 };
 
 /// Stream options. JSON key: "include_usage"
@@ -99,7 +157,7 @@ struct ChatCompletionRequest {
   std::optional<float> presence_penalty;                       // "presence_penalty"; only 0 is supported
   std::optional<float> frequency_penalty;                      // "frequency_penalty"; only 0 is supported
   std::optional<std::vector<ChatCompletionTool>> tools;        // "tools"
-  std::optional<nlohmann::json> tool_choice;                   // "tool_choice" — string or object
+  std::optional<ChatCompletionToolChoice> tool_choice;         // "tool_choice" — string or object
   std::optional<nlohmann::json> response_format;               // "response_format"
   std::optional<int> seed;                                     // "seed"
   std::optional<bool> logprobs;                                // "logprobs"
@@ -196,19 +254,25 @@ struct ChatCompletionChunk {
 
 // --- Request deserialization ---
 void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f);
+void from_json(const nlohmann::json& j, ChatCompletionCustomCall& c);
 void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc);
 void from_json(const nlohmann::json& j, ChatCompletionMessage& m);
 void from_json(const nlohmann::json& j, ChatCompletionFunctionDef& f);
+void from_json(const nlohmann::json& j, ChatCompletionCustomToolDef& c);
 void from_json(const nlohmann::json& j, ChatCompletionTool& t);
+void from_json(const nlohmann::json& j, ChatCompletionToolChoice& tc);
 void from_json(const nlohmann::json& j, ChatStreamOptions& s);
 void from_json(const nlohmann::json& j, ChatCompletionRequest& r);
 
-// --- Cheaper to re-serialize to pass tools json to GenAI ---
+// --- Request serialization (round-trips the tool declarations tests and clients compare against) ---
 void to_json(nlohmann::json& j, const ChatCompletionFunctionDef& f);
+void to_json(nlohmann::json& j, const ChatCompletionCustomToolDef& c);
 void to_json(nlohmann::json& j, const ChatCompletionTool& t);
+void to_json(nlohmann::json& j, const ChatCompletionToolChoice& tc);
 
 // --- Response serialization ---
 void to_json(nlohmann::json& j, const ChatCompletionFunctionCall& f);
+void to_json(nlohmann::json& j, const ChatCompletionCustomCall& c);
 void to_json(nlohmann::json& j, const ChatCompletionToolCall& tc);
 void to_json(nlohmann::json& j, const ChatCompletionResponseMessage& m);
 void to_json(nlohmann::json& j, const ChatCompletionChoice& c);

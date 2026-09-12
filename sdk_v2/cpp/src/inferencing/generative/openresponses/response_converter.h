@@ -5,6 +5,7 @@
 #include "contracts/responses.h"
 #include "inferencing/generative/openresponses/response_chain.h"
 #include "inferencing/session/session.h"
+#include "inferencing/session/types.h"
 
 #include <nlohmann/json.hpp>
 
@@ -38,29 +39,28 @@ std::string GenerateId(const std::string& prefix);
 Request ToSessionRequest(const ResponseCreateParams& params,
                          const ResponseChainContext* previous_context = nullptr);
 
-/// Extract tool definitions from the Responses request, mirroring the chat-completions
-/// `ExtractToolDefinitions` helper. Returns a pre-serialized JSON array of tools in the
-/// chat-template (OpenAI nested) format, and sets `session_request.options["tool_choice"]`
-/// from `params.tool_choice` so that `SearchOptions::ParseToolChoice` picks it up.
+/// Convert the declared tools into core tool definitions, in declaration order, and translate
+/// `tool_choice` into `session_request.options["tool_choice"]` so `SearchOptions::ParseToolChoice`
+/// picks it up.
 ///
-/// For ForcedFunction tool_choice, the returned tools array is filtered to just the named
-/// function and tool_choice is set to "required" (matches chat-completions behavior).
-///
-/// The caller is expected to attach the returned JSON to the session via
-/// `session->AddToolDefinition({{}, {}, std::move(tools_json)})` — the empty-name entry is
-/// recognized by `ChatSession::BuildToolCallContext` as a pre-serialized full tools array.
-std::string ExtractResponsesToolDefinitions(const ResponseCreateParams& params, Request& session_request);
+/// A forced tool_choice narrows the set to the named tool of the matching kind and forces
+/// "required"; `allowed_tools` then intersects what is left. The returned definitions are what the
+/// caller registers on the session; the session's registry — not this converter — serializes them
+/// for the prompt.
+std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCreateParams& params,
+                                                                Request& session_request);
 
 /// Convert an internal session Response into typed Responses API output items
 /// and output_text string.
 ///
-/// Handles: text messages → ResponseOutputMessage, tool calls → FunctionCallOutputItem
+/// Handles: text messages → ResponseOutputMessage, tool calls → FunctionCallOutputItem or
+/// CustomToolCallOutputItem, according to the kind the call's tool was registered under.
 ///
 /// @param session_response  The session response from ChatSession::Run().
 /// @param msg_id_prefix     Prefix to use for generated message IDs.
 /// @return  A pair of (typed output items, output_text string).
-std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(const fl::Response& session_response,
-                                                                            const std::string& msg_id_prefix = "msg");
+std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(
+    const fl::Response& session_response, const std::string& msg_id_prefix = "msg");
 
 /// Build the complete typed Responses API response object.
 ///
@@ -94,15 +94,20 @@ ResponseObject BuildInitialResponseObject(const std::string& response_id,
                                           const std::string& model_name,
                                           const ResponseCreateParams& params);
 
-struct FunctionCallStreamOutput {
+struct ToolCallStreamOutput {
   std::vector<StreamEvent> events;
-  FunctionCallOutputItem completed_item;
+  ResponseOutputItem completed_item;
 };
 
-/// Build the complete Responses streaming event sequence for an atomically parsed function call.
-FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
-                                                       int output_index,
-                                                       int& next_sequence_number);
+/// Build the complete Responses streaming event sequence for an atomically parsed tool call.
+///
+/// A call is parsed only once its closing marker arrives, so there is no partial payload to stream:
+/// the lifecycle is added → payload delta → payload done → item done, emitted back to back. A
+/// custom call reports the raw payload through the custom_tool_call_input events; a function call
+/// reports JSON arguments through the function_call_arguments events.
+ToolCallStreamOutput BuildToolCallStreamOutput(const ToolCallItem& call,
+                                               int output_index,
+                                               int& next_sequence_number);
 
 /// Convert input items from the request JSON to a storable form.
 ///
