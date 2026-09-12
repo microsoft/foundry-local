@@ -87,7 +87,15 @@ void Session::UndoTurns(size_t /*count*/) {
 }
 
 void Session::AddToolDefinition(ToolDefinition tool_def) {
+  auto lock = LockStateMutex();
   tool_registry_.Add(std::move(tool_def));
+}
+
+void Session::SetSessionOptions(const KeyValuePairs& options) {
+  auto request_lock = LockRequestMutex();
+  auto state_lock = LockStateMutex();
+  session_options_ = options;
+  SetSessionOptionsImpl(session_options_);
 }
 
 void Session::ValidateRequestItems(const Request& request) const {
@@ -145,6 +153,8 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     lock.lock();
   }
 
+  ValidateRequestItems(request);
+
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
     active_requests_.insert(&request);
@@ -171,8 +181,6 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   tracker.SetModelId(CatalogModel().Id());
 
   try {
-    ValidateRequestItems(request);
-
     ProcessRequestImpl(request, response);
 
     tracker.SetStatus(ActionStatus::kSuccess);

@@ -4,6 +4,7 @@
 
 #include "inferencing/session/session_manager.h"
 #include "inferencing/session/session_registration.h"
+#include "c_api_types.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/openresponses/response_store.h"
@@ -12,6 +13,7 @@
 #include "logger.h"
 #include "model.h"
 #include "internal_api/test_helpers.h"
+#include "internal_api/c_api_test_helpers.h"
 #include "internal_api/test_model_cache.h"
 
 #include <gtest/gtest.h>
@@ -430,6 +432,28 @@ class BlockingCancelSession : public Session {
   std::atomic<bool> in_flight_{false};
 };
 
+class NonChatPreflightSession final : public Session {
+ public:
+  NonChatPreflightSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kAudio; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& /*response*/) override {}
+};
+
+class RequestLockHoldingChatSession final : public ChatSession {
+ public:
+  using ChatSession::ChatSession;
+
+  void HoldRequestExecution(std::promise<void>& active, const std::shared_future<void>& release) const {
+    auto request_lock = LockRequestMutex();
+    active.set_value();
+    release.wait();
+  }
+};
+
 /// Spin until `pred` is true or the timeout elapses. Returns pred's final value.
 template <typename Pred>
 bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
@@ -446,6 +470,61 @@ bool WaitUntil(Pred pred, std::chrono::milliseconds timeout) {
 }
 
 }  // namespace
+
+class SessionPreflightSynchronizationTest : public SessionManagerTest {};
+
+TEST_F(SessionPreflightSynchronizationTest, CaptureDoesNotWaitForActiveRequestExecution) {
+  RequestLockHoldingChatSession session(GetCatalogModel(), GetModel(), GetLogger(), null_telemetry_);
+  Request request;
+
+  std::promise<void> active_promise;
+  auto active = active_promise.get_future();
+  std::promise<void> release_promise;
+  auto release = release_promise.get_future().share();
+  auto execution = std::async(std::launch::async, [&] {
+    session.HoldRequestExecution(active_promise, release);
+  });
+
+  if (active.wait_for(std::chrono::seconds(1)) != std::future_status::ready) {
+    release_promise.set_value();
+    execution.wait();
+    FAIL() << "request execution did not acquire the session request lock";
+    return;
+  }
+
+  auto capture = std::async(std::launch::async, [&] {
+    return session.CaptureRequestPreflight(request);
+  });
+  const auto capture_status = capture.wait_for(std::chrono::milliseconds(250));
+
+  release_promise.set_value();
+  EXPECT_EQ(execution.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  execution.get();
+
+  EXPECT_EQ(capture_status, std::future_status::ready)
+      << "production ChatSession::CaptureRequestPreflight waited for request_mutex_";
+  ASSERT_EQ(capture.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  auto operation = capture.get();
+  EXPECT_NE(operation, nullptr);
+}
+
+TEST(SessionPreflightTest, PublicCAbiRejectsNonChatSessionAsInvalidUsage) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  NonChatPreflightSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  flRequestPreflight preflight{};
+  preflight.version = FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION;
+
+  const auto* api = fl::test::GetApi();
+  fl::test::StatusGuard status{
+      api->GetInferenceApi()->Session_PreflightRequest(
+          AsHandle<flSession>(&session), AsHandle<flRequest>(&request), &preflight),
+      api};
+  ASSERT_NE(status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+}
 
 TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
   fl::test::FakeServiceBindings svc;

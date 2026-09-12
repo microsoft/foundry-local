@@ -4,6 +4,7 @@
 
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
+#include "inferencing/generative/chat/request_budget.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
@@ -24,6 +25,8 @@ namespace fl {
 
 class GenAIModelInstance;
 class ChatGenerator;
+struct PreparedChatRequest;
+struct ChatSessionStateSnapshot;
 
 namespace chat_session_internal {
 
@@ -117,6 +120,8 @@ using GeneratedOutputEvent = std::variant<ReasoningStreamSplitter::Segment, Pars
 /// Designed for multi-turn conversations where visible text, reasoning, and tool calls accumulate in event order
 /// and are sent with each generation request (for use with the OpenAI Responses API pattern).
 ///
+class ChatSessionTestAccessor;
+
 /// Retained inference state: compatible turns reuse backend state. Engine backends render the complete authoritative
 /// transcript and reuse resident tokens only when they are an exact prefix; classic Generator backends rebuild for
 /// transcript shapes that cannot be appended independently.
@@ -157,19 +162,24 @@ class ChatSession : public Session {
   /// @param count  Number of turns to undo. Must be <= TurnCount().
   void UndoTurns(size_t count) override;
 
+  /// Prepare and budget a request without admitting it to the request lifecycle or mutating session state.
+  RequestBudget PreflightRequest(const Request& request) const;
+
+  /// Capture mutable request and session inputs for asynchronous preparation. Inline bytes are frozen now;
+  /// URI-backed media is materialized when the operation executes.
+  std::unique_ptr<RequestPreflightOperation> CaptureRequestPreflight(const Request& request) const;
+
  private:
+  friend class ChatSessionTestAccessor;
+
   // populate session_options_
   void SetSessionOptionsImpl(const KeyValuePairs& options) override;
+
+  ChatSessionStateSnapshot CaptureState(Request request) const;
 
   /// Process a request: extracts items and parameters from the generic request, generates a response, and on
   /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
-
-  /// Build tool calling context from request parameters and a snapshot of the session's tool definitions.
-  ///
-  /// The snapshot is supplied by the caller rather than read here so that one turn resolves its replayed calls, its
-  /// prompt, and its produced calls against the same tool set.
-  ToolCallContext BuildToolCallContext(const Request& request, const std::vector<ToolDefinition>& definitions) const;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
@@ -188,7 +198,7 @@ class ChatSession : public Session {
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged
   /// TextItem response with the OpenAI ChatCompletionResponse.
   /// Does not use or update the transcript or the cached generator.
-  void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
+  void ProcessChatCompletionsJson(PreparedChatRequest& preparation, const Request& original_request,
                                   Response& response);
 
   /// Drop the cached generator and its tool context. Called whenever the generator's KV cache can no longer be

@@ -257,6 +257,38 @@ int main() {
 }
 ```
 
+`ChatSession.preflightRequest()` is asynchronous. Invocation captures immutable request/session state, including
+copies of inline media, before prompt rendering, URI I/O, media preprocessing, and tokenization run off-thread:
+
+```ts
+const budget = await session.preflightRequest(request);
+console.log({
+  promptTokens: budget.promptTokens,
+  outputReserveTokens: budget.outputReserveTokens,
+  requiredTokens: budget.requiredTokens,
+  contextLimitTokens: budget.contextLimitTokens,
+  fits: budget.fits,
+  deficitTokens: budget.deficitTokens,
+});
+
+// Preflight the final request again immediately before submitting it after
+// any mutation or context compaction.
+request.addItem(Item.userMessage("Keep the answer to one sentence."));
+const finalBudget = await session.preflightRequest(request);
+
+if (finalBudget.fits) {
+  const response = await session.processRequest(request);
+  // ...
+}
+```
+
+URI capture freezes the URI string, not its external content; worker-side read and preparation failures reject the
+promise. Mutating the request or session after invocation does not change the captured work.
+
+There is no server-side digest enforcement. Toolkit integrations should compact private context, rebuild the exact
+private `Request`, then use `await Promise.resolve(session.preflightRequest(request))` immediately before
+`processRequest()`. This transitional form supports older synchronous and current asynchronous implementations.
+
 Build it against:
 
 - Header: `sdk_v2/cpp/include/foundry_local_cpp.h`

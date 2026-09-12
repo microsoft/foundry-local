@@ -26,6 +26,15 @@
 
 using namespace fl;
 
+namespace {
+
+SearchOptions ResolveTextOutputLimit(SearchOptions options = {}) {
+  options.max_output_tokens = ResolveOutputLimit(options, false);
+  return options;
+}
+
+}  // namespace
+
 TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
   for (const char* temperature : {"-1", "2.1", "nan"}) {
     KeyValuePairs params;
@@ -35,19 +44,23 @@ TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
   }
 }
 
-TEST(SearchOptionsParsingTest, OmittedOutputLimitUsesTextAndMediaDefaults) {
-  SearchOptions defaults;
-  EXPECT_EQ(GetDefaultMaxOutputTokens(/*has_media=*/false), 2048);
-  EXPECT_EQ(GetDefaultMaxOutputTokens(/*has_media=*/true), 3072);
-  EXPECT_EQ(ResolveMaxOutputTokens(defaults, GetDefaultMaxOutputTokens(/*has_media=*/false)), 2048);
-  EXPECT_EQ(ResolveMaxOutputTokens(defaults, GetDefaultMaxOutputTokens(/*has_media=*/true)), 3072);
+TEST(OutputLimitResolutionTest, AbsentCurrentSchemaGenerationDefaultUsesTextAndMediaFallbacks) {
+  const SearchOptions options;
+
+  const auto text = ResolveOutputLimit(options, false);
+  EXPECT_EQ(text, 2048);
+
+  const auto media = ResolveOutputLimit(options, true);
+  EXPECT_EQ(media, 3072);
 }
 
-TEST(SearchOptionsParsingTest, ExplicitOutputLimitOverridesTurnDefault) {
-  SearchOptions explicit_limit;
-  explicit_limit.max_output_tokens = 64;
-  EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/false)), 64);
-  EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/true)), 64);
+TEST(OutputLimitResolutionTest, ExplicitPositiveRequestLimitWinsForTextAndMedia) {
+  SearchOptions options;
+  options.max_output_tokens = 64;
+
+  for (bool has_media : {false, true}) {
+    EXPECT_EQ(ResolveOutputLimit(options, has_media), 64);
+  }
 }
 
 TEST(SearchOptionsParsingTest, RetainedGenerationSettingsAreBackendAware) {
@@ -212,10 +225,18 @@ TEST(SamplingPlanTest, OutOfRangeScalarsAreRejected) {
   EXPECT_THROW(ResolveSamplingPlan(negative_top_k), fl::Exception);
 }
 
-TEST(EngineTurnOptionsPlanTest, LeavesMaxOutputAndSamplingUnsetWhenCallerOmitsThem) {
+TEST(EngineTurnOptionsPlanTest, RejectsAnUnresolvedOutputLimitBeforeBackendSubmission) {
+  EXPECT_THROW(
+      BuildEngineTurnOptionsPlan(SearchOptions{}, ToolCallContext{}, ChatBackendKind::kEngine, false),
+      fl::Exception);
+}
+
+TEST(EngineTurnOptionsPlanTest, ProductionFacingPlanCarriesCanonicalResolvedFallback) {
+  const auto options = ResolveTextOutputLimit();
   const auto plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, ToolCallContext{}, ChatBackendKind::kEngine, false);
-  EXPECT_FALSE(plan.max_generated_tokens.has_value());
+      BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false);
+
+  EXPECT_EQ(plan.max_generated_tokens, 2048);
   EXPECT_FALSE(plan.sampling.do_sample.has_value());
   EXPECT_FALSE(plan.sampling.temperature.has_value());
   EXPECT_FALSE(plan.seed.has_value());
@@ -245,8 +266,7 @@ TEST(EngineTurnOptionsPlanTest, CarriesStopStringsSeedAndGuidanceOnDynamicBacken
   tool_ctx.guidance_data = R"({"type":"object"})";
 
   const auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, ChatBackendKind::kEngine, false);
-  ASSERT_TRUE(plan.max_generated_tokens.has_value());
-  EXPECT_EQ(*plan.max_generated_tokens, 64);
+  EXPECT_EQ(plan.max_generated_tokens, 64);
   ASSERT_TRUE(plan.seed.has_value());
   EXPECT_EQ(*plan.seed, 42);
   EXPECT_EQ(plan.stop_sequences, (std::vector<std::string>{"END", "STOP"}));
@@ -260,6 +280,7 @@ TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
   for (int seed : {-1, -2, std::numeric_limits<int>::min()}) {
     SearchOptions options;
     options.seed = seed;
+    options = ResolveTextOutputLimit(std::move(options));
 
     const auto plan =
         BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false);
@@ -270,6 +291,7 @@ TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
 TEST(EngineTurnOptionsPlanTest, ZeroSeedIsForwarded) {
   SearchOptions options;
   options.seed = 0;
+  options = ResolveTextOutputLimit(std::move(options));
 
   const auto plan =
       BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false);
@@ -283,7 +305,7 @@ TEST(EngineTurnOptionsPlanTest, UserGuidanceAppliesWithoutToolOnlyMode) {
   tool_ctx.guidance_data = R"({"type":"object","required":["answer"]})";
 
   const auto plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+      BuildEngineTurnOptionsPlan(ResolveTextOutputLimit(), tool_ctx, ChatBackendKind::kEngine, false);
 
   ASSERT_TRUE(plan.guidance.has_value());
   EXPECT_EQ(plan.guidance->type, "json_schema");
@@ -301,10 +323,11 @@ TEST(EngineTurnOptionsPlanTest, PromptOpenedReasoningOmitsTheGrammarOpener) {
   tool_ctx.reasoning_start_token_id = 248058;
   tool_ctx.reasoning_end_token_id = 248059;
 
+  const auto options = ResolveTextOutputLimit();
   const auto closed_plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+      BuildEngineTurnOptionsPlan(options, tool_ctx, ChatBackendKind::kEngine, false);
   const auto open_plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, true);
+      BuildEngineTurnOptionsPlan(options, tool_ctx, ChatBackendKind::kEngine, true);
 
   ASSERT_TRUE(closed_plan.guidance.has_value());
   ASSERT_TRUE(open_plan.guidance.has_value());
@@ -319,6 +342,7 @@ TEST(EngineTurnOptionsPlanTest, NeutralPenaltiesDoNotOverrideModelDefaults) {
   SearchOptions options;
   options.frequency_penalty = 0.0f;
   options.presence_penalty = 0.0f;
+  options = ResolveTextOutputLimit(std::move(options));
 
   EXPECT_NO_THROW(
       BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false));
@@ -331,6 +355,7 @@ TEST(EngineTurnOptionsPlanTest, RejectsNonzeroPenalties) {
     SearchOptions options;
     options.frequency_penalty = frequency;
     options.presence_penalty = presence;
+    options = ResolveTextOutputLimit(std::move(options));
 
     EXPECT_THROW(BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false),
                  fl::Exception);
@@ -340,11 +365,13 @@ TEST(EngineTurnOptionsPlanTest, RejectsNonzeroPenalties) {
 TEST(EngineTurnOptionsPlanTest, RejectsTrueEarlyStoppingAndAcceptsNeutralFalse) {
   SearchOptions enabled;
   enabled.early_stopping = true;
+  enabled = ResolveTextOutputLimit(std::move(enabled));
   EXPECT_THROW(BuildEngineTurnOptionsPlan(enabled, ToolCallContext{}, ChatBackendKind::kEngine, false),
                fl::Exception);
 
   SearchOptions disabled;
   disabled.early_stopping = false;
+  disabled = ResolveTextOutputLimit(std::move(disabled));
   EXPECT_NO_THROW(
       BuildEngineTurnOptionsPlan(disabled, ToolCallContext{}, ChatBackendKind::kEngine, false));
 }

@@ -79,6 +79,9 @@ class ToolRegistry {
   /// brings its own tools.
   void Clear();
 
+  /// Validate, normalize, and atomically replace every definition.
+  void Replace(std::vector<ToolDefinition> tool_definitions);
+
   /// Snapshot of the registered definitions, in registration order.
   std::vector<ToolDefinition> Definitions() const;
 

@@ -2,9 +2,15 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "exception.h"
+
 #include <cctype>
+#include <cstdint>
+#include <fstream>
+#include <ios>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fl {
 
@@ -39,6 +45,27 @@ inline std::string PathFromFileUri(std::string_view uri) {
   }
 
   return out;
+}
+
+inline std::vector<std::uint8_t> ReadFileUriBytes(std::string_view uri, std::string_view media_kind) {
+  const auto path = PathFromFileUri(uri);
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "failed to open ", media_kind, " file: ", path);
+  }
+
+  const auto size = input.tellg();
+  if (size <= 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, media_kind, " file is empty: ", path);
+  }
+
+  input.seekg(0, std::ios::beg);
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  if (!input.read(reinterpret_cast<char*>(bytes.data()), size)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "failed to read ", media_kind, " file: ", path);
+  }
+
+  return bytes;
 }
 
 }  // namespace fl

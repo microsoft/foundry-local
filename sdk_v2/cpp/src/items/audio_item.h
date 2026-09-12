@@ -90,6 +90,9 @@ struct AudioItem : Item {
     out.deleter_user_data = nullptr;
   }
 
+  /// Return owned or borrowed bytes, reading a URI only when no bytes are present.
+  std::vector<std::uint8_t> ReadBytes() const;
+
  private:
   // Optional owning storage when the item was constructed with a vector of
   // bytes. The `data` pointer is set to point into this buffer at construction.

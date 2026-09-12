@@ -6,6 +6,7 @@
 #include "errors.h"
 #include "items.h"
 #include "model.h"
+#include "node_private_api.h"
 #include "promise_worker.h"
 #include "request.h"
 #include "request_options.h"
@@ -67,9 +68,10 @@ void ThrowFoundryLocalError(Napi::Env env, int code, const std::string& msg) {
   err.ThrowAsJavaScriptException();
 }
 
-foundry_local::Request* UnwrapRequest(Napi::Env env, const Napi::Value& v) {
+foundry_local::Request* UnwrapRequest(Napi::Env env, const Napi::Value& v,
+                                      const char* method = "processRequest") {
   if (!v.IsObject()) {
-    Napi::TypeError::New(env, "processRequest(request): expected a Request instance")
+    Napi::TypeError::New(env, std::string(method) + "(request): expected a Request instance")
         .ThrowAsJavaScriptException();
     return nullptr;
   }
@@ -80,17 +82,55 @@ foundry_local::Request* UnwrapRequest(Napi::Env env, const Napi::Value& v) {
     return nullptr;
   }
   if (!obj.InstanceOf(data->request_ctor.Value())) {
-    Napi::TypeError::New(env, "processRequest(request): argument is not a Request instance")
+    Napi::TypeError::New(env, std::string(method) + "(request): argument is not a Request instance")
         .ThrowAsJavaScriptException();
     return nullptr;
   }
   Request* req = Napi::ObjectWrap<Request>::Unwrap(obj);
   if (req == nullptr || req->native() == nullptr) {
-    Napi::TypeError::New(env, "processRequest(request): Request is not initialized")
+    Napi::TypeError::New(env, std::string(method) + "(request): Request is not initialized")
         .ThrowAsJavaScriptException();
     return nullptr;
   }
   return req->native();
+}
+
+Napi::Value RequestPreflightToJs(Napi::Env env, const foundry_local::RequestPreflight& preflight) {
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("promptTokens", Napi::Number::New(env, static_cast<double>(preflight.prompt_tokens)));
+  out.Set("outputReserveTokens",
+          Napi::Number::New(env, static_cast<double>(preflight.output_reserve_tokens)));
+  out.Set("requiredTokens", Napi::Number::New(env, static_cast<double>(preflight.required_tokens)));
+  out.Set("contextLimitTokens",
+          Napi::Number::New(env, static_cast<double>(preflight.context_limit_tokens)));
+  out.Set("fits", Napi::Boolean::New(env, preflight.fits));
+  out.Set("deficitTokens", Napi::Number::New(env, static_cast<double>(preflight.deficit_tokens)));
+  return out;
+}
+
+Napi::Value PreflightRequestOn(Napi::Env env, foundry_local::ChatSession* sess,
+                               const Napi::Value& request_arg,
+                               Napi::ObjectReference manager_ref) {
+  foundry_local::Request* req = UnwrapRequest(env, request_arg, "preflightRequest");
+  if (req == nullptr) return env.Undefined();  // pending exception
+
+  using Result = foundry_local::RequestPreflight;
+  using PrivatePreflight = foundry_local::detail::RequestPreflightOperation;
+  std::shared_ptr<PrivatePreflight> preflight;
+  CallCheckedVoid(env, [&]() {
+    preflight =
+        std::make_shared<PrivatePreflight>(foundry_local::detail::CaptureRequestPreflight(*sess, *req));
+  });
+  if (env.IsExceptionPending()) return env.Undefined();
+
+  // PromiseWorker stores a copyable std::function. Shared ownership keeps the private move-only RAII snapshot alive
+  // through worker execution, including after the JS session is disposed.
+  return PromiseWorker<Result>::Run(
+      env, [preflight = std::move(preflight)]() -> Result { return preflight->Execute(); },
+      [](Napi::Env env, Result& preflight) -> Napi::Value {
+        return RequestPreflightToJs(env, preflight);
+      },
+      std::move(manager_ref));
 }
 
 // Process a Request on the worker thread, converting to JS in the resolver.
@@ -291,6 +331,7 @@ Napi::Value ProcessStreamingRequestOn(Napi::Env env, SessT* sess, const Napi::Ca
 Napi::Function ChatSession::Init(Napi::Env env) {
   return DefineClass(env, "ChatSession",
                      {
+                         InstanceMethod("preflightRequest", &ChatSession::PreflightRequest),
                          InstanceMethod("processRequest", &ChatSession::ProcessRequest),
                          InstanceMethod("processStreamingRequest", &ChatSession::ProcessStreamingRequest),
                          InstanceMethod("setOptions", &ChatSession::SetOptions),
@@ -340,6 +381,17 @@ bool ChatSession::ThrowIfDisposed(Napi::Env env) {
     return true;
   }
   return false;
+}
+
+Napi::Value ChatSession::PreflightRequest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() < 1) {
+    Napi::TypeError::New(env, "preflightRequest(request: Request)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
+  return PreflightRequestOn(env, impl_.get(), info[0], std::move(owner));
 }
 
 Napi::Value ChatSession::ProcessRequest(const Napi::CallbackInfo& info) {

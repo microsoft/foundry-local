@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "exception.h"
 #include "items/item.h"
 #include "util/key_value_pairs.h"
 
@@ -65,6 +66,30 @@ struct Request {
 
   Request(const Request&) = delete;
   Request& operator=(const Request&) = delete;
+
+  /// Deep-copy all in-memory state read by chat request preparation.
+  ///
+  /// Request and session mutations are frozen here, including inline media
+  /// bytes. URI-backed media retains only its URI and descriptors; external
+  /// content is read by the preflight worker at Execute and is not
+  /// transactionally frozen with the captured request.
+  Request CapturePreflightSnapshot() const {
+    Request snapshot;
+    snapshot.options = options;
+    snapshot.item_segment_starts = item_segment_starts;
+    snapshot.items.reserve(items.size());
+
+    for (const auto* item : items) {
+      if (item == nullptr) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "request preflight snapshot cannot contain a null item");
+      }
+
+      snapshot.AddOwnedItem(CloneChatRequestItem(*item));
+    }
+
+    return snapshot;
+  }
 
   /// Add a pre-allocated owned item.
   void AddOwnedItem(std::unique_ptr<Item> item) {

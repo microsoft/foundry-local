@@ -16,7 +16,8 @@
             ],
             "include_dirs": [
                 "<!@(node -p \"require('node-addon-api').include\")",
-                "../cpp/include"
+                "../cpp/include",
+                "../cpp/src"
             ],
             "defines": [
                 "NAPI_VERSION=8",

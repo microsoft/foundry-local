@@ -6,11 +6,15 @@
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_engine_chat_stream.h"
 #include "inferencing/model_load_manager.h"
+#include "configuration.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "items/text_item.h"
+#include "manager.h"
 #include "model.h"
 #include "telemetry/telemetry_logger.h"
+#include "utils/safe_getenv.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 #include <ort_genai.h>
@@ -24,11 +28,28 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace std::chrono_literals;
 
 namespace fl {
+
+class ChatSessionTestAccessor {
+ public:
+  static const ChatGenerator* CachedGenerator(const ChatSession& session) {
+    return session.cached_generator_.get();
+  }
+
+  static const OnnxEngineChatStream* CachedEngineStream(const ChatSession& session) {
+    return dynamic_cast<const OnnxEngineChatStream*>(session.cached_generator_.get());
+  }
+
+  static std::vector<int32_t> ResidentTokens(const OnnxEngineChatStream& stream) {
+    return stream.engine_.ResidentTokens(stream.conversation_);
+  }
+};
+
 namespace {
 
 constexpr const char* kDynamicEngineModelId = "tiny-paged-attention";
@@ -177,6 +198,38 @@ class DynamicEngineChatTest : public ::testing::Test {
   static inline GenAIModelInstance* model_ = nullptr;
   TelemetryLogger telemetry_{"dynamic-engine-test", test::NullLog()};
 };
+
+TEST_F(DynamicEngineChatTest, PreflightDoesNotMutateRetainedGeneratorEngineKvOrTranscriptState) {
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto warm_request = MakeRequest("Retain this exact paged-attention state.", 5);
+  Response warm_response;
+  session.ProcessRequest(warm_request, warm_response);
+
+  const auto* generator_before = ChatSessionTestAccessor::CachedGenerator(session);
+  const auto* stream_before = ChatSessionTestAccessor::CachedEngineStream(session);
+  ASSERT_NE(generator_before, nullptr);
+  ASSERT_NE(stream_before, nullptr);
+  const auto resident_tokens_before = ChatSessionTestAccessor::ResidentTokens(*stream_before);
+  const auto token_count_before = generator_before->TokenCount();
+  const auto transcript_before = BuildChatPrompt(session.Transcript().Messages(), ModelInstance());
+  const auto turn_count_before = session.TurnCount();
+  const auto message_count_before = session.MessageCount();
+
+  auto candidate = MakeRequest("This request must remain hypothetical.", 7);
+  candidate.options.Add(kSystemPromptOption, "Use a different instruction.");
+  const auto preflight = session.PreflightRequest(candidate);
+
+  EXPECT_GT(preflight.prompt_tokens, 0);
+  EXPECT_EQ(preflight.output_reserve_tokens, 7);
+  EXPECT_EQ(ChatSessionTestAccessor::CachedGenerator(session), generator_before);
+  const auto* stream_after = ChatSessionTestAccessor::CachedEngineStream(session);
+  ASSERT_EQ(stream_after, stream_before);
+  EXPECT_EQ(ChatSessionTestAccessor::ResidentTokens(*stream_after), resident_tokens_before);
+  EXPECT_EQ(generator_before->TokenCount(), token_count_before);
+  EXPECT_EQ(BuildChatPrompt(session.Transcript().Messages(), ModelInstance()), transcript_before);
+  EXPECT_EQ(session.TurnCount(), turn_count_before);
+  EXPECT_EQ(session.MessageCount(), message_count_before);
+}
 
 TEST_F(DynamicEngineChatTest, RetainedContinuationReportsFreshPromptUsageParity) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
@@ -521,6 +574,220 @@ TEST_F(DynamicEngineChatTest, UnloadsAfterSessionsClose) {
   }
 
   EXPECT_TRUE(load_manager.UnloadModel(kUnloadModelId));
+}
+
+TEST(QualifiedQwenPreflightTest, RealCudaEnginePreflightMatchesGenerationAndPreservesWarmState) {
+  constexpr const char* kModelPathEnv = "FOUNDRY_QUALIFIED_QWEN_MODEL_PATH";
+  constexpr const char* kCudaLibraryEnv = "FOUNDRY_LOCAL_CUDA_EP_LIBRARY";
+  constexpr const char* kModelId = "qualified-qwen-generic-gpu";
+
+  const auto model_path = test::SafeGetEnv(kModelPathEnv);
+  const auto cuda_library = test::SafeGetEnv(kCudaLibraryEnv);
+  if (model_path.empty() || cuda_library.empty()) {
+    GTEST_SKIP() << "Qualified Qwen preflight requires both " << kModelPathEnv << " and " << kCudaLibraryEnv;
+  }
+
+  ASSERT_TRUE(std::filesystem::is_directory(model_path))
+      << kModelPathEnv << " must point directly to the model directory: " << model_path;
+  ASSERT_TRUE(std::filesystem::is_regular_file(cuda_library))
+      << kCudaLibraryEnv << " must point to the qualified CUDA EP library: " << cuda_library;
+
+  auto temp_root = test::TempPath::CreateTempDir("fl_qualified_qwen_preflight_");
+  const auto app_dir = temp_root.path() / "app";
+  const auto cache_dir = temp_root.path() / "cache";
+  const auto logs_dir = temp_root.path() / "logs";
+  ASSERT_TRUE(std::filesystem::create_directories(app_dir));
+  ASSERT_TRUE(std::filesystem::create_directories(cache_dir));
+  ASSERT_TRUE(std::filesystem::create_directories(logs_dir));
+
+  Configuration config;
+  config.app_name = "qualified-qwen-preflight-test";
+  config.app_data_dir = app_dir.string();
+  config.model_cache_dir = cache_dir.string();
+  config.logs_dir = logs_dir.string();
+  config.disable_nonessential_telemetry = true;
+
+  Manager* manager = nullptr;
+  ASSERT_NO_THROW(manager = &Manager::Create(config));
+  ASSERT_NE(manager, nullptr);
+
+  struct ManagerDestroyGuard {
+    ~ManagerDestroyGuard() { Manager::Destroy(); }
+  } manager_destroy_guard;
+
+  std::vector<std::string> requested_eps = {"CUDAExecutionProvider"};
+  const auto ep_result = manager->DownloadAndRegisterEps(&requested_eps, {});
+  ASSERT_TRUE(ep_result.success) << ep_result.status;
+  EXPECT_FALSE(ep_result.cancelled);
+  EXPECT_TRUE(ep_result.failed_eps.empty());
+  ASSERT_EQ(ep_result.registered_eps.size(), 1u);
+  EXPECT_EQ(ep_result.registered_eps[0], "CUDAExecutionProvider");
+
+  auto& load_manager = manager->GetModelLoadManager();
+  const auto load_result = load_manager.LoadModel(model_path, kModelId, ExecutionProvider::kCUDA);
+  ASSERT_EQ(load_result.status, ModelLoadManager::LoadStatus::kSuccess);
+  ASSERT_NE(load_result.model, nullptr);
+  ASSERT_EQ(load_result.model->EP(), ExecutionProvider::kCUDA);
+  ASSERT_EQ(load_result.model->GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kEngine);
+  ASSERT_NE(load_result.model->GetChatEngine(), nullptr);
+
+  ModelInfo info;
+  info.model_id = kModelId;
+  info.task = "chat-completion";
+  info.device_type = DeviceType::kGPU;
+  info.execution_provider = "CUDAExecutionProvider";
+  info.model_settings.Add("max_tokens", "1024");
+  auto catalog_model = Model::FromModelInfo(std::move(info), model_path, manager->GetDownloadManager(), load_manager);
+
+  {
+    ChatSession session(catalog_model, *load_result.model, manager->GetLogger(), manager->GetTelemetry());
+
+    auto warm_request = MakeRequest("Reply with one short word.", 4);
+    const auto warm_preflight = session.PreflightRequest(warm_request);
+    Response warm_response;
+    session.ProcessRequest(warm_request, warm_response);
+
+    EXPECT_GT(warm_preflight.prompt_tokens, 0);
+    EXPECT_EQ(warm_preflight.output_reserve_tokens, 4);
+    EXPECT_EQ(warm_response.usage.prompt_tokens, warm_preflight.prompt_tokens);
+    EXPECT_GE(warm_response.usage.completion_tokens, 1);
+    EXPECT_LE(warm_response.usage.completion_tokens, 4);
+
+    const auto* generator_before = ChatSessionTestAccessor::CachedGenerator(session);
+    const auto* stream_before = ChatSessionTestAccessor::CachedEngineStream(session);
+    ASSERT_NE(generator_before, nullptr);
+    ASSERT_NE(stream_before, nullptr);
+    const auto resident_tokens_before = ChatSessionTestAccessor::ResidentTokens(*stream_before);
+    const auto generator_tokens_before = generator_before->TokenCount();
+    const auto transcript_before = BuildChatPrompt(session.Transcript().Messages(), *load_result.model);
+    const auto turn_count_before = session.TurnCount();
+    const auto message_count_before = session.MessageCount();
+
+    KeyValuePairs original_session_options;
+    original_session_options.Add(kSystemPromptOption, "Use the original captured session instruction.");
+    session.SetSessionOptions(original_session_options);
+    session.SetToolDefinitions({
+        {"original_lookup", "Look up the original value",
+         R"({"type":"object","properties":{"key":{"type":"string"}}})"},
+    });
+
+    Request original_candidate;
+    original_candidate.AddOwnedItem(UserMessage("Original captured Qwen prompt."));
+    original_candidate.options.Add("max_output_tokens", "8");
+    original_candidate.options.Add("temperature", "0");
+    original_candidate.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "none");
+    const auto original_preflight = session.PreflightRequest(original_candidate);
+
+    Request captured_candidate;
+    auto original_item = UserMessage("Original captured Qwen prompt.");
+    auto* original_message = static_cast<MessageItem*>(original_item.get());
+    captured_candidate.AddOwnedItem(std::move(original_item));
+    captured_candidate.options.Add("max_output_tokens", "8");
+    captured_candidate.options.Add("temperature", "0");
+    captured_candidate.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "none");
+    auto captured_operation = session.CaptureRequestPreflight(captured_candidate);
+
+    auto& original_text = static_cast<TextItem&>(*original_message->content.front().owned);
+    original_text.text = "Changed Qwen prompt after capture with substantially different text.";
+    captured_candidate.AddOwnedItem(UserMessage("Additional request item added after capture."));
+    captured_candidate.options.Add("max_output_tokens", "17");
+
+    KeyValuePairs changed_session_options;
+    changed_session_options.Add(kSystemPromptOption, "Use the changed session instruction.");
+    changed_session_options.Add("max_output_tokens", "23");
+    session.SetSessionOptions(changed_session_options);
+    session.SetToolDefinitions({
+        {"replacement_search", "Search for a replacement value",
+         R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})"},
+    });
+
+    const auto captured_preflight = captured_operation->Execute();
+    EXPECT_EQ(captured_preflight.prompt_tokens, original_preflight.prompt_tokens);
+    EXPECT_EQ(captured_preflight.output_reserve_tokens, 8);
+    EXPECT_EQ(captured_preflight.required_tokens, captured_preflight.prompt_tokens + 8);
+
+    const auto changed_preflight = session.PreflightRequest(captured_candidate);
+    EXPECT_EQ(changed_preflight.output_reserve_tokens, 17);
+    EXPECT_EQ(changed_preflight.required_tokens, changed_preflight.prompt_tokens + 17);
+    EXPECT_NE(changed_preflight.prompt_tokens, captured_preflight.prompt_tokens);
+
+    KeyValuePairs reset_session_options;
+    session.SetSessionOptions(reset_session_options);
+    session.ClearToolDefinitions();
+
+    Request candidate;
+    candidate.AddOwnedItem(UserMessage("Describe the retained answer briefly."));
+    const auto first_preflight = session.PreflightRequest(candidate);
+
+    Request rebuilt_candidate;
+    rebuilt_candidate.AddOwnedItem(UserMessage("Describe the retained answer briefly."));
+    const auto rebuilt_preflight = session.PreflightRequest(rebuilt_candidate);
+
+    EXPECT_EQ(first_preflight.output_reserve_tokens, 2048);
+    EXPECT_EQ(first_preflight.required_tokens, first_preflight.prompt_tokens + 2048);
+    EXPECT_EQ(rebuilt_preflight.prompt_tokens, first_preflight.prompt_tokens);
+    EXPECT_EQ(rebuilt_preflight.output_reserve_tokens, first_preflight.output_reserve_tokens);
+    EXPECT_EQ(rebuilt_preflight.required_tokens, first_preflight.required_tokens);
+
+    EXPECT_EQ(ChatSessionTestAccessor::CachedGenerator(session), generator_before);
+    const auto* stream_after = ChatSessionTestAccessor::CachedEngineStream(session);
+    ASSERT_EQ(stream_after, stream_before);
+    EXPECT_EQ(ChatSessionTestAccessor::ResidentTokens(*stream_after), resident_tokens_before);
+    EXPECT_EQ(generator_before->TokenCount(), generator_tokens_before);
+    EXPECT_EQ(BuildChatPrompt(session.Transcript().Messages(), *load_result.model), transcript_before);
+    EXPECT_EQ(session.TurnCount(), turn_count_before);
+    EXPECT_EQ(session.MessageCount(), message_count_before);
+  }
+
+  {
+    ChatSession session(catalog_model, *load_result.model, manager->GetLogger(), manager->GetTelemetry());
+    Request candidate;
+    candidate.AddOwnedItem(UserMessage("Reply with exactly one word: OK."));
+    candidate.options.Add("temperature", "0");
+    const auto candidate_preflight = session.PreflightRequest(candidate);
+
+    Request final_request;
+    final_request.AddOwnedItem(UserMessage("Reply with exactly one word: OK."));
+    final_request.options.Add("temperature", "0");
+    const auto final_preflight = session.PreflightRequest(final_request);
+
+    Response response;
+    ASSERT_NO_THROW(session.ProcessRequest(final_request, response));
+    EXPECT_EQ(candidate_preflight.prompt_tokens, final_preflight.prompt_tokens);
+    EXPECT_EQ(final_preflight.output_reserve_tokens, 2048);
+    EXPECT_EQ(final_preflight.required_tokens, final_preflight.prompt_tokens + 2048);
+    EXPECT_FALSE(response.items.empty());
+    EXPECT_EQ(response.usage.prompt_tokens, final_preflight.prompt_tokens);
+    EXPECT_GT(response.usage.completion_tokens, 0);
+    EXPECT_LE(response.usage.completion_tokens, 2048);
+  }
+
+  {
+    ChatSession session(catalog_model, *load_result.model, manager->GetLogger(), manager->GetTelemetry());
+    constexpr std::string_view request_json =
+        R"({"model":"qualified-qwen-generic-gpu","messages":[{"role":"user","content":"Reply with exactly one word: OK."}],"temperature":0,"stop":["\n"]})";
+    Request candidate;
+    candidate.AddOwnedItem(std::make_unique<TextItem>(
+        std::string(request_json), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    const auto candidate_preflight = session.PreflightRequest(candidate);
+
+    Request final_request;
+    final_request.AddOwnedItem(std::make_unique<TextItem>(
+        std::string(request_json), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    const auto final_preflight = session.PreflightRequest(final_request);
+
+    Response response;
+    ASSERT_NO_THROW(session.ProcessRequest(final_request, response));
+    EXPECT_EQ(candidate_preflight.prompt_tokens, final_preflight.prompt_tokens);
+    EXPECT_EQ(final_preflight.output_reserve_tokens, 2048);
+    EXPECT_EQ(final_preflight.required_tokens, final_preflight.prompt_tokens + 2048);
+    EXPECT_FALSE(response.items.empty());
+    EXPECT_EQ(response.usage.prompt_tokens, final_preflight.prompt_tokens);
+    EXPECT_GT(response.usage.completion_tokens, 0);
+    EXPECT_LE(response.usage.completion_tokens, 2048);
+  }
+
+  EXPECT_TRUE(load_manager.UnloadModel(kModelId));
 }
 
 }  // namespace

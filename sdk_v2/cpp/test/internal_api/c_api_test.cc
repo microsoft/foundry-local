@@ -1,14 +1,18 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "internal_api/c_api_test_helpers.h"
+#include "c_api_types.h"
 #include "items/tool_call_item.h"
+#include "node_private_api.h"
 #include "utils/temp_path.h"
 
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -23,6 +27,17 @@ using fl::test::CreateTestConfig;
 using fl::test::GetApi;
 using fl::test::IsOk;
 using fl::test::StatusGuard;
+
+template <typename T>
+concept HasPreflightRequest = requires(const T& session, const foundry_local::Request& request) {
+  session.PreflightRequest(request);
+};
+
+static_assert(HasPreflightRequest<foundry_local::ChatSession>);
+static_assert(!HasPreflightRequest<foundry_local::Session>);
+static_assert(sizeof(flNodePrivateApi) <= std::numeric_limits<uint32_t>::max());
+
+constexpr auto kNodePrivateApiSize = static_cast<uint32_t>(sizeof(flNodePrivateApi));
 
 // ========================================================================
 // Exports & Version
@@ -54,6 +69,90 @@ TEST(CApiTest, SupportedVersionsReturnSameExpandedApiTables) {
   EXPECT_EQ(v1->GetModelApi(), v2->GetModelApi());
   EXPECT_NE(v1->GetCatalogApi()->RegisterModel, nullptr);
   EXPECT_NE(v1->GetModelApi()->CreateModelInfo, nullptr);
+}
+
+TEST(CApiTest, RequestPreflightVersionRangeAcceptsV2) {
+  EXPECT_FALSE(fl::detail::IsRequestPreflightVersionSupported(1));
+  EXPECT_TRUE(fl::detail::IsRequestPreflightVersionSupported(2));
+  EXPECT_FALSE(fl::detail::IsRequestPreflightVersionSupported(3));
+}
+
+TEST(CApiTest, RequestPreflightVersionRangeCanValidateAFutureCurrentVersion) {
+  constexpr uint32_t future_current_version = FOUNDRY_LOCAL_API_VERSION + 1;
+  EXPECT_TRUE(fl::detail::IsRequestPreflightVersionSupported(
+      future_current_version, future_current_version));
+  EXPECT_FALSE(fl::detail::IsRequestPreflightVersionSupported(
+      future_current_version + 1, future_current_version));
+}
+
+TEST(CApiTest, InferenceApiV2AppendsOnlyPreflightAtOffset22) {
+  EXPECT_EQ(FOUNDRY_LOCAL_API_VERSION, 2);
+  EXPECT_EQ(FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION, 2);
+  EXPECT_EQ(offsetof(flInferenceApi, Session_UndoTurns), 21 * sizeof(void*));
+  EXPECT_EQ(offsetof(flInferenceApi, Session_PreflightRequest), 22 * sizeof(void*));
+  EXPECT_EQ(sizeof(flInferenceApi), 23 * sizeof(void*));
+
+  const auto* api_v2 = FoundryLocalGetApi(2);
+  ASSERT_NE(api_v2, nullptr);
+  const auto* inference = api_v2->GetInferenceApi();
+  ASSERT_NE(inference, nullptr);
+  EXPECT_NE(inference->Session_PreflightRequest, nullptr);
+}
+
+TEST(CApiTest, RequestPreflightV2LayoutIsFrozenWithoutAvailableTokens) {
+  EXPECT_EQ(offsetof(flRequestPreflight, version), 0u);
+  EXPECT_EQ(offsetof(flRequestPreflight, prompt_tokens), 8u);
+  EXPECT_EQ(offsetof(flRequestPreflight, output_reserve_tokens), 16u);
+  EXPECT_EQ(offsetof(flRequestPreflight, required_tokens), 24u);
+  EXPECT_EQ(offsetof(flRequestPreflight, context_limit_tokens), 32u);
+  EXPECT_EQ(offsetof(flRequestPreflight, fits), 40u);
+  EXPECT_EQ(offsetof(flRequestPreflight, deficit_tokens), 48u);
+  EXPECT_EQ(sizeof(flRequestPreflight), 56u);
+
+  EXPECT_EQ(offsetof(foundry_local::RequestPreflight, prompt_tokens), 0u);
+  EXPECT_EQ(offsetof(foundry_local::RequestPreflight, output_reserve_tokens), 8u);
+  EXPECT_EQ(offsetof(foundry_local::RequestPreflight, required_tokens), 16u);
+  EXPECT_EQ(offsetof(foundry_local::RequestPreflight, context_limit_tokens), 24u);
+  EXPECT_EQ(offsetof(foundry_local::RequestPreflight, fits), 32u);
+  EXPECT_EQ(offsetof(foundry_local::RequestPreflight, deficit_tokens), 40u);
+  EXPECT_EQ(sizeof(foundry_local::RequestPreflight), 48u);
+}
+
+TEST(CApiTest, NodePrivateApiRequiresExactVersionAndSize) {
+  EXPECT_EQ(FoundryLocalGetNodePrivateApi(
+                FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION - 1, kNodePrivateApiSize),
+            nullptr);
+  EXPECT_EQ(FoundryLocalGetNodePrivateApi(
+                FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION + 1, kNodePrivateApiSize),
+            nullptr);
+  EXPECT_EQ(FoundryLocalGetNodePrivateApi(
+                FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION, kNodePrivateApiSize - 1),
+            nullptr);
+  EXPECT_EQ(FoundryLocalGetNodePrivateApi(
+                FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION, kNodePrivateApiSize + 1),
+            nullptr);
+
+  const auto* private_api = FoundryLocalGetNodePrivateApi(
+      FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION, kNodePrivateApiSize);
+  ASSERT_NE(private_api, nullptr);
+  EXPECT_NE(private_api->Session_CaptureRequestPreflight, nullptr);
+  EXPECT_NE(private_api->RequestPreflightOperation_Execute, nullptr);
+  EXPECT_NE(private_api->RequestPreflightOperation_Release, nullptr);
+}
+
+TEST(CApiTest, NodePrivateCaptureNullsOutputBeforeReturningAnError) {
+  const auto* api = GetApi();
+  const auto* private_api = FoundryLocalGetNodePrivateApi(
+      FOUNDRY_LOCAL_NODE_PRIVATE_API_VERSION, kNodePrivateApiSize);
+  ASSERT_NE(private_api, nullptr);
+
+  auto* operation = reinterpret_cast<flRequestPreflightOperation*>(static_cast<uintptr_t>(1));
+  StatusGuard status{private_api->Session_CaptureRequestPreflight(nullptr, nullptr, &operation), api};
+  ASSERT_NE(status.s, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(status.s), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  EXPECT_EQ(operation, nullptr);
+
+  private_api->RequestPreflightOperation_Release(nullptr);
 }
 
 TEST(CApiTest, VersionReturnsNonNull) {

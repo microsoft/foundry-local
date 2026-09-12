@@ -153,6 +153,20 @@ export interface NativeRequest {
   getItem(index: number): unknown;
 }
 
+/**
+ * Plain-object result returned by the asynchronous native request preflight
+ * check. Capture copies request/session state and inline bytes synchronously;
+ * its worker resolves URI-backed media and performs preparation.
+ */
+export interface NativeRequestPreflight {
+  promptTokens: number;
+  outputReserveTokens: number;
+  requiredTokens: number;
+  contextLimitTokens: number;
+  fits: boolean;
+  deficitTokens: number;
+}
+
 export interface NativeItemQueueCtor {
   new (): NativeItemQueue;
 }
@@ -175,6 +189,7 @@ export interface NativeSession {
 }
 
 export interface NativeChatSession extends NativeSession {
+  preflightRequest(request: NativeRequest): Promise<NativeRequestPreflight>;
   addToolDefinition(
     definition:
       | {

@@ -136,7 +136,11 @@ The C API boundary (`foundry_local_c.h`) follows these conventions for ABI stabi
 
 ### Exports and Versioning
 
-* The library exports exactly **two symbols**: `FoundryLocalGetApi(uint32_t version)` and `FoundryLocalGetVersionString()`.
+* The library has exactly **two supported public exports**: `FoundryLocalGetApi(uint32_t version)` and
+  `FoundryLocalGetVersionString()`.
+* `FoundryLocalGetNodePrivateApi(version, size)` is an additional unsupported, versioned lockstep getter used only
+  by the in-repo Node addon. External bindings must not use it. Its contract may change independently when the
+  packaged addon and native runtime are updated together.
 * All other functionality is accessed through **versioned structs of function pointers** (vtables) returned by `FoundryLocalGetApi`.
 * `FOUNDRY_LOCAL_API_VERSION` is incremented with each release. New entries are appended at the end of each vtable struct — never removed or reordered.
 

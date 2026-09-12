@@ -4,6 +4,7 @@
 
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
+#include "inferencing/generative/chat/prepared_chat_prompt.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 
@@ -15,6 +16,7 @@ struct OgaTokenizerStream;
 
 namespace fl {
 
+class ChatSessionTestAccessor;
 class GenAIModelInstance;
 
 /// ChatGenerator stream for a conversation scheduled by a model-owned ORT GenAI Engine.
@@ -34,6 +36,11 @@ class OnnxEngineChatStream final : public ChatGenerator {
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  int AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                           const PreparedChatPrompt& prepared,
+                           GenAIModelInstance& model,
+                           const ToolCallContext& tool_ctx,
+                           const SearchOptions& options) override;
   bool PromptOpensReasoning() const override { return prompt_opens_reasoning_; }
   std::optional<ChatTurnUsage> GetTurnUsage() const override;
 
@@ -42,8 +49,14 @@ class OnnxEngineChatStream final : public ChatGenerator {
       const SearchOptions& options,
       GenAIModelInstance& model,
       const ToolCallContext& tool_ctx);
+  static std::unique_ptr<OnnxEngineChatStream> CreatePrepared(PreparedChatPrompt prepared,
+                                                              const SearchOptions& options,
+                                                              GenAIModelInstance& model,
+                                                              const ToolCallContext& tool_ctx);
 
  private:
+  friend class ChatSessionTestAccessor;
+
   OnnxEngineChatStream(OnnxChatEngine& engine,
                        std::shared_ptr<OnnxChatEngine::Conversation> conversation,
                        std::unique_ptr<OgaTokenizerStream> stream,

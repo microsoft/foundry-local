@@ -4,6 +4,7 @@
 
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/prepared_chat_prompt.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
@@ -61,6 +62,11 @@ class OnnxChatGenerator : public ChatGenerator {
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  int AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                           const PreparedChatPrompt& prepared,
+                           GenAIModelInstance& model,
+                           const ToolCallContext& tool_ctx,
+                           const SearchOptions& options) override;
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
@@ -98,6 +104,13 @@ class OnnxChatGenerator : public ChatGenerator {
       const ToolCallContext& tool_ctx = {},
       bool use_full_context = false);
 
+  /// Create a generator from the exact artifact produced by request preflight preparation.
+  static std::unique_ptr<OnnxChatGenerator> CreatePrepared(PreparedChatPrompt prepared,
+                                                           const SearchOptions& options,
+                                                           GenAIModelInstance& model,
+                                                           const ToolCallContext& tool_ctx,
+                                                           bool use_full_context = false);
+
   // ---- Static helpers exposed for unit testing ----
 
   /// Build the JSON messages array fed to OgaTokenizer::ApplyChatTemplate when
@@ -123,13 +136,11 @@ class OnnxChatGenerator : public ChatGenerator {
   // the two paths project their messages differently: text builds from the transcript, media rewrites MessageItems
   // so the template inserts media sentinels. Both share search-options validation, guidance setup, media tensor
   // preparation, and generator construction.
-  static std::unique_ptr<OnnxChatGenerator> CreateImpl(const std::string& prompt,
+  static std::unique_ptr<OnnxChatGenerator> CreateImpl(PreparedChatPrompt prepared,
                                                        const SearchOptions& options,
                                                        GenAIModelInstance& model,
                                                        const ToolCallContext& tool_ctx,
-                                                       bool use_full_context,
-                                                       const std::vector<const ImageItem*>& images,
-                                                       const std::vector<const AudioItem*>& audios);
+                                                       bool use_full_context);
 
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;

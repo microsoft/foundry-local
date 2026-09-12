@@ -109,7 +109,7 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_DoesNotOverrideExisting)
   EXPECT_FLOAT_EQ(*req.top_p, 0.5f);
 }
 
-TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_AppliesMaxTokens) {
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_IgnoresCatalogMaxTokensAsAnOutputLimit) {
   ChatCompletionRequest req;
 
   KeyValuePairs settings;
@@ -117,8 +117,26 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_AppliesMaxTokens) {
 
   ApplyCatalogDefaults(req, settings);
 
-  ASSERT_TRUE(req.max_tokens.has_value());
-  EXPECT_EQ(*req.max_tokens, 1024);
+  EXPECT_FALSE(req.max_tokens.has_value());
+  EXPECT_FALSE(req.max_completion_tokens.has_value());
+}
+
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_PreservesExplicitWireOutputLimits) {
+  ChatCompletionRequest req;
+  req.max_completion_tokens = 64;
+  req.max_tokens = 32;
+
+  KeyValuePairs settings;
+  settings.Add("max_tokens", "1024");
+
+  ApplyCatalogDefaults(req, settings);
+
+  EXPECT_EQ(req.max_completion_tokens, 64);
+  EXPECT_EQ(req.max_tokens, 32);
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+  EXPECT_STREQ(session_request.options.Find("max_output_tokens"), "64");
 }
 
 TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_AppliesMetadata) {

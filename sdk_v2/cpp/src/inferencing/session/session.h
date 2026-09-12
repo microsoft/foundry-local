@@ -24,6 +24,7 @@ namespace fl {
 class ILogger;     // forward declaration
 class ITelemetry;  // forward declaration
 class Model;       // forward declaration
+struct RequestBudget;
 
 /// Base class for model inference sessions.
 /// Manages lifecycle, request dispatch, streaming callbacks, and tool definitions.
@@ -34,6 +35,25 @@ class Model;       // forward declaration
 ///   - Future: predictive inference, realtime audio, multi-modal
 class Session {
  public:
+#if defined(_WIN32)
+  class RequestPreflightOperation {
+#else
+  class __attribute__((visibility("hidden"))) RequestPreflightOperation {
+#endif
+   public:
+    virtual ~RequestPreflightOperation() = default;
+
+    RequestPreflightOperation(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation& operator=(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation(RequestPreflightOperation&&) = delete;
+    RequestPreflightOperation& operator=(RequestPreflightOperation&&) = delete;
+
+    virtual RequestBudget Execute() = 0;
+
+   protected:
+    RequestPreflightOperation() = default;
+  };
+
   virtual ~Session();
 
   Session(Session&&) = default;
@@ -69,6 +89,7 @@ class Session {
   /// Remove a previously-added tool definition by name.
   /// Returns true if a matching tool was found and removed, false otherwise.
   bool RemoveToolDefinition(const std::string& tool_name) {
+    auto lock = LockStateMutex();
     return tool_registry_.Remove(tool_name);
   }
 
@@ -77,6 +98,7 @@ class Session {
   /// A request takes this once, before generation, so the calls it replays, the prompt it builds,
   /// and the calls it produces are all resolved against the same tool set.
   std::vector<ToolDefinition> ToolDefinitions() const {
+    auto lock = LockStateMutex();
     return tool_registry_.Definitions();
   }
 
@@ -84,7 +106,14 @@ class Session {
   /// requests (e.g. via Responses API `previous_response_id`) and the new request brings its
   /// own tools — the request-is-self-contained model means stale tools must not leak across turns.
   void ClearToolDefinitions() {
+    auto lock = LockStateMutex();
     tool_registry_.Clear();
+  }
+
+  /// Validate, normalize, and atomically replace all definitions.
+  void SetToolDefinitions(std::vector<ToolDefinition> tool_definitions) {
+    auto lock = LockStateMutex();
+    tool_registry_.Replace(std::move(tool_definitions));
   }
 
   /// Get the number of completed turns. Only meaningful for chat sessions.
@@ -95,10 +124,7 @@ class Session {
   virtual void UndoTurns(size_t count);
 
   /// Session-level parameters overlaid onto each request.
-  void SetSessionOptions(const KeyValuePairs& options) {
-    session_options_ = options;
-    SetSessionOptionsImpl(session_options_);
-  }
+  void SetSessionOptions(const KeyValuePairs& options);
 
   using StreamingCallbackFn = std::function<int(flStreamingCallbackData, void*)>;
   void SetStreamingCallback(StreamingCallbackFn callback, void* user_data = nullptr) {
@@ -149,14 +175,22 @@ class Session {
 
   const KeyValuePairs& SessionOptions() const { return session_options_; }
 
-  /// Serialize a state mutation with ProcessRequest for session types that maintain mutable turn state.
+  /// Serialize request execution/admission for session types that maintain ordered mutable inference state.
   std::unique_lock<std::mutex> LockRequestMutex() const { return std::unique_lock<std::mutex>(*request_mutex_); }
 
- private:
+  /// Protect short-lived snapshots and mutations of session state. When both locks are needed, request_mutex_
+  /// must be acquired first so preflight capture never blocks behind inference or creates a lock inversion.
+  std::unique_lock<std::mutex> LockStateMutex() const { return std::unique_lock<std::mutex>(*state_mutex_); }
+
+  const KeyValuePairs& SessionOptionsLocked() const { return session_options_; }
+
+  std::vector<ToolDefinition> ToolDefinitionsLocked() const { return tool_registry_.Definitions(); }
+
   /// Reject items (and message content parts) whose type the model's task does not advertise as an
   /// input. Currently applies to chat tasks only.
   void ValidateRequestItems(const Request& request) const;
 
+ private:
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
@@ -166,6 +200,7 @@ class Session {
   void* callback_user_data_ = nullptr;
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
+  mutable std::unique_ptr<std::mutex> state_mutex_ = std::make_unique<std::mutex>();
 
   // In-flight requests tracked so Cancel() can flip their cancel flags from another thread. Guarded
   // by its own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several

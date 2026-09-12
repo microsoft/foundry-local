@@ -8,6 +8,8 @@
 #include "inferencing/generative/chat/media_input.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
+#include "inferencing/generative/chat/prepared_chat_prompt.h"
+#include "inferencing/generative/chat/request_budget.h"
 #if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
 #include "inferencing/generative/chat/onnx_engine_chat_stream.h"
 #endif
@@ -26,12 +28,38 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <fmt/format.h>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <utility>
 
 namespace fl {
+
+struct PreparedChatRequest {
+  Request request;
+  TranscriptIngest ingest;
+  MediaInput media;
+  ToolCallContext tool_context;
+  SearchOptions options;
+  ChatBackendKind backend_kind = ChatBackendKind::kGenerator;
+  std::string system_prompt;
+  std::vector<TranscriptMessage> all_messages;
+  PreparedChatPrompt prompt;
+  RequestBudget budget;
+  std::string json_model_name;
+  bool json_passthrough = false;
+};
+
+struct ChatSessionStateSnapshot {
+  Request request;
+  ChatTranscript transcript;
+  KeyValuePairs base_session_options;
+  SearchOptions chat_session_options;
+  std::vector<ToolDefinition> tool_definitions;
+  ModelInfo model_info;
+};
 
 namespace {
 
@@ -55,21 +83,31 @@ void ApplyToolChoiceToContext(std::optional<flToolChoice> tool_choice, ToolCallC
   }
 }
 
-std::unique_ptr<ChatGenerator> CreateTextChatGenerator(const std::vector<TranscriptMessage>& messages,
+std::unique_ptr<ChatGenerator> CreateTextChatGenerator(PreparedChatPrompt prepared,
                                                        const SearchOptions& options,
                                                        GenAIModelInstance& model,
                                                        const ToolCallContext& tool_ctx,
                                                        bool use_full_context) {
   if (model.GetGenAIConfig().GetChatBackendKind() != ChatBackendKind::kGenerator) {
 #if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
-    return OnnxEngineChatStream::Create(messages, options, model, tool_ctx);
+    return OnnxEngineChatStream::CreatePrepared(std::move(prepared), options, model, tool_ctx);
 #else
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
              "model requires the ORT GenAI dynamic Engine API, but this build does not provide it");
 #endif
   }
 
-  return OnnxChatGenerator::Create(messages, options, model, tool_ctx, use_full_context);
+  return OnnxChatGenerator::CreatePrepared(std::move(prepared), options, model, tool_ctx, use_full_context);
+}
+
+void FinalizePreparedRequest(PreparedChatRequest& prepared,
+                             GenAIModelInstance& model,
+                             bool media_turn) {
+  const auto& config = model.GetGenAIConfig();
+  const auto output_limit = ResolveOutputLimit(prepared.options, media_turn);
+  prepared.options.max_output_tokens = output_limit;
+  const int64_t context_limit = GetModelMaxContextLength(config);
+  prepared.budget = ComputeRequestBudget(prepared.prompt.prompt_token_count, output_limit, context_limit);
 }
 
 using TextSegment = ReasoningStreamSplitter::Segment;
@@ -78,6 +116,16 @@ using TextSegment = ReasoningStreamSplitter::Segment;
 std::string GetOptionOrEmpty(const KeyValuePairs& options, const char* key) {
   auto it = options.find(key);
   return it != options.end() ? it->second : std::string{};
+}
+
+KeyValuePairs MergeOptions(const KeyValuePairs& session_options,
+                           const KeyValuePairs& request_options) {
+  auto merged = session_options;
+  for (const auto& [key, value] : request_options) {
+    merged.Add(key, value);
+  }
+
+  return merged;
 }
 
 /// Use a model-published boundary ID only when its published text matches the configured marker.
@@ -355,15 +403,18 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
-ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
-                                                  const std::vector<ToolDefinition>& definitions) const {
+ToolCallContext BuildToolCallContext(const Request& request,
+                                     const std::vector<ToolDefinition>& tool_definitions,
+                                     const SearchOptions& session_options,
+                                     const ModelInfo& model_info,
+                                     GenAIModelInstance& model) {
   ToolCallContext tool_ctx;
 
   tool_ctx.tool_call_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
   tool_ctx.tool_call_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
 
   // Fall back to model info properties if not specified in the request
-  const auto& info = CatalogModel().Info();
+  const auto& info = model_info;
 
   // Check if the model supports tool calling
   const auto* tool_calling_val = info.GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
@@ -388,7 +439,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   // Catalog metadata is immutable and may not contain markers for models whose
   // tokenizer defines them dynamically. Read those markers from the loaded GenAI
   // model without mutating the published ModelInfo.
-  const auto& tag_info = model_.GetTagInfo();
+  const auto& tag_info = model.GetTagInfo();
   if (tool_ctx.tool_call_start.empty()) {
     tool_ctx.tool_call_start = tag_info.bot_str;
   }
@@ -443,23 +494,15 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
         ResolveMarkerTokenId(tool_ctx.reasoning_end, {tag_info.eor_id, tag_info.eor_str});
   }
 
-  // Accumulate tool definitions from the session.
-  // Tool definitions may come from two sources:
-  // 1. Individual AddToolDefinition calls (name + description + parameters schema)
-  // 2. ChatCompletions converter (pre-serialized full OpenAI tools JSON array, no name)
-  // We need to produce a JSON array in OpenAI tools format for the chat template.
-  // Custom tools are already normalized by the registry into a function-shaped schema, so the
-  // template and the guidance grammar only ever see function tools. Their kinds are carried on the
-  // context, so this turn's output is read back with exactly the tool set that shaped its prompt
-  // even if the session's registry changes underneath.
+  // Custom tools are normalized into function-shaped schemas by ToolRegistry. Keep their kinds on the immutable
+  // request context so prompt construction, replay normalization, and generated output use the same snapshot.
   nlohmann::json tools_array = nlohmann::json::array();
   bool has_preserialized = false;
 
-  tool_ctx.tool_kinds = KindsByName(definitions);
+  tool_ctx.tool_kinds = KindsByName(tool_definitions);
 
-  for (const auto& td : definitions) {
+  for (const auto& td : tool_definitions) {
     if (!td.name.empty()) {
-      // Individual tool: wrap in OpenAI format
       nlohmann::json tool;
       tool["type"] = "function";
       tool["function"]["name"] = td.name;
@@ -471,7 +514,6 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
 
       tools_array.push_back(std::move(tool));
     } else if (!td.json_schema.empty()) {
-      // Pre-serialized from ChatCompletions path — already a complete tools array
       has_preserialized = true;
       tool_ctx.tools_json += td.json_schema;
     }
@@ -487,7 +529,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
   auto tool_choice = SearchOptions::ParseToolChoice(request.options);
   if (!tool_choice.has_value()) {
-    tool_choice = session_options_.tool_choice;
+    tool_choice = session_options.tool_choice;
   }
 
   if (tool_ctx.HasTools()) {
@@ -571,72 +613,214 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
                   total_tokens, prompt_tokens, completion_tokens, reasoning_tokens));
 }
 
-void ChatSession::ProcessRequestImpl(const Request& request, Response& response) {
-  // OpenAI chat completions JSON pass-through: a TEXT item tagged OPENAI_JSON. Routes to a separate handler that
-  // never uses the cached generator or the transcript (the JSON payload is self-contained).
+std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
+    Request request_snapshot,
+    const ChatTranscript& transcript,
+    const KeyValuePairs& base_session_options,
+    const SearchOptions& chat_session_options,
+    const std::vector<ToolDefinition>& tool_definitions,
+    const ModelInfo& model_info,
+    GenAIModelInstance& model) {
+  auto prepared = std::make_unique<PreparedChatRequest>();
+  prepared->request = std::move(request_snapshot);
+  const auto& request = prepared->request;
+
   for (const auto* item : request.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
       const auto& text_item = static_cast<const fl::TextItem&>(*item);
 
       if (text_item.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
-        ProcessChatCompletionsJson(text_item.text, request, response);
-        return;
+        auto request_json = nlohmann::json::parse(text_item.text);
+        auto chat_request = request_json.get<ChatCompletionRequest>();
+        chat_completions::ApplyCatalogDefaults(chat_request, model_info.model_settings);
+
+        Request internal_request;
+        chat_completions::BuildRequestItems(chat_request, internal_request);
+        if (internal_request.items.empty()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "the request has nothing to generate from: `messages` carried no content");
+        }
+
+        std::string tools_json =
+            chat_completions::ExtractToolDefinitions(chat_request, internal_request);
+        chat_completions::MapRequestParameters(chat_request, internal_request);
+        chat_completions::MapGuidance(chat_request, internal_request);
+        chat_completions::MapStopSequences(chat_request, internal_request);
+
+        for (const auto& [key, value] : request.options) {
+          if (internal_request.options.find(key) == internal_request.options.end()) {
+            internal_request.options[key] = value;
+          }
+        }
+
+        const auto request_tool_definitions =
+            chat_session_internal::BuildJsonRequestToolDefinitions(std::move(tools_json), tool_definitions);
+
+        prepared->json_passthrough = true;
+        prepared->json_model_name = chat_request.model;
+        prepared->tool_context = BuildToolCallContext(internal_request, request_tool_definitions,
+                                                      chat_session_options, model_info, model);
+        auto effective_kvp = MergeOptions(base_session_options, internal_request.options);
+        prepared->options = SearchOptions::FromParameters(effective_kvp);
+        prepared->backend_kind = model.GetGenAIConfig().GetChatBackendKind();
+        prepared->all_messages =
+            BuildTranscriptMessages(internal_request.items, prepared->tool_context.tool_kinds);
+
+        const ChatTranscript payload_transcript;
+        payload_transcript.ValidateInputs(prepared->all_messages);
+        prepared->prompt =
+            PrepareTextChatPrompt(prepared->all_messages, model, prepared->tool_context);
+        FinalizePreparedRequest(*prepared, model, /*media_turn=*/false);
+        return prepared;
       }
     }
   }
 
-  // One snapshot of the session's tools for this whole turn, taken before anything reads them. The registry is safe
-  // to mutate from another thread while a request generates, so taking it once is what makes a turn
-  // self-consistent: the calls it replays, the prompt it builds, and the calls it produces are all resolved against
-  // the same tool set.
-  //
-  // A turn appended to a cached generator does not rebuild the prompt and so keeps the kinds from the turn that
-  // did. That stays consistent because a turn carrying tool activity always invalidates the cached generator
-  // below, so any turn that actually replays a call is also the turn that rebuilds the prompt from this snapshot.
-  auto turn_tool_ctx = BuildToolCallContext(request, ToolDefinitions());
+  prepared->tool_context =
+      BuildToolCallContext(request, tool_definitions, chat_session_options, model_info, model);
+  prepared->ingest =
+      IngestRequestItems(request.items, request.item_segment_starts, prepared->tool_context.tool_kinds);
+  transcript.ValidateInputs(prepared->ingest.messages);
+  prepared->media = CollectMediaInput(request);
+  ValidateMediaTurn(prepared->media, prepared->ingest.messages,
+                    {.session_has_history = !transcript.Empty(),
+                     .tools_declared = prepared->tool_context.HasTools()});
 
-  // Collect this turn's input messages locally — nothing reaches the transcript until the turn commits. Replay
-  // segment boundaries travel with the items so a reconstructed conversation regroups exactly as it was committed.
-  //
-  // Replayed tool calls are normalized with this turn's kinds: a custom tool's call comes back as the text payload
-  // this session handed out, so it must be rewrapped rather than rejected as malformed JSON.
-  auto ingest = IngestRequestItems(request.items, request.item_segment_starts, turn_tool_ctx.tool_kinds);
-  auto inputs = std::move(ingest.messages);
+  auto effective_kvp = MergeOptions(base_session_options, request.options);
+  prepared->options = SearchOptions::FromParameters(effective_kvp);
+  prepared->backend_kind = model.GetGenAIConfig().GetChatBackendKind();
+  prepared->system_prompt = GetOptionOrEmpty(effective_kvp, kSystemPromptOption);
+  const bool media_turn = !prepared->media.Empty();
 
-  // Reject bad tool-call correlation before any generator work: a rejected turn must cost nothing and leave no
-  // state. This runs before the has-anything-to-say check below so a tool result that answers nothing is reported
-  // as the correlation error it is — an empty result for an unknown call ID is a broken conversation, not an
-  // empty request.
-  transcript_.ValidateInputs(inputs);
-
-  // Media is single-shot. One conversation-scoped rule covers a live session and a conversation replayed into this
-  // request after the session cache dropped it, so a continuation is rejected identically either way.
-  auto media = CollectMediaInput(request);
-  const bool media_turn = !media.Empty();
-  ValidateMediaTurn(media, inputs,
-                    {.session_has_history = !transcript_.Empty(), .tools_declared = turn_tool_ctx.HasTools()});
-
-  // Merge session-level and per-request options once for this turn.
-  auto effective_kvp = MergedOptions(request.options);
-  SearchOptions effective_options = SearchOptions::FromParameters(effective_kvp);
-  const ChatBackendKind backend_kind = Model().GetGenAIConfig().GetChatBackendKind();
-
-  // Request-scoped system prefix. It is not conversation history: it never enters the transcript, so it cannot
-  // accumulate a copy per turn, and the value this request carries is the only one used. It is baked into a
-  // generator's prompt, so a changed prefix has to rebuild while an unchanged one keeps the KV cache.
-  const std::string turn_system_prompt = GetOptionOrEmpty(effective_kvp, kSystemPromptOption);
-
-  // One gate for every way a turn can carry meaning: its own messages, media bytes, the conversation behind it, or
-  // the instructions in front of it. A turn with none of them is the caller's mistake, so it is a client error —
-  // and a turn with any of them generates, whether the conversation is held in this session or was replayed into
-  // the request after the cache dropped it.
-  if (!TurnCanGenerate(inputs, {.media = media_turn,
-                                .history = !transcript_.Empty(),
-                                .system_prefix = !turn_system_prompt.empty()})) {
+  if (!TurnCanGenerate(prepared->ingest.messages,
+                       {.media = media_turn,
+                        .history = !transcript.Empty(),
+                        .system_prefix = !prepared->system_prompt.empty()})) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "the request has nothing to generate from: no message content, no image or audio, no instructions, "
              "and no conversation to continue");
   }
+
+  const auto& committed = transcript.Messages();
+  prepared->all_messages.reserve(
+      committed.size() + prepared->ingest.messages.size() + (prepared->system_prompt.empty() ? 0u : 1u));
+  prepared->all_messages.insert(prepared->all_messages.end(), committed.begin(), committed.end());
+  prepared->all_messages.insert(
+      prepared->all_messages.end(), prepared->ingest.messages.begin(), prepared->ingest.messages.end());
+  prepared->all_messages = WithSystemPrompt(prepared->system_prompt, std::move(prepared->all_messages));
+
+  if (media_turn) {
+    auto media_messages = prepared->media.messages;
+    if (!prepared->system_prompt.empty()) {
+      media_messages.insert(
+          media_messages.begin(), MessageItem(FOUNDRY_LOCAL_ROLE_SYSTEM, prepared->system_prompt));
+    }
+
+    prepared->prompt =
+        PrepareMediaChatPrompt(media_messages, model, prepared->media.images, prepared->media.audios,
+                               prepared->tool_context);
+  } else {
+    prepared->prompt = PrepareTextChatPrompt(prepared->all_messages, model, prepared->tool_context);
+  }
+
+  FinalizePreparedRequest(*prepared, model, media_turn);
+  return prepared;
+}
+
+namespace {
+
+class ChatRequestPreflightOperation final : public Session::RequestPreflightOperation {
+ public:
+  ChatRequestPreflightOperation(ChatSessionStateSnapshot state, GenAIModelInstance& model)
+      : state_(std::move(state)), model_(model) {
+    // Match ChatSession's loaded-model lease so the immutable tokenizer/config
+    // services remain valid even if the originating session is released.
+    model_.AcquireSession();
+  }
+
+  ~ChatRequestPreflightOperation() override {
+    model_.ReleaseSession();
+  }
+
+  RequestBudget Execute() override {
+    ChatSessionStateSnapshot state;
+    {
+      std::lock_guard lock(mutex_);
+      if (!state_.has_value()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight operation has already been executed");
+      }
+
+      state = std::move(*state_);
+      state_.reset();
+    }
+
+    const auto prepared =
+        PrepareChatRequest(std::move(state.request), state.transcript, state.base_session_options,
+                           state.chat_session_options, state.tool_definitions, state.model_info, model_);
+    return prepared->budget;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::optional<ChatSessionStateSnapshot> state_;
+  GenAIModelInstance& model_;
+};
+
+}  // namespace
+
+ChatSessionStateSnapshot ChatSession::CaptureState(Request request) const {
+  auto state_lock = LockStateMutex();
+  return {
+      .request = std::move(request),
+      .transcript = transcript_,
+      .base_session_options = SessionOptionsLocked(),
+      .chat_session_options = session_options_,
+      .tool_definitions = ToolDefinitionsLocked(),
+      .model_info = CatalogModel().Info(),
+  };
+}
+
+RequestBudget ChatSession::PreflightRequest(const Request& request) const {
+  return CaptureRequestPreflight(request)->Execute();
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> ChatSession::CaptureRequestPreflight(
+    const Request& request) const {
+  auto snapshot = request.CapturePreflightSnapshot();
+  ValidateRequestItems(snapshot);
+  auto state = CaptureState(std::move(snapshot));
+  return std::make_unique<ChatRequestPreflightOperation>(std::move(state), model_);
+}
+
+void ChatSession::ProcessRequestImpl(const Request& request, Response& response) {
+  auto state = CaptureState(request.CapturePreflightSnapshot());
+  auto prepared_owner =
+      PrepareChatRequest(std::move(state.request), state.transcript, state.base_session_options,
+                         state.chat_session_options, state.tool_definitions, state.model_info, model_);
+  auto& prepared = *prepared_owner;
+
+  if (!prepared.budget.fits) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "request requires " + std::to_string(prepared.budget.required_tokens) + " total tokens (" +
+                 std::to_string(prepared.budget.prompt_tokens) + " input + " +
+                 std::to_string(prepared.budget.output_reserve_tokens) +
+                 " output), which exceeds the model's maximum context length of " +
+                 std::to_string(prepared.budget.context_limit_tokens) + " tokens");
+  }
+
+  if (prepared.json_passthrough) {
+    ProcessChatCompletionsJson(prepared, request, response);
+    return;
+  }
+
+  auto& ingest = prepared.ingest;
+  auto& inputs = ingest.messages;
+  auto& media = prepared.media;
+  const bool media_turn = !media.Empty();
+  auto& turn_tool_ctx = prepared.tool_context;
+  auto& effective_options = prepared.options;
+  const auto backend_kind = prepared.backend_kind;
+  const auto& turn_system_prompt = prepared.system_prompt;
 
   int prompt_tokens = 0;
   // Empty until this turn's input is appended to an existing generator. A rebuilt generator bakes the input into its
@@ -645,13 +829,6 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   // The complete authoritative prompt for this turn. Engine uses this to verify that its resident raw tokens are an
   // exact prefix before reusing them; otherwise it replaces the conversation and submits the full prompt.
-  std::vector<TranscriptMessage> all_messages;
-  const auto& committed = transcript_.Messages();
-  all_messages.reserve(committed.size() + inputs.size() + (turn_system_prompt.empty() ? 0u : 1u));
-  all_messages.insert(all_messages.end(), committed.begin(), committed.end());
-  all_messages.insert(all_messages.end(), inputs.begin(), inputs.end());
-  all_messages = WithSystemPrompt(turn_system_prompt, std::move(all_messages));
-
   // Classic Generator cannot append tool exchanges or a changed prefix in isolation. Engine always renders the full
   // transcript and performs token-prefix reconciliation, so it can decide safely whether to reuse or replace state.
   const bool retained_tool_context_changed =
@@ -708,7 +885,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (cached_generator_) {
     pre_turn_token_count = cached_generator_->TokenCount();
     try {
-      cached_generator_->AppendMessages(inputs, all_messages, Model(), turn_tool_ctx, effective_options);
+      cached_generator_->AppendPreparedPrompt(inputs, prepared.prompt, Model(), turn_tool_ctx, effective_options);
       prompt_tokens = cached_generator_->TokenCount();
       cached_tool_ctx_ = turn_tool_ctx;
     } catch (const RetainedPromptMismatchError&) {
@@ -727,15 +904,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     if (media_turn) {
       // Media is single-shot: the generator is dropped after the turn because retained text state cannot reconstruct
       // media bytes. The system prefix is projected into the media prompt but never enters the transcript.
-      auto media_messages = std::move(media.messages);
-      if (!turn_system_prompt.empty()) {
-        media_messages.insert(media_messages.begin(), MessageItem(FOUNDRY_LOCAL_ROLE_SYSTEM, turn_system_prompt));
-      }
-
-      generator = OnnxChatGenerator::CreateWithMedia(media_messages, effective_options, Model(), media.images,
-                                                     media.audios, tool_ctx, /*use_full_context*/ false);
+      generator = OnnxChatGenerator::CreatePrepared(std::move(prepared.prompt), effective_options, Model(), tool_ctx,
+                                                    /*use_full_context=*/false);
     } else {
-      generator = CreateTextChatGenerator(all_messages, effective_options, Model(), tool_ctx,
+      generator = CreateTextChatGenerator(std::move(prepared.prompt), effective_options, Model(), tool_ctx,
                                           /*use_full_context=*/true);
     }
 
@@ -748,7 +920,12 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   std::optional<int> host_max_output;
   if (chat_session_internal::ShouldEnforceHostOutputLimit(backend_kind, media_turn)) {
-    host_max_output = ResolveMaxOutputTokens(effective_options, GetDefaultMaxOutputTokens(media_turn));
+    if (!effective_options.max_output_tokens.has_value()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "max_output_tokens must be resolved before generation");
+    }
+
+    host_max_output = effective_options.max_output_tokens;
   }
 
   // Generate token-by-token with optional streaming.
@@ -887,6 +1064,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   const bool generated_tool_calls = assistant_message.HasToolCalls();
 
   if (!request.canceled) {
+    auto state_lock = LockStateMutex();
+
     // Reject a generation whose calls cannot be correlated before it reaches the caller — a committed turn must never
     // leave the outstanding-call set inconsistent.
     transcript_.ValidateGeneratedOutput(assistant_message);
@@ -926,8 +1105,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   // The reply may only merge into an input message from the last replay segment — this request's own input. Merging
   // into an earlier hop's assistant message would glue two recorded turns together.
-  transcript_.CommitTurn(std::move(inputs), std::move(assistant_message),
-                         {pre_turn_token_count, total_tokens}, ingest.last_segment_start);
+  {
+    auto state_lock = LockStateMutex();
+    transcript_.CommitTurn(std::move(inputs), std::move(assistant_message),
+                           {pre_turn_token_count, total_tokens}, ingest.last_segment_start);
+  }
   turn_committed = true;
 
   if (discard_after_success || media_turn || generated_tool_calls || turn_guard.TurnEnded()) {
@@ -935,71 +1117,20 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   }
 }
 
-void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
+void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared,
+                                             const Request& original_request,
                                              Response& response) {
-  // Consult mutable session state exactly once. JSON requests otherwise derive their complete tool
-  // context from their own payload, so later registration cannot alter this request's interpretation.
-  const auto session_tool_definitions = ToolDefinitions();
-
-  // Parse the OpenAI chat completions request
-  auto req_json = nlohmann::json::parse(request_json);
-  auto req = req_json.get<ChatCompletionRequest>();
-
-  // Apply catalog defaults passed via request options
-  chat_completions::ApplyCatalogDefaults(req, CatalogModel().Info().model_settings);
-
-  std::string model_name = req.model;
+  const std::string& model_name = prepared.json_model_name;
   std::string completion_id = chat_completions::GenerateCompletionId();
   auto now = std::chrono::system_clock::now();
   int64_t created = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
 
-  // Build the internal request from the chat completions request
-  Request internal_request;
-
-  // We don't use history_ for this request as it's for backwards compat and all messages come from the input.
-  chat_completions::BuildRequestItems(req, internal_request);
-  if (internal_request.items.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "the request has nothing to generate from: `messages` carried no content");
-  }
-
-  std::string tools_json = chat_completions::ExtractToolDefinitions(req, internal_request);
-  chat_completions::MapRequestParameters(req, internal_request);
-  chat_completions::MapGuidance(req, internal_request);
-  chat_completions::MapStopSequences(req, internal_request);
-
-  // Merge options from the original request (e.g. tool_call_start/end from model properties)
-  for (const auto& [key, value] : original_request.options) {
-    if (internal_request.options.find(key) == internal_request.options.end()) {
-      internal_request.options[key] = value;
-    }
-  }
-
-  // Build a request-local tool definition. It must never enter the session registry: this payload
-  // is self-contained and concurrent registration must not alter either its prompt or call parsing.
-  const auto request_tool_definitions =
-      chat_session_internal::BuildJsonRequestToolDefinitions(std::move(tools_json),
-                                                             session_tool_definitions);
-
-  const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);
-
-  // Merge session-level and per-request options once.
-  auto effective_kvp = MergedOptions(internal_request.options);
-  SearchOptions options = SearchOptions::FromParameters(effective_kvp);
-
-  // Collect transcript messages from the internal request for the generator.
-  // The session transcript is not used here — everything comes from the parsed JSON input.
-  // The context above already snapshotted the kinds that shape this prompt, so replayed calls in the payload are
-  // normalized with exactly the kinds the produced calls are read back with.
-  auto messages = BuildTranscriptMessages(internal_request.items, tool_ctx.tool_kinds);
-
-  // The payload is self-contained, so correlate its tool calls and results against an empty transcript. This gives
-  // the same stable errors a session turn would produce for a history the model cannot interpret.
-  const ChatTranscript payload_transcript;
-  payload_transcript.ValidateInputs(messages);
+  auto& tool_ctx = prepared.tool_context;
+  auto& options = prepared.options;
+  auto& messages = prepared.all_messages;
 
   // Create generator
-  auto generator = CreateTextChatGenerator(messages, options, Model(), tool_ctx,
+  auto generator = CreateTextChatGenerator(std::move(prepared.prompt), options, Model(), tool_ctx,
                                            /*use_full_context=*/false);
   int prompt_tokens = generator->PromptTokenCount();
 
@@ -1183,6 +1314,7 @@ void ChatSession::InvalidateCachedGenerator() noexcept {
 }
 
 size_t ChatSession::TurnCount() const {
+  auto state_lock = LockStateMutex();
   return transcript_.TurnCount();
 }
 
@@ -1193,10 +1325,15 @@ void ChatSession::UndoTurns(size_t count) {
     return;
   }
 
-  const bool undo_all = count == transcript_.TurnCount();
+  bool undo_all = false;
+  ChatTranscript::TurnTokens tokens;
+  {
+    auto state_lock = LockStateMutex();
+    undo_all = count == transcript_.TurnCount();
 
-  // The transcript validates `count` and rolls back messages, turn records, and outstanding-call state as one step.
-  auto tokens = transcript_.UndoTurns(count);
+    // The transcript validates `count` and rolls back messages, turn records, and outstanding-call state as one step.
+    tokens = transcript_.UndoTurns(count);
+  }
 
   if (!cached_generator_) {
     return;
@@ -1219,6 +1356,7 @@ void ChatSession::UndoTurns(size_t count) {
 }
 
 size_t ChatSession::MessageCount() const {
+  auto state_lock = LockStateMutex();
   return transcript_.MessageCount();
 }
 
