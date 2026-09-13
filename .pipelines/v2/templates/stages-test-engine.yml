@@ -1,4 +1,4 @@
-# CPU paged-attention Engine gate, independent of the Generator/release packaging matrix.
+# CPU paged-attention Engine gate.
 # Model assets are checked in and staged by the normal C++ testdata build rule.
 parameters:
 - name: buildConfig
@@ -7,7 +7,6 @@ parameters:
   type: string
 - name: genaiVersion
   type: string
-  default: '0.16.0-dev1001407373'
 
 stages:
 - stage: cpp_test_engine
@@ -48,8 +47,7 @@ stages:
           --cmake_extra_defines \
             "GENAI_FETCH_URL=$NUGET_CACHE/genai.zip" \
             "ORT_GENAI_VERSION=$ENGINE_GENAI_VERSION" \
-            "ORT_FETCH_URL=$NUGET_CACHE/ort.zip" \
-            "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON"
+            "ORT_FETCH_URL=$NUGET_CACHE/ort.zip"
         build="$PWD/build/Linux/$BUILD_CONFIG"
         bin="$build/bin"
         export LD_LIBRARY_PATH="$bin:${LD_LIBRARY_PATH:-}"
