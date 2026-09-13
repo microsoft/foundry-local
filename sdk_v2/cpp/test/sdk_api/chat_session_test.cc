@@ -819,10 +819,8 @@ TEST_F(ModelFixture, OpenAIJsonMultipleRequestsAreStateless) {
 }
 
 // ------------------------------------------------------------------------
-// JSON request with a tools[] array. Model behavior varies by version —
-// it may invoke the tool or just answer in prose. Both shapes are valid;
-// we assert only that the response parses and contains *some* assistant
-// signal (tool_calls OR content).
+// JSON request with a tools[] array and required tool choice. Requiring a call keeps this API contract test
+// deterministic across model and runtime versions while exercising JSON conversion, guidance, and response parsing.
 // ------------------------------------------------------------------------
 TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
   using namespace foundry_local;
@@ -850,6 +848,7 @@ TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
                            {"second", {{"type", "integer"}, {"description", "second number"}}}}},
                          {"required", json::array({"first", "second"})}}}}}},
                 })},
+      {"tool_choice", "required"},
       {"temperature", 0},
       {"max_tokens", 256},
   };
@@ -863,41 +862,25 @@ TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
   ASSERT_EQ(chat_response.choices.size(), 1u);
   const auto& msg = chat_response.choices[0].message;
 
-  bool has_tool_calls = msg.tool_calls.has_value() && !msg.tool_calls->empty();
-  bool has_content = msg.content.has_value() && !msg.content->empty();
+  ASSERT_TRUE(msg.tool_calls.has_value());
+  ASSERT_FALSE(msg.tool_calls->empty());
 
-  ASSERT_TRUE(has_tool_calls || has_content)
-      << "Expected either tool_calls or content in assistant response";
+  // Validate the call shape — correct function name and the two integer arguments {7, 6}. Argument order is
+  // intentionally flexible because multiplication is commutative and models may legitimately swap the operands.
+  const auto& call = (*msg.tool_calls)[0];
+  EXPECT_EQ(call.function.name, "multiply_numbers") << "Model invoked unexpected tool: " << call.function.name;
 
-  if (has_tool_calls) {
-    // Tool-calling path: the model invoked our tool. Validate the call shape
-    // matches the contract — correct function name and the two integer
-    // arguments {7, 6} (order-insensitive: model may legitimately swap).
-    const auto& call = (*msg.tool_calls)[0];
-    EXPECT_EQ(call.function.name, "multiply_numbers")
-        << "Model invoked unexpected tool: " << call.function.name;
+  auto args = nlohmann::json::parse(call.function.arguments);
+  ASSERT_TRUE(args.contains("first")) << "Tool args missing 'first': " << call.function.arguments;
+  ASSERT_TRUE(args.contains("second")) << "Tool args missing 'second': " << call.function.arguments;
 
-    auto args = nlohmann::json::parse(call.function.arguments);
-    ASSERT_TRUE(args.contains("first")) << "Tool args missing 'first': " << call.function.arguments;
-    ASSERT_TRUE(args.contains("second")) << "Tool args missing 'second': " << call.function.arguments;
+  int first = args["first"].get<int>();
+  int second = args["second"].get<int>();
 
-    int first = args["first"].get<int>();
-    int second = args["second"].get<int>();
+  EXPECT_TRUE((first == 7 && second == 6) || (first == 6 && second == 7))
+      << "Tool args don't match the prompt (7 * 6). Got first=" << first << ", second=" << second;
 
-    EXPECT_TRUE((first == 7 && second == 6) || (first == 6 && second == 7))
-        << "Tool args don't match the prompt (7 * 6). Got first=" << first
-        << ", second=" << second;
-
-    std::cout << "Tool-call JSON path: model invoked multiply_numbers(" << first << ", " << second << ")\n";
-  } else {
-    // Direct-answer path: model declined to call the tool. Reply must still
-    // contain the correct product, otherwise the model didn't actually answer
-    // the question.
-    EXPECT_NE(msg.content->find("42"), std::string::npos)
-        << "Direct-answer reply missing '42'. Got: " << *msg.content;
-
-    std::cout << "Tool-call JSON path: model produced content: " << *msg.content << "\n";
-  }
+  std::cout << "Tool-call JSON path: model invoked multiply_numbers(" << first << ", " << second << ")\n";
 }
 
 // ------------------------------------------------------------------------
