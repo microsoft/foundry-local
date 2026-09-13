@@ -40,6 +40,8 @@ public final class Transcription implements AutoCloseable {
         this.api = session.api;
         this.format = format;
         this.listener = listener;
+        worker = new Thread(this::run, "foundry-java-asr");
+        feeder = wav == null ? null : new Thread(() -> feedWav(wav), "foundry-java-asr-input");
         request = api.create(api.inference, NativeApi.InferenceApi.REQUEST_CREATE);
         try {
             Pointer audio = api.create(api.item, NativeApi.ItemApi.CREATE, 30);
@@ -83,8 +85,6 @@ public final class Transcription implements AutoCloseable {
             }
             throw e;
         }
-        worker = new Thread(this::run, "foundry-java-asr");
-        feeder = wav == null ? null : new Thread(() -> feedWav(wav), "foundry-java-asr-input");
         startThreads(worker, feeder, this::rollbackStartup);
     }
 
