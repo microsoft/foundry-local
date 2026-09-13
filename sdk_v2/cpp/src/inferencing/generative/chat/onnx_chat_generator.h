@@ -75,10 +75,15 @@ class OnnxChatGenerator : public ChatGenerator {
   /// Used for continuous decoding — only the new turn's messages are encoded and appended.
   /// Returns the number of new prompt tokens appended.
   int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
-                     const std::vector<TranscriptMessage>& full_messages,
+                     const chat_internal::PreparedChatMessages& full_messages,
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                     const std::vector<TranscriptMessage>& full_messages,
+                     GenAIModelInstance& model,
+                     const ToolCallContext& tool_ctx,
+                     const SearchOptions& options);
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
@@ -101,6 +106,11 @@ class OnnxChatGenerator : public ChatGenerator {
   ///                       Used for continuous decoding with cached generators.
   /// @throws fl::Exception on invalid request or configuration error
   static std::unique_ptr<OnnxChatGenerator> Create(const std::vector<TranscriptMessage>& messages,
+                                                   const SearchOptions& options,
+                                                   GenAIModelInstance& model,
+                                                   const ToolCallContext& tool_ctx = {},
+                                                   bool use_full_context = false);
+  static std::unique_ptr<OnnxChatGenerator> Create(const chat_internal::PreparedChatMessages& messages,
                                                    const SearchOptions& options,
                                                    GenAIModelInstance& model,
                                                    const ToolCallContext& tool_ctx = {},

@@ -45,6 +45,7 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
+    internal_api/genai_model_instance_test.cc
     internal_api/handler_error_mapping_test.cc
     internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
