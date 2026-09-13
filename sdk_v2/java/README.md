@@ -99,6 +99,9 @@ try (var manager = new FoundryLocalManager(configuration)) {
 }
 ```
 
+`Catalog.getModel` requires an exact `name:version` ID and throws
+`ModelNotFoundException` when that valid ID is unavailable.
+
 For a real microphone stream, create one `Transcription`, call `writePcm` for
 each chunk, then call `finishInput` and `await`. `finishInput` drains queued
 audio and publishes the final transcript. `cancel` requests native cancellation

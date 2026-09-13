@@ -85,8 +85,79 @@ public final class Transcription implements AutoCloseable {
         }
         worker = new Thread(this::run, "foundry-java-asr");
         feeder = wav == null ? null : new Thread(() -> feedWav(wav), "foundry-java-asr-input");
-        worker.start();
-        if (feeder != null) feeder.start();
+        startThreads(worker, feeder, this::rollbackStartup);
+    }
+
+    static void startThreads(Thread worker, Thread feeder, Runnable rollback) {
+        try {
+            worker.start();
+            if (feeder != null) feeder.start();
+        } catch (RuntimeException | Error failure) {
+            try {
+                rollback.run();
+            } catch (RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private void rollbackStartup() {
+        boolean interrupted = false;
+        Throwable failure = null;
+        synchronized (this) {
+            closing = true;
+            try {
+                cancel();
+            } catch (RuntimeException | Error e) {
+                failure = e;
+            }
+        }
+        while (worker.isAlive()) {
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        while (feeder != null && feeder.isAlive()) {
+            try {
+                feeder.join();
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        try {
+            try {
+                api.check(api.inference.pointer(
+                        NativeApi.InferenceApi.SESSION_SET_STREAMING_CALLBACK,
+                        session.handle,
+                        null,
+                        null));
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            }
+            try {
+                api.inference.call(NativeApi.InferenceApi.REQUEST_RELEASE, request);
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            } finally {
+                request = null;
+                queue = null;
+                closed = true;
+                closing = false;
+            }
+            if (!buffers.isEmpty()) {
+                failure = NativeApi.preserveFailure(
+                        failure,
+                        new IllegalStateException("Native request did not release all PCM buffers"));
+            }
+            NativeApi.rethrow(failure);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+            Reference.reachabilityFence(callback);
+            Reference.reachabilityFence(deleter);
+        }
     }
 
     private void feedWav(byte[] pcm) {
@@ -95,15 +166,24 @@ public final class Transcription implements AutoCloseable {
                 writePcm(java.util.Arrays.copyOfRange(pcm, offset, Math.min(offset + 3200, pcm.length)));
             }
             finishInput();
-        } catch (InterruptedException | RuntimeException e) {
+        } catch (InterruptedException | RuntimeException | Error e) {
             synchronized (this) {
                 if (!completion.isCancelled() && !closing && !isDone()) {
                     callbackFailure.compareAndSet(null, e);
-                    cancel();
+                    try {
+                        cancel();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        e.addSuppressed(cleanupFailure);
+                    }
                 }
             }
-            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            finishFeederFailure(e);
         }
+    }
+
+    static void finishFeederFailure(Throwable failure) {
+        if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+        if (failure instanceof Error error) throw error;
     }
 
     /** Copies a complete PCM chunk. Applies bounded backpressure (at most 2 seconds queued). */

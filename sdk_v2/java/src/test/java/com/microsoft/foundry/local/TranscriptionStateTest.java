@@ -5,9 +5,51 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class TranscriptionStateTest {
+    @Test void feederErrorsEscapeAfterCleanup() {
+        LinkageError failure = new LinkageError("JNA callback");
+        assertSame(failure, assertThrows(LinkageError.class, () ->
+                Transcription.finishFeederFailure(failure)));
+    }
+
+    @Test void secondThreadStartFailureRollsBackTheStartedWorker() throws Exception {
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch stopWorker = new CountDownLatch(1);
+        Thread worker = new Thread(() -> {
+            workerStarted.countDown();
+            try {
+                stopWorker.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        LinkageError startupFailure = new LinkageError("feeder startup");
+        Thread feeder = new Thread() {
+            @Override public synchronized void start() { throw startupFailure; }
+        };
+        AtomicBoolean rolledBack = new AtomicBoolean();
+
+        LinkageError thrown = assertThrows(LinkageError.class, () ->
+                Transcription.startThreads(worker, feeder, () -> {
+                    stopWorker.countDown();
+                    try {
+                        worker.join();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(e);
+                    }
+                    rolledBack.set(true);
+                }));
+
+        assertSame(startupFailure, thrown);
+        assertTrue(workerStarted.await(5, TimeUnit.SECONDS));
+        assertTrue(rolledBack.get());
+        assertFalse(worker.isAlive());
+    }
+
     @Test void absentOrUnfinishedResponseIsNotCancellation() {
         assertThrows(IllegalStateException.class, () -> Transcription.cancelledResult(false, false, 0));
         assertThrows(IllegalStateException.class, () -> Transcription.cancelledResult(false, true, 0));

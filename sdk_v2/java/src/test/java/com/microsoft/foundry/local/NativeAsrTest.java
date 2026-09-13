@@ -25,8 +25,10 @@ class NativeAsrTest {
         try (FoundryLocalManager manager = new FoundryLocalManager(config)) {
             System.err.println("native-test: manager created");
             assertThrows(IllegalStateException.class, () -> new FoundryLocalManager(config));
-            assertThrows(IllegalArgumentException.class, () -> manager.catalog().getModel("nemotron"));
-            borrowed = manager.catalog().getModel(System.getProperty("foundry.test.model",
+            Catalog catalog = manager.catalog();
+            assertThrows(IllegalArgumentException.class, () -> catalog.getModel("nemotron"));
+            assertThrows(ModelNotFoundException.class, () -> catalog.getModel("missing-java-test-model:999"));
+            borrowed = catalog.getModel(System.getProperty("foundry.test.model",
                     "nemotron-speech-streaming-en-0.6b-generic-cpu:3"));
             CancellationToken cancelled = new CancellationToken();
             cancelled.cancel();

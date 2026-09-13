@@ -10,6 +10,14 @@ import org.junit.jupiter.api.io.TempDir;
 class NativeContractTest {
     @TempDir Path temporary;
 
+    @Test void missingModelReportsTheRequestedId() {
+        ModelNotFoundException error = assertThrows(
+                ModelNotFoundException.class,
+                () -> Catalog.requireModelHandle("missing-model:9", null));
+        assertEquals("missing-model:9", error.modelId());
+        assertTrue(error.getMessage().contains("missing-model:9"));
+    }
+
     @Test void matchesPackaged64BitStructSizes() {
         assertEquals(16, new NativeApi.CallbackData().size());
         assertEquals(72, new NativeApi.AudioData().size());

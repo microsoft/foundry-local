@@ -12,7 +12,11 @@ public final class Catalog {
 
     Catalog(FoundryLocalManager owner, Pointer handle) { this.owner = owner; this.handle = handle; }
 
-    /** No alias fallback: the returned native identity must equal the requested name:version. */
+    /**
+     * No alias fallback: the returned native identity must equal the requested name:version.
+     *
+     * @throws ModelNotFoundException if the exact ID is valid but unavailable
+     */
     public Model getModel(String exactId) {
         NativeApi.outsideCallback();
         if (exactId == null || !exactId.matches("[A-Za-z0-9._-]+:[0-9]+")) {
@@ -20,13 +24,19 @@ public final class Catalog {
         }
         synchronized (owner) {
             owner.checkOpen();
-            Model model = new Model(owner, owner.api.create(
-                    owner.api.catalog, NativeApi.CatalogApi.GET_MODEL_VARIANT, handle, exactId));
+            Pointer modelHandle = owner.api.output(
+                    owner.api.catalog, NativeApi.CatalogApi.GET_MODEL_VARIANT, handle, exactId);
+            Model model = new Model(owner, requireModelHandle(exactId, modelHandle));
             if (!model.info().id().equals(exactId)) {
                 throw new IllegalStateException("Catalog returned a different model ID");
             }
             return model;
         }
+    }
+
+    static Pointer requireModelHandle(String exactId, Pointer handle) {
+        if (handle == null) throw new ModelNotFoundException(exactId);
+        return handle;
     }
 
     public List<ModelInfo> models() {

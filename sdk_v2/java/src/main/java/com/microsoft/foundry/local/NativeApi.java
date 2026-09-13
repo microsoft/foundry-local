@@ -246,13 +246,18 @@ final class NativeApi {
         }
     }
 
-    Pointer create(Table table, int slot, Object... args) {
+    Pointer output(Table table, int slot, Object... args) {
         PointerByReference output = new PointerByReference();
         Object[] all = java.util.Arrays.copyOf(args, args.length + 1);
         all[args.length] = output;
         check(table.pointer(slot, all));
-        if (output.getValue() == null) throw new IllegalStateException("Native API returned a null handle");
         return output.getValue();
+    }
+
+    Pointer create(Table table, int slot, Object... args) {
+        Pointer output = output(table, slot, args);
+        if (output == null) throw new IllegalStateException("Native API returned a null handle");
+        return output;
     }
 
     static final class Table {
