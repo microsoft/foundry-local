@@ -59,6 +59,32 @@ struct ToolCallContext {
   /// `tools_json` was built. Generation resolves a produced call's name through this copy rather
   /// than through the session's registry, which another thread may change mid-turn.
   std::unordered_map<std::string, ToolKind> tool_kinds;
+  std::unordered_map<std::string, std::string> custom_lark_grammars;
+  std::optional<ForcedToolChoice> forced_tool;
+  std::optional<RawEnvelopeDescriptor> raw_envelope;
+  bool built_in_raw_envelope = false;
+  bool guidance_disabled = false;
+
+  const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
+    if (!tool_output || !raw_envelope.has_value() || !IsCustomTool(raw_envelope->tool_name)) {
+      return nullptr;
+    }
+
+    if (!forced_tool.has_value()) {
+      return text_output ? &*raw_envelope : nullptr;
+    }
+
+    if (forced_tool->kind != ToolKind::kCustom || forced_tool->name != raw_envelope->tool_name) {
+      return nullptr;
+    }
+
+    return &*raw_envelope;
+  }
+
+  /// Whether this turn explicitly forces the custom tool whose raw envelope is active.
+  bool HasForcedRawEnvelope() const {
+    return forced_tool.has_value() && ActiveRawEnvelope() != nullptr;
+  }
 
   /// The kind registered for `name` when this context was built. Names the context does not know
   /// resolve to kFunction, which leaves their arguments untouched.
@@ -86,7 +112,10 @@ struct ToolCallContext {
   /// before it reaches `tools_json`, so two tool sets can render byte-identical JSON and still differ in how the
   /// calls they produce must be read back.
   bool HasSameTools(const ToolCallContext& other) const {
-    return tools_json == other.tools_json && tool_kinds == other.tool_kinds;
+    return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
+           custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
+           built_in_raw_envelope == other.built_in_raw_envelope &&
+           guidance_disabled == other.guidance_disabled;
   }
 
   /// Whether the model has known tool call marker tokens.

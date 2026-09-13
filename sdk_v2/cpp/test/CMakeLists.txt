@@ -76,6 +76,7 @@ add_executable(foundry_local_tests
     internal_api/time_utils_test.cc
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
+    internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
     internal_api/toolcalling/custom_tools_chat_test.cc
     internal_api/toolcalling/custom_tools_responses_test.cc

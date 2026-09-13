@@ -277,7 +277,8 @@ void from_json(const nlohmann::json& j, CustomToolDefinition& c) {
   opt_str(j, "description", c.description);
 
   auto format = j.find("format");
-  c.format = tools::ParseCustomToolFormat(format == j.end() ? nlohmann::json() : *format, c.name);
+  c.format = tools::ParseCustomToolFormat(format == j.end() ? nlohmann::json() : *format, c.name,
+                                          tools::CustomToolFormatSurface::kResponses);
 }
 
 void from_json(const nlohmann::json& j, ToolDefinition& t) {

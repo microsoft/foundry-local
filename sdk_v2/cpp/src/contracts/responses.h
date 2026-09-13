@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -271,6 +273,8 @@ struct CustomToolCallOutputItem {
   std::string call_id;
   std::string name;
   std::string input;
+  /// Internal-only provenance; to_json intentionally does not serialize it.
+  GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
 };
 
 // Reasoning output item (OpenAI Responses API). Surfaces chain-of-thought text emitted between the model's

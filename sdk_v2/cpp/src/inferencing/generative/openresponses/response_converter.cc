@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <variant>
 
 namespace fl {
@@ -132,6 +133,7 @@ ResponseOutputItem ToOutputItem(const ToolCallItem& call, fl::ToolKind kind, con
     custom.call_id = ids.call_id;
     custom.name = call.name;
     custom.input = std::move(payload);
+    custom.generated_encoding = call.generated_encoding;
     return custom;
   }
 
@@ -254,12 +256,16 @@ std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
 /// A custom call's payload is raw text, so it is carried as the call's arguments verbatim — the same form the session
 /// produced it in, and the same form the tool would receive. It is never parsed or re-encoded: doing so would change
 /// the bytes for a payload that is itself JSON, or reject one that is not.
-std::unique_ptr<ToolCallItem> MakeReplayedCustomToolCall(const nlohmann::json& item) {
+std::unique_ptr<ToolCallItem> MakeReplayedCustomToolCall(
+    const nlohmann::json& item, const std::unordered_set<std::string>& raw_envelope_call_ids) {
   const auto call_id = RequiredReplayString(item, "call_id", "stored custom_tool_call");
   const auto name = RequiredReplayString(item, "name", "stored custom_tool_call");
   auto input = RequiredReplayString(item, "input", "stored custom_tool_call", true);
   auto call = std::make_unique<ToolCallItem>(call_id, name, input, /*replayed_from_store=*/true,
-                                             ToolKind::kCustom);
+                                             ToolKind::kCustom, std::nullopt,
+                                             raw_envelope_call_ids.contains(call_id)
+                                                 ? GeneratedCallEncoding::kRawEnvelope
+                                                 : GeneratedCallEncoding::kStructured);
   call->replayed_arguments = std::move(input);
   call->replayed_kind = ToolKind::kCustom;
   return call;
@@ -321,7 +327,7 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     }
 
     if (type == "custom_tool_call") {
-      request.AddOwnedItem(MakeReplayedCustomToolCall(entry));
+      request.AddOwnedItem(MakeReplayedCustomToolCall(entry, {}));
       continue;
     }
 
@@ -370,7 +376,8 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
 /// text after one — and a hop that somehow did is rejected by ValidateRenderableTurn rather than replayed with its
 /// text moved in front of the call. A hop that produced nothing replayable still emits the assistant boundary it
 /// committed live.
-static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items) {
+static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items,
+                                  const std::unordered_set<std::string>& raw_envelope_call_ids) {
   bool emitted = false;
 
   if (output_items.is_array()) {
@@ -388,7 +395,7 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
       }
 
       if (type == "custom_tool_call") {
-        request.AddOwnedItem(MakeReplayedCustomToolCall(entry));
+        request.AddOwnedItem(MakeReplayedCustomToolCall(entry, raw_envelope_call_ids));
         emitted = true;
         continue;
       }
@@ -423,7 +430,7 @@ static void AddChainContextToRequest(Request& request, const ResponseChainContex
   for (const auto& hop : context) {
     request.BeginItemSegment();
     AddJsonItemsToRequest(request, hop.input_items);
-    AddHopOutputToRequest(request, hop.output_items);
+    AddHopOutputToRequest(request, hop.output_items, hop.raw_envelope_call_ids);
   }
 }
 
@@ -763,7 +770,8 @@ namespace {
 fl::ToolDefinition ToCoreDefinition(const responses::ToolDefinition& td) {
   if (td.IsCustom()) {
     return tools::MakeCustomTool(td.custom->name, td.custom->description.value_or(""),
-                                 td.custom->description.has_value());
+                                 td.custom->description.has_value(),
+                                 tools::CustomToolLarkGrammar(td.custom->format));
   }
 
   return tools::MakeFunctionTool(td.function.name, td.function.description.value_or(""),
@@ -833,6 +841,7 @@ std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCr
             constexpr auto kind = std::is_same_v<T, ForcedCustomTool> ? fl::ToolKind::kCustom
                                                                       : fl::ToolKind::kFunction;
             session_request.options["tool_choice"] = "required";
+            session_request.forced_tool_choice = ForcedToolChoice{tc.name, kind};
             tools::NarrowToForcedTool(definitions, tc.name, kind);
             forced_choice = true;
           }
@@ -851,6 +860,11 @@ std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCr
   if (definitions.empty() && (forced_choice || requires_tool)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "tool_choice requires at least one effective tool after allowed tool filtering");
+  }
+
+  if (const auto descriptor = params.metadata.find(tools::kRawEnvelopeMetadataKey);
+      descriptor != params.metadata.end()) {
+    session_request.raw_envelope_descriptor = tools::ParseRawEnvelopeDescriptor(descriptor->second);
   }
 
   return definitions;
@@ -953,6 +967,7 @@ static void EchoRequestParams(ResponseObject& r,
   r.parallel_tool_calls = params.parallel_tool_calls.value_or(true);
   r.store = params.store;
   r.metadata = params.metadata;
+  r.metadata.erase(tools::kRawEnvelopeMetadataKey);
   r.user = params.user;
   r.text = params.text;
   r.truncation = "disabled";  // always disabled for local inference

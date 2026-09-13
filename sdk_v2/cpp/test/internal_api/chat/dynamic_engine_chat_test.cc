@@ -33,6 +33,21 @@ namespace {
 
 constexpr const char* kDynamicEngineModelId = "tiny-paged-attention";
 
+TEST(OnnxEngineChatStreamDecisionTest, PreservesEveryOgaFinishCauseForRawFinalization) {
+  using onnx_engine_chat_stream_internal::MapTerminationCause;
+
+  EXPECT_EQ(MapTerminationCause(OgaFinishReason_Eos), BackendTerminationCause::kNaturalEnd);
+  EXPECT_EQ(MapTerminationCause(OgaFinishReason_StopString), BackendTerminationCause::kStopSequence);
+  EXPECT_EQ(MapTerminationCause(OgaFinishReason_MaxGeneratedTokens),
+            BackendTerminationCause::kOutputTokenLimit);
+  EXPECT_EQ(MapTerminationCause(OgaFinishReason_MaxSessionTokens),
+            BackendTerminationCause::kSessionTokenLimit);
+  EXPECT_EQ(MapTerminationCause(OgaFinishReason_Cancelled),
+            BackendTerminationCause::kCancellation);
+  EXPECT_EQ(MapTerminationCause(OgaFinishReason_Failed), BackendTerminationCause::kFailure);
+  EXPECT_EQ(MapTerminationCause(9999), std::nullopt);
+}
+
 std::unique_ptr<Item> UserMessage(std::string text) {
   return std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(text));
 }

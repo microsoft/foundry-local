@@ -17,6 +17,12 @@ namespace fl {
 
 class GenAIModelInstance;
 
+namespace onnx_engine_chat_stream_internal {
+
+std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason);
+
+}  // namespace onnx_engine_chat_stream_internal
+
 /// ChatGenerator stream for a conversation scheduled by a model-owned ORT GenAI Engine.
 class OnnxEngineChatStream final : public ChatGenerator {
  public:

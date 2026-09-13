@@ -12,6 +12,8 @@
 #include <nlohmann/json.hpp>
 #include <ort_genai.h>
 
+#include <algorithm>
+
 namespace fl {
 
 namespace {
@@ -31,6 +33,45 @@ bool DetectPromptOpensReasoning(const std::string& prompt,
 }
 
 }  // namespace
+
+namespace onnx_chat_generator_internal {
+
+TurnTermination ClassifyTurnTermination(bool cancelled,
+                                        bool eos_matched,
+                                        int generated_tokens,
+                                        int max_output_tokens,
+                                        int token_count,
+                                        int max_length,
+                                        bool done) {
+  if (cancelled) {
+    return {.finish_reason = std::nullopt,
+            .cause = BackendTerminationCause::kCancellation};
+  }
+
+  if (eos_matched) {
+    return {.finish_reason = FOUNDRY_LOCAL_FINISH_STOP,
+            .cause = BackendTerminationCause::kNaturalEnd};
+  }
+
+  if (generated_tokens >= max_output_tokens) {
+    return {.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH,
+            .cause = BackendTerminationCause::kOutputTokenLimit};
+  }
+
+  if (token_count >= max_length) {
+    return {.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH,
+            .cause = BackendTerminationCause::kSessionTokenLimit};
+  }
+
+  if (done) {
+    return {.finish_reason = std::nullopt,
+            .cause = BackendTerminationCause::kFailure};
+  }
+
+  return {};
+}
+
+}  // namespace onnx_chat_generator_internal
 
 ReasoningMarkers ResolveReasoningMarkers(const ToolCallContext& tool_ctx, GenAIModelInstance& model) {
   const auto& tag_info = model.GetTagInfo();
@@ -62,6 +103,8 @@ OnnxChatGenerator::OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_par
                                      std::unique_ptr<OgaTokenizerStream> stream,
                                      GenAIModelInstance& model,
                                      int prompt_token_count,
+                                     int max_length,
+                                     int max_output_tokens,
                                      ReasoningMarkers reasoning_markers,
                                      bool prompt_opens_reasoning,
                                      std::unique_ptr<OgaNamedTensors> named_tensors)
@@ -71,6 +114,9 @@ OnnxChatGenerator::OnnxChatGenerator(std::unique_ptr<OgaGeneratorParams> gen_par
       named_tensors_(std::move(named_tensors)),
       model_(model),
       prompt_token_count_(prompt_token_count),
+      turn_start_token_count_(prompt_token_count),
+      max_length_(max_length),
+      max_output_tokens_(max_output_tokens),
       reasoning_markers_(std::move(reasoning_markers)),
       prompt_opens_reasoning_(prompt_opens_reasoning) {}
 
@@ -104,6 +150,7 @@ void OnnxChatGenerator::GenerateNextToken() {
     const auto next_tokens = generator_->GetNextTokens();
     if (!next_tokens.empty()) {
       current_token_ = next_tokens[0];
+      last_generated_token_ = current_token_;
     }
   } catch (const std::runtime_error& e) {
     // If cancelled while generating, the OGA engine throws when the session is terminated.
@@ -162,6 +209,26 @@ int OnnxChatGenerator::PromptTokenCount() const {
   return prompt_token_count_;
 }
 
+std::optional<ChatTurnUsage> OnnxChatGenerator::GetTurnUsage() const {
+  const int token_count = TokenCount();
+  const int generated_tokens = token_count - turn_start_token_count_;
+  bool eos_matched = false;
+  if (!cancelled_ && last_generated_token_.has_value()) {
+    const auto& eos_token_ids = model_.GetPreprocessor().GetEosTokenIds();
+    eos_matched = std::ranges::find(eos_token_ids, *last_generated_token_) != eos_token_ids.end();
+  }
+
+  const auto termination = onnx_chat_generator_internal::ClassifyTurnTermination(
+      cancelled_, eos_matched, generated_tokens, max_output_tokens_, token_count, max_length_, IsDone());
+
+  return ChatTurnUsage{
+      prompt_token_count_,
+      generated_tokens,
+      termination.finish_reason,
+      termination.cause,
+  };
+}
+
 void OnnxChatGenerator::Cancel() {
   cancelled_ = true;
 
@@ -182,7 +249,7 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
                                       const std::vector<TranscriptMessage>& full_messages,
                                       GenAIModelInstance& model,
                                       const ToolCallContext& tool_ctx,
-                                      const SearchOptions& /*options*/) {
+                                      const SearchOptions& options) {
   if (new_messages.empty() || full_messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
@@ -218,6 +285,10 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
   // Re-probe: the appended segment ends with this turn's assistant generation prefix, so it — not the original
   // prompt — determines whether generation resumes inside a template-opened reasoning block.
   prompt_opens_reasoning_ = DetectPromptOpensReasoning(prompt, full_sequences.get(), reasoning_markers_);
+  prompt_token_count_ = static_cast<int>(full_count);
+  turn_start_token_count_ = TokenCount();
+  max_output_tokens_ = ResolveMaxOutputTokens(options);
+  ResetTurnState();
 
   return static_cast<int>(suffix.size());
 }
@@ -225,9 +296,16 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
 void OnnxChatGenerator::RewindTo(int token_count) {
   try {
     generator_->RewindTo(token_count);
+    ResetTurnState();
   } catch (const std::runtime_error& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to rewind generator: ") + e.what());
   }
+}
+
+void OnnxChatGenerator::ResetTurnState() {
+  current_token_.reset();
+  last_generated_token_.reset();
+  cancelled_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,8 +490,11 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::stri
 
   // 3. Apply search options (temperature, top_p, max_length, etc.) and validate token budget.
   //    Media inputs use a larger default because preprocessing expands them into tokens.
-  ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
-                     use_full_context, GetDefaultMaxOutputTokens(media_branch));
+  const int default_max_output_tokens = GetDefaultMaxOutputTokens(media_branch);
+  const int max_length =
+      ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
+                         use_full_context, default_max_output_tokens);
+  const int max_output_tokens = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
   // 4. Build guidance from the actual rendered prompt state, then reuse that state to seed stream reasoning.
   auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);
@@ -448,6 +529,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::stri
                                                                   std::move(stream),
                                                                   model,
                                                                   input_token_count,
+                                                                  max_length,
+                                                                  max_output_tokens,
                                                                   std::move(reasoning_markers),
                                                                   prompt_opens_reasoning,
                                                                   std::move(named_tensors)));
