@@ -21,9 +21,46 @@ class GenAIModelInstance;
 
 namespace chat_internal {
 
+/// A complete transcript after its model-specific message projection has been validated and applied.
+///
+/// Keeping this as a distinct value prevents retained backends from accidentally projecting again after the
+/// session has already crossed its cache-mutation boundary.
+class PreparedChatMessages {
+ public:
+  const std::vector<TranscriptMessage>& Messages() const noexcept { return messages_; }
+  bool Empty() const noexcept { return messages_.empty(); }
+
+ private:
+  friend PreparedChatMessages PrepareChatMessages(std::vector<TranscriptMessage> messages,
+                                                  bool positional_tool_results);
+
+  explicit PreparedChatMessages(std::vector<TranscriptMessage> messages) : messages_(std::move(messages)) {}
+
+  std::vector<TranscriptMessage> messages_;
+};
+
 /// Return the first unmatched full-prompt token when the resident sequence is an exact prefix.
 std::optional<size_t> FindUnmatchedPromptSuffix(std::span<const int32_t> resident_tokens,
                                                 std::span<const int32_t> full_prompt) noexcept;
+
+/// Copy a complete logical conversation and reorder each multi-call assistant turn's immediately following tool
+/// results into call order.
+///
+/// Positional templates discard result IDs, so a multi-call exchange is renderable only when its contiguous result
+/// run is an exact bijection to the calls. This projection is deliberately separate from transcript validation:
+/// canonical messages and public IDs retain arrival order, and non-positional models never invoke it.
+///
+/// @throws fl::Exception FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT when a multi-call result group is ambiguous.
+std::vector<TranscriptMessage> ProjectPositionalToolResults(const std::vector<TranscriptMessage>& messages);
+
+/// Validate and apply the model-specific projection to a complete logical conversation.
+PreparedChatMessages PrepareChatMessages(std::vector<TranscriptMessage> messages,
+                                         bool positional_tool_results);
+
+/// Select the model-capability-specific projection before rendering. The false branch is the canonical projection
+/// verbatim so models whose templates preserve result IDs remain byte-for-byte unchanged.
+std::string BuildChatMessagesJsonForModel(const std::vector<TranscriptMessage>& messages,
+                                          bool positional_tool_results);
 
 }  // namespace chat_internal
 
@@ -68,6 +105,11 @@ std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages
 /// @param tools_json     Optional JSON string describing available tools. Pass empty string for none.
 /// @returns The formatted prompt string ready for tokenization
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
+                            GenAIModelInstance& model,
+                            const std::string& tools_json = "");
+
+/// Build a prompt from a projection that was already validated at the caller's state-mutation boundary.
+std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json = "");
 

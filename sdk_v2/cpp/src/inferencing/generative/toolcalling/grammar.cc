@@ -9,6 +9,97 @@
 
 namespace fl {
 
+namespace {
+
+using Json = nlohmann::json;
+
+const Json* FindObjectMember(const Json& object, std::string_view name) {
+  const auto member = object.find(name);
+  return member == object.end() ? nullptr : &*member;
+}
+
+bool IsValidRequiredList(const Json& required, const Json* properties) {
+  if (!required.is_array()) {
+    return false;
+  }
+
+  for (const auto& name : required) {
+    if (!name.is_string() ||
+        (properties != nullptr && !properties->contains(name.get_ref<const std::string&>()))) {
+      return false;
+    }
+  }
+
+  return properties != nullptr || required.empty();
+}
+
+bool TryReadFunctionDefinition(const Json& tool,
+                               std::string& name,
+                               std::string& description,
+                               Json& parameters) {
+  if (!tool.is_object()) {
+    return false;
+  }
+
+  const Json* function = &tool;
+  if (const auto* nested = FindObjectMember(tool, "function")) {
+    if (!nested->is_object()) {
+      return false;
+    }
+
+    function = nested;
+  }
+
+  const auto* name_value = FindObjectMember(*function, "name");
+  if (name_value == nullptr || !name_value->is_string()) {
+    return false;
+  }
+
+  name = name_value->get<std::string>();
+  if (name.empty()) {
+    return false;
+  }
+
+  if (const auto* description_value = FindObjectMember(*function, "description")) {
+    if (!description_value->is_string()) {
+      return false;
+    }
+
+    description = description_value->get<std::string>();
+  }
+
+  const auto* parameters_value = FindObjectMember(*function, "parameters");
+  if (parameters_value == nullptr || parameters_value->is_null() ||
+      (parameters_value->is_object() && parameters_value->empty())) {
+    return true;
+  }
+
+  if (!parameters_value->is_object()) {
+    return false;
+  }
+
+  const auto* type = FindObjectMember(*parameters_value, "type");
+  if (type == nullptr || !type->is_string() ||
+      type->get_ref<const std::string&>() != "object") {
+    return false;
+  }
+
+  const auto* properties = FindObjectMember(*parameters_value, "properties");
+  if (properties != nullptr && !properties->is_object()) {
+    return false;
+  }
+
+  if (const auto* required = FindObjectMember(*parameters_value, "required");
+      required != nullptr && !IsValidRequiredList(*required, properties)) {
+    return false;
+  }
+
+  parameters = *parameters_value;
+  return true;
+}
+
+}  // namespace
+
 std::string EscapeLarkLiteral(const std::string& text) {
   std::string out;
   out.reserve(text.size() + 2);
@@ -108,19 +199,14 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   }
 
   // Parse the tools JSON to extract function schemas
-  nlohmann::json tools;
-  try {
-    tools = nlohmann::json::parse(ctx.tools_json);
-  } catch (const nlohmann::json::parse_error&) {
-    return "{}";
-  }
+  const auto tools = Json::parse(ctx.tools_json, nullptr, false);
 
-  if (!tools.is_array() || tools.empty()) {
+  if (tools.is_discarded() || !tools.is_array() || tools.empty()) {
     return "{}";
   }
 
   // Build anyOf schemas — one entry per tool
-  nlohmann::json schemas = nlohmann::json::array();
+  Json schemas = Json::array();
 
   for (const auto& tool : tools) {
     // Support both OpenAI-function style and direct-name style for tool definitions.
@@ -156,27 +242,9 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
     // }
     std::string name;
     std::string description;
-    nlohmann::json parameters;
-
-    if (tool.contains("function") && tool["function"].is_object()) {
-      const auto& fn = tool["function"];
-      name = fn.value("name", "");
-      description = fn.value("description", "");
-
-      if (fn.contains("parameters") && fn["parameters"].is_object()) {
-        parameters = fn["parameters"];
-      }
-    } else {
-      name = tool.value("name", "");
-      description = tool.value("description", "");
-
-      if (tool.contains("parameters") && tool["parameters"].is_object()) {
-        parameters = tool["parameters"];
-      }
-    }
-
-    if (name.empty()) {
-      continue;
+    Json parameters;
+    if (!TryReadFunctionDefinition(tool, name, description, parameters)) {
+      return "{}";
     }
 
     // Build the grammar schema for this tool
@@ -188,13 +256,11 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
 
     // Only add `parameters` to `properties` object if it exists in the original tool
     // and if type has been set (since type is required if providing parameters)
-    bool has_params = parameters.is_object() &&
-                      parameters.contains("type") &&
-                      !parameters["type"].get<std::string>().empty();
+    const bool has_params = parameters.is_object() && !parameters.empty();
 
     if (has_params) {
-      nlohmann::json param_schema;
-      param_schema["type"] = parameters.value("type", "object");
+      Json param_schema;
+      param_schema["type"] = "object";
 
       if (parameters.contains("properties")) {
         param_schema["properties"] = parameters["properties"];
@@ -210,7 +276,7 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
     }
 
     // Create `schema` for tool
-    nlohmann::json schema = {
+    Json schema = {
         {"description", description},
         {"type", "object"},
         {"properties", properties},
@@ -226,7 +292,7 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   }
 
   // Construct grammar for guidance
-  nlohmann::json grammar = {
+  Json grammar = {
       {"x-guidance", {{"whitespace_flexible", false}, {"key_separator", ": "}, {"item_separator", ", "}}},
       {"type", "array"},
       {"items", {{"anyOf", schemas}}},
