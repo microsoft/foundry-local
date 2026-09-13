@@ -6,6 +6,7 @@
 #   3. Python SDK                 (templates/stages-python.yml)
 #   4. JS SDK                     (templates/stages-js.yml)
 #   5. Rust SDK                   (templates/stages-rust.yml)
+#   6. Java SDK                   (templates/stages-java.yml)
 #
 # Assumes the caller has already emitted a `compute_version` stage that
 # publishes the `version-info` pipeline artifact (containing sdkVersion.txt
@@ -51,3 +52,7 @@ stages:
 # ── Rust SDK (single platform-independent crate) ──
 # Rust integration tests consume the complete matching cpp-native artifact.
 - template: stages-rust.yml
+
+# ── Java SDK (single platform-independent Maven bundle) ──
+# Java native ASR tests consume the complete matching cpp-native artifact.
+- template: stages-java.yml
