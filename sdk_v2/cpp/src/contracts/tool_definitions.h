@@ -8,11 +8,35 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace fl {
 namespace tools {
+
+enum class CustomToolFormatSurface {
+  kChatCompletions,
+  kResponses,
+};
+
+inline constexpr const char* kRawEnvelopeMetadataKey = "tool_output_encoding";
+inline constexpr std::string_view kStockGhcpApplyPatchLarkGrammar =
+    "start: begin_patch hunk+ end_patch\n"
+    "begin_patch: \"*** Begin Patch\" LF\n"
+    "end_patch: \"*** End Patch\" LF?\n\n"
+    "hunk: add_hunk | delete_hunk | update_hunk\n"
+    "add_hunk: \"*** Add File: \" filename LF add_line+\n"
+    "delete_hunk: \"*** Delete File: \" filename LF\n"
+    "update_hunk: \"*** Update File: \" filename LF change_move? change?\n\n"
+    "filename: /(.+)/\n"
+    "add_line: \"+\" /(.*)/ LF -> line\n\n"
+    "change_move: \"*** Move to: \" filename LF\n"
+    "change: (change_context | change_line)+ eof_line?\n"
+    "change_context: (\"@@\" | \"@@ \" /(.+)/) LF\n"
+    "change_line: (\"+\" | \"-\" | \" \") /(.*)/ LF\n"
+    "eof_line: \"*** End of File\" LF\n\n"
+    "%import common.LF";
 
 // ========================================================================
 // Wire tool declarations → core tool definitions.
@@ -28,17 +52,24 @@ namespace tools {
 // legacy C ABI path may still supply an unnamed pre-serialized tools array.
 // ========================================================================
 
-/// Parse and validate a text custom-tool `format`.
+/// Parse and validate a custom-tool `format`.
 ///
 /// A custom tool takes free-form text: the model is prompted with the synthesized single-string
-/// schema and whatever it produces comes back verbatim. Grammar-constrained tools require raw
-/// envelope handling that this transport does not implement, so they are rejected.
+/// schema and whatever it produces comes back verbatim. The one accepted Lark grammar is retained
+/// so the built-in apply_patch raw envelope can use it for forced generation.
 ///
-/// Accepted: a null value (normalized to text) and `{"type":"text"}`.
+/// Accepted: a null value (normalized to text), `{"type":"text"}`, and the exact stock GHCP
+/// apply-patch Lark grammar in its surface-specific shape. Explicit raw-envelope descriptors do
+/// not require a grammar.
 ///
 /// @throws fl::Exception (FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT) for a non-object format, a missing
-///         or non-string `type`, grammar/unknown formats, or unexpected members.
-nlohmann::json ParseCustomToolFormat(const nlohmann::json& format, const std::string& tool_name);
+///         or non-string `type`, malformed/unknown formats, or unexpected members.
+nlohmann::json ParseCustomToolFormat(const nlohmann::json& format, const std::string& tool_name,
+                                     CustomToolFormatSurface surface = CustomToolFormatSurface::kResponses);
+
+std::optional<std::string> CustomToolLarkGrammar(const nlohmann::json& format);
+
+RawEnvelopeDescriptor ParseRawEnvelopeDescriptor(const std::string& value);
 
 /// Parse a function tool's `strict` value.
 ///
@@ -62,7 +93,8 @@ ToolDefinition MakeFunctionTool(std::string name, std::string description, std::
 /// The schema is left empty on purpose: the registry synthesizes the single required string `input`
 /// schema, and a caller-supplied schema is rejected. This is what keeps raw custom input out of
 /// function-argument handling — a custom tool never carries a function schema anywhere.
-ToolDefinition MakeCustomTool(std::string name, std::string description, bool description_present = true);
+ToolDefinition MakeCustomTool(std::string name, std::string description, bool description_present = true,
+                              std::optional<std::string> custom_lark_grammar = std::nullopt);
 
 /// Name-to-kind index over one immutable snapshot of tool definitions.
 ///

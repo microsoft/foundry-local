@@ -8,6 +8,7 @@
 #include "catalog.h"
 #include "contracts/chat_completions.h"
 #include "contracts/chat_completions_converter.h"
+#include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session.h"
@@ -54,6 +55,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
     }
 
     prepared_request.prepared_tool_definitions = registry.Definitions();
+    if (req.metadata.has_value()) {
+      const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
+      if (descriptor != req.metadata->end()) {
+        prepared_request.raw_envelope_descriptor =
+            tools::ParseRawEnvelopeDescriptor(descriptor->second);
+      }
+    }
   } catch (const fl::Exception& ex) {
     // Contract validation (tool call shape, unsupported tool kinds) rejects malformed client payloads.
     return ErrorResponse(StatusForException(ex), "Invalid request", ex.what());

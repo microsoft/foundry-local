@@ -14,6 +14,7 @@
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/raw_envelope_detector.h"
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/tool_registry.h"
@@ -58,7 +59,12 @@ std::unique_ptr<ChatGenerator> CreateTextChatGenerator(const std::vector<Transcr
                                                        const SearchOptions& options,
                                                        GenAIModelInstance& model,
                                                        const ToolCallContext& tool_ctx,
-                                                       bool use_full_context) {
+                                                       bool use_full_context,
+                                                       const TextChatGeneratorFactory& factory) {
+  if (factory) {
+    return factory(messages, options, model, tool_ctx, use_full_context);
+  }
+
   if (model.GetGenAIConfig().GetChatBackendKind() != ChatBackendKind::kGenerator) {
     return OnnxEngineChatStream::Create(messages, options, model, tool_ctx);
   }
@@ -109,7 +115,9 @@ TranscriptMessage MakeAssistantMessage(const std::vector<GeneratedOutputEvent>& 
     }
 
     const auto& parsed = std::get<ParsedToolCall>(event);
-    auto generated = MakeGeneratedToolCall(parsed.id, parsed.name, parsed.arguments, tool_ctx.KindOf(parsed.name));
+    auto generated = MakeGeneratedToolCall(
+        parsed.id, parsed.name, parsed.arguments, tool_ctx.KindOf(parsed.name),
+        parsed.raw_envelope ? GeneratedCallEncoding::kRawEnvelope : GeneratedCallEncoding::kStructured);
 
     if (!generated.arguments_usable) {
       logger.Log(LogLevel::Warning,
@@ -134,7 +142,8 @@ ReasoningStreamSplitter CreateReasoningSplitter(const ToolCallContext& tool_ctx,
   auto markers = ResolveReasoningMarkers(tool_ctx, model);
   auto ignored_token_ids = model.GetPreprocessor().GetEosTokenIds();
   return {std::move(markers.start), std::move(markers.end), std::move(markers.start_token_ids),
-          std::move(markers.end_token_ids), std::move(ignored_token_ids), prompt_opens_reasoning};
+          std::move(markers.end_token_ids), std::move(ignored_token_ids),
+          chat_session_internal::ShouldStartInsideReasoning(tool_ctx, prompt_opens_reasoning)};
 }
 
 void AppendSegment(std::vector<TextSegment>& destination, std::string text, flTextItemType type) {
@@ -211,6 +220,10 @@ void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, Too
   context.tool_kinds = tools::KindsByName(definitions);
 
   for (const auto& definition : definitions) {
+    if (definition.custom_lark_grammar.has_value()) {
+      context.custom_lark_grammars.emplace(definition.name, *definition.custom_lark_grammar);
+    }
+
     if (definition.name.empty()) {
       const auto serialized = nlohmann::json::parse(definition.json_schema);
       if (!serialized.is_array()) {
@@ -248,6 +261,51 @@ void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, Too
   }
 }
 
+void ResolveBuiltInRawEnvelope(ToolCallContext& context) {
+  const auto apply_patch_grammar = context.custom_lark_grammars.find("apply_patch");
+  if (apply_patch_grammar == context.custom_lark_grammars.end() ||
+      apply_patch_grammar->second != tools::kStockGhcpApplyPatchLarkGrammar) {
+    return;
+  }
+
+  const RawEnvelopeDescriptor built_in{
+      "apply_patch", "*** Begin Patch", "*** End Patch"};
+  if (context.raw_envelope.has_value() && *context.raw_envelope != built_in) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool_output_encoding conflicts with the stock apply_patch grammar");
+  }
+
+  context.raw_envelope = built_in;
+  context.built_in_raw_envelope = true;
+}
+
+void ApplyRawEnvelopeGuidance(ToolCallContext& context) {
+  const auto* raw = context.ActiveRawEnvelope();
+  if (raw == nullptr || !context.forced_tool.has_value()) {
+    return;
+  }
+
+  const auto grammar = context.custom_lark_grammars.find(raw->tool_name);
+  if (grammar != context.custom_lark_grammars.end()) {
+    context.guidance_type = "lark_grammar";
+    context.guidance_data = grammar->second;
+    return;
+  }
+
+  context.guidance_type.clear();
+  context.guidance_data.clear();
+  context.guidance_disabled = true;
+}
+
+bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_opens_reasoning) {
+  // Grammar-constrained raw output starts with the envelope itself. An unconstrained raw tool may still reason
+  // before emitting its envelope, so it must preserve the prompt-derived reasoning state.
+  const bool forced_raw_grammar =
+      context.HasForcedRawEnvelope() && context.guidance_type == "lark_grammar" &&
+      !context.guidance_data.empty();
+  return prompt_opens_reasoning && !forced_raw_grammar;
+}
+
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx) {
   for (auto& event : output.events) {
@@ -263,6 +321,170 @@ void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
     ValidateToolCallText(call->name, "tool call name");
     ValidateToolCallText(call->arguments, "tool call arguments");
   }
+}
+
+namespace {
+
+void AppendToolOutput(ToolCallStreamAccumulator::Output& destination,
+                      ToolCallStreamAccumulator::Output source) {
+  destination.events.insert(destination.events.end(),
+                            std::make_move_iterator(source.events.begin()),
+                            std::make_move_iterator(source.events.end()));
+}
+
+bool ContainsToolCall(const ToolCallStreamAccumulator::Output& output) {
+  return std::ranges::any_of(output.events, [](const auto& event) {
+    return std::holds_alternative<ParsedToolCall>(event);
+  });
+}
+
+ToolCallStreamAccumulator::Output RouteRawToolOutput(
+    RawEnvelopeDetector::Output raw_output,
+    RawEnvelopeDetector& raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator) {
+  ToolCallStreamAccumulator::Output output;
+  bool structured_call_completed = false;
+  const bool output_contains_raw_call =
+      std::ranges::any_of(raw_output.events, [](const auto& event) {
+        return std::holds_alternative<ParsedToolCall>(event);
+      });
+  bool raw_call_completed =
+      raw_detector.CallCompleted() && !output_contains_raw_call;
+
+  const auto push_structured = [&](const std::string& text) {
+    auto structured_output = structured_accumulator.Push(text);
+    structured_call_completed |= ContainsToolCall(structured_output);
+    AppendToolOutput(output, std::move(structured_output));
+
+    if (structured_call_completed) {
+      auto disabled_output = raw_detector.DisableRecognition();
+      for (auto& disabled_event : disabled_output.events) {
+        auto& disabled_text = std::get<std::string>(disabled_event);
+        AppendToolOutput(output, structured_accumulator.Push(disabled_text));
+      }
+    }
+  };
+
+  for (auto& event : raw_output.events) {
+    if (auto* text = std::get_if<std::string>(&event)) {
+      if (raw_call_completed) {
+        output.events.emplace_back(std::move(*text));
+      } else {
+        push_structured(*text);
+      }
+      continue;
+    }
+
+    if (auto* rejected = std::get_if<RawEnvelopeDetector::RejectedCandidate>(&event)) {
+      auto structured_output = structured_accumulator.Flush();
+      structured_call_completed |= ContainsToolCall(structured_output);
+      AppendToolOutput(output, std::move(structured_output));
+      output.events.emplace_back(std::move(rejected->text));
+      continue;
+    }
+
+    // Raw envelopes interrupt the structured byte stream. Release any structured prefix first
+    // so caller-visible event ordering remains identical to model output ordering.
+    auto structured_output = structured_accumulator.Flush();
+    structured_call_completed |= ContainsToolCall(structured_output);
+    AppendToolOutput(output, std::move(structured_output));
+
+    auto raw_call = std::move(std::get<ParsedToolCall>(event));
+    if (structured_call_completed) {
+      AppendToolOutput(output, structured_accumulator.Push(raw_call.arguments));
+    } else {
+      output.events.emplace_back(std::move(raw_call));
+    }
+    raw_call_completed = true;
+  }
+
+  return output;
+}
+
+}  // namespace
+
+ToolCallStreamAccumulator::Output PushToolOutput(
+    const std::string& text, RawEnvelopeDetector* raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator) {
+  if (raw_detector == nullptr) {
+    return structured_accumulator.Push(text);
+  }
+
+  ToolCallStreamAccumulator::Output output;
+  size_t position = 0;
+  while (position < text.size()) {
+    const auto newline = text.find('\n', position);
+    const auto end = newline == std::string::npos ? text.size() : newline + 1;
+    const auto part = text.substr(position, end - position);
+
+    if (structured_accumulator.InsideToolCall()) {
+      auto structured_output = structured_accumulator.Push(part);
+      const bool call_completed = ContainsToolCall(structured_output);
+      AppendToolOutput(output, std::move(structured_output));
+      if (call_completed) {
+        auto disabled = raw_detector->DisableRecognition();
+        for (auto& event : disabled.events) {
+          output.events.emplace_back(std::move(std::get<std::string>(event)));
+        }
+      }
+    } else {
+      AppendToolOutput(
+          output,
+          RouteRawToolOutput(raw_detector->Push(part), *raw_detector, structured_accumulator));
+    }
+
+    position = end;
+  }
+
+  return output;
+}
+
+ToolCallStreamAccumulator::Output FlushToolOutput(
+    RawEnvelopeDetector* raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator,
+    bool natural_end) {
+  if (raw_detector == nullptr) {
+    return structured_accumulator.Flush();
+  }
+
+  auto raw_output = natural_end ? raw_detector->FinalizeNatural() : raw_detector->Abort();
+  auto output = RouteRawToolOutput(std::move(raw_output), *raw_detector, structured_accumulator);
+  AppendToolOutput(output, structured_accumulator.Flush());
+  return output;
+}
+
+ToolCallStreamAccumulator::Output AbortRawToolOutput(RawEnvelopeDetector* raw_detector) {
+  ToolCallStreamAccumulator::Output output;
+  if (raw_detector == nullptr || !raw_detector->HasPendingCandidate()) {
+    return output;
+  }
+
+  for (auto& event : raw_detector->RejectCandidateForReasoning().events) {
+    if (auto* rejected = std::get_if<RawEnvelopeDetector::RejectedCandidate>(&event)) {
+      output.events.emplace_back(std::move(rejected->text));
+    } else {
+      output.events.emplace_back(std::move(std::get<std::string>(event)));
+    }
+  }
+
+  return output;
+}
+
+bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
+                      const ToolCallStreamAccumulator& structured_accumulator) {
+  return (raw_detector != nullptr && raw_detector->InsideEnvelope()) ||
+         structured_accumulator.InsideToolCall();
+}
+
+bool IsNaturalToolOutputEnd(bool canceled,
+                            bool stop_sequence_matched,
+                            bool host_output_limit_reached,
+                            std::optional<BackendTerminationCause> backend_termination) {
+  if (canceled || stop_sequence_matched || host_output_limit_reached) {
+    return false;
+  }
+
+  return backend_termination == BackendTerminationCause::kNaturalEnd;
 }
 
 flFinishReason ResolveGeneratedFinishReason(bool canceled,
@@ -332,11 +554,13 @@ bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_b
 }  // namespace chat_session_internal
 
 ChatSession::ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger,
-                         ITelemetry& telemetry, ChatTranscript::CommitFaultInjector transcript_fault_injector)
+                         ITelemetry& telemetry, ChatTranscript::CommitFaultInjector transcript_fault_injector,
+                         TextChatGeneratorFactory text_generator_factory)
     : Session(catalog_model, logger, telemetry),
       logger_(logger),
       model_(model),
-      transcript_(std::move(transcript_fault_injector)) {
+      transcript_(std::move(transcript_fault_injector)),
+      text_generator_factory_(std::move(text_generator_factory)) {
   logger_.Log(LogLevel::Debug, fmt::format("Creating ChatSession for model: {}", model.ModelId()));
   // Last so a throw above does not leak a refcount; nothing below can throw.
   model_.AcquireSession();
@@ -360,7 +584,8 @@ ChatSession::ChatSession(ChatSession&& other) noexcept
       cached_generator_(std::move(other.cached_generator_)),
       cached_tool_ctx_(std::move(other.cached_tool_ctx_)),
       cached_search_options_(std::move(other.cached_search_options_)),
-      system_prompt_(std::move(other.system_prompt_)) {
+      system_prompt_(std::move(other.system_prompt_)),
+      text_generator_factory_(std::move(other.text_generator_factory_)) {
   other.owns_session_ = false;
 }
 
@@ -469,6 +694,9 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   // context, so this turn's output is read back with exactly the tool set that shaped its prompt
   // even if the session's registry changes underneath.
   chat_session_internal::PopulateToolDefinitions(definitions, tool_ctx);
+  tool_ctx.forced_tool = request.forced_tool_choice;
+  tool_ctx.raw_envelope = request.raw_envelope_descriptor;
+  chat_session_internal::ResolveBuiltInRawEnvelope(tool_ctx);
 
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
@@ -484,6 +712,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   // Read user-specified guidance from request parameters
   tool_ctx.guidance_type = GetOptionOrEmpty(request.options, "guidance_type");
   tool_ctx.guidance_data = GetOptionOrEmpty(request.options, "guidance_data");
+  chat_session_internal::ApplyRawEnvelopeGuidance(tool_ctx);
 
   return tool_ctx;
 }
@@ -538,7 +767,10 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
     const auto kind = tool_ctx.KindOf(call.name);
     response.items.push_back(std::make_unique<ToolCallItem>(std::move(call.id), std::move(call.name),
                                                             std::move(call.arguments),
-                                                            /*replayed_from_store=*/false, kind));
+                                                            /*replayed_from_store=*/false, kind, std::nullopt,
+                                                            call.raw_envelope
+                                                                ? GeneratedCallEncoding::kRawEnvelope
+                                                                : GeneratedCallEncoding::kStructured));
     has_tool_calls = true;
   }
   flush_segments();
@@ -723,7 +955,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
                                                      media.audios, tool_ctx, /*use_full_context*/ false);
     } else {
       generator = CreateTextChatGenerator(all_messages, effective_options, Model(), tool_ctx,
-                                          /*use_full_context=*/true);
+                                          /*use_full_context=*/true, text_generator_factory_);
     }
 
     prompt_tokens = generator->PromptTokenCount();
@@ -769,6 +1001,16 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.tool_output ? cached_tool_ctx_.tool_call_end : std::string{},
       cached_tool_ctx_.tools_json,
       cached_tool_ctx_.reasoning_end);
+  std::optional<RawEnvelopeDetector> raw_detector;
+  if (const auto* descriptor = cached_tool_ctx_.ActiveRawEnvelope()) {
+    raw_detector.emplace(*descriptor);
+  }
+  auto* active_raw_detector = raw_detector.has_value() ? &*raw_detector : nullptr;
+
+  auto push_tool_output = [&](const std::string& text) {
+    return chat_session_internal::PushToolOutput(
+        text, active_raw_detector, tool_accumulator);
+  };
 
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
     // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
@@ -798,7 +1040,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       if (streaming_callback) {
         streaming_callback->PushItem(std::make_unique<ToolCallItem>(
             call.id, call.name, call.arguments, /*replayed_from_store=*/false,
-            cached_tool_ctx_.KindOf(call.name)));
+            cached_tool_ctx_.KindOf(call.name), std::nullopt,
+            call.raw_envelope ? GeneratedCallEncoding::kRawEnvelope : GeneratedCallEncoding::kStructured));
       }
       generated_events.push_back(std::move(call));
     }
@@ -807,10 +1050,16 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   auto emit_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
     for (const auto& seg : segments) {
       if (seg.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
-        // Release a visible prefix held as a potential tool marker before appending later reasoning.
+        if (active_raw_detector != nullptr && active_raw_detector->HasPendingCandidate()) {
+          emit_tool_output(chat_session_internal::AbortRawToolOutput(active_raw_detector));
+        }
+
+        // Preserve the structured accumulator's existing cross-reasoning behavior, but release an
+        // outside prefix before appending a later reasoning segment.
         if (!tool_accumulator.InsideToolCall()) {
           emit_tool_output(tool_accumulator.Flush());
         }
+
         // REASONING goes straight through — never feed it to the tool-call accumulator.
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
         if (streaming_callback) {
@@ -819,11 +1068,14 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         continue;
       }
 
-      emit_tool_output(tool_accumulator.Push(seg.text));
+      emit_tool_output(push_tool_output(seg.text));
     }
   };
 
-  auto flush_accumulator = [&]() { emit_tool_output(tool_accumulator.Flush()); };
+  auto flush_accumulator = [&](bool natural_end) {
+    emit_tool_output(chat_session_internal::FlushToolOutput(
+        active_raw_detector, tool_accumulator, natural_end));
+  };
 
   while (!cached_generator_->IsDone() && !request.canceled && !turn_guard.TurnEnded()) {
     cached_generator_->GenerateNextToken();
@@ -848,7 +1100,26 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // End-of-stream: drain the reasoning splitter first so any final DEFAULT bytes feed into the tool accumulator,
   // then drain the tool accumulator.
   chat_session_internal::FlushDecodedStream(active_stop_filter, splitter, emit_segments);
-  flush_accumulator();
+
+  // Callback delivery is asynchronous. Drain it before the final cancellation check and commit decision so a callback
+  // that rejects the last queued item cannot arrive after this turn has already changed the transcript.
+  if (streaming_callback) {
+    streaming_callback->DrainPending();
+  }
+
+  int total_tokens = cached_generator_->TokenCount();
+  std::optional<flFinishReason> backend_finish_reason;
+  std::optional<BackendTerminationCause> backend_termination;
+  if (const auto turn_usage = cached_generator_->GetTurnUsage()) {
+    prompt_tokens = turn_usage->prompt_tokens;
+    total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    backend_finish_reason = turn_usage->finish_reason;
+    backend_termination = turn_usage->termination_cause;
+  }
+
+  const bool natural_tool_output_end = chat_session_internal::IsNaturalToolOutputEnd(
+      request.canceled, stop_sequence_matched, host_output_limit_reached, backend_termination);
+  flush_accumulator(natural_tool_output_end);
 
   if (request.canceled) {
     cached_generator_->Cancel();
@@ -856,18 +1127,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     cached_generator_->Cancel();
   }
 
-  // Callback delivery is asynchronous. Drain it before the final cancellation check and commit decision so a callback
-  // that rejects the last queued item cannot arrive after this turn has already changed the transcript.
   if (streaming_callback) {
     streaming_callback->Drain();
-  }
-
-  int total_tokens = cached_generator_->TokenCount();
-  std::optional<flFinishReason> backend_finish_reason;
-  if (const auto turn_usage = cached_generator_->GetTurnUsage()) {
-    prompt_tokens = turn_usage->prompt_tokens;
-    total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
-    backend_finish_reason = turn_usage->finish_reason;
   }
 
   auto assistant_message = MakeAssistantMessage(generated_events, cached_tool_ctx_, logger_);
@@ -942,6 +1203,15 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Build the internal request from the chat completions request
   Request internal_request;
+  internal_request.forced_tool_choice = original_request.forced_tool_choice;
+  internal_request.raw_envelope_descriptor = original_request.raw_envelope_descriptor;
+  if (!internal_request.raw_envelope_descriptor.has_value() && req.metadata.has_value()) {
+    const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
+    if (descriptor != req.metadata->end()) {
+      internal_request.raw_envelope_descriptor =
+          tools::ParseRawEnvelopeDescriptor(descriptor->second);
+    }
+  }
 
   // We don't use history_ for this request as it's for backwards compat and all messages come from the input.
   chat_completions::BuildRequestItems(req, internal_request);
@@ -999,7 +1269,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   // Create generator
   auto generator = CreateTextChatGenerator(messages, options, Model(), tool_ctx,
-                                           /*use_full_context=*/false);
+                                           /*use_full_context=*/false, text_generator_factory_);
   int prompt_tokens = generator->PromptTokenCount();
 
   auto streaming_callback = CreateCallbackHandler(original_request);
@@ -1021,6 +1291,16 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
                                              tool_ctx.tool_output ? tool_ctx.tool_call_end : std::string{},
                                              tool_ctx.tools_json,
                                              tool_ctx.reasoning_end);
+  std::optional<RawEnvelopeDetector> raw_detector;
+  if (const auto* descriptor = tool_ctx.ActiveRawEnvelope()) {
+    raw_detector.emplace(*descriptor);
+  }
+  auto* active_raw_detector = raw_detector.has_value() ? &*raw_detector : nullptr;
+
+  auto push_tool_output = [&](const std::string& text) {
+    return chat_session_internal::PushToolOutput(
+        text, active_raw_detector, tool_accumulator);
+  };
 
   int next_tool_call_index = 0;
   std::vector<GeneratedOutputEvent> generated_events;
@@ -1084,9 +1364,14 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
       // REASONING segments: never feed reasoning text to the tool-call accumulator — tool-call-shaped text inside
       // <think>...</think> is scratchpad, not a real call. Emit via reasoning_content, not content.
       if (seg.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+        if (active_raw_detector != nullptr && active_raw_detector->HasPendingCandidate()) {
+          process_tool_output(chat_session_internal::AbortRawToolOutput(active_raw_detector));
+        }
+
         if (!tool_accumulator.InsideToolCall()) {
           process_tool_output(tool_accumulator.Flush());
         }
+
         AppendGeneratedSegment(generated_events, seg.text, seg.type);
 
         if (is_streaming && !seg.text.empty()) {
@@ -1098,7 +1383,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
         continue;
       }
 
-      process_tool_output(tool_accumulator.Push(seg.text));
+      process_tool_output(push_tool_output(seg.text));
     }
   };
 
@@ -1121,13 +1406,6 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // Drain any buffered partial-marker bytes at end-of-stream. Reasoning splitter first so any final DEFAULT bytes
   // feed into the tool accumulator; then drain the tool accumulator.
   chat_session_internal::FlushDecodedStream(active_stop_filter, splitter, process_segments);
-  process_tool_output(tool_accumulator.Flush());
-
-  if (original_request.canceled) {
-    generator->Cancel();
-  } else if (stop_sequence_matched && !generator->IsDone()) {
-    generator->Cancel();
-  }
 
   // Delivery is asynchronous. Observe cancellation from the last content callback before deriving a success finish
   // reason, publishing a terminal chunk, or constructing the final completion envelope.
@@ -1137,10 +1415,28 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   int total_tokens = generator->TokenCount();
   std::optional<flFinishReason> backend_finish_reason;
+  std::optional<BackendTerminationCause> backend_termination;
   if (const auto turn_usage = generator->GetTurnUsage()) {
     prompt_tokens = turn_usage->prompt_tokens;
     total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
     backend_finish_reason = turn_usage->finish_reason;
+    backend_termination = turn_usage->termination_cause;
+  }
+
+  const bool natural_tool_output_end = chat_session_internal::IsNaturalToolOutputEnd(
+      original_request.canceled, stop_sequence_matched, /*host_output_limit_reached=*/false,
+      backend_termination);
+  process_tool_output(chat_session_internal::FlushToolOutput(
+      active_raw_detector, tool_accumulator, natural_tool_output_end));
+
+  if (original_request.canceled) {
+    generator->Cancel();
+  } else if (stop_sequence_matched && !generator->IsDone()) {
+    generator->Cancel();
+  }
+
+  if (streaming_callback) {
+    streaming_callback->DrainPending();
   }
 
   ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options, original_request.canceled,

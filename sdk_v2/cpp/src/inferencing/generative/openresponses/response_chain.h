@@ -5,6 +5,9 @@
 #include <nlohmann/json.hpp>
 
 #include <vector>
+#include <string>
+#include <unordered_set>
+#include <utility>
 
 namespace fl {
 
@@ -19,8 +22,16 @@ namespace fl {
 /// This is an internal replay representation. It never reaches the wire — the Responses response shape and the
 /// `/input_items` endpoint are unchanged.
 struct ResponseChainHop {
+  ResponseChainHop() = default;
+  ResponseChainHop(nlohmann::json input, nlohmann::json output,
+                   std::unordered_set<std::string> raw_call_ids = {})
+      : input_items(std::move(input)),
+        output_items(std::move(output)),
+        raw_envelope_call_ids(std::move(raw_call_ids)) {}
+
   nlohmann::json input_items = nlohmann::json::array();
   nlohmann::json output_items = nlohmann::json::array();
+  std::unordered_set<std::string> raw_envelope_call_ids;
 };
 
 /// A complete chain, oldest hop first.

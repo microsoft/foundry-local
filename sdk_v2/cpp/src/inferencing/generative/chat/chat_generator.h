@@ -17,10 +17,20 @@ struct TranscriptMessage;
 struct SearchOptions;
 struct ToolCallContext;
 
+enum class BackendTerminationCause {
+  kNaturalEnd,
+  kStopSequence,
+  kOutputTokenLimit,
+  kSessionTokenLimit,
+  kCancellation,
+  kFailure,
+};
+
 struct ChatTurnUsage {
   int prompt_tokens = 0;
   int generated_tokens = 0;
   std::optional<flFinishReason> finish_reason;
+  std::optional<BackendTerminationCause> termination_cause;
 };
 
 class RetainedPromptMismatchError : public std::runtime_error {
