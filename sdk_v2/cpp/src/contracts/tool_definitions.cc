@@ -145,8 +145,12 @@ void ValidateRawEnvelopeTool(const RawEnvelopeDescriptor& descriptor,
 
   const RawEnvelopeDescriptor built_in{
       "apply_patch", "*** Begin Patch", "*** End Patch"};
-  if (matching_tool->custom_lark_grammar == kStockGhcpApplyPatchLarkGrammar &&
-      descriptor != built_in) {
+  const auto stock_apply_patch =
+      std::ranges::find_if(definitions, [](const ToolDefinition& definition) {
+        return definition.name == "apply_patch" && definition.kind == ToolKind::kCustom &&
+               definition.custom_lark_grammar == kStockGhcpApplyPatchLarkGrammar;
+      });
+  if (stock_apply_patch != definitions.end() && descriptor != built_in) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "tool_output_encoding conflicts with the stock apply_patch grammar");
   }

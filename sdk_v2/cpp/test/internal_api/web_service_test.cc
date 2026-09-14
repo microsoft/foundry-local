@@ -1003,28 +1003,36 @@ TEST_F(WebServiceTest, RawEnvelopeDescriptorMustReferenceEffectiveCustomTool) {
 }
 
 TEST_F(WebServiceTest, ConflictingStockRawEnvelopeDescriptorIsRejectedBeforeModelResolutionOrSse) {
-  const std::string descriptor =
-      R"({"type":"raw_envelope","tool_name":"apply_patch","start_marker":"BEGIN","end_marker":"END"})";
-  for (const bool chat : {false, true}) {
-    for (const bool stream : {false, true}) {
-      json body = chat
-                      ? json{{"model", "alpha-model"},
-                             {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
-                             {"tools", json::parse(test::kCodingAgentChatToolsJson)}}
-                      : json{{"model", "alpha-model"},
-                             {"input", "hi"},
-                             {"tools", json::parse(test::kCodingAgentResponsesToolsJson)}};
-      body["stream"] = stream;
-      body["metadata"] = {{tools::kRawEnvelopeMetadataKey, descriptor}};
+  const std::vector<std::string> descriptors{
+      R"({"type":"raw_envelope","tool_name":"apply_patch","start_marker":"BEGIN","end_marker":"END"})",
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN","end_marker":"END"})",
+  };
+  for (const auto& descriptor : descriptors) {
+    for (const bool chat : {false, true}) {
+      for (const bool stream : {false, true}) {
+        json body = chat
+                        ? json{{"model", "alpha-model"},
+                               {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+                               {"tools", json::parse(test::kCodingAgentChatToolsJson)}}
+                        : json{{"model", "alpha-model"},
+                               {"input", "hi"},
+                               {"tools", json::parse(test::kCodingAgentResponsesToolsJson)}};
+        body["tools"].push_back(
+            chat ? json{{"type", "custom"},
+                        {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}}
+                 : json{{"type", "custom"}, {"name", "edit"}});
+        body["stream"] = stream;
+        body["metadata"] = {{tools::kRawEnvelopeMetadataKey, descriptor}};
 
-      const auto endpoint = chat ? "/v1/chat/completions" : "/v1/responses";
-      const auto result = PostJson(base_url_ + endpoint, body);
+        const auto endpoint = chat ? "/v1/chat/completions" : "/v1/responses";
+        const auto result = PostJson(base_url_ + endpoint, body);
 
-      EXPECT_EQ(result.status, 400) << body.dump() << '\n'
-                                    << result.body.dump(2);
-      EXPECT_NE(ErrorMessageOf(result.body).find("conflicts with the stock apply_patch grammar"),
-                std::string::npos)
-          << result.body.dump(2);
+        EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                      << result.body.dump(2);
+        EXPECT_NE(ErrorMessageOf(result.body).find("conflicts with the stock apply_patch grammar"),
+                  std::string::npos)
+            << result.body.dump(2);
+      }
     }
   }
 }
