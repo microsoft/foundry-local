@@ -142,6 +142,14 @@ void ValidateRawEnvelopeTool(const RawEnvelopeDescriptor& descriptor,
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, kRawEnvelopeMetadataKey,
              " must reference an effective declared custom tool: ", descriptor.tool_name);
   }
+
+  const RawEnvelopeDescriptor built_in{
+      "apply_patch", "*** Begin Patch", "*** End Patch"};
+  if (matching_tool->custom_lark_grammar == kStockGhcpApplyPatchLarkGrammar &&
+      descriptor != built_in) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool_output_encoding conflicts with the stock apply_patch grammar");
+  }
 }
 
 std::optional<bool> ParseFunctionStrict(const nlohmann::json& strict) {

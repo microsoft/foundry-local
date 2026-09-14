@@ -275,7 +275,6 @@ void ResolveBuiltInRawEnvelope(ToolCallContext& context) {
              "tool_output_encoding conflicts with the stock apply_patch grammar");
   }
   context.raw_envelope = built_in;
-  context.raw_envelope = built_in;
 }
 
 void ApplyRawEnvelopeGuidance(ToolCallContext& context) {
