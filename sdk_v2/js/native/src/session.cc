@@ -380,7 +380,7 @@ Napi::Value ChatSession::AddToolDefinition(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) return env.Undefined();
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(
-        env, "addToolDefinition({ name, description, jsonSchema }: ToolDefinition)")
+        env, "addToolDefinition({ name, description, jsonSchema, kind? }: ToolDefinition)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -392,9 +392,34 @@ Napi::Value ChatSession::AddToolDefinition(const Napi::CallbackInfo& info) {
     }
     return def.Get(key).As<Napi::String>().Utf8Value();
   };
+
+  // `kind` is optional, so the pre-existing three-property shape keeps working unchanged. It is
+  // validated here rather than inside CallChecked so a bad shape surfaces as a TypeError, like the
+  // other argument-shape checks, instead of a native FoundryLocalError.
+  flToolKind kind = FOUNDRY_LOCAL_TOOL_KIND_FUNCTION;
+  if (def.Has("kind") && !def.Get("kind").IsUndefined()) {
+    std::string kind_name =
+        def.Get("kind").IsString() ? def.Get("kind").As<Napi::String>().Utf8Value() : std::string{};
+    if (kind_name == "custom") {
+      kind = FOUNDRY_LOCAL_TOOL_KIND_CUSTOM;
+    } else if (kind_name != "function") {
+      Napi::TypeError::New(env, "addToolDefinition: 'kind' must be 'function' or 'custom'")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+  }
+
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    // `jsonSchema` is required for a function tool and omitted for a custom one, which carries no
+    // schema of its own. A custom tool that does supply one is rejected natively.
+    std::string json_schema;
+    if (kind == FOUNDRY_LOCAL_TOOL_KIND_FUNCTION || def.Has("jsonSchema")) {
+      json_schema = getStr("jsonSchema");
+    }
+
     foundry_local::ToolDefinition tool(getStr("name"), getStr("description"),
-                                       getStr("jsonSchema"));
+                                       std::move(json_schema));
+    tool.kind = kind;
     impl_->AddToolDefinition(tool);
     return env.Undefined();
   });

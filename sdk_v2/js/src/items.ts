@@ -88,7 +88,7 @@ export interface ToolCallItem {
   readonly type: "toolCall";
   readonly callId: string;
   readonly name: string;
-  /** Arguments JSON string. Mirrors the C++ wrapper's `arguments`. */
+  /** JSON object text for a function tool, or raw NUL-free UTF-8 text for a custom tool. */
   readonly arguments: string;
 }
 
@@ -96,6 +96,12 @@ export interface ToolResultItem {
   readonly type: "toolResult";
   readonly callId: string;
   readonly result: string;
+}
+
+function rejectEmbeddedNul(value: string, argumentName: string): void {
+  if (value.includes("\0")) {
+    throw new TypeError(`${argumentName} must not contain an embedded NUL character`);
+  }
 }
 
 /**
@@ -194,10 +200,15 @@ export const Item = Object.freeze({
   developerMessage(content: string): MessageItem {
     return { type: "message", role: "developer", content };
   },
-  toolCall(callId: string, name: string, argumentsJson: string): ToolCallItem {
-    return { type: "toolCall", callId, name, arguments: argumentsJson };
+  toolCall(callId: string, name: string, toolArguments: string): ToolCallItem {
+    rejectEmbeddedNul(callId, "callId");
+    rejectEmbeddedNul(name, "name");
+    rejectEmbeddedNul(toolArguments, "arguments");
+    return { type: "toolCall", callId, name, arguments: toolArguments };
   },
   toolResult(callId: string, result: string): ToolResultItem {
+    rejectEmbeddedNul(callId, "callId");
+    rejectEmbeddedNul(result, "result");
     return { type: "toolResult", callId, result };
   },
   imageFromUri(uri: string, format?: string): ImageItem {

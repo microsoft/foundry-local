@@ -50,12 +50,6 @@ option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
-option(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS
-       "Fail configuration unless the ORT GenAI dynamic Engine tests can be built"
-       OFF)
-if(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS AND NOT FOUNDRY_LOCAL_BUILD_TESTS)
-    message(FATAL_ERROR "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS requires FOUNDRY_LOCAL_BUILD_TESTS=ON")
-endif()
 
 # Optional 1DS ingestion token override. Override only via environment so it does
 # not appear in CMake cache files.
@@ -115,50 +109,6 @@ endif()
 # ORT and ORT GenAI — acquired via FetchContent from nuget.org.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
-
-include(CheckCXXSourceCompiles)
-
-set(CMAKE_REQUIRED_LIBRARIES OnnxRuntimeGenAI::OnnxRuntimeGenAI)
-unset(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE CACHE)
-check_cxx_source_compiles("
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-
-#include <ort_genai.h>
-
-int main() {
-    auto* model = reinterpret_cast<OgaModel*>(1);
-    auto engine = OgaEngine::Create(*model);
-    auto events = engine->CreateEventBuffer(1);
-    auto request_options = OgaRequestOptions::Create();
-    auto request = engine->CreateRequest(request_options.get());
-    auto turn_options = request->CreateTurnOptions();
-    turn_options->SetMaxGeneratedTokens(static_cast<uint64_t>(1));
-    turn_options->SetDoSample(true);
-    turn_options->SetTemperature(1.0f);
-    turn_options->SetTopP(1.0f);
-    turn_options->SetTopK(1);
-    turn_options->SetSeed(static_cast<uint64_t>(1));
-    const char* values[] = {\"stop\"};
-    auto stop_strings = OgaStringArray::Create(values, 1);
-    turn_options->SetStopStrings(*stop_strings);
-    turn_options->SetGuidance(\"\", \"\");
-    const auto finish_reason = OgaFinishReason_StopString;
-    return events && request && turn_options && finish_reason == OgaFinishReason_Eos ? 0 : 1;
-}
-" FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
-unset(CMAKE_REQUIRED_LIBRARIES)
-
-if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
-    message(STATUS "ORT GenAI dynamic Engine API: enabled")
-else()
-    if(FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS)
-        message(FATAL_ERROR
-            "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS requires an ORT GenAI package with the dynamic Engine API")
-    endif()
-    message(STATUS "ORT GenAI dynamic Engine API: unavailable; using Generator backend")
-endif()
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -265,6 +215,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
     src/inferencing/session/session_manager.cc
+    src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc
@@ -330,12 +281,10 @@ set(FOUNDRY_LOCAL_SOURCES
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
 )
 
-if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
-    list(APPEND FOUNDRY_LOCAL_SOURCES
-        src/inferencing/generative/chat/onnx_chat_engine.cc
-        src/inferencing/generative/chat/onnx_engine_chat_stream.cc
-    )
-endif()
+list(APPEND FOUNDRY_LOCAL_SOURCES
+    src/inferencing/generative/chat/onnx_chat_engine.cc
+    src/inferencing/generative/chat/onnx_engine_chat_stream.cc
+)
 
 # 1DS bridge — always compiled for Foundry Local Core.
 list(APPEND FOUNDRY_LOCAL_SOURCES src/telemetry/one_ds_telemetry.cc)
@@ -411,7 +360,6 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
         ${TARGET}
         PRIVATE
             FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
-            FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE}>
     )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)

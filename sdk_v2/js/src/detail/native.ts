@@ -175,7 +175,21 @@ export interface NativeSession {
 }
 
 export interface NativeChatSession extends NativeSession {
-  addToolDefinition(definition: { name: string; description: string; jsonSchema: string }): void;
+  addToolDefinition(
+    definition:
+      | {
+          name: string;
+          description: string;
+          jsonSchema: string;
+          kind?: "function";
+        }
+      | {
+          name: string;
+          description: string;
+          kind: "custom";
+          jsonSchema?: never;
+        },
+  ): void;
   removeToolDefinition(name: string): boolean;
   turnCount(): number;
   undoTurns(count: number): void;

@@ -2,9 +2,12 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace fl {
 
@@ -52,6 +55,21 @@ struct ToolCallContext {
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
 
+  /// Kind of each named tool, snapshotted from the session's registry at the same moment
+  /// `tools_json` was built. Generation resolves a produced call's name through this copy rather
+  /// than through the session's registry, which another thread may change mid-turn.
+  std::unordered_map<std::string, ToolKind> tool_kinds;
+
+  /// The kind registered for `name` when this context was built. Names the context does not know
+  /// resolve to kFunction, which leaves their arguments untouched.
+  ToolKind KindOf(const std::string& name) const {
+    auto it = tool_kinds.find(name);
+    return it == tool_kinds.end() ? ToolKind::kFunction : it->second;
+  }
+
+  /// Whether the named tool takes a raw text payload rather than JSON arguments.
+  bool IsCustomTool(const std::string& name) const { return KindOf(name) == ToolKind::kCustom; }
+
   /// User-specified guidance type from response_format (e.g., "lark_grammar", "json_schema").
   /// Empty means no explicit guidance — the generator may still apply auto-generated tool guidance.
   std::string guidance_type;
@@ -63,7 +81,13 @@ struct ToolCallContext {
   bool HasTools() const { return !tools_json.empty(); }
 
   /// Whether two turns expose the same definitions to the model.
-  bool HasSameTools(const ToolCallContext& other) const { return tools_json == other.tools_json; }
+  ///
+  /// Kinds are compared as well as the rendered JSON: a custom tool is normalized into a function-shaped schema
+  /// before it reaches `tools_json`, so two tool sets can render byte-identical JSON and still differ in how the
+  /// calls they produce must be read back.
+  bool HasSameTools(const ToolCallContext& other) const {
+    return tools_json == other.tools_json && tool_kinds == other.tool_kinds;
+  }
 
   /// Whether the model has known tool call marker tokens.
   bool HasToolCallTokens() const {

@@ -594,7 +594,6 @@ ResponseChainHop ResponseStore::ToReplayHop(const Entry& entry) {
   if (output != entry.response.end() && output->is_array()) {
     replay.output_items = *output;
   }
-
   return replay;
 }
 
