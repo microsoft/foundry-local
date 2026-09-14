@@ -1,11 +1,13 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
+#include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
 #include "inferencing/session/session.h"
 #include "items/message_item.h"
@@ -53,13 +55,12 @@ bool PushDecodedFragment(const std::string& fragment,
     return false;
   }
 
-  auto filtered = stop_filter->PushWithTokenAlignment(fragment);
-  if (!filtered.text.empty()) {
-    if (filtered.token_aligned && token_id.has_value()) {
-      process_segments(splitter.Push(*token_id, std::move(filtered.text)));
+  auto filtered = stop_filter->PushWithTokenAlignment(fragment, token_id);
+  for (auto& safe_fragment : filtered.fragments) {
+    if (safe_fragment.token_id.has_value()) {
+      process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
     } else {
-      // Filtering combined or shortened decoded token fragments, so the current token ID is no longer aligned.
-      process_segments(splitter.Push(filtered.text));
+      process_segments(splitter.Push(safe_fragment.text));
     }
   }
 
@@ -71,18 +72,19 @@ void FlushDecodedStream(StopStringFilter* stop_filter,
                         ReasoningStreamSplitter& splitter,
                         SegmentProcessor&& process_segments) {
   if (stop_filter != nullptr && !stop_filter->matched()) {
-    auto tail = stop_filter->Flush();
-    if (!tail.empty()) {
-      process_segments(splitter.Push(tail));
+    auto tail = stop_filter->FlushWithTokenAlignment();
+    for (auto& safe_fragment : tail.fragments) {
+      if (safe_fragment.token_id.has_value()) {
+        process_segments(splitter.Push(*safe_fragment.token_id, std::move(safe_fragment.text)));
+      } else {
+        process_segments(splitter.Push(safe_fragment.text));
+      }
     }
   }
 
   process_segments(splitter.Flush());
 }
 
-/// Resolve the final finish reason for one generated turn.
-/// Complete tool calls win over a later host-side stop-string match because the
-/// structured tool-call protocol is the durable caller-visible outcome.
 flFinishReason ResolveGeneratedFinishReason(bool canceled,
                                             bool has_tool_calls,
                                             bool stop_sequence_matched,
@@ -90,61 +92,40 @@ flFinishReason ResolveGeneratedFinishReason(bool canceled,
                                             std::optional<flFinishReason> backend_finish_reason,
                                             int completion_tokens,
                                             std::optional<int> max_output_tokens);
-
-/// Whether the host output limit stopped generation before the backend completed naturally.
 bool DidHostOutputLimitTruncate(int output_tokens, int max_output_tokens, bool backend_finished);
-
-/// Whether the selected generator path requires host-side output-limit enforcement.
 bool ShouldEnforceHostOutputLimit(ChatBackendKind backend_kind, bool media_turn);
-
-/// Whether the retained generator must be rebuilt from full history before appending this turn.
-///
-/// Guidance is baked into a Generator at creation time. Dynamic Engine options are applied per turn.
 bool ShouldRebuildRetainedGeneratorBeforeAppend(ChatBackendKind backend_kind,
                                                 bool guidance_requirement_changed,
                                                 bool guidance_payload_changed,
                                                 bool retained_generation_settings_changed);
-
-/// Whether retained backend state must be discarded after a successful turn commits.
-/// Host-side stop filtering or output-limit truncation can leave retained state ahead of committed history, so
-/// either condition invalidates even when the current turn still succeeds.
 bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind backend_kind,
                                                                 bool grammar_was_active,
                                                                 bool reasoning_was_active,
                                                                 bool stop_sequence_matched,
                                                                 bool host_output_limit_reached);
+bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
+std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
+    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot);
+void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
+                              const ToolCallContext& tool_ctx);
 
 }  // namespace chat_session_internal
 
 using GeneratedOutputEvent = std::variant<ReasoningStreamSplitter::Segment, ParsedToolCall>;
 
-/// A chat session that maintains conversation history across turns.
-/// Designed for multi-turn conversations where message history accumulates
-/// and is sent with each generation request (for use with the OpenAI
-/// Responses API pattern).
+/// A chat session that maintains an authoritative conversation transcript across turns.
+/// Designed for multi-turn conversations where visible text, reasoning, and tool calls accumulate in event order
+/// and are sent with each generation request (for use with the OpenAI Responses API pattern).
 ///
-/// Retained inference state: after the first non-JSON request, compatible subsequent turns reuse the existing KV
-/// cache. Engine backends render and tokenize the complete committed transcript, append only the unmatched suffix
-/// when the resident tokens are an exact prefix, and rebuild otherwise. Cancellation never commits the partial
-/// assistant response to history. When the selected inference path can restore its pre-turn token position, the same
-/// allocation is reused; otherwise the retained state is discarded and the next request rebuilds it from committed
-/// history.
+/// Retained inference state: compatible turns reuse backend state. Engine backends render the complete authoritative
+/// transcript and reuse resident tokens only when they are an exact prefix; classic Generator backends rebuild for
+/// transcript shapes that cannot be appended independently.
 /// OpenAI chat completions JSON requests (TextItem with text_type == OPENAI_JSON) always create a fresh
-/// inference stream and never use retained state.
+/// generator and never use the cache.
 class ChatSession : public Session {
  public:
-  /// Tracks the token-level and history-level boundaries of a single conversation turn.
-  /// Used for retained-state restoration and history rollback on error or undo.
-  struct TurnRecord {
-    size_t history_start;       // index in history_ where this turn's input messages begin
-    size_t input_count;         // number of input messages (user + tool results) in this turn
-    int pre_turn_token_count;   // generator sequence length before this turn's input was appended
-    int post_turn_token_count;  // generator sequence length after generation completed
-    bool can_rewind_to_pre_turn;
-    // The assistant reply is at history_[history_start + input_count]
-  };
-
-  ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry);
+  ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry,
+              ChatTranscript::CommitFaultInjector transcript_fault_injector = {});
   ~ChatSession();
 
   // Movable: transfers session refcount ownership to the moved-to instance.
@@ -153,23 +134,25 @@ class ChatSession : public Session {
 
   SessionType Type() const override;
 
-  /// Get the full conversation history.
-  const std::vector<MessageItem>& GetHistory() const;
+  /// Get the authoritative conversation transcript. Not safe to inspect while a request is in flight.
+  const ChatTranscript& Transcript() const;
 
-  /// Get the number of messages in the history.
+  /// Get the number of messages in the transcript. Not safe to inspect while a request is in flight.
   size_t MessageCount() const;
 
-  /// Get the number of completed turns.
+  /// Get the number of completed turns. Not safe to inspect while a request is in flight.
   size_t TurnCount() const override;
 
-  /// Undo the last `count` completed turns and remove each turn's input messages and assistant reply from history.
-  /// Retained inference state is restored when supported and discarded otherwise. If all turns are undone, retained
-  /// state is always discarded.
+  /// Undo the last `count` completed turns: rewinds the cached generator and removes
+  /// each turn's input messages and assistant reply from the transcript.
+  /// If all turns are undone, the cached generator is destroyed.
   ///
-  /// Vision turns: image input is only allowed on the first turn of a
-  /// session. UndoTurns rolls back history but does not undo this
-  /// constraint — once a session has started, no later turn may include
-  /// images. Start a new ChatSession to send images.
+  /// Vision turns: image input is only allowed while the conversation has no
+  /// history. UndoTurns rolls back messages, so undoing every turn does make
+  /// the session accept media again — but the media bytes of an undone turn
+  /// are gone either way, because they never entered the transcript.
+  ///
+  /// Blocks until any in-flight request on this session completes.
   ///
   /// @param count  Number of turns to undo. Must be <= TurnCount().
   void UndoTurns(size_t count) override;
@@ -178,15 +161,19 @@ class ChatSession : public Session {
   // populate session_options_
   void SetSessionOptionsImpl(const KeyValuePairs& options) override;
 
-  /// Process a request: extracts MESSAGE items and parameters from the generic request,
-  /// generates a response, and on success commits messages to conversation history.
+  /// Process a request: extracts items and parameters from the generic request, generates a response, and on
+  /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
 
-  /// Build tool calling context from request parameters and session tool definitions.
-  ToolCallContext BuildToolCallContext(const Request& request) const;
+  /// Build tool calling context from request parameters and a snapshot of the session's tool definitions.
+  ///
+  /// The snapshot is supplied by the caller rather than read here so that one turn resolves its replayed calls, its
+  /// prompt, and its produced calls against the same tool set.
+  ToolCallContext BuildToolCallContext(const Request& request, const std::vector<ToolDefinition>& definitions) const;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
+                              const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
                               bool canceled,
                               bool stop_sequence_matched,
@@ -200,16 +187,14 @@ class ChatSession : public Session {
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
   /// request. Parses the JSON, converts to internal items, runs generation, and produces an OPENAI_JSON-tagged
   /// TextItem response with the OpenAI ChatCompletionResponse.
-  /// Does not use or update history_ or the cached generator.
+  /// Does not use or update the transcript or the cached generator.
   void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                   Response& response);
 
-  /// Commit input messages and assistant reply to history after a successful turn.
-  void CommitTurn(std::vector<MessageItem>&& new_messages,
-                  std::string assistant_history,
-                  int pre_turn_token_count,
-                  int post_turn_token_count,
-                  bool can_rewind_to_pre_turn);
+  /// Drop the cached generator and its tool context. Called whenever the generator's KV cache can no longer be
+  /// trusted to match the committed transcript — the next turn then rebuilds from full committed history.
+  /// noexcept because it also runs from a scope guard during exception unwinding.
+  void InvalidateCachedGenerator() noexcept;
 
   GenAIModelInstance& Model() { return model_; }
   const GenAIModelInstance& Model() const { return model_; }
@@ -219,8 +204,7 @@ class ChatSession : public Session {
   // Tracks who is responsible for calling model_.ReleaseSession(). Set to false on the
   // moved-from instance so the refcount transfers cleanly across moves.
   bool owns_session_ = true;
-  std::vector<MessageItem> history_;
-  std::vector<TurnRecord> turns_;
+  ChatTranscript transcript_;
   SearchOptions session_options_;
 
   // Cached generator for continuous decoding (non-JSON path only).
@@ -231,8 +215,14 @@ class ChatSession : public Session {
   // Reused for subsequent turns to maintain tool definition consistency.
   ToolCallContext cached_tool_ctx_;
 
-  // Search settings baked into the retained generator or Engine request.
+  // Settings baked into classic Generator state. Dynamic Engine applies supported settings per turn.
   SearchOptions cached_search_options_;
+
+  // The system prefix baked into cached_generator_'s prompt (the kSystemPromptOption value of the turn that built
+  // it). Deliberately not part of the transcript: it is request state, so it can never accumulate a copy per turn
+  // and is never replayed from a stored conversation. A turn that asks for a different prefix rebuilds; a turn that
+  // asks for the same one keeps the KV cache.
+  std::string system_prompt_;
 };
 
 }  // namespace fl

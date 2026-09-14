@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "contracts/chat_completions.h"
+#include "exception.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -21,7 +22,7 @@ TEST(ChatCompletionMessageTest, BasicUserMessage) {
   EXPECT_EQ(*msg.content, "hello");
   EXPECT_FALSE(msg.name.has_value());
   EXPECT_FALSE(msg.tool_call_id.has_value());
-  EXPECT_FALSE(msg.tool_calls.has_value());
+  EXPECT_TRUE(msg.tool_calls.empty());
 }
 
 TEST(ChatCompletionMessageTest, NullContent) {
@@ -63,19 +64,75 @@ TEST(ChatCompletionMessageTest, OptionalFieldsPopulated) {
   EXPECT_EQ(*msg.tool_call_id, "call_abc123");
 }
 
-TEST(ChatCompletionMessageTest, ToolCallsPreservedAsJson) {
+TEST(ChatCompletionMessageTest, ToolCallsParsedWithNullContent) {
   auto j = json::parse(R"({
     "role": "assistant",
     "content": null,
     "tool_calls": [
-      {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+      {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Seattle\"}"}}
     ]
   })");
   auto msg = j.get<ChatCompletionMessage>();
 
-  ASSERT_TRUE(msg.tool_calls.has_value());
-  EXPECT_TRUE(msg.tool_calls->is_array());
-  EXPECT_EQ(msg.tool_calls->size(), 1);
+  EXPECT_FALSE(msg.content.has_value());
+  ASSERT_EQ(msg.tool_calls.size(), 1u);
+  EXPECT_EQ(msg.tool_calls[0].id, "call_1");
+  EXPECT_EQ(msg.tool_calls[0].type, "function");
+  EXPECT_EQ(msg.tool_calls[0].function.name, "get_weather");
+  EXPECT_EQ(msg.tool_calls[0].function.arguments, R"({"city":"Seattle"})");
+}
+
+TEST(ChatCompletionMessageTest, ToolCallArgumentsMayBeAnObject) {
+  auto j = json::parse(R"({
+    "role": "assistant",
+    "tool_calls": [
+      {"id": "call_1", "function": {"name": "get_weather", "arguments": {"city": "Seattle"}}}
+    ]
+  })");
+  auto msg = j.get<ChatCompletionMessage>();
+
+  ASSERT_EQ(msg.tool_calls.size(), 1u);
+  EXPECT_EQ(msg.tool_calls[0].function.arguments, R"({"city":"Seattle"})");
+}
+
+TEST(ChatCompletionMessageTest, ToolCallWithoutIdIsRejected) {
+  auto j = json::parse(R"({
+    "role": "assistant",
+    "tool_calls": [{"function": {"name": "get_weather", "arguments": "{}"}}]
+  })");
+
+  EXPECT_THROW(j.get<ChatCompletionMessage>(), fl::Exception);
+}
+
+TEST(ChatCompletionMessageTest, ToolCallWithoutFunctionNameIsRejected) {
+  auto j = json::parse(R"({
+    "role": "assistant",
+    "tool_calls": [{"id": "call_1", "function": {"arguments": "{}"}}]
+  })");
+
+  EXPECT_THROW(j.get<ChatCompletionMessage>(), fl::Exception);
+}
+
+TEST(ChatCompletionMessageTest, UnknownToolCallKindIsRejected) {
+  // Only function calls exist today. Unknown kinds are rejected rather than quietly coerced — support for a new kind
+  // is an explicit extension, not a fallback.
+  auto j = json::parse(R"({
+    "role": "assistant",
+    "tool_calls": [{"id": "call_1", "type": "custom", "custom": {"name": "x"}}]
+  })");
+
+  try {
+    (void)j.get<ChatCompletionMessage>();
+    FAIL() << "expected an unknown tool call type to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ChatCompletionMessageTest, ToolCallsMustBeAnArray) {
+  auto j = json::parse(R"({"role": "assistant", "tool_calls": {"id": "call_1"}})");
+
+  EXPECT_THROW(j.get<ChatCompletionMessage>(), fl::Exception);
 }
 
 // ========================================================================

@@ -4,6 +4,7 @@
 // `Item` factory helpers. Runs whenever the native addon is present.
 import { describe, expect, it } from "vitest";
 
+import { getAddon } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
 import { Request } from "../src/request.js";
 
@@ -14,6 +15,23 @@ const describeIfBuilt = haveNativePrereqs ? describe : describe.skip;
 if (!haveNativePrereqs) {
   console.warn(`[Item tests] SKIPPED — ${nativePrereqsDiagnostic}`);
 }
+
+describe("Tool Item validation", () => {
+  it.each([
+    [() => Item.toolCall("bad\0id", "tool", "{}"), "callId"],
+    [() => Item.toolCall("id", "bad\0name", "{}"), "name"],
+    [() => Item.toolCall("id", "tool", "bad\0arguments"), "arguments"],
+    [() => Item.toolResult("bad\0id", ""), "callId"],
+    [() => Item.toolResult("id", "bad\0result"), "result"],
+  ])("rejects embedded NUL in tool payload factories", (create, argumentName) => {
+    expect(create).toThrow(new TypeError(`${argumentName} must not contain an embedded NUL character`));
+  });
+
+  it("preserves empty tool payload strings", () => {
+    expect(Item.toolCall("", "", "")).toEqual({ type: "toolCall", callId: "", name: "", arguments: "" });
+    expect(Item.toolResult("", "")).toEqual({ type: "toolResult", callId: "", result: "" });
+  });
+});
 
 describeIfBuilt("Item factory", () => {
   it("text() builds a default text item", () => {
@@ -116,6 +134,30 @@ describeIfBuilt("Request round-trip through the native layer", () => {
       expect(got.name).toBe("weather");
       expect(got.arguments).toBe('{"city":"Redmond"}');
     }
+  });
+
+  it.each([
+    [{ type: "toolCall", callId: "bad\0id", name: "tool", arguments: "{}" }, "toolCall", "callId"],
+    [{ type: "toolCall", callId: "id", name: "bad\0name", arguments: "{}" }, "toolCall", "name"],
+    [{ type: "toolCall", callId: "id", name: "tool", arguments: "bad\0arguments" }, "toolCall", "arguments"],
+    [{ type: "toolResult", callId: "bad\0id", result: "" }, "toolResult", "callId"],
+    [{ type: "toolResult", callId: "id", result: "bad\0result" }, "toolResult", "result"],
+  ] as const)("rejects embedded NUL in plain tool payloads before the native boundary", (item, _itemType, field) => {
+    const req = new Request();
+    expect(() => req.addItem(item)).toThrow(new TypeError(`${field} must not contain an embedded NUL character`));
+  });
+
+  it.each([
+    [{ type: "toolCall", callId: "bad\0id", name: "tool", arguments: "{}" }, "toolCall", "callId"],
+    [{ type: "toolCall", callId: "id", name: "bad\0name", arguments: "{}" }, "toolCall", "name"],
+    [{ type: "toolCall", callId: "id", name: "tool", arguments: "bad\0arguments" }, "toolCall", "arguments"],
+    [{ type: "toolResult", callId: "bad\0id", result: "" }, "toolResult", "callId"],
+    [{ type: "toolResult", callId: "id", result: "bad\0result" }, "toolResult", "result"],
+  ] as const)("rejects embedded NUL in the N-API conversion", (item, itemType, field) => {
+    const req = new (getAddon().Request)();
+    expect(() => req.addItem(item)).toThrow(
+      `Item[type=${itemType}].${field} must not contain an embedded NUL character`,
+    );
   });
 
   it("setOptions accepts string, number, boolean values", () => {

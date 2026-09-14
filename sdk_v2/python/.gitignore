@@ -29,8 +29,9 @@ src/foundry_local_sdk/_native/Release/
 *.lib
 *.obj
 
-# CFFI-generated C source emitted by build_cffi.py (regenerated on every build).
+# CFFI-generated C source and its object file, emitted by build_cffi.py (regenerated on every build).
 src/foundry_local_sdk/_native/_cffi_bindings*.c
+src/foundry_local_sdk/_native/_cffi_bindings*.o
 
 # Per-RID native runtime libraries staged by the wheel build (CI populates
 # these from the cpp-native-<rid>[-winml] artifact; local dev copies them

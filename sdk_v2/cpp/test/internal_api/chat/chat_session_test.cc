@@ -9,9 +9,13 @@
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/chat/search_options.h"
+#include "inferencing/session/request.h"
+#include "inferencing/session/tool_registry.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/text_item.h"
+#include "items/tool_call_item.h"
+#include "items/tool_result_item.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
 #include "model.h"
@@ -24,9 +28,12 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <future>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace fl;
@@ -56,6 +63,109 @@ TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtT
                                          /*backend_finished=*/false));
   EXPECT_FALSE(DidHostOutputLimitTruncate(/*output_tokens=*/32, /*max_output_tokens=*/32,
                                           /*backend_finished=*/true));
+}
+
+TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot) {
+  ToolRegistry registry;
+  const auto captured = registry.Definitions();
+
+  std::thread registration([&] {
+    registry.Add({"late_custom", "registered after capture", "", ToolKind::kCustom});
+  });
+  registration.join();
+
+  const std::string serialized_tools =
+      R"([{"type":"function","function":{"name":"payload_tool","parameters":{}}}])";
+  const auto local =
+      chat_session_internal::BuildJsonRequestToolDefinitions(serialized_tools, captured);
+
+  ASSERT_EQ(local.size(), 1u);
+  EXPECT_TRUE(local[0].name.empty());
+  EXPECT_EQ(local[0].json_schema, serialized_tools);
+  EXPECT_EQ(local[0].kind, ToolKind::kFunction);
+
+  // A fresh snapshot sees the custom registration and preserves the existing JSON-path rejection.
+  EXPECT_THROW(chat_session_internal::BuildJsonRequestToolDefinitions(
+                   serialized_tools, registry.Definitions()),
+               fl::Exception);
+}
+
+TEST(ChatSessionDecisionTest, EmptyJsonToolsIgnoreSessionFunctionAndCustomDefinitions) {
+  const std::vector<ToolDefinition> function_definitions{
+      {"lookup", "Look up a value.", R"({"type":"object"})", ToolKind::kFunction}};
+  const std::vector<ToolDefinition> custom_definitions{
+      {"apply_patch", "Apply a patch.", "", ToolKind::kCustom}};
+
+  EXPECT_TRUE(
+      chat_session_internal::BuildJsonRequestToolDefinitions({}, function_definitions).empty());
+  EXPECT_TRUE(
+      chat_session_internal::BuildJsonRequestToolDefinitions({}, custom_definitions).empty());
+}
+
+TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStreaming) {
+  ToolCallContext context;
+  context.tool_kinds = {{"custom", ToolKind::kCustom}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall valid{"call_1", "custom", R"({"input":"valid"})"};
+  valid.argument_source = valid.arguments;
+  output.events.emplace_back(std::move(valid));
+
+  ParsedToolCall invalid{"call_2", "custom", R"({"input":"invalid\u0000payload"})"};
+  invalid.argument_source = invalid.arguments;
+  output.events.emplace_back(std::move(invalid));
+
+  size_t streamed_calls = 0;
+  EXPECT_THROW(
+      {
+        chat_session_internal::NormalizeToolOutputBatch(output, context);
+        for (const auto& event : output.events) {
+          if (std::holds_alternative<ParsedToolCall>(event)) {
+            ++streamed_calls;
+          }
+        }
+      },
+      fl::Exception);
+  EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, InvalidLaterFunctionCallPreventsTheWholeBatchFromStreaming) {
+  ToolCallContext context;
+  context.tool_kinds = {{"first", ToolKind::kFunction}, {"second", ToolKind::kFunction}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall valid{"call_1", "first", R"({"value":1})"};
+  valid.argument_source = valid.arguments;
+  output.events.emplace_back(std::move(valid));
+
+  ParsedToolCall invalid{"call_2", "second", std::string("before\0after", 12)};
+  invalid.argument_source = R"("before\u0000after")";
+  output.events.emplace_back(std::move(invalid));
+
+  size_t streamed_calls = 0;
+  EXPECT_THROW(
+      {
+        chat_session_internal::NormalizeToolOutputBatch(output, context);
+        for (const auto& event : output.events) {
+          if (std::holds_alternative<ParsedToolCall>(event)) {
+            ++streamed_calls;
+          }
+        }
+      },
+      fl::Exception);
+  EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, FunctionCallNameMustBeNulFreeUtf8) {
+  ToolCallContext context;
+  context.tool_kinds = {{"tool", ToolKind::kFunction}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall invalid{"call_1", std::string("tool\0hidden", 11), R"({"value":1})"};
+  invalid.argument_source = invalid.arguments;
+  output.events.emplace_back(std::move(invalid));
+
+  EXPECT_THROW(chat_session_internal::NormalizeToolOutputBatch(output, context), fl::Exception);
 }
 
 TEST(ChatSessionDecisionTest, ExactResidentPrefixSelectsOnlyTheUnmatchedFullPromptSuffix) {
@@ -125,7 +235,7 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
   }
 }
 
-TEST(ChatSessionDecodedStreamTest, CombinedFilterOutputUsesTextMarkerFallback) {
+TEST(ChatSessionDecodedStreamTest, CombinedFilterOutputPreservesTokenProvenance) {
   StopStringFilter stop_filter({"STOP"});
   ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102});
   std::vector<Segment> segments;
@@ -144,31 +254,39 @@ TEST(ChatSessionDecodedStreamTest, CombinedFilterOutputUsesTextMarkerFallback) {
   EXPECT_EQ(segments[1].text, "hidden");
   EXPECT_EQ(segments[2].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT);
   EXPECT_EQ(segments[2].text, "visible");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
 }
 
 TEST(ChatSessionDecodedStreamTest, FlushReleasesUnmatchedStopPrefixThroughReasoningSplitter) {
   StopStringFilter stop_filter({"STOP"});
-  ReasoningStreamSplitter splitter("<think>", "</think>");
+  ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102});
   std::vector<Segment> segments;
   const auto process = [&](const std::vector<Segment>& emitted) { AppendSegments(segments, emitted); };
 
   EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
-      "<think>unfinished ST", 1, &stop_filter, splitter, process));
+      "", 101, &stop_filter, splitter, process));
+  EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
+      "unfinished ", 1, &stop_filter, splitter, process));
+  EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
+      "ST", 2, &stop_filter, splitter, process));
   chat_session_internal::FlushDecodedStream(&stop_filter, splitter, process);
 
   ASSERT_EQ(segments.size(), 1u);
   EXPECT_EQ(segments[0].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
   EXPECT_EQ(segments[0].text, "unfinished ST");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 2);
 }
 
 TEST(ChatSessionDecodedStreamTest, MatchedStopSuppressesStopBytesButFlushesPendingReasoningText) {
   StopStringFilter stop_filter({"STOP"});
-  ReasoningStreamSplitter splitter("<think>", "</think>");
+  ReasoningStreamSplitter splitter("<think>", "</think>", {101}, {102});
   std::vector<Segment> segments;
   const auto process = [&](const std::vector<Segment>& emitted) { AppendSegments(segments, emitted); };
 
   EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
-      "<think>hidden</thiST", 1, &stop_filter, splitter, process));
+      "", 101, &stop_filter, splitter, process));
+  EXPECT_FALSE(chat_session_internal::PushDecodedFragment(
+      "hidden</thiST", 1, &stop_filter, splitter, process));
   EXPECT_TRUE(chat_session_internal::PushDecodedFragment(
       "OPignored", 2, &stop_filter, splitter, process));
   chat_session_internal::FlushDecodedStream(&stop_filter, splitter, process);
@@ -176,6 +294,7 @@ TEST(ChatSessionDecodedStreamTest, MatchedStopSuppressesStopBytesButFlushesPendi
   ASSERT_EQ(segments.size(), 1u);
   EXPECT_EQ(segments[0].type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
   EXPECT_EQ(segments[0].text, "hidden</thi");
+  EXPECT_EQ(splitter.ReasoningTokenCount(), 1);
 }
 
 TEST(ChatSessionDecisionTest, PreAppendRebuildTracksBackendBakedSettings) {
@@ -237,6 +356,19 @@ TEST(ChatSessionDecisionTest, RetainedStateInvalidationMatchesSuccessfulTurnSema
       /*host_output_limit_reached=*/true));
 }
 
+TEST(ChatSessionDecisionTest, UndoInvalidatesGeneratorsWithoutAUsableRewindBoundary) {
+  using chat_session_internal::ShouldInvalidateRetainedGeneratorForUndo;
+
+  EXPECT_TRUE(ShouldInvalidateRetainedGeneratorForUndo(
+      /*undo_all=*/true, /*has_pre_turn_boundary=*/true, /*can_rewind=*/true));
+  EXPECT_TRUE(ShouldInvalidateRetainedGeneratorForUndo(
+      /*undo_all=*/false, /*has_pre_turn_boundary=*/false, /*can_rewind=*/true));
+  EXPECT_TRUE(ShouldInvalidateRetainedGeneratorForUndo(
+      /*undo_all=*/false, /*has_pre_turn_boundary=*/true, /*can_rewind=*/false));
+  EXPECT_FALSE(ShouldInvalidateRetainedGeneratorForUndo(
+      /*undo_all=*/false, /*has_pre_turn_boundary=*/true, /*can_rewind=*/true));
+}
+
 // ===========================================================================
 // Integration test fixture: loads the shared test model once per suite
 // ===========================================================================
@@ -293,7 +425,7 @@ class ChatSessionTest : public ::testing::Test {
 TEST_F(ChatSessionTest, ConstructWithModelOnly) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
   EXPECT_EQ(session.MessageCount(), 0u);
-  EXPECT_TRUE(session.GetHistory().empty());
+  EXPECT_TRUE(session.Transcript().Empty());
   EXPECT_EQ(session.TurnCount(), 0u);
 }
 
@@ -349,9 +481,10 @@ TEST_F(ChatSessionTest, RunBasic) {
 
   // History should contain user + assistant
   EXPECT_EQ(session.MessageCount(), 2u);
-  EXPECT_EQ(session.GetHistory()[0].role, FOUNDRY_LOCAL_ROLE_USER);
-  EXPECT_EQ(session.GetHistory()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_EQ(session.GetHistory()[1].GetSimpleText(), text);
+  const auto& messages = session.Transcript().Messages();
+  EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
+  EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(messages[1].VisibleText(), text);
 }
 
 TEST_F(ChatSessionTest, ChatCompletionRejectsAudioInput) {
@@ -526,8 +659,19 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
-TEST_F(ChatSessionTest, RunStreamingCancellation) {
+TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancellation) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator);
+
+  Request seed;
+  seed.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Remember the word sapphire. Reply OK."));
+  seed.options.Add("max_output_tokens", "32");
+  seed.options.Add("temperature", "0");
+
+  Response seed_response;
+  session.ProcessRequest(seed, seed_response);
+  ASSERT_EQ(session.MessageCount(), 2u);
+  ASSERT_EQ(session.TurnCount(), 1u);
 
   Request request;
   request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Count from 1 to 100."));
@@ -561,9 +705,9 @@ TEST_F(ChatSessionTest, RunStreamingCancellation) {
   // so allow for a couple of extra tokens to come through after the cancellation condition is met
   EXPECT_LE(tokens_received, 6);
 
-  // Cancelled requests should not commit to history (delayed commit)
-  EXPECT_EQ(session.MessageCount(), 0u);
-  EXPECT_EQ(session.TurnCount(), 0u);
+  // The appended canceled turn commits nothing; only the seed turn remains.
+  EXPECT_EQ(session.MessageCount(), 2u);
+  EXPECT_EQ(session.TurnCount(), 1u);
 
   cancel_enabled = false;
   Request retry;
@@ -576,10 +720,142 @@ TEST_F(ChatSessionTest, RunStreamingCancellation) {
   const auto retry_text = GetAssistantText(retry_response);
 
   EXPECT_NE(retry_text.find("4"), std::string::npos)
-      << "The retained generator should recover after cancellation. Got: " << retry_text;
+      << "The generator rebuilt from committed history should recover after cancellation. Got: " << retry_text;
   EXPECT_EQ(retry_response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
-  EXPECT_EQ(session.MessageCount(), 2u);
+  EXPECT_EQ(session.MessageCount(), 4u);
+  EXPECT_EQ(session.TurnCount(), 2u);
+}
+
+TEST_F(ChatSessionTest, CancellationFromTheLastQueuedCallbackPreventsCommit) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Reply with one word."));
+  request.options.Add("max_output_tokens", "1");
+  request.options.Add("temperature", "0");
+
+  session.SetStreamingCallback([](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+    auto item = queue->TryPop();
+    if (!item) {
+      return 0;
+    }
+
+    // Generation has only one token to produce, so this callback remains outstanding after the generator finishes.
+    // ProcessRequest must drain it and observe cancellation before committing the turn.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    return 1;
+  });
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_EQ(session.MessageCount(), 0u);
+  EXPECT_EQ(session.TurnCount(), 0u);
+}
+
+TEST_F(ChatSessionTest, OpenAIJsonCancellationFromLastContentCallbackPublishesNoTerminalSuccess) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  nlohmann::json request_json = {
+      {"model", GetModel().ModelId()},
+      {"messages", nlohmann::json::array({
+                       {{"role", "user"}, {"content", "Reply with one word."}},
+                   })},
+      {"max_tokens", 1},
+      {"temperature", 0}};
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  std::vector<nlohmann::json> delivered;
+  session.SetStreamingCallback([&delivered](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+    auto item = queue->TryPop();
+    if (!item) {
+      return 0;
+    }
+
+    const auto& text = static_cast<const TextItem&>(*item);
+    auto chunk = nlohmann::json::parse(text.text);
+    const bool has_content =
+        chunk["choices"][0]["delta"].contains("content") &&
+        !chunk["choices"][0]["delta"]["content"].get<std::string>().empty();
+    delivered.push_back(std::move(chunk));
+
+    if (has_content) {
+      // Keep the final content delivery outstanding until generation has naturally completed.
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      return 1;
+    }
+
+    return 0;
+  });
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  ASSERT_EQ(delivered.size(), 2u);
+  EXPECT_EQ(delivered[0]["choices"][0]["delta"]["role"], "assistant");
+  EXPECT_FALSE(delivered[0]["choices"][0]["finish_reason"].is_string());
+  EXPECT_TRUE(delivered[1]["choices"][0]["delta"].contains("content"));
+  EXPECT_FALSE(delivered[1]["choices"][0]["finish_reason"].is_string());
+  EXPECT_EQ(session.MessageCount(), 0u);
+  EXPECT_EQ(session.TurnCount(), 0u);
+}
+
+TEST_F(ChatSessionTest, TranscriptUndoFailureLeavesGeneratorAndConversationUsable) {
+  bool fail_undo_before_publish = false;
+  ChatSession session(
+      GetCatalogModel(), GetModel(), *logger_, null_telemetry_,
+      [&fail_undo_before_publish](ChatTranscript::CommitPhase phase) {
+        if (fail_undo_before_publish && phase == ChatTranscript::CommitPhase::kUndoBeforePublish) {
+          throw std::runtime_error("injected undo failure");
+        }
+      });
+
+  Request first;
+  first.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What is 2+2? Answer with just the number."));
+  first.options.Add("max_output_tokens", "32");
+  first.options.Add("temperature", "0");
+  Response first_response;
+  session.ProcessRequest(first, first_response);
+
+  Request second;
+  second.AddOwnedItem(MakeMessage(
+      FOUNDRY_LOCAL_ROLE_USER, "Now add 1 to that. Answer with just the number."));
+  second.options.Add("max_output_tokens", "32");
+  second.options.Add("temperature", "0");
+  Response second_response;
+  session.ProcessRequest(second, second_response);
+  const auto original_second_text = GetAssistantText(second_response);
+  const auto prompt_before = BuildChatMessagesJson(session.Transcript().Messages());
+
+  fail_undo_before_publish = true;
+  EXPECT_THROW(session.UndoTurns(1), std::runtime_error);
+  EXPECT_EQ(session.TurnCount(), 2u);
+  EXPECT_EQ(session.MessageCount(), 4u);
+  EXPECT_EQ(BuildChatMessagesJson(session.Transcript().Messages()), prompt_before);
+
+  fail_undo_before_publish = false;
+  EXPECT_NO_THROW(session.UndoTurns(1));
   EXPECT_EQ(session.TurnCount(), 1u);
+  EXPECT_EQ(session.MessageCount(), 2u);
+
+  Request retry;
+  retry.AddOwnedItem(MakeMessage(
+      FOUNDRY_LOCAL_ROLE_USER, "Now add 1 to that. Answer with just the number."));
+  retry.options.Add("max_output_tokens", "32");
+  retry.options.Add("temperature", "0");
+  Response retry_response;
+  session.ProcessRequest(retry, retry_response);
+
+  EXPECT_EQ(GetAssistantText(retry_response), original_second_text);
+  EXPECT_EQ(session.TurnCount(), 2u);
+  EXPECT_EQ(session.MessageCount(), 4u);
 }
 
 // ===========================================================================
@@ -609,4 +885,313 @@ TEST_F(ChatSessionTest, SearchOptionsFromEmptyParameters) {
 
   EXPECT_FALSE(opts.temperature.has_value());
   EXPECT_FALSE(opts.max_output_tokens.has_value());
+}
+
+// ===========================================================================
+// Request-scoped system prefix (`instructions`) against a warm session.
+//
+// The prefix is baked into a generator's prompt, so a turn that changes it must rebuild while a turn that repeats it
+// keeps the KV cache. Public usage always reports the complete logical prompt, so warm results are compared with an
+// equivalent freshly rebuilt session rather than exposing the internal suffix-token optimization.
+// ===========================================================================
+
+namespace {
+
+/// Run one turn. `instructions` is the request-scoped system prefix; empty means none.
+Response RunTurnResponse(ChatSession& session, const std::string& user_text, const std::string& instructions,
+                         bool disable_tools = false, int max_output_tokens = 8) {
+  Request request;
+  if (!user_text.empty()) {
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, user_text));
+  }
+
+  if (!instructions.empty()) {
+    request.options.Add(kSystemPromptOption, instructions);
+  }
+  if (disable_tools) {
+    request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "none");
+  }
+
+  request.options.Add("max_output_tokens", std::to_string(max_output_tokens));
+  request.options.Add("temperature", "0");
+
+  Response response;
+  session.ProcessRequest(request, response);
+  return response;
+}
+
+fl::TokenUsage RunTurn(ChatSession& session, const std::string& user_text, const std::string& instructions) {
+  return RunTurnResponse(session, user_text, instructions).usage;
+}
+
+}  // namespace
+
+TEST_F(ChatSessionTest, UnchangedInstructionsKeepTheCachedGeneratorAndDoNotRepeatThePrefix) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  const std::string instructions = "You are a terse assistant that answers in one word.";
+  const std::string first_user = "Say ok.";
+  const std::string second_user = "Say ok again.";
+
+  auto first_response = RunTurnResponse(session, first_user, instructions);
+  const auto second = RunTurn(session, second_user, instructions);
+
+  EXPECT_GT(first_response.usage.prompt_tokens, 0);
+  EXPECT_GT(second.prompt_tokens, 0);
+  EXPECT_GT(second.prompt_tokens, first_response.usage.prompt_tokens)
+      << "the second turn's input sequence includes the conversation already held by the generator";
+  EXPECT_LE(second.completion_tokens, 8);
+  ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+  EXPECT_TRUE(session.Transcript().Turns()[1].tokens.pre_turn.has_value())
+      << "unchanged instructions should append to the existing generator rather than rebuild it";
+
+  // The prefix is request state and never enters the conversation record: two turns, four messages, no system
+  // message among them.
+  ASSERT_EQ(session.MessageCount(), 4u);
+  for (const auto& message : session.Transcript().Messages()) {
+    EXPECT_NE(message.role, FOUNDRY_LOCAL_ROLE_SYSTEM) << "the system prefix must not be committed to history";
+  }
+}
+
+TEST_F(ChatSessionTest, OrdinaryWarmContinuationMatchesFreshFullTranscriptReplay) {
+  ChatSession warm_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  const std::string first_user = "What is 2+2? Answer with just the number.";
+  const std::string second_user = "Add 1 to the previous answer. Answer with just the number.";
+
+  const auto first = RunTurnResponse(warm_session, first_user, "", /*disable_tools=*/true,
+                                     /*max_output_tokens=*/32);
+  ASSERT_EQ(first.finish_reason, FOUNDRY_LOCAL_FINISH_STOP)
+      << "the first turn must finish naturally so its Generator can be retained";
+  auto full_messages = warm_session.Transcript().Messages();
+  full_messages.emplace_back(FOUNDRY_LOCAL_ROLE_USER, second_user);
+  const auto expected_prompt = BuildChatPrompt(full_messages, GetModel());
+
+  const auto warm = RunTurnResponse(warm_session, second_user, "", /*disable_tools=*/true,
+                                    /*max_output_tokens=*/32);
+  ASSERT_TRUE(warm_session.Transcript().Turns()[1].tokens.pre_turn.has_value())
+      << "the ordinary continuation must exercise the retained Generator path";
+
+  ChatSession fresh_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  Request fresh_request;
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, GetAssistantText(first)));
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
+  fresh_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "none");
+  fresh_request.options.Add("max_output_tokens", "32");
+  fresh_request.options.Add("temperature", "0");
+
+  const auto fresh_input = BuildTranscriptMessages(fresh_request.items);
+  EXPECT_EQ(BuildChatPrompt(fresh_input, GetModel()), expected_prompt)
+      << "the warm logical prompt and fresh rendered prompt must be identical";
+
+  Response fresh;
+  fresh_session.ProcessRequest(fresh_request, fresh);
+
+  EXPECT_EQ(warm.usage.prompt_tokens, fresh.usage.prompt_tokens);
+  EXPECT_EQ(GetAssistantText(warm), GetAssistantText(fresh));
+  EXPECT_EQ(warm.finish_reason, fresh.finish_reason);
+  EXPECT_EQ(warm.usage.completion_tokens, fresh.usage.completion_tokens);
+}
+
+TEST_F(ChatSessionTest, WarmTurnThatStopsBeforeItsLimitReportsStop) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  const std::string instructions = "Answer each request with only the word ok.";
+  RunTurnResponse(session, "Say ok.", instructions, /*disable_tools=*/false, /*max_output_tokens=*/64);
+  const auto second =
+      RunTurnResponse(session, "Say ok again.", instructions, /*disable_tools=*/false, /*max_output_tokens=*/64);
+
+  EXPECT_EQ(second.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_GT(second.usage.completion_tokens, 0);
+  EXPECT_LT(second.usage.completion_tokens, 64);
+  EXPECT_EQ(second.usage.total_tokens, second.usage.prompt_tokens + second.usage.completion_tokens);
+  EXPECT_TRUE(session.Transcript().Turns()[1].tokens.pre_turn.has_value());
+}
+
+TEST_F(ChatSessionTest, ChangedInstructionsRebuildTheGeneratorWithTheNewPrefix) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  const std::string first_instructions = "You are a terse assistant that answers in one word.";
+  // Deliberately much longer: a rebuilt prompt has to carry it, so the token count cannot be mistaken for an append.
+  const std::string second_instructions =
+      "You are an extremely careful assistant. Answer in one word. Do not explain yourself. Do not apologise. "
+      "Do not add pleasantries. Do not restate the question. Keep every answer as short as it can possibly be.";
+
+  const auto first = RunTurnResponse(session, "Say ok.", first_instructions);
+  const auto second = RunTurnResponse(session, "Say ok again.", first_instructions);
+  const auto rebuilt = RunTurnResponse(session, "Say ok once more.", second_instructions);
+
+  ChatSession fresh_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  Request fresh_request;
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Say ok."));
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, GetAssistantText(first)));
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Say ok again."));
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, GetAssistantText(second)));
+  fresh_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Say ok once more."));
+  fresh_request.options.Add(kSystemPromptOption, second_instructions);
+  fresh_request.options.Add("max_output_tokens", "8");
+  fresh_request.options.Add("temperature", "0");
+
+  Response fresh;
+  fresh_session.ProcessRequest(fresh_request, fresh);
+
+  EXPECT_EQ(rebuilt.usage.prompt_tokens, fresh.usage.prompt_tokens)
+      << "changing instructions must rebuild the same prompt as a fresh session";
+  EXPECT_EQ(rebuilt.usage.total_tokens, rebuilt.usage.prompt_tokens + rebuilt.usage.completion_tokens);
+
+  // Still nothing in the record: a changed prefix replaces the old one rather than stacking another system message.
+  ASSERT_EQ(session.MessageCount(), 6u);
+  for (const auto& message : session.Transcript().Messages()) {
+    EXPECT_NE(message.role, FOUNDRY_LOCAL_ROLE_SYSTEM) << "the system prefix must not be committed to history";
+  }
+}
+
+TEST_F(ChatSessionTest, RemovingToolDefinitionsRebuildsWithTheCurrentToolSet) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  session.AddToolDefinition({"lookup", "Look up a value",
+                             R"({"type":"object","properties":{"key":{"type":"string"}}})"});
+
+  const std::string first_user = "Reply with the single word ok.";
+  const std::string second_user = "Reply with the single word done.";
+  auto first_response = RunTurnResponse(session, first_user, "", /*disable_tools=*/true);
+  ASSERT_TRUE(session.RemoveToolDefinition("lookup"));
+
+  const auto after_removal = RunTurn(session, second_user, "");
+
+  ChatSession rebuilt_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  Request rebuilt_request;
+  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
+  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, GetAssistantText(first_response)));
+  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
+  rebuilt_request.options.Add("max_output_tokens", "8");
+  rebuilt_request.options.Add("temperature", "0");
+
+  Response rebuilt_response;
+  rebuilt_session.ProcessRequest(rebuilt_request, rebuilt_response);
+
+  EXPECT_EQ(after_removal.prompt_tokens, rebuilt_response.usage.prompt_tokens)
+      << "removing tools must rebuild with the same prompt a fresh session sees";
+}
+
+TEST_F(ChatSessionTest, AutoModeGeneratedToolCallInvalidatesTheCachedGenerator) {
+  const ToolDefinition tool{"lookup", "Look up a value",
+                            R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"};
+  const std::string first_user = "Call lookup with key alpha. Do not answer without calling the tool.";
+  const std::string second_user = "Reply with the single word done without calling a tool.";
+
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  session.AddToolDefinition(tool);
+
+  Request first_request;
+  first_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
+  first_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
+  first_request.options.Add("max_output_tokens", "64");
+  first_request.options.Add("temperature", "0");
+
+  Response first_response;
+  session.ProcessRequest(first_request, first_response);
+
+  const auto generated_call = std::find_if(first_response.items.begin(), first_response.items.end(),
+                                           [](const auto& item) {
+                                             return item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL;
+                                           });
+  ASSERT_NE(generated_call, first_response.items.end()) << "the deterministic prompt must produce a tool call";
+
+  Request second_request;
+  second_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
+  second_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
+  second_request.options.Add("max_output_tokens", "8");
+  second_request.options.Add("temperature", "0");
+
+  Response warm_response;
+  session.ProcessRequest(second_request, warm_response);
+
+  ChatSession rebuilt_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  rebuilt_session.AddToolDefinition(tool);
+
+  Request rebuilt_request;
+  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, first_user));
+  for (const auto& item : first_response.items) {
+    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
+      rebuilt_request.AddOwnedItem(std::make_unique<MessageItem>(static_cast<const MessageItem&>(*item)));
+    } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      rebuilt_request.AddOwnedItem(std::make_unique<ToolCallItem>(static_cast<const ToolCallItem&>(*item)));
+    }
+  }
+  rebuilt_request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, second_user));
+  rebuilt_request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "auto");
+  rebuilt_request.options.Add("max_output_tokens", "8");
+  rebuilt_request.options.Add("temperature", "0");
+
+  Response rebuilt_response;
+  rebuilt_session.ProcessRequest(rebuilt_request, rebuilt_response);
+
+  EXPECT_EQ(warm_response.usage.prompt_tokens, rebuilt_response.usage.prompt_tokens)
+      << "a generated auto-mode call must force the next turn to rebuild from structured history";
+}
+
+// ===========================================================================
+// Turns that carry no message of their own.
+// ===========================================================================
+
+TEST_F(ChatSessionTest, InstructionsAloneOnANewConversationGenerate) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  const auto usage = RunTurn(session, "", "Reply with the single word: ok");
+
+  EXPECT_GT(usage.prompt_tokens, 0) << "the system prefix is the prompt";
+  ASSERT_EQ(session.MessageCount(), 1u) << "only the assistant turn is recorded";
+  EXPECT_EQ(session.Transcript().Messages()[0].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+}
+
+TEST_F(ChatSessionTest, AnEmptyInputContinuesAWarmConversation) {
+  // The warm half of the previous_response_id-with-empty-input case. The cached generator cannot append an empty
+  // message list, so the turn rebuilds from committed history and produces the next assistant turn — which is what
+  // the cold path does with the same request.
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  RunTurn(session, "Name a colour. Answer with one word.", "");
+  ASSERT_EQ(session.MessageCount(), 2u);
+
+  const auto continued = RunTurn(session, "", "");
+
+  EXPECT_GT(continued.prompt_tokens, 0);
+  // No input message was added, so the turn contributes exactly one assistant message.
+  ASSERT_EQ(session.MessageCount(), 3u);
+  EXPECT_EQ(session.Transcript().Messages()[2].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(session.Transcript().TurnCount(), 2u);
+}
+
+TEST_F(ChatSessionTest, ARequestWithNothingAtAllIsAClientError) {
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  Response response;
+
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "expected a request with no content, no media, no instructions and no history to be rejected";
+  } catch (const fl::Exception& ex) {
+    // A caller mistake, so it must map to HTTP 400 — never a 500.
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("nothing to generate from"), std::string::npos) << ex.what();
+  }
+}
+
+TEST_F(ChatSessionTest, AnEmptyToolResultForAnUnknownCallReportsTheCorrelationError) {
+  // Precedence: an empty tool result carries no content, but "unknown call id" is the real problem and must not be
+  // reported as an empty request.
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<ToolResultItem>("call_missing", ""));
+
+  Response response;
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "expected the unknown tool call id to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("unknown tool call id"), std::string::npos) << ex.what();
+  }
 }

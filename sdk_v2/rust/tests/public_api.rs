@@ -27,3 +27,25 @@ fn native_errors_expose_stable_and_unknown_codes() {
     assert_eq!(unknown.native_code(), Some(NativeErrorCode::Unknown(42)));
     assert_eq!(unknown.native_message(), Some("future native error"));
 }
+
+#[test]
+fn tool_definitions_preserve_the_published_struct_shape() {
+    use foundry_local_sdk::{CustomToolDefinition, ToolDefinition};
+
+    let literal = ToolDefinition {
+        name: "literal".to_string(),
+        description: None,
+        json_schema: r#"{"type":"object"}"#.to_string(),
+    };
+    assert_eq!(literal.name, "literal");
+
+    let function = ToolDefinition::new("multiply", r#"{"type":"object"}"#)
+        .with_description("Multiplies two numbers.");
+    assert_eq!(function.json_schema, r#"{"type":"object"}"#);
+    assert_eq!(
+        function.description.as_deref(),
+        Some("Multiplies two numbers.")
+    );
+
+    let _custom = CustomToolDefinition::new("apply_patch").with_description("Applies a patch.");
+}

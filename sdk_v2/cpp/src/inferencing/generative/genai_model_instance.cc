@@ -169,4 +169,23 @@ const GenAIModelInstance::TagInfo& GenAIModelInstance::GetTagInfo() {
   return tag_info_;
 }
 
+std::vector<int32_t> GenAIModelInstance::EncodeText(const std::string& text) {
+  try {
+    auto sequences = GetPreprocessor().Encode(text.c_str());
+    if (!sequences || sequences->Count() == 0) {
+      return {};
+    }
+
+    const auto* data = sequences->SequenceData(0);
+    const auto count = sequences->SequenceCount(0);
+    if (data == nullptr || count == 0) {
+      return {};
+    }
+
+    return {data, data + count};
+  } catch (...) {
+    return {};
+  }
+}
+
 }  // namespace fl

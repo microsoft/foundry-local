@@ -15,7 +15,10 @@ use core::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
 /// The library is built against this API version (`FOUNDRY_LOCAL_API_VERSION`).
-pub const FOUNDRY_LOCAL_API_VERSION: u32 = 1;
+///
+/// This is both the version requested from `FoundryLocalGetApi` and the version stamped on every
+/// versioned struct built here, so the two can never disagree.
+pub const FOUNDRY_LOCAL_API_VERSION: u32 = 2;
 
 // ── Opaque handle types ──────────────────────────────────────────────────────
 
@@ -326,12 +329,22 @@ pub struct flStreamingCallbackData {
     pub item_queue: *mut flItemQueue,
 }
 
+/// `flToolKind` — a fixed 32-bit discriminant in the C header, so it is bound as `u32`.
+pub type flToolKind = u32;
+/// Arguments are a JSON object conforming to the definition's schema, which is required.
+pub const FOUNDRY_LOCAL_TOOL_KIND_FUNCTION: flToolKind = 0;
+/// Arguments are raw text. The definition must not carry a schema.
+pub const FOUNDRY_LOCAL_TOOL_KIND_CUSTOM: flToolKind = 1;
+
 #[repr(C)]
 pub struct flToolDefinition {
     pub version: u32,
     pub name: *const c_char,
     pub description: *const c_char,
+    /// Null or empty for a custom tool.
     pub json_schema: *const c_char,
+    /// Appended in API version 2. The native side reads it only when `version` is at least 2.
+    pub kind: flToolKind,
 }
 
 // ── Callback types (plain C calling convention) ──────────────────────────────
@@ -747,4 +760,42 @@ pub struct flModelApiVtable {
         key: *const c_char,
         default_value: i64,
     ) -> i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, size_of};
+
+    /// Frozen copy of `flToolDefinition` as published in API version 1. A consumer built
+    /// against that header allocates only these bytes, so `kind` must be appended after them rather
+    /// than woven into the prefix.
+    #[repr(C)]
+    struct LegacyToolDefinitionV1 {
+        version: u32,
+        name: *const c_char,
+        description: *const c_char,
+        json_schema: *const c_char,
+    }
+
+    #[test]
+    fn tool_definition_appends_kind_after_the_legacy_prefix() {
+        assert_eq!(
+            size_of::<LegacyToolDefinitionV1>(),
+            std::mem::offset_of!(flToolDefinition, kind)
+        );
+        assert_eq!(
+            std::mem::offset_of!(flToolDefinition, json_schema),
+            std::mem::offset_of!(LegacyToolDefinitionV1, json_schema)
+        );
+        assert_eq!(align_of::<flToolDefinition>(), align_of::<*const c_char>());
+
+        assert_eq!(size_of::<flToolKind>(), 4);
+        assert_eq!(FOUNDRY_LOCAL_TOOL_KIND_FUNCTION, 0);
+        assert_eq!(FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, 1);
+    }
+
+    // `kind` is only read by the native side from a version 2 or later definition, so this crate
+    // must request — and stamp — at least that version.
+    const _: () = assert!(FOUNDRY_LOCAL_API_VERSION >= 2);
 }

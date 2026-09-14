@@ -21,12 +21,24 @@ The integration test suite must never pull a multi-GB model over the network dur
 
 ## Dynamic Engine lane
 
-Engine-capable builds compile `DynamicEngineChatTest`. Set `FOUNDRY_LOCAL_DYNAMIC_ENGINE_TEST_MODEL_PATH` to a
-pre-staged model directory whose `genai_config.json` defines `engine.dynamic_batching` to run generation,
-continuation, concurrency, capacity, cancellation-recovery, and unload coverage. The fixture stages writable metadata
-without modifying the shared model and sets `max_batch_size` to two. Current GenAI 0.15.2 builds exclude these tests;
-any CI lane that enables the newer Engine API must stage the model and set this variable so skips do not hide a
-regression.
+Engine-capable builds compile and run `DynamicEngineChatTest` using the checked-in
+`sdk_v2/cpp/test/testdata/tiny-paged-attention` model. The ordinary CMake testdata rule stages the assets, and
+`test::GetTestDataPath` locates them. Missing assets fail suite setup; no model environment variables, GPU,
+credentials, shared cache, or downloads are needed. The reproducible generator is beside the model, but generation
+dependencies are not required to build or run tests.
+
+This small CPU decoder performs causal attention through real paged KV reads and writes using standard ONNX
+operators. Its deterministic output is checked against an independent integer reference, including across retained
+turns and isolated concurrent requests. It covers SDK dispatch, paging, eviction/replay, cancellation, usage, and
+unload, not CUDA kernel correctness or trained-model quality.
+
+The packaging pipeline includes the unconditional `cpp_test_engine` stage from
+`.pipelines/v2/templates/stages-test-engine.yml`. It runs on the existing `onnxruntime-Ubuntu2404-AMD-CPU` pool image
+without a custom container and uses standard CPU NuGet packages with a test-only Engine-capable GenAI pin.
+`FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON` rejects packages that cannot compile the suite. The XML gate rejects
+missing lifecycle cases, skipped/disabled/unexecuted tests, and failures. Do not bypass failures with skips or
+`continueOnError`. Its binaries are not published as SDK artifacts, and shipping/release dependency pins are unchanged.
+Generator-only builds can still exclude the suite; the unconditional Engine lane supplies the required coverage.
 
 ## Debugging skips in CI
 

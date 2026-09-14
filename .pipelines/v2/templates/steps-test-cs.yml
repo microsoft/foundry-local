@@ -194,19 +194,28 @@ steps:
       $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/Microsoft.AI.Foundry.Local.Tests.csproj"
 
       # Test TFMs:
-      #   * net9.0 covers the .NET (Core) runtime test surface.
+      #   * net8.0 covers the .NET (Core) runtime test surface.
       #   * net462 (Windows only) exercises the netstandard2.0 surface
       #     + polyfills at runtime on .NET Framework.
-      # The csproj also targets net8.0, but only as build-time coverage — the .NET
-      # back-compat guarantee means a successful net9.0 test run validates the same
-      # assemblies for net8.0 consumers.
-      $frameworks = @('net9.0')
+      $frameworks = @('net8.0')
       $isWin = $IsWindows -or ($PSVersionTable.Platform -eq $null)
       if ($isWin) {
         $frameworks += 'net462'
       }
 
+      # `dotnet test --no-build --framework <unknown>` exits successfully without running tests.
+      # Validate the requested matrix first so a csproj/pipeline mismatch cannot produce a false green.
+      $declaredFrameworks = dotnet msbuild $proj -getProperty:TargetFrameworks
+      if ($LASTEXITCODE -ne 0 -or -not $declaredFrameworks) {
+        throw "Failed to determine test TargetFrameworks"
+      }
+      $declaredFrameworks = $declaredFrameworks.Trim().Split(';')
+
       foreach ($tfm in $frameworks) {
+        if ($tfm -notin $declaredFrameworks) {
+          throw "Test framework '$tfm' is not declared by $proj ($($declaredFrameworks -join ', '))"
+        }
+
         Write-Host "=== dotnet test --framework $tfm ==="
         dotnet test $proj `
           --no-build --configuration Release `
