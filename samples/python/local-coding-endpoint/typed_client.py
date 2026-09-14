@@ -15,7 +15,7 @@ from foundry_local_sdk import (
     Response,
     TextItem,
 )
-from launcher import DEFAULT_MODEL_ID, MODEL_ID_PATTERN, get_or_register_model
+from launcher import MODEL_ID, get_or_register_model
 
 DEFAULT_PROMPTS = (
     "Write a Python function that chunks a list into groups of three.",
@@ -35,22 +35,10 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Model directory containing genai_config.json.",
     )
-    parser.add_argument(
-        "--model-id",
-        default=DEFAULT_MODEL_ID,
-        help="Local catalog ID in <name>:<version> form.",
-    )
-    parser.add_argument(
-        "--skip-cuda-ep",
-        action="store_true",
-        help="Do not register CUDAExecutionProvider.",
-    )
     args = parser.parse_args()
     args.model = args.model.expanduser().resolve()
     if not args.model.is_dir() or not (args.model / "genai_config.json").is_file():
         parser.error("--model must be a directory containing genai_config.json")
-    if not MODEL_ID_PATTERN.fullmatch(args.model_id):
-        parser.error("--model-id must use <name>:<positive-integer-version> form")
     return args
 
 
@@ -87,16 +75,13 @@ def main() -> None:
     registered_here = False
     loaded_here = False
     try:
-        if not args.skip_cuda_ep:
-            result = manager.download_and_register_eps(["CUDAExecutionProvider"])
-            if not result.success:
-                raise RuntimeError(
-                    f"CUDA execution-provider registration failed: {result.status}"
-                )
+        result = manager.download_and_register_eps(["CUDAExecutionProvider"])
+        if not result.success:
+            raise RuntimeError(
+                f"CUDA execution-provider registration failed: {result.status}"
+            )
 
-        model, registered_here = get_or_register_model(
-            manager, args.model, args.model_id
-        )
+        model, registered_here = get_or_register_model(manager, args.model)
         if not model.is_loaded:
             model.load()
             loaded_here = True
@@ -114,9 +99,7 @@ def main() -> None:
         finally:
             try:
                 if registered_here:
-                    manager.get_catalog(CatalogType.LOCAL).unregister_model(
-                        args.model_id
-                    )
+                    manager.get_catalog(CatalogType.LOCAL).unregister_model(MODEL_ID)
             finally:
                 manager.close()
 
