@@ -32,7 +32,7 @@ EpBundleArtifact Archive(std::string id, std::string filename, std::string sha25
 
 EpBundleManifest WindowsX64Manifest() {
   return EpBundleManifest{
-      .bundle_id = "cuda-ep-win-x64-cuda-12.8.4-ort-1.28.0-genai-0.15.2-20260806-182620",
+      .bundle_id = "cuda-ep-win-x64-cuda-12.8.4-ort-1.30.0-genai-0.16.0-20260913-071149",
       .artifacts =
           {
               Archive(
@@ -66,13 +66,13 @@ EpBundleManifest WindowsX64Manifest() {
                        .sha256 = "49487537744256a3d4365c4792b03bf31130ad1faea0a13eafa219620941d837"},
                   }),
               Archive(
-                  "cuda-ep", "cuda-ep-bins-win-x64-20260806-182620.zip",
-                  "e62938987e848a0fbb3d215dfefaed40307d2446393909927ba0345eaaf3d263", 256 * kMiB,
+                  "cuda-ep", "cuda-ep-bins-win-x64-20260913-071149.zip",
+                  "5d1c38eb4058b6898d78ae5e7881ac07dda8ef37156be232f0f63846a1405f85", 256 * kMiB,
                   {
                       {.relative_path = "onnxruntime-genai-cuda.dll",
-                       .sha256 = "7894fb5efaad4a663e834f20b912b44cc383629b24ffe8bbc6382786a7326dbc"},
+                       .sha256 = "132d28f988ee8bc1ce050e8dcdda7036ab436616d827508af8e0a4f6ec21f2da"},
                       {.relative_path = "onnxruntime_providers_cuda.dll",
-                       .sha256 = "60f1aeef7ebe27f7e659cb88f597005ca5a5e75832b85dcef3eef02b9322df9a"},
+                       .sha256 = "7d014892b64d03092c01e99ae5786c6080c5239eeee30e6fb902fd2a800fa95e"},
                   }),
           },
       .provider_relative_path = "onnxruntime_providers_cuda.dll",
@@ -81,7 +81,7 @@ EpBundleManifest WindowsX64Manifest() {
 
 EpBundleManifest WindowsArm64Manifest() {
   return EpBundleManifest{
-      .bundle_id = "cuda-ep-win-arm64-cuda-13.4.1-ort-1.28.0-genai-0.15.2-20260806-182803",
+      .bundle_id = "cuda-ep-win-arm64-cuda-13.4.1-ort-1.30.0-genai-0.16.0-20260913-071350",
       .artifacts =
           {
               Archive(
@@ -115,13 +115,13 @@ EpBundleManifest WindowsArm64Manifest() {
                        .sha256 = "c9e0ec0e0a4e659393e15897ed1f6e5bac677e0c0fe7e12290f0386f19477b6b"},
                   }),
               Archive(
-                  "cuda-ep", "cuda-ep-bins-win-arm64-20260806-182803.zip",
-                  "212e670c61b3292d4a7d98f16fc2cf61f7b080604e0c145e81c39ec81e7b3259", 96 * kMiB,
+                  "cuda-ep", "cuda-ep-bins-win-arm64-20260913-071350.zip",
+                  "fc8f0a01daafedc82aa57072f023b11cf801dd94ed0a449ddc8ac4698e43e519", 96 * kMiB,
                   {
                       {.relative_path = "onnxruntime-genai-cuda.dll",
-                       .sha256 = "ab61145f4bc6284286e663586f634b973072d58ced20c497c7e5259f2ef3fc08"},
+                       .sha256 = "d27a02b8a83d0aaac47904d1baff4f7954aa25dcc130dba539fe9aafc53eab30"},
                       {.relative_path = "onnxruntime_providers_cuda.dll",
-                       .sha256 = "d92ffbd23a84f91b976baed9031de267efe1dc892d85c09d0979d25b89f5d1a0"},
+                       .sha256 = "82a3887c64791fc7131a0f705130f02f456952915ecea71372236656c59a47b2"},
                   }),
           },
       .provider_relative_path = "onnxruntime_providers_cuda.dll",
@@ -130,17 +130,17 @@ EpBundleManifest WindowsArm64Manifest() {
 
 EpBundleManifest LinuxX64Manifest() {
   return EpBundleManifest{
-      .bundle_id = "cuda-ep-linux-x64-ort-1.28.0-genai-0.15.2-20260806-182830",
+      .bundle_id = "cuda-ep-linux-x64-ort-1.30.0-genai-0.16.0-20260913-071417",
       .artifacts =
           {
               Archive(
-                  "cuda-ep", "cuda-ep-linux-x64-20260806-182830.zip",
-                  "abf347e7234d7434105efde12a2e0609fdd1d8828167b9873f4463926f1206e6", 448 * kMiB,
+                  "cuda-ep", "cuda-ep-linux-x64-20260913-071417.zip",
+                  "482e615e4c66b3f14a980af00e330e28fa5897a34161ec2972f75289685546be", 448 * kMiB,
                   {
                       {.relative_path = "libonnxruntime-genai-cuda.so",
-                       .sha256 = "d5300fc4413d9e74bd8dfceb5233fca6fcfa1d5ddc247081365fdb5f143091e6"},
+                       .sha256 = "3c95bb3b92f560718482dd3638388b6fd7374fb5ba6d9d5f4c4ca22c095e7681"},
                       {.relative_path = "libonnxruntime_providers_cuda.so",
-                       .sha256 = "b88d7b7f4b2e81d3eff41663fc70f4ae9e03dee9e2301cb53dc250e5a96d7f7a"},
+                       .sha256 = "8589ae31ed4941e72693a6a2e9dd8b8e721c888cfd9e6ffcb26da4e6e58ce720"},
                   }),
           },
       .provider_relative_path = "libonnxruntime_providers_cuda.so",
