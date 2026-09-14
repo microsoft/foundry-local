@@ -4,7 +4,6 @@
 #include "ep_detection/ep_detector.h"
 #include "inferencing/model_load_manager.h"
 #include "internal_api/test_helpers.h"
-#include "internal_api/test_model_cache.h"
 #include "logger.h"
 #include "utils/safe_getenv.h"
 
@@ -123,33 +122,20 @@ TEST(ModelCapabilitiesTest, QualifiedQwenPackageResolvesBothProductionCapabiliti
   constexpr const char* kQualifiedModelPath =
       "FOUNDRY_QUALIFIED_QWEN_MODEL_PATH";
   const auto explicit_path = fl::test::SafeGetEnv(kQualifiedModelPath);
-  std::filesystem::path model_path;
-  if (!explicit_path.empty()) {
-    model_path = FindModelConfigDirectory(explicit_path);
-    ASSERT_FALSE(model_path.empty())
-        << kQualifiedModelPath
-        << " must name a package root or model directory containing "
-           "genai_config.json";
-  } else {
-    const auto cache = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");
-    if (cache.empty() ||
-        !std::filesystem::exists(std::filesystem::path(cache) / "Microsoft" /
-                                 kQwenModelAlias)) {
-      GTEST_SKIP() << "Qualified Qwen package is absent; set "
-                   << kQualifiedModelPath
-                   << " or install the fallback package in FOUNDRY_TEST_DATA_DIR";
-    }
-
-    model_path = fl::test::GetTestModelPath(kQwenModelAlias);
+  if (explicit_path.empty()) {
+    GTEST_SKIP() << "Set " << kQualifiedModelPath
+                 << " to the qualified qwen3_5_text package";
   }
 
+  const auto model_path = FindModelConfigDirectory(explicit_path);
+  ASSERT_FALSE(model_path.empty())
+      << kQualifiedModelPath
+      << " must name a package root or model directory containing "
+         "genai_config.json";
+
   fl::StderrLogger logger;
-  fl::test::CpuOnlyEpDetector cpu_detector;
   CpuCudaEpDetector cpu_cuda_detector;
-  fl::IEpDetector& ep_detector = explicit_path.empty()
-                                     ? static_cast<fl::IEpDetector&>(cpu_detector)
-                                     : static_cast<fl::IEpDetector&>(cpu_cuda_detector);
-  fl::ModelLoadManager load_manager(ep_detector, logger);
+  fl::ModelLoadManager load_manager(cpu_cuda_detector, logger);
   const auto result = load_manager.LoadModel(model_path.string(), kQwenModelAlias);
 
   ASSERT_EQ(result.status, fl::ModelLoadManager::LoadStatus::kSuccess);
