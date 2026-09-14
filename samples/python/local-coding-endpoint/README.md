@@ -18,13 +18,13 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install --extra-index-url "https://<PACKAGE-SOURCE>/simple" \
   "foundry-local-sdk==<VERSION-CONTAINING-LOCAL-CATALOG-BYOM>" \
-  "onnxruntime-gpu==1.30.0" \
-  "onnxruntime-genai-cuda==0.16.0"
+  "onnxruntime==1.30.0" \
+  "onnxruntime-genai-core==0.16.0"
 python -m pip install -r requirements.txt
 ```
 
-If the released `foundry-local-sdk` provides a qualified CUDA dependency bundle, install that bundle instead of
-separately installing the three packages above, while retaining ORT 1.30.0 and ORT GenAI 0.16.0.
+Do not install `onnxruntime-gpu` or `onnxruntime-genai-cuda` for this setup. The launcher asks Foundry Local to
+download and register the qualified CUDA execution-provider bundle separately.
 
 On the qualified single-GPU setup, expose GPU 0 before launching:
 
