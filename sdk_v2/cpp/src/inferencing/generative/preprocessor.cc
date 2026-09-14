@@ -6,6 +6,8 @@
 
 #include <ort_genai.h>
 
+#include <nlohmann/json.hpp>
+
 namespace fl {
 
 std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_multimodal_processor) {
@@ -65,9 +67,34 @@ std::unique_ptr<OgaSequences> Preprocessor::Encode(const char* text) {
 std::string Preprocessor::ApplyChatTemplate(const char* messages_json,
                                             const char* tools_json,
                                             bool add_generation_prompt) {
+  return ApplyChatTemplateWithOptions(messages_json, tools_json, nullptr, add_generation_prompt);
+}
+
+std::string Preprocessor::ApplyChatTemplateWithOptions(const char* messages_json,
+                                                       const char* tools_json,
+                                                       const char* template_kwargs_json,
+                                                       bool add_generation_prompt) {
   std::lock_guard<std::mutex> lock(mutex_);
-  OgaString result = tokenizer_->ApplyChatTemplate(/*template_str=*/nullptr, messages_json, tools_json,
-                                                   add_generation_prompt);
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+  KeyValuePairs options;
+  options.Add("chat_template_kwargs", template_kwargs_json ? template_kwargs_json : "{}");
+  tokenizer_->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
+#else
+  if (template_kwargs_json && *template_kwargs_json) {
+    auto template_kwargs = nlohmann::json::parse(
+        template_kwargs_json, nullptr, /*allow_exceptions=*/false);
+    if (!template_kwargs.is_object()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "chat_template_kwargs must be a valid JSON object");
+    }
+    if (!template_kwargs.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "chat_template_kwargs requires a newer ONNX Runtime GenAI package");
+    }
+  }
+#endif
+  OgaString result = tokenizer_->ApplyChatTemplate(
+      /*template_str=*/nullptr, messages_json, tools_json, add_generation_prompt);
   return std::string(static_cast<const char*>(result));
 }
 

@@ -5,6 +5,7 @@
 
 #include "inferencing/generative/chat/chat_template.h"
 #include "exception.h"
+#include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/model_load_manager.h"
 #include "ep_detection/ep_detector.h"
 #include "logger.h"
@@ -18,6 +19,12 @@
 #include <string>
 
 using namespace fl;
+
+namespace {
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+constexpr const char* kTestChatTemplateKwargsModelAlias = "qwen3.5-0.8b-generic-cpu-2";
+#endif
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Test fixture: loads the shared test model once per suite
@@ -58,6 +65,42 @@ class ChatTemplateTest : public ::testing::Test {
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
   static inline GenAIModelInstance* model_ = nullptr;
 };
+
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+class ChatTemplateKwargsTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    auto model_path = fl::test::GetTestModelPath(kTestChatTemplateKwargsModelAlias);
+    logger_ = std::make_unique<StderrLogger>();
+    ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
+    load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
+
+    auto result = load_manager_->LoadModel(model_path.string(), kTestChatTemplateKwargsModelAlias);
+
+    ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess)
+        << "Failed to load test model from: " << model_path;
+
+    model_ = result.model;
+  }
+
+  static void TearDownTestSuite() {
+    if (load_manager_) {
+      load_manager_->UnloadModel(kTestChatTemplateKwargsModelAlias);
+    }
+
+    load_manager_.reset();
+    ep_detector_.reset();
+    model_ = nullptr;
+  }
+
+  GenAIModelInstance& GetModel() { return *model_; }
+
+  static inline std::unique_ptr<StderrLogger> logger_;
+  static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
+  static inline std::unique_ptr<ModelLoadManager> load_manager_;
+  static inline GenAIModelInstance* model_ = nullptr;
+};
+#endif
 
 // ---------------------------------------------------------------------------
 // BuildChatPrompt tests
@@ -121,6 +164,47 @@ TEST_F(ChatTemplateTest, PromptEndsWithAssistantPrefix) {
   EXPECT_NE(prompt.find("assistant"), std::string::npos)
       << "Prompt should end with assistant prefix for generation. Got: " << prompt;
 }
+
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+TEST_F(ChatTemplateKwargsTest, TypedKwargsChangePromptAndOmissionClearsPriorState) {
+  std::vector<MessageItem> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
+  ToolCallContext default_context;
+  ToolCallContext thinking_context;
+  thinking_context.template_kwargs_json = R"({"enable_thinking":true})";
+  ToolCallContext no_thinking_context;
+  no_thinking_context.template_kwargs_json = R"({"enable_thinking":false})";
+
+  std::string default_prompt = BuildChatPrompt(messages, GetModel(), default_context);
+  std::string thinking_prompt = BuildChatPrompt(messages, GetModel(), thinking_context);
+  std::string no_thinking_prompt = BuildChatPrompt(messages, GetModel(), no_thinking_context);
+  std::string default_prompt_after_kwargs =
+      BuildChatPrompt(messages, GetModel(), default_context);
+
+  EXPECT_NE(thinking_prompt, no_thinking_prompt)
+      << "ToolCallContext kwargs should reach the prompt path shared by Generator and Engine backends";
+  EXPECT_EQ(default_prompt_after_kwargs, default_prompt)
+      << "Omitting kwargs must clear tokenizer state from the previous render";
+}
+#else
+TEST_F(ChatTemplateTest, TemplateKwargsRequireSupportedGenAI) {
+  std::vector<MessageItem> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
+  ToolCallContext empty_context;
+  empty_context.template_kwargs_json = "{}";
+
+  EXPECT_EQ(BuildChatPrompt(messages, GetModel(), empty_context),
+            BuildChatPrompt(messages, GetModel()))
+      << "An empty kwargs object should remain a no-op with the stable GenAI dependency";
+
+  try {
+    (void)BuildChatPrompt(messages, GetModel(), "", R"({"enable_thinking":false})");
+    FAIL() << "Expected chat_template_kwargs to be rejected by the stable GenAI dependency";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("requires a newer ONNX Runtime GenAI package"),
+              std::string::npos);
+  }
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // EncodePrompt tests

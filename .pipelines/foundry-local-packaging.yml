@@ -63,7 +63,7 @@ variables:
     value: '0.15.2'
 - ${{ else }}:
   - name: cppGenaiVersion
-    value: '0.16.0-dev1001400138'
+    value: '0.16.0-dev1001407373'
 - name: cppWinmlVersion
   value: '2.1.70'
 - name: cppBuildConfig

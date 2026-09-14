@@ -137,6 +137,9 @@ steps:
           'genai' {
             $defines += "GENAI_FETCH_URL=$archive"
             $defines += "ORT_GENAI_VERSION=$($pkg.version)"
+            if ($pkg.version -match '-dev') {
+              $defines += "FOUNDRY_LOCAL_REQUIRE_CHAT_TEMPLATE_KWARGS=ON"
+            }
           }
           'ort' { $defines += "ORT_FETCH_URL=$archive" }
           'winml' { $defines += "WINML_EP_CATALOG_FETCH_URL=$archive" }

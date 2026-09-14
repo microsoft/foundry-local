@@ -361,6 +361,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
 
   tool_ctx.tool_call_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
   tool_ctx.tool_call_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.template_kwargs_json = GetOptionOrEmpty(request.options, "chat_template_kwargs");
 
   // Fall back to model info properties if not specified in the request
   const auto& info = CatalogModel().Info();
@@ -661,6 +662,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.supports_reasoning != turn_tool_ctx.supports_reasoning ||
       cached_tool_ctx_.reasoning_start != turn_tool_ctx.reasoning_start ||
       cached_tool_ctx_.reasoning_end != turn_tool_ctx.reasoning_end ||
+      cached_tool_ctx_.template_kwargs_json != turn_tool_ctx.template_kwargs_json ||
       !cached_tool_ctx_.HasSameTools(turn_tool_ctx);
 
   if (cached_generator_ &&

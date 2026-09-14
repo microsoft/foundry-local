@@ -659,6 +659,166 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+    request.options.Add("max_output_tokens", "4");
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_NE(response.finish_reason, FOUNDRY_LOCAL_FINISH_ERROR);
+    return TurnResult{GetAssistantText(response), response.usage.prompt_tokens};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Reply briefly: two.";
+  constexpr const char* kThirdPrompt = "Reply briefly: three.";
+  constexpr const char* kFourthPrompt = "Reply briefly: four.";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto first = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kNoThinking);
+  auto same_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, kNoThinking);
+
+  ChatSession same_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto same_kwargs_full_history = run_turn(
+      same_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+      kNoThinking);
+  EXPECT_EQ(same_kwargs.text, same_kwargs_full_history.text);
+  EXPECT_LT(same_kwargs.prompt_tokens, same_kwargs_full_history.prompt_tokens)
+      << "Identical template kwargs should retain the continuous-decoding path";
+
+  auto changed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+
+  ChatSession changed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto changed_kwargs_full_history = run_turn(
+      changed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}},
+      kThinking);
+  EXPECT_EQ(changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Changing template kwargs must rebuild the generator from full history";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 2u);
+  auto replayed_changed_kwargs =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  EXPECT_EQ(replayed_changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Undoing a kwargs-triggered rebuild must discard stale rewind state and replay full history";
+
+  auto removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+
+  ChatSession removed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto removed_kwargs_full_history = run_turn(
+      removed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, replayed_changed_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}},
+      nullptr);
+  EXPECT_EQ(removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens)
+      << "Removing template kwargs must rebuild from full history and clear tokenizer state";
+}
+
+TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs,
+                      int max_output_tokens = 4) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+    request.options.Add("max_output_tokens", std::to_string(max_output_tokens));
+    request.options.Add("temperature", "0");
+    request.options.Add("chat_template_kwargs", template_kwargs);
+
+    Response response;
+    session.ProcessRequest(request, response);
+    return std::pair{TurnResult{GetAssistantText(response), response.usage.prompt_tokens},
+                     response.finish_reason};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Using the previous turn, reply briefly: two.";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto [first, first_finish] =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kThinking);
+  EXPECT_NE(first_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+
+  int streamed_items = 0;
+  bool cancel_enabled = true;
+  session.SetStreamingCallback(
+      [&](flStreamingCallbackData event, void*) -> int {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        if (queue->TryPop()) {
+          ++streamed_items;
+        }
+        return cancel_enabled && streamed_items >= 1 ? 1 : 0;
+      });
+
+  auto [canceled, canceled_finish] =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, kNoThinking, 64);
+  (void)canceled;
+  EXPECT_EQ(canceled_finish, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_EQ(session.TurnCount(), 1u);
+  EXPECT_EQ(session.MessageCount(), 2u);
+
+  cancel_enabled = false;
+  auto [replayed, replayed_finish] =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, kNoThinking);
+  EXPECT_NE(replayed_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+
+  ChatSession baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto [full_history, baseline_finish] = run_turn(
+      baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+      kNoThinking);
+  EXPECT_NE(baseline_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+  EXPECT_EQ(replayed.text, full_history.text);
+  EXPECT_EQ(replayed.prompt_tokens, full_history.prompt_tokens)
+      << "Cancellation after a kwargs-triggered rebuild must discard retained state before replay";
+}
+#endif
+
 TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancellation) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
   ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator);

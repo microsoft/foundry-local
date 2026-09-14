@@ -66,9 +66,12 @@ struct ToolCallContext {
     auto it = tool_kinds.find(name);
     return it == tool_kinds.end() ? ToolKind::kFunction : it->second;
   }
-
   /// Whether the named tool takes a raw text payload rather than JSON arguments.
   bool IsCustomTool(const std::string& name) const { return KindOf(name) == ToolKind::kCustom; }
+  bool IsCustomTool(const std::string& name) const { return KindOf(name) == ToolKind::kCustom; }
+  /// Additional typed context values for the model's chat template, serialized as a JSON object.
+  std::string template_kwargs_json;
+  std::string template_kwargs_json;
 
   /// User-specified guidance type from response_format (e.g., "lark_grammar", "json_schema").
   /// Empty means no explicit guidance — the generator may still apply auto-generated tool guidance.

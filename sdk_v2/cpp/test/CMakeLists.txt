@@ -104,7 +104,9 @@ endif()
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
 target_compile_definitions(
     foundry_local_tests
-    PRIVATE FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE}>
+    PRIVATE
+        FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE}>
+        FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS}>
 )
 
 target_link_libraries(foundry_local_tests
