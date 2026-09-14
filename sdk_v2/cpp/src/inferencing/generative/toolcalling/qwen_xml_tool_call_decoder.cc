@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
+#include "inferencing/session/tool_registry.h"
 
 #include <nlohmann/json.hpp>
 
@@ -36,6 +37,7 @@ struct FunctionSchema {
   Json properties = Json::object();
   std::unordered_set<std::string> required;
   bool valid = false;
+  bool custom = false;
 };
 
 using FunctionSchemas = std::unordered_map<std::string, FunctionSchema>;
@@ -105,6 +107,7 @@ FunctionSchemas ParseFunctionSchemas(
     return schemas;
   }
 
+  const auto custom_tool_schema = Json::parse(kCustomToolInputSchema);
   for (const auto& tool : tools) {
     if (!tool.is_object() || !tool.contains("type") || !tool["type"].is_string() ||
         tool["type"].get<std::string>() != "function") {
@@ -126,11 +129,12 @@ FunctionSchemas ParseFunctionSchemas(
 
     const auto name = (*function)["name"].get<std::string>();
     const auto kind = tool_kinds.find(name);
-    if (kind == tool_kinds.end() || kind->second != ToolKind::kFunction) {
+    if (kind == tool_kinds.end()) {
       continue;
     }
 
     FunctionSchema schema;
+    schema.custom = kind->second == ToolKind::kCustom;
     if (name.empty()) {
       schemas.emplace(name, std::move(schema));
       continue;
@@ -143,6 +147,11 @@ FunctionSchemas ParseFunctionSchemas(
     }
 
     const auto& parameters = (*function)["parameters"];
+    if (kind->second == ToolKind::kCustom && parameters != custom_tool_schema) {
+      schemas.emplace(name, std::move(schema));
+      continue;
+    }
+
     if (!parameters.is_object() || HasUnsupportedComposition(parameters)) {
       schemas.emplace(name, std::move(schema));
       continue;
@@ -319,7 +328,9 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
     }
 
     const auto body = source.substr(position, body_end - position);
-    if (ContainsAmbiguousMarkup(body)) {
+    // Canonical custom tools carry free-form text, where '<' is ordinary data. The exact newline-delimited closing
+    // marker remains reserved by the framing parser; function parameters retain the stricter ambiguity check.
+    if (!schema_it->second.custom && ContainsAmbiguousMarkup(body)) {
       return BlockResult(ParseState::kInvalid);
     }
 

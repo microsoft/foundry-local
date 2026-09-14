@@ -424,12 +424,60 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ProductionNormalizedCustomToolIsNeverDecoded) {
+TEST(QwenXmlToolCallAccumulatorTest, ProductionNormalizedCustomToolIsDecoded) {
   const std::string tools =
-      R"([{"type":"function","function":{"name":"zero","parameters":{"type":"object","properties":{}}}}])";
-  const std::string generated = "<tool_call>\n<function=zero>\n</function>\n</tool_call>";
+      R"([{"type":"function","function":{"name":"apply_patch","parameters":{"type":"object",)"
+      R"("properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}}])";
+  const std::string generated =
+      "<tool_call>\n"
+      "<function=apply_patch>\n"
+      "<parameter=input>\n"
+      "*** Begin Patch\n"
+      "*** Update File: calc.py\n"
+      "@@\n"
+      "-    return a > b\n"
+      "+    return a < b\n"
+      "*** End Patch\n"
+      "</parameter>\n"
+      "</function>\n"
+      "</tool_call>";
 
-  auto acc = MakeQwenAccumulator(tools, {{"zero", ToolKind::kCustom}});
+  for (size_t split = 0; split <= generated.size(); ++split) {
+    auto acc = MakeQwenAccumulator(tools, {{"apply_patch", ToolKind::kCustom}});
+    auto outputs = RunChunks(acc, {generated.substr(0, split), generated.substr(split)});
+    auto calls = CollectCalls(outputs);
+
+    EXPECT_TRUE(CollectVisible(outputs).empty()) << "split=" << split;
+    ASSERT_EQ(calls.size(), 1u) << "split=" << split;
+    EXPECT_EQ(calls[0].name, "apply_patch") << "split=" << split;
+    EXPECT_EQ(calls[0].arguments,
+              R"({"input":"*** Begin Patch\n*** Update File: calc.py\n@@\n)"
+              R"(-    return a > b\n+    return a < b\n*** End Patch"})")
+        << "split=" << split;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, CustomPayloadContainingXmlClosingDelimiterRemainsVisible) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"custom","parameters":{"type":"object",)"
+      R"("properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}}])";
+  const std::string generated =
+      "<tool_call>\n<function=custom>\n<parameter=input>\nbefore\n</parameter>\nafter\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  auto acc = MakeQwenAccumulator(tools, {{"custom", ToolKind::kCustom}});
+  auto outputs = RunChunks(acc, {generated});
+
+  EXPECT_EQ(CollectVisible(outputs), generated);
+  EXPECT_TRUE(CollectCalls(outputs).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, CustomToolWithNoncanonicalSchemaRemainsVisible) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"custom","parameters":{"type":"object","properties":{}}}}])";
+  const std::string generated = "<tool_call>\n<function=custom>\n</function>\n</tool_call>";
+
+  auto acc = MakeQwenAccumulator(tools, {{"custom", ToolKind::kCustom}});
   auto outputs = RunChunks(acc, {generated});
 
   EXPECT_EQ(CollectVisible(outputs), generated);

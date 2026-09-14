@@ -409,10 +409,11 @@ TEST(ChatSessionDecisionTest, QwenXmlParserIsSelectedOnlyForNativeAutoToolOutput
       context, /*has_native_qwen_xml_tool_calls=*/true));
 }
 
-TEST(ChatSessionDecisionTest, QwenXmlParserUsesAuthoritativeKindsToExcludeCustomTools) {
+TEST(ChatSessionDecisionTest, QwenXmlParserUsesAuthoritativeKindsToDecodeCustomTools) {
   const std::string tools =
       R"([{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{}}}},)"
-      R"({"type":"function","function":{"name":"custom","parameters":{"type":"object","properties":{}}}}])";
+      R"({"type":"function","function":{"name":"custom","parameters":{"type":"object",)"
+      R"("properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}}])";
   const std::unordered_map<std::string, ToolKind> kinds = {
       {"lookup", ToolKind::kFunction},
       {"custom", ToolKind::kCustom},
@@ -423,6 +424,9 @@ TEST(ChatSessionDecisionTest, QwenXmlParserUsesAuthoritativeKindsToExcludeCustom
   const std::string generated =
       "<tool_call>\n"
       "<function=custom>\n"
+      "<parameter=input>\n"
+      "raw payload\n"
+      "</parameter>\n"
       "</function>\n"
       "</tool_call>";
 
@@ -432,9 +436,15 @@ TEST(ChatSessionDecisionTest, QwenXmlParserUsesAuthoritativeKindsToExcludeCustom
                        std::make_move_iterator(terminal.events.begin()),
                        std::make_move_iterator(terminal.events.end()));
 
+  ToolCallContext context;
+  context.tool_kinds = kinds;
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
   ASSERT_EQ(output.events.size(), 1u);
-  ASSERT_TRUE(std::holds_alternative<std::string>(output.events.front()));
-  EXPECT_EQ(std::get<std::string>(output.events.front()), generated);
+  ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(output.events.front()));
+  const auto& call = std::get<ParsedToolCall>(output.events.front());
+  EXPECT_EQ(call.name, "custom");
+  EXPECT_EQ(call.arguments, "raw payload");
 }
 
 TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStreaming) {
