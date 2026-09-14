@@ -62,11 +62,7 @@ class GenAIModelInstance {
   /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();
   Preprocessor& GetPreprocessor();
-#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
   OnnxChatEngine* GetChatEngine() { return chat_engine_.get(); }
-#else
-  OnnxChatEngine* GetChatEngine() { return nullptr; }
-#endif
 
   /// Get the last-activity timestamp.
   std::chrono::steady_clock::time_point LastActivity() const { return last_activity_; }
@@ -93,9 +89,7 @@ class GenAIModelInstance {
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
   std::unique_ptr<Preprocessor> preprocessor_;
-#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
   std::unique_ptr<OnnxChatEngine> chat_engine_;
-#endif
   TagInfo tag_info_;
   std::once_flag tag_info_init_flag_;
   std::chrono::steady_clock::time_point last_activity_;

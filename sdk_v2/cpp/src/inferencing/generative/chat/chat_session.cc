@@ -8,9 +8,7 @@
 #include "inferencing/generative/chat/media_input.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
-#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
 #include "inferencing/generative/chat/onnx_engine_chat_stream.h"
-#endif
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/genai_model_instance.h"
@@ -61,12 +59,7 @@ std::unique_ptr<ChatGenerator> CreateTextChatGenerator(const std::vector<Transcr
                                                        const ToolCallContext& tool_ctx,
                                                        bool use_full_context) {
   if (model.GetGenAIConfig().GetChatBackendKind() != ChatBackendKind::kGenerator) {
-#if FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE
     return OnnxEngineChatStream::Create(messages, options, model, tool_ctx);
-#else
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
-             "model requires the ORT GenAI dynamic Engine API, but this build does not provide it");
-#endif
   }
 
   return OnnxChatGenerator::Create(messages, options, model, tool_ctx, use_full_context);
