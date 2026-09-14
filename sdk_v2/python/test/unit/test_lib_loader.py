@@ -136,7 +136,7 @@ class TestOrtPackageDiscovery:
 
     def test_find_file_in_package_supports_versioned_macos_ort_dylib(self, tmp_path, monkeypatch):
         pkg_spec = self._install_fake_package(tmp_path, "onnxruntime")
-        dylib_path = tmp_path / "onnxruntime" / "capi" / "libonnxruntime.1.28.0.dylib"
+        dylib_path = tmp_path / "onnxruntime" / "capi" / "libonnxruntime.1.30.0.dylib"
         dylib_path.parent.mkdir()
         dylib_path.write_text("", encoding="utf-8")
 
