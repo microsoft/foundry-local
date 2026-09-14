@@ -16,11 +16,24 @@ class GenAIModelInstance;
 struct TranscriptMessage;
 struct SearchOptions;
 struct ToolCallContext;
+namespace chat_internal {
+class PreparedChatMessages;
+}
+
+enum class BackendTerminationCause {
+  kNaturalEnd,
+  kStopSequence,
+  kOutputTokenLimit,
+  kSessionTokenLimit,
+  kCancellation,
+  kFailure,
+};
 
 struct ChatTurnUsage {
   int prompt_tokens = 0;
   int generated_tokens = 0;
   std::optional<flFinishReason> finish_reason;
+  std::optional<BackendTerminationCause> termination_cause;
 };
 
 class RetainedPromptMismatchError : public std::runtime_error {
@@ -71,7 +84,7 @@ class ChatGenerator {
   /// full_messages contains the complete structured transcript through new_messages. Backends that reconcile
   /// retained tokens against a freshly rendered prompt use it to decide whether the retained state is reusable.
   virtual int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
-                             const std::vector<TranscriptMessage>& full_messages,
+                             const chat_internal::PreparedChatMessages& full_messages,
                              GenAIModelInstance& model,
                              const ToolCallContext& tool_ctx,
                              const SearchOptions& options) = 0;

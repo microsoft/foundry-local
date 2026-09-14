@@ -36,6 +36,7 @@ struct TranscriptToolCall {
   /// Which of the session's tool kinds produced this call. Recorded so the authoritative transcript reports the call
   /// as what it was, and so a replayed call normalizes the same way the generated one did.
   ToolKind kind = ToolKind::kFunction;
+  GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
 };
 
 /// One event within a message, stored in the order it occurred.
@@ -140,7 +141,8 @@ struct GeneratedToolCall {
 /// unusable argument bytes must not fail the request. The raw bytes are preserved verbatim and the normalized form
 /// degrades to an empty object, which keeps the committed transcript renderable on every later turn.
 GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments,
-                                        ToolKind kind = ToolKind::kFunction);
+                                        ToolKind kind = ToolKind::kFunction,
+                                        GeneratedCallEncoding encoding = GeneratedCallEncoding::kStructured);
 
 /// Result of turning a request's items into transcript messages.
 struct TranscriptIngest {

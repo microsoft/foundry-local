@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 using namespace fl;
 
@@ -36,6 +37,38 @@ TEST(BuildToolJsonSchemaTest, InvalidJsonReturnsEmptyObject) {
   ctx.tool_output = true;
   ctx.tools_json = "not json";
   EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThrowing) {
+  const std::vector<nlohmann::json> malformed_tools = {
+      1,
+      {{"function", 1}},
+      {{"function", {{"name", 1}}}},
+      {{"function", {{"name", "fn"}, {"description", 1}}}},
+      {{"function", {{"name", "fn"}, {"parameters", 1}}}},
+      {{"function", {{"name", "fn"}, {"parameters", {{"type", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters", {{"type", "object"}, {"properties", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters", {{"type", "object"}, {"required", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", nlohmann::json::object()},
+           {"required", nlohmann::json::array({"missing"})}}}}}},
+  };
+
+  for (const auto& malformed : malformed_tools) {
+    SCOPED_TRACE(malformed.dump());
+    ToolCallContext ctx;
+    ctx.tool_output = true;
+    ctx.tools_json = nlohmann::json::array({malformed}).dump();
+
+    EXPECT_NO_THROW({ EXPECT_EQ(BuildToolJsonSchema(ctx), "{}"); });
+  }
 }
 
 TEST(BuildToolJsonSchemaTest, SingleToolProducesSchema) {
@@ -369,7 +402,6 @@ TEST(BuildLarkGrammarTest, PromptDoesNotOpenReasoningKeepsCotOpener) {
 // ========================================================================
 // ToolCallContext tests
 // ========================================================================
-
 
 TEST(ToolCallContextTest, DefaultsAreCorrect) {
   ToolCallContext ctx;

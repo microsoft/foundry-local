@@ -80,12 +80,13 @@ TranscriptToolCall MakeSuppliedToolCall(std::string call_id, std::string name, s
   return {std::move(call_id), std::move(name), std::move(arguments), std::move(*normalized), kind};
 }
 
-GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments, ToolKind kind) {
+GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, std::string arguments, ToolKind kind,
+                                        GeneratedCallEncoding encoding) {
   auto normalized = NormalizeToolCallArguments(kind, arguments);
   const bool usable = normalized.has_value();
 
   return {{std::move(call_id), std::move(name), std::move(arguments),
-           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind},
+           usable ? std::move(*normalized) : nlohmann::ordered_json::object(), kind, encoding},
           usable};
 }
 
@@ -309,10 +310,11 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
       if (call_item.replayed_from_store) {
         const auto kind = call_item.replayed_kind.value_or(kind_of(call_item.name));
         message.AppendToolCall(MakeGeneratedToolCall(call_item.call_id, call_item.name,
-                                                     call_item.replayed_arguments, kind)
+                                                     call_item.replayed_arguments, kind,
+                                                     call_item.generated_encoding)
                                    .call);
       } else {
-        const auto kind = kind_of(call_item.name);
+        const auto kind = call_item.declared_kind.value_or(kind_of(call_item.name));
         message.AppendToolCall(
             MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind));
       }

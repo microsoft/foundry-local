@@ -2,10 +2,12 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
+#include "inferencing/generative/toolcalling/raw_envelope_detector.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/toolcalling/tool_call_utils.h"
@@ -13,6 +15,7 @@
 #include "items/message_item.h"
 #include "logger.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,6 +27,17 @@ namespace fl {
 
 class GenAIModelInstance;
 class ChatGenerator;
+enum class BackendTerminationCause;
+
+using TextChatGeneratorFactory =
+    std::function<std::unique_ptr<ChatGenerator>(
+        const chat_internal::PreparedChatMessages&,
+        const SearchOptions&,
+        GenAIModelInstance&,
+        const ToolCallContext&,
+        bool)>;
+using ChatMessagePreparer = std::function<chat_internal::PreparedChatMessages(
+    std::vector<TranscriptMessage>, bool)>;
 
 namespace chat_session_internal {
 
@@ -105,9 +119,32 @@ bool ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(ChatBackendKind 
                                                                 bool host_output_limit_reached);
 bool ShouldInvalidateRetainedGeneratorForUndo(bool undo_all, bool has_pre_turn_boundary, bool can_rewind);
 std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
-    std::string tools_json, const std::vector<ToolDefinition>& session_snapshot);
+    std::vector<ToolDefinition> definitions, const std::vector<ToolDefinition>& session_snapshot);
+void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context);
+void ResolveBuiltInRawEnvelope(ToolCallContext& context);
+void ApplyRawEnvelopeGuidance(ToolCallContext& context);
+bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_opens_reasoning);
+bool ShouldUseQwenXmlToolCallParser(const ToolCallContext& context,
+                                    bool has_native_qwen_xml_tool_calls);
+ToolCallPayloadParser CreateToolCallPayloadParser(
+    const ToolCallContext& context, const GenAIModelInstance& model);
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx);
+ToolCallStreamAccumulator::Output PushToolOutput(
+    const std::string& text, RawEnvelopeDetector* raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator);
+ToolCallStreamAccumulator::Output FlushToolOutput(
+    RawEnvelopeDetector* raw_detector,
+    ToolCallStreamAccumulator& structured_accumulator,
+    bool natural_end = true);
+ToolCallStreamAccumulator::Output AbortRawToolOutput(
+    RawEnvelopeDetector* raw_detector);
+bool InsideToolOutput(const RawEnvelopeDetector* raw_detector,
+                      const ToolCallStreamAccumulator& structured_accumulator);
+bool IsNaturalToolOutputEnd(bool canceled,
+                            bool stop_sequence_matched,
+                            bool host_output_limit_reached,
+                            std::optional<BackendTerminationCause> backend_termination);
 
 }  // namespace chat_session_internal
 
@@ -125,7 +162,9 @@ using GeneratedOutputEvent = std::variant<ReasoningStreamSplitter::Segment, Pars
 class ChatSession : public Session {
  public:
   ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry,
-              ChatTranscript::CommitFaultInjector transcript_fault_injector = {});
+              ChatTranscript::CommitFaultInjector transcript_fault_injector = {},
+              TextChatGeneratorFactory text_generator_factory = {},
+              ChatMessagePreparer message_preparer = {});
   ~ChatSession();
 
   // Movable: transfers session refcount ownership to the moved-to instance.
@@ -223,6 +262,8 @@ class ChatSession : public Session {
   // and is never replayed from a stored conversation. A turn that asks for a different prefix rebuilds; a turn that
   // asks for the same one keeps the KV cache.
   std::string system_prompt_;
+  TextChatGeneratorFactory text_generator_factory_;
+  ChatMessagePreparer message_preparer_;
 };
 
 }  // namespace fl

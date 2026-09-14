@@ -45,6 +45,7 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
+    internal_api/genai_model_instance_test.cc
     internal_api/handler_error_mapping_test.cc
     internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
@@ -76,8 +77,12 @@ add_executable(foundry_local_tests
     internal_api/time_utils_test.cc
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
+    internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/custom_tools_chat_test.cc
+    internal_api/toolcalling/custom_tools_responses_test.cc
     internal_api/toolcalling/tool_definition_abi_test.cc
+    internal_api/toolcalling/tool_definitions_test.cc
     internal_api/toolcalling/tool_registry_test.cc
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
