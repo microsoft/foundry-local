@@ -141,6 +141,13 @@ TEST_F(LocalModelCatalogTest, RegistrationRequiresExistingDirectoryAndParseableC
   EXPECT_THROW(catalog_.RegisterModel(malformed_path.string(), "malformed:1", MakeMetadata()), Exception);
 }
 
+TEST_F(LocalModelCatalogTest, EmptyReadDoesNotCreateRegistrationLockFile) {
+  const auto lock_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.lock";
+
+  EXPECT_TRUE(catalog_.ListModels().empty());
+  EXPECT_FALSE(std::filesystem::exists(lock_path));
+}
+
 TEST_F(LocalModelCatalogTest, RegistrationRequiresSupportedTask) {
   ModelInfo missing_task;
   EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "missing-task:1", missing_task), Exception);

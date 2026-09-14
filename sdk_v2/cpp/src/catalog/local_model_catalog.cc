@@ -178,6 +178,16 @@ LocalModelCatalog::LocalModelCatalog(std::filesystem::path model_cache_dir, Mode
       model_factory_(std::move(model_factory)) {}
 
 std::vector<Model> LocalModelCatalog::FetchModels() const {
+  std::error_code exists_error;
+  const bool index_exists = std::filesystem::exists(index_path_, exists_error);
+  if (exists_error) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "failed to inspect local model registration index: " + exists_error.message());
+  }
+  if (!index_exists) {
+    return {};
+  }
+
   std::lock_guard<std::mutex> guard(registration_mutex_);
   FileLock file_lock(lock_path_);
   const auto registrations = LoadRegistrations();
