@@ -15,12 +15,12 @@ if TYPE_CHECKING:
     from foundry_local_sdk.items import Item
     from foundry_local_sdk.request import Request
     from foundry_local_sdk.response import Response
-    from foundry_local_sdk.session_types import RequestOptions
+    from foundry_local_sdk.session_types import RequestOptions, RequestPreflight
 
-# Stamped on every versioned struct this module builds. Must match the version requested from
-# FoundryLocalGetApi (see _native/api.py): a tool definition carrying `kind` is only read as such
-# by a runtime that supports version 2.
+# Minimum versions for the versioned structs this module builds. A tool definition carrying `kind`
+# is only read as such by a runtime that supports version 2; request preflight was added in version 3.
 _API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
+_REQUEST_PREFLIGHT_VERSION = 3
 
 # flToolKind values.
 _TOOL_KIND_FUNCTION = 0
@@ -566,6 +566,27 @@ class ChatSession(Session):
         from foundry_local_sdk._native.api import api
 
         api.check_status(api.inference.Session_UndoTurns(self._ptr, count))
+
+    def preflight_request(self, request: "Request") -> "RequestPreflight":
+        """Compute the exact token budget without mutating the request or session."""
+        self._check_open()
+        from foundry_local_sdk._native import ffi
+        from foundry_local_sdk._native.api import api
+        from foundry_local_sdk.session_types import RequestPreflight
+
+        preflight = ffi.new("flRequestPreflight*")
+        preflight.version = _REQUEST_PREFLIGHT_VERSION
+        api.check_status(
+            api.inference.Session_PreflightRequest(self._ptr, request._ptr, preflight)
+        )
+        return RequestPreflight(
+            prompt_tokens=int(preflight.prompt_tokens),
+            output_reserve_tokens=int(preflight.output_reserve_tokens),
+            required_tokens=int(preflight.required_tokens),
+            context_limit_tokens=int(preflight.context_limit_tokens),
+            fits=bool(preflight.fits),
+            deficit_tokens=int(preflight.deficit_tokens),
+        )
 
 
 class AudioSession(Session):

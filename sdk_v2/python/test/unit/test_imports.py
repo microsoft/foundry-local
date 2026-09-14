@@ -50,6 +50,7 @@ PUBLIC_NAMES = [
     "TokenUsage",
     "SearchOptions",
     "RequestOptions",
+    "RequestPreflight",
     "ToolChoice",
     "Request",
     "Response",

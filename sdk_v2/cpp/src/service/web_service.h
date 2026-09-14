@@ -16,6 +16,7 @@ namespace fl {
 class ICatalog;
 class ITelemetry;
 class ModelLoadManager;
+class Model;
 class SessionManager;
 class ResponseStore;
 
@@ -67,7 +68,8 @@ class StreamingThreadTracker {
 /// Context shared with all HTTP controllers.
 /// Provides access to the manager's internal state without exposing flManager directly.
 struct ServiceContext {
-  ICatalog& catalog;
+  ICatalog& public_catalog;
+  ICatalog& local_catalog;
   ILogger& logger;
   std::string model_cache_dir;
   std::vector<std::string> bound_urls;
@@ -76,6 +78,11 @@ struct ServiceContext {
   ResponseStore& response_store;
   ITelemetry& telemetry;
   StreamingThreadTracker& thread_tracker;
+
+  Model* GetModel(const std::string& alias) const;
+  Model* GetModelVariant(const std::string& model_id) const;
+  std::vector<Model*> ListModelVariants() const;
+  std::vector<Model*> GetLoadedModels() const;
 };
 
 /// HTTP web service wrapping oatpp.
@@ -87,7 +94,7 @@ struct ServiceContext {
 /// Creates and owns ResponseStore, StreamingThreadTracker, and ServiceContext internally.
 class WebService {
  public:
-  WebService(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+  WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
              ModelLoadManager& model_load_manager, SessionManager& session_manager,
              ITelemetry& telemetry, std::function<void()> shutdown_callback);
   ~WebService();

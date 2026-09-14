@@ -47,8 +47,9 @@ class TestToolDefinitionAbi:
     def test_stamped_version_matches_the_requested_version(self):
         # Stamping a version the requested API table does not support would be silently wrong: the
         # native side reads `kind` only from a version 2 definition.
-        assert _API_VERSION == _FOUNDRY_LOCAL_API_VERSION
+        assert _API_VERSION <= _FOUNDRY_LOCAL_API_VERSION
         assert _API_VERSION == 2
+        assert _FOUNDRY_LOCAL_API_VERSION == 3
 
     def test_public_custom_tool_api_encodes_definition_and_handles_duplicates_and_removal(
         self, monkeypatch

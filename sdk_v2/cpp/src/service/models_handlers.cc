@@ -25,7 +25,7 @@ class ListLoadedModelsHandler : public HttpRequestHandler {
   explicit ListLoadedModelsHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
-    auto loaded = ctx_.catalog.GetLoadedModels();
+    auto loaded = ctx_.GetLoadedModels();
     nlohmann::json names = nlohmann::json::array();
 
     for (const auto* model : loaded) {
@@ -57,7 +57,7 @@ class LoadModelHandler : public HttpRequestHandler {
     }
 
     std::string name = name_raw->c_str();
-    auto* model = ctx_.catalog.GetModel(name);
+    auto* model = ctx_.GetModel(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
@@ -113,7 +113,7 @@ class UnloadModelHandler : public HttpRequestHandler {
     }
 
     std::string name = name_raw->c_str();
-    auto* model = ctx_.catalog.GetModel(name);
+    auto* model = ctx_.GetModel(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
@@ -157,32 +157,30 @@ class OpenAIListModelsHandler : public HttpRequestHandler {
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
     ActionTracker tracker(Action::kOpenAIModelList, ctx_.telemetry);
 
-    auto models = ctx_.catalog.ListModels();
+    auto models = ctx_.ListModelVariants();
     nlohmann::json data = nlohmann::json::array();
 
     // List individual variants so the client knows exactly which model_id to use.
     for (const auto* model : models) {
-      for (const auto* variant : model->Variants()) {
-        const auto& info = variant->Info();
-        int64_t created = 0;
-        auto it = info.int_properties.find(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT);
-        if (it != info.int_properties.end()) {
-          created = it->second;
-        }
-
-        std::string owned_by = "system";
-        auto pub_it = info.string_properties.find(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR);
-        if (pub_it != info.string_properties.end()) {
-          owned_by = pub_it->second;
-        }
-
-        data.push_back({
-            {"id", info.model_id},
-            {"object", "model"},
-            {"created", created},
-            {"owned_by", owned_by},
-        });
+      const auto& info = model->Info();
+      int64_t created = 0;
+      auto it = info.int_properties.find(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT);
+      if (it != info.int_properties.end()) {
+        created = it->second;
       }
+
+      std::string owned_by = "system";
+      auto pub_it = info.string_properties.find(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR);
+      if (pub_it != info.string_properties.end()) {
+        owned_by = pub_it->second;
+      }
+
+      data.push_back({
+          {"id", info.model_id},
+          {"object", "model"},
+          {"created", created},
+          {"owned_by", owned_by},
+      });
     }
 
     nlohmann::json body = {
@@ -217,7 +215,7 @@ class OpenAIRetrieveModelHandler : public HttpRequestHandler {
     }
 
     std::string name = name_raw->c_str();
-    auto* model = ctx_.catalog.GetModelVariant(name);
+    auto* model = ctx_.GetModelVariant(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);

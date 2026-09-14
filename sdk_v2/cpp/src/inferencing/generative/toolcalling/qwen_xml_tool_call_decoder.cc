@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,7 +38,6 @@ struct FunctionSchema {
   Json properties = Json::object();
   std::unordered_set<std::string> required;
   bool valid = false;
-  bool custom = false;
 };
 
 using FunctionSchemas = std::unordered_map<std::string, FunctionSchema>;
@@ -98,6 +98,32 @@ std::optional<std::string> GetSupportedType(const Json& schema) {
   return type;
 }
 
+bool IsSupportedParameterSchema(const Json& schema) {
+  if (!schema.is_object()) {
+    return false;
+  }
+
+  if (schema.contains("anyOf")) {
+    if (schema.contains("oneOf") || schema.contains("allOf") || schema.contains("not") ||
+        schema.contains("if") || !schema["anyOf"].is_array() || schema["anyOf"].empty()) {
+      return false;
+    }
+
+    return std::ranges::all_of(schema["anyOf"], [](const auto& branch) {
+      return branch.is_object() && !branch.contains("anyOf") &&
+             IsSupportedParameterSchema(branch);
+    });
+  }
+
+  const auto type = GetSupportedType(schema);
+  if (!type.has_value()) {
+    return false;
+  }
+
+  return *type != "array" || !schema.contains("items") ||
+         (!schema["items"].contains("anyOf") && IsSupportedParameterSchema(schema["items"]));
+}
+
 FunctionSchemas ParseFunctionSchemas(
     const std::string& tools_json,
     const std::unordered_map<std::string, ToolKind>& tool_kinds) {
@@ -132,9 +158,7 @@ FunctionSchemas ParseFunctionSchemas(
     if (kind == tool_kinds.end()) {
       continue;
     }
-
     FunctionSchema schema;
-    schema.custom = kind->second == ToolKind::kCustom;
     if (name.empty()) {
       schemas.emplace(name, std::move(schema));
       continue;
@@ -182,7 +206,7 @@ FunctionSchemas ParseFunctionSchemas(
     schema.properties = parameters["properties"];
     const bool properties_valid =
         std::ranges::all_of(schema.properties.items(), [](const auto& property) {
-          return GetSupportedType(property.value()).has_value();
+          return IsSupportedParameterSchema(property.value());
         });
     bool required_valid = true;
     if (parameters.contains("required")) {
@@ -211,30 +235,42 @@ FunctionSchemas ParseFunctionSchemas(
   return schemas;
 }
 
-bool IsCompatibleJsonValue(const Json& value, std::string_view type) {
-  if (type == "number") {
+bool IsCompatibleJsonValue(const Json& value, const Json& schema) {
+  const auto type = GetSupportedType(schema);
+  if (!type.has_value()) {
+    return false;
+  }
+
+  if (*type == "string") {
+    return value.is_string();
+  }
+  if (*type == "number") {
     return value.is_number();
   }
-  if (type == "integer") {
+  if (*type == "integer") {
     return value.is_number_integer() || value.is_number_unsigned();
   }
-  if (type == "boolean") {
+  if (*type == "boolean") {
     return value.is_boolean();
   }
-  if (type == "array") {
-    return value.is_array();
+  if (*type == "array") {
+    return value.is_array() &&
+           (!schema.contains("items") ||
+            std::ranges::all_of(value, [&](const auto& item) {
+              return IsCompatibleJsonValue(item, schema["items"]);
+            }));
   }
-  if (type == "object") {
+  if (*type == "object") {
     return value.is_object();
   }
-  if (type == "null") {
+  if (*type == "null") {
     return value.is_null();
   }
 
   return false;
 }
 
-std::optional<Json> DecodeParameterValue(std::string_view body, const Json& schema) {
+std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json& schema) {
   const auto type = GetSupportedType(schema);
   if (!type.has_value()) {
     return std::nullopt;
@@ -245,15 +281,69 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
   }
 
   const auto value = Json::parse(body, nullptr, false);
-  if (value.is_discarded() || !IsCompatibleJsonValue(value, *type)) {
+  if (value.is_discarded() || !IsCompatibleJsonValue(value, schema)) {
     return std::nullopt;
   }
 
   return value;
 }
 
-bool ContainsAmbiguousMarkup(std::string_view body) {
-  return body.find('<') != std::string_view::npos;
+bool HasStructuredJsonPrefix(std::string_view body) {
+  const auto first = body.find_first_not_of(" \t\r\n");
+  return first != std::string_view::npos && (body[first] == '[' || body[first] == '{');
+}
+
+std::optional<Json> DecodeParameterValue(std::string_view body, const Json& schema) {
+  if (!schema.is_object() || !schema.contains("anyOf")) {
+    return DecodeSimpleParameterValue(body, schema);
+  }
+
+  if (!IsSupportedParameterSchema(schema)) {
+    return std::nullopt;
+  }
+
+  bool has_string_branch = false;
+  std::optional<Json> decoded;
+  for (const auto& branch : schema["anyOf"]) {
+    const auto type = GetSupportedType(branch);
+    if (type.has_value() && *type == "string") {
+      has_string_branch = true;
+      continue;
+    }
+
+    auto candidate = DecodeSimpleParameterValue(body, branch);
+    if (!candidate.has_value()) {
+      continue;
+    }
+
+    if (decoded.has_value() && *decoded != *candidate) {
+      return std::nullopt;
+    }
+    decoded = std::move(candidate);
+  }
+
+  if (decoded.has_value()) {
+    return decoded;
+  }
+  if (has_string_branch && !HasStructuredJsonPrefix(body)) {
+    return Json(std::string(body));
+  }
+
+  return std::nullopt;
+}
+
+bool ContainsReservedFramingMarkup(std::string_view body) {
+  constexpr std::array<std::string_view, 6> kReservedMarkup = {
+      kStartMarker,
+      kEndMarker,
+      kFunctionPrefix,
+      "</function>",
+      kParameterPrefix,
+      "</parameter>",
+  };
+  return std::ranges::any_of(kReservedMarkup, [&](const auto marker) {
+    return body.find(marker) != std::string_view::npos;
+  });
 }
 
 std::optional<std::string_view> ReadTagName(std::string_view source, size_t& position,
@@ -328,9 +418,7 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
     }
 
     const auto body = source.substr(position, body_end - position);
-    // Canonical custom tools carry free-form text, where '<' is ordinary data. The exact newline-delimited closing
-    // marker remains reserved by the framing parser; function parameters retain the stricter ambiguity check.
-    if (!schema_it->second.custom && ContainsAmbiguousMarkup(body)) {
+    if (ContainsReservedFramingMarkup(body)) {
       return BlockResult(ParseState::kInvalid);
     }
 

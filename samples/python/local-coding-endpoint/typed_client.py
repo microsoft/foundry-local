@@ -15,7 +15,6 @@ from foundry_local_sdk import (
     Response,
     TextItem,
 )
-
 from launcher import DEFAULT_MODEL_ID, MODEL_ID_PATTERN, get_or_register_model
 
 DEFAULT_PROMPTS = (
@@ -69,10 +68,12 @@ def response_text(response: Response) -> str:
 
 def complete(model: IModel, prompt: str) -> str:
     # Sessions retain conversation state, so concurrent tasks must not share one.
-    with ChatSession(model) as session:
-        with Request().add_item(MessageItem.user(prompt)) as request:
-            with session.process_request(request) as response:
-                return response_text(response)
+    with (
+        ChatSession(model) as session,
+        Request().add_item(MessageItem.user(prompt)) as request,
+        session.process_request(request) as response,
+    ):
+        return response_text(response)
 
 
 def main() -> None:

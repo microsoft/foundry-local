@@ -61,7 +61,7 @@ class EmbeddingsHandler : public HttpRequestHandler {
 
     // 3. Resolve model
     std::string model_name = req.model;
-    auto* model = ctx_.catalog.GetModelVariant(model_name);
+    auto* model = ctx_.GetModelVariant(model_name);
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", model_name);

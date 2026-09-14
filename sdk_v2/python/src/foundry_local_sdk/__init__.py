@@ -44,6 +44,7 @@ from foundry_local_sdk.items import (
 from foundry_local_sdk.session_types import (
     FinishReason,
     RequestOptions,
+    RequestPreflight,
     SearchOptions,
     TokenUsage,
     ToolChoice,
@@ -108,6 +109,7 @@ __all__ = [
     "TokenUsage",
     "SearchOptions",
     "RequestOptions",
+    "RequestPreflight",
     "ToolChoice",
     "Request",
     "Response",

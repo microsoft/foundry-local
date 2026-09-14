@@ -194,6 +194,16 @@ typedef struct flUsage {
     int64_t total_tokens;
 } flUsage;
 
+typedef struct flRequestPreflight {
+    uint32_t version;
+    int64_t prompt_tokens;
+    int64_t output_reserve_tokens;
+    int64_t required_tokens;
+    int64_t context_limit_tokens;
+    int64_t fits;
+    int64_t deficit_tokens;
+} flRequestPreflight;
+
 typedef struct flEpInfo {
     uint32_t version;
     const char* name;
@@ -467,6 +477,7 @@ typedef struct flInferenceApi {
     flStatusPtr (*Session_RemoveToolDefinition)(flSession* session, const char* tool_name, bool* out_removed);
     size_t (*Session_GetTurnCount)(const flSession* session);
     flStatusPtr (*Session_UndoTurns)(flSession* session, size_t count);
+    flStatusPtr (*Session_PreflightRequest)(const flSession* session, const flRequest* request, flRequestPreflight* out_preflight);
 } flInferenceApi;
 
 /* -----------------------------------------------------------------------

@@ -87,6 +87,8 @@ def get_or_register_model(
         metadata.set_string_property("task", "chat-completion")
         metadata.set_string_property("device_type", "GPU")
         metadata.set_string_property("execution_provider", "CUDAExecutionProvider")
+        metadata.set_int_property("supports_tool_calling", 1)
+        metadata.set_int_property("supports_reasoning", 1)
         model = local_catalog.register_model(model_path, model_id, metadata)
     return model, True
 

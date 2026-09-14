@@ -5,6 +5,7 @@
 
 #include "service/web_service.h"
 
+#include "catalog.h"
 #include "exception.h"
 #include "inferencing/generative/openresponses/response_store.h"
 #include "inferencing/session/session_manager.h"
@@ -26,6 +27,7 @@
 #include <chrono>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 
 #ifdef _WIN32
 // winsock2.h must come before windows.h to avoid pulling in winsock.h (1.x).
@@ -37,6 +39,63 @@
 #endif
 
 namespace fl {
+
+namespace {
+
+template <typename ListModels>
+std::vector<Model*> CombineModels(ICatalog& public_catalog, ICatalog& local_catalog,
+                                  ListModels list_models) {
+  std::vector<Model*> models;
+  std::unordered_set<std::string> model_ids;
+
+  const auto append_unique = [&](ICatalog& catalog) {
+    for (auto* model : list_models(catalog)) {
+      if (model_ids.insert(model->Id()).second) {
+        models.push_back(model);
+      }
+    }
+  };
+
+  append_unique(public_catalog);
+  append_unique(local_catalog);
+
+  return models;
+}
+
+}  // namespace
+
+Model* ServiceContext::GetModel(const std::string& alias) const {
+  if (auto* model = public_catalog.GetModel(alias)) {
+    return model;
+  }
+
+  return local_catalog.GetModel(alias);
+}
+
+Model* ServiceContext::GetModelVariant(const std::string& model_id) const {
+  if (auto* model = public_catalog.GetModelVariant(model_id)) {
+    return model;
+  }
+
+  return local_catalog.GetModelVariant(model_id);
+}
+
+std::vector<Model*> ServiceContext::ListModelVariants() const {
+  return CombineModels(public_catalog, local_catalog, [](ICatalog& catalog) {
+    std::vector<Model*> variants;
+    for (auto* model : catalog.ListModels()) {
+      const auto model_variants = model->Variants();
+      variants.insert(variants.end(), model_variants.begin(), model_variants.end());
+    }
+
+    return variants;
+  });
+}
+
+std::vector<Model*> ServiceContext::GetLoadedModels() const {
+  return CombineModels(public_catalog, local_catalog,
+                       [](ICatalog& catalog) { return catalog.GetLoadedModels(); });
+}
 
 // ========================================================================
 // ForceCloseConnectionProvider
@@ -221,14 +280,15 @@ struct WebService::Impl {
   } wsa_guard_;
 #endif
 
-  Impl(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+  Impl(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
        ITelemetry& telemetry, std::function<void()> shutdown_callback)
       : session_cache(session_manager),
         response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
         context(std::make_unique<ServiceContext>(
-            ServiceContext{catalog,
+            ServiceContext{public_catalog,
+                           local_catalog,
                            logger,
                            std::move(model_cache_dir),
                            {},
@@ -239,10 +299,11 @@ struct WebService::Impl {
                            thread_tracker})) {}
 };
 
-WebService::WebService(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger,
+                       std::string model_cache_dir,
                        ModelLoadManager& model_load_manager, SessionManager& session_manager,
                        ITelemetry& telemetry, std::function<void()> shutdown_callback)
-    : impl_(std::make_unique<Impl>(catalog, logger, std::move(model_cache_dir),
+    : impl_(std::make_unique<Impl>(public_catalog, local_catalog, logger, std::move(model_cache_dir),
                                    model_load_manager, session_manager, telemetry,
                                    std::move(shutdown_callback))) {}
 

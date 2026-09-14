@@ -469,8 +469,8 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *logger_, *config_.model_cache_dir,
-                                              *model_load_manager_,
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_,
+                                              *config_.model_cache_dir, *model_load_manager_,
                                               *session_manager_, *telemetry_,
                                               [this]() { Shutdown(); });
 

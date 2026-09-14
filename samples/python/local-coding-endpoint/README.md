@@ -49,7 +49,10 @@ default endpoint is `http://127.0.0.1:5272/v1`; use `--model-id`, `--host`, and 
 The launcher uses only the public local-catalog BYOM API. It registers the directory only when that model ID is not
 already registered, loads the model, starts the endpoint, and waits for Ctrl+C or SIGTERM. Shutdown stops the
 endpoint, unloads the model, unregisters registrations created by this process, and closes the manager. Registration
-is non-owning: unregistering never deletes the model directory.
+is non-owning: unregistering never deletes the model directory. The sample registers Qwen-compatible tool-call and
+reasoning capabilities so coding harnesses receive structured tool calls and separate reasoning instead of raw model
+markup. Foundry resolves the corresponding delimiter tokens through the ONNX Runtime GenAI tokenizer APIs. Change
+the capability values when using a model package with different behavior.
 
 ## Concurrent OpenAI requests
 
