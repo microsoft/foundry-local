@@ -19,7 +19,7 @@ enum class ChatBackendKind {
 /// Maps the C# GenAIConfig / OnnxModel / OnnxDecoder types.
 struct GenAIConfig {
   struct OnnxModel {
-    int context_length = 0;
+    int64_t context_length = 0;
     std::string type;
     std::map<std::string, std::string> prompt_templates;
 
@@ -39,7 +39,7 @@ struct GenAIConfig {
   };
 
   struct Search {
-    int max_length = 0;
+    int64_t max_length = 0;
   };
 
   struct Engine {

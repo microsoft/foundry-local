@@ -17,6 +17,7 @@
 #include "items/tool_result_item.h"
 #include "inferencing/session/session.h"
 #include "exception.h"
+#include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_cpp.h>
 #include <gtest/gtest.h>
@@ -37,6 +38,156 @@ TEST(ItemTypeNameTest, ReturnsSymbolicNames) {
   EXPECT_EQ(Item::TypeName(FOUNDRY_LOCAL_ITEM_IMAGE), "IMAGE");
   EXPECT_EQ(Item::TypeName(FOUNDRY_LOCAL_ITEM_AUDIO), "AUDIO");
   EXPECT_EQ(Item::TypeName(static_cast<flItemType>(-1)), "UNKNOWN");
+}
+
+TEST(RequestPreflightSnapshotTest, DeepCopiesNestedImageBytes) {
+  std::vector<std::uint8_t> source = {1, 2, 3, 4};
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<ImageItem>(source.data(), source.size(), "png"));
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(
+      FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+  auto snapshot = request.CapturePreflightSnapshot();
+
+  source.assign(source.size(), 9);
+
+  const auto& message = static_cast<const MessageItem&>(*snapshot.items.front());
+  const auto& image = static_cast<const ImageItem&>(*message.content.front().view);
+  ASSERT_EQ(image.data_size, 4u);
+  const auto* bytes = static_cast<const std::uint8_t*>(image.data);
+  EXPECT_EQ(std::vector<std::uint8_t>(bytes, bytes + image.data_size),
+            (std::vector<std::uint8_t>{1, 2, 3, 4}));
+}
+
+TEST(RequestPreflightSnapshotTest, CapturePreservesMissingMediaUrisWithoutReadingFiles) {
+  const auto image_path = std::filesystem::temp_directory_path() /
+                          "foundry_local_missing_preflight_snapshot_image.bin";
+  const auto audio_path = std::filesystem::temp_directory_path() /
+                          "foundry_local_missing_preflight_snapshot_audio.bin";
+  std::filesystem::remove(image_path);
+  std::filesystem::remove(audio_path);
+
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<ImageItem>(image_path.string(), "png"));
+  auto audio = std::make_unique<AudioItem>(audio_path.string(), "wav");
+  audio->sample_rate = 16'000;
+  audio->channels = 2;
+  parts.push_back(std::move(audio));
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<MessageItem>(
+      FOUNDRY_LOCAL_ROLE_USER, std::move(parts)));
+
+  auto snapshot = request.CapturePreflightSnapshot();
+
+  const auto& message = static_cast<const MessageItem&>(*snapshot.items.front());
+  const auto& image = static_cast<const ImageItem&>(*message.content.front().view);
+  const auto& captured_audio =
+      static_cast<const AudioItem&>(*message.content.back().view);
+  EXPECT_EQ(image.data, nullptr);
+  EXPECT_EQ(image.data_size, 0u);
+  EXPECT_EQ(image.format, "png");
+  EXPECT_EQ(image.uri, image_path.string());
+  EXPECT_EQ(captured_audio.data, nullptr);
+  EXPECT_EQ(captured_audio.data_size, 0u);
+  EXPECT_EQ(captured_audio.format, "wav");
+  EXPECT_EQ(captured_audio.sample_rate, 16'000);
+  EXPECT_EQ(captured_audio.channels, 2);
+  EXPECT_EQ(captured_audio.uri, audio_path.string());
+}
+
+TEST(RequestPreflightSnapshotTest, UriBackedSnapshotReadsFileStateAtUseTime) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    "foundry_local_changed_preflight_snapshot_image.bin";
+  const std::vector<std::uint8_t> captured_file_bytes = {1, 2, 3};
+  const std::vector<std::uint8_t> execution_file_bytes = {8, 9, 10, 11};
+  {
+    std::ofstream output(path, std::ios::binary);
+    ASSERT_TRUE(output);
+    output.write(reinterpret_cast<const char*>(captured_file_bytes.data()),
+                 static_cast<std::streamsize>(captured_file_bytes.size()));
+    ASSERT_TRUE(output);
+  }
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<ImageItem>(path.string(), "png"));
+  auto snapshot = request.CapturePreflightSnapshot();
+
+  {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(output);
+    output.write(reinterpret_cast<const char*>(execution_file_bytes.data()),
+                 static_cast<std::streamsize>(execution_file_bytes.size()));
+    ASSERT_TRUE(output);
+  }
+
+  const auto& image = static_cast<const ImageItem&>(*snapshot.items.front());
+  EXPECT_EQ(image.ReadBytes(), execution_file_bytes);
+  EXPECT_EQ(image.uri, path.string());
+  EXPECT_EQ(image.format, "png");
+
+  ASSERT_TRUE(std::filesystem::remove(path));
+}
+
+TEST(RequestPreflightSnapshotTest, UriBackedSnapshotObservesFileRemovalAtReadBytes) {
+  auto image_temp = fl::test::TempPath::CreateTempFile("foundry_local_preflight_removed_image_");
+  auto audio_temp = fl::test::TempPath::CreateTempFile("foundry_local_preflight_removed_audio_");
+  {
+    std::ofstream image_output(image_temp.path(), std::ios::binary);
+    ASSERT_TRUE(image_output);
+    image_output.put('\x01');
+    ASSERT_TRUE(image_output);
+
+    std::ofstream audio_output(audio_temp.path(), std::ios::binary);
+    ASSERT_TRUE(audio_output);
+    audio_output.put('\x02');
+    ASSERT_TRUE(audio_output);
+  }
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<ImageItem>(image_temp.string(), "png"));
+  request.AddOwnedItem(std::make_unique<AudioItem>(audio_temp.string(), "wav"));
+  auto snapshot = request.CapturePreflightSnapshot();
+
+  ASSERT_TRUE(std::filesystem::remove(image_temp.path()));
+  ASSERT_TRUE(std::filesystem::remove(audio_temp.path()));
+
+  const auto& image = static_cast<const ImageItem&>(*snapshot.items.front());
+  try {
+    image.ReadBytes();
+    FAIL() << "Expected ImageItem::ReadBytes to observe backing file removal";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("failed to open image file: " + image_temp.string()), std::string::npos);
+  }
+
+  const auto& audio = static_cast<const AudioItem&>(*snapshot.items.back());
+  try {
+    audio.ReadBytes();
+    FAIL() << "Expected AudioItem::ReadBytes to observe backing file removal";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("failed to open audio file: " + audio_temp.string()), std::string::npos);
+  }
+}
+
+TEST(MessageItemCloneTest, UriBackedImageCloneDoesNotReadBackingFile) {
+  const auto missing_path = std::filesystem::temp_directory_path() /
+                            "foundry_local_missing_message_clone_image.bin";
+  std::filesystem::remove(missing_path);
+
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<ImageItem>(missing_path.string(), "jpeg"));
+  const MessageItem source(FOUNDRY_LOCAL_ROLE_USER, std::move(parts));
+
+  const MessageItem clone(source);
+
+  const auto& image = static_cast<const ImageItem&>(*clone.content.front().view);
+  EXPECT_EQ(image.data, nullptr);
+  EXPECT_EQ(image.data_size, 0u);
+  EXPECT_EQ(image.format, "jpeg");
+  EXPECT_EQ(image.uri, missing_path.string());
 }
 
 // ========================================================================

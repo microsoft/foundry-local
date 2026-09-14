@@ -17,13 +17,10 @@ namespace fl {
 
 namespace {
 
-// Only options the caller expressed are set. Upstream treats an unset turn option as "use the model-configured
-// default for this Turn", so forwarding a Foundry-invented default would silently override model policy — and an
-// explicit do_sample=true is rejected outright when the model's own defaults still resolve the turn to greedy.
+// Sampling fields remain optional so model policy applies when the caller omitted them. The
+// output limit is always resolved by request preparation before the turn reaches Engine.
 void ApplyEngineTurnOptions(const EngineTurnOptionsPlan& plan, OgaTurnOptions& options) {
-  if (plan.max_generated_tokens.has_value()) {
-    options.SetMaxGeneratedTokens(static_cast<uint64_t>(*plan.max_generated_tokens));
-  }
+  options.SetMaxGeneratedTokens(static_cast<uint64_t>(plan.max_generated_tokens));
 
   if (plan.sampling.do_sample.has_value()) {
     options.SetDoSample(*plan.sampling.do_sample);
@@ -170,21 +167,18 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
 
         auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind(),
                                                prompt_opens_reasoning);
-        if (plan.max_generated_tokens.has_value()) {
-          // Validate only the limit the caller requested. When it is absent, leave the turn uncapped and let OGA
-          // enforce the Request's model-context session limit.
-          const uint64_t total_required =
-              static_cast<uint64_t>(existing_tokens) + static_cast<uint64_t>(tokens.size()) +
-              static_cast<uint64_t>(*plan.max_generated_tokens);
-          const uint64_t model_max_tokens = static_cast<uint64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
-          if (total_required > model_max_tokens) {
-            FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                     "request requires " + std::to_string(total_required) + " total tokens (" +
-                         std::to_string(existing_tokens) + " existing + " + std::to_string(tokens.size()) +
-                         " input + " + std::to_string(*plan.max_generated_tokens) +
-                         " output), which exceeds the model's maximum context length of " +
-                         std::to_string(model_max_tokens) + " tokens");
-          }
+        const uint64_t total_required =
+            static_cast<uint64_t>(existing_tokens) + static_cast<uint64_t>(tokens.size()) +
+            static_cast<uint64_t>(plan.max_generated_tokens);
+        const uint64_t model_max_tokens =
+            static_cast<uint64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
+        if (total_required > model_max_tokens) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "request requires " + std::to_string(total_required) + " total tokens (" +
+                       std::to_string(existing_tokens) + " existing + " + std::to_string(tokens.size()) +
+                       " input + " + std::to_string(plan.max_generated_tokens) +
+                       " output), which exceeds the model's maximum context length of " +
+                       std::to_string(model_max_tokens) + " tokens");
         }
 
         ApplyEngineTurnOptions(plan, *turn_options);

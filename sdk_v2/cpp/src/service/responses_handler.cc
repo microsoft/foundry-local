@@ -346,10 +346,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
     // Sessions can be reused via previous_response_id; clear any stale tool defs from the prior
     // turn before applying this request's tools so the request stays self-contained.
-    session->ClearToolDefinitions();
-    for (auto& definition : tool_definitions) {
-      session->AddToolDefinition(std::move(definition));
-    }
+    session->SetToolDefinitions(std::move(tool_definitions));
 
     if (params.stream) {
       ctx_.logger.Log(LogLevel::Debug,

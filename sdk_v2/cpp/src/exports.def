@@ -3,6 +3,8 @@
 ; Using a .def file instead of __declspec(dllexport) allows the OBJECT library
 ; to compile sources once and share the object files between the shared (DLL)
 ; and static library targets.
+; FoundryLocalGetNodePrivateApi is a lockstep private bridge for the in-repo Node addon.
 EXPORTS
     FoundryLocalGetApi
     FoundryLocalGetVersionString
+    FoundryLocalGetNodePrivateApi

@@ -64,4 +64,10 @@ struct Item {
   mutable std::unique_ptr<KeyValuePairs> metadata;
 };
 
+/// Deep-copy an item accepted by chat request preparation.
+///
+/// The returned item owns all nested content and byte-backed media. ItemQueue is
+/// deliberately rejected without inspecting or consuming its contents.
+std::unique_ptr<Item> CloneChatRequestItem(const Item& item);
+
 }  // namespace fl

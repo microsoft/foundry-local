@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <utility>
 
 namespace fl {
@@ -24,6 +25,40 @@ constexpr uint32_t kToolDefinitionKindVersion = 2;
 static_assert(offsetof(flToolDefinition, kind) == offsetof(flToolDefinition, json_schema) + sizeof(const char*),
               "flToolDefinition::kind must be appended directly after the version 1 prefix");
 static_assert(sizeof(flToolKind) == sizeof(uint32_t), "flToolKind must be a fixed-width 32-bit ABI type");
+
+void NormalizeToolDefinition(ToolDefinition& tool_def) {
+  if (tool_def.kind == ToolKind::kCustom) {
+    if (tool_def.name.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a custom tool definition requires a name");
+    }
+
+    if (!tool_def.json_schema.empty()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "custom tool '", tool_def.name,
+               "' must not supply a json_schema; the schema is synthesized");
+    }
+
+    tool_def.json_schema = kCustomToolInputSchema;
+  } else if (!nlohmann::json::accept(tool_def.json_schema)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "ToolDefinition.json_schema is not valid JSON for tool: " + tool_def.name);
+  }
+}
+
+void ValidateUniqueToolNames(const std::vector<ToolDefinition>& definitions) {
+  for (auto current = definitions.begin(); current != definitions.end(); ++current) {
+    if (current->name.empty()) {
+      continue;
+    }
+
+    const auto duplicate = std::find_if(
+        std::next(current), definitions.end(),
+        [&](const ToolDefinition& candidate) { return candidate.name == current->name; });
+    if (duplicate != definitions.end()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a tool named '", current->name,
+               "' is already registered; remove it before registering it again");
+    }
+  }
+}
 
 }  // namespace
 
@@ -75,21 +110,7 @@ void ValidateToolCallText(std::string_view text, std::string_view field) {
 
 void ToolRegistry::Add(ToolDefinition tool_def) {
   // Validate and normalize before taking the lock — none of it touches shared state.
-  if (tool_def.kind == ToolKind::kCustom) {
-    if (tool_def.name.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a custom tool definition requires a name");
-    }
-
-    if (!tool_def.json_schema.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "custom tool '", tool_def.name,
-               "' must not supply a json_schema; the schema is synthesized");
-    }
-
-    tool_def.json_schema = kCustomToolInputSchema;
-  } else if (!nlohmann::json::accept(tool_def.json_schema)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "ToolDefinition.json_schema is not valid JSON for tool: " + tool_def.name);
-  }
+  NormalizeToolDefinition(tool_def);
 
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -129,6 +150,16 @@ bool ToolRegistry::Remove(const std::string& name) {
 void ToolRegistry::Clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   definitions_.clear();
+}
+
+void ToolRegistry::Replace(std::vector<ToolDefinition> tool_definitions) {
+  for (auto& definition : tool_definitions) {
+    NormalizeToolDefinition(definition);
+  }
+  ValidateUniqueToolNames(tool_definitions);
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  definitions_ = std::move(tool_definitions);
 }
 
 std::vector<ToolDefinition> ToolRegistry::Definitions() const {

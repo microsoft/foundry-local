@@ -59,7 +59,10 @@ Manager (singleton, explicit Create/Destroy lifecycle)
 The C++ SDK exposes three layers:
 
 1. **C ABI** (`foundry_local_c.h`) — Versioned vtable-based API with opaque handles.
-   Only two exported symbols: `FoundryLocalGetApi(version)` and `FoundryLocalGetVersionString()`.
+   It has two supported public exports: `FoundryLocalGetApi(version)` and `FoundryLocalGetVersionString()`.
+   The additional versioned `FoundryLocalGetNodePrivateApi(version, size)` getter is an unsupported lockstep bridge
+   for the in-repo Node addon. External bindings must not use it; it may change independently when the packaged
+   addon and native runtime are updated together.
 2. **C++ Wrapper** (`foundry_local_cpp.h`) — Header-only RAII wrappers over the C API.
 3. **Internal Implementation** (`src/`) — The actual business logic.
 

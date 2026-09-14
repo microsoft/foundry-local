@@ -111,7 +111,7 @@ std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             const std::string& tools_json = "",
                             const std::string& template_kwargs_json = "");
 
-/// Build a chat prompt from the complete retained tool/template context.
+/// Build a chat prompt from message items and the complete retained tool/template context.
 std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx);

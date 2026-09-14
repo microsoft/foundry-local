@@ -2,14 +2,8 @@
 // Licensed under the MIT License.
 #include "items/message_item.h"
 
-#include <cstdint>
-#include <cstring>
-
 #include "c_api_types.h"
 #include "exception.h"
-#include "items/audio_item.h"
-#include "items/image_item.h"
-#include "items/text_item.h"
 
 namespace fl {
 
@@ -20,7 +14,7 @@ MessageItem::MessageItem(const MessageItem& other)
     if (!part.view) {
       continue;
     }
-    content.push_back(MessagePart::Own(CloneApiPart(*part.view)));
+    content.push_back(MessagePart::Own(CloneChatRequestItem(*part.view)));
   }
 }
 
@@ -38,7 +32,7 @@ MessageItem& MessageItem::operator=(const MessageItem& other) {
     if (!part.view) {
       continue;
     }
-    content.push_back(MessagePart::Own(CloneApiPart(*part.view)));
+    content.push_back(MessagePart::Own(CloneChatRequestItem(*part.view)));
   }
 
   api_part_ptrs_.clear();
@@ -85,7 +79,7 @@ void MessageItem::SetMessageData(const flMessageData& new_data) {
     // Request construction, language bindings) drops the source parts
     // immediately, leaving the message dangling. Cloning at the C ABI ingress
     // makes the contract symmetric with every other typed item.
-    content.push_back(MessagePart::Own(CloneApiPart(*part_item)));
+    content.push_back(MessagePart::Own(CloneChatRequestItem(*part_item)));
   }
 }
 
@@ -102,49 +96,6 @@ void MessageItem::GetApiData(flMessageData& out) const {
 
   out.content_items = api_part_ptrs_.empty() ? nullptr : api_part_ptrs_.data();
   out.content_items_count = api_part_ptrs_.size();
-}
-
-std::unique_ptr<Item> MessageItem::CloneApiPart(const Item& src) {
-  switch (src.type) {
-    case FOUNDRY_LOCAL_ITEM_TEXT: {
-      const auto& t = static_cast<const TextItem&>(src);
-      return std::make_unique<TextItem>(t.text, t.text_type);
-    }
-    case FOUNDRY_LOCAL_ITEM_IMAGE: {
-      const auto& img = static_cast<const ImageItem&>(src);
-      // Bytes-based: deep-copy into independently-owned storage so the clone
-      // has no dependency on the source buffer's lifetime.
-      if (img.data && img.data_size > 0) {
-        const auto* bytes = static_cast<const std::uint8_t*>(img.data);
-        std::vector<std::uint8_t> owned(bytes, bytes + img.data_size);
-        auto clone = std::make_unique<ImageItem>(std::move(owned), img.format);
-        clone->uri = img.uri;
-        return clone;
-      }
-      // URI-only (or empty).
-      auto clone = std::make_unique<ImageItem>(img.uri, img.format);
-      return clone;
-    }
-    case FOUNDRY_LOCAL_ITEM_AUDIO: {
-      const auto& aud = static_cast<const AudioItem&>(src);
-      if (aud.data && aud.data_size > 0) {
-        const auto* bytes = static_cast<const std::uint8_t*>(aud.data);
-        std::vector<std::uint8_t> owned(bytes, bytes + aud.data_size);
-        auto clone = std::make_unique<AudioItem>(std::move(owned), aud.format);
-        clone->uri = aud.uri;
-        clone->sample_rate = aud.sample_rate;
-        clone->channels = aud.channels;
-        return clone;
-      }
-
-      auto clone = std::make_unique<AudioItem>(aud.uri, aud.format);
-      clone->sample_rate = aud.sample_rate;
-      clone->channels = aud.channels;
-      return clone;
-    }
-    default:
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported item type for message content part");
-  }
 }
 
 }  // namespace fl

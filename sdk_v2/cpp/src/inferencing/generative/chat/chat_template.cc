@@ -249,7 +249,23 @@ std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
 std::string BuildChatPrompt(const std::vector<MessageItem>& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx) {
-  return BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json);
+  if (messages.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
+  }
+
+  nlohmann::json messages_json = nlohmann::json::array();
+  for (const auto& message : messages) {
+    messages_json.push_back({
+        {"role", Utils::RoleToString(message.role)},
+        {"content", RenderMessageForPrompt(message)},
+    });
+  }
+
+  const char* tools = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
+  const char* template_kwargs =
+      tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+  return model.GetPreprocessor().ApplyChatTemplateWithOptions(
+      messages_json.dump().c_str(), tools, template_kwargs, /*add_generation_prompt=*/true);
 }
 
 std::unique_ptr<OgaSequences> EncodePrompt(const std::string& prompt,

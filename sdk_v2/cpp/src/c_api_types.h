@@ -87,6 +87,17 @@ struct HandleImpl<flSession> {
 
 }  // namespace fl::detail
 
+namespace fl::detail {
+
+inline constexpr bool IsRequestPreflightVersionSupported(
+    uint32_t version,
+    uint32_t current_api_version = FOUNDRY_LOCAL_API_VERSION) noexcept {
+  return version >= FOUNDRY_LOCAL_REQUEST_PREFLIGHT_MIN_VERSION &&
+         version <= current_api_version;
+}
+
+}  // namespace fl::detail
+
 // Convert an internal fl::Xxx* to its opaque handle. Always pick the matching
 // handle type explicitly, e.g. AsHandle<flItem>(item_ptr).
 template <typename Handle, typename Impl>

@@ -119,7 +119,7 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
     OnnxModel model;
 
     if (jm.contains("context_length") && jm["context_length"].is_number()) {
-      model.context_length = jm["context_length"].get<int>();
+      model.context_length = jm["context_length"].get<int64_t>();
     }
 
     if (jm.contains("type") && jm["type"].is_string()) {
@@ -173,7 +173,7 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
     Search search;
 
     if (js.contains("max_length") && js["max_length"].is_number()) {
-      search.max_length = js["max_length"].get<int>();
+      search.max_length = js["max_length"].get<int64_t>();
     }
 
     config.search = std::move(search);

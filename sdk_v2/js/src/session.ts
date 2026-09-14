@@ -60,6 +60,33 @@ function rejectEmbeddedNul(value: unknown, argumentName: string): void {
   }
 }
 
+/**
+ * Token-budget estimate for a chat request, computed without running generation or mutating session history.
+ * {@link ChatSession.preflightRequest} always returns a promise; request-preparation failures reject it.
+ */
+export interface RequestPreflight {
+  /** Tokens consumed by the fully rendered prompt. */
+  readonly promptTokens: number;
+  /**
+   * Tokens reserved for generated output.
+   *
+   * An explicit positive request limit is used when present. The current
+   * package schema exposes no distinct generation-default field, so an
+   * omitted limit uses the bounded server fallback: 2048 tokens for text and
+   * 3072 for media. If a positive package generation default becomes
+   * supported, it will take precedence over that fallback.
+   */
+  readonly outputReserveTokens: number;
+  /** Total prompt and output-reserve tokens required by the request. */
+  readonly requiredTokens: number;
+  /** Model context-window limit used for the estimate. */
+  readonly contextLimitTokens: number;
+  /** Whether the complete request fits in the available context window. */
+  readonly fits: boolean;
+  /** Additional tokens required when `fits` is false; otherwise zero. */
+  readonly deficitTokens: number;
+}
+
 function modelToNativeChatSession(model: IModel): NativeChatSession {
   if (!(model instanceof Model)) {
     throw new TypeError("ChatSession: expected a Model as the first argument");
@@ -364,6 +391,21 @@ export class ChatSession extends Session {
   // `ChatSession` always constructs a `NativeChatSession`.
   get #nativeChat(): NativeChatSession {
     return this.native as NativeChatSession;
+  }
+
+  /**
+   * Estimate the context-window budget without generation or history mutation.
+   *
+   * Invocation synchronously captures immutable request and chat-session state, including copies of inline media.
+   * Prompt rendering, tokenization, URI reads, and media preprocessing run on a worker thread. URI strings are
+   * captured, but their external content is read later and is not transactionally frozen.
+   *
+   * After request mutation or context compaction, rebuild and preflight the exact request again immediately before
+   * submission. The server does not enforce a preflight identity.
+   */
+  async preflightRequest(request: Request): Promise<RequestPreflight> {
+    const nativeReq = unwrapNativeRequest(request);
+    return await this.#nativeChat.preflightRequest(nativeReq);
   }
 
   /**
