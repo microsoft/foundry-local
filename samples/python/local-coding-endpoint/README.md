@@ -1,7 +1,7 @@
 # Qwen coding endpoint
 
-Serve a local Qwen3.8 DFlash2 model through Foundry Local and send concurrent coding requests through either its
-OpenAI-compatible endpoint or the typed Python SDK.
+Serve a local Qwen3.8 DFlash2 model through Foundry Local and send concurrent coding requests through its
+OpenAI-compatible endpoint.
 
 ## Setup
 
@@ -44,16 +44,3 @@ With the launcher still running, in another shell:
 source .venv/bin/activate
 python openai_client.py
 ```
-
-## Concurrent typed SDK requests
-
-Stop the endpoint launcher first, then run the standalone typed example:
-
-```bash
-source .venv/bin/activate
-export CUDA_VISIBLE_DEVICES=0
-python typed_client.py --model "$MODEL_DIR"
-```
-
-Each worker creates and closes its own `ChatSession`; no mutable session is shared between concurrent tasks. The
-typed example manages its own model lifecycle, so stop `launcher.py` before running it.
