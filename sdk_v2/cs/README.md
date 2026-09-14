@@ -5,6 +5,7 @@ The Foundry Local C# SDK provides a .NET interface for running AI models locally
 ## Features
 
 - **Model catalog** — browse and search all available models; filter by cached or loaded state
+- **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
 - **Lifecycle management** — download, load, unload, and remove models programmatically
 - **Chat completions** — synchronous and `IAsyncEnumerable` streaming via OpenAI-compatible types
 - **Audio transcription** — transcribe audio files with streaming support
@@ -165,6 +166,37 @@ var cached = await catalog.GetCachedModelsAsync();
 // List models currently loaded in memory
 var loaded = await catalog.GetLoadedModelsAsync();
 ```
+
+### Bring your own model
+
+Select the local catalog to register an existing model directory. The directory must contain a valid
+`genai_config.json`; registration records the path but does not copy or take ownership of the assets.
+
+```csharp
+var localCatalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+
+var metadata = new ModelInfo
+{
+    Task = "chat-completion",
+    DisplayName = "My local model",
+    Runtime = new Runtime
+    {
+        DeviceType = DeviceType.CPU,
+        ExecutionProvider = "CPUExecutionProvider",
+    },
+};
+metadata.SetIntProperty(ModelInfoPropertyKeys.ContextLength, 4096);
+
+var model = await localCatalog.RegisterModelAsync(
+    @"C:\models\my-model",
+    "my-model-generic-cpu:1",
+    metadata);
+
+// Removes only the catalog registration; model files are preserved.
+await localCatalog.UnregisterModelAsync(model.Id);
+```
+
+Calling `GetCatalogAsync()` without a `CatalogType` remains equivalent to requesting `CatalogType.Public`.
 
 ### Model Lifecycle
 

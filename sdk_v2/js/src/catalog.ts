@@ -8,6 +8,7 @@
 import type { NativeCatalog, NativeModel } from "./detail/native.js";
 import type { IModel } from "./imodel.js";
 import { Model, unwrapNativeModel, wrapNativeModel } from "./model.js";
+import { type MutableModelInfo, unwrapMutableModelInfo } from "./modelInfo.js";
 
 const internalCtorKey = Symbol("Catalog.internal");
 
@@ -94,14 +95,39 @@ export class Catalog {
     // Reject them here (matching Rust's i32::MAX rejection) so callers get a
     // clear error rather than a surprising truncated result. Negatives/0 are
     // valid ("no cap") but must still fit i32.
-    if (
-      !Number.isInteger(maxVersions) ||
-      maxVersions < -(2 ** 31) ||
-      maxVersions > 2 ** 31 - 1
-    ) {
+    if (!Number.isInteger(maxVersions) || maxVersions < -(2 ** 31) || maxVersions > 2 ** 31 - 1) {
       throw new TypeError("maxVersions must be an integer within the 32-bit range.");
     }
     return wrapAll(await this.#native.getModelVersions(modelAlias, modelName ?? null, maxVersions));
+  }
+
+  /**
+   * Register existing local model assets. Use this only with `CatalogType.Local`; public catalogs reject mutation.
+   * The metadata is copied, and the catalog never deletes `modelPath`.
+   */
+  async registerModel(modelPath: string, modelId: string, metadata: MutableModelInfo): Promise<IModel> {
+    validateRegistrationArgs(modelPath, modelId, metadata);
+    return wrapNativeModel(await this.#native.registerModel(modelPath, modelId, unwrapMutableModelInfo(metadata)));
+  }
+
+  /**
+   * Synchronous registration variant. This performs file I/O and blocks the event loop; prefer `registerModel()`.
+   */
+  registerModelSync(modelPath: string, modelId: string, metadata: MutableModelInfo): IModel {
+    validateRegistrationArgs(modelPath, modelId, metadata);
+    return wrapNativeModel(this.#native.registerModelSync(modelPath, modelId, unwrapMutableModelInfo(metadata)));
+  }
+
+  /** Unregister a local model without deleting its assets. Accepts either an alias or a full model ID. */
+  async unregisterModel(aliasOrModelId: string): Promise<void> {
+    validateNonEmptyString(aliasOrModelId, "Alias or model ID");
+    await this.#native.unregisterModel(aliasOrModelId);
+  }
+
+  /** Synchronous unregistration variant. This performs file I/O and blocks the event loop. */
+  unregisterModelSync(aliasOrModelId: string): void {
+    validateNonEmptyString(aliasOrModelId, "Alias or model ID");
+    this.#native.unregisterModelSync(aliasOrModelId);
   }
 }
 
@@ -112,4 +138,16 @@ export function wrapNativeCatalog(native: NativeCatalog): Catalog {
 
 function wrapAll(natives: readonly NativeModel[]): IModel[] {
   return natives.map((n) => wrapNativeModel(n));
+}
+
+function validateNonEmptyString(value: string, name: string): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${name} must be a non-empty string.`);
+  }
+}
+
+function validateRegistrationArgs(modelPath: string, modelId: string, metadata: MutableModelInfo): void {
+  validateNonEmptyString(modelPath, "Model path");
+  validateNonEmptyString(modelId, "Model ID");
+  unwrapMutableModelInfo(metadata);
 }

@@ -7,6 +7,12 @@ export enum DeviceType {
   NPU = "NPU",
 }
 
+/** Selects the manager-owned model catalog. */
+export enum CatalogType {
+  Public = 0,
+  Local = 1,
+}
+
 /**
  * @deprecated PromptTemplate is an internal model implementation detail and will be removed in a future release.
  * Templates are applied automatically by ChatSession.
