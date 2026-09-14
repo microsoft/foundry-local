@@ -491,7 +491,7 @@ TEST_F(SearchOptionsTest, DefaultOptionsApplySuccessfully) {
   SearchOptions opts;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault);
+  auto max_length = ApplySearchOptions(opts, 10, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_GT(max_length, 10);
   // Default output tokens = 2048, so max_length should be 10 + 2048 = 2058
   EXPECT_EQ(max_length, 2058);
@@ -502,7 +502,7 @@ TEST_F(SearchOptionsTest, MaxOutputTokensRespected) {
   opts.max_output_tokens = 100;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 50, GetConfig(), *params, ExecutionProvider::kDefault);
+  auto max_length = ApplySearchOptions(opts, 50, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_EQ(max_length, 150);  // 50 input + 100 output
 }
 
@@ -628,7 +628,7 @@ TEST_F(SearchOptionsTest, AllOptionsSetSimultaneously) {
   opts.do_sample = true;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 20, GetConfig(), *params, ExecutionProvider::kDefault);
+  auto max_length = ApplySearchOptions(opts, 20, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_EQ(max_length, 276);  // 20 + 256
 }
 
@@ -699,7 +699,7 @@ TEST_F(SearchOptionsTest, LargeInputFitsExactly) {
   opts.max_output_tokens = 768;
   auto params = MakeParams();
 
-  int max_length = ApplySearchOptions(opts, 32000, GetConfig(), *params, ExecutionProvider::kDefault);
+  auto max_length = ApplySearchOptions(opts, 32000, GetConfig(), *params, ExecutionProvider::kDefault);
   EXPECT_EQ(max_length, 32768);  // Exactly at limit
 }
 

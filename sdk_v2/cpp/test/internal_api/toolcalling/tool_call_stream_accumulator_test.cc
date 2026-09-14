@@ -315,9 +315,16 @@ TEST(QwenXmlToolCallAccumulatorTest, SchemaTypesAreDecodedAsCompatibleJson) {
   auto calls = CollectCalls(outputs);
 
   ASSERT_EQ(calls.size(), 1u);
-  EXPECT_EQ(calls[0].arguments,
-            R"({"array":[1,"two"],"boolean":true,"integer":-2,"nothing":null,"number":1.5,)"
-            R"("object":{"key":3},"text":"{\"looks\":\"json\"}"})");
+  const nlohmann::json expected = {
+      {"array", {1, "two"}},
+      {"boolean", true},
+      {"integer", -2},
+      {"nothing", nullptr},
+      {"number", 1.5},
+      {"object", {{"key", 3}}},
+      {"text", R"({"looks":"json"})"},
+  };
+  EXPECT_EQ(calls[0].arguments, expected.dump());
   EXPECT_TRUE(CollectVisible(outputs).empty());
 }
 
