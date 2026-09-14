@@ -33,7 +33,7 @@ class TestChatSessionValidation:
     def test_rejects_embeddings_model(self, manager):
         m = _find_first_model_for_task(manager, "embeddings")
         if m is None:
-            pytest.skip("No embeddings model in catalog to use as wrong-task input.")
+            pytest.fail("No embeddings model in catalog to use as wrong-task input.")
         with pytest.raises(ValueError, match="ChatSession requires"):
             ChatSession(m)
 
@@ -42,7 +42,7 @@ class TestAudioSessionValidation:
     def test_rejects_chat_model(self, manager):
         m = _find_first_model_for_task(manager, "chat-completion")
         if m is None:
-            pytest.skip("No chat-completion model in catalog.")
+            pytest.fail("No chat-completion model in catalog.")
         with pytest.raises(ValueError, match="AudioSession requires"):
             AudioSession(m)
 
@@ -51,7 +51,7 @@ class TestEmbeddingsSessionValidation:
     def test_rejects_chat_model(self, manager):
         m = _find_first_model_for_task(manager, "chat-completion")
         if m is None:
-            pytest.skip("No chat-completion model in catalog.")
+            pytest.fail("No chat-completion model in catalog.")
         with pytest.raises(ValueError, match="EmbeddingsSession requires"):
             EmbeddingsSession(m)
 

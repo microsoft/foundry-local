@@ -54,6 +54,19 @@ export interface RealModelManagerFixture {
   readonly model: IModel;
 }
 
+function selectCpuVariant(model: IModel, task?: string): IModel | undefined {
+  const cpuVariant = [model, ...model.variants].find(
+    (variant) => variant.info.deviceType === "CPU" && (task === undefined || variant.info.task === task),
+  );
+  if (cpuVariant === undefined) {
+    return undefined;
+  }
+  if (cpuVariant.info.id !== model.info.id) {
+    model.selectVariant(cpuVariant);
+  }
+  return model;
+}
+
 /**
  * Build a Manager pointed at `FOUNDRY_TEST_DATA_DIR`, pick a small chat
  * model, ensure it is on disk + loaded, and return the fixture. The caller
@@ -80,7 +93,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   let model: IModel | undefined;
   try {
     const exact = await catalog.getModel(namePref);
-    model = exact.info.deviceType === "CPU" ? exact : undefined;
+    model = selectCpuVariant(exact);
   } catch {
     model = undefined;
   }
@@ -91,9 +104,11 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   // filter — caller-specified names should win over "smallest by task".
   if (model === undefined && opts.namePreference !== undefined) {
     const all = await catalog.getModels();
-    const prefixed = all.find((m) => m.info.deviceType === "CPU" && m.info.name.startsWith(namePref));
+    const prefixed = all.find(
+      (candidate) => candidate.info.alias.startsWith(namePref) || candidate.info.name.startsWith(namePref),
+    );
     if (prefixed !== undefined) {
-      model = prefixed;
+      model = selectCpuVariant(prefixed);
     }
   }
 
@@ -101,9 +116,9 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   if (model === undefined) {
     const task = opts.task ?? "chat-completion";
     const all = await catalog.getModels();
-    const matching = all.filter((m) => {
-      const info = m.info;
-      return info.task === task && info.deviceType === "CPU";
+    const matching = all.flatMap((candidate) => {
+      const cpuModel = selectCpuVariant(candidate, task);
+      return cpuModel === undefined ? [] : [cpuModel];
     });
     if (matching.length === 0) {
       manager.dispose();
