@@ -11,10 +11,10 @@ struct OgaNamedTensors;
 
 namespace fl {
 
-class AudioItem;
+struct AudioItem;
 class GenAIModelInstance;
-class ImageItem;
-class MessageItem;
+struct ImageItem;
+struct MessageItem;
 struct ToolCallContext;
 struct TranscriptMessage;
 namespace chat_internal {
