@@ -11,6 +11,7 @@ These samples demonstrate how to use Foundry Local with Python.
 | Sample | Description |
 |--------|-------------|
 | [native-chat-completions](native-chat-completions/) | Initialize the SDK, start the local service, and run streaming chat completions. |
+| [local-coding-endpoint](local-coding-endpoint/) | Serve a local coding model and run concurrent OpenAI or typed SDK requests. |
 | [embeddings](embeddings/) | Generate single and batch text embeddings using the Foundry Local SDK. |
 | [audio-transcription](audio-transcription/) | Transcribe audio files using the Whisper model. |
 | [web-server](web-server/) | Start a local OpenAI-compatible web server and call it with the OpenAI Python SDK. |

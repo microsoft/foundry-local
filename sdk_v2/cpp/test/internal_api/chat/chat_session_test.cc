@@ -2412,16 +2412,20 @@ TEST_F(ChatSessionTest, CatalogMaxTokensDoesNotChangeOmittedTypedOrOpenAIJsonPre
   openai_request.AddOwnedItem(std::make_unique<TextItem>(
       request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
 
-  // The tiny test model has a 512-token context, so submitting this 2048-token fallback
-  // to generation would be rejected. Preflight exercises the shared prepared-request seam
-  // without generating the fallback-sized completion.
   const auto typed_preflight = session.PreflightRequest(typed_request);
   const auto openai_preflight = session.PreflightRequest(openai_request);
 
   EXPECT_EQ(typed_preflight.output_reserve_tokens, 2048);
   EXPECT_EQ(openai_preflight.output_reserve_tokens, typed_preflight.output_reserve_tokens);
+  EXPECT_EQ(typed_preflight.required_tokens, typed_preflight.prompt_tokens + 2048);
   EXPECT_EQ(openai_preflight.required_tokens, openai_preflight.prompt_tokens + 2048);
-  EXPECT_FALSE(openai_preflight.fits);
+  EXPECT_EQ(openai_preflight.context_limit_tokens, typed_preflight.context_limit_tokens);
+  EXPECT_EQ(openai_preflight.fits,
+            openai_preflight.required_tokens <= openai_preflight.context_limit_tokens);
+  EXPECT_EQ(openai_preflight.deficit_tokens,
+            openai_preflight.fits
+                ? 0
+                : openai_preflight.required_tokens - openai_preflight.context_limit_tokens);
   EXPECT_EQ(session.TurnCount(), 0u);
   EXPECT_EQ(session.MessageCount(), 0u);
 }
@@ -2830,6 +2834,49 @@ TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
     int64_t prompt_tokens;
   };
 
+  auto counters = std::make_shared<GeneratorCounters>();
+  TextChatGeneratorFactory factory =
+      [counters](const auto&, const auto&, auto&, const auto&, bool) {
+        return std::make_unique<FixedOutputGenerator>(
+            "ok", BackendTerminationCause::kNaturalEnd, false, counters);
+      };
+  ChatSession cache_session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {},
+                            std::move(factory));
+
+  auto run_cache_turn = [&](const char* prompt, const char* template_kwargs) {
+    Request request;
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, prompt));
+    request.options.Add("max_output_tokens", "4");
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    cache_session.ProcessRequest(request, response);
+    EXPECT_NE(response.finish_reason, FOUNDRY_LOCAL_FINISH_ERROR);
+  };
+
+  run_cache_turn("first", R"({"enable_thinking":false})");
+  EXPECT_EQ(counters->created, 1);
+  EXPECT_EQ(counters->appended, 0);
+  EXPECT_EQ(counters->destroyed, 0);
+
+  run_cache_turn("second", R"({"enable_thinking":false})");
+  EXPECT_EQ(counters->created, 1);
+  EXPECT_EQ(counters->appended, 1);
+  EXPECT_EQ(counters->destroyed, 0);
+
+  run_cache_turn("third", R"({"enable_thinking":true})");
+  EXPECT_EQ(counters->created, 2);
+  EXPECT_EQ(counters->appended, 1);
+  EXPECT_EQ(counters->destroyed, 1);
+
+  run_cache_turn("fourth", nullptr);
+  EXPECT_EQ(counters->created, 3);
+  EXPECT_EQ(counters->appended, 1);
+  EXPECT_EQ(counters->destroyed, 2);
+
   auto run_turn = [&](ChatSession& session,
                       const std::vector<std::pair<flMessageRole, std::string>>& messages,
                       const char* template_kwargs) {
@@ -2868,8 +2915,8 @@ TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
        {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
       kNoThinking);
   EXPECT_EQ(same_kwargs.text, same_kwargs_full_history.text);
-  EXPECT_LT(same_kwargs.prompt_tokens, same_kwargs_full_history.prompt_tokens)
-      << "Identical template kwargs should retain the continuous-decoding path";
+  EXPECT_EQ(same_kwargs.prompt_tokens, same_kwargs_full_history.prompt_tokens)
+      << "Usage reports the complete logical prompt even when retained state avoids full prefill";
 
   auto changed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
 

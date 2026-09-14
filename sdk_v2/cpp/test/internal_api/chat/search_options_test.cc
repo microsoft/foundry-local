@@ -346,7 +346,7 @@ TEST(EngineTurnOptionsPlanTest, ForcedRawToolWithoutCompatibleGrammarDisablesStr
   tool_ctx.guidance_disabled = true;
 
   const auto plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+      BuildEngineTurnOptionsPlan(ResolveTextOutputLimit(), tool_ctx, ChatBackendKind::kEngine, false);
 
   EXPECT_FALSE(plan.guidance.has_value());
 }
@@ -359,7 +359,7 @@ TEST(EngineTurnOptionsPlanTest, ForcedRawToolUsesItsCompatibleLarkGrammar) {
   tool_ctx.guidance_data = "start: \"BEGIN\" /(.|\\n)+/ \"END\"";
 
   const auto plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+      BuildEngineTurnOptionsPlan(ResolveTextOutputLimit(), tool_ctx, ChatBackendKind::kEngine, false);
 
   ASSERT_TRUE(plan.guidance.has_value());
   EXPECT_EQ(plan.guidance->type, "lark_grammar");
