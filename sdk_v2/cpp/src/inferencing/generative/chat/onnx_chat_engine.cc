@@ -246,6 +246,27 @@ OnnxChatEngine::TurnResult OnnxChatEngine::GetTurnResult(
   return conversation->result;
 }
 
+OnnxChatEngine::SpeculativeStatsSnapshot OnnxChatEngine::GetSpeculativeStatsSnapshotForTest() {
+  auto completion = std::make_shared<std::promise<SpeculativeStatsSnapshot>>();
+  auto ready = completion->get_future();
+  Enqueue(
+      [this, completion]() {
+        auto stats = engine_->GetSpeculativeStats();
+        SpeculativeStatsSnapshot snapshot;
+        snapshot.draft_tokens_proposed = stats->GetCount("draft_tokens_proposed");
+        snapshot.draft_tokens_evaluated = stats->GetCount("draft_tokens_evaluated");
+        snapshot.draft_tokens_accepted = stats->GetCount("draft_tokens_accepted");
+        snapshot.rounds = stats->GetCount("rounds");
+        snapshot.dflash2_failures = stats->GetCount("dflash2_failures");
+        snapshot.dflash2_disables = stats->GetCount("dflash2_disables");
+        snapshot.dflash2_admission_misses = stats->GetCount("dflash2_admission_misses");
+        completion->set_value(snapshot);
+      },
+      [completion](std::exception_ptr error) { completion->set_exception(error); });
+
+  return ready.get();
+}
+
 size_t OnnxChatEngine::SequenceLength(const std::shared_ptr<Conversation>& conversation) const {
   std::lock_guard<std::mutex> lock(conversation->mutex);
   return conversation->resident_tokens.size();
