@@ -27,6 +27,7 @@ struct OgaRequest;
 
 namespace fl {
 
+class OnnxChatEngineTestAccessor;
 class GenAIModelInstance;
 struct ToolCallContext;
 
@@ -45,6 +46,16 @@ class OnnxChatEngine {
     uint64_t generated_tokens = 0;
     uint64_t cached_prompt_tokens = 0;
     uint32_t finish_reason = 0;
+  };
+
+  struct SpeculativeStatsSnapshot {
+    uint64_t draft_tokens_proposed = 0;
+    uint64_t draft_tokens_evaluated = 0;
+    uint64_t draft_tokens_accepted = 0;
+    uint64_t rounds = 0;
+    uint64_t dflash2_failures = 0;
+    uint64_t dflash2_disables = 0;
+    uint64_t dflash2_admission_misses = 0;
   };
 
   class Conversation {
@@ -96,6 +107,8 @@ class OnnxChatEngine {
   void Close(const std::shared_ptr<Conversation>& conversation);
 
  private:
+  friend class OnnxChatEngineTestAccessor;
+
   struct NativeConversation;
   struct PendingCommand {
     std::function<void()> run;
@@ -109,6 +122,7 @@ class OnnxChatEngine {
   bool ExpireCapacityBlockedConversation(bool new_admissions_only = false);
   void FailAll(std::exception_ptr error);
   NativeConversation& FindNative(const std::shared_ptr<Conversation>& conversation);
+  SpeculativeStatsSnapshot GetSpeculativeStatsSnapshotForTest();
 
   GenAIModelInstance& model_;
   const std::chrono::milliseconds capacity_wait_timeout_;
