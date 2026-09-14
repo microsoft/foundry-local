@@ -1572,7 +1572,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   const auto completion = RunChatCompletions(stateless, "auto");
   const auto& choice = completion.at("choices").at(0);
   const auto& message = choice.at("message");
-  EXPECT_EQ(message.at("content"), kLookupCall);
+  EXPECT_EQ(message.at("content").get<std::string>(), std::string(kLookupCall));
   EXPECT_FALSE(message.contains("tool_calls"));
   EXPECT_EQ(choice.at("finish_reason"), "length");
 }
