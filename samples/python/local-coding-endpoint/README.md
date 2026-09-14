@@ -6,22 +6,12 @@ OpenAI-compatible endpoint.
 ## Setup
 
 Use Python 3.11 or later. Keep the Foundry Local package source and version placeholders below until the package is
-published.
+published. Run these commands in your preferred Python environment:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --extra-index-url "https://<PACKAGE-SOURCE>/simple" \
-  "foundry-local-sdk==<FOUNDRY-LOCAL-VERSION>" \
-  "onnxruntime==1.30.0" \
-  "onnxruntime-genai-core==0.16.0"
+python -m pip install --extra-index-url "https://<PACKAGE-SOURCE>/simple" "foundry-local-sdk==<FOUNDRY-LOCAL-VERSION>"
+python -m pip install "onnxruntime==1.30.0" "onnxruntime-genai-core==0.16.0"
 python -m pip install -r requirements.txt
-```
-
-Use a CUDA-capable machine and select the GPU before launching:
-
-```bash
-export CUDA_VISIBLE_DEVICES=0
 ```
 
 ## Start the endpoint
@@ -41,6 +31,5 @@ and unregisters the model without deleting the model files.
 With the launcher still running, in another shell:
 
 ```bash
-source .venv/bin/activate
 python openai_client.py
 ```
