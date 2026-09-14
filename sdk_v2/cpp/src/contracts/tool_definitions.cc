@@ -132,6 +132,18 @@ RawEnvelopeDescriptor ParseRawEnvelopeDescriptor(const std::string& value) {
   return result;
 }
 
+void ValidateRawEnvelopeTool(const RawEnvelopeDescriptor& descriptor,
+                             const std::vector<ToolDefinition>& definitions) {
+  const auto matching_tool =
+      std::ranges::find_if(definitions, [&](const ToolDefinition& definition) {
+        return definition.name == descriptor.tool_name && definition.kind == ToolKind::kCustom;
+      });
+  if (matching_tool == definitions.end()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, kRawEnvelopeMetadataKey,
+             " must reference an effective declared custom tool: ", descriptor.tool_name);
+  }
+}
+
 std::optional<bool> ParseFunctionStrict(const nlohmann::json& strict) {
   if (strict.is_null()) {
     return std::nullopt;

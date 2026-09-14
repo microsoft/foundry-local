@@ -71,6 +71,10 @@ std::optional<std::string> CustomToolLarkGrammar(const nlohmann::json& format);
 
 RawEnvelopeDescriptor ParseRawEnvelopeDescriptor(const std::string& value);
 
+/// Require a raw-envelope descriptor to name a custom tool in the effective, filtered tool set.
+void ValidateRawEnvelopeTool(const RawEnvelopeDescriptor& descriptor,
+                             const std::vector<ToolDefinition>& definitions);
+
 /// Parse a function tool's `strict` value.
 ///
 /// Omitted values are handled by the caller. Null is treated as unspecified, false is preserved,

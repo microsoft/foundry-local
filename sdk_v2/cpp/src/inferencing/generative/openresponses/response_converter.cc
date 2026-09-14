@@ -875,6 +875,7 @@ std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCr
   if (const auto descriptor = params.metadata.find(tools::kRawEnvelopeMetadataKey);
       descriptor != params.metadata.end()) {
     session_request.raw_envelope_descriptor = tools::ParseRawEnvelopeDescriptor(descriptor->second);
+    tools::ValidateRawEnvelopeTool(*session_request.raw_envelope_descriptor, definitions);
   }
 
   return definitions;

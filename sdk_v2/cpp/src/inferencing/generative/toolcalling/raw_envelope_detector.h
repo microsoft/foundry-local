@@ -50,10 +50,13 @@ class RawEnvelopeDetector {
     DrainCompleteLines(output);
     DrainSafeOutsideText(output);
 
-    const bool pending_closer =
-        inside_envelope_ && LineText(pending_) == descriptor_.end_marker;
-    if (candidate_.size() + pending_.size() > kMaxBufferedBytes &&
-        !pending_closer) {
+    const bool pending_crlf_closer =
+        inside_envelope_ && pending_.ends_with('\r') &&
+        LineText(pending_) == descriptor_.end_marker;
+    const auto buffered_pending_size =
+        pending_.size() - static_cast<size_t>(pending_crlf_closer);
+    if (buffered_pending_size > kMaxBufferedBytes ||
+        candidate_.size() > kMaxBufferedBytes - buffered_pending_size) {
       EmitRejectedCandidate(output, std::move(candidate_));
       EmitRejectedCandidate(output, std::move(pending_));
       candidate_.clear();
@@ -355,7 +358,17 @@ class RawEnvelopeDetector {
   }
 
   void DrainSafeOutsideText(Output& output) {
-    if (finished_ || inside_envelope_ || pending_.empty()) {
+    if (pending_.empty()) {
+      return;
+    }
+
+    if (finished_) {
+      EmitText(output, std::move(pending_));
+      pending_.clear();
+      return;
+    }
+
+    if (inside_envelope_) {
       return;
     }
 

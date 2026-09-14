@@ -298,3 +298,17 @@ TEST(RawEnvelopeDescriptorTest, RejectsUnknownMissingAndUnsafeMembers) {
   EXPECT_INVALID_ARGUMENT(tools::ParseRawEnvelopeDescriptor(
       "{\"type\":\"raw_envelope\",\"tool_name\":\"edit\",\"start_marker\":\"<\\n<\",\"end_marker\":\">>>\"}"));
 }
+
+TEST(RawEnvelopeDescriptorTest, RequiresEffectiveDeclaredCustomTool) {
+  const RawEnvelopeDescriptor descriptor{"edit", "BEGIN", "END"};
+  const std::vector<ToolDefinition> custom_tools{
+      tools::MakeCustomTool("edit", ""),
+  };
+  EXPECT_NO_THROW(tools::ValidateRawEnvelopeTool(descriptor, custom_tools));
+
+  const std::vector<ToolDefinition> function_tools{
+      tools::MakeFunctionTool("edit", "", "{}"),
+  };
+  EXPECT_INVALID_ARGUMENT(tools::ValidateRawEnvelopeTool(descriptor, function_tools));
+  EXPECT_INVALID_ARGUMENT(tools::ValidateRawEnvelopeTool(descriptor, {}));
+}

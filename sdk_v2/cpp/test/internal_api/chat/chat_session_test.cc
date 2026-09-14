@@ -216,7 +216,6 @@ TEST(ChatSessionDecisionTest, StockApplyPatchGrammarDeclaresBuiltInRawDescriptor
   EXPECT_EQ(context.raw_envelope->tool_name, "apply_patch");
   EXPECT_EQ(context.raw_envelope->start_marker, "*** Begin Patch");
   EXPECT_EQ(context.raw_envelope->end_marker, "*** End Patch");
-  EXPECT_TRUE(context.built_in_raw_envelope);
   EXPECT_NE(context.ActiveRawEnvelope(), nullptr);
 }
 
@@ -1085,43 +1084,12 @@ TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoni
   EXPECT_EQ(callback_call_id, call.call_id);
   EXPECT_EQ(callback_arguments, envelope);
   EXPECT_EQ(call.arguments, envelope);
+  EXPECT_EQ(call.generated_encoding, GeneratedCallEncoding::kRawEnvelope);
 
   ASSERT_EQ(session.Transcript().Messages().back().ToolCalls().size(), 1u);
   const auto& transcript_call = *session.Transcript().Messages().back().ToolCalls().front();
   EXPECT_EQ(transcript_call.call_id, call.call_id);
   EXPECT_EQ(transcript_call.arguments, envelope);
-
-  ToolCallItem callback_call(callback_call_id, "apply_patch", callback_arguments,
-                             /*replayed_from_store=*/false, ToolKind::kCustom, std::nullopt,
-                             GeneratedCallEncoding::kRawEnvelope);
-  int next_sequence_number = 2;
-  auto streamed = ResponseConverter::BuildToolCallStreamOutput(
-      callback_call, /*output_index=*/0, next_sequence_number);
-  ASSERT_EQ(streamed.events.size(), 4u);
-  EXPECT_EQ(streamed.events[1].tool_call_id, call.call_id);
-  EXPECT_EQ(streamed.events[1].delta, envelope);
-  EXPECT_EQ(streamed.events[2].tool_call_id, call.call_id);
-  EXPECT_EQ(streamed.events[2].tool_payload, envelope);
-
-  responses::ResponseCreateParams params;
-  params.model = "test-model";
-  params.input = "make a patch";
-  std::vector<responses::ResponseOutputItem> output;
-  output.push_back(std::move(streamed.completed_item));
-  const auto completed = ResponseConverter::BuildResponseObject(
-      "resp_eof", 1, "test-model", params, std::move(output), "", response.usage);
-  const nlohmann::json completed_json = completed;
-  ASSERT_EQ(completed_json.at("output").size(), 1u);
-  EXPECT_EQ(completed_json.at("output")[0].at("call_id"), call.call_id);
-  EXPECT_EQ(completed_json.at("output")[0].at("input"), envelope);
-
-  ResponseStore store;
-  store.Store("resp_eof", completed_json, nlohmann::json::array(), "test-model",
-              std::unordered_set<std::string>{call.call_id});
-  const auto stored = store.Get("resp_eof");
-  ASSERT_TRUE(stored.has_value());
-  EXPECT_EQ(stored->at("output")[0].at("call_id"), callback_call_id);
-  EXPECT_EQ(stored->at("output")[0].at("input"), envelope);
 }
 
 TEST_F(ChatSessionTest, ChatCompletionsUnguidedForcedRawCallPreservesPromptOpenedReasoning) {

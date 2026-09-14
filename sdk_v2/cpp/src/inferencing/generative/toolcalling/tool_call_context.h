@@ -62,7 +62,6 @@ struct ToolCallContext {
   std::unordered_map<std::string, std::string> custom_lark_grammars;
   std::optional<ForcedToolChoice> forced_tool;
   std::optional<RawEnvelopeDescriptor> raw_envelope;
-  bool built_in_raw_envelope = false;
   bool guidance_disabled = false;
 
   const RawEnvelopeDescriptor* ActiveRawEnvelope() const {
@@ -114,7 +113,6 @@ struct ToolCallContext {
   bool HasSameTools(const ToolCallContext& other) const {
     return tools_json == other.tools_json && tool_kinds == other.tool_kinds &&
            custom_lark_grammars == other.custom_lark_grammars && raw_envelope == other.raw_envelope &&
-           built_in_raw_envelope == other.built_in_raw_envelope &&
            guidance_disabled == other.guidance_disabled;
   }
 

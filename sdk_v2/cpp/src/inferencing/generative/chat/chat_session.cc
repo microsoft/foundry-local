@@ -274,9 +274,8 @@ void ResolveBuiltInRawEnvelope(ToolCallContext& context) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "tool_output_encoding conflicts with the stock apply_patch grammar");
   }
-
   context.raw_envelope = built_in;
-  context.built_in_raw_envelope = true;
+  context.raw_envelope = built_in;
 }
 
 void ApplyRawEnvelopeGuidance(ToolCallContext& context) {
@@ -1205,13 +1204,6 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   Request internal_request;
   internal_request.forced_tool_choice = original_request.forced_tool_choice;
   internal_request.raw_envelope_descriptor = original_request.raw_envelope_descriptor;
-  if (!internal_request.raw_envelope_descriptor.has_value() && req.metadata.has_value()) {
-    const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
-    if (descriptor != req.metadata->end()) {
-      internal_request.raw_envelope_descriptor =
-          tools::ParseRawEnvelopeDescriptor(descriptor->second);
-    }
-  }
 
   // We don't use history_ for this request as it's for backwards compat and all messages come from the input.
   chat_completions::BuildRequestItems(req, internal_request);
@@ -1248,6 +1240,17 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   } else {
     request_tool_definitions = chat_session_internal::BuildJsonRequestToolDefinitions(
         std::move(tool_definitions), session_tool_definitions);
+  }
+
+  if (!internal_request.raw_envelope_descriptor.has_value() && req.metadata.has_value()) {
+    const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
+    if (descriptor != req.metadata->end()) {
+      internal_request.raw_envelope_descriptor =
+          tools::ParseRawEnvelopeDescriptor(descriptor->second);
+    }
+  }
+  if (internal_request.raw_envelope_descriptor.has_value()) {
+    tools::ValidateRawEnvelopeTool(*internal_request.raw_envelope_descriptor, request_tool_definitions);
   }
 
   const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);

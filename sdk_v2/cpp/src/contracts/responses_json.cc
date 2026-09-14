@@ -566,6 +566,11 @@ void from_json(const nlohmann::json& j, ResponseCreateParams& p) {
   // Metadata
   if (j.contains("metadata") && j["metadata"].is_object()) {
     for (const auto& [key, value] : j["metadata"].items()) {
+      if (key == tools::kRawEnvelopeMetadataKey && !value.is_string()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, tools::kRawEnvelopeMetadataKey,
+                 " must be a string containing a JSON descriptor");
+      }
+
       if (value.is_string()) {
         p.metadata[key] = value.get<std::string>();
       }

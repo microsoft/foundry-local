@@ -943,6 +943,65 @@ TEST_F(WebServiceTest, MalformedRawEnvelopeDescriptorIsRejectedBeforeModelResolu
   }
 }
 
+TEST_F(WebServiceTest, ResponsesRejectsNonStringRawEnvelopeDescriptorBeforeModelResolutionOrSse) {
+  for (const bool stream : {false, true}) {
+    const json body = {
+        {"model", "alpha-model"},
+        {"input", "hi"},
+        {"stream", stream},
+        {"metadata", {{tools::kRawEnvelopeMetadataKey, {{"type", "raw_envelope"}}}}},
+    };
+
+    const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+    EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                  << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find(tools::kRawEnvelopeMetadataKey),
+              std::string::npos)
+        << result.body.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, RawEnvelopeDescriptorMustReferenceEffectiveCustomTool) {
+  const std::string descriptor =
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN","end_marker":"END"})";
+  for (const bool chat : {false, true}) {
+    for (const bool stream : {false, true}) {
+      json body = chat
+                      ? json{{"model", "alpha-model"},
+                             {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+                             {"tools",
+                              json::array({
+                                  {{"type", "custom"},
+                                   {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}},
+                                  {{"type", "custom"},
+                                   {"custom", {{"name", "other"}, {"format", {{"type", "text"}}}}}},
+                              })},
+                             {"tool_choice",
+                              {{"type", "custom"}, {"custom", {{"name", "other"}}}}}}
+                      : json{{"model", "alpha-model"},
+                             {"input", "hi"},
+                             {"tools",
+                              json::array({
+                                  {{"type", "custom"}, {"name", "edit"}},
+                                  {{"type", "custom"}, {"name", "other"}},
+                              })},
+                             {"tool_choice", {{"type", "custom"}, {"name", "other"}}}};
+      body["stream"] = stream;
+      body["metadata"] = {{tools::kRawEnvelopeMetadataKey, descriptor}};
+
+      const auto endpoint = chat ? "/v1/chat/completions" : "/v1/responses";
+      const auto result = PostJson(base_url_ + endpoint, body);
+
+      EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                    << result.body.dump(2);
+      EXPECT_NE(ErrorMessageOf(result.body).find("effective declared custom tool"),
+                std::string::npos)
+          << result.body.dump(2);
+    }
+  }
+}
+
 TEST_F(WebServiceTest, GenericRawEnvelopeDescriptorIsAcceptedForAutoAndForcedCustomTool) {
   const std::string descriptor =
       R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN","end_marker":"END"})";

@@ -49,19 +49,21 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
     req = req_json.get<ChatCompletionRequest>();
 
     auto definitions = chat_completions::ExtractToolDefinitions(req, prepared_request);
+    if (req.metadata.has_value()) {
+      const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
+      if (descriptor != req.metadata->end()) {
+        prepared_request.raw_envelope_descriptor =
+            tools::ParseRawEnvelopeDescriptor(descriptor->second);
+        tools::ValidateRawEnvelopeTool(*prepared_request.raw_envelope_descriptor, definitions);
+      }
+    }
+
     ToolRegistry registry;
     for (auto& definition : definitions) {
       registry.Add(std::move(definition));
     }
 
     prepared_request.prepared_tool_definitions = registry.Definitions();
-    if (req.metadata.has_value()) {
-      const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
-      if (descriptor != req.metadata->end()) {
-        prepared_request.raw_envelope_descriptor =
-            tools::ParseRawEnvelopeDescriptor(descriptor->second);
-      }
-    }
   } catch (const fl::Exception& ex) {
     // Contract validation (tool call shape, unsupported tool kinds) rejects malformed client payloads.
     return ErrorResponse(StatusForException(ex), "Invalid request", ex.what());

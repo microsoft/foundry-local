@@ -105,6 +105,18 @@ TEST(RawEnvelopeDetectorTest, PreservesPrefixAndStopsAfterFirstCompletedCall) {
   EXPECT_EQ(result.text, "before\n\nafter\n" + kEnvelope);
 }
 
+TEST(RawEnvelopeDetectorTest, PreservesSuffixOrderAcrossChunksAfterCompletedCall) {
+  RawEnvelopeDetector detector(Descriptor());
+  Result result;
+
+  Append(result, detector.Push(kEnvelope + "\ntail"));
+  Append(result, detector.Push("more"));
+  Append(result, detector.FinalizeNatural());
+
+  ASSERT_EQ(result.calls.size(), 1u);
+  EXPECT_EQ(result.text, "\ntailmore");
+}
+
 TEST(RawEnvelopeDetectorTest, FencedEnvelopeStaysText) {
   for (const auto& fence : {"```patch", "~~~"}) {
     const auto input = std::string(fence) + "\n" + kEnvelope + "\n" +
@@ -273,7 +285,6 @@ TEST(RawEnvelopeActivationTest, BuiltInApplyPatchIsActiveForAutoButNotUnnamedReq
   context.text_output = true;
   context.tool_kinds = {{"apply_patch", ToolKind::kCustom}};
   context.raw_envelope = Descriptor();
-  context.built_in_raw_envelope = true;
 
   ASSERT_NE(context.ActiveRawEnvelope(), nullptr);
 
@@ -332,4 +343,29 @@ TEST(RawEnvelopeDetectorTest, ExactLimitClosingMarkerIsIndependentOfEofLfCrLfAnd
       EXPECT_EQ(result.text, terminator);
     }
   }
+}
+
+TEST(RawEnvelopeDetectorTest, ExactLimitIsChunkIndependentAndLimitPlusOneIsRejected) {
+  const std::string start = "*** Begin Patch\n";
+  const std::string end = "*** End Patch";
+  const auto payload_size =
+      RawEnvelopeDetector::kMaxBufferedBytes - start.size() - end.size();
+  const std::string exact = start + std::string(payload_size - 1, 'x') + "\n" + end;
+
+  RawEnvelopeDetector detector(Descriptor());
+  Result bytewise;
+  for (const char byte : exact) {
+    Append(bytewise, detector.Push(std::string_view(&byte, 1)));
+  }
+  Append(bytewise, detector.FinalizeNatural());
+
+  ASSERT_EQ(bytewise.calls.size(), 1u);
+  EXPECT_EQ(bytewise.calls.front().arguments, exact);
+  EXPECT_TRUE(bytewise.text.empty());
+
+  const std::string over_limit =
+      start + std::string(payload_size, 'x') + "\n" + end;
+  const auto rejected = Read({over_limit});
+  EXPECT_TRUE(rejected.calls.empty());
+  EXPECT_EQ(rejected.text, over_limit);
 }
