@@ -70,7 +70,8 @@ int GetModelMaxContextLength(const GenAIConfig& config) {
   return model_max_length;
 }
 
-std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx) {
+std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
+                                                              bool prompt_opens_reasoning) {
   std::string guidance_type;
   std::string guidance_data;
   const bool user_specified_guidance =
@@ -85,7 +86,7 @@ std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallCont
       json_schema = BuildToolJsonSchema(tool_ctx);
     }
 
-    guidance_data = BuildLarkGrammar(tool_ctx, json_schema);
+    guidance_data = BuildLarkGrammar(tool_ctx, json_schema, prompt_opens_reasoning);
     if (!guidance_data.empty()) {
       guidance_type = "lark_grammar";
     }
@@ -94,7 +95,11 @@ std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallCont
   const bool tool_call_only = tool_ctx.tool_output && !tool_ctx.text_output;
   if (!guidance_type.empty() && !guidance_data.empty() &&
       (user_specified_guidance || tool_call_only)) {
-    return TurnGuidanceOptions{std::move(guidance_type), std::move(guidance_data)};
+    return TurnGuidanceOptions{
+        std::move(guidance_type),
+        std::move(guidance_data),
+        user_specified_guidance,
+    };
   }
 
   return std::nullopt;
@@ -157,7 +162,8 @@ bool SupportsPerTurnSeed(ChatBackendKind backend_kind) {
 
 EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
                                                  const ToolCallContext& tool_ctx,
-                                                 ChatBackendKind backend_kind) {
+                                                 ChatBackendKind backend_kind,
+                                                 bool prompt_opens_reasoning) {
   ValidatePenalties(options);
   if (options.early_stopping.value_or(false)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
@@ -182,23 +188,24 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
     plan.stop_sequences = options.stop_sequences;
   }
 
-  plan.guidance = ResolveTurnGuidanceOptions(tool_ctx);
+  plan.guidance = ResolveTurnGuidanceOptions(tool_ctx, prompt_opens_reasoning);
   return plan;
 }
 
-void ApplyGuidanceOptions(const ToolCallContext& tool_ctx, OgaGeneratorParams& gen_params) {
-  if (const auto guidance = ResolveTurnGuidanceOptions(tool_ctx)) {
-    const bool user_specified_guidance =
-        !tool_ctx.guidance_type.empty() && !tool_ctx.guidance_data.empty();
+void ApplyGuidanceOptions(const ToolCallContext& tool_ctx,
+                          bool prompt_opens_reasoning,
+                          OgaGeneratorParams& gen_params) {
+  if (const auto guidance = ResolveTurnGuidanceOptions(tool_ctx, prompt_opens_reasoning)) {
     try {
       gen_params.SetGuidance(guidance->type.c_str(), guidance->data.c_str());
     } catch (const std::runtime_error& e) {
-      if (user_specified_guidance) {
+      if (guidance->user_specified) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "failed to apply requested response guidance: " + std::string(e.what()));
       }
 
-      // Auto-generated tool grammar remains best-effort for models that do not implement guidance.
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "failed to apply required tool-call guidance: " + std::string(e.what()));
     }
   }
 }

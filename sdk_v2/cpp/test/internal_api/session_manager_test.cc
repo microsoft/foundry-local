@@ -6,6 +6,7 @@
 #include "inferencing/session/session_registration.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
+#include "inferencing/generative/openresponses/response_store.h"
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
 #include "logger.h"
@@ -19,10 +20,36 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
 using namespace fl;
+
+namespace {
+
+class ToggleThrowLogger final : public ILogger {
+ public:
+  void Log(LogLevel, std::string_view) override {
+    if (throw_on_log) {
+      throw std::runtime_error("injected logging failure");
+    }
+  }
+
+  bool throw_on_log = false;
+};
+
+class SessionCacheCoordinator final : public IResponseCacheCoordinator {
+ public:
+  explicit SessionCacheCoordinator(SessionManager& manager) : manager_(manager) {}
+
+  void Drop(const std::string& response_id) noexcept override { manager_.EvictCached(response_id); }
+
+ private:
+  SessionManager& manager_;
+};
+
+}  // namespace
 
 // ===========================================================================
 // Test fixture: loads the shared test model once per suite
@@ -177,6 +204,24 @@ TEST_F(SessionManagerTest, CheckInReplacesExistingKey) {
   EXPECT_EQ(checked_out.get(), raw2);
 }
 
+TEST_F(SessionManagerTest, CheckInFailurePreservesExistingSessionForTheSameKey) {
+  ToggleThrowLogger manager_logger;
+  SessionManager mgr(manager_logger);
+
+  auto existing = MakeSession();
+  auto* existing_raw = existing.get();
+  mgr.CheckIn("resp-1", std::move(existing));
+
+  manager_logger.throw_on_log = true;
+  EXPECT_THROW(mgr.CheckIn("resp-1", MakeSession()), std::runtime_error);
+  manager_logger.throw_on_log = false;
+
+  EXPECT_EQ(mgr.CacheSize(), 1u);
+  auto checked_out = mgr.CheckOut("resp-1");
+  ASSERT_NE(checked_out, nullptr);
+  EXPECT_EQ(checked_out.get(), existing_raw);
+}
+
 TEST_F(SessionManagerTest, EvictCachedRemovesEntry) {
   SessionManager mgr(GetLogger());
   mgr.CheckIn("resp-1", MakeSession());
@@ -241,6 +286,37 @@ TEST_F(SessionManagerTest, LruEvictionRemovesOldestEntry) {
 
   auto out3 = mgr.CheckOut("resp-3");
   EXPECT_EQ(out3.get(), raw3);
+}
+
+TEST_F(SessionManagerTest, ResponseCapacityEvictionDropsMatchingSessionWhenLruOrdersDiverge) {
+  SessionManager manager(GetLogger(), /*cache_capacity=*/3);
+  SessionCacheCoordinator cache(manager);
+  ResponseStore store(/*capacity=*/2, &cache);
+
+  store.Store("resp-1", {{"id", "resp-1"}}, nlohmann::json::array());
+  store.Store("resp-2", {{"id", "resp-2"}}, nlohmann::json::array());
+
+  auto response_1 = MakeSession();
+  auto response_2 = MakeSession();
+  auto unrelated = MakeSession();
+  auto* response_1_raw = response_1.get();
+  auto* unrelated_raw = unrelated.get();
+  manager.CheckIn("resp-1", std::move(response_1));
+  manager.CheckIn("resp-2", std::move(response_2));
+  manager.CheckIn("unrelated", std::move(unrelated));
+
+  // Metadata now considers resp-1 most recent and resp-2 least recent. The session cache has an independent order:
+  // unrelated is most recent and resp-1 is least recent.
+  ASSERT_TRUE(store.Get("resp-1").has_value());
+  store.Store("resp-3", {{"id", "resp-3"}}, nlohmann::json::array());
+
+  EXPECT_EQ(manager.CheckOut("resp-2"), nullptr);
+  auto retained_response_1 = manager.CheckOut("resp-1");
+  auto retained_unrelated = manager.CheckOut("unrelated");
+  ASSERT_NE(retained_response_1, nullptr);
+  ASSERT_NE(retained_unrelated, nullptr);
+  EXPECT_EQ(retained_response_1.get(), response_1_raw);
+  EXPECT_EQ(retained_unrelated.get(), unrelated_raw);
 }
 
 TEST_F(SessionManagerTest, CacheCapacityOne) {

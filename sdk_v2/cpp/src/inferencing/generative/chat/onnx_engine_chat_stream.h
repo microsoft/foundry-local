@@ -29,15 +29,16 @@ class OnnxEngineChatStream final : public ChatGenerator {
   int TokenCount() const override;
   int PromptTokenCount() const override;
   void Cancel() override;
-  int AppendMessages(const std::vector<MessageItem>& new_messages,
-                     const std::vector<MessageItem>& full_messages,
+  int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                     const std::vector<TranscriptMessage>& full_messages,
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  bool PromptOpensReasoning() const override { return prompt_opens_reasoning_; }
   std::optional<ChatTurnUsage> GetTurnUsage() const override;
 
   static std::unique_ptr<OnnxEngineChatStream> Create(
-      const std::vector<MessageItem>& messages,
+      const std::vector<TranscriptMessage>& messages,
       const SearchOptions& options,
       GenAIModelInstance& model,
       const ToolCallContext& tool_ctx);
@@ -57,6 +58,7 @@ class OnnxEngineChatStream final : public ChatGenerator {
   std::unique_ptr<OgaTokenizerStream> stream_;
   GenAIModelInstance& model_;
   int prompt_token_count_ = 0;
+  bool prompt_opens_reasoning_ = false;
   std::optional<int32_t> current_token_;
   std::atomic<bool> cancelled_{false};
 };

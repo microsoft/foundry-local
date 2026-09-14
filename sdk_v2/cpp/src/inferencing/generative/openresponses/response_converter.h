@@ -3,6 +3,7 @@
 #pragma once
 
 #include "contracts/responses.h"
+#include "inferencing/generative/openresponses/response_chain.h"
 #include "inferencing/session/session.h"
 
 #include <nlohmann/json.hpp>
@@ -26,16 +27,16 @@ using namespace fl::responses;
 std::string GenerateId(const std::string& prefix);
 
 /// Build an internal session Request from typed Responses API parameters.
-/// Handles: instructions → system message, string/array input parsing,
+/// Handles: instructions → request-scoped system prefix option, string/array input parsing,
 /// function_call_output → tool result, parameter mapping.
 ///
 /// @param params            The typed Responses API request parameters.
-/// @param previous_input    Input items from a previous response (JSON, for chaining).
-/// @param previous_output   Output items from a previous response (JSON, for chaining).
+/// @param previous_context  Fully reconstructed chained context, oldest hop first. Each hop's own input items are
+///                          replayed, then its output items as exactly one assistant turn. Every hop becomes a
+///                          replay segment so ingestion cannot merge two recorded turns together.
 /// @return  A session Request ready for ChatSession::Run().
 Request ToSessionRequest(const ResponseCreateParams& params,
-                         const nlohmann::json* previous_input = nullptr,
-                         const nlohmann::json* previous_output = nullptr);
+                         const ResponseChainContext* previous_context = nullptr);
 
 /// Extract tool definitions from the Responses request, mirroring the chat-completions
 /// `ExtractToolDefinitions` helper. Returns a pre-serialized JSON array of tools in the
@@ -104,7 +105,10 @@ FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
                                                        int& next_sequence_number);
 
 /// Convert input items from the request JSON to a storable form.
-/// Returns a JSON array of input items (instructions as system message + input).
+///
+/// Returns a JSON array of exactly what the caller put in `input`, with IDs filled in and function-call arguments
+/// canonicalized to a string. `instructions` is request-scoped state and is deliberately not stored: /input_items
+/// reports what the caller sent, and a replayed chain takes its instructions from the current request.
 nlohmann::json ToInputItems(const nlohmann::json& req_json);
 
 }  // namespace ResponseConverter

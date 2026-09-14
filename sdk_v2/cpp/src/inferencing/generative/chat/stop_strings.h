@@ -6,6 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -34,9 +36,15 @@ std::vector<std::string> LoadStopStringsOption(const KeyValuePairs& options);
 /// never splits a code point; every chunk returned from Push()/Flush() remains valid UTF-8.
 class StopStringFilter {
  public:
+  struct TokenFragment {
+    std::string text;
+    std::optional<int32_t> token_id;
+  };
+
   struct PushResult {
     std::string text;
     bool token_aligned = false;
+    std::vector<TokenFragment> fragments;
   };
 
   explicit StopStringFilter(std::vector<std::string> stop_strings = {});
@@ -45,11 +53,14 @@ class StopStringFilter {
   /// If a stop string completes, the matching bytes and every later byte are suppressed.
   std::string Push(std::string_view fragment);
 
-  /// Feed one decoded token fragment and report whether the returned text still corresponds exactly to that token.
-  PushResult PushWithTokenAlignment(std::string_view fragment);
+  /// Feed one decoded token fragment and preserve the token provenance of every returned safe prefix.
+  PushResult PushWithTokenAlignment(std::string_view fragment, std::optional<int32_t> token_id = std::nullopt);
 
   /// Flush any pending safe suffix at normal end-of-stream.
   std::string Flush();
+
+  /// Flush pending safe text while preserving the originating token boundaries.
+  PushResult FlushWithTokenAlignment();
 
   bool matched() const {
     return matched_;
@@ -68,10 +79,13 @@ class StopStringFilter {
 
   std::optional<MatchCandidate> FindBestMatch() const;
   size_t LongestPendingSuffix() const;
+  size_t AlignSafePrefixToTokenBoundary(size_t length) const;
+  PushResult ConsumePendingPrefix(size_t length);
 
   std::vector<std::string> stop_strings_;
   size_t longest_stop_length_ = 0;
   std::string pending_;
+  std::deque<TokenFragment> pending_fragments_;
   bool matched_ = false;
   std::optional<size_t> matched_index_;
 };

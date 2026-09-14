@@ -9,10 +9,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
 struct OgaModel;
@@ -51,6 +53,11 @@ class GenAIModelInstance {
     std::string eor_str;
   };
   const TagInfo& GetTagInfo();
+
+  /// Token IDs `text` encodes to with this model's tokenizer, or an empty sequence when it cannot be encoded.
+  /// Encoding is best-effort by design: a marker the tokenizer cannot represent leaves callers matching decoded
+  /// text instead of token IDs, which is the same fallback a model that publishes no marker IDs already uses.
+  std::vector<int32_t> EncodeText(const std::string& text);
 
   /// Access the underlying OGA objects.
   OgaModel& GetOgaModel();

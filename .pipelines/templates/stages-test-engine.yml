@@ -1,0 +1,118 @@
+# CPU paged-attention Engine gate, independent of the Generator/release packaging matrix.
+# Model assets are checked in and staged by the normal C++ testdata build rule.
+parameters:
+- name: buildConfig
+  type: string
+- name: ortVersion
+  type: string
+- name: genaiVersion
+  type: string
+  default: '0.16.0-dev1001407373'
+
+stages:
+- stage: cpp_test_engine
+  displayName: 'C++ Engine: CPU paged-attention lifecycle tests'
+  dependsOn: []
+  jobs:
+  - job: test
+    timeoutInMinutes: 120
+    workspace:
+      clean: all
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    steps:
+    - checkout: self
+
+    - task: UsePythonVersion@0
+      displayName: 'Use Python 3.12'
+      inputs:
+        versionSpec: '3.12'
+        architecture: x64
+
+    - template: steps-prefetch-nuget.yml
+      parameters:
+        ortVersion: ${{ parameters.ortVersion }}
+        genaiVersion: ${{ parameters.genaiVersion }}
+
+    - bash: |
+        set -euo pipefail
+        git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+        python -m venv "$ENGINE_VENV"
+        python="$ENGINE_VENV/bin/python"
+        "$python" -m pip install "cmake==3.31.6"
+        "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+        "$python" build.py --configure --build --skip_examples \
+          --config "$BUILD_CONFIG" \
+          --cmake_path "$ENGINE_VENV/bin/cmake" \
+          --cmake_extra_defines \
+            "GENAI_FETCH_URL=$NUGET_CACHE/genai.zip" \
+            "ORT_GENAI_VERSION=$ENGINE_GENAI_VERSION" \
+            "ORT_FETCH_URL=$NUGET_CACHE/ort.zip" \
+            "FOUNDRY_LOCAL_REQUIRE_DYNAMIC_ENGINE_TESTS=ON"
+        build="$PWD/build/Linux/$BUILD_CONFIG"
+        bin="$build/bin"
+        export LD_LIBRARY_PATH="$bin:${LD_LIBRARY_PATH:-}"
+        results="$build/TestResults"
+        mkdir -p "$results"
+        cd "$bin"
+        timeout --signal=TERM --kill-after=30s 10m ./foundry_local_tests \
+          --gtest_filter="DynamicEngineChatTest.*" \
+          --gtest_output="xml:$results/dynamic-engine.xml"
+      displayName: 'Build and run Engine tests with the checked-in CPU fixture'
+      workingDirectory: $(Build.SourcesDirectory)/sdk_v2/cpp
+      env:
+        VCPKG_ROOT: $(Build.BinariesDirectory)/engine-vcpkg
+        ENGINE_VENV: $(Build.BinariesDirectory)/engine-venv
+        NUGET_CACHE: $(Build.BinariesDirectory)/nuget_packages
+        ENGINE_GENAI_VERSION: ${{ parameters.genaiVersion }}
+        BUILD_CONFIG: ${{ parameters.buildConfig }}
+        TF_BUILD: 'true'
+
+    # GTest succeeds when a filter selects zero tests or every test skips.
+    # Require every lifecycle regression as well as successful execution of any new tests.
+    - task: PowerShell@2
+      displayName: 'Reject missing, skipped, or unexecuted Engine tests'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $path = "$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/TestResults/dynamic-engine.xml"
+          [xml]$report = Get-Content -LiteralPath $path -Raw
+          $suite = $report.testsuites.testsuite | Where-Object name -eq 'DynamicEngineChatTest'
+          if (-not $suite) { throw 'The dynamic Engine suite did not run' }
+          $cases = @($suite.testcase)
+          $required = @(
+            'RetainedContinuationReportsFreshPromptUsageParity',
+            'RetainedSuffixReadsPriorPagedAttentionState',
+            'MismatchedResidentPromptIsReplacedAndMatchesFreshReplay',
+            'RunsTwoConcurrentSessions',
+            'CapacityTimeoutFailsOnlyNewestWaitingConversation',
+            'EvictsOldestIdleConversation',
+            'EvictedSessionReplaysCommittedHistory',
+            'EvictsIdleConversationWhileAnotherTurnIsGenerating',
+            'LateCancelAfterCompletedConversationRemovalIsNoOp',
+            'CancellationRebuildsCommittedHistoryWithinBudget',
+            'UnloadsAfterSessionsClose'
+          )
+          foreach ($name in $required) {
+            if ($name -notin $cases.name) { throw "Required Engine test is missing: $name" }
+          }
+          foreach ($case in $cases) {
+            if ($case.status -ne 'run' -or $case.result -ne 'completed' -or
+                $case.SelectNodes('skipped|failure|error').Count -gt 0) {
+              throw "Engine test did not pass without skipping: $($case.name)"
+            }
+          }
+          Write-Host "All $($cases.Count) dynamic Engine tests executed and passed; none skipped."
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Engine lifecycle results'
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: JUnit
+        testResultsFiles: '$(Build.SourcesDirectory)/sdk_v2/cpp/build/Linux/${{ parameters.buildConfig }}/TestResults/dynamic-engine.xml'
+        testRunTitle: 'C++ dynamic Engine (CPU, tiny paged attention)'
+        failTaskOnFailedTests: true
+        failTaskOnMissingResultsFile: true

@@ -85,7 +85,8 @@ class OnnxChatEngine {
   uint64_t BeginTurn(const std::shared_ptr<Conversation>& conversation,
                      std::span<const int32_t> input_ids,
                      const SearchOptions& options,
-                     const ToolCallContext& tool_ctx);
+                     const ToolCallContext& tool_ctx,
+                     bool prompt_opens_reasoning);
   std::optional<int32_t> WaitForToken(const std::shared_ptr<Conversation>& conversation);
   bool IsTurnFinished(const std::shared_ptr<Conversation>& conversation) const;
   TurnResult GetTurnResult(const std::shared_ptr<Conversation>& conversation) const;
@@ -105,7 +106,7 @@ class OnnxChatEngine {
   void WorkerLoop(std::promise<void> initialized);
   void RouteEvents();
   bool EvictDormantConversation();
-  bool ExpireCapacityBlockedConversation();
+  bool ExpireCapacityBlockedConversation(bool new_admissions_only = false);
   void FailAll(std::exception_ptr error);
   NativeConversation& FindNative(const std::shared_ptr<Conversation>& conversation);
 

@@ -57,7 +57,17 @@ void ApplyEngineTurnOptions(const EngineTurnOptionsPlan& plan, OgaTurnOptions& o
   }
 
   if (plan.guidance.has_value()) {
-    options.SetGuidance(plan.guidance->type.c_str(), plan.guidance->data.c_str());
+    try {
+      options.SetGuidance(plan.guidance->type.c_str(), plan.guidance->data.c_str());
+    } catch (const std::runtime_error& e) {
+      if (plan.guidance->user_specified) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "failed to apply requested response guidance: " + std::string(e.what()));
+      }
+
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "failed to apply required tool-call guidance: " + std::string(e.what()));
+    }
   }
 }
 
@@ -66,6 +76,7 @@ void ApplyEngineTurnOptions(const EngineTurnOptionsPlan& plan, OgaTurnOptions& o
 struct OnnxChatEngine::NativeConversation {
   std::unique_ptr<OgaRequest> request;
   std::shared_ptr<Conversation> state;
+  bool admitted = false;
 };
 
 OnnxChatEngine::OnnxChatEngine(GenAIModelInstance& model, std::chrono::milliseconds capacity_wait_timeout)
@@ -125,7 +136,8 @@ std::shared_ptr<OnnxChatEngine::Conversation> OnnxChatEngine::CreateConversation
 uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversation,
                                    std::span<const int32_t> input_ids,
                                    const SearchOptions& options,
-                                   const ToolCallContext& tool_ctx) {
+                                   const ToolCallContext& tool_ctx,
+                                   bool prompt_opens_reasoning) {
   if (input_ids.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Engine turn input must not be empty");
   }
@@ -135,7 +147,7 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
   auto ready = completion->get_future();
 
   Enqueue(
-      [this, conversation, tokens = std::move(tokens), options, tool_ctx, completion]() {
+      [this, conversation, tokens = std::move(tokens), options, tool_ctx, prompt_opens_reasoning, completion]() {
         auto& native = FindNative(conversation);
         auto turn_options = native.request->CreateTurnOptions();
         size_t existing_tokens = 0;
@@ -156,7 +168,8 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
           conversation->turn_has_progress = false;
         }
 
-        auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind());
+        auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, model_.GetGenAIConfig().GetChatBackendKind(),
+                                               prompt_opens_reasoning);
         if (plan.max_generated_tokens.has_value()) {
           // Validate only the limit the caller requested. When it is absent, leave the turn uncapped and let OGA
           // enforce the Request's model-context session limit.
@@ -408,6 +421,7 @@ void OnnxChatEngine::RouteEvents() {
       conversation->turn_has_progress = true;
       conversation->last_activity = std::chrono::steady_clock::now();
       if ((flags & OgaEngineEventFlag_Token) != 0) {
+        it->second->admitted = true;
         const auto token = event->Token();
         conversation->tokens.push_back(token);
         conversation->resident_tokens.push_back(token);
@@ -432,6 +446,25 @@ void OnnxChatEngine::RouteEvents() {
     if ((flags & OgaEngineEventFlag_Failed) != 0) {
       it->second->request->Close();
       conversations_.erase(it);
+    }
+  }
+
+  // A full resident batch can keep emitting tokens without a CapacityBlocked event. Service waiting admissions
+  // between those steps too, without confusing an in-progress initial prefill with a capacity-blocked request.
+  size_t resident_count = 0;
+  bool has_waiting_admission = false;
+  for (const auto& [_, native] : conversations_) {
+    if (native->admitted) {
+      ++resident_count;
+    } else {
+      std::lock_guard<std::mutex> lock(native->state->mutex);
+      has_waiting_admission |= native->state->turn_id != 0 && !native->state->turn_finished;
+    }
+  }
+
+  if (has_waiting_admission && resident_count >= model_.GetGenAIConfig().EngineMaxBatchSize().value_or(1)) {
+    if (!EvictDormantConversation()) {
+      ExpireCapacityBlockedConversation(/*new_admissions_only=*/true);
     }
   }
 }
@@ -465,11 +498,15 @@ bool OnnxChatEngine::EvictDormantConversation() {
   return true;
 }
 
-bool OnnxChatEngine::ExpireCapacityBlockedConversation() {
+bool OnnxChatEngine::ExpireCapacityBlockedConversation(bool new_admissions_only) {
   auto candidate = conversations_.end();
   uint64_t newest_admission = 0;
   const auto now = std::chrono::steady_clock::now();
   for (auto it = conversations_.begin(); it != conversations_.end(); ++it) {
+    if (new_admissions_only && it->second->admitted) {
+      continue;
+    }
+
     const auto& conversation = it->second->state;
     std::lock_guard<std::mutex> lock(conversation->mutex);
     if (!conversation->turn_finished && !conversation->turn_has_progress &&

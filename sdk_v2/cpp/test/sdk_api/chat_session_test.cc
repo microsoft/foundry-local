@@ -302,6 +302,97 @@ TEST_F(ToolCallFixture, ToolCallWithRequired) {
   EXPECT_TRUE(found_tool_call) << "No TOOL_CALL item in response";
 }
 
+TEST_F(ToolCallFixture, CustomToolRegistrationRules) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+
+  // A custom tool needs no schema, and must not carry one.
+  session.AddToolDefinition(ToolDefinition::Custom("apply_patch", "Applies a patch."));
+
+  ToolDefinition custom_with_schema = ToolDefinition::Custom("other_patch", "d");
+  custom_with_schema.json_schema = "{}";
+  EXPECT_THROW(session.AddToolDefinition(custom_with_schema), Error);
+
+  // Names are unique across kinds, and case-sensitive.
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition{"apply_patch", "d", "{}"}), Error);
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition::Custom("apply_patch", "d")), Error);
+  session.AddToolDefinition(ToolDefinition::Custom("Apply_Patch", "Different name."));
+
+  // Removing frees the name for re-registration, including under a different kind.
+  EXPECT_TRUE(session.RemoveToolDefinition("apply_patch"));
+  EXPECT_FALSE(session.RemoveToolDefinition("apply_patch"));
+  session.AddToolDefinition(ToolDefinition{"apply_patch", "Now a function tool.", "{}"});
+
+  // A function tool still requires a schema that is valid JSON.
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition{"broken", "d", "{not json"}), Error);
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition{"no_schema", "d", ""}), Error);
+}
+
+TEST_F(ToolCallFixture, CustomToolCallDeliversRawArguments) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+  session.AddToolDefinition(
+      ToolDefinition::Custom("apply_patch", "Applies a text patch. The payload is the patch text."));
+
+  Request request{
+      SystemMessage("You are a helpful AI assistant. Use the provided tool to answer."),
+      UserMessage("Apply a patch that adds the line 'hello' to a.txt."),
+  };
+  RequestOptions opts;
+  opts.search.temperature = 0.0f;
+  opts.search.max_output_tokens = 256;
+  opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  request.SetOptions(opts);
+
+  Response response = session.ProcessRequest(request);
+
+  ASSERT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+
+  bool found_tool_call = false;
+  std::string tool_call_id;
+  std::string payload;
+  for (const auto& item : response.GetItems()) {
+    if (item.GetType() != FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      continue;
+    }
+
+    auto tc = item.GetToolCall();
+    EXPECT_EQ(tc.name, "apply_patch");
+    EXPECT_FALSE(tc.call_id.empty());
+    tool_call_id = tc.call_id;
+    payload = tc.arguments;
+
+    // The model is prompted with the synthesized single-string schema, so it emits
+    // {"input": "..."}. What reaches the caller is the raw payload with that wrapper removed.
+    auto parsed = nlohmann::json::parse(tc.arguments, nullptr, /*allow_exceptions=*/false);
+    EXPECT_FALSE(parsed.is_object() && parsed.contains("input"))
+        << "custom tool arguments must be the raw payload, not the normalized wrapper: " << tc.arguments;
+    EXPECT_NE(tc.arguments.find("hello"), std::string_view::npos);
+    EXPECT_NE(tc.arguments.find("a.txt"), std::string_view::npos);
+    std::cout << "Custom tool call: " << tc.name << "(" << tc.arguments << ")\n";
+    found_tool_call = true;
+    break;
+  }
+
+  ASSERT_TRUE(found_tool_call) << "No TOOL_CALL item in response";
+  ASSERT_FALSE(payload.empty());
+
+  Request continuation;
+  continuation.AddItem(Item::ToolResult(tool_call_id, "Patch applied successfully."));
+  continuation.AddItem(UserMessage("Confirm the patch result in one short sentence."));
+  RequestOptions continuation_options;
+  continuation_options.search.temperature = 0.0f;
+  continuation_options.search.max_output_tokens = 128;
+  continuation.SetOptions(continuation_options);
+
+  const auto continued = session.ProcessRequest(continuation);
+  EXPECT_EQ(continued.GetFinishReason(), FOUNDRY_LOCAL_FINISH_STOP);
+  ASSERT_FALSE(continued.GetItems().empty());
+  EXPECT_EQ(session.TurnCount(), 2u);
+}
+
 TEST_F(ToolCallFixture, SessionToolChoiceRequiredIsInherited) {
   using namespace foundry_local;
 

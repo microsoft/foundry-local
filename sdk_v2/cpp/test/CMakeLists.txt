@@ -27,6 +27,8 @@ add_executable(foundry_local_tests
     internal_api/chat/reasoning_stream_splitter_test.cc
     internal_api/chat/chat_session_test.cc
     internal_api/chat/chat_template_test.cc
+    internal_api/chat/chat_transcript_test.cc
+    internal_api/chat/media_input_test.cc
     internal_api/chat/onnx_chat_generator_vision_test.cc
     internal_api/chat/stop_strings_test.cc
     internal_api/chat_completions_test.cc
@@ -43,6 +45,7 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
+    internal_api/handler_error_mapping_test.cc
     internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
@@ -56,9 +59,12 @@ add_executable(foundry_local_tests
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
     internal_api/platform_path_test.cc
+    internal_api/replay_equivalence_test.cc
     internal_api/response_converter_test.cc
+    internal_api/response_lifecycle_test.cc
     internal_api/response_store_test.cc
     internal_api/responses_json_test.cc
+    internal_api/scope_guard_test.cc
     internal_api/session_manager_test.cc
     internal_api/sha256_test.cc
     internal_api/region_fallback_test.cc
@@ -71,6 +77,8 @@ add_executable(foundry_local_tests
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/tool_definition_abi_test.cc
+    internal_api/toolcalling/tool_registry_test.cc
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
     internal_api/web_service_test.cc

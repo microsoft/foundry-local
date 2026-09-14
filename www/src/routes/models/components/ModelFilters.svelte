@@ -17,11 +17,15 @@
 	export let selectedDevices: string[] = [];
 	export let selectedFamily = '';
 	export let selectedAcceleration = '';
+	export let selectedTask = '';
+	export let selectedCapability = '';
 	export let sortBy = 'lastModified';
 	export let sortOrder: 'asc' | 'desc' = 'desc';
 	export let availableDevices: string[] = [];
 	export let availableFamilies: string[] = [];
 	export let availableAccelerations: string[] = [];
+	export let availableTasks: string[] = [];
+	export let availableCapabilities: string[] = [];
 	export let filteredCount = 0;
 	export let loading = false;
 	export let isFiltering = false;
@@ -38,7 +42,12 @@
 	}
 
 	$: hasActiveFilters =
-		searchTerm || selectedDevices.length > 0 || selectedFamily || selectedAcceleration;
+		searchTerm ||
+		selectedDevices.length > 0 ||
+		selectedFamily ||
+		selectedAcceleration ||
+		selectedTask ||
+		selectedCapability;
 </script>
 
 <Card.Root class="border-border/40 bg-background shadow-sm">
@@ -84,7 +93,7 @@
 				<Label>Sort By</Label>
 				<div class="flex gap-2">
 					<DropdownMenu.Root>
-						<DropdownMenu.Trigger asChild>
+						<DropdownMenu.Trigger>
 							{#snippet child({ props })}
 								<Button
 									{...props}
@@ -159,7 +168,7 @@
 			<div>
 				<Label for="family">Model Family</Label>
 				<DropdownMenu.Root>
-					<DropdownMenu.Trigger asChild>
+					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
 							<Button {...props} variant="outline" class="h-10 w-full justify-between font-normal">
 								<span>
@@ -194,7 +203,7 @@
 			<div>
 				<Label for="acceleration">Acceleration</Label>
 				<DropdownMenu.Root>
-					<DropdownMenu.Trigger asChild>
+					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
 							<Button {...props} variant="outline" class="h-10 w-full justify-between font-normal">
 								<span>
@@ -234,6 +243,90 @@
 									/>
 								{/if}
 								{foundryModelService.getAccelerationDisplayName(acceleration)}
+							</DropdownMenu.Item>
+						{/each}
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
+
+			<!-- Task Filter -->
+			<div>
+				<Label for="task">Task</Label>
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button
+								{...props}
+								id="task"
+								variant="outline"
+								class="h-10 w-full justify-between font-normal"
+							>
+								<span>
+									{selectedTask
+										? foundryModelService.getMetadataDisplayName(selectedTask)
+										: 'All Tasks'}
+								</span>
+								<ChevronDown class="ml-2 size-4 opacity-50" />
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content
+						style="width: var(--radix-dropdown-menu-trigger-width)"
+						class="min-w-0"
+					>
+						<DropdownMenu.Item onclick={() => (selectedTask = '')}>
+							<Check class="mr-2 size-4 {!selectedTask ? 'opacity-100' : 'opacity-0'}" />
+							All Tasks
+						</DropdownMenu.Item>
+						<DropdownMenu.Separator />
+						{#each availableTasks as task}
+							<DropdownMenu.Item onclick={() => (selectedTask = task)}>
+								<Check class="mr-2 size-4 {selectedTask === task ? 'opacity-100' : 'opacity-0'}" />
+								{foundryModelService.getMetadataDisplayName(task)}
+							</DropdownMenu.Item>
+						{/each}
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
+
+			<!-- Capability Filter -->
+			<div>
+				<Label for="capability">Capability</Label>
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button
+								{...props}
+								id="capability"
+								variant="outline"
+								class="h-10 w-full justify-between font-normal"
+							>
+								<span>
+									{selectedCapability
+										? foundryModelService.getMetadataDisplayName(selectedCapability)
+										: 'All Capabilities'}
+								</span>
+								<ChevronDown class="ml-2 size-4 opacity-50" />
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content
+						style="width: var(--radix-dropdown-menu-trigger-width)"
+						class="min-w-0"
+					>
+						<DropdownMenu.Item onclick={() => (selectedCapability = '')}>
+							<Check class="mr-2 size-4 {!selectedCapability ? 'opacity-100' : 'opacity-0'}" />
+							All Capabilities
+						</DropdownMenu.Item>
+						<DropdownMenu.Separator />
+						{#each availableCapabilities as capability}
+							<DropdownMenu.Item onclick={() => (selectedCapability = capability)}>
+								<Check
+									class="mr-2 size-4 {selectedCapability === capability
+										? 'opacity-100'
+										: 'opacity-0'}"
+								/>
+								{foundryModelService.getMetadataDisplayName(capability)}
 							</DropdownMenu.Item>
 						{/each}
 					</DropdownMenu.Content>
