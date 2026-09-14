@@ -14,7 +14,10 @@
 
 #include <ort_genai.h>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -22,7 +25,11 @@ using namespace fl;
 
 namespace {
 #if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
-constexpr const char* kTestChatTemplateKwargsModelAlias = "qwen3.5-0.8b-generic-cpu-2";
+constexpr const char* kTestChatTemplateKwargsModelId = "chat-template-kwargs-test";
+constexpr const char* kTestChatTemplate =
+    "{% for message in messages %}{{ message['content'] }}{% endfor %}"
+    "{% if enable_thinking %}thinking{% else %}not-thinking{% endif %}"
+    "{% if add_generation_prompt %}assistant{% endif %}";
 #endif
 }  // namespace
 
@@ -70,31 +77,55 @@ class ChatTemplateTest : public ::testing::Test {
 class ChatTemplateKwargsTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    auto model_path = fl::test::GetTestModelPath(kTestChatTemplateKwargsModelAlias);
+    model_directory_ = test::MakeUniqueTempPath("chat_template_kwargs_");
+    ASSERT_TRUE(std::filesystem::create_directory(model_directory_));
+    const auto source = test::GetTestDataPath("tiny-random-gpt2-fp32-1");
+    for (const auto& entry : std::filesystem::directory_iterator(source)) {
+      if (entry.is_regular_file()) {
+        std::filesystem::copy_file(entry.path(), model_directory_ / entry.path().filename());
+      }
+    }
+
+    const auto tokenizer_config_path = model_directory_ / "tokenizer_config.json";
+    std::ifstream input(tokenizer_config_path);
+    ASSERT_TRUE(input);
+    auto tokenizer_config = nlohmann::json::parse(input);
+    input.close();
+    tokenizer_config["chat_template"] = kTestChatTemplate;
+    std::ofstream output(tokenizer_config_path, std::ios::trunc);
+    output << tokenizer_config.dump(2);
+    ASSERT_TRUE(output);
+    output.close();
+
     logger_ = std::make_unique<StderrLogger>();
     ep_detector_ = std::make_unique<test::CpuOnlyEpDetector>();
     load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
 
-    auto result = load_manager_->LoadModel(model_path.string(), kTestChatTemplateKwargsModelAlias);
+    auto result = load_manager_->LoadModel(model_directory_.string(), kTestChatTemplateKwargsModelId);
 
     ASSERT_EQ(result.status, ModelLoadManager::LoadStatus::kSuccess)
-        << "Failed to load test model from: " << model_path;
+        << "Failed to load test model from: " << model_directory_;
 
     model_ = result.model;
   }
 
   static void TearDownTestSuite() {
     if (load_manager_) {
-      load_manager_->UnloadModel(kTestChatTemplateKwargsModelAlias);
+      load_manager_->UnloadModel(kTestChatTemplateKwargsModelId);
     }
 
     load_manager_.reset();
     ep_detector_.reset();
     model_ = nullptr;
+    std::error_code error;
+    std::filesystem::remove_all(model_directory_, error);
+    EXPECT_FALSE(error) << error.message();
+    model_directory_.clear();
   }
 
   GenAIModelInstance& GetModel() { return *model_; }
 
+  static inline std::filesystem::path model_directory_;
   static inline std::unique_ptr<StderrLogger> logger_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
@@ -180,8 +211,8 @@ TEST_F(ChatTemplateKwargsTest, TypedKwargsChangePromptAndOmissionClearsPriorStat
   std::string default_prompt_after_kwargs =
       BuildChatPrompt(messages, GetModel(), default_context);
 
-  EXPECT_NE(thinking_prompt, no_thinking_prompt)
-      << "ToolCallContext kwargs should reach the prompt path shared by Generator and Engine backends";
+  EXPECT_EQ(thinking_prompt, "Hello!thinkingassistant");
+  EXPECT_EQ(no_thinking_prompt, "Hello!not-thinkingassistant");
   EXPECT_EQ(default_prompt_after_kwargs, default_prompt)
       << "Omitting kwargs must clear tokenizer state from the previous render";
 }
