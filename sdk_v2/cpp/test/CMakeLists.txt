@@ -96,7 +96,6 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
 endif()
 
 target_sources(foundry_local_tests PRIVATE
-    internal_api/chat/dflash2_engine_qualification_test.cc
     internal_api/chat/dynamic_engine_chat_test.cc
 )
 
