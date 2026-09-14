@@ -1,0 +1,277 @@
+# Build + native-test + package stages for the sdk_v2 Java SDK.
+#
+# Native ASR tests run on all five supported platform/architecture pairs using
+# the matching cpp-native artifact and the pinned CI model cache. The final
+# stage creates one platform-independent Maven bundle.
+
+stages:
+- stage: java_build_win_x64
+  displayName: 'Java SDK: Build + Test Windows x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_x64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
+    - template: steps-build-java.yml
+      parameters:
+        rid: 'win-x64'
+        jdkArchitecture: 'x64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: java_build_win_arm64
+  displayName: 'Java SDK: Build + Test Windows ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_win_arm64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-medium-arm64-scus
+      os: windows
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-win-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
+    - template: steps-build-java.yml
+      parameters:
+        rid: 'win-arm64'
+        jdkArchitecture: 'arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: java_build_linux_x64
+  displayName: 'Java SDK: Build + Test Linux x64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_x64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-Ubuntu2404-AMD-CPU
+      os: linux
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-x64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
+    - template: steps-build-java.yml
+      parameters:
+        rid: 'linux-x64'
+        jdkArchitecture: 'x64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: java_build_linux_arm64
+  displayName: 'Java SDK: Build + Test Linux ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_linux_arm64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: onnxruntime-linux-ARM64-CPU-2019
+      os: linux
+      hostArchitecture: arm64
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-linux-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
+    - template: steps-build-java.yml
+      parameters:
+        rid: 'linux-arm64'
+        jdkArchitecture: 'arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: java_build_osx_arm64
+  displayName: 'Java SDK: Build + Test macOS ARM64'
+  dependsOn:
+  - compute_version
+  - cpp_build_osx_arm64
+  jobs:
+  - job: build
+    timeoutInMinutes: 90
+    pool:
+      name: AcesShared
+      os: macOS
+      demands:
+      - ImageOverride -equals ACES_VM_SharedPool_Sequoia
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      - input: pipelineArtifact
+        artifactName: 'cpp-native-osx-arm64'
+        targetPath: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+    steps:
+    - checkout: self
+      clean: true
+    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+      parameters:
+        modelSet: 'nemotron-speech'
+    - template: steps-build-java.yml
+      parameters:
+        rid: 'osx-arm64'
+        jdkArchitecture: 'arm64'
+        nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
+        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+
+- stage: java_pack_maven
+  displayName: 'Java SDK: Pack Maven bundle (java-sdk-v2)'
+  dependsOn:
+  - compute_version
+  - java_build_win_x64
+  - java_build_win_arm64
+  - java_build_linux_x64
+  - java_build_linux_arm64
+  - java_build_osx_arm64
+  jobs:
+  - job: pack
+    pool:
+      name: onnxruntime-Win-CPU-2022
+      os: windows
+    templateContext:
+      inputs:
+      - input: pipelineArtifact
+        artifactName: 'version-info'
+        targetPath: '$(Pipeline.Workspace)/version-info'
+      outputs:
+      - output: pipelineArtifact
+        artifactName: 'java-sdk-v2'
+        targetPath: '$(Build.ArtifactStagingDirectory)/java-sdk-v2'
+    steps:
+    - checkout: self
+      clean: true
+    - task: PowerShell@2
+      displayName: 'Read Java SDK version'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $versionFile = Join-Path '$(Pipeline.Workspace)/version-info' 'sdkVersion.txt'
+          if (-not (Test-Path $versionFile)) {
+            throw "Missing shared SDK version file: $versionFile"
+          }
+          $version = (Get-Content $versionFile -Raw).Trim()
+          if (-not $version) {
+            throw 'The shared SDK version is empty.'
+          }
+          Write-Host "##vso[task.setvariable variable=javaSdkVersion]$version"
+    - task: Maven@4
+      displayName: 'Maven clean verify'
+      inputs:
+        mavenPOMFile: 'sdk_v2/java/pom.xml'
+        goals: 'clean verify'
+        options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)'
+        publishJUnitResults: true
+        testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
+        testRunTitle: 'Java SDK package'
+        javaHomeOption: JDKVersion
+        jdkVersionOption: '1.17'
+        jdkArchitectureOption: 'x64'
+        mavenVersionOption: Default
+    - task: PowerShell@2
+      displayName: 'Stage and validate Maven bundle'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          $version = '$(javaSdkVersion)'
+          $javaRoot = '$(Build.SourcesDirectory)/sdk_v2/java'
+          $target = Join-Path $javaRoot 'target'
+          $output = '$(Build.ArtifactStagingDirectory)/java-sdk-v2'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+
+          $artifacts = @(
+            @{ Source = Join-Path $target "foundry-local-sdk-$version.jar"; Name = "foundry-local-sdk-$version.jar" },
+            @{ Source = Join-Path $target "foundry-local-sdk-$version-sources.jar"; Name = "foundry-local-sdk-$version-sources.jar" },
+            @{ Source = Join-Path $javaRoot '.flattened-pom.xml'; Name = "foundry-local-sdk-$version.pom" }
+          )
+          foreach ($artifact in $artifacts) {
+            if (-not (Test-Path $artifact.Source)) {
+              throw "Missing Maven artifact: $($artifact.Source)"
+            }
+            Copy-Item $artifact.Source (Join-Path $output $artifact.Name) -Force
+          }
+          Copy-Item '$(Build.SourcesDirectory)/LICENSE' (Join-Path $output 'LICENSE') -Force
+          Copy-Item (Join-Path $javaRoot 'THIRD_PARTY_NOTICES.md') $output -Force
+
+          $mainJar = Join-Path $output "foundry-local-sdk-$version.jar"
+          $entries = @(jar tf $mainJar)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not inspect the Java SDK JAR.'
+          }
+          foreach ($required in @('META-INF/LICENSE', 'META-INF/THIRD_PARTY_NOTICES.md')) {
+            if ($required -notin $entries) {
+              throw "Missing $required from the Java SDK JAR."
+            }
+          }
+          if ($entries | Where-Object { $_ -match '(?:\.(?:dll|dylib|onnx)$|\.so(?:\.|$))' }) {
+            throw 'The platform-independent Java SDK JAR contains a native binary or model.'
+          }
+
+          $utf8NoBom = [Text.UTF8Encoding]::new($false)
+          Get-ChildItem $output -File |
+            Where-Object { $_.Extension -in @('.jar', '.pom') } |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              [IO.File]::WriteAllText("$($_.FullName).sha256", "$hash  $($_.Name)`n", $utf8NoBom)
+            }
+
+          Get-ChildItem $output -File | ForEach-Object { Write-Host "  $($_.Name)" }

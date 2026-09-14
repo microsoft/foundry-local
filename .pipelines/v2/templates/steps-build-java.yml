@@ -1,0 +1,85 @@
+# Build and native-test the sdk_v2 Java SDK on the current platform.
+
+parameters:
+- name: rid
+  type: string
+  # win-x64 | win-arm64 | linux-x64 | linux-arm64 | osx-arm64
+- name: jdkArchitecture
+  type: string
+  # x64 | arm64
+- name: nativeArtifactDir
+  type: string
+- name: testDataSharedDir
+  type: string
+
+steps:
+- task: PowerShell@2
+  displayName: 'Assemble native runtime'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $rid = '${{ parameters.rid }}'
+      $assembled = Join-Path '$(Build.BinariesDirectory)' 'fl-native'
+      if (Test-Path $assembled) {
+        Remove-Item -Recurse -Force $assembled
+      }
+      New-Item -ItemType Directory -Force -Path $assembled | Out-Null
+
+      $nativeFiles = @(Get-ChildItem -Path '${{ parameters.nativeArtifactDir }}' -Recurse -File |
+        Where-Object {
+          $file = $_
+          switch -Regex ($rid) {
+            '^win' { $file.Name.EndsWith('.dll', [StringComparison]::OrdinalIgnoreCase) }
+            '^osx' { $file.Name.EndsWith('.dylib', [StringComparison]::OrdinalIgnoreCase) }
+            default { $file.Name -match '\.so(?:\.|$)' }
+          }
+        })
+      if ($nativeFiles.Count -eq 0) {
+        throw "No native libraries found in the $rid native artifact."
+      }
+
+      foreach ($file in $nativeFiles) {
+        Copy-Item $file.FullName (Join-Path $assembled $file.Name) -Force
+        Write-Host "  native: $($file.Name)"
+      }
+
+      Write-Host "##vso[task.setvariable variable=flNativeDir]$assembled"
+
+- task: PowerShell@2
+  displayName: 'Read Java SDK version'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $versionFile = Join-Path '$(Pipeline.Workspace)/version-info' 'sdkVersion.txt'
+      if (-not (Test-Path $versionFile)) {
+        throw "Missing shared SDK version file: $versionFile"
+      }
+      $version = (Get-Content $versionFile -Raw).Trim()
+      if (-not $version) {
+        throw 'The shared SDK version is empty.'
+      }
+      Write-Host "##vso[task.setvariable variable=javaSdkVersion]$version"
+
+- task: Maven@4
+  displayName: 'Maven verify + native ASR (${{ parameters.rid }})'
+  inputs:
+    mavenPOMFile: 'sdk_v2/java/pom.xml'
+    goals: 'clean verify'
+    options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)'
+    publishJUnitResults: true
+    testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
+    testRunTitle: 'Java SDK ${{ parameters.rid }}'
+    javaHomeOption: JDKVersion
+    jdkVersionOption: '1.17'
+    jdkArchitectureOption: '${{ parameters.jdkArchitecture }}'
+    mavenVersionOption: Default
+  env:
+    FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
+    FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+    FOUNDRY_TEST_WAV: '$(Build.SourcesDirectory)/sdk_v2/testdata/Recording.wav'
+    ORT_TELEMETRY_DISABLED: '1'
