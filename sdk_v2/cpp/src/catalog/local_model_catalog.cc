@@ -3,6 +3,7 @@
 #include "catalog/local_model_catalog.h"
 
 #include "exception.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
 #include "util/file_lock.h"
 #include "util/time_utils.h"
@@ -49,6 +50,62 @@ struct ParsedModelId {
   std::string name;
   int version;
 };
+
+std::optional<std::string> ConfigExecutionProvider(const GenAIConfig& config) {
+  const auto config_provider = config.DefaultProvider();
+  if (config_provider.empty()) {
+    return std::nullopt;
+  }
+
+  auto provider = EPUtils::StringtoEP(config_provider);
+  if (provider == ExecutionProvider::kUnknown) {
+    return std::nullopt;
+  }
+
+  return std::string(EPUtils::EPtoRegistrationName(provider));
+}
+
+std::optional<std::string_view> DeviceTypeForExecutionProvider(std::string_view provider_name) {
+  const auto provider = EPUtils::StringtoEP(provider_name);
+  switch (provider) {
+    case ExecutionProvider::kCPU:
+      return "CPU";
+    case ExecutionProvider::kCUDA:
+    case ExecutionProvider::kWebGPU:
+    case ExecutionProvider::kTensorRT_RTX:
+      return "GPU";
+    case ExecutionProvider::kVitisAI:
+    case ExecutionProvider::kRyzenAI:
+      return "NPU";
+    default:
+      return std::nullopt;
+  }
+}
+
+void ApplyTaskDefaults(ModelInfo& info) {
+  if (info.task == "chat-completion") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "vision-language-chat") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "automatic-speech-recognition") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "audio");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  }
+}
 
 ParsedModelId ParseModelId(const std::string& model_id) {
   const auto separator = model_id.find(':');
@@ -116,6 +173,25 @@ void RemoveLegacyRegistrationProperties(ModelInfo& info) {
   info.int_properties.erase(kLegacyAliasProperty);
   info.int_properties.erase(kLegacyRegistrationIdProperty);
   info.int_properties.erase(kLegacyVersionProperty);
+}
+
+void RemoveSdkOwnedProperty(ModelInfo& info, std::string_view key) {
+  if (const auto string_property = info.string_properties.find(key);
+      string_property != info.string_properties.end()) {
+    info.string_properties.erase(string_property);
+  }
+  if (const auto int_property = info.int_properties.find(key); int_property != info.int_properties.end()) {
+    info.int_properties.erase(int_property);
+  }
+}
+
+void RemoveSdkOwnedProperties(ModelInfo& info) {
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR);
 }
 
 bool IsLegacyIntegerProperty(std::string_view key) {
@@ -217,7 +293,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must contain a regular genai_config.json file");
   }
 
-  GenAIConfig::LoadFromFile(config_path.string());
+  const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
 
   ListModels();
   Registration registration;
@@ -232,7 +308,8 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id is already registered: " + model_id);
     }
 
-    registration = {ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version), model_path.string()};
+    registration = {
+        ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version, genai_config), model_path.string()};
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -316,21 +393,46 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
 }
 
 ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
-                                             const std::string& name, int version) const {
+                                             const std::string& name, int version,
+                                             const GenAIConfig& genai_config) const {
   auto resolved = metadata;
   RemoveLegacyRegistrationProperties(resolved);
+  RemoveSdkOwnedProperties(resolved);
 
+  resolved.detected_region.clear();
+  resolved.prompt_templates = {};
+  resolved.model_settings = {};
   resolved.alias = DeriveAlias(name);
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
   resolved.uri.clear();
+  if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR)) {
+    resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, name);
+  }
   if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR)) {
     resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
   }
+  if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR)) {
+    if (const auto provider = ConfigExecutionProvider(genai_config)) {
+      resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, *provider);
+    }
+  }
+  if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR)) {
+    if (const auto* provider = resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR)) {
+      if (const auto device_type = DeviceTypeForExecutionProvider(*provider)) {
+        resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, std::string(*device_type));
+      }
+    }
+  }
+  ApplyTaskDefaults(resolved);
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "LocalRegistration");
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "Model");
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "ONNX");
+
+  if (genai_config.model && genai_config.model->context_length > 0) {
+    resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, genai_config.model->context_length);
+  }
 
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
