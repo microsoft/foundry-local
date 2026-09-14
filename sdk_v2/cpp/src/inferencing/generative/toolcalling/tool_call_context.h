@@ -55,6 +55,9 @@ struct ToolCallContext {
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
 
+  /// Additional typed context values for the model's chat template, serialized as a JSON object.
+  std::string template_kwargs_json;
+
   /// Kind of each named tool, snapshotted from the session's registry at the same moment
   /// `tools_json` was built. Generation resolves a produced call's name through this copy rather
   /// than through the session's registry, which another thread may change mid-turn.

@@ -189,7 +189,7 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
 
   // Render and tokenize the authoritative full transcript once. Generated text is not guaranteed to round-trip
   // through decode/encode to the same token IDs, so resident state is reusable only when it is an exact prefix.
-  std::string prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
+  std::string prompt = BuildChatPrompt(full_messages, model, tool_ctx);
   auto full_sequences = EncodePrompt(prompt, model);
   const auto full_count = full_sequences->SequenceCount(0);
   const auto* full_data = full_sequences->SequenceData(0);
@@ -298,7 +298,7 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(const std::vector<T
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
-  std::string prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  std::string prompt = BuildChatPrompt(messages, model, tool_ctx);
   return CreateImpl(prompt, options, model, tool_ctx, use_full_context, /*images=*/{}, /*audios=*/{});
 }
 
@@ -329,8 +329,9 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
 
   std::string messages_json = TransformMessagesForMedia(messages);
   const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-  std::string prompt =
-      model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+  const char* template_kwargs_ptr = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+  std::string prompt = model.GetPreprocessor().ApplyChatTemplateWithOptions(
+      messages_json.c_str(), tools_ptr, template_kwargs_ptr, /*add_generation_prompt=*/true);
 
   return CreateImpl(prompt, options, model, tool_ctx, use_full_context, images, audios);
 }

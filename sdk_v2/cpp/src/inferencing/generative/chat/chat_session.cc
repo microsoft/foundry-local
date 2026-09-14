@@ -348,12 +348,13 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
-ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
+ToolCallContext ChatSession::BuildToolCallContext(const KeyValuePairs& options,
                                                   const std::vector<ToolDefinition>& definitions) const {
   ToolCallContext tool_ctx;
 
-  tool_ctx.tool_call_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
-  tool_ctx.tool_call_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.tool_call_start = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
+  tool_ctx.tool_call_end = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.template_kwargs_json = GetOptionOrEmpty(options, "chat_template_kwargs");
 
   // Fall back to model info properties if not specified in the request
   const auto& info = CatalogModel().Info();
@@ -405,8 +406,8 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   }
 
   // Read reasoning marker tokens — same pattern as tool_call tokens
-  tool_ctx.reasoning_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
-  tool_ctx.reasoning_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
+  tool_ctx.reasoning_start = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
+  tool_ctx.reasoning_end = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
 
   if (tool_ctx.reasoning_start.empty()) {
     const auto* val = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
@@ -478,7 +479,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
 
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
-  auto tool_choice = SearchOptions::ParseToolChoice(request.options);
+  auto tool_choice = SearchOptions::ParseToolChoice(options);
   if (!tool_choice.has_value()) {
     tool_choice = session_options_.tool_choice;
   }
@@ -488,8 +489,8 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   }
 
   // Read user-specified guidance from request parameters
-  tool_ctx.guidance_type = GetOptionOrEmpty(request.options, "guidance_type");
-  tool_ctx.guidance_data = GetOptionOrEmpty(request.options, "guidance_data");
+  tool_ctx.guidance_type = GetOptionOrEmpty(options, "guidance_type");
+  tool_ctx.guidance_data = GetOptionOrEmpty(options, "guidance_data");
 
   return tool_ctx;
 }
@@ -586,7 +587,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // A turn appended to a cached generator does not rebuild the prompt and so keeps the kinds from the turn that
   // did. That stays consistent because a turn carrying tool activity always invalidates the cached generator
   // below, so any turn that actually replays a call is also the turn that rebuilds the prompt from this snapshot.
-  auto turn_tool_ctx = BuildToolCallContext(request, ToolDefinitions());
+  const auto effective_kvp = MergedOptions(request.options);
+  auto turn_tool_ctx = BuildToolCallContext(effective_kvp, ToolDefinitions());
 
   // Collect this turn's input messages locally — nothing reaches the transcript until the turn commits. Replay
   // segment boundaries travel with the items so a reconstructed conversation regroups exactly as it was committed.
@@ -609,8 +611,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   ValidateMediaTurn(media, inputs,
                     {.session_has_history = !transcript_.Empty(), .tools_declared = turn_tool_ctx.HasTools()});
 
-  // Merge session-level and per-request options once for this turn.
-  auto effective_kvp = MergedOptions(request.options);
+  // Use the same resolved options for prompt rendering and generation.
   SearchOptions effective_options = SearchOptions::FromParameters(effective_kvp);
   const ChatBackendKind backend_kind = Model().GetGenAIConfig().GetChatBackendKind();
 
@@ -654,6 +655,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.supports_reasoning != turn_tool_ctx.supports_reasoning ||
       cached_tool_ctx_.reasoning_start != turn_tool_ctx.reasoning_start ||
       cached_tool_ctx_.reasoning_end != turn_tool_ctx.reasoning_end ||
+      cached_tool_ctx_.template_kwargs_json != turn_tool_ctx.template_kwargs_json ||
       !cached_tool_ctx_.HasSameTools(turn_tool_ctx);
 
   if (cached_generator_ &&
@@ -974,10 +976,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
       chat_session_internal::BuildJsonRequestToolDefinitions(std::move(tools_json),
                                                              session_tool_definitions);
 
-  const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);
-
   // Merge session-level and per-request options once.
-  auto effective_kvp = MergedOptions(internal_request.options);
+  const auto effective_kvp = MergedOptions(internal_request.options);
+  const auto tool_ctx = BuildToolCallContext(effective_kvp, request_tool_definitions);
   SearchOptions options = SearchOptions::FromParameters(effective_kvp);
 
   // Collect transcript messages from the internal request for the generator.

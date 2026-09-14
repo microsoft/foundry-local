@@ -33,6 +33,8 @@ class Preprocessor {
 
   std::unique_ptr<OgaSequences> Encode(const char* text);
   std::string ApplyChatTemplate(const char* messages_json, const char* tools_json, bool add_generation_prompt);
+  std::string ApplyChatTemplateWithOptions(const char* messages_json, const char* tools_json,
+                                           const char* template_kwargs_json, bool add_generation_prompt);
 
   std::unique_ptr<OgaTokenizerStream> CreateTokenizerStream();
   std::unique_ptr<OgaTokenizerStream> CreateSpecialTokenizerStream();

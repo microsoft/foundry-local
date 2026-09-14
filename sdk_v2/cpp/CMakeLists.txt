@@ -50,6 +50,8 @@ option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
+option(FOUNDRY_LOCAL_REQUIRE_CHAT_TEMPLATE_KWARGS
+       "Fail configuration unless ORT GenAI supports chat template kwargs" OFF)
 
 # Optional 1DS ingestion token override. Override only via environment so it does
 # not appear in CMake cache files.
@@ -109,6 +111,8 @@ endif()
 # ORT and ORT GenAI — acquired via FetchContent from nuget.org.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
+
+include(cmake/chat-template-kwargs.cmake)
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -360,6 +364,7 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
         ${TARGET}
         PRIVATE
             FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
+            FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS}>
     )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)

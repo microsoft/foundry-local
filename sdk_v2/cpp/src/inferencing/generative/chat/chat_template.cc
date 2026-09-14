@@ -3,6 +3,7 @@
 #include "inferencing/generative/chat/chat_template.h"
 #include "exception.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "inferencing/generative/toolcalling/tool_call_context.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
 #include "utils.h"
@@ -115,17 +116,26 @@ std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages
 
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
-                            const std::string& tools_json) {
+                            const std::string& tools_json,
+                            const std::string& template_kwargs_json) {
   if (messages.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
   std::string messages_str = BuildChatMessagesJson(messages);
   const char* tools_ptr = tools_json.empty() ? nullptr : tools_json.c_str();
+  const char* template_kwargs_ptr = template_kwargs_json.empty() ? nullptr : template_kwargs_json.c_str();
 
   // ApplyChatTemplate uses the model's built-in template (template_str=nullptr) and appends the assistant
   // turn prefix (add_generation_prompt=true).
-  return model.GetPreprocessor().ApplyChatTemplate(messages_str.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+  return model.GetPreprocessor().ApplyChatTemplateWithOptions(
+      messages_str.c_str(), tools_ptr, template_kwargs_ptr, /*add_generation_prompt=*/true);
+}
+
+std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
+                            GenAIModelInstance& model,
+                            const ToolCallContext& tool_ctx) {
+  return BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json);
 }
 
 std::unique_ptr<OgaSequences> EncodePrompt(const std::string& prompt,
