@@ -1,0 +1,18 @@
+Automated testing is a practice in software development where tests are written and executed
+by specialized tools rather than performed manually. There are several categories of automated
+tests, including unit tests, integration tests, and end-to-end tests. Unit tests verify that
+individual functions or methods behave correctly in isolation. Integration tests check that
+multiple components work together as expected. End-to-end tests simulate real user workflows
+across the entire application.
+
+Adopting automated testing brings measurable benefits to a development team. It catches
+regressions early, before they reach production. It reduces the time spent on repetitive
+manual verification after each code change. It serves as living documentation of expected
+behavior, which helps new team members understand the codebase. Continuous integration
+pipelines rely on automated tests to gate deployments and maintain release quality.
+
+Effective test suites follow a few guiding principles. Tests should be deterministic, meaning
+they produce the same result every time they run. Tests should be independent, so that one
+failing test does not cascade into false failures elsewhere. Tests should run fast, because
+slow tests discourage developers from running them frequently. Finally, tests should be
+maintained alongside production code so they stay accurate as the application evolves.
