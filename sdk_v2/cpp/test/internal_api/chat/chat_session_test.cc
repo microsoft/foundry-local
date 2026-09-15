@@ -149,7 +149,25 @@ class FixedOutputGenerator final : public ChatGenerator {
 };
 
 constexpr std::string_view kNativeQwenChatTemplate =
-    R"({% for message in messages %}{% if message.role == 'user' %}{{ '<|im_start|>user\n' + message.content + '<|im_end|>\n' }}{% elif message.role == 'assistant' %}{{ '<|im_start|>assistant\n<think>\n\n</think>\n\n' }}{% for call in message.tool_calls %}{{ '<tool_call>\n<function=' + call.function.name + '>\n' }}{% for name, value in call.function.arguments.items() %}{{ '<parameter=' + name + '>\n' + value + '\n</parameter>\n' }}{% endfor %}{{ '</function>\n</tool_call>' }}{% if not loop.last %}{{ '\n' }}{% endif %}{% endfor %}{{ '<|im_end|>\n' }}{% elif message.role == 'tool' %}{% if loop.first or messages[loop.index0 - 1].role != 'tool' %}{{ '<|im_start|>user\n' }}{% endif %}{{ '<tool_response>\n' + message.content + '\n</tool_response>' }}{% if loop.last or messages[loop.index0 + 1].role != 'tool' %}{{ '<|im_end|>\n' }}{% else %}{{ '\n' }}{% endif %}{% endif %}{% endfor %})";
+    R"({% for message in messages %})"
+    R"({% if message.role == 'user' %})"
+    R"({{ '<|im_start|>user\n' + message.content + '<|im_end|>\n' }})"
+    R"({% elif message.role == 'assistant' %})"
+    R"({{ '<|im_start|>assistant\n<think>\n\n</think>\n\n' }})"
+    R"({% for call in message.tool_calls %})"
+    R"({{ '<tool_call>\n<function=' + call.function.name + '>\n' }})"
+    R"({% for name, value in call.function.arguments.items() %})"
+    R"({{ '<parameter=' + name + '>\n' + value + '\n</parameter>\n' }})"
+    R"({% endfor %}{{ '</function>\n</tool_call>' }})"
+    R"({% if not loop.last %}{{ '\n' }}{% endif %}{% endfor %})"
+    R"({{ '<|im_end|>\n' }})"
+    R"({% elif message.role == 'tool' %})"
+    R"({% if loop.first or messages[loop.index0 - 1].role != 'tool' %})"
+    R"({{ '<|im_start|>user\n' }}{% endif %})"
+    R"({{ '<tool_response>\n' + message.content + '\n</tool_response>' }})"
+    R"({% if loop.last or messages[loop.index0 + 1].role != 'tool' %})"
+    R"({{ '<|im_end|>\n' }}{% else %}{{ '\n' }}{% endif %})"
+    R"({% endif %}{% endfor %})";
 
 constexpr std::string_view kLookupCall =
     "<tool_call>\n"
@@ -1661,6 +1679,53 @@ TEST_F(QwenNativeProductionIntegrationTest,
   session.ProcessRequest(request, response);
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       RequiredOrForcedMalformedVersionOneSchemaIsRejectedBeforeGeneration) {
+  flToolDefinition legacy_definition{};
+  legacy_definition.version = 1;
+  legacy_definition.name = "";
+  legacy_definition.description = "";
+  legacy_definition.json_schema =
+      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":1}}}])";
+
+  for (const bool forced : {false, true}) {
+    SCOPED_TRACE(forced ? "forced" : "required");
+    bool generator_created = false;
+    TextChatGeneratorFactory factory =
+        [&](const auto&, const auto&, auto&, const ToolCallContext&, bool) {
+          generator_created = true;
+          return std::make_unique<FixedOutputGenerator>(
+              "ordinary text", BackendTerminationCause::kNaturalEnd,
+              /*prompt_opens_reasoning=*/false);
+        };
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                        std::move(factory));
+    session.AddToolDefinition(ToolDefinitionFromC(legacy_definition));
+
+    auto request = MakeStatefulRequest("call legacy");
+    if (forced) {
+      request.forced_tool_choice =
+          ForcedToolChoice{"legacy", ToolKind::kFunction};
+    } else {
+      request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "required");
+    }
+
+    Response response;
+    try {
+      session.ProcessRequest(request, response);
+      FAIL() << "expected malformed tool-only output to be rejected";
+    } catch (const fl::Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      EXPECT_NE(std::string(ex.what()).find("valid tool definitions"),
+                std::string::npos)
+          << ex.what();
+    }
+
+    EXPECT_FALSE(generator_created);
+  }
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,

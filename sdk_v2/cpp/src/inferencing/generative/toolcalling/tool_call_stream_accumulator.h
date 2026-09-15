@@ -118,6 +118,7 @@ class ToolCallStreamAccumulator {
     inside_tool_call_ = false;
     rejected_batch_state_ = RejectedBatchState::kNone;
     ResetPayloadScan();
+    ResetSelectedPayloadBoundaryScan();
     return out;
   }
 
@@ -137,6 +138,13 @@ class ToolCallStreamAccumulator {
     kNone,
     kCandidate,
     kBetweenCandidates,
+  };
+
+  enum class SelectedPayloadBoundaryState {
+    kSearchingForEnd,
+    kAfterEnd,
+    kMatchingAdjacentStart,
+    kResolved,
   };
 
   struct MarkerMatch {
@@ -248,10 +256,44 @@ class ToolCallStreamAccumulator {
       }
 
       if (inside_tool_call_) {
-        const auto available = kSelectedPayloadBufferLimit - tool_call_buffer_.size();
+        // A candidate ending exactly at the limit needs one byte to distinguish an adjacent batch member from
+        // ordinary following text. No other state may exceed the payload limit.
+        const auto capacity =
+            selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd
+                ? kSelectedPayloadBufferLimit + 1
+                : kSelectedPayloadBufferLimit;
+        const auto available = capacity - tool_call_buffer_.size();
         const auto appended = std::min(available, buffer_.size());
         tool_call_buffer_.append(buffer_, 0, appended);
         buffer_.erase(0, appended);
+
+        const bool has_decision_point = AdvanceSelectedPayloadBoundaryScan();
+        if (!flushing && !has_decision_point) {
+          if (tool_call_buffer_.size() < kSelectedPayloadBufferLimit) {
+            return;
+          }
+
+          if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd &&
+              tool_call_buffer_.size() == kSelectedPayloadBufferLimit) {
+            if (buffer_.empty()) {
+              return;
+            }
+
+            continue;
+          }
+
+          if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd &&
+              tool_call_buffer_.size() == kSelectedPayloadBufferLimit + 1 && buffer_.empty()) {
+            return;
+          }
+
+          RejectOversizedSelectedPayload(out, flushing);
+          if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
+            return;
+          }
+
+          continue;
+        }
 
         auto result = payload_parser_(tool_call_buffer_, flushing);
         if (result.disposition == ToolCallPayloadDisposition::kNeedMore) {
@@ -259,22 +301,8 @@ class ToolCallStreamAccumulator {
             EmitVisible(out, std::move(tool_call_buffer_));
             tool_call_buffer_.clear();
             inside_tool_call_ = false;
+            ResetSelectedPayloadBoundaryScan();
             return;
-          }
-
-          if (tool_call_buffer_.size() == kSelectedPayloadBufferLimit) {
-            const auto hold = LongestSuffixThatIsPrefixOf(tool_call_buffer_, end_marker_);
-            const auto safe = tool_call_buffer_.size() - hold;
-            EmitVisible(out, tool_call_buffer_.substr(0, safe));
-            buffer_.insert(0, tool_call_buffer_.substr(safe));
-            tool_call_buffer_.clear();
-            rejected_batch_state_ = RejectedBatchState::kCandidate;
-            DrainRejectedCandidate(out, flushing);
-            if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-              return;
-            }
-
-            continue;
           }
 
           return;
@@ -284,6 +312,7 @@ class ToolCallStreamAccumulator {
           EmitVisible(out, std::move(tool_call_buffer_));
           tool_call_buffer_.clear();
           inside_tool_call_ = false;
+          ResetSelectedPayloadBoundaryScan();
           return;
         }
 
@@ -291,6 +320,7 @@ class ToolCallStreamAccumulator {
         buffer_.insert(0, tool_call_buffer_.substr(result.consumed_size));
         tool_call_buffer_.clear();
         inside_tool_call_ = false;
+        ResetSelectedPayloadBoundaryScan();
         if (result.disposition == ToolCallPayloadDisposition::kParsed) {
           EmitParsedCalls(out, std::move(result.calls));
         } else {
@@ -316,6 +346,7 @@ class ToolCallStreamAccumulator {
         tool_call_buffer_ = buffer_.substr(0, start_marker_.size());
         buffer_.erase(0, start_marker_.size());
         inside_tool_call_ = true;
+        ResetSelectedPayloadBoundaryScan();
         continue;
       }
 
@@ -334,6 +365,67 @@ class ToolCallStreamAccumulator {
 
       return;
     }
+  }
+
+  bool AdvanceSelectedPayloadBoundaryScan() {
+    while (selected_payload_scan_position_ < tool_call_buffer_.size()) {
+      if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kSearchingForEnd) {
+        const auto found = tool_call_buffer_.find(end_marker_, selected_payload_scan_position_);
+        if (found == std::string::npos) {
+          selected_payload_scan_position_ =
+              tool_call_buffer_.size() >= end_marker_.size() - 1
+                  ? tool_call_buffer_.size() - (end_marker_.size() - 1)
+                  : 0;
+          return false;
+        }
+
+        selected_payload_scan_position_ = found + end_marker_.size();
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kAfterEnd;
+        continue;
+      }
+
+      const auto byte = tool_call_buffer_[selected_payload_scan_position_];
+      if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd) {
+        if (std::string_view(" \t\r\n").find(byte) != std::string_view::npos) {
+          ++selected_payload_scan_position_;
+          continue;
+        }
+
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kMatchingAdjacentStart;
+        selected_payload_start_match_size_ = 0;
+      }
+
+      if (byte != start_marker_[selected_payload_start_match_size_]) {
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kResolved;
+        return true;
+      }
+
+      ++selected_payload_scan_position_;
+      ++selected_payload_start_match_size_;
+      if (selected_payload_start_match_size_ == start_marker_.size()) {
+        selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kSearchingForEnd;
+        selected_payload_start_match_size_ = 0;
+      }
+    }
+
+    return selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kResolved;
+  }
+
+  void RejectOversizedSelectedPayload(Output& out, bool flushing) {
+    const auto hold = LongestSuffixThatIsPrefixOf(tool_call_buffer_, end_marker_);
+    const auto safe = tool_call_buffer_.size() - hold;
+    EmitVisible(out, tool_call_buffer_.substr(0, safe));
+    buffer_.insert(0, tool_call_buffer_.substr(safe));
+    tool_call_buffer_.clear();
+    rejected_batch_state_ = RejectedBatchState::kCandidate;
+    ResetSelectedPayloadBoundaryScan();
+    DrainRejectedCandidate(out, flushing);
+  }
+
+  void ResetSelectedPayloadBoundaryScan() {
+    selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kSearchingForEnd;
+    selected_payload_scan_position_ = start_marker_.size();
+    selected_payload_start_match_size_ = 0;
   }
 
   bool EmitParsedBlock(Output& out, const std::string& block) const {
@@ -591,6 +683,10 @@ class ToolCallStreamAccumulator {
   bool prefix_classified_ = false;
   bool scan_inside_string_ = false;
   bool scan_escaped_ = false;
+  SelectedPayloadBoundaryState selected_payload_boundary_state_ =
+      SelectedPayloadBoundaryState::kSearchingForEnd;
+  size_t selected_payload_scan_position_ = 0;
+  size_t selected_payload_start_match_size_ = 0;
 };
 
 }  // namespace fl

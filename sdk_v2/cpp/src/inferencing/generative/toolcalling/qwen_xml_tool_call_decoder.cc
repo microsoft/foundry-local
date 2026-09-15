@@ -175,6 +175,13 @@ FunctionSchemas ParseFunctionSchemas(
   }
 
   const auto custom_tool_schema = Json::parse(kCustomToolInputSchema);
+  const auto insert_schema = [&schemas](const std::string& name, FunctionSchema schema) {
+    const auto [existing, inserted] = schemas.emplace(name, std::move(schema));
+    if (!inserted) {
+      existing->second.valid = false;
+    }
+  };
+
   for (const auto& tool : tools) {
     if (!tool.is_object() || !tool.contains("type") || !tool["type"].is_string() ||
         tool["type"].get<std::string>() != "function") {
@@ -201,24 +208,24 @@ FunctionSchemas ParseFunctionSchemas(
     }
     FunctionSchema schema;
     if (name.empty()) {
-      schemas.emplace(name, std::move(schema));
+      insert_schema(name, std::move(schema));
       continue;
     }
 
     if (!function->contains("parameters") || (*function)["parameters"].is_null()) {
       schema.valid = true;
-      schemas.emplace(name, std::move(schema));
+      insert_schema(name, std::move(schema));
       continue;
     }
 
     const auto& parameters = (*function)["parameters"];
     if (kind->second == ToolKind::kCustom && parameters != custom_tool_schema) {
-      schemas.emplace(name, std::move(schema));
+      insert_schema(name, std::move(schema));
       continue;
     }
 
     if (!IsSupportedParametersObject(parameters)) {
-      schemas.emplace(name, std::move(schema));
+      insert_schema(name, std::move(schema));
       continue;
     }
 
@@ -234,13 +241,13 @@ FunctionSchemas ParseFunctionSchemas(
          has_no_required_parameters)) {
       schema.valid =
           !parameters.contains("properties") || parameters["properties"].is_object();
-      schemas.emplace(name, std::move(schema));
+      insert_schema(name, std::move(schema));
       continue;
     }
 
     if (!parameter_type.has_value() || *parameter_type != "object" ||
         !parameters.contains("properties") || !parameters["properties"].is_object()) {
-      schemas.emplace(name, std::move(schema));
+      insert_schema(name, std::move(schema));
       continue;
     }
 
@@ -267,10 +274,7 @@ FunctionSchemas ParseFunctionSchemas(
                    std::ranges::all_of(schema.required, [&](const auto& required) {
                      return schema.properties.contains(required);
                    });
-    const auto insertion = schemas.emplace(name, std::move(schema));
-    if (!insertion.second) {
-      schemas[name].valid = false;
-    }
+    insert_schema(name, std::move(schema));
   }
 
   return schemas;

@@ -812,9 +812,15 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
     // guidance. This preflight happens before generator construction and before a streaming callback can observe
     // output. The Qwen XML decoder independently marks the malformed declaration ineligible, so matching generated
     // XML remains caller-visible text.
-    if (tool_ctx.tool_output && tool_ctx.guidance_type.empty() && tool_ctx.guidance_data.empty() &&
-        BuildToolJsonSchema(tool_ctx) == "{}") {
-      tool_ctx.guidance_disabled = true;
+    if (tool_ctx.tool_output && BuildToolJsonSchema(tool_ctx) == "{}") {
+      if (!tool_ctx.text_output || tool_ctx.forced_tool.has_value()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "tool-only output requires valid tool definitions");
+      }
+
+      if (tool_ctx.guidance_type.empty() && tool_ctx.guidance_data.empty()) {
+        tool_ctx.guidance_disabled = true;
+      }
     }
   }
 

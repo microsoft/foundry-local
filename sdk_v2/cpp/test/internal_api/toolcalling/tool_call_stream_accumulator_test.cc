@@ -8,6 +8,7 @@
 #include "inferencing/generative/toolcalling/tool_call_stream_accumulator.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.h"
+#include "inferencing/session/tool_registry.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -106,6 +107,19 @@ ToolCallStreamAccumulator MakeQwenAccumulator(
 std::string MakeOversizedQwenCall() {
   return "<tool_call>\n<function=typed>\n<parameter=text>\n" + std::string(70 * 1024, 'x') +
          "\n</parameter>\n</function>\n</tool_call>";
+}
+
+constexpr size_t kSelectedPayloadBufferLimit = 64 * 1024;
+
+std::string MakeSizedQwenCall(size_t encoded_size) {
+  constexpr std::string_view prefix =
+      "<tool_call>\n<function=typed>\n<parameter=text>\n";
+  constexpr std::string_view suffix =
+      "\n</parameter>\n</function>\n</tool_call>";
+  EXPECT_GE(encoded_size, prefix.size() + suffix.size());
+  return std::string(prefix) +
+         std::string(encoded_size - prefix.size() - suffix.size(), 'x') +
+         std::string(suffix);
 }
 
 const std::string kValidZeroQwenCall =
@@ -470,14 +484,23 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidSecondCallRejectsEntireAdjacentBatch
 
 TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible) {
   const std::vector<std::string> schemas = {
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":["string","null"]}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"oneOf":[{"type":"string"},{"type":"null"}]}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"date"}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"string","enum":["allowed"]}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"array","items":{"type":"string"},"maxItems":1}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"array","items":{"type":"string","enum":["allowed"]}}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"object","properties":1}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"object","properties":{"nested":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":["string","null"]}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"oneOf":[{"type":"string"},{"type":"null"}]}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"date"}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"string","enum":["allowed"]}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"array","items":{"type":"string"},"maxItems":1}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"array","items":{"type":"string","enum":["allowed"]}}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"object","properties":1}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"object","properties":{"nested":{)"
+      R"("oneOf":[{"type":"string"},{"type":"integer"}]}}}}}}}])",
   };
   const std::string generated =
       "<tool_call>\n<function=bad>\n<parameter=value>\ntext\n</parameter>\n</function>\n</tool_call>";
@@ -487,6 +510,76 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
     auto outputs = RunChunks(acc, {generated});
     EXPECT_EQ(CollectVisible(outputs), generated);
     EXPECT_TRUE(CollectCalls(outputs).empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, DuplicateDeclarationsFailClosedInEitherOrderForEverySchemaShape) {
+  const nlohmann::json valid_parameters = {
+      {"type", "object"},
+      {"properties", {{"value", {{"type", "string"}}}}},
+      {"required", {"value"}},
+  };
+  const std::vector<std::optional<nlohmann::json>> duplicate_shapes = {
+      std::nullopt,
+      nlohmann::json(nullptr),
+      nlohmann::json(1),
+      nlohmann::json{{"type", "object"}, {"properties", 1}},
+  };
+  const std::string generated =
+      "<tool_call>\n<function=duplicate>\n<parameter=value>\ntext\n</parameter>\n"
+      "</function>\n</tool_call>";
+
+  for (const auto& duplicate_parameters : duplicate_shapes) {
+    auto valid = nlohmann::json{{"name", "duplicate"}, {"parameters", valid_parameters}};
+    auto duplicate = nlohmann::json{{"name", "duplicate"}};
+    if (duplicate_parameters.has_value()) {
+      duplicate["parameters"] = *duplicate_parameters;
+    }
+
+    for (const bool duplicate_first : {false, true}) {
+      auto tools = nlohmann::json::array();
+      tools.push_back({{"type", "function"},
+                       {"function", duplicate_first ? duplicate : valid}});
+      tools.push_back({{"type", "function"},
+                       {"function", duplicate_first ? valid : duplicate}});
+      auto acc = MakeQwenAccumulator(
+          tools.dump(), {{"duplicate", ToolKind::kFunction}});
+      auto outputs = RunChunks(acc, {generated});
+
+      EXPECT_TRUE(CollectCalls(outputs).empty())
+          << "duplicate_first=" << duplicate_first
+          << ", parameters="
+          << (duplicate_parameters.has_value() ? duplicate_parameters->dump()
+                                               : "omitted");
+      EXPECT_EQ(CollectVisible(outputs), generated);
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, DuplicateCustomDeclarationsFailClosedInEitherOrder) {
+  const auto canonical_parameters = nlohmann::json::parse(kCustomToolInputSchema);
+  const auto valid =
+      nlohmann::json{{"name", "duplicate"}, {"parameters", canonical_parameters}};
+  const auto invalid = nlohmann::json{
+      {"name", "duplicate"},
+      {"parameters", {{"type", "object"}, {"properties", nlohmann::json::object()}}},
+  };
+  const std::string generated =
+      "<tool_call>\n<function=duplicate>\n<parameter=input>\ntext\n</parameter>\n"
+      "</function>\n</tool_call>";
+
+  for (const bool invalid_first : {false, true}) {
+    auto tools = nlohmann::json::array();
+    tools.push_back({{"type", "function"},
+                     {"function", invalid_first ? invalid : valid}});
+    tools.push_back({{"type", "function"},
+                     {"function", invalid_first ? valid : invalid}});
+    auto acc =
+        MakeQwenAccumulator(tools.dump(), {{"duplicate", ToolKind::kCustom}});
+    auto outputs = RunChunks(acc, {generated});
+
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << "invalid_first=" << invalid_first;
+    EXPECT_EQ(CollectVisible(outputs), generated);
   }
 }
 
@@ -930,6 +1023,97 @@ TEST(QwenXmlToolCallAccumulatorTest, CandidateAtLimitIsParsedBeforeOversizedReje
 
   ExpectTwoCallsAroundVisibleTail(SplitAt(generated, kValidTypedQwenCall.size()),
                                   visible_tail);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateParsesAcrossBoundarySplits) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
+  const auto generated = candidate + "tail";
+  const std::vector<size_t> split_positions = {
+      0,
+      1,
+      std::string_view("<tool_call>").size(),
+      kSelectedPayloadBufferLimit - 1,
+      kSelectedPayloadBufferLimit,
+      kSelectedPayloadBufferLimit + 1,
+      generated.size(),
+  };
+
+  for (const auto split : split_positions) {
+    SCOPED_TRACE("split=" + std::to_string(split));
+    auto acc = MakeQwenAccumulator();
+    auto outputs = RunChunks(acc, SplitAt(generated, split));
+    auto calls = CollectCalls(outputs);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls.front().name, "typed");
+    EXPECT_EQ(nlohmann::json::parse(calls.front().arguments)["text"],
+              std::string(kSelectedPayloadBufferLimit -
+                              std::string_view("<tool_call>\n<function=typed>\n<parameter=text>\n")
+                                  .size() -
+                              std::string_view("\n</parameter>\n</function>\n</tool_call>").size(),
+                          'x'));
+    EXPECT_EQ(CollectVisible(outputs), "tail");
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateParsesAtEndOfStream) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
+
+  {
+    auto acc = MakeQwenAccumulator();
+    auto outputs = RunChunks(acc, SplitIntoBytes(candidate));
+    auto calls = CollectCalls(outputs);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls.front().name, "typed");
+    EXPECT_TRUE(CollectVisible(outputs).empty());
+  }
+
+  {
+    auto acc = MakeQwenAccumulator();
+    auto outputs = RunChunks(acc, SplitAt(candidate + " ", candidate.size()));
+    auto calls = CollectCalls(outputs);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls.front().name, "typed");
+    EXPECT_EQ(CollectVisible(outputs), " ");
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitRemainsExactVisibleText) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit + 1);
+
+  ExpectExactVisibleWithoutCalls({candidate}, candidate);
+  ExpectExactVisibleWithoutCalls(
+      SplitAt(candidate, kSelectedPayloadBufferLimit), candidate);
+  ExpectExactVisibleWithoutCalls(SplitIntoBytes(candidate), candidate);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ByteSizedChunksPerformBoundedSelectedPayloadParseWork) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit - 1);
+  auto parser =
+      CreateQwenXmlToolCallPayloadParser(kQwenTools, kQwenToolKinds);
+  size_t parsed_bytes = 0;
+  size_t parse_count = 0;
+  ToolCallStreamAccumulator acc(
+      "<tool_call>", "</tool_call>", kQwenTools, "",
+      [&](std::string_view source, bool end_of_stream) {
+        ++parse_count;
+        parsed_bytes += source.size();
+        return parser(source, end_of_stream);
+      });
+
+  std::vector<ToolCallStreamAccumulator::Output> outputs;
+  for (const auto& chunk : SplitIntoBytes(candidate + "tail")) {
+    outputs.push_back(acc.Push(chunk));
+  }
+  outputs.push_back(acc.Flush());
+
+  auto calls = CollectCalls(outputs);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(CollectVisible(outputs), "tail");
+  EXPECT_EQ(parse_count, 1u);
+  EXPECT_LE(parsed_bytes, candidate.size() + 1);
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, CallsAroundLimitSizedVisibleTailAreChunkInvariant) {
