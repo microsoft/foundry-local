@@ -271,7 +271,8 @@ class ToolCallStreamAccumulator {
         bool finalize_exact_limit = false;
         if (!has_decision_point &&
             tool_call_buffer_.size() == kSelectedPayloadBufferLimit &&
-            selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd) {
+            (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd ||
+             selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kMatchingAdjacentStart)) {
           switch (ResolveExactLimitLookahead(flushing)) {
             case ExactLimitLookahead::kNeedMore:
               return;
@@ -418,6 +419,19 @@ class ToolCallStreamAccumulator {
   }
 
   ExactLimitLookahead ResolveExactLimitLookahead(bool flushing) {
+    if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kMatchingAdjacentStart) {
+      const auto remaining_marker = start_marker_.substr(selected_payload_start_match_size_);
+      const auto compared = std::min(buffer_.size(), remaining_marker.size());
+      if (std::string_view(buffer_).substr(0, compared) != remaining_marker.substr(0, compared)) {
+        return ExactLimitLookahead::kFinalize;
+      }
+      if (buffer_.size() >= remaining_marker.size()) {
+        return ExactLimitLookahead::kOversized;
+      }
+
+      return flushing ? ExactLimitLookahead::kFinalize : ExactLimitLookahead::kNeedMore;
+    }
+
     while (selected_payload_lookahead_position_ < buffer_.size() &&
            std::string_view(" \t\r\n").find(buffer_[selected_payload_lookahead_position_]) !=
                std::string_view::npos) {

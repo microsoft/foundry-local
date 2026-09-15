@@ -1105,8 +1105,10 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateHandlesWhitespace
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespaceAdjacentBatchAtEveryMarkerSplit) {
-  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
   const std::string separator = " \n\t";
+  constexpr size_t partial_marker_size = 5;
+  const auto candidate =
+      MakeSizedQwenCall(kSelectedPayloadBufferLimit - separator.size() - partial_marker_size);
   const auto generated = candidate + separator + kValidZeroQwenCall;
   const auto adjacent_start = candidate.size() + separator.size();
 
@@ -1119,8 +1121,9 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespace
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateFinalizesBeforePartialMarkerAtEos) {
-  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
-  const std::string visible = " \n<tool_cal";
+  const std::string visible = " \n<tool";
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit - visible.size());
+  ASSERT_EQ(candidate.size() + visible.size(), kSelectedPayloadBufferLimit);
   auto accumulator = MakeQwenAccumulator();
   auto outputs = RunChunks(accumulator, SplitIntoBytes(candidate + visible));
   auto calls = CollectCalls(outputs);
@@ -1128,6 +1131,30 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateFinalizesBeforePa
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls.front().name, "typed");
   EXPECT_EQ(CollectVisible(outputs), visible);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedPartialMarkerMismatchBecomesVisibleText) {
+  const std::string separator = " \n";
+  const std::string partial_marker = "<tool";
+  const auto candidate =
+      MakeSizedQwenCall(kSelectedPayloadBufferLimit - separator.size() - partial_marker.size());
+  const std::string visible = separator + partial_marker + "x ordinary";
+  const auto generated = candidate + visible;
+  const std::vector<std::vector<std::string>> chunkings = {
+      {generated},
+      SplitAt(generated, kSelectedPayloadBufferLimit),
+      SplitIntoBytes(generated),
+  };
+
+  for (const auto& chunks : chunkings) {
+    auto accumulator = MakeQwenAccumulator();
+    auto outputs = RunChunks(accumulator, chunks);
+    auto calls = CollectCalls(outputs);
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls.front().name, "typed");
+    EXPECT_EQ(CollectVisible(outputs), visible);
+  }
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitRemainsExactVisibleText) {
