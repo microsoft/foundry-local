@@ -224,7 +224,6 @@ void from_json(const nlohmann::json& j, CatalogTags& t) {
 }
 
 void from_json(const nlohmann::json& j, SystemCatalogData& s) {
-  opt_str(j, "alias", s.alias);
   opt_str(j, "publisher", s.publisher);
   opt_str(j, "displayName", s.display_name);
   opt_int(j, "maxOutputTokens", s.max_output_tokens);
@@ -360,14 +359,9 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     parent_uri = *variant_info->parents[0].asset_id;
   }
 
-  // Prefer the compatibility alias published in system metadata. The top-level
-  // V2 alias may identify the parent asset rather than the stable SDK alias.
+  // Determine alias — prefer the V2 field, then legacy tag, then short name from parent, then model name.
   std::string alias;
-  if (cm.annotations && cm.annotations->system_catalog_data &&
-      cm.annotations->system_catalog_data->alias &&
-      !cm.annotations->system_catalog_data->alias->empty()) {
-    alias = *cm.annotations->system_catalog_data->alias;
-  } else if (cm.alias && !cm.alias->empty()) {
+  if (cm.alias && !cm.alias->empty()) {
     alias = *cm.alias;
   } else if (cm.annotations && cm.annotations->tags && cm.annotations->tags->alias) {
     alias = *cm.annotations->tags->alias;
