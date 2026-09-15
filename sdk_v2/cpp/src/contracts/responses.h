@@ -411,6 +411,10 @@ std::string ResponseStatusToString(ResponseStatus status);
 ResponseStatus ResponseStatusFromString(const std::string& s);
 std::string StreamEventTypeToString(StreamEventType type);
 
+/// Read a custom tool result's text from either the compact string form or an ordered array of
+/// `input_text` content parts. Other content types are unsupported by the text-only runtime.
+std::string ParseCustomToolOutputText(const nlohmann::json& output);
+
 // --- Input content from_json (request deserialization) ---
 void from_json(const nlohmann::json& j, InputTextContent& c);
 void from_json(const nlohmann::json& j, InputImageContent& c);

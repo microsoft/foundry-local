@@ -288,6 +288,25 @@ TEST(ChatToolChoiceTest, ForcedFunctionDoesNotSelectASameNamedCustomTool) {
   EXPECT_THROW((void)ExtractToolDefinitions(req, session_request), fl::Exception);
 }
 
+TEST(ChatToolChoiceTest, ForcedChoiceDoesNotHideDuplicateDeclarations) {
+  for (const auto* tools : {
+           R"([{"type":"custom","custom":{"name":"edit"}},)"
+           R"({"type":"custom","custom":{"name":"edit","description":"second"}}])",
+           R"([{"type":"function","function":{"name":"edit"}},)"
+           R"({"type":"custom","custom":{"name":"edit"}}])",
+           R"([{"type":"custom","custom":{"name":"edit"}},)"
+           R"({"type":"function","function":{"name":"edit"}}])",
+       }) {
+    auto req = RequestWithTools(tools);
+    req.tool_choice =
+        json::parse(R"({"type":"custom","custom":{"name":"edit"}})")
+            .get<ChatCompletionToolChoice>();
+
+    Request session_request;
+    EXPECT_INVALID_ARGUMENT(ExtractToolDefinitions(req, session_request));
+  }
+}
+
 // ========================================================================
 // Prior turns — assistant calls and tool results become request items
 // ========================================================================

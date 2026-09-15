@@ -310,8 +310,17 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     // they answer and the text the tool returned.
     if (type == "function_call_output" || type == "custom_tool_call_output") {
       const auto call_id = RequiredReplayString(entry, "call_id", "stored tool call output");
-      request.AddOwnedItem(
-          std::make_unique<ToolResultItem>(call_id, entry.value("output", "")));
+      if (type == "custom_tool_call_output") {
+        const auto output = entry.find("output");
+        if (output == entry.end()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "stored custom_tool_call_output must contain 'output'");
+        }
+        request.AddOwnedItem(
+            std::make_unique<ToolResultItem>(call_id, responses::ParseCustomToolOutputText(*output)));
+      } else {
+        request.AddOwnedItem(std::make_unique<ToolResultItem>(call_id, entry.value("output", "")));
+      }
       continue;
     }
 
@@ -815,6 +824,7 @@ std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCr
       definitions.push_back(ToCoreDefinition(tool));
     }
   }
+  tools::ValidateUniqueNames(definitions);
 
   // tool_choice: the mode strings flow straight to options. A forced tool additionally narrows the
   // set to the named tool of the matching kind and forces "required".

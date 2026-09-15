@@ -71,6 +71,9 @@ ToolDefinition MakeCustomTool(std::string name, std::string description, bool de
 /// and re-reading it mid-turn could resolve a turn's own output against a tool set that never prompted it.
 std::unordered_map<std::string, ToolKind> KindsByName(const std::vector<ToolDefinition>& definitions);
 
+/// Reject duplicate non-empty names before request-local filtering can hide an invalid declaration.
+void ValidateUniqueNames(const std::vector<ToolDefinition>& definitions);
+
 /// Narrow a declared tool set to the single tool a forced `tool_choice` names, matching on both
 /// name and kind so a function and a custom tool sharing a name can never be swapped for each
 /// other.

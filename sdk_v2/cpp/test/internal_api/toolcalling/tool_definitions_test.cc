@@ -169,6 +169,15 @@ TEST(ToolDefinitionFactoryTest, RegisteredCustomToolGetsExactlyTheSynthesizedSch
 // NarrowToForcedTool / RetainAllowedTools
 // ========================================================================
 
+TEST(ToolDefinitionFilterTest, DuplicateNamesAreRejectedAcrossKinds) {
+  const std::vector<ToolDefinition> definitions{
+      tools::MakeFunctionTool("same", "", "{}"),
+      tools::MakeCustomTool("same", ""),
+  };
+
+  EXPECT_THROW(tools::ValidateUniqueNames(definitions), fl::Exception);
+}
+
 TEST(ToolDefinitionFilterTest, NarrowToForcedToolKeepsOnlyTheNamedToolOfThatKind) {
   std::vector<ToolDefinition> definitions{tools::MakeFunctionTool("a", "", "{}"),
                                           tools::MakeFunctionTool("b", "", "{}"),

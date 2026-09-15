@@ -420,6 +420,32 @@ TEST(ResponsesAllowedToolsTest, OfficialDuplicateReferencesAreIdempotentAndPrese
                         R"({"type":"custom","name":"apply_patch"}])"));
 }
 
+TEST(ResponsesToolChoiceTest, FilteringDoesNotHideDuplicateDeclarations) {
+  for (const auto* tools : {
+           R"([{"type":"custom","name":"edit"},)"
+           R"({"type":"custom","name":"edit","description":"second"}])",
+           R"([{"type":"function","name":"edit"},)"
+           R"({"type":"custom","name":"edit"}])",
+           R"([{"type":"custom","name":"edit"},)"
+           R"({"type":"function","name":"edit"}])",
+       }) {
+    auto forced = ParamsWithTools(tools);
+    forced.tool_choice = ForcedCustomTool{"edit"};
+    Request forced_request;
+    EXPECT_INVALID_ARGUMENT(
+        ResponseConverter::ExtractResponsesToolDefinitions(forced, forced_request));
+
+    auto allowed = ParamsWithTools(tools);
+    allowed.tool_choice =
+        json::parse(R"({"type":"allowed_tools","mode":"auto",)"
+                    R"("tools":[{"type":"custom","name":"edit"}]})")
+            .get<AllowedToolsChoice>();
+    Request allowed_request;
+    EXPECT_INVALID_ARGUMENT(
+        ResponseConverter::ExtractResponsesToolDefinitions(allowed, allowed_request));
+  }
+}
+
 // ========================================================================
 // Historical input items
 // ========================================================================
@@ -455,6 +481,40 @@ TEST(ResponsesToolTranscriptTest, ParsesPriorCallsAndResultsOfBothKinds) {
   const auto& custom_result = static_cast<const ToolResultItem&>(*request.items[4]);
   EXPECT_EQ(custom_result.call_id, "call_2");
   EXPECT_EQ(custom_result.result, "applied");
+}
+
+TEST(ResponsesToolTranscriptTest, CustomResultAcceptsOrderedTextContent) {
+  auto params = ParamsWithInput(R"([
+    {"type":"custom_tool_call_output","call_id":"call_2","output":[
+      {"type":"input_text","text":"line 1\n"},
+      {"type":"input_text","text":""},
+      {"type":"input_text","text":"line 2  "}
+    ]}
+  ])");
+
+  Request request = ResponseConverter::ToSessionRequest(params);
+  ASSERT_EQ(request.items.size(), 1u);
+  const auto& result = static_cast<const ToolResultItem&>(*request.items[0]);
+  EXPECT_EQ(result.call_id, "call_2");
+  EXPECT_EQ(result.result, "line 1\nline 2  ");
+}
+
+TEST(ResponsesToolTranscriptTest, CustomResultRejectsUnsupportedOrMalformedContent) {
+  for (const auto* output : {
+           R"([{"type":"input_image","image_url":"data:image/png;base64,AA=="}])",
+           R"([{"type":"input_file","file_data":"AA=="}])",
+           R"([{"type":1,"text":"wrong type"}])",
+           R"([{"type":"input_text"}])",
+           R"([{"type":"input_text","text":1}])",
+           R"({"type":"input_text","text":"not an array"})",
+       }) {
+    json request{{"model", "m"}};
+    request["input"] = json::array(
+        {{{"type", "custom_tool_call_output"},
+          {"call_id", "call_2"},
+          {"output", json::parse(output)}}});
+    EXPECT_INVALID_ARGUMENT(request.get<ResponseCreateParams>());
+  }
 }
 
 TEST(ResponsesToolTranscriptTest, RejectsCustomCallWithNonStringInput) {
@@ -557,6 +617,59 @@ TEST(ResponsesToolTranscriptTest, StoredChainReplaysCustomCallsAndResults) {
   auto messages = IngestRequestItems(request.items, request.item_segment_starts, CustomApplyPatchKinds()).messages;
   ChatTranscript transcript;
   EXPECT_NO_THROW(transcript.ValidateInputs(messages));
+}
+
+TEST(ResponsesToolTranscriptTest, StoredChainReplaysCustomTextContentResults) {
+  ResponseStore store;
+  json previous{{"id", "resp_previous"}, {"previous_response_id", nullptr}, {"output", json::array()}};
+  store.Store(
+      "resp_previous", previous,
+      json::array(
+          {{{"type", "custom_tool_call_output"},
+            {"call_id", "call_2"},
+            {"output",
+             json::array(
+                 {{{"type", "input_text"}, {"text", "line 1\n"}},
+                  {{"type", "input_text"}, {"text", ""}},
+                  {{"type", "input_text"}, {"text", "line 2  "}}})}}}));
+  auto context = store.BuildChainContext("resp_previous");
+  ASSERT_TRUE(context.has_value());
+
+  ResponseCreateParams params;
+  params.model = "m";
+  params.input = std::string("continue");
+  params.previous_response_id = "resp_previous";
+
+  Request request = ResponseConverter::ToSessionRequest(params, &*context);
+
+  ASSERT_GE(request.items.size(), 1u);
+  const auto& result = static_cast<const ToolResultItem&>(*request.items[0]);
+  EXPECT_EQ(result.call_id, "call_2");
+  EXPECT_EQ(result.result, "line 1\nline 2  ");
+}
+
+TEST(ResponsesToolTranscriptTest, StoredChainRejectsUnsupportedCustomResultContent) {
+  for (const auto& output : {
+           json::array({{{"type", "input_image"}, {"image_url", "data:image/png;base64,AA=="}}}),
+           json::array({{{"type", "input_text"}}}),
+           json::array({{{"type", "input_text"}, {"text", 1}}}),
+       }) {
+    ResponseStore store;
+    json previous{{"id", "resp_previous"}, {"previous_response_id", nullptr}, {"output", json::array()}};
+    store.Store(
+        "resp_previous", previous,
+        json::array(
+            {{{"type", "custom_tool_call_output"}, {"call_id", "call_2"}, {"output", output}}}));
+    auto context = store.BuildChainContext("resp_previous");
+    ASSERT_TRUE(context.has_value());
+
+    ResponseCreateParams params;
+    params.model = "m";
+    params.input = std::string("continue");
+    params.previous_response_id = "resp_previous";
+
+    EXPECT_INVALID_ARGUMENT(ResponseConverter::ToSessionRequest(params, &*context));
+  }
 }
 
 TEST(ResponsesToolTranscriptTest, StoredCustomReplayRequiresInputAndNonEmptyIdentifiers) {

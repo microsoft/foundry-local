@@ -108,6 +108,18 @@ std::unordered_map<std::string, ToolKind> KindsByName(const std::vector<ToolDefi
   return kinds;
 }
 
+void ValidateUniqueNames(const std::vector<ToolDefinition>& definitions) {
+  std::unordered_set<std::string_view> names;
+  names.reserve(definitions.size());
+
+  for (const auto& definition : definitions) {
+    if (!definition.name.empty() && !names.insert(definition.name).second) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "a tool named '", definition.name,
+               "' is declared more than once");
+    }
+  }
+}
+
 void NarrowToForcedTool(std::vector<ToolDefinition>& definitions, const std::string& name, ToolKind kind) {
   auto forced = std::find_if(definitions.begin(), definitions.end(), [&](const ToolDefinition& definition) {
     return definition.name == name && definition.kind == kind;

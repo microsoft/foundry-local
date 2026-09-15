@@ -170,6 +170,7 @@ std::vector<ToolDefinition> ExtractToolDefinitions(const ChatCompletionRequest& 
       definitions.push_back(ToCoreDefinition(tool));
     }
   }
+  tools::ValidateUniqueNames(definitions);
 
   // tool_choice → controls text_output / tool_output in ChatSession. Unrepresentable choices were
   // already rejected while the request was read, so only valid ones reach here.

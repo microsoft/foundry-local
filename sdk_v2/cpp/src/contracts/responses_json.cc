@@ -66,6 +66,35 @@ ResponseStatus ResponseStatusFromString(const std::string& s) {
   return ResponseStatus::kInProgress;
 }
 
+std::string ParseCustomToolOutputText(const nlohmann::json& output) {
+  if (output.is_string()) {
+    return output.get<std::string>();
+  }
+  if (!output.is_array()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "custom_tool_call_output output must be a string or an array of input_text content");
+  }
+
+  std::string text;
+  for (const auto& part : output) {
+    const auto type = part.is_object() ? part.find("type") : part.end();
+    if (!part.is_object() || type == part.end() || !type->is_string() ||
+        type->get_ref<const std::string&>() != "input_text") {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "custom_tool_call_output output arrays support only input_text content");
+    }
+
+    const auto value = part.find("text");
+    if (value == part.end() || !value->is_string()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "custom_tool_call_output input_text content must contain string text");
+    }
+    text += value->get_ref<const std::string&>();
+  }
+
+  return text;
+}
+
 std::string StreamEventTypeToString(StreamEventType type) {
   switch (type) {
     case StreamEventType::kResponseCreated:
@@ -210,7 +239,7 @@ void from_json(const nlohmann::json& j, FunctionCallResultInputItem& f) {
 void from_json(const nlohmann::json& j, CustomToolCallResultInputItem& c) {
   c.type = j.value("type", "custom_tool_call_output");
   c.call_id = RequiredNonEmptyString(j, "call_id", "custom_tool_call_output");
-  c.output = j.at("output").get<std::string>();
+  c.output = ParseCustomToolOutputText(j.at("output"));
 }
 
 void from_json(const nlohmann::json& j, CustomToolCallInputItem& c) {
