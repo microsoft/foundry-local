@@ -41,13 +41,13 @@ bool IsValidRequiredList(const Json& required, const Json* properties) {
 }
 
 bool IsUniqueNonemptyArray(const Json& values) {
-  if (!values.is_array() || values.empty()) {
+  constexpr size_t kMaxEnumValues = 64;
+  if (!values.is_array() || values.empty() || values.size() > kMaxEnumValues) {
     return false;
   }
 
-  std::unordered_set<Json> seen;
-  for (const auto& value : values) {
-    if (!seen.insert(value).second) {
+  for (auto current = values.begin(); current != values.end(); ++current) {
+    if (std::find(values.begin(), current, *current) != current) {
       return false;
     }
   }
