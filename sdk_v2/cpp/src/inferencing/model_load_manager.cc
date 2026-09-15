@@ -5,8 +5,11 @@
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
 #include "inferencing/generative/genai_model_instance.h"
+#include "platform/dynlib_loader.h"
 #include "platform/path.h"
 #include "utils.h"
+
+#include <ort_genai.h>
 
 #include <algorithm>
 #include <cctype>
@@ -104,6 +107,42 @@ std::string RequiredEpForConfigProvider(std::string_view provider) {
   // MIGraphXExecutionProvider and RyzenAILightExecutionProvider. Canonical registration names can still be guarded.
   constexpr std::string_view suffix = "ExecutionProvider";
   return provider.ends_with(suffix) ? std::string(provider) : std::string{};
+}
+
+void LogDeviceReleaseWarning(ILogger& logger, std::string_view message) noexcept {
+  try {
+    logger.Log(LogLevel::Warning, message);
+  } catch (...) {
+  }
+}
+
+void ReleaseDeviceResourcesIfAvailable(const std::string& device_type, ILogger& logger) noexcept {
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
+  try {
+    using ReleaseDeviceResourcesFn = OgaResult*(OGA_API_CALL*)(const char*);
+    auto release_device_resources = reinterpret_cast<ReleaseDeviceResourcesFn>(
+        platform::GetLoadedLibrarySymbol("onnxruntime-genai.dll", "OgaReleaseDeviceResources"));
+    if (!release_device_resources) {
+      return;
+    }
+
+    if (OgaResult* result = release_device_resources(device_type.c_str())) {
+      const std::string error = OgaResultGetError(result);
+      OgaDestroyResult(result);
+      LogDeviceReleaseWarning(
+          logger, fmt::format("GenAI device resource release failed for {}: {}", device_type, error));
+    }
+  } catch (const std::exception& ex) {
+    LogDeviceReleaseWarning(
+        logger, fmt::format("GenAI device resource release failed for {}: {}", device_type, ex.what()));
+  } catch (...) {
+    LogDeviceReleaseWarning(
+        logger, fmt::format("GenAI device resource release failed for {}: unknown error", device_type));
+  }
+#else
+  (void)device_type;
+  (void)logger;
+#endif
 }
 
 }  // namespace
@@ -277,10 +316,16 @@ bool ModelLoadManager::UnloadModel(std::string_view model_id, const std::string*
 
   logger_.Log(LogLevel::Information, fmt::format("unloading model: {}", id_str));
 
+  const std::string device_type = it->second->DeviceType();
   // Erasing destroys the GenAIModelInstance, which destroys OGA objects in reverse order.
   loaded_models_.erase(it);
-  // Return unused regions retained by GenAI's long-lived device allocator.
-  Oga::ShrinkDeviceMemory();
+
+  const bool device_still_in_use =
+      std::any_of(loaded_models_.begin(), loaded_models_.end(),
+                  [&device_type](const auto& entry) { return entry.second->DeviceType() == device_type; });
+  if (device_type == "CUDA" && !device_still_in_use) {
+    ReleaseDeviceResourcesIfAvailable(device_type, logger_);
+  }
   return true;
 }
 

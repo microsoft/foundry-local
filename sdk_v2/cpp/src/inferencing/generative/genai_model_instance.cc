@@ -59,6 +59,7 @@ GenAIModelInstance::GenAIModelInstance(std::string model_id,
   // Create OGA Model
   try {
     oga_model_ = OgaModel::Create(*oga_config);
+    device_type_ = oga_model_->GetDeviceType().p_;
   } catch (const std::runtime_error& e) {
     FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to load model ", model_id_, ": ", e.what());

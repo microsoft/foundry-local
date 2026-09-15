@@ -45,4 +45,9 @@ std::shared_ptr<void> LoadSharedLibrary(const std::filesystem::path& path, fl::I
   });
 }
 
+void* GetLoadedLibrarySymbol(const char* library_name, const char* symbol_name) {
+  HMODULE module = ::GetModuleHandleA(library_name);
+  return module == nullptr ? nullptr : reinterpret_cast<void*>(::GetProcAddress(module, symbol_name));
+}
+
 }  // namespace fl::platform

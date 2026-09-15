@@ -29,4 +29,9 @@ std::shared_ptr<void> LoadSharedLibrary(const std::filesystem::path& path, fl::I
   });
 }
 
+void* GetLoadedLibrarySymbol(const char* /*library_name*/, const char* symbol_name) {
+  dlerror();
+  return dlsym(RTLD_DEFAULT, symbol_name);
+}
+
 }  // namespace fl::platform
