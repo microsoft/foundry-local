@@ -42,7 +42,7 @@ TEST(CallbackHandlerTest, StdExceptionFromCallbackDoesNotTerminate) {
   }
 
   EXPECT_GE(invocations.load(), 1);
-  EXPECT_TRUE(request.canceled.load());
+  EXPECT_TRUE(request.IsCancellationRequested());
 }
 
 TEST(CallbackHandlerTest, NonStdExceptionFromCallbackDoesNotTerminate) {
@@ -61,7 +61,7 @@ TEST(CallbackHandlerTest, NonStdExceptionFromCallbackDoesNotTerminate) {
   }
 
   EXPECT_GE(invocations.load(), 1);
-  EXPECT_TRUE(request.canceled.load());
+  EXPECT_TRUE(request.IsCancellationRequested());
 }
 
 TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
@@ -72,11 +72,11 @@ TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
   handler.PushItem(std::make_unique<TextItem>("first"));
 
   // Wait until the worker has cancelled the request after catching the throw.
-  for (int i = 0; i < 200 && !request.canceled.load(); ++i) {
+  for (int i = 0; i < 200 && !request.IsCancellationRequested(); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  ASSERT_TRUE(request.canceled.load());
+  ASSERT_TRUE(request.IsCancellationRequested());
 
   const int invocations_after_first = invocations.load();
 
@@ -109,7 +109,7 @@ TEST(CallbackHandlerTest, NormalCallbackCancelsViaReturnValue) {
   handler.Drain();
 
   EXPECT_EQ(invocations.load(), 1);
-  EXPECT_TRUE(request.canceled.load());
+  EXPECT_TRUE(request.IsCancellationRequested());
 }
 
 TEST(CallbackHandlerTest, DrainPendingWaitsForDeliveryWithoutClosingTheQueue) {

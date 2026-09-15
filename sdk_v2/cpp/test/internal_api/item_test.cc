@@ -683,12 +683,28 @@ TEST(RequestTest, MixedOwnedAndBorrowedItems) {
   EXPECT_TRUE(req.items[1]->type == FOUNDRY_LOCAL_ITEM_MESSAGE);
 }
 
-TEST(RequestTest, CancellationFlag) {
+TEST(RequestTest, CancellationWinsBeforeCompletion) {
   Request req;
-  EXPECT_FALSE(req.canceled);
+  EXPECT_FALSE(req.IsCancellationRequested());
 
-  req.canceled = true;
-  EXPECT_TRUE(req.canceled);
+  EXPECT_TRUE(req.Cancel());
+  EXPECT_TRUE(req.Cancel());
+  EXPECT_TRUE(req.IsCancellationRequested());
+  EXPECT_FALSE(req.TryComplete());
+}
+
+TEST(RequestTest, CompletionMakesLateCancellationANoOp) {
+  Request req;
+
+  ASSERT_TRUE(req.TryBegin());
+  EXPECT_TRUE(req.TryComplete());
+  EXPECT_FALSE(req.Cancel());
+  EXPECT_FALSE(req.IsCancellationRequested());
+  EXPECT_FALSE(req.IsCompleted());
+  EXPECT_FALSE(req.TryBegin());
+  req.PublishCompletion();
+  EXPECT_TRUE(req.IsCompleted());
+  EXPECT_TRUE(req.TryBegin());
 }
 
 // ========================================================================

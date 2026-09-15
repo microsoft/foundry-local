@@ -124,11 +124,17 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
     "early break cancels the stream cleanly and the session remains usable",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
+      const stream = session.processStreamingRequest(buildPrompt());
       let count = 0;
-      for await (const _item of session.processStreamingRequest(buildPrompt())) {
+      for await (const _item of stream) {
         count++;
         if (count >= 1) break;
       }
+      await expect(stream.response).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.OperationCancelled,
+      });
+
       // After the break the session should accept a follow-up send.
       const resp = await session.processRequest(
         new Request()
@@ -237,9 +243,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(["stop", "length", "toolCalls", "error", "none"]).toContain(resp.finishReason);
       expect(resp.usage.promptTokens).toBeGreaterThan(0);
       expect(resp.usage.completionTokens).toBeGreaterThan(0);
-      expect(resp.usage.totalTokens).toBeGreaterThanOrEqual(
-        resp.usage.promptTokens + resp.usage.completionTokens,
-      );
+      expect(resp.usage.totalTokens).toBeGreaterThanOrEqual(resp.usage.promptTokens + resp.usage.completionTokens);
       // The Response's text should match what we accumulated from the stream
       // (modulo possible model post-processing — assert non-empty overlap on
       // the boundary tokens rather than strict equality).
@@ -264,46 +268,40 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
     3 * 60_000,
   );
 
-  it(
-    "stream.response rejects with AbortError when pre-aborted",
-    async () => {
-      if (session === undefined) throw new Error("fixture missing");
-      const ctrl = new AbortController();
-      ctrl.abort();
-      const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
-      await expect(stream.response).rejects.toMatchObject({ name: "AbortError" });
-    },
-    60_000,
-  );
+  it("stream.response rejects with AbortError when pre-aborted", async () => {
+    if (session === undefined) throw new Error("fixture missing");
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
+    await expect(stream.response).rejects.toMatchObject({ name: "AbortError" });
+  }, 60_000);
 
   it(
-    "stream.response resolves with finishReason='none' when request.cancel() is called mid-stream",
+    "request.cancel rejects iteration and stream.response with OperationCancelled",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
-      // Native ChatSession::ProcessRequestImpl treats Request::Cancel as a
-      // graceful early-exit: the generation loop breaks, the generator is
-      // rewound, and ProcessGeneratedOutput sets finish_reason=NONE. The
-      // call returns a normal Response — it does NOT throw OperationCancelled
-      // (that exception is only raised on the pre-call path). The JS layer
-      // must surface that same contract: `.response` resolves with a
-      // FinishReason of "none".
       const req = new Request()
         .addItem(Item.systemMessage("You are verbose."))
         .addItem(Item.userMessage("Write a 500-word essay about the history of bread."))
         .setOptions({ search: { maxOutputTokens: 1024, temperature: 0 } });
       const stream = session.processStreamingRequest(req);
-      let observed = 0;
-      for await (const _item of stream) {
-        observed++;
-        if (observed >= 1) {
-          req.cancel();
-          break;
+      const iteration = async (): Promise<void> => {
+        let observed = 0;
+        for await (const _item of stream) {
+          if (++observed >= 1) {
+            req.cancel();
+          }
         }
-      }
-      const resp = await stream.response;
-      expect(resp.finishReason).toBe("none");
-      // History must NOT be committed on cancel — CommitTurn is skipped
-      // when request.canceled is true (see ChatSession::ProcessRequestImpl).
+      };
+
+      await expect(iteration()).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.OperationCancelled,
+      });
+      await expect(stream.response).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.OperationCancelled,
+      });
       expect(session.turnCount).toBe(0);
     },
     3 * 60_000,
@@ -334,9 +332,11 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       });
 
       const req = new Request()
-        .addItem(Item.systemMessage(
-          "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question.",
-        ))
+        .addItem(
+          Item.systemMessage(
+            "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question.",
+          ),
+        )
         .addItem(Item.userMessage("What is the answer to 7 multiplied by 6?"))
         .setOptions({
           search: { temperature: 0, maxOutputTokens: 256 },
@@ -362,7 +362,8 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(itemCount).toBeGreaterThan(0);
       expect(streamedToolCalls.length).toBeGreaterThanOrEqual(1);
 
-      const streamed = streamedToolCalls[0]!;
+      const streamed = streamedToolCalls[0];
+      if (streamed === undefined) throw new Error("expected a streamed tool call");
       expect(streamed.name).toBe("multiply_numbers");
       expect(streamed.arguments.length).toBeGreaterThan(0);
       expect(streamed.callId.length).toBeGreaterThan(0);
@@ -373,13 +374,11 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       const resp = await stream.response;
       expect(resp.finishReason).toBe("toolCalls");
 
-      const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> =>
-        it.type === "toolCall",
-      );
-      expect(finalToolCall).toBeDefined();
-      expect(finalToolCall!.name).toBe(streamed.name);
-      expect(finalToolCall!.arguments).toBe(streamed.arguments);
-      expect(finalToolCall!.callId).toBe(streamed.callId);
+      const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> => it.type === "toolCall");
+      if (finalToolCall === undefined) throw new Error("expected a final tool call");
+      expect(finalToolCall.name).toBe(streamed.name);
+      expect(finalToolCall.arguments).toBe(streamed.arguments);
+      expect(finalToolCall.callId).toBe(streamed.callId);
     },
     3 * 60_000,
   );

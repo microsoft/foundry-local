@@ -74,8 +74,8 @@ export class Request {
   }
 
   /**
-   * Cancel an in-flight request. Safe to call at any time — if the request
-   * is not currently being processed by a session, this is a no-op.
+   * Cancel a request. Safe to call at any time; cancellation before processing
+   * is remembered and prevents the request from reaching the backend.
    * Cancellation makes the matching `Session.processRequest()` reject with a
    * `FoundryLocalError` whose `code === FlErrorCode.OperationCancelled`.
    */

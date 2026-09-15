@@ -54,9 +54,9 @@ class Session {
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
 
-  /// Signal every in-flight request on this session to cancel. Only sets each request's atomic
-  /// cancel flag — never blocks and never joins — so it is safe to call from a shutdown path while
-  /// another thread holds a manager lock. Generation loops poll the flag and stop within ~one token.
+  /// Signal every in-flight request on this session to cancel. Only updates each request's atomic
+  /// lifecycle — never blocks and never joins — so it is safe to call from a shutdown path while
+  /// another thread holds a manager lock. Generation loops poll the request between backend scheduling quanta.
   void Cancel();
 
   /// Add a tool definition to this session. Names are case-sensitive and unique across kinds.

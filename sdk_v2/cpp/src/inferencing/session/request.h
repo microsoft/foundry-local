@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -23,6 +24,14 @@ inline constexpr const char* kSystemPromptOption = "system_prompt";
 /// Generic inference request — pure input data.
 /// Items are stored as borrowed pointers. Owned items are kept alive in owned_items.
 struct Request {
+  enum class State : uint8_t {
+    Ready,
+    Running,
+    Canceled,
+    Completing,
+    Completed,
+  };
+
   std::vector<Item*> items;  // all items (borrowed pointers)
   KeyValuePairs options;
 
@@ -39,26 +48,20 @@ struct Request {
   /// ascending and consistent with `items`.
   std::vector<size_t> item_segment_starts;
 
-  /// Cancellation flag — set by the C API or streaming callback handler to cancel
-  /// an in-flight request. Checked in generation loops. Atomic because it is written
-  /// by one thread (callback worker or C API) and read by another (generator loop).
-  /// Uses relaxed ordering since it is a one-way flag and exact timing doesn't matter.
-  mutable std::atomic<bool> canceled{false};
-
   Request() = default;
 
   Request(Request&& other) noexcept
       : items(std::move(other.items)),
         options(std::move(other.options)),
         item_segment_starts(std::move(other.item_segment_starts)),
-        canceled(other.canceled.load(std::memory_order_relaxed)),
+        state_(other.state_.load(std::memory_order_relaxed)),
         owned_items(std::move(other.owned_items)) {}
 
   Request& operator=(Request&& other) noexcept {
     items = std::move(other.items);
     options = std::move(other.options);
     item_segment_starts = std::move(other.item_segment_starts);
-    canceled.store(other.canceled.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    state_.store(other.state_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     owned_items = std::move(other.owned_items);
     return *this;
   }
@@ -83,7 +86,61 @@ struct Request {
     item_segment_starts.push_back(items.size());
   }
 
+  /// Atomically wins cancellation against terminal publication. Returns false after completion has won.
+  bool Cancel() const noexcept {
+    auto state = state_.load(std::memory_order_acquire);
+    while (state == State::Ready || state == State::Running) {
+      if (state_.compare_exchange_weak(state, State::Canceled,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+        return true;
+      }
+    }
+
+    return state == State::Canceled;
+  }
+
+  bool IsCancellationRequested() const noexcept {
+    return state_.load(std::memory_order_acquire) == State::Canceled;
+  }
+
+  /// Starts first-time processing or reuses a request whose previous operation completed.
+  bool TryBegin() const noexcept {
+    auto state = state_.load(std::memory_order_acquire);
+    while (state == State::Ready || state == State::Completed) {
+      if (state_.compare_exchange_weak(state, State::Running,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /// Atomically claims the normal or error terminal boundary. Returns false when cancellation won first.
+  bool TryComplete() const noexcept {
+    auto expected = State::Running;
+    if (state_.compare_exchange_strong(expected, State::Completing,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+      return true;
+    }
+
+    return expected == State::Completing;
+  }
+
+  /// Makes a claimed completion reusable after the outer request call has finished publishing its result.
+  void PublishCompletion() const noexcept {
+    state_.store(State::Completed, std::memory_order_release);
+  }
+
+  bool IsCompleted() const noexcept {
+    return state_.load(std::memory_order_acquire) == State::Completed;
+  }
+
  private:
+  mutable std::atomic<State> state_{State::Ready};
   std::vector<std::unique_ptr<Item>> owned_items;  // owned items (lifetime)
 };
 
