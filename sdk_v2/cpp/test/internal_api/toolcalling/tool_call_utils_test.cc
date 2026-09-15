@@ -247,6 +247,8 @@ TEST(ParseToolCallsTest, MalformedAdvertisedToolNamesRejectRepairWithoutThrowing
       R"([{"function":1}])",
       R"([{"type":"bogus","name":"advertised"}])",
       R"([{"type":"bogus","function":{"name":"advertised"}}])",
+      R"([{"type":"function","name":"advertised","function":{"name":"inner"}}])",
+      R"([{"type":"function","name":"advertised","function":1}])",
   };
 
   for (const auto& tools : malformed_tools) {
