@@ -152,7 +152,6 @@ TEST(AzureCatalogClientTest, DefaultPageSizeIs50) {
 TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-
   // Realistic single-model response matching the V2 asset-gallery schema.
   const char* mock_response = R"({
     "totalCount": 1,
@@ -167,7 +166,7 @@ TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
         "license": "MIT",
         "licenseDescription": "MIT License",
         "alias": "Phi-4-mini-instruct",
-        "minFLVersion": "0.3.0",
+        "minFLVersion": "0.0.0",
         "inferenceTasks": ["chat-completion"],
         "modelCapabilities": ["tool-calling", "reasoning"],
         "modelLimits": {
@@ -219,7 +218,7 @@ TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR), "Phi-4 Mini Instruct");
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
-  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.3.0");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.0.0");
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "FoundryLocal");
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 4096);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 8192);
@@ -227,6 +226,32 @@ TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR), "text,image");
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR), "text");
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR), "tool-calling,reasoning");
+}
+
+TEST(AzureCatalogClientTest, PrefersSystemCatalogAlias) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "totalCount": 1,
+    "summaries": [{
+      "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-instruct-generic-cpu/versions/4",
+      "name": "qwen2.5-0.5b-instruct-generic-cpu",
+      "version": "4",
+      "alias": "qwen2.5-0.5b-instruct",
+      "variantInformation": {"parents": [], "variantMetadata": {"device": "cpu"}},
+      "annotations": {"systemCatalogData": {"alias": "qwen2.5-0.5b"}}
+    }],
+    "continuationToken": ""
+  })";
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(response);
+                            });
+
+  const auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 1u);
+  EXPECT_EQ(infos[0].alias, "qwen2.5-0.5b");
 }
 
 // Verify that invalid models (missing required fields) are filtered out
@@ -461,6 +486,46 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyReturnsEmptyNoHttp) {
   auto result = client.FetchModelsByIds({});
   EXPECT_TRUE(result.empty());
   EXPECT_FALSE(http_called);
+}
+
+TEST(AzureCatalogClientTest, FetchAllVersionsFiltersAliasLocally) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  nlohmann::json captured_request;
+  const char* response = R"({
+    "totalCount": 2,
+    "summaries": [
+      {
+        "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-instruct-generic-cpu/versions/4",
+        "name": "qwen2.5-0.5b-instruct-generic-cpu",
+        "version": "4",
+        "variantInformation": {"parents": [], "variantMetadata": {"device": "cpu"}},
+        "annotations": {"systemCatalogData": {"alias": "qwen2.5-0.5b"}}
+      },
+      {
+        "assetId": "azureml://registries/azureml/models/other/versions/1",
+        "name": "other",
+        "version": "1",
+        "alias": "other-alias",
+        "variantInformation": {"parents": [], "variantMetadata": {"device": "cpu"}}
+      }
+    ],
+    "continuationToken": ""
+  })";
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              captured_request = nlohmann::json::parse(body);
+                              return MakeOkResponse(response);
+                            });
+
+  const auto result = client.FetchAllVersionsByAlias("qwen2.5-0.5b");
+
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].alias, "qwen2.5-0.5b");
+  for (const auto& filter : captured_request["filters"]) {
+    EXPECT_NE(filter["field"], "Alias");
+  }
 }
 
 // ========================================================================

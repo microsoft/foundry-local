@@ -208,7 +208,6 @@ std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_mo
 
 /// Build per-device filter sets for catalog queries.
 /// `latest_only` controls whether to include the `labels=latest` filter (default true for latest models).
-/// `model_alias` scopes results to a specific alias when non-empty; when empty, no alias filter is applied.
 /// `model_name` scopes results to a specific model name when non-empty for server-side filtering.
 /// Each filter set queries for variants on a specific device/EP pair; the catalog API matches on the
 /// (device, execution provider) pair.
@@ -216,7 +215,6 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
     const IEpDetector& ep_detector,
     const std::vector<std::string>& model_filter,
     bool latest_only = true,
-    const std::string& model_alias = "",
     const std::string& model_name = "") {
 
   // Full parameter-driven filter sets (keep for easy rollback once catalog models are updated):
@@ -230,9 +228,6 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
     }
   
     filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
-    if (!model_alias.empty()) {
-      filters.push_back(MakeFilter("Alias", {model_alias}));
-    }
     if (!model_name.empty()) {
       filters.push_back(MakeFilter("Name", {model_name}));
     }
@@ -395,11 +390,9 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
     const std::string& model_alias,
     const std::string& model_name,
     int /*max_versions*/) {
-  // Fetch all versions of the alias across per-device filter sets. Each filter set
-  // queries for variants matching the alias on a specific device/EP pair; the results
-  // are aggregated. The caller applies per-variant version caps (latest X per variant).
-  const auto filter_sets = BuildSearchFilters(ep_detector_, model_filter_, /*latest_only=*/false,
-                                              model_alias, model_name);
+  // Alias is not a supported asset-gallery filter field. Fetch compatible variants,
+  // optionally narrowed by model name, and apply the alias constraint locally.
+  const auto filter_sets = BuildSearchFilters(ep_detector_, model_filter_, /*latest_only=*/false, model_name);
 
   std::vector<ModelInfo> result;
 
@@ -410,6 +403,7 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
     }
 
     auto batch = ToModelInfos(walk->models, walk->region);
+    std::erase_if(batch, [&](const ModelInfo& info) { return info.alias != model_alias; });
     result.insert(result.end(),
                   std::make_move_iterator(batch.begin()),
                   std::make_move_iterator(batch.end()));
