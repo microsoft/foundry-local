@@ -701,6 +701,7 @@ TEST(QwenXmlToolCallAccumulatorTest,
       {{"type", "object"},
        {"properties", nlohmann::json::object()},
        {"required", nlohmann::json::array({1})}},
+      {{"type", "object"}, {"minProperties", 1}},
   };
   const std::string malformed_call =
       "<tool_call>\n<function=bad>\n<parameter=value>\ntext\n</parameter>\n"
@@ -728,6 +729,29 @@ TEST(QwenXmlToolCallAccumulatorTest,
     EXPECT_EQ(CollectVisible(outputs), generated);
     EXPECT_TRUE(CollectCalls(outputs).empty());
   }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExcessiveArraySchemaNestingRemainsExactVisibleText) {
+  nlohmann::json value_schema = {{"type", "string"}};
+  for (size_t depth = 0; depth < 16; ++depth) {
+    value_schema = {{"type", "array"}, {"items", std::move(value_schema)}};
+  }
+
+  const nlohmann::json parameters = {
+      {"type", "object"},
+      {"properties", {{"value", std::move(value_schema)}}},
+      {"required", {"value"}},
+  };
+  const nlohmann::json function = {{"name", "deep"}, {"parameters", parameters}};
+  const auto tools =
+      nlohmann::json::array({{{"type", "function"}, {"function", function}}}).dump();
+  const std::string generated =
+      "<tool_call>\n<function=deep>\n<parameter=value>\n[]\n</parameter>\n</function>\n</tool_call>";
+  auto accumulator = MakeQwenAccumulator(tools, {{"deep", ToolKind::kFunction}});
+  auto outputs = RunChunks(accumulator, {generated});
+
+  EXPECT_TRUE(CollectCalls(outputs).empty());
+  EXPECT_EQ(CollectVisible(outputs), generated);
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ParameterWithoutSchemaRejectsEntireAdjacentBatchExactly) {

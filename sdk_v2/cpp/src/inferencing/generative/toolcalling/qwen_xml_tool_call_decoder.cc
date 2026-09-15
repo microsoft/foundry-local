@@ -27,6 +27,7 @@ constexpr std::string_view kFunctionPrefix = "<function=";
 constexpr std::string_view kParameterPrefix = "<parameter=";
 constexpr std::string_view kFunctionEnd = "</function>\n</tool_call>";
 constexpr std::string_view kParameterEnd = "\n</parameter>\n";
+constexpr size_t kMaxSchemaNesting = 16;
 
 enum class ParseState {
   kComplete,
@@ -112,8 +113,8 @@ bool IsSupportedAnnotation(std::string_view keyword) {
   return kSupportedAnnotations.contains(keyword);
 }
 
-bool IsSupportedParameterSchema(const Json& schema) {
-  if (!schema.is_object()) {
+bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
+  if (!schema.is_object() || depth >= kMaxSchemaNesting) {
     return false;
   }
 
@@ -126,9 +127,9 @@ bool IsSupportedParameterSchema(const Json& schema) {
       return false;
     }
 
-    return std::ranges::all_of(schema["anyOf"], [](const auto& branch) {
+    return std::ranges::all_of(schema["anyOf"], [depth](const auto& branch) {
       return branch.is_object() && !branch.contains("anyOf") &&
-             IsSupportedParameterSchema(branch);
+             IsSupportedParameterSchema(branch, depth + 1);
     });
   }
 
@@ -145,7 +146,23 @@ bool IsSupportedParameterSchema(const Json& schema) {
   }
 
   return *type != "array" || !schema.contains("items") ||
-         IsSupportedParameterSchema(schema["items"]);
+         IsSupportedParameterSchema(schema["items"], depth + 1);
+}
+
+bool IsSupportedParametersObject(const Json& schema) {
+  if (!schema.is_object() || HasUnsupportedComposition(schema)) {
+    return false;
+  }
+
+  return std::ranges::all_of(schema.items(), [](const auto& item) {
+    if (IsSupportedAnnotation(item.key())) {
+      return true;
+    }
+    if (item.key() == "type" || item.key() == "properties" || item.key() == "required") {
+      return true;
+    }
+    return item.key() == "additionalProperties" && item.value().is_boolean();
+  });
 }
 
 FunctionSchemas ParseFunctionSchemas(
@@ -200,7 +217,7 @@ FunctionSchemas ParseFunctionSchemas(
       continue;
     }
 
-    if (!parameters.is_object() || HasUnsupportedComposition(parameters)) {
+    if (!IsSupportedParametersObject(parameters)) {
       schemas.emplace(name, std::move(schema));
       continue;
     }
@@ -259,7 +276,11 @@ FunctionSchemas ParseFunctionSchemas(
   return schemas;
 }
 
-bool IsCompatibleJsonValue(const Json& value, const Json& schema) {
+bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth = 0) {
+  if (depth >= kMaxSchemaNesting) {
+    return false;
+  }
+
   const auto type = GetSupportedType(schema);
   if (!type.has_value()) {
     return false;
@@ -281,7 +302,7 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema) {
     return value.is_array() &&
            (!schema.contains("items") ||
             std::ranges::all_of(value, [&](const auto& item) {
-              return IsCompatibleJsonValue(item, schema["items"]);
+              return IsCompatibleJsonValue(item, schema["items"], depth + 1);
             }));
   }
   if (*type == "object") {
@@ -349,6 +370,8 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
   if (decoded.has_value()) {
     return decoded;
   }
+  // A leading array/object delimiter claims the structured branch. Reinterpreting malformed structured output as
+  // a string would turn a model type error into an executable call; ambiguous union values therefore fail closed.
   if (has_string_branch && !HasStructuredJsonPrefix(body)) {
     return Json(std::string(body));
   }
