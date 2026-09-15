@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <unordered_set>
 
@@ -40,6 +41,96 @@ bool IsValidRequiredList(const Json& required, const Json* properties) {
   return properties != nullptr || required.empty();
 }
 
+bool IsFloatEqualToUnsigned(double floating, uint64_t integer) {
+  constexpr double kUint64Limit = 18446744073709551616.0;
+  return std::isfinite(floating) && floating >= 0 && floating < kUint64Limit &&
+         std::trunc(floating) == floating && static_cast<uint64_t>(floating) == integer;
+}
+
+bool IsFloatEqualToSigned(double floating, int64_t integer) {
+  constexpr double kInt64LowerBound = -9223372036854775808.0;
+  constexpr double kInt64UpperLimit = 9223372036854775808.0;
+  return std::isfinite(floating) && floating >= kInt64LowerBound && floating < kInt64UpperLimit &&
+         std::trunc(floating) == floating && static_cast<int64_t>(floating) == integer;
+}
+
+bool AreJsonNumbersEqual(const Json& left, const Json& right) {
+  if (left.is_number_float()) {
+    const auto floating = left.get<double>();
+    if (right.is_number_float()) {
+      return floating == right.get<double>();
+    }
+    return right.is_number_unsigned()
+               ? IsFloatEqualToUnsigned(floating, right.get<uint64_t>())
+               : IsFloatEqualToSigned(floating, right.get<int64_t>());
+  }
+  if (right.is_number_float()) {
+    return AreJsonNumbersEqual(right, left);
+  }
+  if (left.is_number_unsigned()) {
+    if (right.is_number_unsigned()) {
+      return left.get<uint64_t>() == right.get<uint64_t>();
+    }
+
+    const auto signed_value = right.get<int64_t>();
+    return signed_value >= 0 && left.get<uint64_t>() == static_cast<uint64_t>(signed_value);
+  }
+  if (right.is_number_unsigned()) {
+    return AreJsonNumbersEqual(right, left);
+  }
+
+  return left.get<int64_t>() == right.get<int64_t>();
+}
+
+bool AreJsonValuesEqual(const Json& left, const Json& right, size_t depth = 0) {
+  constexpr size_t kMaxValueNesting = 32;
+  if (depth >= kMaxValueNesting) {
+    return false;
+  }
+  if (left.is_number() && right.is_number()) {
+    return AreJsonNumbersEqual(left, right);
+  }
+  if (left.type() != right.type()) {
+    return false;
+  }
+  if (left.is_array()) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin(), [depth](const auto& lhs, const auto& rhs) {
+             return AreJsonValuesEqual(lhs, rhs, depth + 1);
+           });
+  }
+  if (left.is_object()) {
+    if (left.size() != right.size()) {
+      return false;
+    }
+    return std::ranges::all_of(left.items(), [&](const auto& item) {
+      const auto member = right.find(item.key());
+      return member != right.end() && AreJsonValuesEqual(item.value(), *member, depth + 1);
+    });
+  }
+
+  return left == right;
+}
+
+bool IsJsonValueWithinDepth(const Json& value, size_t depth = 0) {
+  constexpr size_t kMaxValueNesting = 32;
+  if (depth >= kMaxValueNesting) {
+    return !value.is_structured();
+  }
+  if (value.is_array()) {
+    return std::ranges::all_of(value, [depth](const auto& element) {
+      return IsJsonValueWithinDepth(element, depth + 1);
+    });
+  }
+  if (value.is_object()) {
+    return std::ranges::all_of(value.items(), [depth](const auto& member) {
+      return IsJsonValueWithinDepth(member.value(), depth + 1);
+    });
+  }
+
+  return true;
+}
+
 bool IsUniqueNonemptyArray(const Json& values) {
   constexpr size_t kMaxEnumValues = 64;
   if (!values.is_array() || values.empty() || values.size() > kMaxEnumValues) {
@@ -47,7 +138,12 @@ bool IsUniqueNonemptyArray(const Json& values) {
   }
 
   for (auto current = values.begin(); current != values.end(); ++current) {
-    if (std::find(values.begin(), current, *current) != current) {
+    if (!IsJsonValueWithinDepth(*current)) {
+      return false;
+    }
+    if (std::find_if(values.begin(), current, [&](const auto& prior) {
+          return AreJsonValuesEqual(prior, *current);
+        }) != current) {
       return false;
     }
   }

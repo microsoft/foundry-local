@@ -148,6 +148,16 @@ TEST(BuildToolJsonSchemaTest, SingleToolProducesSchema) {
   EXPECT_EQ(any_of[0]["properties"]["name"]["const"], "get_weather");
 }
 
+TEST(BuildToolJsonSchemaTest, DistinctLargeNumericEnumValuesProduceSchema) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"number","enum":[18446744073709551615,-1,9007199254740993,9007199254740992.0]}}}}}])";
+
+  EXPECT_NE(BuildToolJsonSchema(ctx), "{}");
+}
+
 TEST(BuildToolJsonSchemaTest, MultipleToolsProducesAnyOf) {
   ToolCallContext ctx;
   ctx.tool_output = true;
