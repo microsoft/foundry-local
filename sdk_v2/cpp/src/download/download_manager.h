@@ -29,14 +29,11 @@ class DownloadManager {
   /// @param catalog_region Explicit Azure region override for the model registry endpoint,
   ///        or "auto"/empty to use each model's detected region (falling back to the default registry region).
   /// @param max_concurrency Per-blob chunk parallelism (default 64).
-  /// @param logger Logger forwarded to the registry client for retry diagnostics.
-  /// @param disable_region_fallback When true, the registry uses a single region attempt
-  ///        with no cross-region fallback.
+  /// @param logger Logger forwarded to the registry client.
   DownloadManager(std::string cache_directory,
                   std::string_view catalog_region,
                   int max_concurrency,
-                  ILogger& logger,
-                  bool disable_region_fallback = false);
+                  ILogger& logger);
   ~DownloadManager();
 
   /// Override the model registry client (for testing).

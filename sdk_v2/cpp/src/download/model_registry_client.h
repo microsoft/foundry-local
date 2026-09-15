@@ -11,10 +11,8 @@
 namespace fl {
 
 class ILogger;
-class RegionFallback;
 
-/// Response-aware HTTP GET (status + headers + body) — lets the region-fallback
-/// engine classify region-health failures by status code.
+/// Response-aware HTTP GET (status + headers + body).
 using HttpGetResponseFn = std::function<http::HttpResponse(const std::string& url)>;
 
 /// Result from resolving a model's asset ID against the Azure model registry.
@@ -31,11 +29,9 @@ class ModelRegistryClient {
   ///               Used when ResolveModelContainer is called without a per-call region.
   /// @param logger Logger used for diagnostics. Tests that override the HTTP seam with a
   ///               synchronous fake can pass a sink logger.
-  /// @param fallback Region-fallback engine. It can be constructed as disabled when only one region should be tried.
   /// @param http_get HTTP GET implementation. The default uses `http::HttpGetWithResponse`.
   ModelRegistryClient(std::string region,
                       ILogger& logger,
-                      std::unique_ptr<RegionFallback> fallback,
                       HttpGetResponseFn http_get = {});
 
   /// Resolve a model's asset_id (URI) to a blob storage SAS URI.
@@ -51,7 +47,6 @@ class ModelRegistryClient {
 
   std::string default_region_;
   HttpGetResponseFn http_get_;
-  std::unique_ptr<RegionFallback> fallback_;
 };
 
 }  // namespace fl

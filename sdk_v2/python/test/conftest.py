@@ -10,8 +10,8 @@ CI policy mirrors the C++ integration tests (see
 - ``IS_CI`` is true when ``TF_BUILD=true`` (Azure DevOps) or
   ``GITHUB_ACTIONS=true`` (GitHub Actions), case-insensitive.
 - Tests that require a model **never download** in CI. They use a model
-  only when it is already present in the local model cache. When no
-  suitable model is cached, the test is skipped with a clear reason.
+    only when it is already present in the local model cache. When no
+    suitable model is cached, the test fails with a clear reason.
 - Locally the same rule applies: pre-cache models with the Foundry
   Local CLI before running model-dependent tests.
 
@@ -65,10 +65,10 @@ def manager():
     created_here = False
 
     if not FOUNDRY_TEST_DATA_DIR:
-        pytest.skip("FOUNDRY_TEST_DATA_DIR is required for sdk_v2 Python tests.")
+        pytest.fail("FOUNDRY_TEST_DATA_DIR is required for sdk_v2 Python tests.")
 
     if not os.path.isdir(FOUNDRY_TEST_DATA_DIR):
-        pytest.skip(f"FOUNDRY_TEST_DATA_DIR does not exist: {FOUNDRY_TEST_DATA_DIR}")
+        pytest.fail(f"FOUNDRY_TEST_DATA_DIR does not exist: {FOUNDRY_TEST_DATA_DIR}")
 
     if FoundryLocalManager.instance is None:
         config_kwargs = {
@@ -162,7 +162,7 @@ def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str
     return best
 
 
-def _model_fixture_or_skip(manager, task: str, role: str, *, load: bool, name_substr: str | None = None):
+def _model_fixture_or_fail(manager, task: str, role: str, *, load: bool, name_substr: str | None = None):
     from foundry_local_sdk.exception import FoundryLocalException
 
     model = _find_smallest_cached_model_for_task(manager, task, name_substr=name_substr)
@@ -173,12 +173,12 @@ def _model_fixture_or_skip(manager, task: str, role: str, *, load: bool, name_su
             f"In CI: pre-stage one in FOUNDRY_TEST_DATA_DIR. "
             f"Locally: run 'foundry model download <alias>' first."
         )
-        pytest.skip(reason)
+        pytest.fail(reason)
     if load:
         try:
             model.load()
         except FoundryLocalException as e:
-            pytest.skip(f"Could not load {role} model {model.alias!r}: {e}")
+            pytest.fail(f"Could not load {role} model {model.alias!r}: {e}")
     return model
 
 
@@ -193,7 +193,7 @@ _PINNED_CHAT_MODEL_ID = "qwen2.5-0.5b-instruct-generic-cpu:4"
 @pytest.fixture(scope="session")
 def chat_model(manager):
     """Pinned cached chat-completion model, loaded. Falls back to smallest cached
-    chat model when the pinned variant is not present. Skips if none cached.
+    chat model when the pinned variant is not present. Fails if none is cached.
     """
     from foundry_local_sdk.exception import FoundryLocalException
 
@@ -203,52 +203,52 @@ def chat_model(manager):
             pinned.load()
             return pinned
         except FoundryLocalException as e:
-            pytest.skip(f"Could not load pinned chat model {_PINNED_CHAT_MODEL_ID!r}: {e}")
+            pytest.fail(f"Could not load pinned chat model {_PINNED_CHAT_MODEL_ID!r}: {e}")
 
-    return _model_fixture_or_skip(manager, "chat-completion", "chat", load=True)
+    return _model_fixture_or_fail(manager, "chat-completion", "chat", load=True)
 
 
 @pytest.fixture(scope="session")
 def embedding_model(manager):
-    """Smallest cached embeddings model, loaded. Skips if none cached."""
-    return _model_fixture_or_skip(manager, "embeddings", "embedding", load=True)
+    """Smallest cached embeddings model, loaded. Fails if none is cached."""
+    return _model_fixture_or_fail(manager, "embeddings", "embedding", load=True)
 
 
 @pytest.fixture(scope="session")
 def audio_model(manager):
-    """Smallest cached ASR model, loaded. Skips if none cached.
+    """Smallest cached ASR model, loaded. Fails if none is cached.
 
     Used by tests that exercise the streaming live-audio path, which works with any
     ``automatic-speech-recognition`` model the native side can load (e.g. nemotron-style). Tests that hit the
     one-shot file transcription path should depend on :func:`whisper_audio_model` instead — today only the
     whisper decoder implements that path.
     """
-    return _model_fixture_or_skip(manager, "automatic-speech-recognition", "audio", load=True)
+    return _model_fixture_or_fail(manager, "automatic-speech-recognition", "audio", load=True)
 
 
 @pytest.fixture(scope="session")
 def whisper_audio_model(manager):
-    """Smallest cached whisper-family ASR model, loaded. Skips if none cached.
+    """Smallest cached whisper-family ASR model, loaded. Fails if none is cached.
 
     The one-shot ``AudioClient.transcribe`` path goes through ``onnx_audio_generator``, which only implements
     whisper-style decoders today — a non-whisper ASR model loads but fails at inference time with
     ``model does not support audio processing``. Constrain selection to models whose id/alias contains
     ``whisper``.
     """
-    return _model_fixture_or_skip(
+    return _model_fixture_or_fail(
         manager, "automatic-speech-recognition", "whisper-audio", load=True, name_substr="whisper"
     )
 
 
 @pytest.fixture(scope="session")
 def streaming_audio_model(manager):
-    """Smallest cached nemotron-family ASR model, loaded. Skips if none cached.
+    """Smallest cached nemotron-family ASR model, loaded. Fails if none is cached.
 
     The live-streaming PCM path (``AudioItem`` format-descriptor + ``ItemQueue``) requires a streaming-capable
     decoder. Whisper-style models load but fail when fed unbounded streamed PCM, so constrain selection to
     models whose id/alias contains ``nemotron``.
     """
-    return _model_fixture_or_skip(
+    return _model_fixture_or_fail(
         manager, "automatic-speech-recognition", "streaming-audio", load=True, name_substr="nemotron"
     )
 

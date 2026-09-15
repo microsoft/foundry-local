@@ -9,7 +9,6 @@
 #include "exception.h"
 #include "http/http_client.h"
 #include "logger.h"
-#include "util/region_fallback.h"
 #include "utils.h"
 
 namespace fl {
@@ -45,12 +44,8 @@ constexpr const char* kUserAgent = "AzureAiStudio";
 
 ModelRegistryClient::ModelRegistryClient(std::string region,
                                          ILogger& /*logger*/,
-                                         std::unique_ptr<RegionFallback> fallback,
                                          HttpGetResponseFn http_get)
-    : default_region_(std::move(region)), http_get_(std::move(http_get)), fallback_(std::move(fallback)) {
-  // Default transport: status-aware GET (non-throwing) so the fallback engine can
-  // classify region-health failures. Cross-region fallback provides resilience
-  // in place of in-region retries when enabled.
+    : default_region_(std::move(region)), http_get_(std::move(http_get)) {
   if (!http_get_) {
     http_get_ = [](const std::string& url) {
       http::HttpRequestOptions options;
@@ -70,14 +65,7 @@ ModelContainer ModelRegistryClient::ResolveModelContainer(const std::string& ass
   const std::string resolved_region = ToLower(has_per_call_region ? region : default_region_);
   const std::string encoded = UrlEncode(asset_id);
 
-  auto attempt = [&](const std::string& r) -> http::HttpResponse {
-    return http_get_(BuildBaseUrl(r) + encoded);
-  };
-
-  // A per-call region comes from explicit config or the model's detected catalog region and must take precedence.
-  // Sticky only biases calls that fall back to the client's default region.
-  const std::string start = has_per_call_region ? resolved_region : fallback_->StickyRegion().value_or(resolved_region);
-  http::HttpResponse response = fallback_->Execute(start, attempt).response;
+  http::HttpResponse response = http_get_(BuildBaseUrl(resolved_region) + encoded);
 
   if (response.status == 0 || response.status < 200 || response.status >= 300) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,

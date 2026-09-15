@@ -25,7 +25,7 @@ class TestCatalogShape:
     def test_each_model_has_required_metadata(self, manager):
         models = manager.catalog.list_models()
         if not models:
-            pytest.skip("Catalog is empty (no network or empty result).")
+            pytest.fail("Catalog is empty (no network or empty result).")
         for m in models[:5]:  # spot-check first few
             assert m.id
             assert m.alias
@@ -36,7 +36,7 @@ class TestCatalogShape:
     def test_get_model_by_alias_round_trip(self, manager):
         models = manager.catalog.list_models()
         if not models:
-            pytest.skip("Catalog is empty.")
+            pytest.fail("Catalog is empty.")
         m = models[0]
         looked_up = manager.catalog.get_model(m.alias)
         assert looked_up is not None
@@ -49,7 +49,7 @@ class TestCatalogShape:
     def test_get_model_variant_by_id_round_trip(self, manager):
         models = manager.catalog.list_models()
         if not models:
-            pytest.skip("Catalog is empty.")
+            pytest.fail("Catalog is empty.")
         m = models[0]
         variant = manager.catalog.get_model_variant(m.id)
         assert variant is not None
@@ -61,7 +61,7 @@ class TestCatalogShape:
     def test_get_model_versions_returns_versions_for_alias(self, manager):
         models = manager.catalog.list_models()
         if not models:
-            pytest.skip("Catalog is empty.")
+            pytest.fail("Catalog is empty.")
 
         alias = next((m.alias for m in models if len(m.variants) > 1), models[0].alias)
         versions = manager.catalog.get_model_versions(alias)
@@ -73,7 +73,7 @@ class TestCatalogShape:
     def test_get_model_versions_respects_max_versions_cap(self, manager):
         models = manager.catalog.list_models()
         if not models:
-            pytest.skip("Catalog is empty.")
+            pytest.fail("Catalog is empty.")
 
         alias = next((m.alias for m in models if len(m.variants) > 1), models[0].alias)
         versions = manager.catalog.get_model_versions(alias)
@@ -93,7 +93,7 @@ class TestCatalogShape:
     def test_get_latest_version_returns_model_for_multi_variant_model(self, manager):
         models = manager.catalog.list_models()
         if not models:
-            pytest.skip("Catalog is empty.")
+            pytest.fail("Catalog is empty.")
         m = models[0]
         latest = manager.catalog.get_latest_version(m)
         assert latest is not None
@@ -122,7 +122,7 @@ class TestSelectVariantMetadata:
     def test_select_variant_refreshes_metadata(self, manager):
         model = self._find_multi_variant_model(manager)
         if model is None:
-            pytest.skip("No multi-variant model in the catalog.")
+            pytest.fail("No multi-variant model in the catalog.")
 
         variants = model.variants
 

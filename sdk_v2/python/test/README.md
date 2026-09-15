@@ -92,7 +92,7 @@ poison other integration tests that share the session-scoped `manager` fixture.
 | Shared setup | `conftest.py` (auto-discovered) | `testUtils.ts` (explicit import) | `Utils.cs` (static ctor) |
 | Singleton | `@pytest.fixture(scope="session") manager` | manual singleton | `FoundryLocalManager.Instance` |
 | Teardown | `yield` + `mgr.close()` in fixture | `after()` hook | `[After(Assembly)]` |
-| Integration gating | fixture-driven `pytest.skip(...)` when no cached model | inline `this.skip()` | `[SkipUnlessIntegration]` |
+| Integration gating | fixture-driven `pytest.fail(...)` when no cached model | inline `this.skip()` | `[SkipUnlessIntegration]` |
 | Native availability | `native_api` fixture skips if `.pyd` unloadable | N/A | manager init fails → all integration skipped |
 | Expected failure | `@pytest.mark.xfail` | N/A | N/A |
 | Timeout | `@pytest.mark.timeout(30)` | `this.timeout(30000)` | `[Timeout(30000)]` |
@@ -105,7 +105,7 @@ poison other integration tests that share the session-scoped `manager` fixture.
 - Models are **never downloaded**. Tests that need a model use only what is already
   in the cache.
 - `FOUNDRY_TEST_DATA_DIR` points at the pre-staged cache assembled by the pipeline.
-- Tests that find no suitable cached model **skip** with a reason naming the task and
+- Tests that find no suitable cached model **fail** with a reason naming the task and
   pointing at the fix (`foundry model download <alias>` locally, or pre-stage in CI).
 
 This matches the C++ integration test policy in
