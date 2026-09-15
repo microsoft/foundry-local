@@ -56,7 +56,7 @@ struct CallbackHandler {
   /// Push an item into the queue and wake the worker.
   /// Called from the generator thread — returns immediately.
   void PushItem(std::unique_ptr<Item> item) {
-    if (request_.canceled) {
+    if (request_.IsCancellationRequested()) {
       return;
     }
 
@@ -94,7 +94,7 @@ struct CallbackHandler {
 
         try {
           if (fn_(data_, user_data_) != 0) {
-            request_.canceled = true;
+            request_.Cancel();
           }
         } catch (const std::exception& e) {
           logger_.Log(LogLevel::Warning,
@@ -125,7 +125,7 @@ struct CallbackHandler {
   /// cancelled (so PushItem becomes a no-op and the generator loop stops feeding work)
   /// and drops any items still queued so the destructor can join cleanly.
   void DisableAfterException() {
-    request_.canceled = true;
+    request_.Cancel();
     while (queue_->TryPop()) {
     }
   }

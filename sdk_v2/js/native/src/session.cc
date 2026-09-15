@@ -189,11 +189,10 @@ class StreamWorker : public Napi::AsyncWorker {
   }
 
   void Execute() override {
+    bool callback_installed = false;
     try {
       auto tsfn = tsfn_;
-      auto* ctx = ctx_;
-      sess_->SetStreamingCallback([tsfn, ctx](flStreamingCallbackData data) -> int {
-        (void)ctx;
+      sess_->SetStreamingCallback([tsfn](flStreamingCallbackData data) -> int {
         if (data.item_queue == nullptr) return 0;
         flItem* raw = nullptr;
         while (foundry_local::detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw)) {
@@ -214,10 +213,8 @@ class StreamWorker : public Napi::AsyncWorker {
         }
         return 0;
       });
+      callback_installed = true;
       ctx_->response = std::make_shared<foundry_local::Response>(sess_->ProcessRequest(*req_));
-      // Drop the callback so any stale shared state in the lambda is released
-      // before the Session is re-used for a follow-up request.
-      sess_->SetStreamingCallback(nullptr);
     } catch (const foundry_local::Error& e) {
       ctx_->errored = true;
       ctx_->err_code = static_cast<int>(e.Code());
@@ -229,6 +226,29 @@ class StreamWorker : public Napi::AsyncWorker {
     } catch (...) {
       ctx_->errored = true;
       ctx_->err_msg = "Unknown native exception";
+    }
+
+    if (callback_installed) {
+      try {
+        sess_->SetStreamingCallback(nullptr);
+      } catch (const foundry_local::Error& e) {
+        if (!ctx_->errored) {
+          ctx_->errored = true;
+          ctx_->err_code = static_cast<int>(e.Code());
+          ctx_->err_msg = e.what();
+          ctx_->tagged = true;
+        }
+      } catch (const std::exception& e) {
+        if (!ctx_->errored) {
+          ctx_->errored = true;
+          ctx_->err_msg = e.what();
+        }
+      } catch (...) {
+        if (!ctx_->errored) {
+          ctx_->errored = true;
+          ctx_->err_msg = "Failed to clear native streaming callback";
+        }
+      }
     }
   }
 

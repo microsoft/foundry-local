@@ -399,7 +399,7 @@ TEST_F(SessionManagerTest, CheckedOutSessionNotAffectedByCheckIn) {
 
 namespace {
 
-/// Test-only Session that blocks inside ProcessRequestImpl until its request's cancel flag is
+/// Test-only Session that blocks inside ProcessRequestImpl until its request's cancellation is
 /// observed. Lets a unit test verify SessionManager::CancelAll() propagates cancellation to every
 /// registered session without loading a model. Polls the atomic exactly like the real generation
 /// loop, with a safety deadline so a broken Cancel() fails the test instead of hanging the suite.
@@ -417,7 +417,7 @@ class BlockingCancelSession : public Session {
     in_flight_.store(true, std::memory_order_release);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!request.canceled.load(std::memory_order_relaxed)) {
+    while (!request.IsCancellationRequested()) {
       if (std::chrono::steady_clock::now() >= deadline) {
         return;  // safety net: a broken Cancel() must not hang the test suite
       }
@@ -429,6 +429,29 @@ class BlockingCancelSession : public Session {
  private:
   std::atomic<bool> in_flight_{false};
 };
+
+class CompletingSession : public Session {
+ public:
+  CompletingSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& response) override {
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+};
+
+flErrorCode ProcessAndGetCode(Session& session, const Request& request) {
+  try {
+    Response response;
+    session.ProcessRequest(request, response);
+    return FOUNDRY_LOCAL_OK;
+  } catch (const Exception& error) {
+    return error.code();
+  }
+}
 
 /// Spin until `pred` is true or the timeout elapses. Returns pred's final value.
 template <typename Pred>
@@ -463,25 +486,21 @@ TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
 
   // Drive each session's blocking ProcessRequest on its own worker so both requests are in-flight
   // (registered in active_requests_) at the same time — exercising "every registered session".
-  auto f1 = std::async(std::launch::async, [&] {
-    Response resp;
-    s1.ProcessRequest(req1, resp);
-  });
-  auto f2 = std::async(std::launch::async, [&] {
-    Response resp;
-    s2.ProcessRequest(req2, resp);
-  });
+  auto f1 = std::async(std::launch::async, [&] { return ProcessAndGetCode(s1, req1); });
+  auto f2 = std::async(std::launch::async, [&] { return ProcessAndGetCode(s2, req2); });
 
   ASSERT_TRUE(WaitUntil([&] { return s1.InFlight() && s2.InFlight(); }, std::chrono::seconds(2)))
       << "worker requests never became in-flight";
 
   mgr.CancelAll();
 
-  // CancelAll set each request's flag; the blocked workers observe it and return promptly.
+  // CancelAll canceled each request; the blocked workers observe it and return promptly.
   EXPECT_EQ(f1.wait_for(std::chrono::seconds(2)), std::future_status::ready);
   EXPECT_EQ(f2.wait_for(std::chrono::seconds(2)), std::future_status::ready);
-  EXPECT_TRUE(req1.canceled.load(std::memory_order_relaxed));
-  EXPECT_TRUE(req2.canceled.load(std::memory_order_relaxed));
+  EXPECT_EQ(f1.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_EQ(f2.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(req1.IsCancellationRequested());
+  EXPECT_TRUE(req2.IsCancellationRequested());
 }
 
 TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
@@ -505,12 +524,39 @@ TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
 
   // Now drive the request. It is admitted after Cancel() ran, so ProcessRequest must stamp it on
   // insert and the blocking loop must observe cancellation at its first poll.
-  auto f = std::async(std::launch::async, [&] {
-    Response resp;
-    s.ProcessRequest(req, resp);
-  });
+  auto f = std::async(std::launch::async, [&] { return ProcessAndGetCode(s, req); });
 
   EXPECT_EQ(f.wait_for(std::chrono::seconds(2)), std::future_status::ready)
       << "late-admitted request ran uncanceled — the session_canceled_ latch did not stamp it";
-  EXPECT_TRUE(req.canceled.load(std::memory_order_relaxed));
+  EXPECT_EQ(f.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(req.IsCancellationRequested());
+  EXPECT_FALSE(s.InFlight());
+}
+
+TEST(SessionRequestLifecycleTest, PreCanceledRequestNeverReachesBackend) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  BlockingCancelSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  ASSERT_TRUE(request.Cancel());
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_FALSE(session.InFlight());
+}
+
+TEST(SessionRequestLifecycleTest, PublishedCompletionMakesLateCancellationNoOp) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  Response response;
+
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.Cancel());
+  EXPECT_FALSE(request.IsCancellationRequested());
 }

@@ -52,6 +52,16 @@ void AppendSegments(std::vector<Segment>& destination, const std::vector<Segment
   }
 }
 
+template <typename Action>
+void ExpectOperationCancelled(Action&& action) {
+  try {
+    action();
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
+}
+
 }  // namespace
 
 TEST(ChatSessionDecisionTest, HostOutputLimitTruncatesOnlyAnUnfinishedBackendAtTheBoundary) {
@@ -204,31 +214,28 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
 
   struct TestCase {
     const char* name;
-    bool canceled;
     bool has_tool_calls;
     bool stop_sequence_matched;
     bool host_output_limit_reached;
     std::optional<flFinishReason> backend_finish_reason;
     flFinishReason expected;
   };
-
   const std::vector<TestCase> cases = {
-      {"cancellation wins", true, true, true, true, FOUNDRY_LOCAL_FINISH_NONE, FOUNDRY_LOCAL_FINISH_NONE},
-      {"tool calls win over stop", false, true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"tool calls win over stop", true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"tool calls win over host limit", false, true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"tool calls win over host limit", true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"stop wins over host limit", false, false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"stop wins over host limit", false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_STOP},
-      {"host limit produces length", false, false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"host limit produces length", false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_LENGTH},
-      {"backend reason survives natural completion", false, false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"backend reason survives natural completion", false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_STOP},
   };
 
   for (const auto& test : cases) {
     SCOPED_TRACE(test.name);
-    EXPECT_EQ(ResolveGeneratedFinishReason(test.canceled, test.has_tool_calls, test.stop_sequence_matched,
+    EXPECT_EQ(ResolveGeneratedFinishReason(test.has_tool_calls, test.stop_sequence_matched,
                                            test.host_output_limit_reached, test.backend_finish_reason,
                                            /*completion_tokens=*/32, /*max_output_tokens=*/32),
               test.expected);
@@ -697,12 +704,12 @@ TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancell
   session.SetStreamingCallback(callback_fn);
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  // Should have stopped early
+  // The canceled response is not published.
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-  // we check cancellation at the start of each loop and we don't use std::atomic to make processing cheaper
-  // so allow for a couple of extra tokens to come through after the cancellation condition is met
+  EXPECT_TRUE(response.items.empty());
+  // Cancellation is observed between token steps, so allow for a couple of extra tokens after the callback.
   EXPECT_LE(tokens_received, 6);
 
   // The appended canceled turn commits nothing; only the seed turn remains.
@@ -748,9 +755,10 @@ TEST_F(ChatSessionTest, CancellationFromTheLastQueuedCallbackPreventsCommit) {
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(session.MessageCount(), 0u);
   EXPECT_EQ(session.TurnCount(), 0u);
 }
@@ -795,9 +803,10 @@ TEST_F(ChatSessionTest, OpenAIJsonCancellationFromLastContentCallbackPublishesNo
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   ASSERT_EQ(delivered.size(), 2u);
   EXPECT_EQ(delivered[0]["choices"][0]["delta"]["role"], "assistant");
   EXPECT_FALSE(delivered[0]["choices"][0]["finish_reason"].is_string());

@@ -484,8 +484,14 @@ TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) 
 
   auto canceled = MakeRequest("Write a long essay about mathematics.", 512);
   Response canceled_response;
-  session.ProcessRequest(canceled, canceled_response);
+  try {
+    session.ProcessRequest(canceled, canceled_response);
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
   EXPECT_EQ(canceled_response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(canceled_response.items.empty());
   EXPECT_EQ(session.TurnCount(), 1u);
   EXPECT_GE(streamed_tokens, 3);
 

@@ -85,8 +85,7 @@ void FlushDecodedStream(StopStringFilter* stop_filter,
   process_segments(splitter.Flush());
 }
 
-flFinishReason ResolveGeneratedFinishReason(bool canceled,
-                                            bool has_tool_calls,
+flFinishReason ResolveGeneratedFinishReason(bool has_tool_calls,
                                             bool stop_sequence_matched,
                                             bool host_output_limit_reached,
                                             std::optional<flFinishReason> backend_finish_reason,
@@ -175,7 +174,6 @@ class ChatSession : public Session {
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
                               const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
-                              bool canceled,
                               bool stop_sequence_matched,
                               bool host_output_limit_reached,
                               Response& response,

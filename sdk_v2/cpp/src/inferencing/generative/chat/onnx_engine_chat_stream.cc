@@ -23,8 +23,6 @@ std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
     case OgaFinishReason_MaxGeneratedTokens:
     case OgaFinishReason_MaxSessionTokens:
       return FOUNDRY_LOCAL_FINISH_LENGTH;
-    case OgaFinishReason_Cancelled:
-      return FOUNDRY_LOCAL_FINISH_NONE;
     case OgaFinishReason_Failed:
       return FOUNDRY_LOCAL_FINISH_ERROR;
     default:
@@ -190,6 +188,10 @@ void OnnxEngineChatStream::ResetTurnDecoder() {
 
 std::optional<ChatTurnUsage> OnnxEngineChatStream::GetTurnUsage() const {
   const auto result = engine_.GetTurnResult(conversation_);
+  if (result.finish_reason == OgaFinishReason_Cancelled) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled");
+  }
+
   return ChatTurnUsage{
       prompt_token_count_,
       static_cast<int>(result.generated_tokens),
