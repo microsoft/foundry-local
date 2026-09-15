@@ -1104,6 +1104,32 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateHandlesWhitespace
   }
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespaceAdjacentBatchAtEveryMarkerSplit) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
+  const std::string separator = " \n\t";
+  const auto generated = candidate + separator + kValidZeroQwenCall;
+  const auto adjacent_start = candidate.size() + separator.size();
+
+  ExpectExactVisibleWithoutCalls({generated}, generated);
+  for (size_t offset = 0; offset <= std::string_view("<tool_call>").size(); ++offset) {
+    SCOPED_TRACE("offset=" + std::to_string(offset));
+    ExpectExactVisibleWithoutCalls(SplitAt(generated, adjacent_start + offset), generated);
+  }
+  ExpectExactVisibleWithoutCalls(SplitIntoBytes(generated), generated);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateFinalizesBeforePartialMarkerAtEos) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
+  const std::string visible = " \n<tool_cal";
+  auto accumulator = MakeQwenAccumulator();
+  auto outputs = RunChunks(accumulator, SplitIntoBytes(candidate + visible));
+  auto calls = CollectCalls(outputs);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls.front().name, "typed");
+  EXPECT_EQ(CollectVisible(outputs), visible);
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitRemainsExactVisibleText) {
   const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit + 1);
 

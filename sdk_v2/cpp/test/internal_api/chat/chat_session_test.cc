@@ -1686,6 +1686,8 @@ TEST_F(QwenNativeProductionIntegrationTest,
   const std::vector<std::string> malformed_schemas = {
       R"([{"type":"function","function":{"name":"legacy","parameters":{"type":1}}}])",
       R"([{"type":"function","function":{"name":"legacy","parameters":{"type":"object","properties":{"value":1}}}}])",
+      R"([{"type":"function","function":{"name":"legacy","parameters":{)"
+      R"("type":"object","properties":{"value":{"type":1}}}}}])",
       R"([{"type":"function","function":{"name":"legacy"}},{"type":"function","function":{"name":"legacy"}}])",
   };
 

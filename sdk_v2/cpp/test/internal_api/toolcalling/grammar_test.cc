@@ -52,6 +52,11 @@ TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThr
          {"parameters", {{"type", "object"}, {"properties", 1}}}}}},
       {{"function",
         {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", 1}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
          {"parameters", {{"type", "object"}, {"required", 1}}}}}},
       {{"function",
         {{"name", "fn"},
@@ -69,6 +74,16 @@ TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThr
 
     EXPECT_NO_THROW({ EXPECT_EQ(BuildToolJsonSchema(ctx), "{}"); });
   }
+}
+
+TEST(BuildToolJsonSchemaTest, DuplicateFunctionNamesReturnEmptyObject) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"duplicate"}},)"
+      R"({"type":"function","function":{"name":"duplicate","parameters":{"type":"object"}}}])";
+
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
 }
 
 TEST(BuildToolJsonSchemaTest, SingleToolProducesSchema) {

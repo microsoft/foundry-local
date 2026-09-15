@@ -35,9 +35,46 @@ bool IsValidRequiredList(const Json& required, const Json* properties) {
   return properties != nullptr || required.empty();
 }
 
+bool IsValidSchemaType(const Json& type) {
+  static const std::unordered_set<std::string_view> kTypes = {
+      "array",
+      "boolean",
+      "integer",
+      "null",
+      "number",
+      "object",
+      "string",
+  };
+  if (type.is_string()) {
+    return kTypes.contains(type.get_ref<const std::string&>());
+  }
+  if (!type.is_array() || type.empty()) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  for (const auto& entry : type) {
+    if (!entry.is_string()) {
+      return false;
+    }
+
+    const auto& name = entry.get_ref<const std::string&>();
+    if (!kTypes.contains(name) || !seen.insert(name).second) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
   constexpr size_t kMaxSchemaNesting = 32;
   if (!schema.is_object() || depth >= kMaxSchemaNesting) {
+    return false;
+  }
+
+  if (const auto* type = FindObjectMember(schema, "type");
+      type != nullptr && !IsValidSchemaType(*type)) {
     return false;
   }
 
