@@ -183,18 +183,23 @@ FunctionSchemas ParseFunctionSchemas(
   };
 
   for (const auto& tool : tools) {
-    if (!tool.is_object() || !tool.contains("type") || !tool["type"].is_string() ||
-        tool["type"].get<std::string>() != "function") {
+    if (!tool.is_object()) {
       continue;
     }
 
     const Json* function = &tool;
     if (tool.contains("function")) {
-      if (!tool["function"].is_object()) {
+      if (!tool.contains("type") || !tool["type"].is_string() ||
+          tool["type"].get_ref<const std::string&>() != "function" ||
+          !tool["function"].is_object()) {
         continue;
       }
 
       function = &tool["function"];
+    } else if (tool.contains("type") &&
+               (!tool["type"].is_string() ||
+                tool["type"].get_ref<const std::string&>() != "function")) {
+      continue;
     }
 
     if (!function->contains("name") || !(*function)["name"].is_string()) {

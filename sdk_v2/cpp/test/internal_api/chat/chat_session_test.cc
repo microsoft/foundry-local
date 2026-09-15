@@ -1600,6 +1600,33 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
+       UnnamedVersionOneDirectToolWithoutTypeProducesAFunctionCall) {
+  flToolDefinition legacy_definition{};
+  legacy_definition.version = 1;
+  legacy_definition.name = "";
+  legacy_definition.description = "";
+  legacy_definition.json_schema =
+      R"([{"name":"zero","parameters":{"type":"object","properties":{}}}])";
+
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(
+      catalog_model, *model_, *logger_, telemetry_, {},
+      OutputFactory("<tool_call>\n<function=zero>\n</function>\n</tool_call>"));
+  session.AddToolDefinition(ToolDefinitionFromC(legacy_definition));
+
+  auto request = MakeStatefulRequest("call zero");
+  Response response;
+  session.ProcessRequest(request, response);
+
+  const auto calls = Calls(response);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls.front()->name, "zero");
+  EXPECT_EQ(calls.front()->arguments, "{}");
+  EXPECT_EQ(calls.front()->kind, ToolKind::kFunction);
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
        MalformedVersionOneSerializedFunctionSchemaFallsBackToExactText) {
   constexpr std::string_view generated =
       "<tool_call>\n<function=legacy>\n<parameter=value>\ntext\n</parameter>\n"

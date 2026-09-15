@@ -213,20 +213,24 @@ void AddSerializedFunctionKinds(
       continue;
     }
 
-    const auto type = tool.find("type");
-    if (type == tool.end() || !type->is_string() ||
-        type->get<std::string>() != "function") {
-      continue;
-    }
-
     const nlohmann::json* declaration = &tool;
     const auto function = tool.find("function");
     if (function != tool.end()) {
-      if (!function->is_object()) {
+      const auto type = tool.find("type");
+      if (type == tool.end() || !type->is_string() ||
+          type->get_ref<const std::string&>() != "function" ||
+          !function->is_object()) {
         continue;
       }
 
       declaration = &*function;
+    } else {
+      const auto type = tool.find("type");
+      if (type != tool.end() &&
+          (!type->is_string() ||
+           type->get_ref<const std::string&>() != "function")) {
+        continue;
+      }
     }
 
     const auto name = declaration->find("name");

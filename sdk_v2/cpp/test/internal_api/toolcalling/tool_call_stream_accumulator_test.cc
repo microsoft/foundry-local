@@ -780,6 +780,19 @@ TEST(QwenXmlToolCallAccumulatorTest, DeclaredParameterlessSchemaShapesDecodeExac
   EXPECT_EQ(calls.front().arguments, "{}");
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, LegacyDirectNameWithoutTypeDecodes) {
+  const auto tools =
+      R"([{"name":"zero","parameters":{"type":"object","properties":{}}}])";
+  auto accumulator = MakeQwenAccumulator(tools, {{"zero", ToolKind::kFunction}});
+  auto outputs = RunChunks(accumulator, {kValidZeroQwenCall});
+  auto calls = CollectCalls(outputs);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls.front().name, "zero");
+  EXPECT_EQ(calls.front().arguments, "{}");
+  EXPECT_TRUE(CollectVisible(outputs).empty());
+}
+
 TEST(QwenXmlToolCallAccumulatorTest,
      MalformedParameterSchemasRejectEntireAdjacentBatchExactly) {
   const std::vector<nlohmann::json> malformed_parameters = {
