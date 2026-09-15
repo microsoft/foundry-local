@@ -30,7 +30,7 @@ class AzureCatalogClient : public ICatalogClient {
       std::function<http::HttpResponse(const std::string& url, const std::string& body)>;
 
   /// @param base_url Catalog endpoint. Empty means the default V2 asset-gallery endpoint.
-  /// @param filter_override Deployment-option override. Empty means `foundryLocalDevices`.
+  /// @param filter_override Deployment-option override. Empty means `Foundry Local on Devices`.
   /// @param ep_detector Reports available device and execution-provider pairs.
   /// @param logger Logger.
   /// @param http_post HTTP POST implementation. The default uses `http::HttpPostWithResponse`.

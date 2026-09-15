@@ -58,7 +58,7 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
 
 /// Construct a client for the live Azure Foundry catalog.
 /// - `ep_detector` limits results to models supported by this machine.
-/// - `filter_override` overrides the deploymentOptions filter (default `foundryLocalDevices`).
+/// - `filter_override` overrides the deploymentOptions filter (default `Foundry Local on Devices`).
 /// - `catalog_region` controls regional routing: empty/"auto" means detect it,
 ///   any other value is an explicit region.
 std::unique_ptr<ICatalogClient> MakeCatalogClient(
