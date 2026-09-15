@@ -1688,6 +1688,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
       R"([{"type":"function","function":{"name":"legacy","parameters":{"type":"object","properties":{"value":1}}}}])",
       R"([{"type":"function","function":{"name":"legacy","parameters":{)"
       R"("type":"object","properties":{"value":{"type":1}}}}}])",
+      R"([{"type":"bogus","function":{"name":"legacy","parameters":{"type":"object"}}}])",
       R"([{"type":"function","function":{"name":"legacy","parameters":{)"
       R"("type":"object","properties":{"value":{"type":"string","enum":"invalid"}}}}}])",
       R"([{"type":"function","function":{"name":"legacy","parameters":{)"

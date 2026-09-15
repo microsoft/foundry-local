@@ -321,11 +321,21 @@ bool TryReadFunctionDefinition(const Json& tool,
 
   const Json* function = &tool;
   if (const auto* nested = FindObjectMember(tool, "function")) {
+    const auto* type = FindObjectMember(tool, "type");
+    if (type == nullptr || !type->is_string() ||
+        type->get_ref<const std::string&>() != "function") {
+      return false;
+    }
     if (!nested->is_object()) {
       return false;
     }
 
     function = nested;
+  } else if (const auto* type = FindObjectMember(tool, "type");
+             type != nullptr &&
+             (!type->is_string() ||
+              type->get_ref<const std::string&>() != "function")) {
+    return false;
   }
 
   const auto* name_value = FindObjectMember(*function, "name");

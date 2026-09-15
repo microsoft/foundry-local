@@ -314,14 +314,22 @@ bool HasAdvertisedTool(const nlohmann::json& tools, const std::string& name) {
       continue;
     }
 
+    const auto type = tool.find("type");
+    const bool has_function_type =
+        type != tool.end() && type->is_string() &&
+        type->get_ref<const std::string&>() == "function";
+    const bool has_invalid_type = type != tool.end() && !has_function_type;
+
     const auto direct_name = tool.find("name");
-    if (direct_name != tool.end() && direct_name->is_string() &&
+    if (!has_invalid_type && direct_name != tool.end() &&
+        direct_name->is_string() &&
         direct_name->get_ref<const std::string&>() == name) {
       return true;
     }
 
     const auto function = tool.find("function");
-    if (function == tool.end() || !function->is_object()) {
+    if (!has_function_type || function == tool.end() ||
+        !function->is_object()) {
       continue;
     }
 

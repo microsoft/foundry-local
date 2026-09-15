@@ -43,6 +43,9 @@ TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThr
   const std::vector<nlohmann::json> malformed_tools = {
       1,
       {{"function", 1}},
+      {{"type", "bogus"},
+       {"function",
+        {{"name", "fn"}, {"parameters", {{"type", "object"}}}}}},
       {{"function", {{"name", 1}}}},
       {{"function", {{"name", "fn"}, {"description", 1}}}},
       {{"function", {{"name", "fn"}, {"parameters", 1}}}},
