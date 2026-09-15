@@ -84,7 +84,7 @@ bool AreJsonNumbersEqual(const Json& left, const Json& right) {
 
 bool AreJsonValuesEqual(const Json& left, const Json& right, size_t depth = 0) {
   constexpr size_t kMaxValueNesting = 32;
-  if (depth >= kMaxValueNesting) {
+  if (depth > kMaxValueNesting) {
     return false;
   }
   if (left.is_number() && right.is_number()) {

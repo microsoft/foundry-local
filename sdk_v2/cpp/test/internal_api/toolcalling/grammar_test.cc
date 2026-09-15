@@ -158,6 +158,30 @@ TEST(BuildToolJsonSchemaTest, DistinctLargeNumericEnumValuesProduceSchema) {
   EXPECT_NE(BuildToolJsonSchema(ctx), "{}");
 }
 
+TEST(BuildToolJsonSchemaTest, DuplicateEnumValuesAtMaximumDepthReturnEmptyObject) {
+  auto value = nlohmann::json(1);
+  for (size_t depth = 0; depth < 32; ++depth) {
+    value = nlohmann::json::array({std::move(value)});
+  }
+
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      nlohmann::json::array(
+          {{{"type", "function"},
+            {"function",
+             {{"name", "fn"},
+              {"parameters",
+               {{"type", "object"},
+                {"properties",
+                 {{"value",
+                   {{"type", "array"},
+                    {"enum", nlohmann::json::array({value, value})}}}}}}}}}}})
+          .dump();
+
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
+}
+
 TEST(BuildToolJsonSchemaTest, MultipleToolsProducesAnyOf) {
   ToolCallContext ctx;
   ctx.tool_output = true;
