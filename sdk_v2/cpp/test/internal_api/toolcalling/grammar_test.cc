@@ -158,6 +158,19 @@ TEST(BuildToolJsonSchemaTest, DistinctLargeNumericEnumValuesProduceSchema) {
   EXPECT_NE(BuildToolJsonSchema(ctx), "{}");
 }
 
+TEST(BuildToolJsonSchemaTest, RootParameterConstraintsArePreserved) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"string"}},"minProperties":1,"additionalProperties":true}}}])";
+
+  const auto schema = nlohmann::json::parse(BuildToolJsonSchema(ctx));
+  const auto& parameters = schema["items"]["anyOf"][0]["properties"]["parameters"];
+  EXPECT_EQ(parameters["minProperties"], 1);
+  EXPECT_EQ(parameters["additionalProperties"], true);
+}
+
 TEST(BuildToolJsonSchemaTest, DuplicateEnumValuesAtMaximumDepthReturnEmptyObject) {
   auto value = nlohmann::json(1);
   for (size_t depth = 0; depth < 32; ++depth) {

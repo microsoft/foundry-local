@@ -535,18 +535,11 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
     const bool has_params = parameters.is_object() && !parameters.empty();
 
     if (has_params) {
-      Json param_schema;
-      param_schema["type"] = "object";
-
-      if (parameters.contains("properties")) {
-        param_schema["properties"] = parameters["properties"];
+      Json param_schema = parameters;
+      if (!param_schema.contains("additionalProperties")) {
+        param_schema["additionalProperties"] = false;
       }
 
-      if (parameters.contains("required")) {
-        param_schema["required"] = parameters["required"];
-      }
-
-      param_schema["additionalProperties"] = false;
       properties["parameters"] = param_schema;
       required_fields.push_back("parameters");
     }
