@@ -151,10 +151,10 @@ TEST(CudaEpBootstrapperTest, PlatformSupportMatchesPublishedBundles) {
 #endif
 }
 
-TEST(CudaEpManifestTest, WindowsX64MetadataMatches20260806Bundle) {
+TEST(CudaEpManifestTest, WindowsX64MetadataMatches20260913Bundle) {
   const auto manifest = BuildCudaEpManifest(CudaEpPlatform::WindowsX64);
   ASSERT_TRUE(manifest.has_value());
-  EXPECT_EQ(manifest->bundle_id, "cuda-ep-win-x64-cuda-12.8.4-ort-1.28.0-genai-0.15.2-20260806-182620");
+  EXPECT_EQ(manifest->bundle_id, "cuda-ep-win-x64-cuda-12.8.4-ort-1.30.0-genai-0.16.0-20260913-071149");
   EXPECT_EQ(manifest->provider_relative_path, "onnxruntime_providers_cuda.dll");
   ASSERT_EQ(manifest->artifacts.size(), 3u);
 
@@ -179,19 +179,19 @@ TEST(CudaEpManifestTest, WindowsX64MetadataMatches20260806Bundle) {
           {"cudnn_ops64_9.dll", "49487537744256a3d4365c4792b03bf31130ad1faea0a13eafa219620941d837"},
       });
   ExpectArtifact(
-      manifest->artifacts[2], "cuda-ep", "cuda-ep-bins-win-x64-20260806-182620.zip",
-      "e62938987e848a0fbb3d215dfefaed40307d2446393909927ba0345eaaf3d263", 256 * kMiB,
+      manifest->artifacts[2], "cuda-ep", "cuda-ep-bins-win-x64-20260913-071149.zip",
+      "5d1c38eb4058b6898d78ae5e7881ac07dda8ef37156be232f0f63846a1405f85", 256 * kMiB,
       {
-          {"onnxruntime-genai-cuda.dll", "7894fb5efaad4a663e834f20b912b44cc383629b24ffe8bbc6382786a7326dbc"},
-          {"onnxruntime_providers_cuda.dll", "60f1aeef7ebe27f7e659cb88f597005ca5a5e75832b85dcef3eef02b9322df9a"},
+          {"onnxruntime-genai-cuda.dll", "132d28f988ee8bc1ce050e8dcdda7036ab436616d827508af8e0a4f6ec21f2da"},
+          {"onnxruntime_providers_cuda.dll", "7d014892b64d03092c01e99ae5786c6080c5239eeee30e6fb902fd2a800fa95e"},
       });
   ExpectUniqueInstalledPaths(*manifest);
 }
 
-TEST(CudaEpManifestTest, WindowsArm64MetadataMatches20260806Bundle) {
+TEST(CudaEpManifestTest, WindowsArm64MetadataMatches20260913Bundle) {
   const auto manifest = BuildCudaEpManifest(CudaEpPlatform::WindowsArm64);
   ASSERT_TRUE(manifest.has_value());
-  EXPECT_EQ(manifest->bundle_id, "cuda-ep-win-arm64-cuda-13.4.1-ort-1.28.0-genai-0.15.2-20260806-182803");
+  EXPECT_EQ(manifest->bundle_id, "cuda-ep-win-arm64-cuda-13.4.1-ort-1.30.0-genai-0.16.0-20260913-071350");
   EXPECT_EQ(manifest->provider_relative_path, "onnxruntime_providers_cuda.dll");
   ASSERT_EQ(manifest->artifacts.size(), 3u);
 
@@ -216,28 +216,28 @@ TEST(CudaEpManifestTest, WindowsArm64MetadataMatches20260806Bundle) {
           {"cudnn_ops64_9.dll", "c9e0ec0e0a4e659393e15897ed1f6e5bac677e0c0fe7e12290f0386f19477b6b"},
       });
   ExpectArtifact(
-      manifest->artifacts[2], "cuda-ep", "cuda-ep-bins-win-arm64-20260806-182803.zip",
-      "212e670c61b3292d4a7d98f16fc2cf61f7b080604e0c145e81c39ec81e7b3259", 96 * kMiB,
+      manifest->artifacts[2], "cuda-ep", "cuda-ep-bins-win-arm64-20260913-071350.zip",
+      "fc8f0a01daafedc82aa57072f023b11cf801dd94ed0a449ddc8ac4698e43e519", 96 * kMiB,
       {
-          {"onnxruntime-genai-cuda.dll", "ab61145f4bc6284286e663586f634b973072d58ced20c497c7e5259f2ef3fc08"},
-          {"onnxruntime_providers_cuda.dll", "d92ffbd23a84f91b976baed9031de267efe1dc892d85c09d0979d25b89f5d1a0"},
+          {"onnxruntime-genai-cuda.dll", "d27a02b8a83d0aaac47904d1baff4f7954aa25dcc130dba539fe9aafc53eab30"},
+          {"onnxruntime_providers_cuda.dll", "82a3887c64791fc7131a0f705130f02f456952915ecea71372236656c59a47b2"},
       });
   ExpectUniqueInstalledPaths(*manifest);
 }
 
-TEST(CudaEpManifestTest, LinuxX64MetadataMatches20260806Bundle) {
+TEST(CudaEpManifestTest, LinuxX64MetadataMatches20260913Bundle) {
   const auto manifest = BuildCudaEpManifest(CudaEpPlatform::LinuxX64);
   ASSERT_TRUE(manifest.has_value());
-  EXPECT_EQ(manifest->bundle_id, "cuda-ep-linux-x64-ort-1.28.0-genai-0.15.2-20260806-182830");
+  EXPECT_EQ(manifest->bundle_id, "cuda-ep-linux-x64-ort-1.30.0-genai-0.16.0-20260913-071417");
   EXPECT_EQ(manifest->provider_relative_path, "libonnxruntime_providers_cuda.so");
   ASSERT_EQ(manifest->artifacts.size(), 1u);
 
   ExpectArtifact(
-      manifest->artifacts[0], "cuda-ep", "cuda-ep-linux-x64-20260806-182830.zip",
-      "abf347e7234d7434105efde12a2e0609fdd1d8828167b9873f4463926f1206e6", 448 * kMiB,
+      manifest->artifacts[0], "cuda-ep", "cuda-ep-linux-x64-20260913-071417.zip",
+      "482e615e4c66b3f14a980af00e330e28fa5897a34161ec2972f75289685546be", 448 * kMiB,
       {
-          {"libonnxruntime-genai-cuda.so", "d5300fc4413d9e74bd8dfceb5233fca6fcfa1d5ddc247081365fdb5f143091e6"},
-          {"libonnxruntime_providers_cuda.so", "b88d7b7f4b2e81d3eff41663fc70f4ae9e03dee9e2301cb53dc250e5a96d7f7a"},
+          {"libonnxruntime-genai-cuda.so", "3c95bb3b92f560718482dd3638388b6fd7374fb5ba6d9d5f4c4ca22c095e7681"},
+          {"libonnxruntime_providers_cuda.so", "8589ae31ed4941e72693a6a2e9dd8b8e721c888cfd9e6ffcb26da4e6e58ce720"},
       });
   ExpectUniqueInstalledPaths(*manifest);
 }

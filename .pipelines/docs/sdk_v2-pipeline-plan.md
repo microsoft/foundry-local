@@ -284,9 +284,8 @@ accessing public package feeds directly. Pre-fetching serves two purposes:
 
 Versions are pipeline-level variables, currently:
 
-* `ortVersion`        `1.28.0`   (`Microsoft.ML.OnnxRuntime`)
-* `genaiVersion`      `0.15.2` for releases; selected ORT-Nightly version for non-release CI
-  (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
+* `ortVersion`        `1.30.0`   (`Microsoft.ML.OnnxRuntime`)
+* `genaiVersion`      `0.16.0`   (`Microsoft.ML.OnnxRuntimeGenAI.Foundry`)
 * `winmlVersion`      `2.1.70`    (`Microsoft.Windows.AI.MachineLearning`, WinML 2.x reg-free)
 
 These must be kept in sync with the cmake defaults and with
