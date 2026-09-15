@@ -38,6 +38,7 @@ class GenAIModelInstance {
   const std::string& ModelPath() const { return model_path_; }
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ExecutionProvider EP() const { return ep_; }
+  const std::string& DeviceType() const { return device_type_; }
   bool IsMultiModal() const;
 
   /// Cached tag token IDs and decoded strings for tool/reasoning detection.
@@ -87,6 +88,7 @@ class GenAIModelInstance {
   std::string model_path_;
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
+  std::string device_type_;
   std::unique_ptr<OgaModel> oga_model_;
   std::unique_ptr<Preprocessor> preprocessor_;
   std::unique_ptr<OnnxChatEngine> chat_engine_;
