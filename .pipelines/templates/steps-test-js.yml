@@ -3,6 +3,7 @@
 # The caller is responsible for placing the `js-prebuild-<rid>` artifact at
 # `prebuildArtifactDir`. We drop its contents into sdk_v2/js/prebuilds/<plat>-<arch>/
 # so the runtime addon-loader in dist/native/load.js finds it, then run vitest.
+# Model cache is pre-populated via fetch-models-from-artifacts-feed.yml.
 
 parameters:
 - name: rid
@@ -12,9 +13,6 @@ parameters:
 - name: prebuildArtifactDir
   type: string
   displayName: 'Path to the downloaded js-prebuild-<rid> artifact directory (root with prebuilds/ inside)'
-- name: testDataSharedDir
-  type: string
-  displayName: 'Path to the model cache directory used by tests'
 
 steps:
 
@@ -22,6 +20,24 @@ steps:
   displayName: 'Use Node.js 20'
   inputs:
     versionSpec: '20.x'
+
+- task: UseDotNet@2
+  displayName: 'Use .NET 10 SDK for native package restore'
+  inputs:
+    packageType: sdk
+    version: '10.0.x'
+
+- task: NuGetAuthenticate@1
+  displayName: 'Authenticate NuGet feeds'
+
+- powershell: |
+    Set-Content '$(Build.SourcesDirectory)/sdk_v2/js/.npmrc' 'registry=https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/npm/registry/'
+  displayName: 'Configure AIFoundryLocal_PublicPackages npm registry'
+
+- task: npmAuthenticate@0
+  displayName: 'Authenticate AIFoundryLocal_PublicPackages for npm'
+  inputs:
+    workingFile: '$(Build.SourcesDirectory)/sdk_v2/js/.npmrc'
 
 - ${{ if or(eq(parameters.rid, 'win-x64'), eq(parameters.rid, 'win-arm64')) }}:
   - task: PowerShell@2
@@ -96,6 +112,9 @@ steps:
       command: custom
       workingDir: '$(Build.SourcesDirectory)/sdk_v2/js'
       customCommand: 'ci --no-audit --no-fund'
+    env:
+      FOUNDRY_LOCAL_NUGET_MODE: 'dotnet'
+      FOUNDRY_LOCAL_NUGET_FEEDS: 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json'
 
   - task: PowerShell@2
     displayName: 'Build TypeScript'
@@ -120,7 +139,7 @@ steps:
         npx --no-install vitest run --reporter=verbose
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     env:
-      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+      FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
 
 - ${{ if or(eq(parameters.rid, 'linux-x64'), eq(parameters.rid, 'linux-arm64'), eq(parameters.rid, 'osx-arm64')) }}:
   - bash: |
@@ -128,6 +147,9 @@ steps:
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
       npm ci --no-audit --no-fund
     displayName: 'npm ci (runs install-native postinstall)'
+    env:
+      FOUNDRY_LOCAL_NUGET_MODE: 'dotnet'
+      FOUNDRY_LOCAL_NUGET_FEEDS: 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json'
 
   - bash: |
       set -euo pipefail
@@ -138,10 +160,7 @@ steps:
   - bash: |
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
-      echo "FOUNDRY_TEST_DATA_DIR=${FOUNDRY_TEST_DATA_DIR}"
-      test -d "${FOUNDRY_TEST_DATA_DIR}"
-      ls -la "${FOUNDRY_TEST_DATA_DIR}"
       npx --no-install vitest run --reporter=verbose
     displayName: 'Run vitest'
     env:
-      FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
+      FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'

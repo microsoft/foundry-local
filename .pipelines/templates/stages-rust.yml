@@ -42,13 +42,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-build-rust.yml
       parameters:
         rid: 'win-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
         runTests: true
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: rust_build_win_arm64
   displayName: 'Rust SDK: Build Windows ARM64 (cross)'
@@ -99,13 +98,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-build-rust.yml
       parameters:
         rid: 'linux-x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         runTests: true
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: rust_build_linux_arm64
   displayName: 'Rust SDK: Build + Test Linux ARM64'
@@ -130,13 +128,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-build-rust.yml
       parameters:
         rid: 'linux-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
         runTests: true
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: rust_build_osx_arm64
   displayName: 'Rust SDK: Build + Test macOS ARM64'
@@ -162,13 +159,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-build-rust.yml
       parameters:
         rid: 'osx-arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         runTests: true
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # ================================================================
 # Pack the platform-independent crate (rust-sdk-v2). Runs only if
@@ -220,6 +216,36 @@ stages:
             $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
           }
           Write-Host "##vso[task.prependpath]$cargoBin"
+          $env:PATH = "$cargoBin$([IO.Path]::PathSeparator)$env:PATH"
+
+          $cargoHome = if ($env:CARGO_HOME) {
+            $env:CARGO_HOME
+          } elseif ($env:HOME) {
+            Join-Path $env:HOME '.cargo'
+          } else {
+            Join-Path $env:USERPROFILE '.cargo'
+          }
+          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
+          @"
+          [source.crates-io]
+          replace-with = "AIFoundryLocal_PublicPackages"
+
+          [source.AIFoundryLocal_PublicPackages]
+          registry = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
+
+          [registries.AIFoundryLocal_PublicPackages]
+          index = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
+
+          [registry]
+          global-credential-providers = ["cargo:token"]
+          "@ | Set-Content (Join-Path $cargoHome 'config.toml')
+
+          if (-not $env:SYSTEM_ACCESSTOKEN) { throw 'System.AccessToken is required for Cargo feed authentication.' }
+          $credential = 'Basic ' + [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes("build:$($env:SYSTEM_ACCESSTOKEN)"))
+          $credential | cargo login --registry AIFoundryLocal_PublicPackages
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
     - task: PowerShell@2
       displayName: 'Set crate version from sdkVersion.txt'
       inputs:

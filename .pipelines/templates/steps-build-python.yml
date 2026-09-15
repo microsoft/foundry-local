@@ -60,6 +60,11 @@ steps:
         Write-Host "##vso[task.prependpath]$venvBin"
         Write-Host "Using system Python through build venv: $venvDir"
 
+- task: PipAuthenticate@1
+  displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+  inputs:
+    artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+
 - task: PowerShell@2
   displayName: 'Set package version from pyVersion.txt'
   inputs:
@@ -270,6 +275,7 @@ steps:
       out_dir="${{ parameters.outputDir }}"
       home_dir="$(Agent.TempDirectory)/manylinux-python-home"
       mkdir -p "$raw_dir" "$out_dir" "$home_dir"
+      : "${PIP_INDEX_URL:?PipAuthenticate did not set PIP_INDEX_URL}"
       user_id=$(id -u)
       group_id=$(id -g)
       docker version
@@ -285,6 +291,8 @@ steps:
         --env "RAW_WHEEL_DIR=$raw_dir" \
         --env "WHEEL_DIR=$out_dir" \
         --env "AUDITWHEEL_PLAT=$platform_tag" \
+        --env PIP_INDEX_URL \
+        --env PIP_NO_INPUT=1 \
         --workdir "$(Build.SourcesDirectory)/sdk_v2/python" \
         "$image" \
         bash -c '

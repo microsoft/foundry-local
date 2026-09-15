@@ -38,11 +38,14 @@ parameters:
   type: string
   default: ''
   # e.g. 'aarch64-pc-windows-msvc' for the win-arm64 cross build; '' for native.
-- name: testDataSharedDir
-  type: string
-  default: ''
 
 steps:
+
+- powershell: |
+    $feed = 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json'
+    Write-Host "##vso[task.setvariable variable=FOUNDRY_LOCAL_NUGET_FEEDS]$feed"
+    $env:FOUNDRY_LOCAL_NUGET_FEEDS = $feed
+  displayName: 'Configure Rust native package feed'
 
 # ── 1. Rust toolchain ────────────────────────────────────────────────────────
 - task: PowerShell@2
@@ -86,9 +89,38 @@ steps:
         rustup target add $cross
       }
 
+      $cargoHome = if ($env:CARGO_HOME) {
+        $env:CARGO_HOME
+      } elseif ($env:HOME) {
+        Join-Path $env:HOME '.cargo'
+      } else {
+        Join-Path $env:USERPROFILE '.cargo'
+      }
+      New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
+      @"
+      [source.crates-io]
+      replace-with = "AIFoundryLocal_PublicPackages"
+
+      [source.AIFoundryLocal_PublicPackages]
+      registry = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
+
+      [registries.AIFoundryLocal_PublicPackages]
+      index = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
+
+      [registry]
+      global-credential-providers = ["cargo:token"]
+      "@ | Set-Content (Join-Path $cargoHome 'config.toml')
+
+      if (-not $env:SYSTEM_ACCESSTOKEN) { throw 'System.AccessToken is required for Cargo feed authentication.' }
+      $credential = 'Basic ' + [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes("build:$($env:SYSTEM_ACCESSTOKEN)"))
+      $credential | cargo login --registry AIFoundryLocal_PublicPackages
+
       rustup show
       cargo --version
       rustc --version
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
 # ── 2. Assemble the native runtime directory ─────────────────────────────────
 - task: PowerShell@2
@@ -235,6 +267,7 @@ steps:
       env:
         FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
         FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
+        FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
 
     - task: PowerShell@2
       displayName: 'cargo test --tests (integration)'
@@ -251,5 +284,5 @@ steps:
       env:
         FOUNDRY_LOCAL_NATIVE_BIN_DIR: $(flNativeDir)
         FOUNDRY_LOCAL_LIB_DIR: $(flNativeDir)
-        FOUNDRY_TEST_DATA_DIR: ${{ parameters.testDataSharedDir }}
+        FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
         TF_BUILD: 'true'

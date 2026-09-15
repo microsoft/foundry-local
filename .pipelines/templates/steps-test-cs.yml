@@ -2,15 +2,12 @@
 # (FoundryLocal.Tests). The caller is responsible for:
 #   - placing the Foundry Local Runtime nupkg in `flNugetDir`
 #   - downloading the `version-info` pipeline artifact
-#   - populating the model cache directory at `testDataSharedDir`
+#   - pre-populating the model cache via fetch-models-from-artifacts-feed.yml
 
 parameters:
 - name: flNugetDir
   type: string
   displayName: 'Path to directory containing the Foundry Local Runtime .nupkg'
-- name: testDataSharedDir
-  type: string
-  displayName: 'Absolute path to the model cache directory used by tests'
 - name: additionalTestArgs
   type: string
   default: ''
@@ -103,7 +100,6 @@ steps:
       <configuration>
         <packageSources>
           <clear />
-          <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
           <add key="LocalFLRuntime" value="$flFeedDir" />
           <add key="AIFoundryLocal_PublicPackages" value="https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json" />
         </packageSources>
@@ -225,4 +221,4 @@ steps:
       }
   env:
     TF_BUILD: 'true'
-    FOUNDRY_TEST_DATA_DIR: ${{ parameters.testDataSharedDir }}
+    FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'

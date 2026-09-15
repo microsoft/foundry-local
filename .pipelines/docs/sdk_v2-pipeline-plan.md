@@ -21,10 +21,9 @@ JS is documented separately in `sdk_v2-js-pipeline-plan.md`. A standalone
 
 There is **no dedicated sdk_v2 top-level pipeline**. The sdk_v2 stage graph
 is emitted by a single coordinator template,
-`.pipelines/v2/templates/stages-sdk-v2.yml`, which is included by the
+`.pipelines/templates/stages-sdk-v2.yml`, which is included by the
 existing `.pipelines/foundry-local-packaging.yml`. sdk_v2 is built
-unconditionally on every run (there is no v2 gate); the v1 legacy stages
-are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
+unconditionally on every run.
 
 ## Supported platforms
 
@@ -54,10 +53,10 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
    ORT and GenAI native libraries are **not** bundled in the wheel; they are
    resolved at install time from public PyPI (see decision 9). The wheel
    only contains `foundry_local` plus its non-ORT runtime closure.
-4. **Test stages set `FOUNDRY_TEST_DATA_DIR`** to the checked-out
-   `test-data-shared` path for all three languages. C++ stages set it
-   directly; Python's `conftest.py` reads it; C# `Utils.cs` prefers it
-   over `appsettings.Test.json`.
+4. **Test stages set `FOUNDRY_TEST_DATA_DIR`** to the local model-cache path
+   for all three languages. C++ stages set it directly; Python's
+   `conftest.py` reads it; C# `Utils.cs` prefers it over
+   `appsettings.Test.json`.
 5. **Parameter naming.** sdk_v2 templates use `flNugetDir` (not `flcNugetDir`).
    `flc` was Foundry Local Core, which we are replacing.
 6. **Shared `compute_version` stage.** Defined inline in
@@ -129,7 +128,9 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
 ## Template layout
 
 ```
-.pipelines/v2/
+.pipelines/
+├── docker/
+├── docs/
 └── templates/
     ├── stages-sdk-v2.yml             # Coordinator: native + C# + Python + JS + Rust
     ├── stages-build-native.yml       # 5 native build stages + C++/NuGet pack stages
@@ -149,9 +150,10 @@ are gated separately via `.pipelines/v1/templates/stages-sdk-v1.yml`.
     └── steps-pack-nuget.yml          # Runs sdk_v2/cpp/nuget/pack.py
 ```
 
-The repo-shared `.pipelines/templates/checkout-steps.yml` is reused for
-`test-data-shared` (LFS) checkout via the `FoundryLocalCore-SP` Azure CLI
-service connection.
+The repo-shared `.pipelines/templates/fetch-models-from-artifacts-feed.yml`
+pre-populates the local model cache from the AIFoundryLocal public artifacts
+feed, so every test stage can point `FOUNDRY_TEST_DATA_DIR` at the same
+staged cache without a Git checkout dependency.
 
 ## Stage dependency graph
 
@@ -231,8 +233,8 @@ hand off, so:
   matrices.
 * Integration tests run with `--test-threads=1`: the native core enforces a
   single `FoundryLocalManager` per process, so tests that each create one must
-  not run concurrently. They consume the same `test-data-shared` models as the
-  C# / Python suites (`FOUNDRY_TEST_DATA_DIR`).
+  not run concurrently. They consume the same model cache as the C# / Python
+  suites (`FOUNDRY_TEST_DATA_DIR`).
 
 ## Versioning
 
@@ -268,11 +270,9 @@ Pipeline parameters allow override:
 ## Dependency versions
 
 The pipeline pins ORT / GenAI / WinML versions and downloads the NuGet
-packages from **public nuget.org** (`https://www.nuget.org/api/v2/package`)
-before invoking CMake. This matches Foundry Local Core's own
-[nuget.config](../templates/build-core-steps.yml), which maps everything
-except `Microsoft.Telemetry*` to nuget.org. Pre-fetching serves two
-purposes:
+packages through `AIFoundryLocal_PublicPackages` before invoking CMake.
+The feed provides the approved upstreams while preventing pipeline jobs from
+accessing public package feeds directly. Pre-fetching serves two purposes:
 
 1. **Version pinning** — the `KEY=PATH` pairs are passed via
    `--cmake_extra_defines` (`ORT_FETCH_URL`, `GENAI_FETCH_URL`,
@@ -297,17 +297,17 @@ a PowerShell and a bash implementation behind a `shell` parameter. The
 PowerShell build steps consume its `cmakeFetchDefines` variable; Linux
 container builds use the downloaded package paths directly.
 
-WinML downloads `Microsoft.Windows.AI.MachineLearning` directly from
-nuget.org as a single self-contained reg-free package — no transitive
-WinAppSDK Foundation resolution needed. The bash branch fails fast if
-`includeWinml=true` is ever passed — WinML is Windows-only.
+WinML downloads `Microsoft.Windows.AI.MachineLearning` through
+`AIFoundryLocal_PublicPackages` as a single self-contained reg-free package,
+so no transitive WinAppSDK Foundation resolution is needed. The bash branch
+fails fast if `includeWinml=true` is ever passed because WinML is Windows-only.
 
 ## Test data
 
-All three SDKs honor `FOUNDRY_TEST_DATA_DIR` (env var) pointing at a
-checked-out `test-data-shared` working tree. CI test stages check out
-`test-data-shared` (LFS) via `.pipelines/templates/checkout-steps.yml` and
-set the env var. SDK *build* stages do not need test-data-shared.
+All three SDKs honor `FOUNDRY_TEST_DATA_DIR` (env var) pointing at a local
+model cache directory. CI test stages fetch models via
+`.pipelines/templates/fetch-models-from-artifacts-feed.yml` and set the env
+var. SDK *build* stages do not need the model cache.
 
 Test data is fetched on every stage that runs tests:
 
@@ -361,7 +361,7 @@ Build output directories follow `build.py`'s convention:
 ## Things explicitly out of scope
 
 - No `foundry-local-runtime` standalone wheel.
-- No multi-repo `Foundry-Local`/`test-data-shared` path-juggling logic in
+- No multi-repo `Foundry-Local`/shared-cache path-juggling logic in
   the sdk_v2 templates — sdk_v2 paths are repo-relative.
 - No private Azure DevOps feed dependency for the Python wheel install
   path — ORT/GenAI come from public PyPI (decision 9).
@@ -381,11 +381,11 @@ Build output directories follow `build.py`'s convention:
 
 ## Files
 
-* Coordinator: [stages-sdk-v2.yml](templates/stages-sdk-v2.yml)
-* Native build/pack: [templates/stages-build-native.yml](templates/stages-build-native.yml)
-* C# stages: [templates/stages-cs.yml](templates/stages-cs.yml)
-* Python stages: [templates/stages-python.yml](templates/stages-python.yml)
-* Rust stages: [templates/stages-rust.yml](templates/stages-rust.yml), [templates/steps-build-rust.yml](templates/steps-build-rust.yml)
-* Pre-fetch: [templates/steps-prefetch-nuget.yml](templates/steps-prefetch-nuget.yml)
+* Coordinator: [stages-sdk-v2.yml](../templates/stages-sdk-v2.yml)
+* Native build/pack: [templates/stages-build-native.yml](../templates/stages-build-native.yml)
+* C# stages: [templates/stages-cs.yml](../templates/stages-cs.yml)
+* Python stages: [templates/stages-python.yml](../templates/stages-python.yml)
+* Rust stages: [templates/stages-rust.yml](../templates/stages-rust.yml), [templates/steps-build-rust.yml](../templates/steps-build-rust.yml)
+* Pre-fetch: [templates/steps-prefetch-nuget.yml](../templates/steps-prefetch-nuget.yml)
 * Pack tool: [sdk_v2/cpp/nuget/pack.py](../../sdk_v2/cpp/nuget/pack.py)
 * Top-level pipeline: [foundry-local-packaging.yml](../foundry-local-packaging.yml)
