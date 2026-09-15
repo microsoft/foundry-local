@@ -45,8 +45,9 @@ bool IsUniqueNonemptyArray(const Json& values) {
     return false;
   }
 
-  for (auto current = values.begin(); current != values.end(); ++current) {
-    if (std::find(values.begin(), current, *current) != current) {
+  std::unordered_set<Json> seen;
+  for (const auto& value : values) {
+    if (!seen.insert(value).second) {
       return false;
     }
   }
@@ -96,10 +97,43 @@ bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
     return false;
   }
 
-  for (const auto keyword : {"$ref", "$dynamicRef", "$defs", "definitions"}) {
-    if (schema.contains(keyword)) {
-      return false;
-    }
+  static const std::unordered_set<std::string_view> kSupportedKeywords = {
+      "$comment",
+      "additionalProperties",
+      "allOf",
+      "anyOf",
+      "const",
+      "default",
+      "deprecated",
+      "description",
+      "enum",
+      "examples",
+      "exclusiveMaximum",
+      "exclusiveMinimum",
+      "items",
+      "maximum",
+      "maxItems",
+      "maxLength",
+      "maxProperties",
+      "minimum",
+      "minItems",
+      "minLength",
+      "minProperties",
+      "multipleOf",
+      "not",
+      "oneOf",
+      "properties",
+      "readOnly",
+      "required",
+      "title",
+      "type",
+      "uniqueItems",
+      "writeOnly",
+  };
+  if (std::ranges::any_of(schema.items(), [](const auto& item) {
+        return !kSupportedKeywords.contains(item.key());
+      })) {
+    return false;
   }
 
   if (const auto* type = FindObjectMember(schema, "type");
@@ -123,13 +157,6 @@ bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
                              "maxProperties", "minProperties"}) {
     const auto* value = FindObjectMember(schema, keyword);
     if (value != nullptr && !IsNonnegativeInteger(*value)) {
-      return false;
-    }
-  }
-
-  for (const auto keyword : {"pattern", "format", "contentEncoding", "contentMediaType"}) {
-    const auto* value = FindObjectMember(schema, keyword);
-    if (value != nullptr && !value->is_string()) {
       return false;
     }
   }
@@ -159,35 +186,6 @@ bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
   if (const auto* items = FindObjectMember(schema, "items");
       items != nullptr && !IsStructurallyValidSchema(*items, depth + 1)) {
     return false;
-  }
-
-  for (const auto keyword : {"contains", "propertyNames", "if", "then", "else"}) {
-    const auto* subschema = FindObjectMember(schema, keyword);
-    if (subschema != nullptr && !IsStructurallyValidSchema(*subschema, depth + 1)) {
-      return false;
-    }
-  }
-
-  if (const auto* prefix_items = FindObjectMember(schema, "prefixItems")) {
-    if (!prefix_items->is_array() ||
-        !std::ranges::all_of(*prefix_items, [depth](const auto& subschema) {
-          return IsStructurallyValidSchema(subschema, depth + 1);
-        })) {
-      return false;
-    }
-  }
-
-  for (const auto keyword : {"patternProperties", "dependentSchemas"}) {
-    const auto* schemas = FindObjectMember(schema, keyword);
-    if (schemas == nullptr) {
-      continue;
-    }
-    if (!schemas->is_object() ||
-        !std::ranges::all_of(schemas->items(), [depth](const auto& entry) {
-          return IsStructurallyValidSchema(entry.value(), depth + 1);
-        })) {
-      return false;
-    }
   }
 
   for (const auto keyword : {"anyOf", "oneOf", "allOf"}) {

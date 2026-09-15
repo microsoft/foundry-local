@@ -1691,6 +1691,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
       R"([{"type":"function","function":{"name":"legacy","parameters":{)"
       R"("type":"object","properties":{"value":{"type":"string","enum":"invalid"}}}}}])",
       R"([{"type":"function","function":{"name":"legacy","parameters":{)"
+      R"("type":"object","properties":{"value":{"type":"string","pattern":"["}}}}}])",
+      R"([{"type":"function","function":{"name":"legacy","parameters":{)"
+      R"("type":"object","properties":{"value":{"type":"object","dependentRequired":"invalid"}}}}}])",
+      R"([{"type":"function","function":{"name":"legacy","parameters":{)"
       R"("type":"object","properties":{"value":{"$ref":"#/$defs/value"}},)"
       R"("$defs":{"value":{"type":"string"}}}}}])",
       R"([{"type":"function","function":{"name":"legacy","parameters":{)"
