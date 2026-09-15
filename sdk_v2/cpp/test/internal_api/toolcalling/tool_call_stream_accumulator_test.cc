@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -360,6 +361,66 @@ TEST(QwenXmlToolCallAccumulatorTest, RawAmpersandsRemainExactStringValues) {
   }
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, EditSourceComparisonOperatorsRemainExactStringValues) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"edit","parameters":{"type":"object","properties":{)"
+      R"("path":{"type":"string"},"old_str":{"type":"string"},"new_str":{"type":"string"}},)"
+      R"("required":["path","old_str","new_str"]}}}])";
+  const std::string new_str =
+      "if end < start:\n"
+      "    return value <= limit\n"
+      "mask = value << 1";
+  const auto generated =
+      "<tool_call>\n"
+      "<function=edit>\n"
+      "<parameter=path>\n"
+      "src/range_math.py\n"
+      "</parameter>\n"
+      "<parameter=old_str>\n"
+      "return value\n"
+      "</parameter>\n"
+      "<parameter=new_str>\n" +
+      new_str +
+      "\n</parameter>\n"
+      "</function>\n"
+      "</tool_call>";
+  auto accumulator = MakeQwenAccumulator(tools, {{"edit", ToolKind::kFunction}});
+  auto outputs = RunChunks(accumulator, {generated});
+  const auto calls = CollectCalls(outputs);
+
+  ASSERT_EQ(calls.size(), 1u);
+  const auto arguments = nlohmann::json::parse(calls.front().arguments);
+  EXPECT_EQ(arguments["path"], "src/range_math.py");
+  EXPECT_EQ(arguments["old_str"], "return value");
+  EXPECT_EQ(arguments["new_str"], new_str);
+  EXPECT_TRUE(CollectVisible(outputs).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupRemainsExactVisibleText) {
+  const std::string function_tools =
+      R"([{"type":"function","function":{"name":"edit","parameters":{"type":"object","properties":{)"
+      R"("new_str":{"type":"string"}},"required":["new_str"]}}}])";
+  const std::string custom_tools =
+      R"([{"type":"function","function":{"name":"apply_patch","parameters":{"type":"object",)"
+      R"("properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}}])";
+  const std::vector<std::tuple<std::string, std::unordered_map<std::string, ToolKind>,
+                               std::string, std::string, std::string>>
+      cases = {
+          {function_tools, {{"edit", ToolKind::kFunction}}, "edit", "new_str", "before <parameter=path> after"},
+          {custom_tools, {{"apply_patch", ToolKind::kCustom}}, "apply_patch", "input", "before <tool_call> after"},
+      };
+
+  for (const auto& [tools, kinds, function, parameter, body] : cases) {
+    const auto generated = "<tool_call>\n<function=" + function + ">\n<parameter=" + parameter +
+                           ">\n" + body + "\n</parameter>\n</function>\n</tool_call>";
+    auto accumulator = MakeQwenAccumulator(tools, kinds);
+    auto outputs = RunChunks(accumulator, {generated});
+
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << body;
+    EXPECT_EQ(CollectVisible(outputs), generated) << body;
+  }
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, InvalidSchemaValuesRejectTheExactCandidate) {
   const std::vector<std::string> generated = {
       "<tool_call>\n<function=typed>\n<parameter=text>\nok\n</parameter>\n"
@@ -422,6 +483,108 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
     EXPECT_EQ(CollectVisible(outputs), generated);
     EXPECT_TRUE(CollectCalls(outputs).empty());
   }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, CopilotGlobAnyOfDecodesOmittedStringAndArrayPaths) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"glob","parameters":{"type":"object","properties":{)"
+      R"("pattern":{"type":"string"},"paths":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]})"
+      R"(},"required":["pattern"]}}}])";
+  const std::string supported_call =
+      "<tool_call>\n"
+      "<function=glob>\n"
+      "<parameter=pattern>\n"
+      "**/range_math.py\n"
+      "</parameter>\n"
+      "</function>\n"
+      "</tool_call>";
+  auto supported_accumulator = MakeQwenAccumulator(tools, {{"glob", ToolKind::kFunction}});
+  auto supported_outputs = RunChunks(supported_accumulator, {supported_call});
+  const auto calls = CollectCalls(supported_outputs);
+
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls.front().name, "glob");
+  EXPECT_EQ(calls.front().arguments, R"({"pattern":"**/range_math.py"})");
+  EXPECT_TRUE(CollectVisible(supported_outputs).empty());
+
+  const std::vector<std::pair<std::string, nlohmann::json>> path_values = {
+      {"src", "src"},
+      {R"(["src","test"])", nlohmann::json::array({"src", "test"})},
+  };
+  for (const auto& [body, expected] : path_values) {
+    const auto generated =
+        "<tool_call>\n"
+        "<function=glob>\n"
+        "<parameter=pattern>\n"
+        "**/range_math.py\n"
+        "</parameter>\n"
+        "<parameter=paths>\n" +
+        body +
+        "\n</parameter>\n"
+        "</function>\n"
+        "</tool_call>";
+    auto accumulator = MakeQwenAccumulator(tools, {{"glob", ToolKind::kFunction}});
+    auto outputs = RunChunks(accumulator, {generated});
+    const auto decoded_calls = CollectCalls(outputs);
+
+    ASSERT_EQ(decoded_calls.size(), 1u) << body;
+    const auto arguments = nlohmann::json::parse(decoded_calls.front().arguments);
+    EXPECT_EQ(arguments["pattern"], "**/range_math.py");
+    EXPECT_EQ(arguments["paths"], expected);
+    EXPECT_TRUE(CollectVisible(outputs).empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, CopilotGlobAnyOfRejectsMalformedAndWrongUnionValues) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"glob","parameters":{"type":"object","properties":{)"
+      R"("pattern":{"type":"string"},"paths":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]})"
+      R"(},"required":["pattern"]}}}])";
+  const std::vector<std::string> invalid_values = {
+      R"({"root":"src"})",
+      R"(["src",1])",
+      R"(["src")",
+  };
+
+  for (const auto& body : invalid_values) {
+    const auto generated =
+        "<tool_call>\n"
+        "<function=glob>\n"
+        "<parameter=pattern>\n"
+        "**/range_math.py\n"
+        "</parameter>\n"
+        "<parameter=paths>\n" +
+        body +
+        "\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>";
+    auto accumulator = MakeQwenAccumulator(tools, {{"glob", ToolKind::kFunction}});
+    auto outputs = RunChunks(accumulator, {generated});
+
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << body;
+    EXPECT_EQ(CollectVisible(outputs), generated) << body;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText) {
+  const std::string tools =
+      R"([{"type":"function","function":{"name":"collect","parameters":{"type":"object","properties":{)"
+      R"("values":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}}})"
+      R"(},"required":["values"]}}}])";
+  const std::string generated =
+      "<tool_call>\n"
+      "<function=collect>\n"
+      "<parameter=values>\n"
+      "[\"src\",1]\n"
+      "</parameter>\n"
+      "</function>\n"
+      "</tool_call>";
+
+  auto accumulator = MakeQwenAccumulator(tools, {{"collect", ToolKind::kFunction}});
+  auto outputs = RunChunks(accumulator, {generated});
+  EXPECT_TRUE(CollectCalls(outputs).empty());
+  EXPECT_EQ(CollectVisible(outputs), generated);
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ProductionNormalizedCustomToolIsDecoded) {
@@ -576,12 +739,10 @@ TEST(QwenXmlToolCallAccumulatorTest, ParameterWithoutSchemaRejectsEntireAdjacent
   EXPECT_TRUE(CollectCalls(outputs).empty());
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, MalformedIncompleteAndMarkupCandidatesRemainExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExactVisibleText) {
   const std::vector<std::string> generated = {
       "<tool_call>\r\n<function=zero>\r\n</function>\r\n</tool_call>",
       "<tool_call attribute=x>\n<function=zero>\n</function>\n</tool_call>",
-      "<tool_call>\n<function=typed>\n<parameter=text>\n<!--x-->\n</parameter>\n</function>\n</tool_call>",
-      "<tool_call>\n<function=typed>\n<parameter=text>\n<nested>\n</parameter>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<parameter=text>\nprefix\n</parameter>\nsuffix\n"
       "</parameter>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n</function>\n</tool_call>",
