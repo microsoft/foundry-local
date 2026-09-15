@@ -163,11 +163,15 @@ Explore complete working examples in the [`samples/`](samples/) folder:
 
 ## 🖥️ CLI
 
-The Foundry Local CLI lets you explore models and experiment interactively.
+The Foundry Local CLI lets you explore models and experiment interactively. Download the latest release from [aka.ms/foundry-local-installer](https://aka.ms/foundry-local-installer), or use your package manager:
 
-**Install (public preview):**
+**Install options:**
 
-Download the asset for your platform from the [`cli-preview-0.10.0`](https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.10.0) GitHub release.
+- **Direct download** — Download the latest release from the [GitHub releases page](https://github.com/microsoft/Foundry-Local/releases).
+- **Windows Package Manager** — `winget install Microsoft.FoundryLocal`
+- **Homebrew** — `brew install microsoft/homebrew-foundrylocal/foundrylocal`
+
+> **Version info:** The CLI 0.11.0 public preview uses Foundry Local SDK 2.0.1. For release notes and known issues, see the [GitHub release](https://github.com/microsoft/Foundry-Local/releases).
 
 **Run a model:**
 
