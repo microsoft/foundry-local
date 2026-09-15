@@ -522,6 +522,8 @@ TEST(QwenXmlToolCallAccumulatorTest, DuplicateDeclarationsFailClosedInEitherOrde
   const std::vector<std::optional<nlohmann::json>> duplicate_shapes = {
       std::nullopt,
       nlohmann::json(nullptr),
+      nlohmann::json::object(),
+      nlohmann::json{{"type", "object"}, {"properties", nlohmann::json::object()}},
       nlohmann::json(1),
       nlohmann::json{{"type", "object"}, {"properties", 1}},
   };
@@ -1077,6 +1079,28 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateParsesAtEndOfStre
     ASSERT_EQ(calls.size(), 1u);
     EXPECT_EQ(calls.front().name, "typed");
     EXPECT_EQ(CollectVisible(outputs), " ");
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateHandlesWhitespaceBeforeIndependentOutput) {
+  const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit);
+  const std::string visible = " visible ";
+  const auto generated = candidate + visible + kValidZeroQwenCall;
+  const std::vector<std::vector<std::string>> chunkings = {
+      {generated},
+      SplitAt(generated, candidate.size()),
+      SplitIntoBytes(generated),
+  };
+
+  for (const auto& chunks : chunkings) {
+    auto accumulator = MakeQwenAccumulator();
+    auto outputs = RunChunks(accumulator, chunks);
+    auto calls = CollectCalls(outputs);
+
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_EQ(calls[0].name, "typed");
+    EXPECT_EQ(calls[1].name, "zero");
+    EXPECT_EQ(CollectVisible(outputs), visible);
   }
 }
 

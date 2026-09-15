@@ -5,7 +5,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <sstream>
+#include <unordered_set>
 
 namespace fl {
 
@@ -31,6 +33,61 @@ bool IsValidRequiredList(const Json& required, const Json* properties) {
   }
 
   return properties != nullptr || required.empty();
+}
+
+bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
+  constexpr size_t kMaxSchemaNesting = 32;
+  if (!schema.is_object() || depth >= kMaxSchemaNesting) {
+    return false;
+  }
+
+  const auto* properties = FindObjectMember(schema, "properties");
+  if (properties != nullptr) {
+    if (!properties->is_object()) {
+      return false;
+    }
+    for (const auto& property : properties->items()) {
+      if (!IsStructurallyValidSchema(property.value(), depth + 1)) {
+        return false;
+      }
+    }
+  }
+
+  if (const auto* required = FindObjectMember(schema, "required");
+      required != nullptr && !IsValidRequiredList(*required, properties)) {
+    return false;
+  }
+
+  if (const auto* items = FindObjectMember(schema, "items");
+      items != nullptr && !IsStructurallyValidSchema(*items, depth + 1)) {
+    return false;
+  }
+
+  for (const auto keyword : {"anyOf", "oneOf", "allOf"}) {
+    const auto* alternatives = FindObjectMember(schema, keyword);
+    if (alternatives == nullptr) {
+      continue;
+    }
+    if (!alternatives->is_array() || alternatives->empty() ||
+        !std::ranges::all_of(*alternatives, [depth](const auto& alternative) {
+          return IsStructurallyValidSchema(alternative, depth + 1);
+        })) {
+      return false;
+    }
+  }
+
+  if (const auto* negated = FindObjectMember(schema, "not");
+      negated != nullptr && !IsStructurallyValidSchema(*negated, depth + 1)) {
+    return false;
+  }
+
+  if (const auto* additional = FindObjectMember(schema, "additionalProperties");
+      additional != nullptr && !additional->is_boolean() &&
+      !IsStructurallyValidSchema(*additional, depth + 1)) {
+    return false;
+  }
+
+  return true;
 }
 
 bool TryReadFunctionDefinition(const Json& tool,
@@ -84,13 +141,7 @@ bool TryReadFunctionDefinition(const Json& tool,
     return false;
   }
 
-  const auto* properties = FindObjectMember(*parameters_value, "properties");
-  if (properties != nullptr && !properties->is_object()) {
-    return false;
-  }
-
-  if (const auto* required = FindObjectMember(*parameters_value, "required");
-      required != nullptr && !IsValidRequiredList(*required, properties)) {
+  if (!IsStructurallyValidSchema(*parameters_value)) {
     return false;
   }
 
@@ -207,6 +258,7 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
 
   // Build anyOf schemas — one entry per tool
   Json schemas = Json::array();
+  std::unordered_set<std::string> names;
 
   for (const auto& tool : tools) {
     // Support both OpenAI-function style and direct-name style for tool definitions.
@@ -244,6 +296,9 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
     std::string description;
     Json parameters;
     if (!TryReadFunctionDefinition(tool, name, description, parameters)) {
+      return "{}";
+    }
+    if (!names.insert(name).second) {
       return "{}";
     }
 

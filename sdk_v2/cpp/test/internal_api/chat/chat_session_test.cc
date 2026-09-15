@@ -1683,48 +1683,55 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
 TEST_F(QwenNativeProductionIntegrationTest,
        RequiredOrForcedMalformedVersionOneSchemaIsRejectedBeforeGeneration) {
-  flToolDefinition legacy_definition{};
-  legacy_definition.version = 1;
-  legacy_definition.name = "";
-  legacy_definition.description = "";
-  legacy_definition.json_schema =
-      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":1}}}])";
+  const std::vector<std::string> malformed_schemas = {
+      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":1}}}])",
+      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":"object","properties":{"value":1}}}}])",
+      R"([{"type":"function","function":{"name":"legacy"}},{"type":"function","function":{"name":"legacy"}}])",
+  };
 
-  for (const bool forced : {false, true}) {
-    SCOPED_TRACE(forced ? "forced" : "required");
-    bool generator_created = false;
-    TextChatGeneratorFactory factory =
-        [&](const auto&, const auto&, auto&, const ToolCallContext&, bool) {
-          generator_created = true;
-          return std::make_unique<FixedOutputGenerator>(
-              "ordinary text", BackendTerminationCause::kNaturalEnd,
-              /*prompt_opens_reasoning=*/false);
-        };
-    auto catalog_model = MakeCatalogModel();
-    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
-                        std::move(factory));
-    session.AddToolDefinition(ToolDefinitionFromC(legacy_definition));
+  for (const auto& schema : malformed_schemas) {
+    for (const bool forced : {false, true}) {
+      SCOPED_TRACE((forced ? "forced: " : "required: ") + schema);
+      flToolDefinition legacy_definition{};
+      legacy_definition.version = 1;
+      legacy_definition.name = "";
+      legacy_definition.description = "";
+      legacy_definition.json_schema = schema.c_str();
 
-    auto request = MakeStatefulRequest("call legacy");
-    if (forced) {
-      request.forced_tool_choice =
-          ForcedToolChoice{"legacy", ToolKind::kFunction};
-    } else {
-      request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "required");
+      bool generator_created = false;
+      TextChatGeneratorFactory factory =
+          [&](const auto&, const auto&, auto&, const ToolCallContext&, bool) {
+            generator_created = true;
+            return std::make_unique<FixedOutputGenerator>(
+                "ordinary text", BackendTerminationCause::kNaturalEnd,
+                /*prompt_opens_reasoning=*/false);
+          };
+      auto catalog_model = MakeCatalogModel();
+      ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                          std::move(factory));
+      session.AddToolDefinition(ToolDefinitionFromC(legacy_definition));
+
+      auto request = MakeStatefulRequest("call legacy");
+      if (forced) {
+        request.forced_tool_choice =
+            ForcedToolChoice{"legacy", ToolKind::kFunction};
+      } else {
+        request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "required");
+      }
+
+      Response response;
+      try {
+        session.ProcessRequest(request, response);
+        FAIL() << "expected malformed tool-only output to be rejected";
+      } catch (const fl::Exception& ex) {
+        EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+        EXPECT_NE(std::string(ex.what()).find("valid tool definitions"),
+                  std::string::npos)
+            << ex.what();
+      }
+
+      EXPECT_FALSE(generator_created);
     }
-
-    Response response;
-    try {
-      session.ProcessRequest(request, response);
-      FAIL() << "expected malformed tool-only output to be rejected";
-    } catch (const fl::Exception& ex) {
-      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-      EXPECT_NE(std::string(ex.what()).find("valid tool definitions"),
-                std::string::npos)
-          << ex.what();
-    }
-
-    EXPECT_FALSE(generator_created);
   }
 }
 

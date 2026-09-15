@@ -147,6 +147,12 @@ class ToolCallStreamAccumulator {
     kResolved,
   };
 
+  enum class ExactLimitLookahead {
+    kNeedMore,
+    kFinalize,
+    kOversized,
+  };
+
   struct MarkerMatch {
     MarkerKind kind = MarkerKind::kNone;
     size_t position = std::string::npos;
@@ -256,34 +262,34 @@ class ToolCallStreamAccumulator {
       }
 
       if (inside_tool_call_) {
-        // A candidate ending exactly at the limit needs one byte to distinguish an adjacent batch member from
-        // ordinary following text. No other state may exceed the payload limit.
-        const auto capacity =
-            selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd
-                ? kSelectedPayloadBufferLimit + 1
-                : kSelectedPayloadBufferLimit;
-        const auto available = capacity - tool_call_buffer_.size();
+        const auto available = kSelectedPayloadBufferLimit - tool_call_buffer_.size();
         const auto appended = std::min(available, buffer_.size());
         tool_call_buffer_.append(buffer_, 0, appended);
         buffer_.erase(0, appended);
 
-        const bool has_decision_point = AdvanceSelectedPayloadBoundaryScan();
+        bool has_decision_point = AdvanceSelectedPayloadBoundaryScan();
+        bool finalize_exact_limit = false;
+        if (!has_decision_point &&
+            tool_call_buffer_.size() == kSelectedPayloadBufferLimit &&
+            selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd) {
+          switch (ResolveExactLimitLookahead(flushing)) {
+            case ExactLimitLookahead::kNeedMore:
+              return;
+            case ExactLimitLookahead::kFinalize:
+              has_decision_point = true;
+              finalize_exact_limit = true;
+              break;
+            case ExactLimitLookahead::kOversized:
+              RejectOversizedSelectedPayload(out, flushing);
+              if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
+                return;
+              }
+              continue;
+          }
+        }
+
         if (!flushing && !has_decision_point) {
           if (tool_call_buffer_.size() < kSelectedPayloadBufferLimit) {
-            return;
-          }
-
-          if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd &&
-              tool_call_buffer_.size() == kSelectedPayloadBufferLimit) {
-            if (buffer_.empty()) {
-              return;
-            }
-
-            continue;
-          }
-
-          if (selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kAfterEnd &&
-              tool_call_buffer_.size() == kSelectedPayloadBufferLimit + 1 && buffer_.empty()) {
             return;
           }
 
@@ -295,7 +301,7 @@ class ToolCallStreamAccumulator {
           continue;
         }
 
-        auto result = payload_parser_(tool_call_buffer_, flushing);
+        auto result = payload_parser_(tool_call_buffer_, flushing || finalize_exact_limit);
         if (result.disposition == ToolCallPayloadDisposition::kNeedMore) {
           if (flushing) {
             EmitVisible(out, std::move(tool_call_buffer_));
@@ -411,6 +417,34 @@ class ToolCallStreamAccumulator {
     return selected_payload_boundary_state_ == SelectedPayloadBoundaryState::kResolved;
   }
 
+  ExactLimitLookahead ResolveExactLimitLookahead(bool flushing) {
+    while (selected_payload_lookahead_position_ < buffer_.size() &&
+           std::string_view(" \t\r\n").find(buffer_[selected_payload_lookahead_position_]) !=
+               std::string_view::npos) {
+      ++selected_payload_lookahead_position_;
+    }
+
+    if (selected_payload_lookahead_position_ == buffer_.size()) {
+      if (flushing) {
+        return ExactLimitLookahead::kFinalize;
+      }
+
+      return buffer_.size() <= kSelectedPayloadBufferLimit
+                 ? ExactLimitLookahead::kNeedMore
+                 : ExactLimitLookahead::kOversized;
+    }
+
+    const auto remaining = std::string_view(buffer_).substr(selected_payload_lookahead_position_);
+    if (remaining.starts_with(start_marker_)) {
+      return ExactLimitLookahead::kOversized;
+    }
+    if (!flushing && start_marker_.starts_with(remaining)) {
+      return ExactLimitLookahead::kNeedMore;
+    }
+
+    return ExactLimitLookahead::kFinalize;
+  }
+
   void RejectOversizedSelectedPayload(Output& out, bool flushing) {
     const auto hold = LongestSuffixThatIsPrefixOf(tool_call_buffer_, end_marker_);
     const auto safe = tool_call_buffer_.size() - hold;
@@ -426,6 +460,7 @@ class ToolCallStreamAccumulator {
     selected_payload_boundary_state_ = SelectedPayloadBoundaryState::kSearchingForEnd;
     selected_payload_scan_position_ = start_marker_.size();
     selected_payload_start_match_size_ = 0;
+    selected_payload_lookahead_position_ = 0;
   }
 
   bool EmitParsedBlock(Output& out, const std::string& block) const {
@@ -687,6 +722,7 @@ class ToolCallStreamAccumulator {
       SelectedPayloadBoundaryState::kSearchingForEnd;
   size_t selected_payload_scan_position_ = 0;
   size_t selected_payload_start_match_size_ = 0;
+  size_t selected_payload_lookahead_position_ = 0;
 };
 
 }  // namespace fl
