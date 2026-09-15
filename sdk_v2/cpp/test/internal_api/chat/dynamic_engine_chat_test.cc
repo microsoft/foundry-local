@@ -467,6 +467,23 @@ TEST_F(DynamicEngineChatTest, LateCancelAfterCompletedConversationRemovalIsNoOp)
   EXPECT_EQ(result_after_cancel.finish_reason, result.finish_reason);
 }
 
+TEST_F(DynamicEngineChatTest, BackendCancellationIsNotAnApiErrorByItself) {
+  SearchOptions options;
+  options.max_output_tokens = 512;
+  options.temperature = 0.0f;
+  ToolCallContext tool_context;
+  std::vector<TranscriptMessage> messages = {
+      {FOUNDRY_LOCAL_ROLE_USER, "Write a long essay about mathematics."}};
+  auto stream = OnnxEngineChatStream::Create(messages, options, ModelInstance(), tool_context);
+
+  stream->GenerateNextToken();
+  stream->Cancel();
+
+  const auto usage = stream->GetTurnUsage();
+  ASSERT_TRUE(usage.has_value());
+  EXPECT_FALSE(usage->finish_reason.has_value());
+}
+
 TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
 
