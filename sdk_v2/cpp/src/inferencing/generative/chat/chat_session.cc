@@ -528,8 +528,8 @@ ToolCallStreamAccumulator::Output FlushToolOutput(
       return structured_accumulator.Flush();
     }
 
-    return natural_end ? structured_accumulator.FinalizeQwenPayload()
-                       : structured_accumulator.RejectPendingQwenPayload();
+    return natural_end ? structured_accumulator.Flush()
+                       : structured_accumulator.RejectPendingSelectedPayload();
   }
 
   auto raw_output = natural_end ? raw_detector->FinalizeNatural() : raw_detector->Abort();
@@ -537,9 +537,9 @@ ToolCallStreamAccumulator::Output FlushToolOutput(
   if (!structured_accumulator.HasPayloadParser()) {
     AppendToolOutput(output, structured_accumulator.Flush());
   } else if (natural_end) {
-    AppendToolOutput(output, structured_accumulator.FinalizeQwenPayload());
+    AppendToolOutput(output, structured_accumulator.Flush());
   } else {
-    AppendToolOutput(output, structured_accumulator.RejectPendingQwenPayload());
+    AppendToolOutput(output, structured_accumulator.RejectPendingSelectedPayload());
   }
   return output;
 }
@@ -1164,7 +1164,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         }
 
         if (tool_accumulator.HasPayloadParser()) {
-          emit_tool_output(tool_accumulator.RejectPendingQwenPayload());
+          emit_tool_output(tool_accumulator.RejectPendingSelectedPayload());
         } else if (!tool_accumulator.InsideToolCall()) {
           emit_tool_output(tool_accumulator.Flush());
         }
@@ -1484,7 +1484,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
         }
 
         if (tool_accumulator.HasPayloadParser()) {
-          process_tool_output(tool_accumulator.RejectPendingQwenPayload());
+          process_tool_output(tool_accumulator.RejectPendingSelectedPayload());
         } else if (!tool_accumulator.InsideToolCall()) {
           process_tool_output(tool_accumulator.Flush());
         }

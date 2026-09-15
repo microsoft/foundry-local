@@ -98,6 +98,20 @@ std::optional<std::string> GetSupportedType(const Json& schema) {
   return type;
 }
 
+bool IsSupportedAnnotation(std::string_view keyword) {
+  static const std::unordered_set<std::string_view> kSupportedAnnotations = {
+      "$comment",
+      "default",
+      "deprecated",
+      "description",
+      "examples",
+      "readOnly",
+      "title",
+      "writeOnly",
+  };
+  return kSupportedAnnotations.contains(keyword);
+}
+
 bool IsSupportedParameterSchema(const Json& schema) {
   if (!schema.is_object()) {
     return false;
@@ -105,7 +119,10 @@ bool IsSupportedParameterSchema(const Json& schema) {
 
   if (schema.contains("anyOf")) {
     if (schema.contains("oneOf") || schema.contains("allOf") || schema.contains("not") ||
-        schema.contains("if") || !schema["anyOf"].is_array() || schema["anyOf"].empty()) {
+        schema.contains("if") || !schema["anyOf"].is_array() || schema["anyOf"].empty() ||
+        std::ranges::any_of(schema.items(), [](const auto& item) {
+          return item.key() != "anyOf" && !IsSupportedAnnotation(item.key());
+        })) {
       return false;
     }
 
@@ -120,8 +137,15 @@ bool IsSupportedParameterSchema(const Json& schema) {
     return false;
   }
 
+  if (std::ranges::any_of(schema.items(), [&](const auto& item) {
+        return item.key() != "type" && !IsSupportedAnnotation(item.key()) &&
+               !(*type == "array" && item.key() == "items");
+      })) {
+    return false;
+  }
+
   return *type != "array" || !schema.contains("items") ||
-         (!schema["items"].contains("anyOf") && IsSupportedParameterSchema(schema["items"]));
+         IsSupportedParameterSchema(schema["items"]);
 }
 
 FunctionSchemas ParseFunctionSchemas(

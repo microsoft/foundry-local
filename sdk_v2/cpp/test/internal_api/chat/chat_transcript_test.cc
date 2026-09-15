@@ -218,16 +218,6 @@ TEST(ChatTemplateProjectionTest, PositionalProjectionLeavesSingleCallGroupsInArr
   EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
 }
 
-TEST(ChatTemplateProjectionTest, NonPositionalRenderingExactlyMatchesCanonicalProjection) {
-  const std::vector<TranscriptMessage> messages = {
-      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
-      TranscriptMessage::ToolResult("call_second", "SECOND_SENTINEL"),
-      TranscriptMessage::ToolResult("call_first", "FIRST_SENTINEL")};
-
-  EXPECT_EQ(chat_internal::BuildChatMessagesJsonForModel(messages, /*positional_tool_results=*/false),
-            BuildChatMessagesJson(messages));
-}
-
 TEST(ChatTemplateProjectionTest, ReasoningIsNotProjectedEvenAlongsideToolCalls) {
   // Reasoning is the model's private scratchpad. A conversation rebuilt from storage cannot reproduce it, so
   // projecting it here would make a live session and a rebuilt one send different prompts. It stays on the

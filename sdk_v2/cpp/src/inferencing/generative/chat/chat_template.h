@@ -57,11 +57,6 @@ std::vector<TranscriptMessage> ProjectPositionalToolResults(const std::vector<Tr
 PreparedChatMessages PrepareChatMessages(std::vector<TranscriptMessage> messages,
                                          bool positional_tool_results);
 
-/// Select the model-capability-specific projection before rendering. The false branch is the canonical projection
-/// verbatim so models whose templates preserve result IDs remain byte-for-byte unchanged.
-std::string BuildChatMessagesJsonForModel(const std::vector<TranscriptMessage>& messages,
-                                          bool positional_tool_results);
-
 }  // namespace chat_internal
 
 /// Render a MessageItem's content as a plain string suitable for the chat template.

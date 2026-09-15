@@ -103,13 +103,9 @@ class ToolCallStreamAccumulator {
     return out;
   }
 
-  Output FinalizeQwenPayload() {
-    return Flush();
-  }
-
   /// Reject a pending request-selected payload without parsing it. This is intentionally separate from `Flush()`:
-  /// default JSON recovery keeps its established terminal semantics, while an interrupted Qwen batch is ambiguous.
-  Output RejectPendingQwenPayload() {
+  /// default JSON recovery keeps its established terminal semantics, while an interrupted selected batch is ambiguous.
+  Output RejectPendingSelectedPayload() {
     Output out;
     if (!payload_parser_) {
       return out;

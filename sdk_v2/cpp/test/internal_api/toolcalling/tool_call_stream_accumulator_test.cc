@@ -192,7 +192,7 @@ TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationPreservesCompletePend
   auto acc = MakeQwenAccumulator();
 
   EXPECT_TRUE(acc.Push(kValidTypedQwenCall).events.empty());
-  auto output = acc.RejectPendingQwenPayload();
+  auto output = acc.RejectPendingSelectedPayload();
   std::vector<ToolCallStreamAccumulator::Output> outputs;
   outputs.push_back(std::move(output));
 
@@ -204,7 +204,7 @@ TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationPreservesCompletePend
 TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationKeepsAlreadyAdmittedCallTerminal) {
   auto acc = MakeQwenAccumulator();
   auto admitted = acc.Push(kValidTypedQwenCall + "tail");
-  auto interrupted = acc.RejectPendingQwenPayload();
+  auto interrupted = acc.RejectPendingSelectedPayload();
   std::vector<ToolCallStreamAccumulator::Output> outputs;
   outputs.push_back(std::move(admitted));
   outputs.push_back(std::move(interrupted));
@@ -473,6 +473,11 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":["string","null"]}}}}}])",
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"oneOf":[{"type":"string"},{"type":"null"}]}}}}}])",
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"date"}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"string","enum":["allowed"]}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"array","items":{"type":"string"},"maxItems":1}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"array","items":{"type":"string","enum":["allowed"]}}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"object","properties":1}}}}}])",
+      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{"value":{"type":"object","properties":{"nested":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}}}}}])",
   };
   const std::string generated =
       "<tool_call>\n<function=bad>\n<parameter=value>\ntext\n</parameter>\n</function>\n</tool_call>";

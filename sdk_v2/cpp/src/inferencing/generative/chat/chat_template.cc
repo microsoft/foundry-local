@@ -207,15 +207,6 @@ std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages
   return messages_json.dump();
 }
 
-std::string chat_internal::BuildChatMessagesJsonForModel(const std::vector<TranscriptMessage>& messages,
-                                                         bool positional_tool_results) {
-  if (!positional_tool_results) {
-    return BuildChatMessagesJson(messages);
-  }
-
-  return BuildChatMessagesJson(ProjectPositionalToolResults(messages));
-}
-
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json) {
