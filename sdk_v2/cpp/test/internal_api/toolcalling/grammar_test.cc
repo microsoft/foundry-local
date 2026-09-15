@@ -64,6 +64,23 @@ TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThr
           {{"type", "object"},
            {"properties", nlohmann::json::object()},
            {"required", nlohmann::json::array({"missing"})}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}, {"enum", "not-an-array"}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"$ref", "#/$defs/value"}}}}},
+           {"$defs", {{"value", {{"type", "string"}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}}}}},
+           {"required", nlohmann::json::array({"value", "value"})}}}}}},
   };
 
   for (const auto& malformed : malformed_tools) {

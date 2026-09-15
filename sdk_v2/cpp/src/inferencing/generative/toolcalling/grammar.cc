@@ -25,14 +25,37 @@ bool IsValidRequiredList(const Json& required, const Json* properties) {
     return false;
   }
 
+  std::unordered_set<std::string_view> seen;
   for (const auto& name : required) {
-    if (!name.is_string() ||
-        (properties != nullptr && !properties->contains(name.get_ref<const std::string&>()))) {
+    if (!name.is_string()) {
+      return false;
+    }
+
+    const auto& value = name.get_ref<const std::string&>();
+    if (!seen.insert(value).second || (properties != nullptr && !properties->contains(value))) {
       return false;
     }
   }
 
   return properties != nullptr || required.empty();
+}
+
+bool IsUniqueNonemptyArray(const Json& values) {
+  if (!values.is_array() || values.empty()) {
+    return false;
+  }
+
+  for (auto current = values.begin(); current != values.end(); ++current) {
+    if (std::find(values.begin(), current, *current) != current) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsNonnegativeInteger(const Json& value) {
+  return value.is_number_unsigned() || (value.is_number_integer() && value.get<int64_t>() >= 0);
 }
 
 bool IsValidSchemaType(const Json& type) {
@@ -73,8 +96,46 @@ bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
     return false;
   }
 
+  for (const auto keyword : {"$ref", "$dynamicRef", "$defs", "definitions"}) {
+    if (schema.contains(keyword)) {
+      return false;
+    }
+  }
+
   if (const auto* type = FindObjectMember(schema, "type");
       type != nullptr && !IsValidSchemaType(*type)) {
+    return false;
+  }
+
+  if (const auto* values = FindObjectMember(schema, "enum");
+      values != nullptr && !IsUniqueNonemptyArray(*values)) {
+    return false;
+  }
+
+  for (const auto keyword : {"multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && (!value->is_number() || (keyword == std::string_view("multipleOf") && *value <= 0))) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"maxLength", "minLength", "maxItems", "minItems", "maxContains", "minContains",
+                             "maxProperties", "minProperties"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && !IsNonnegativeInteger(*value)) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"pattern", "format", "contentEncoding", "contentMediaType"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && !value->is_string()) {
+      return false;
+    }
+  }
+
+  if (const auto* unique_items = FindObjectMember(schema, "uniqueItems");
+      unique_items != nullptr && !unique_items->is_boolean()) {
     return false;
   }
 
@@ -98,6 +159,35 @@ bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
   if (const auto* items = FindObjectMember(schema, "items");
       items != nullptr && !IsStructurallyValidSchema(*items, depth + 1)) {
     return false;
+  }
+
+  for (const auto keyword : {"contains", "propertyNames", "if", "then", "else"}) {
+    const auto* subschema = FindObjectMember(schema, keyword);
+    if (subschema != nullptr && !IsStructurallyValidSchema(*subschema, depth + 1)) {
+      return false;
+    }
+  }
+
+  if (const auto* prefix_items = FindObjectMember(schema, "prefixItems")) {
+    if (!prefix_items->is_array() ||
+        !std::ranges::all_of(*prefix_items, [depth](const auto& subschema) {
+          return IsStructurallyValidSchema(subschema, depth + 1);
+        })) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"patternProperties", "dependentSchemas"}) {
+    const auto* schemas = FindObjectMember(schema, keyword);
+    if (schemas == nullptr) {
+      continue;
+    }
+    if (!schemas->is_object() ||
+        !std::ranges::all_of(schemas->items(), [depth](const auto& entry) {
+          return IsStructurallyValidSchema(entry.value(), depth + 1);
+        })) {
+      return false;
+    }
   }
 
   for (const auto keyword : {"anyOf", "oneOf", "allOf"}) {
