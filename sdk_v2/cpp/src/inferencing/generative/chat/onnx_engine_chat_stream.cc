@@ -83,7 +83,7 @@ OnnxEngineChatStream::OnnxEngineChatStream(
 
 OnnxEngineChatStream::~OnnxEngineChatStream() {
   try {
-    engine_.Close(conversation_);
+    Close();
   } catch (...) {
   }
 }
@@ -153,6 +153,15 @@ int OnnxEngineChatStream::PromptTokenCount() const {
 void OnnxEngineChatStream::Cancel() {
   cancelled_ = true;
   engine_.Cancel(conversation_);
+}
+
+void OnnxEngineChatStream::Close() {
+  if (closed_) {
+    return;
+  }
+
+  engine_.Close(conversation_);
+  closed_ = true;
 }
 
 int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,

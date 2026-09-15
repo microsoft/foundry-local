@@ -99,9 +99,10 @@ const std::unordered_map<std::string, ToolKind> kQwenToolKinds = {
 
 ToolCallStreamAccumulator MakeQwenAccumulator(
     const std::string& tools = kQwenTools,
-    const std::unordered_map<std::string, ToolKind>& tool_kinds = kQwenToolKinds) {
+    const std::unordered_map<std::string, ToolKind>& tool_kinds = kQwenToolKinds,
+    bool recovery_aware = false) {
   return ToolCallStreamAccumulator("<tool_call>", "</tool_call>", tools, "",
-                                   CreateQwenXmlToolCallPayloadParser(tools, tool_kinds));
+                                   CreateQwenXmlToolCallPayloadParser(tools, tool_kinds, recovery_aware));
 }
 
 std::string MakeOversizedQwenCall() {
@@ -161,6 +162,10 @@ AccumulatedOutput RunQwen(
   auto outputs = RunChunks(accumulator, chunks);
   auto visible = CollectVisible(outputs);
   return {std::move(visible), CollectCalls(outputs)};
+}
+
+bool AnyMalformed(const std::vector<ToolCallStreamAccumulator::Output>& outputs) {
+  return std::ranges::any_of(outputs, [](const auto& output) { return output.malformed; });
 }
 
 void ExpectExactVisibleWithoutCalls(const std::vector<std::string>& chunks,
@@ -904,6 +909,81 @@ TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExact
     auto output = RunQwen({candidate});
     EXPECT_EQ(output.visible, candidate);
     EXPECT_TRUE(output.calls.empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareQualifiedStructuralFailuresAreSuppressed) {
+  const std::vector<std::string> generated = {
+      "<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n</function>\n</tool_call>",
+      "<tool_call>\n<function=typed>\n<parameter=text>\ntruncated",
+  };
+
+  for (const auto& candidate : generated) {
+    auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
+    auto outputs = RunChunks(accumulator, {candidate});
+
+    EXPECT_TRUE(AnyMalformed(outputs)) << candidate;
+    EXPECT_TRUE(CollectVisible(outputs).empty()) << candidate;
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareOrdinaryRejectionsRemainExactVisibleText) {
+  const std::vector<std::string> generated = {
+      "<tool_call>\n<function=missing>\n</function>\n</tool_call>",
+      "<tool_call>\n<function=typed>\n</function>\n</tool_call>",
+      "<tool_call>\n<function=typed>\n<parameter=text>\nok\n</parameter>\n"
+      "<parameter=unknown>\nvalue\n</parameter>\n</function>\n</tool_call>",
+      "<tool_call>\n<function=typed>\n<parameter=text>\nok\n</parameter>\n"
+      "<parameter=integer>\n1.5\n</parameter>\n</function>\n</tool_call>",
+  };
+
+  for (const auto& candidate : generated) {
+    auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
+    auto outputs = RunChunks(accumulator, {candidate});
+
+    EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
+    EXPECT_EQ(CollectVisible(outputs), candidate);
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareValidCallThenMalformedSiblingRejectsAtomicBatch) {
+  const auto generated =
+      kValidZeroQwenCall +
+      "\n<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n</function>\n</tool_call>";
+  auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
+  auto outputs = RunChunks(accumulator, {generated});
+
+  EXPECT_FALSE(AnyMalformed(outputs));
+  EXPECT_EQ(CollectVisible(outputs), generated);
+  EXPECT_TRUE(CollectCalls(outputs).empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareVisiblePrefixPolicyIsInvariantAcrossEverySplit) {
+  const std::string malformed =
+      "<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n</function>\n</tool_call>";
+  const std::string generated = "safe prefix" + malformed;
+
+  for (size_t split = 0; split <= generated.size(); ++split) {
+    auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, /*recovery_aware=*/true);
+    auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+
+    EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+    EXPECT_EQ(CollectVisible(outputs), "safe prefix") << "split=" << split;
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, GuidedRetryRejectsDuplicateJsonMembers) {
+  const std::vector<std::string> payloads = {
+      R"([{"name":"typed","name":"zero","parameters":{"text":"first"}}])",
+      R"([{"name":"typed","parameters":{"text":"first","text":"second"}}])",
+      R"([{"name":"typed","parameters":{"text":{"nested":1,"nested":2}}}])",
+  };
+
+  for (const auto& payload : payloads) {
+    EXPECT_TRUE(ParseQwenGuidedToolCalls(payload, kQwenTools, kQwenToolKinds).empty()) << payload;
   }
 }
 

@@ -15,6 +15,9 @@ enum class ToolCallPayloadDisposition {
   kNeedMore,
   kParsed,
   kRejected,
+  /// A structurally tool-shaped Engine auto-mode candidate that must not become visible text.
+  /// This is only a retry trigger; it does not mean the payload is valid or repairable.
+  kMalformed,
 };
 
 struct ToolCallPayloadParseResult {
