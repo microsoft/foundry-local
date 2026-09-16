@@ -26,7 +26,8 @@ namespace {
 ToolDefinition ToCoreDefinition(const ChatCompletionTool& tool) {
   if (tool.IsCustom()) {
     return tools::MakeCustomTool(tool.custom->name, tool.custom->description.value_or(""),
-                                 tool.custom->description.has_value());
+                                 tool.custom->description.has_value(),
+                                 tools::CustomToolLarkGrammar(tool.custom->format));
   }
 
   return tools::MakeFunctionTool(tool.function.name, tool.function.description.value_or(""),
@@ -179,7 +180,9 @@ std::vector<ToolDefinition> ExtractToolDefinitions(const ChatCompletionRequest& 
     session_request.options["tool_choice"] = choice.ModeString();
 
     if (choice.IsForced()) {
-      tools::NarrowToForcedTool(definitions, choice.name, ForcedChoiceKind(choice));
+      const auto kind = ForcedChoiceKind(choice);
+      session_request.forced_tool_choice = ForcedToolChoice{choice.name, kind};
+      tools::NarrowToForcedTool(definitions, choice.name, kind);
     }
   }
 

@@ -9,8 +9,11 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <string>
+#include <unordered_set>
 
+#include "contracts/tool_definitions.h"
 #include "items/audio_item.h"
 #include "items/image_item.h"
 #include "items/message_item.h"
@@ -25,6 +28,43 @@ using namespace fl;
 using namespace fl::responses;
 using namespace fl::ResponseConverter;
 using json = nlohmann::json;
+
+TEST(ResponseConverterTest, StoredRawEnvelopeProvenanceReplaysAsOriginalAssistantContent) {
+  const std::string envelope = "{\n\"input\":\"replacement text\"\n}";
+  const json stored_response{
+      {"id", "resp_raw"},
+      {"previous_response_id", nullptr},
+      {"output", json::array({{{"type", "custom_tool_call"},
+                               {"id", "ctc_1"},
+                               {"call_id", "call_1"},
+                               {"name", "apply_patch"},
+                               {"input", envelope}}})}};
+
+  ResponseStore store;
+  store.Store("resp_raw", stored_response, json::array(), "model",
+              std::unordered_set<std::string>{"call_1"});
+  const auto context = store.BuildChainContext("resp_raw");
+  ASSERT_TRUE(context.has_value());
+
+  auto params = json{{"model", "model"}, {"input", "continue"}}.get<ResponseCreateParams>();
+  auto request = ToSessionRequest(params, &*context);
+  const auto call = std::find_if(request.items.begin(), request.items.end(), [](const Item* item) {
+    return item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL;
+  });
+  ASSERT_NE(call, request.items.end());
+  const auto& tool_call = static_cast<const ToolCallItem&>(**call);
+  EXPECT_EQ(tool_call.generated_encoding, GeneratedCallEncoding::kRawEnvelope);
+
+  const auto messages = BuildTranscriptMessages(request.items, {{"apply_patch", ToolKind::kCustom}});
+  const auto rendered = json::parse(BuildChatMessagesJson(messages));
+  ASSERT_FALSE(rendered.empty());
+  EXPECT_EQ(rendered.front().at("content"), envelope);
+  EXPECT_FALSE(rendered.front().contains("tool_calls"));
+
+  const auto visible = store.Get("resp_raw");
+  ASSERT_TRUE(visible.has_value());
+  EXPECT_EQ(visible->dump().find("_fl_"), std::string::npos);
+}
 
 // ========================================================================
 // Helper: minimal ResponseCreateParams for echo tests
@@ -257,6 +297,32 @@ TEST(ResponseConverterTest, EchoRequestParams_ParallelToolCallsDefaultTrue) {
 
   auto r = BuildInitialResponseObject("resp_1", 100, "m", params);
   EXPECT_TRUE(r.parallel_tool_calls);
+}
+
+TEST(ResponseConverterTest, ReservedRawDescriptorMetadataIsNeverPublicOrStored) {
+  auto params = MakeTestParams();
+  params.metadata[tools::kRawEnvelopeMetadataKey] =
+      R"({"tool_name":"apply_patch","start_marker":"BEGIN","end_marker":"END"})";
+
+  const TokenUsage usage{};
+  const auto initial = BuildInitialResponseObject("resp_initial", 100, "m", params);
+  const auto completed = BuildResponseObject(
+      "resp_completed", 100, "m", params, {}, "", usage);
+  const auto failed = BuildFailedResponseObject(
+      "resp_failed", 100, "m", params, "error", "message");
+
+  for (const auto* response : {&initial, &completed, &failed}) {
+    EXPECT_EQ(response->metadata.at("key1"), "value1");
+    EXPECT_FALSE(response->metadata.contains(tools::kRawEnvelopeMetadataKey));
+    const json serialized = *response;
+    EXPECT_FALSE(serialized.at("metadata").contains(tools::kRawEnvelopeMetadataKey));
+  }
+
+  ResponseStore store;
+  store.Store(completed.id, json(completed), json::array());
+  const auto retrieved = store.Get(completed.id);
+  ASSERT_TRUE(retrieved.has_value());
+  EXPECT_FALSE(retrieved->at("metadata").contains(tools::kRawEnvelopeMetadataKey));
 }
 
 TEST(ResponseConverterTest, EchoRequestParams_TextConfigEchoed) {

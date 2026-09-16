@@ -32,6 +32,33 @@ std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
   }
 }
 
+}  // namespace
+
+namespace onnx_engine_chat_stream_internal {
+
+std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason) {
+  switch (static_cast<OgaFinishReason>(reason)) {
+    case OgaFinishReason_Eos:
+      return BackendTerminationCause::kNaturalEnd;
+    case OgaFinishReason_StopString:
+      return BackendTerminationCause::kStopSequence;
+    case OgaFinishReason_MaxGeneratedTokens:
+      return BackendTerminationCause::kOutputTokenLimit;
+    case OgaFinishReason_MaxSessionTokens:
+      return BackendTerminationCause::kSessionTokenLimit;
+    case OgaFinishReason_Cancelled:
+      return BackendTerminationCause::kCancellation;
+    case OgaFinishReason_Failed:
+      return BackendTerminationCause::kFailure;
+    default:
+      return std::nullopt;
+  }
+}
+
+}  // namespace onnx_engine_chat_stream_internal
+
+namespace {
+
 bool DetectPromptOpensReasoning(const std::string& prompt,
                                 const OgaSequences& sequences,
                                 const ToolCallContext& tool_ctx,
@@ -194,6 +221,7 @@ std::optional<ChatTurnUsage> OnnxEngineChatStream::GetTurnUsage() const {
       prompt_token_count_,
       static_cast<int>(result.generated_tokens),
       MapFinishReason(result.finish_reason),
+      onnx_engine_chat_stream_internal::MapTerminationCause(result.finish_reason),
   };
 }
 

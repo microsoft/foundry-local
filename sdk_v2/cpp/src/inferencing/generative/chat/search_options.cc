@@ -72,6 +72,10 @@ int GetModelMaxContextLength(const GenAIConfig& config) {
 
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
                                                               bool prompt_opens_reasoning) {
+  if (tool_ctx.guidance_disabled) {
+    return std::nullopt;
+  }
+
   std::string guidance_type;
   std::string guidance_data;
   const bool user_specified_guidance =

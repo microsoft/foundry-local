@@ -5,6 +5,7 @@
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "catalog.h"
+#include "contracts/tool_definitions.h"
 #include "ep_detection/ep_detector.h"
 #include "http/http_client.h"
 #include "inferencing/model_load_manager.h"
@@ -802,18 +803,20 @@ std::string ErrorMessageOf(const json& body) {
 
 }  // namespace
 
-TEST_F(WebServiceTest, StreamingChatCompletionsRejectsGrammarBeforeStartingSse) {
+TEST_F(WebServiceTest, StreamingChatCompletionsRejectsModifiedStockLarkGrammarBeforeModelResolution) {
   json body = {
       {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
       {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
       {"tools", json::parse(test::kCodingAgentChatToolsJson)},
       {"stream", true},
   };
+  body["tools"][0]["custom"]["format"]["grammar"]["definition"] =
+      std::string(tools::kStockGhcpApplyPatchLarkGrammar) + "\n";
 
   auto result = PostJson(base_url_ + "/v1/chat/completions", body);
 
   EXPECT_EQ(result.status, 400) << result.body.dump(2);
-  EXPECT_NE(ErrorMessageOf(result.body).find("only 'text' is supported"), std::string::npos)
+  EXPECT_NE(ErrorMessageOf(result.body).find("stock GHCP apply-patch"), std::string::npos)
       << result.body.dump(2);
 }
 
@@ -901,18 +904,162 @@ TEST_F(WebServiceTest, StreamingChatCompletionsRejectsRequiredChoiceWithoutTools
       << result.body.dump(2);
 }
 
-TEST_F(WebServiceTest, ResponsesRejectsCapturedCustomToolGrammarFormat) {
+TEST_F(WebServiceTest, ResponsesRejectsModifiedStockCustomToolGrammarFormat) {
   json body = {
       {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
       {"input", "hi"},
       {"tools", json::parse(test::kCodingAgentResponsesToolsJson)},
   };
+  body["tools"][0]["format"]["definition"] = std::string(tools::kStockGhcpApplyPatchLarkGrammar) + "\n";
 
   auto result = PostJson(base_url_ + "/v1/responses", body);
 
   EXPECT_EQ(result.status, 400) << result.body.dump(2);
-  EXPECT_NE(ErrorMessageOf(result.body).find("only 'text' is supported"), std::string::npos)
+  EXPECT_NE(ErrorMessageOf(result.body).find("stock GHCP apply-patch"), std::string::npos)
       << result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, MalformedRawEnvelopeDescriptorIsRejectedBeforeModelResolutionOrSse) {
+  for (const bool chat : {false, true}) {
+    for (const bool stream : {false, true}) {
+      json body = chat
+                      ? json{{"model", "alpha-model"},
+                             {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})}}
+                      : json{{"model", "alpha-model"}, {"input", "hi"}};
+      body["stream"] = stream;
+      body["metadata"] = {
+          {tools::kRawEnvelopeMetadataKey,
+           R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN"})"}};
+
+      const auto endpoint = chat ? "/v1/chat/completions" : "/v1/responses";
+      const auto result = PostJson(base_url_ + endpoint, body);
+
+      EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                    << result.body.dump(2);
+      EXPECT_NE(ErrorMessageOf(result.body).find(tools::kRawEnvelopeMetadataKey),
+                std::string::npos)
+          << result.body.dump(2);
+    }
+  }
+}
+
+TEST_F(WebServiceTest, ResponsesRejectsNonStringRawEnvelopeDescriptorBeforeModelResolutionOrSse) {
+  for (const bool stream : {false, true}) {
+    const json body = {
+        {"model", "alpha-model"},
+        {"input", "hi"},
+        {"stream", stream},
+        {"metadata", {{tools::kRawEnvelopeMetadataKey, {{"type", "raw_envelope"}}}}},
+    };
+
+    const auto result = PostJson(base_url_ + "/v1/responses", body);
+
+    EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                  << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find(tools::kRawEnvelopeMetadataKey),
+              std::string::npos)
+        << result.body.dump(2);
+  }
+}
+
+TEST_F(WebServiceTest, RawEnvelopeDescriptorMustReferenceEffectiveCustomTool) {
+  const std::string descriptor =
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN","end_marker":"END"})";
+  for (const bool chat : {false, true}) {
+    for (const bool stream : {false, true}) {
+      json body = chat
+                      ? json{{"model", "alpha-model"},
+                             {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+                             {"tools",
+                              json::array({
+                                  {{"type", "custom"},
+                                   {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}},
+                                  {{"type", "custom"},
+                                   {"custom", {{"name", "other"}, {"format", {{"type", "text"}}}}}},
+                              })},
+                             {"tool_choice",
+                              {{"type", "custom"}, {"custom", {{"name", "other"}}}}}}
+                      : json{{"model", "alpha-model"},
+                             {"input", "hi"},
+                             {"tools",
+                              json::array({
+                                  {{"type", "custom"}, {"name", "edit"}},
+                                  {{"type", "custom"}, {"name", "other"}},
+                              })},
+                             {"tool_choice", {{"type", "custom"}, {"name", "other"}}}};
+      body["stream"] = stream;
+      body["metadata"] = {{tools::kRawEnvelopeMetadataKey, descriptor}};
+
+      const auto endpoint = chat ? "/v1/chat/completions" : "/v1/responses";
+      const auto result = PostJson(base_url_ + endpoint, body);
+
+      EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                    << result.body.dump(2);
+      EXPECT_NE(ErrorMessageOf(result.body).find("effective declared custom tool"),
+                std::string::npos)
+          << result.body.dump(2);
+    }
+  }
+}
+
+TEST_F(WebServiceTest, ConflictingStockRawEnvelopeDescriptorIsRejectedBeforeModelResolutionOrSse) {
+  const std::vector<std::string> descriptors{
+      R"({"type":"raw_envelope","tool_name":"apply_patch","start_marker":"BEGIN","end_marker":"END"})",
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN","end_marker":"END"})",
+  };
+  for (const auto& descriptor : descriptors) {
+    for (const bool chat : {false, true}) {
+      for (const bool stream : {false, true}) {
+        json body = chat
+                        ? json{{"model", "alpha-model"},
+                               {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+                               {"tools", json::parse(test::kCodingAgentChatToolsJson)}}
+                        : json{{"model", "alpha-model"},
+                               {"input", "hi"},
+                               {"tools", json::parse(test::kCodingAgentResponsesToolsJson)}};
+        body["tools"].push_back(
+            chat ? json{{"type", "custom"},
+                        {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}}
+                 : json{{"type", "custom"}, {"name", "edit"}});
+        body["stream"] = stream;
+        body["metadata"] = {{tools::kRawEnvelopeMetadataKey, descriptor}};
+
+        const auto endpoint = chat ? "/v1/chat/completions" : "/v1/responses";
+        const auto result = PostJson(base_url_ + endpoint, body);
+
+        EXPECT_EQ(result.status, 400) << body.dump() << '\n'
+                                      << result.body.dump(2);
+        EXPECT_NE(ErrorMessageOf(result.body).find("conflicts with the stock apply_patch grammar"),
+                  std::string::npos)
+            << result.body.dump(2);
+      }
+    }
+  }
+}
+
+TEST_F(WebServiceTest, GenericRawEnvelopeDescriptorIsAcceptedForAutoAndForcedCustomTool) {
+  const std::string descriptor =
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"BEGIN","end_marker":"END"})";
+  for (const bool forced : {false, true}) {
+    json body = {
+        {"model", "alpha-model"},
+        {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+        {"tools",
+         json::array({{{"type", "custom"},
+                       {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}}})},
+        {"metadata", {{tools::kRawEnvelopeMetadataKey, descriptor}}},
+    };
+    if (forced) {
+      body["tool_choice"] = {
+          {"type", "custom"}, {"custom", {{"name", "edit"}}}};
+    }
+
+    const auto result = PostJson(base_url_ + "/v1/chat/completions", body);
+
+    EXPECT_EQ(result.status, 404) << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find("No model matching"), std::string::npos)
+        << result.body.dump(2);
+  }
 }
 
 TEST_F(WebServiceTest, ResponsesRejectsForcedToolRemovedByAllowedFilter) {

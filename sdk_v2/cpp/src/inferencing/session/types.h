@@ -25,6 +25,24 @@ enum class ToolKind {
   kCustom,
 };
 
+enum class GeneratedCallEncoding {
+  kStructured,
+  kRawEnvelope,
+};
+
+struct ForcedToolChoice {
+  std::string name;
+  ToolKind kind = ToolKind::kFunction;
+};
+
+struct RawEnvelopeDescriptor {
+  std::string tool_name;
+  std::string start_marker;
+  std::string end_marker;
+
+  bool operator==(const RawEnvelopeDescriptor&) const = default;
+};
+
 struct ToolDefinition {
   ToolDefinition() = default;
 
@@ -49,6 +67,8 @@ struct ToolDefinition {
   bool include_parameters_in_prompt = true;
   /// Preserves an explicit supported false value for prompt serialization.
   std::optional<bool> strict;
+  /// Present only for the exact supported custom-tool grammar declaration.
+  std::optional<std::string> custom_lark_grammar;
 };
 
 }  // namespace fl
