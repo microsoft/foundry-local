@@ -1192,7 +1192,19 @@ TEST_F(ChatSessionTest, HostEndedTurnsCancelBeforeWaitingForBackendUsage) {
     End end;
   };
   const std::vector<Case> cases{
-      {false, false, End::kPostCallText}, {false, true, End::kPostCallText}, {true, false, End::kPostCallText}, {true, true, End::kPostCallText}, {false, false, End::kStopString}, {false, true, End::kStopString}, {true, false, End::kStopString}, {true, true, End::kStopString}, {false, true, End::kCallback}, {true, true, End::kCallback}, {false, false, End::kTokenLimit}, {false, true, End::kTokenLimit}};
+      {false, false, End::kPostCallText},
+      {false, true, End::kPostCallText},
+      {true, false, End::kPostCallText},
+      {true, true, End::kPostCallText},
+      {false, false, End::kStopString},
+      {false, true, End::kStopString},
+      {true, false, End::kStopString},
+      {true, true, End::kStopString},
+      {false, true, End::kCallback},
+      {true, true, End::kCallback},
+      {false, false, End::kTokenLimit},
+      {false, true, End::kTokenLimit},
+  };
   for (const auto& test : cases) {
     SCOPED_TRACE(::testing::Message() << "json=" << test.json << " streaming=" << test.streaming
                                       << " end=" << static_cast<int>(test.end));

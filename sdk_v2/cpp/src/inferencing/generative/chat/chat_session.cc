@@ -1135,7 +1135,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   const bool natural_tool_output_end =
       !turn_guard.TurnEnded() && chat_session_internal::IsNaturalToolOutputEnd(
-                                     request.canceled, stop_sequence_matched, host_output_limit_reached, backend_termination);
+                                     request.canceled, stop_sequence_matched, host_output_limit_reached,
+                                     backend_termination);
   flush_accumulator(natural_tool_output_end);
 
   if (streaming_callback) {
@@ -1442,8 +1443,8 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   const bool natural_tool_output_end =
       !turn_guard.TurnEnded() && chat_session_internal::IsNaturalToolOutputEnd(
-                                     original_request.canceled, stop_sequence_matched, /*host_output_limit_reached=*/false,
-                                     backend_termination);
+                                     original_request.canceled, stop_sequence_matched,
+                                     /*host_output_limit_reached=*/false, backend_termination);
   process_tool_output(chat_session_internal::FlushToolOutput(
       active_raw_detector, tool_accumulator, natural_tool_output_end));
 
