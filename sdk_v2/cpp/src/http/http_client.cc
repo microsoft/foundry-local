@@ -117,6 +117,9 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
                         : Request(method, Url(url), &body_stream);
 
   request.SetHeader("User-Agent", options.user_agent);
+  for (const auto& [name, value] : options.headers) {
+    request.SetHeader(name, value);
+  }
 
   if (options.close_connection) {
     request.SetHeader("Connection", "close");

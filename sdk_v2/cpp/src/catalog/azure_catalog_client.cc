@@ -29,6 +29,7 @@ constexpr const char* kAssetGalleryModelsUrl = "https://api.catalog.azureml.ms/a
 constexpr const char* kRegionProbeBody = R"({"filters":[],"pageSize":1})";
 constexpr const char* kServedByClusterHeader = "azureml-served-by-cluster";
 constexpr const char* kDefaultRegion = "centralus";
+constexpr const char* kUseFullServiceContractsHeader = "x-ms-use-full-service-contracts";
 
 // The catalog and registry gateways reject requests without this User-Agent (HTTP 400).
 constexpr const char* kUserAgent = "AzureAiStudio";
@@ -287,6 +288,7 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
     http_post_response_ = [](const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
       options.user_agent = kUserAgent;
+      options.headers[kUseFullServiceContractsHeader] = "true";
       return http::HttpPostWithResponse(url, body, options);
     };
   }
