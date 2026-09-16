@@ -365,6 +365,24 @@ TEST(ChatSessionDecisionTest, CustomBatchNormalizationUsesTheCompleteArgumentSou
   EXPECT_EQ(std::get<ParsedToolCall>(output.events[2]).arguments, R"({"looks":"json"})");
 }
 
+TEST(ChatSessionDecisionTest, CustomBatchNormalizationPreservesRawEnvelopeBytes) {
+  const std::string envelope = "{\n\"input\":\"replacement text\"\n}";
+  ToolCallContext context;
+  context.tool_kinds = {{"edit", ToolKind::kCustom}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall raw_call{"call_1", "edit", envelope};
+  raw_call.argument_source = envelope;
+  raw_call.raw_envelope = true;
+  output.events.emplace_back(std::move(raw_call));
+
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
+  const auto& normalized = std::get<ParsedToolCall>(output.events.front());
+  EXPECT_EQ(normalized.arguments, envelope);
+  EXPECT_EQ(normalized.argument_source, envelope);
+}
+
 TEST(ChatSessionDecisionTest, RawEligibleOutputStillRecognizesStructuredCalls) {
   RawEnvelopeDetector raw_detector(
       {"apply_patch", "*** Begin Patch", "*** End Patch"});
@@ -1092,8 +1110,8 @@ TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoni
   EXPECT_EQ(transcript_call.arguments, envelope);
 }
 
-TEST_F(ChatSessionTest, ChatCompletionsUnguidedForcedRawCallPreservesPromptOpenedReasoning) {
-  const std::string envelope = "BEGIN\nreplacement text\nEND";
+TEST_F(ChatSessionTest, ChatCompletionsForcedRawCallPreservesJsonShapedPayloadAndPromptOpenedReasoning) {
+  const std::string envelope = "{\n\"input\":\"replacement text\"\n}";
   const std::string output = "private reasoning</think>\n" + envelope;
   TextChatGeneratorFactory factory =
       [output](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
@@ -1109,8 +1127,8 @@ TEST_F(ChatSessionTest, ChatCompletionsUnguidedForcedRawCallPreservesPromptOpene
   const auto descriptor =
       nlohmann::json{{"type", "raw_envelope"},
                      {"tool_name", "edit"},
-                     {"start_marker", "BEGIN"},
-                     {"end_marker", "END"}}
+                     {"start_marker", "{"},
+                     {"end_marker", "}"}}
           .dump();
   const auto request_json =
       nlohmann::json{

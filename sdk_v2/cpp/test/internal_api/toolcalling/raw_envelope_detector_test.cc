@@ -136,6 +136,18 @@ TEST(RawEnvelopeDetectorTest, SuffixedFenceCloserStaysOpenAcrossEveryByteSplit) 
   }
 }
 
+TEST(RawEnvelopeDetectorTest, CrLfFenceCloserIsIndependentOfEveryByteSplit) {
+  for (const auto* fence : {"```", "~~~"}) {
+    const auto input = std::string(fence) + "\r\nexample\r\n" + fence + "\r\nprose\n" + fence + "\n" +
+                       kEnvelope + "\n" + fence + "\n";
+    for (size_t split = 0; split <= input.size(); ++split) {
+      const auto result = Read({input.substr(0, split), input.substr(split)});
+      EXPECT_TRUE(result.calls.empty()) << fence << " split=" << split;
+      EXPECT_EQ(result.text, input) << fence << " split=" << split;
+    }
+  }
+}
+
 TEST(RawEnvelopeDetectorTest, SpaceAndTabFenceCloserSuffixAllowsLaterEnvelope) {
   const auto prefix = std::string("```patch\nnot an envelope\n``` \t\n");
   const auto result = Read({prefix + kEnvelope});

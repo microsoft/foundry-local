@@ -343,10 +343,13 @@ class RawEnvelopeDetector {
       return true;
     }
 
-    const auto suffix = marker.substr(count);
+    auto suffix = marker.substr(count);
     if (fence_.has_value()) {
-      return count >= fence_->size() &&
-             suffix.find_first_not_of(" \t") == std::string_view::npos;
+      if (!suffix.empty() && suffix.back() == '\r') {
+        suffix.remove_suffix(1);
+      }
+
+      return count >= fence_->size() && suffix.find_first_not_of(" \t") == std::string_view::npos;
     }
 
     if (count < 3) {

@@ -312,7 +312,7 @@ void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
       continue;
     }
 
-    if (tool_ctx.IsCustomTool(call->name)) {
+    if (tool_ctx.IsCustomTool(call->name) && !call->raw_envelope) {
       call->arguments = ExtractCustomToolInput(call->argument_source);
     }
 

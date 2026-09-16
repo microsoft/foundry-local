@@ -30,7 +30,7 @@ using namespace fl::ResponseConverter;
 using json = nlohmann::json;
 
 TEST(ResponseConverterTest, StoredRawEnvelopeProvenanceReplaysAsOriginalAssistantContent) {
-  const std::string envelope = "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch";
+  const std::string envelope = "{\n\"input\":\"replacement text\"\n}";
   const json stored_response{
       {"id", "resp_raw"},
       {"previous_response_id", nullptr},
