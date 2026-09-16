@@ -15,6 +15,7 @@
 #include "inferencing/session/callback_handler.h"
 #include "inferencing/session/request.h"
 #include "inferencing/session/response.h"
+#include "inferencing/session/tool_registry.h"
 #include "inferencing/session/types.h"
 #include "util/key_value_pairs.h"
 
@@ -58,33 +59,32 @@ class Session {
   /// another thread holds a manager lock. Generation loops poll the flag and stop within ~one token.
   void Cancel();
 
-  /// Add a tool definition to this session.
-  /// @throws fl::Exception if tool_def.json_schema is not valid JSON.
+  /// Add a tool definition to this session. Names are case-sensitive and unique across kinds.
+  /// Safe to call while a request is being processed: the registry is internally synchronized and
+  /// generation reads only the snapshot taken when the request started.
+  /// @throws fl::Exception if the name is already registered, a function tool's json_schema is not
+  ///         valid JSON, or a custom tool supplies a json_schema.
   void AddToolDefinition(ToolDefinition tool_def);
 
   /// Remove a previously-added tool definition by name.
   /// Returns true if a matching tool was found and removed, false otherwise.
   bool RemoveToolDefinition(const std::string& tool_name) {
-    auto it = std::find_if(tool_definitions_.begin(), tool_definitions_.end(),
-                           [&](const ToolDefinition& td) { return td.name == tool_name; });
-    if (it == tool_definitions_.end()) {
-      return false;
-    }
-
-    tool_definitions_.erase(it);
-    return true;
+    return tool_registry_.Remove(tool_name);
   }
 
-  /// Get the tool definitions added to this session.
-  const std::vector<ToolDefinition>& ToolDefinitions() const {
-    return tool_definitions_;
+  /// Snapshot of the tool definitions added to this session, in registration order. Returned by
+  /// value: a reference into the registry could be invalidated by a concurrent Add or Remove.
+  /// A request takes this once, before generation, so the calls it replays, the prompt it builds,
+  /// and the calls it produces are all resolved against the same tool set.
+  std::vector<ToolDefinition> ToolDefinitions() const {
+    return tool_registry_.Definitions();
   }
 
   /// Remove all tool definitions from this session. Needed when a session is reused across
   /// requests (e.g. via Responses API `previous_response_id`) and the new request brings its
   /// own tools — the request-is-self-contained model means stale tools must not leak across turns.
   void ClearToolDefinitions() {
-    tool_definitions_.clear();
+    tool_registry_.Clear();
   }
 
   /// Get the number of completed turns. Only meaningful for chat sessions.
@@ -160,7 +160,7 @@ class Session {
   const fl::Model& catalog_model_;
   ILogger& logger_;
   ITelemetry& telemetry_;
-  std::vector<ToolDefinition> tool_definitions_;
+  ToolRegistry tool_registry_;
   KeyValuePairs session_options_;
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;

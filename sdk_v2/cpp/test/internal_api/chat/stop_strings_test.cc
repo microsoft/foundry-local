@@ -39,18 +39,36 @@ TEST(StopStringFilterTest, EmptyConfigurationIsPassthrough) {
 TEST(StopStringFilterTest, ReportsWhetherOutputRemainsAlignedWithTheCurrentToken) {
   StopStringFilter filter({"END"});
 
-  auto passthrough = filter.PushWithTokenAlignment("hello");
+  auto passthrough = filter.PushWithTokenAlignment("hello", 1);
   EXPECT_EQ(passthrough.text, "hello");
   EXPECT_TRUE(passthrough.token_aligned);
+  ASSERT_EQ(passthrough.fragments.size(), 1u);
+  EXPECT_EQ(passthrough.fragments[0].token_id, 1);
 
-  auto buffered = filter.PushWithTokenAlignment("E");
+  auto buffered = filter.PushWithTokenAlignment("E", 2);
   EXPECT_TRUE(buffered.text.empty());
   EXPECT_FALSE(buffered.token_aligned);
+  EXPECT_TRUE(buffered.fragments.empty());
 
   // The released prefix happens to equal the current fragment, but belongs to the preceding token.
-  auto combined = filter.PushWithTokenAlignment("E");
+  auto combined = filter.PushWithTokenAlignment("E", 3);
   EXPECT_EQ(combined.text, "E");
   EXPECT_FALSE(combined.token_aligned);
+  ASSERT_EQ(combined.fragments.size(), 1u);
+  EXPECT_EQ(combined.fragments[0].token_id, 2);
+}
+
+TEST(StopStringFilterTest, PreservesTokenProvenanceWhenMatchShortensBufferedFragment) {
+  StopStringFilter filter({"STOP"});
+
+  auto first = filter.PushWithTokenAlignment("thought ST", 10);
+  EXPECT_TRUE(first.fragments.empty());
+
+  auto matched = filter.PushWithTokenAlignment("OPtail", 11);
+  ASSERT_EQ(matched.fragments.size(), 1u);
+  EXPECT_EQ(matched.fragments[0].text, "thought ");
+  EXPECT_EQ(matched.fragments[0].token_id, 10);
+  EXPECT_TRUE(filter.matched());
 }
 
 TEST(StopStringFilterTest, MatchAcrossFragmentsDropsStopAndLaterBytes) {

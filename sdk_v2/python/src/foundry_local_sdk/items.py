@@ -22,6 +22,13 @@ _DURATION_UNSET: int = -(2**63)
 _CONFIDENCE_UNSET: float = -struct.unpack("<f", b"\xff\xff\x7f\x7f")[0]
 
 
+def _validate_native_string(value: str, argument_name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{argument_name} must be a string")
+    if "\x00" in value:
+        raise ValueError(f"{argument_name} must not contain an embedded NUL character")
+
+
 class ItemType(IntEnum):
     UNKNOWN = 0
     BYTES = 1
@@ -651,11 +658,21 @@ class AudioItem(Item):
 
 
 class ToolCallItem(Item):
+    """A model-issued tool call.
+
+    ``arguments`` is JSON object text for a function tool or raw NUL-free UTF-8 text for a custom tool.
+    All fields must be free of embedded NUL characters; empty strings remain accepted.
+    """
+
     call_id: str
     name: str
     arguments: str
 
     def __init__(self, call_id: str, name: str, arguments: str) -> None:
+        _validate_native_string(call_id, "call_id")
+        _validate_native_string(name, "name")
+        _validate_native_string(arguments, "arguments")
+
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
@@ -703,10 +720,18 @@ class ToolCallItem(Item):
 
 
 class ToolResultItem(Item):
+    """The result of executing a tool call.
+
+    ``call_id`` and ``result`` must be free of embedded NUL characters; an empty result remains valid.
+    """
+
     call_id: str
     result: str
 
     def __init__(self, call_id: str, result: str) -> None:
+        _validate_native_string(call_id, "call_id")
+        _validate_native_string(result, "result")
+
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 

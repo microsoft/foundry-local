@@ -159,7 +159,8 @@ std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
     arguments.clear();
   }
 
-  return std::make_unique<ToolCallItem>(item.value("call_id", ""), item.value("name", ""), std::move(arguments));
+  return std::make_unique<ToolCallItem>(item.value("call_id", ""), item.value("name", ""),
+                                        std::move(arguments));
 }
 
 /// The text a message carrying only media renders as. The chat template requires every message to have at least one

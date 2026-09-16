@@ -136,3 +136,25 @@ async fn byom_registration_round_trips_and_preserves_assets() {
     drop(catalog);
     manager.shutdown().expect("shut down manager");
 }
+
+#[test]
+fn tool_definitions_preserve_the_published_struct_shape() {
+    use foundry_local_sdk::{CustomToolDefinition, ToolDefinition};
+
+    let literal = ToolDefinition {
+        name: "literal".to_string(),
+        description: None,
+        json_schema: r#"{"type":"object"}"#.to_string(),
+    };
+    assert_eq!(literal.name, "literal");
+
+    let function = ToolDefinition::new("multiply", r#"{"type":"object"}"#)
+        .with_description("Multiplies two numbers.");
+    assert_eq!(function.json_schema, r#"{"type":"object"}"#);
+    assert_eq!(
+        function.description.as_deref(),
+        Some("Multiplies two numbers.")
+    );
+
+    let _custom = CustomToolDefinition::new("apply_patch").with_description("Applies a patch.");
+}

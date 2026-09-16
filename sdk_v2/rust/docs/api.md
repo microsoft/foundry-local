@@ -39,6 +39,7 @@
   - [Response](#response)
   - [FinishReason](#finishreason)
   - [ToolDefinition](#tooldefinition)
+  - [CustomToolDefinition](#customtooldefinition)
 - [Types](#types)
   - [ModelInfo](#modelinfo)
   - [ChatResponseFormat](#chatresponseformat)
@@ -430,6 +431,7 @@ impl Deref for ChatSession { type Target = Session; }
 |--------|-----------|-------------|
 | `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion` or `vision-language-chat`. |
 | `add_tool_definition` | `async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<(), FoundryLocalError>` | Register a tool for the lifetime of the session. |
+| `add_custom_tool_definition` | `async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<(), FoundryLocalError>` | Register a custom text tool for the lifetime of the session. |
 | `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |
 | `turn_count` | `fn turn_count(&self) -> usize` | The number of completed conversation turns. |
 | `undo_turns` | `async fn undo_turns(&self, count: usize) -> Result<(), FoundryLocalError>` | Rewind the last `count` turns. |
@@ -542,7 +544,7 @@ pub enum Item {
 | `float_tensor` | `fn float_tensor(shape: impl Into<Vec<i64>>, data: &[f32]) -> Item` | A `Float`-typed tensor from `f32` values. |
 | `image_data` / `image_uri` | `fn(…, format: Option<impl Into<String>>) -> Item` | An inline or URI-referenced image. |
 | `audio_data` / `audio_uri` | `fn(…) -> Item` | An inline or URI-referenced audio clip. |
-| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call. |
+| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call whose arguments are JSON object text for a function tool or raw NUL-free UTF-8 text for a custom tool. |
 | `tool_result` | `fn tool_result(call_id: impl Into<String>, result: impl Into<String>) -> Item` | The result of executing a tool call. |
 
 **Accessors:**
@@ -693,6 +695,20 @@ pub struct ToolDefinition {
 |--------|-----------|-------------|
 | `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A tool with a name and JSON-schema parameters. |
 | `with_description` | `fn with_description(mut self, description: impl Into<String>) -> ToolDefinition` | Attach a description (builder-style). |
+
+### CustomToolDefinition
+
+A custom text tool registered on a [`ChatSession`](#chatsession). Its fields are private so future
+additive metadata does not break downstream construction.
+
+```rust
+pub struct CustomToolDefinition { /* private fields */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(name: impl Into<String>) -> CustomToolDefinition` | Create a custom text tool with no caller-supplied schema. |
+| `with_description` | `fn with_description(mut self, description: impl Into<String>) -> CustomToolDefinition` | Attach a description (builder-style). |
 
 ---
 
