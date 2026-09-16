@@ -515,7 +515,13 @@ ToolCallStreamAccumulator::Output PushToolOutput(
       if (call_completed) {
         auto disabled = raw_detector->DisableRecognition();
         for (auto& event : disabled.events) {
-          output.events.emplace_back(std::move(std::get<std::string>(event)));
+          if (auto* event_text = std::get_if<std::string>(&event)) {
+            output.events.emplace_back(std::move(*event_text));
+          } else if (auto* rejected = std::get_if<RawEnvelopeDetector::RejectedCandidate>(&event)) {
+            output.events.emplace_back(std::move(rejected->text));
+          } else {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Disabling raw-envelope recognition unexpectedly produced a call");
+          }
         }
       }
     } else {
