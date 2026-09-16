@@ -294,8 +294,7 @@ TEST(ChatTranscriptTest, TextAfterAToolCallIsRejectedWithInvalidArgument) {
   EXPECT_FALSE(transcript.HasOutstandingCalls());
 }
 
-TEST(ChatTranscriptTest, AReplyThatWouldContinueAPrefilledCallIsRejected) {
-  // Prefill and reply are each renderable on their own; merged they are not, so the check has to run on the merge.
+TEST(ChatTranscriptTest, AReplyAfterASuppliedCallStartsANewAssistantMessage) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Let me check.");
@@ -306,8 +305,11 @@ TEST(ChatTranscriptTest, AReplyThatWouldContinueAPrefilledCallIsRejected) {
   reply.AppendText(" One moment.");
 
   ChatTranscript transcript;
-  EXPECT_THROW(transcript.CommitTurn({prefill}, reply, {}), fl::Exception);
-  EXPECT_TRUE(transcript.Empty());
+  ASSERT_NO_THROW(transcript.CommitTurn({prefill}, reply, {}));
+  ASSERT_EQ(transcript.MessageCount(), 2u);
+  EXPECT_EQ(transcript.Messages()[0].ToolCalls().size(), 1u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), " One moment.");
+  EXPECT_TRUE(transcript.IsOutstanding("call_1"));
 }
 
 TEST(ChatTranscriptTest, CommitFailureBeforePublishPreservesEveryObservableState) {
@@ -351,7 +353,7 @@ TEST(ChatTranscriptTest, CommitFailureBeforePublishPreservesEveryObservableState
 // AssistantTurnGuard — the generation-side half of the ordering invariant.
 //
 // ChatSession applies this while a turn is produced, so post-call text is never streamed to the caller and never
-// reaches the transcript. These tests are the only model-free way to pin that behaviour.
+// reaches the transcript.
 // ===========================================================================
 
 TEST(AssistantTurnGuardTest, TextBeforeAnyCallIsEmitted) {
@@ -395,14 +397,6 @@ TEST(AssistantTurnGuardTest, AnEmptyTextEventNeverEndsTheTurn) {
   EXPECT_FALSE(guard.TurnEnded());
 }
 
-TEST(AssistantTurnGuardTest, APrefilledCallClosesVisibleTextBeforeTheFirstToken) {
-  // The reply merges into the prefill, so the two are one assistant turn and the prefill's call already closed it.
-  AssistantTurnGuard guard(/*calls_already_issued=*/true);
-
-  EXPECT_EQ(guard.OfferVisibleText("continuing"), TextDisposition::kEndTurn);
-  EXPECT_TRUE(guard.TurnEnded());
-}
-
 TEST(AssistantTurnGuardTest, ParallelCallsWithNoTextAreUnaffected) {
   AssistantTurnGuard guard;
 
@@ -439,9 +433,7 @@ TEST(AssistantTurnGuardTest, WhatTheGuardAllowsIsExactlyWhatTheTranscriptAccepts
   EXPECT_EQ(assistant.VisibleText(), "Let me check.\n");
 }
 
-TEST(ChatTranscriptTest, AnEmptyReplyAfterAPrefilledCallCommitsAsTheOneTurn) {
-  // What the guard produces when a caller prefills an unanswered call and asks for more: the text is dropped, so the
-  // reply is empty and merges away. The call stays outstanding, waiting for the result it actually needs.
+TEST(ChatTranscriptTest, AnEmptyReplyAfterASuppliedCallKeepsItsOwnBoundary) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendToolCall(MakeSuppliedToolCall("call_1", "get_weather", "{}"));
@@ -452,25 +444,12 @@ TEST(ChatTranscriptTest, AnEmptyReplyAfterAPrefilledCallCommitsAsTheOneTurn) {
   ChatTranscript transcript;
   ASSERT_NO_THROW(transcript.CommitTurn({UserMessage("Weather?"), prefill}, empty_reply, {}));
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
+  ASSERT_EQ(transcript.MessageCount(), 3u);
   EXPECT_EQ(transcript.Messages()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(transcript.Messages()[1].ToolCalls().size(), 1u);
+  EXPECT_EQ(transcript.Messages()[2].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_TRUE(transcript.Messages()[2].entries.empty());
   EXPECT_TRUE(transcript.IsOutstanding("call_1"));
-}
-
-TEST(ChatTranscriptTest, AssistantPrefillForReplyReportsTheMessageTheReplyWouldContinue) {
-  TranscriptMessage user(FOUNDRY_LOCAL_ROLE_USER, "Weather?");
-  TranscriptMessage prefill;
-  prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
-  prefill.AppendText("Let me check.");
-
-  const std::vector<TranscriptMessage> inputs{user, prefill};
-
-  EXPECT_EQ(AssistantPrefillForReply(inputs, 0), &inputs.back());
-  // The floor is the boundary of the current replay segment: an earlier hop's assistant message is off limits.
-  EXPECT_EQ(AssistantPrefillForReply(inputs, inputs.size()), nullptr);
-  // A trailing user message is not a prefill.
-  EXPECT_EQ(AssistantPrefillForReply({prefill, user}, 0), nullptr);
 }
 
 TEST(TranscriptIngestTest, ConsecutiveAssistantMessagesBecomeOneTurn) {
@@ -590,9 +569,7 @@ TEST(TranscriptIngestTest, JoiningInsertsNothingEvenWhenTheFragmentsHaveNoSpacin
   EXPECT_EQ(messages[0].VisibleText(), "onetwo");
 }
 
-TEST(ChatTranscriptTest, AGeneratedReplyJoinsAnAssistantPrefillByTheSameLiteralRule) {
-  // The commit side of the same decision: a caller prefills "The answer is" and the model continues " 42.". One
-  // assistant turn, one message, no separator — which is also what replay rebuilds for that turn.
+TEST(ChatTranscriptTest, AGeneratedReplyPreservesTheBoundaryOpenedByTheTemplate) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("The answer is");
@@ -604,10 +581,11 @@ TEST(ChatTranscriptTest, AGeneratedReplyJoinsAnAssistantPrefillByTheSameLiteralR
   ChatTranscript transcript;
   transcript.CommitTurn({UserMessage("What is it?"), prefill}, reply, {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
+  ASSERT_EQ(transcript.MessageCount(), 3u);
   EXPECT_EQ(transcript.Messages()[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "The answer is 42.");
-  ASSERT_EQ(transcript.Messages()[1].entries.size(), 1u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "The answer is");
+  EXPECT_EQ(transcript.Messages()[2].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  EXPECT_EQ(transcript.Messages()[2].VisibleText(), " 42.");
 }
 
 TEST(TranscriptIngestTest, AnUnnamedContinuationAdoptsTheOpenTurnsName) {
@@ -758,23 +736,27 @@ TEST(TranscriptIngestTest, NoSegmentsMeansAdjacencyGrouping) {
 }
 
 // ===========================================================================
-// CommitTurn — the reply continues a trailing assistant input
+// CommitTurn — the reply starts a new assistant message
 // ===========================================================================
 
-TEST(ChatTranscriptTest, ReplyMergesIntoATrailingAssistantInputMessage) {
+TEST(ChatTranscriptTest, ReplyDoesNotInheritTheSuppliedAssistantName) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Sure, ");
+  prefill.name = "alice";
 
   ChatTranscript transcript;
   transcript.CommitTurn({UserMessage("Finish this."), prefill}, MakeAssistant("here it is.", {}), {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
-  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Sure, here it is.");
+  ASSERT_EQ(transcript.MessageCount(), 3u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Sure, ");
+  EXPECT_EQ(transcript.Messages()[1].name, "alice");
+  EXPECT_EQ(transcript.Messages()[2].VisibleText(), "here it is.");
+  EXPECT_TRUE(transcript.Messages()[2].name.empty());
   EXPECT_EQ(transcript.TurnCount(), 1u);
 }
 
-TEST(ChatTranscriptTest, ReplyMergedIntoAPrefillKeepsItsToolCalls) {
+TEST(ChatTranscriptTest, ReplyKeepsItsToolCallsSeparateFromAssistantInput) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Checking. ");
@@ -783,27 +765,29 @@ TEST(ChatTranscriptTest, ReplyMergedIntoAPrefillKeepsItsToolCalls) {
   transcript.CommitTurn({UserMessage("Weather?"), prefill},
                         MakeAssistant("", {MakeCall("call_1", "get_weather", "{}")}), {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u);
+  ASSERT_EQ(transcript.MessageCount(), 3u);
   EXPECT_TRUE(transcript.IsOutstanding("call_1"));
-  ASSERT_EQ(transcript.Messages()[1].ToolCalls().size(), 1u);
+  EXPECT_FALSE(transcript.Messages()[1].HasToolCalls());
+  ASSERT_EQ(transcript.Messages()[2].ToolCalls().size(), 1u);
+  EXPECT_TRUE(transcript.Messages()[2].VisibleText().empty());
   EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Checking. ");
 }
 
-TEST(ChatTranscriptTest, ReplyDoesNotMergeAcrossTheReplyMergeFloor) {
+TEST(ChatTranscriptTest, ReplyDoesNotMergeIntoReplayedAssistantHistory) {
   TranscriptMessage replayed;
   replayed.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   replayed.AppendText("earlier turn");
 
   ChatTranscript transcript;
   // The first input message is replayed history, so the reply must not continue it.
-  transcript.CommitTurn({replayed}, MakeAssistant("new answer", {}), {}, /*reply_merge_floor=*/1);
+  transcript.CommitTurn({replayed}, MakeAssistant("new answer", {}), {});
 
   ASSERT_EQ(transcript.MessageCount(), 2u);
   EXPECT_EQ(transcript.Messages()[0].VisibleText(), "earlier turn");
   EXPECT_EQ(transcript.Messages()[1].VisibleText(), "new answer");
 }
 
-TEST(ChatTranscriptTest, UndoRemovesATurnWhoseReplyWasMergedIntoItsInput) {
+TEST(ChatTranscriptTest, UndoRemovesBothAssistantInputAndItsSeparateReply) {
   TranscriptMessage prefill;
   prefill.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
   prefill.AppendText("Sure, ");
@@ -812,7 +796,7 @@ TEST(ChatTranscriptTest, UndoRemovesATurnWhoseReplyWasMergedIntoItsInput) {
   transcript.CommitTurn({UserMessage("First.")}, MakeAssistant("One.", {}), {});
   transcript.CommitTurn({UserMessage("Finish this."), prefill}, MakeAssistant("here it is.", {}), {});
 
-  ASSERT_EQ(transcript.MessageCount(), 4u);
+  ASSERT_EQ(transcript.MessageCount(), 5u);
   transcript.UndoTurns(1);
 
   ASSERT_EQ(transcript.MessageCount(), 2u);
