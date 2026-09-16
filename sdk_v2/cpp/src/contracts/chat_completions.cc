@@ -2,10 +2,95 @@
 // Licensed under the MIT License.
 #include "contracts/chat_completions.h"
 
+#include "contracts/tool_definitions.h"
 #include "exception.h"
 #include "util/json_helpers.h"
 
 namespace fl {
+
+namespace {
+
+/// Read the non-empty string `name` a tool, tool call or tool_choice must carry.
+std::string RequiredName(const nlohmann::json& j, const char* owner) {
+  auto name = j.find("name");
+  if (name == j.end() || !name->is_string() || name->get<std::string>().empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, owner, " must contain a non-empty string 'name'");
+  }
+
+  return name->get<std::string>();
+}
+
+/// Read the nested object an entry of the given type must carry — `function` for a function entry,
+/// `custom` for a custom one. Nesting the wrong payload under a type is a client mistake worth
+/// reporting: silently reading the other member would run a tool the caller did not describe.
+const nlohmann::json& RequiredObject(const nlohmann::json& j, const char* key, const char* owner) {
+  auto nested = j.find(key);
+  if (nested == j.end() || !nested->is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, owner, " of type '", key, "' must contain a '", key, "' object");
+  }
+
+  return *nested;
+}
+
+void RejectMember(const nlohmann::json& j, const char* key, const char* owner) {
+  if (j.contains(key)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, owner, " must not contain '", key, "'");
+  }
+}
+
+void ReadStrict(const nlohmann::json& j, std::optional<bool>& strict) {
+  if (auto value = j.find("strict"); value != j.end()) {
+    strict = tools::ParseFunctionStrict(*value);
+  }
+}
+
+/// The declared `type`, defaulting to "function" for entries that omit it (older clients do).
+std::string ToolTypeOf(const nlohmann::json& j, const char* owner) {
+  auto type = j.find("type");
+  if (type == j.end()) {
+    return "function";
+  }
+
+  if (!type->is_string()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, owner, " 'type' must be a string");
+  }
+
+  return type->get<std::string>();
+}
+
+}  // namespace
+
+std::string ChatCompletionToolChoice::ModeString() const {
+  switch (kind) {
+    case Kind::kNone:
+      return "none";
+    case Kind::kRequired:
+    case Kind::kFunction:
+    case Kind::kCustom:
+      return "required";
+    case Kind::kAuto:
+    default:
+      return "auto";
+  }
+}
+
+ChatCompletionToolCall ChatCompletionToolCall::MakeFunction(std::string id, std::string name,
+                                                            std::string arguments) {
+  ChatCompletionToolCall call;
+  call.id = std::move(id);
+  call.type = "function";
+  call.function.name = std::move(name);
+  call.function.arguments = std::move(arguments);
+  return call;
+}
+
+ChatCompletionToolCall ChatCompletionToolCall::MakeCustom(std::string id, std::string name, std::string input) {
+  ChatCompletionToolCall call;
+  call.id = std::move(id);
+  call.type = "custom";
+  call.custom = ChatCompletionCustomCall{std::move(name), std::move(input)};
+  return call;
+}
 
 // ========================================================================
 // Request deserialization (from_json)
@@ -37,6 +122,28 @@ void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f) {
   }
 }
 
+void from_json(const nlohmann::json& j, ChatCompletionCustomCall& c) {
+  if (!j.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[].custom must be an object");
+  }
+
+  auto name = j.find("name");
+  if (name == j.end() || !name->is_string() || name->get<std::string>().empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[].custom.name must be a non-empty string");
+  }
+
+  c.name = name->get<std::string>();
+
+  // Empty input is valid raw text, but absence and null cannot represent a custom call payload.
+  const auto input = j.find("input");
+  if (input == j.end() || !input->is_string()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool_calls[].custom.input is required and must be a string");
+  }
+
+  c.input = input->get<std::string>();
+}
+
 void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
   if (!j.is_object()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[] entry must be an object");
@@ -49,18 +156,32 @@ void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
 
   tc.id = id->get<std::string>();
   tc.type = j.value("type", "function");
-
-  if (tc.type != "function") {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported tool call type '" + tc.type + "'");
-  }
-
-  auto function = j.find("function");
-  if (function == j.end()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[] entry requires a function object");
-  }
-
-  tc.function = function->get<ChatCompletionFunctionCall>();
   opt_int(j, "index", tc.index);
+
+  // Polymorphic: only the member matching `type` is present, so nothing here may assume a "function" key exists.
+  // Nesting the wrong payload under a type would replay a call the caller never described.
+  if (tc.type == "function") {
+    auto function = j.find("function");
+    if (function == j.end()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[] entry requires a function object");
+    }
+
+    tc.function = function->get<ChatCompletionFunctionCall>();
+    return;
+  }
+
+  if (tc.type == "custom") {
+    auto custom = j.find("custom");
+    if (custom == j.end()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_calls[] entry requires a custom object");
+    }
+
+    tc.custom = custom->get<ChatCompletionCustomCall>();
+    return;
+  }
+
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported tool call type '", tc.type,
+           "'; expected 'function' or 'custom'");
 }
 
 void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
@@ -92,6 +213,11 @@ void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
   opt_str(j, "tool_call_id", m.tool_call_id);
   opt_str(j, "reasoning_content", m.reasoning_content);
 
+  if (m.role == "tool" && (!m.tool_call_id.has_value() || m.tool_call_id->empty())) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool message tool_call_id must be a non-empty string");
+  }
+
   if (j.contains("tool_calls") && !j["tool_calls"].is_null()) {
     if (!j["tool_calls"].is_array()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "message tool_calls must be an array");
@@ -102,19 +228,93 @@ void from_json(const nlohmann::json& j, ChatCompletionMessage& m) {
 }
 
 void from_json(const nlohmann::json& j, ChatCompletionFunctionDef& f) {
-  f.name = j.at("name").get<std::string>();
+  f.name = RequiredName(j, "tool function");
   opt_str(j, "description", f.description);
 
-  if (j.contains("parameters") && !j["parameters"].is_null()) {
-    f.parameters = j["parameters"];
+  if (auto parameters = j.find("parameters"); parameters != j.end()) {
+    if (!parameters->is_null() && !parameters->is_object()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "tool function 'parameters' must be an object or null");
+    }
+
+    if (parameters->is_object()) {
+      f.parameters = *parameters;
+    }
   }
 
-  opt_bool(j, "strict", f.strict);
+  ReadStrict(j, f.strict);
 }
 
+void from_json(const nlohmann::json& j, ChatCompletionCustomToolDef& c) {
+  c.name = RequiredName(j, "custom tool");
+  RejectMember(j, "parameters", "custom tool");
+  RejectMember(j, "strict", "custom tool");
+  opt_str(j, "description", c.description);
+
+  auto format = j.find("format");
+  c.format = tools::ParseCustomToolFormat(format == j.end() ? nlohmann::json() : *format, c.name);
+}
+
+// Tool entries are polymorphic: only the member matching `type` is present, so nothing here may
+// assume a "function" key exists. Unknown types are rejected rather than coerced into functions — a
+// tool the runtime cannot represent must not be offered to the model as if it understood it.
 void from_json(const nlohmann::json& j, ChatCompletionTool& t) {
-  t.type = j.value("type", "function");
-  t.function = j.at("function").get<ChatCompletionFunctionDef>();
+  t.type = ToolTypeOf(j, "tool");
+
+  if (t.type == "function") {
+    RejectMember(j, "custom", "function tool");
+    t.function = RequiredObject(j, "function", "tool").get<ChatCompletionFunctionDef>();
+    return;
+  }
+
+  if (t.type == "custom") {
+    RejectMember(j, "function", "custom tool");
+    t.custom = RequiredObject(j, "custom", "tool").get<ChatCompletionCustomToolDef>();
+    return;
+  }
+
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported tool type '", t.type,
+           "'; expected 'function' or 'custom'");
+}
+
+void from_json(const nlohmann::json& j, ChatCompletionToolChoice& tc) {
+  if (j.is_string()) {
+    const auto mode = j.get<std::string>();
+
+    if (mode == "auto") {
+      tc.kind = ChatCompletionToolChoice::Kind::kAuto;
+    } else if (mode == "none") {
+      tc.kind = ChatCompletionToolChoice::Kind::kNone;
+    } else if (mode == "required") {
+      tc.kind = ChatCompletionToolChoice::Kind::kRequired;
+    } else {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid tool_choice '", mode,
+               "'; expected 'auto', 'none' or 'required'");
+    }
+
+    return;
+  }
+
+  if (!j.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "tool_choice must be a string or an object");
+  }
+
+  const auto type = ToolTypeOf(j, "tool_choice");
+
+  if (type == "function") {
+    tc.kind = ChatCompletionToolChoice::Kind::kFunction;
+    tc.name = RequiredName(RequiredObject(j, "function", "tool_choice"), "tool_choice function");
+    return;
+  }
+
+  if (type == "custom") {
+    tc.kind = ChatCompletionToolChoice::Kind::kCustom;
+    tc.name = RequiredName(RequiredObject(j, "custom", "tool_choice"), "tool_choice custom");
+    return;
+  }
+
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unsupported tool_choice type '", type,
+           "'; expected 'function' or 'custom'");
 }
 
 void from_json(const nlohmann::json& j, ChatStreamOptions& s) {
@@ -152,7 +352,7 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
   }
 
   if (j.contains("tool_choice") && !j["tool_choice"].is_null()) {
-    r.tool_choice = j["tool_choice"];
+    r.tool_choice = j["tool_choice"].get<ChatCompletionToolChoice>();
   }
 
   if (j.contains("response_format") && !j["response_format"].is_null()) {
@@ -190,11 +390,39 @@ void to_json(nlohmann::json& j, const ChatCompletionFunctionDef& f) {
   }
 }
 
+void to_json(nlohmann::json& j, const ChatCompletionCustomToolDef& c) {
+  j = nlohmann::json{{"name", c.name}};
+
+  if (c.description.has_value()) {
+    j["description"] = *c.description;
+  }
+
+  j["format"] = c.format;
+}
+
 void to_json(nlohmann::json& j, const ChatCompletionTool& t) {
-  j = nlohmann::json{
-      {"type", t.type},
-      {"function", t.function},
-  };
+  j = nlohmann::json{{"type", t.type}};
+
+  // Emit only the member that matches the kind — a custom tool has no "function" on the wire.
+  if (t.custom.has_value()) {
+    j["custom"] = *t.custom;
+  } else {
+    j["function"] = t.function;
+  }
+}
+
+void to_json(nlohmann::json& j, const ChatCompletionToolChoice& tc) {
+  switch (tc.kind) {
+    case ChatCompletionToolChoice::Kind::kFunction:
+      j = nlohmann::json{{"type", "function"}, {"function", {{"name", tc.name}}}};
+      break;
+    case ChatCompletionToolChoice::Kind::kCustom:
+      j = nlohmann::json{{"type", "custom"}, {"custom", {{"name", tc.name}}}};
+      break;
+    default:
+      j = tc.ModeString();
+      break;
+  }
 }
 
 void to_json(nlohmann::json& j, const ChatCompletionFunctionCall& f) {
@@ -204,12 +432,26 @@ void to_json(nlohmann::json& j, const ChatCompletionFunctionCall& f) {
   };
 }
 
+void to_json(nlohmann::json& j, const ChatCompletionCustomCall& c) {
+  j = nlohmann::json{
+      {"name", c.name},
+      {"input", c.input},
+  };
+}
+
 void to_json(nlohmann::json& j, const ChatCompletionToolCall& tc) {
   j = nlohmann::json{
       {"id", tc.id},
       {"type", tc.type},
-      {"function", tc.function},
   };
+
+  // A custom call carries raw text under "custom"; a function call carries JSON under "function".
+  // Emitting both would let a client read the payload through the wrong contract.
+  if (tc.custom.has_value()) {
+    j["custom"] = *tc.custom;
+  } else {
+    j["function"] = tc.function;
+  }
 
   if (tc.index.has_value()) {
     j["index"] = *tc.index;

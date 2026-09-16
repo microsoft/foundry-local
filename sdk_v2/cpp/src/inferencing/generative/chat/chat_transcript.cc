@@ -312,7 +312,7 @@ TranscriptIngest IngestRequestItems(const std::vector<Item*>& items, const std::
                                                      call_item.replayed_arguments, kind)
                                    .call);
       } else {
-        const auto kind = kind_of(call_item.name);
+        const auto kind = call_item.declared_kind.value_or(kind_of(call_item.name));
         message.AppendToolCall(
             MakeSuppliedToolCall(call_item.call_id, call_item.name, call_item.arguments, kind));
       }

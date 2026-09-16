@@ -28,6 +28,15 @@ steps:
   inputs:
     versionSpec: '20.x'
 
+- powershell: |
+    Set-Content '$(Build.SourcesDirectory)/sdk_v2/js/.npmrc' 'registry=https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/npm/registry/'
+  displayName: 'Configure AIFoundryLocal_PublicPackages npm registry'
+
+- task: npmAuthenticate@0
+  displayName: 'Authenticate AIFoundryLocal_PublicPackages for npm'
+  inputs:
+    workingFile: '$(Build.SourcesDirectory)/sdk_v2/js/.npmrc'
+
 - pwsh: |
       $dst = "$(Build.SourcesDirectory)/sdk_v2/js/prebuilds"
       if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }

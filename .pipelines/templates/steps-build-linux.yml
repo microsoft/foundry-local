@@ -22,6 +22,11 @@ parameters:
 
 steps:
 
+- task: PipAuthenticate@1
+  displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+  inputs:
+    artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
+
 - bash: |
     set -euo pipefail
     case '${{ parameters.arch }}' in
@@ -39,10 +44,10 @@ steps:
     image_id_file="$(Build.BinariesDirectory)/manylinux-${{ parameters.arch }}.iid"
     docker build \
       --build-arg "BASE_IMAGE=$image" \
-      --file "$(Build.SourcesDirectory)/.pipelines/v2/docker/manylinux/Dockerfile" \
+      --file "$(Build.SourcesDirectory)/.pipelines/docker/manylinux/Dockerfile" \
       --iidfile "$image_id_file" \
       --tag "$build_image" \
-      "$(Build.SourcesDirectory)/.pipelines/v2/docker/manylinux"
+      "$(Build.SourcesDirectory)/.pipelines/docker/manylinux"
     IFS= read -r image_id < "$image_id_file" || [ -n "$image_id" ]
     echo "##vso[task.setvariable variable=manylinuxImage]$image_id"
   displayName: 'Prepare manylinux 2.28 build image'
@@ -55,7 +60,7 @@ steps:
     includeWinml: false
 
 - ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+  - template: fetch-models-from-artifacts-feed.yml
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
 
@@ -64,6 +69,7 @@ steps:
     version=$(tr -d '[:space:]' < "$(Pipeline.Workspace)/version-info/sdkVersion.txt")
     home_dir="$(Build.BinariesDirectory)/manylinux-home"
     mkdir -p "$home_dir"
+    : "${PIP_INDEX_URL:?PipAuthenticate did not set PIP_INDEX_URL}"
     user_id=$(id -u)
     group_id=$(id -g)
 
@@ -75,6 +81,8 @@ steps:
       --env "VCPKG_ROOT=$(Build.BinariesDirectory)/vcpkg" \
       --env "NUGET_CACHE=$(Build.BinariesDirectory)/nuget_packages" \
       --env "SDK_VERSION=$version" \
+      --env PIP_INDEX_URL \
+      --env PIP_NO_INPUT=1 \
       --workdir "$(Build.SourcesDirectory)/sdk_v2/cpp" \
       "$(manylinuxImage)" \
       bash -c '

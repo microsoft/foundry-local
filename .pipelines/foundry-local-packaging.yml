@@ -1,11 +1,8 @@
 # Foundry Local Packaging Pipeline
 #
-# Builds Foundry Local Core from neutron-server (windows.ai.toolkit project),
-# then packages the C# and JS SDKs from this repo using the built Core.
+# Builds the sdk_v2 native runtime and packages the C#, JS, Python, and Rust SDKs.
 #
-# Produces artifacts: flc-nuget, flc-nuget-winml, flc-wheels, flc-wheels-winml,
-#   cs-sdk, cs-sdk-winml, js-sdk, js-sdk-winml, python-sdk, python-sdk-winml,
-#   rust-sdk, rust-sdk-winml
+# Produces the sdk_v2 native runtime, C#, JS, Python, and Rust artifacts.
 
 # CI: only auto-run on pushes to main / release branches. Without an explicit
 # trigger block, ADO defaults to "every commit on every branch", which fires
@@ -30,10 +27,6 @@ parameters:
   displayName: 'Package version (sdk_v2/...)'
   type: string
   default: '2.0.1'
-- name: versionV1
-  displayName: 'Package version (sdk/...)'
-  type: string
-  default: '1.3.0'
 - name: prereleaseId
   displayName: 'Pre-release identifier (e.g. rc1, beta).'
   type: string
@@ -42,14 +35,6 @@ parameters:
   displayName: 'Release build'
   type: boolean
   default: false
-- name: buildV1
-  displayName: 'Force build v1 sdk. If unchecked, auto-detected from PR changes.'
-  type: boolean
-  default: false
-- name: neutronServerBranch
-  displayName: 'Foundry Local Core branch (windows.ai.toolkit/neutron-server)'
-  type: string
-  default: 'dev/FoundryLocalCore/main'
 
 variables:
 - group: FoundryLocal-ESRP-Signing
@@ -165,13 +150,9 @@ extends:
     # A single version string is computed once and shared across all stages.
     # This prevents timestamp drift between standard and WinML builds.
     # Outputs (written to the `version-info` pipeline artifact):
-    #   sdk_v2 (no suffix; FLC is legacy-only and not emitted here):
+    #   sdk_v2:
     #     sdkVersion.txt    – semver for C#       (e.g. X.Y.Z-dev.202604061234)
     #     pyVersion.txt     – PEP 440 for Python  (e.g. X.Y.Z.dev202604061234)
-    #   Legacy sdk/ (.v1. suffix):
-    #     sdkVersion.v1.txt – semver for JS, C#, Rust
-    #     pyVersion.v1.txt  – PEP 440 for Python
-    #     flcVersion.v1.txt – NuGet/FLC style
     - stage: compute_version
       displayName: 'Compute Version'
       dependsOn: []
@@ -222,46 +203,19 @@ extends:
                 }
               }
 
-              $v2 = Compute-Versions "${{ parameters.version }}"   $false
-              $v1 = Compute-Versions "${{ parameters.versionV1 }}" $true
+              $v2 = Compute-Versions "${{ parameters.version }}" $false
 
               $outDir = "$(Build.ArtifactStagingDirectory)/version-info"
               New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-              # sdk_v2 versions (canonical, no suffix). No flcVersion — v2
-              # does not consume Foundry Local Core.
               Set-Content -Path "$outDir/sdkVersion.txt" -Value $v2.sdk -NoNewline
               Set-Content -Path "$outDir/pyVersion.txt"  -Value $v2.py  -NoNewline
 
-              # Legacy sdk/ versions (.v1. suffix).
-              Set-Content -Path "$outDir/sdkVersion.v1.txt" -Value $v1.sdk -NoNewline
-              Set-Content -Path "$outDir/pyVersion.v1.txt"  -Value $v1.py  -NoNewline
-              Set-Content -Path "$outDir/flcVersion.v1.txt" -Value $v1.flc -NoNewline
-
               Write-Host "v2 SDK version:    $($v2.sdk)"
               Write-Host "v2 Python version: $($v2.py)"
-              Write-Host "v1 SDK version:    $($v1.sdk)"
-              Write-Host "v1 Python version: $($v1.py)"
-              Write-Host "v1 FLC version:    $($v1.flc)"
-
-    # -- sdk_v1 (sdk/) C++ Core (FLC) + C# / JS / Python / Rust SDKs --
-    # Entire subgraph is gated by a single artificial root stage (`v1_gate`)
-    # defined inside stages-sdk-v1.yml. When detect_changes.buildV1 is false,
-    # v1_gate is skipped and every downstream v1 stage skips via the default
-    # `succeeded()` cascade.
-    - template: v1/templates/stages-sdk-v1.yml
-      parameters:
-        gateCondition: eq(dependencies.detect_changes.outputs['setflags.setflags.buildV1'], 'true')
-        gateDependsOn: [detect_changes]
-        version: ${{ parameters.versionV1 }}
-        prereleaseId: ${{ parameters.prereleaseId }}
-        isRelease: ${{ parameters.isRelease }}
-        neutronServerBranch: ${{ parameters.neutronServerBranch }}
-
-
     # ── sdk_v2 (C++ native + C# SDK + Python SDK) ──
     # Built unconditionally on every run; no detect_changes gate.
-    - template: v2/templates/stages-sdk-v2.yml
+    - template: templates/stages-sdk-v2.yml
       parameters:
         buildConfig: $(cppBuildConfig)
         ortVersion: $(cppOrtVersion)

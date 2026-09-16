@@ -67,13 +67,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
       parameters:
         scriptType: ps
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: cs_test_win_arm64
   displayName: 'C# SDK: Test Windows ARM64'
@@ -96,13 +95,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
       parameters:
         scriptType: ps
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # ====================================================================
 # Test — Linux x64
@@ -127,11 +125,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # ====================================================================
 # Test — Linux ARM64
@@ -157,11 +154,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 # ====================================================================
 # Test — macOS ARM64
@@ -188,11 +184,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-test-cs.yml
       parameters:
         flNugetDir: '$(Pipeline.Workspace)/cpp-nuget'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         additionalTestArgs: '--settings $(Build.SourcesDirectory)/sdk_v2/cs/test/FoundryLocal.Tests/sequential.runsettings'
 
 # ====================================================================
