@@ -13,6 +13,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -24,8 +25,10 @@ namespace {
 
 constexpr int kPageSize = 50;
 
-constexpr const char* kIndexEntitiesUrl = "https://eastus.api.azureml.ms/index/v1.0/entities";
-constexpr const char* kDefaultDeploymentOption = "Foundry Local on Devices";
+constexpr const char* kAssetGalleryModelsUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+constexpr const char* kRegionProbeBody = R"({"filters":[],"pageSize":1})";
+constexpr const char* kServedByClusterHeader = "azureml-served-by-cluster";
+constexpr const char* kDefaultRegion = "centralus";
 
 // The catalog and registry gateways reject requests without this User-Agent (HTTP 400).
 constexpr const char* kUserAgent = "AzureAiStudio";
@@ -41,13 +44,13 @@ std::string TrimSingleQuotes(const std::string& s) {
   return s.substr(begin, end - begin + 1);
 }
 
-/// Build the deployment-option filter values from the override string.
-/// An empty override selects models published for Foundry Local devices.
+/// Build the values for the foundryLocal tag filter from the override string.
+/// Empty override → {} so the caller can apply the default deployment option.
 /// Otherwise split on ',', drop entries that are empty after whitespace-trimming,
 /// then strip surrounding quotes.
 std::vector<std::string> CreateModelFilter(const std::string& filter_override) {
   if (filter_override.empty()) {
-    return {kDefaultDeploymentOption};
+    return {};
   }
 
   std::vector<std::string> values;
@@ -79,8 +82,52 @@ CatalogFilter MakeFilter(std::string field, std::vector<std::string> values) {
   return f;
 }
 
+/// Extract the region from an `azureml-served-by-cluster` header value such as
+/// "vienna-eastus-01" → "eastus". Returns "" if the value doesn't match.
+std::string ExtractRegionFromClusterHeader(const std::string& header_value) {
+  static const std::regex pattern(R"(vienna-(\w+)-\d+)");
+  std::smatch match;
+  if (std::regex_search(header_value, match, pattern)) {
+    return match[1].str();
+  }
+
+  return {};
+}
+
+bool IsAssetGalleryUrl(const std::string& url) {
+  return url.find("/asset-gallery/") != std::string::npos;
+}
+
+/// Detect the Azure region by POSTing a probe to the catalog gallery and reading
+/// the `azureml-served-by-cluster` response header. Returns "centralus" on failure.
+std::string DetectRegion(const AzureCatalogClient::HttpPostResponseFn& http_post_response, ILogger& logger) {
+  http::HttpResponse response = http_post_response(kAssetGalleryModelsUrl, kRegionProbeBody);
+
+  std::string region = kDefaultRegion;
+  if (response.status >= 200 && response.status < 300) {
+    auto it = response.headers.find(kServedByClusterHeader);
+    if (it != response.headers.end()) {
+      auto parsed = ExtractRegionFromClusterHeader(it->second);
+      if (!parsed.empty()) {
+        region = parsed;
+      }
+    }
+  } else {
+    logger.Log(LogLevel::Warning,
+               "Region detection probe failed (status " + std::to_string(response.status) + "); defaulting to '" +
+                   kDefaultRegion + "'.");
+  }
+
+  logger.Log(LogLevel::Information, "Detected catalog region: '" + region + "'.");
+  return region;
+}
+
 std::string BuildRequestUrl(const std::string& base_url) {
-  return base_url.empty() ? kIndexEntitiesUrl : base_url;
+  if (base_url.empty()) {
+    return kAssetGalleryModelsUrl;
+  }
+
+  return base_url;
 }
 
 std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
@@ -160,6 +207,7 @@ std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_mo
 }
 
 /// Build per-device filter sets for catalog queries.
+/// `latest_only` controls whether to include the `labels=latest` filter (default true for latest models).
 /// `model_alias` scopes results to a specific alias when non-empty; when empty, no alias filter is applied.
 /// `model_name` scopes results to a specific model name when non-empty for server-side filtering.
 /// Each filter set queries for variants on a specific device/EP pair; the catalog API matches on the
@@ -167,6 +215,7 @@ std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_mo
 std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
     const IEpDetector& ep_detector,
     const std::vector<std::string>& model_filter,
+    bool latest_only = true,
     const std::string& model_alias = "",
     const std::string& model_name = "") {
 
@@ -174,18 +223,27 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
   std::vector<std::vector<CatalogFilter>> filter_sets;
   for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
     std::vector<CatalogFilter> filters;
-
-    filters.push_back(MakeFilter("type", {"models"}));
-    filters.push_back(MakeFilter("annotations/systemCatalogData/deploymentOptions", model_filter));
+  
+    std::vector<std::string> deployment_options = model_filter;
+    if (deployment_options.empty()) {
+      deployment_options.push_back("Foundry Local on Devices");
+    }
+  
+    filters.push_back(MakeFilter("DeploymentOptions", std::move(deployment_options)));
     if (!model_alias.empty()) {
-      filters.push_back(MakeFilter("annotations/systemCatalogData/alias", {model_alias}));
+      filters.push_back(MakeFilter("Alias", {model_alias}));
     }
     if (!model_name.empty()) {
-      filters.push_back(MakeFilter("properties/name", {model_name}));
+      filters.push_back(MakeFilter("Name", {model_name}));
     }
-    filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}));
-    filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps));
-
+    filters.push_back(MakeFilter("VariantInformation/VariantMetadata/Device", {ToLower(device)}));
+    filters.push_back(MakeFilter("VariantInformation/VariantMetadata/ExecutionProvider", eps));
+  
+    if (!latest_only) {
+      // Placeholder to keep the parameter part of the behavior contract.
+      // Asset-gallery query currently does not require an extra field to fetch all versions.
+    }
+  
     filter_sets.push_back(std::move(filters));
   }
   return filter_sets;
@@ -195,9 +253,20 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(
 std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& model_filter,
                                                const std::vector<std::string>& model_ids) {
   std::vector<CatalogFilter> filters;
-  filters.push_back(MakeFilter("type", {"models"}));
-  filters.push_back(MakeFilter("annotations/systemCatalogData/deploymentOptions", model_filter));
-  filters.push_back(MakeFilter("properties/id", model_ids));
+  std::vector<std::string> deployment_options = model_filter;
+  if (deployment_options.empty()) {
+    deployment_options.push_back("Foundry Local on Devices");
+  }
+
+  std::vector<std::string> names;
+  names.reserve(model_ids.size());
+  for (const auto& model_id : model_ids) {
+    const auto colon = model_id.rfind(':');
+    names.push_back(colon == std::string::npos ? model_id : model_id.substr(0, colon));
+  }
+
+  filters.push_back(MakeFilter("DeploymentOptions", deployment_options));
+  filters.push_back(MakeFilter("Name", names));
   return filters;
 }
 
@@ -227,11 +296,13 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
     base_url_.pop_back();
   }
 
-  // Catalog requests are routed by the index service. An explicit region is retained
-  // only as model-registry routing metadata for downloads.
+  // An explicit region is a hard override. Empty/"auto" means detect the region
+  // when using the asset-gallery catalog service.
   const auto normalized_catalog_region = ToLower(catalog_region);
   if (!normalized_catalog_region.empty() && normalized_catalog_region != "auto") {
     region_ = normalized_catalog_region;
+  } else if (base_url_.empty() || IsAssetGalleryUrl(base_url_)) {
+    region_ = DetectRegion(http_post_response_, logger_);
   }
 }
 
@@ -327,7 +398,8 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
   // Fetch all versions of the alias across per-device filter sets. Each filter set
   // queries for variants matching the alias on a specific device/EP pair; the results
   // are aggregated. The caller applies per-variant version caps (latest X per variant).
-  const auto filter_sets = BuildSearchFilters(ep_detector_, model_filter_, model_alias, model_name);
+  const auto filter_sets = BuildSearchFilters(ep_detector_, model_filter_, /*latest_only=*/false,
+                                              model_alias, model_name);
 
   std::vector<ModelInfo> result;
 

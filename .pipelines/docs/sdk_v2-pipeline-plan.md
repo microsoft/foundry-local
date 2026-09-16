@@ -249,12 +249,12 @@ the Python build stage consumes `pyVersion.txt`; `flcVersion.txt` exists for
 Core publishing.
 
 `sdkVersion` is baked into the native binary via the cmake cache variable
-`FOUNDRY_LOCAL_VERSION_OVERRIDE`, so `FoundryLocalGetVersionString()` returns
+`FOUNDRY_LOCAL_VERSION_STRING`, so `FoundryLocalGetVersionString()` returns
 the same string that appears in the `.nupkg` filename. Each platform build
 stage:
 
 1. Depends on `compute_version` and downloads the `version-info` artifact.
-2. Reads `sdkVersion.txt` and sets `FOUNDRY_LOCAL_VERSION_OVERRIDE`.
+2. Reads `sdkVersion.txt` and sets `FOUNDRY_LOCAL_VERSION_STRING`.
 3. Passes the combined defines to `build.py --cmake_extra_defines`.
 
 Local developer builds (no `-D` override) use the `PROJECT_VERSION` from
@@ -262,7 +262,7 @@ Local developer builds (no `-D` override) use the `PROJECT_VERSION` from
 
 Pipeline parameters allow override:
 
-* `version`        — base version, default `2.0.1`
+* `version`        — base version, default `0.1.0`
 * `prereleaseId`   — `none` (default) or any string (`rc1`, `beta`, …)
 * `isRelease`      — boolean, drops the dev/timestamp suffix
 * `buildConfig`    — CMake config, default `RelWithDebInfo`

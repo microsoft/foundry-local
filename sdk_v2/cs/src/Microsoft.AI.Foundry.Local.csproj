@@ -34,10 +34,12 @@
     <!-- 
       set a default Version so if someone creates a nuget package locally it has a meaningful name.
       CI builds will set the version using .pipelines\sdk\templates\sdk-version.yml
-      We only set this if we're actually generating a package (build or pack).
+      We only set this if we're actually generating a package (build or pack) so that Visual Studio doesn't 
+      constantly restore packages. Assuming it considers the csproj to be 'changed' due to the dynamic timestamp.
       -->
     <PropertyGroup Condition="'$(GeneratePackageOnBuild)' == 'true' Or '$(IsPacking)' == 'true'">
-      <Version>2.0.1</Version>
+      <BuildTimestamp>$([System.DateTime]::Now.ToString("yyyyMMddHHmmss"))</BuildTimestamp>
+      <Version>0.5.0-dev.local.$(BuildTimestamp)</Version>
     </PropertyGroup>
 
     <PropertyGroup>
