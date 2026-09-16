@@ -77,7 +77,7 @@ steps:
 
 # Tests need shared model files.
 - ${{ if eq(parameters.runTests, true) }}:
-  - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+  - template: fetch-models-from-artifacts-feed.yml
     parameters:
       destinationPath: '$(Agent.BuildDirectory)/test-data-shared'
       scriptType: ps

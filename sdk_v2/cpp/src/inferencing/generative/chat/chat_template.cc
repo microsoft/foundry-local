@@ -35,6 +35,10 @@ nlohmann::ordered_json BuildToolCallsJson(const TranscriptMessage& message) {
   auto tool_calls = nlohmann::ordered_json::array();
 
   for (const auto* call : message.ToolCalls()) {
+    if (call->generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
+      continue;
+    }
+
     nlohmann::ordered_json entry;
     entry["id"] = call->call_id;
     entry["type"] = "function";
@@ -50,6 +54,12 @@ nlohmann::ordered_json BuildMessageJson(const TranscriptMessage& message) {
   nlohmann::ordered_json entry;
   entry["role"] = Utils::RoleToString(message.role);
   entry["content"] = message.VisibleText();
+
+  for (const auto* call : message.ToolCalls()) {
+    if (call->generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
+      entry["content"] = entry["content"].get<std::string>() + call->arguments;
+    }
+  }
 
   if (!message.name.empty()) {
     entry["name"] = message.name;
@@ -70,7 +80,10 @@ nlohmann::ordered_json BuildMessageJson(const TranscriptMessage& message) {
   // Reasoning is never projected back into a prompt, not even alongside the calls it produced. It is the model's
   // private scratchpad: it is typed, stored, and surfaced to the caller, but a conversation replayed from storage
   // cannot reproduce it, so replaying it here would make a warm session and a rebuilt one send different prompts.
-  entry["tool_calls"] = BuildToolCallsJson(message);
+  auto tool_calls = BuildToolCallsJson(message);
+  if (!tool_calls.empty()) {
+    entry["tool_calls"] = std::move(tool_calls);
+  }
   return entry;
 }
 

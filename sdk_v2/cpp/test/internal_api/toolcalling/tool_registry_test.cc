@@ -295,19 +295,17 @@ TEST(ToolRegistryTest, SnapshotsAreConsistentWhileToolsAreRegisteredAndRemoved) 
   registry.Add(Function("stable_function"));
 
   std::atomic<bool> stop{false};
+  std::atomic<bool> mutation_started{false};
   std::atomic<int> reads{0};
 
-  std::thread writer([&] {
-    for (int i = 0; i < 2000; ++i) {
-      registry.Add(Custom("churn_" + std::to_string(i)));
-      EXPECT_TRUE(registry.Remove("churn_" + std::to_string(i)));
-    }
-    stop = true;
-  });
-
   std::thread reader([&] {
-    while (!stop) {
+    while (!mutation_started.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+
+    while (!stop.load(std::memory_order_acquire)) {
       auto definitions = registry.Definitions();
+      reads.fetch_add(1, std::memory_order_release);
 
       // The two tools that are never churned must be present, intact, and of the right kind in
       // every snapshot, regardless of what the writer is doing.
@@ -335,9 +333,22 @@ TEST(ToolRegistryTest, SnapshotsAreConsistentWhileToolsAreRegisteredAndRemoved) 
       for (const auto& definition : definitions) {
         EXPECT_FALSE(definition.json_schema.empty());
       }
-
-      ++reads;
     }
+  });
+
+  std::thread writer([&] {
+    registry.Add(Custom("churn_0"));
+    mutation_started.store(true, std::memory_order_release);
+    while (reads.load(std::memory_order_acquire) == 0) {
+      std::this_thread::yield();
+    }
+    EXPECT_TRUE(registry.Remove("churn_0"));
+
+    for (int i = 1; i < 2000; ++i) {
+      registry.Add(Custom("churn_" + std::to_string(i)));
+      EXPECT_TRUE(registry.Remove("churn_" + std::to_string(i)));
+    }
+    stop.store(true, std::memory_order_release);
   });
 
   writer.join();

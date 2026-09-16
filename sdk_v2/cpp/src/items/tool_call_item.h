@@ -22,15 +22,23 @@ struct ToolCallItem : Item {
   std::string replayed_arguments;
   std::optional<ToolKind> replayed_kind;
   ToolKind kind = ToolKind::kFunction;
+  // Provider request transcripts state whether a supplied call used the function or custom wire
+  // shape. Native callers do not, so absence preserves registry-based kind resolution.
+  std::optional<ToolKind> declared_kind;
+  GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
 
   ToolCallItem(std::string call_id_in = {}, std::string name_in = {}, std::string arguments_in = {},
-               bool replayed_from_store_in = false, ToolKind kind_in = ToolKind::kFunction)
+               bool replayed_from_store_in = false, ToolKind kind_in = ToolKind::kFunction,
+               std::optional<ToolKind> declared_kind_in = std::nullopt,
+               GeneratedCallEncoding generated_encoding_in = GeneratedCallEncoding::kStructured)
       : Item(FOUNDRY_LOCAL_ITEM_TOOL_CALL),
         call_id(std::move(call_id_in)),
         name(std::move(name_in)),
         arguments(std::move(arguments_in)),
         replayed_from_store(replayed_from_store_in),
-        kind(kind_in) {}
+        kind(kind_in),
+        declared_kind(declared_kind_in),
+        generated_encoding(generated_encoding_in) {}
 
   void SetToolCallData(const flToolCallData& new_data) {
     call_id = new_data.call_id ? new_data.call_id : "";
@@ -40,6 +48,8 @@ struct ToolCallItem : Item {
     replayed_arguments.clear();
     replayed_kind.reset();
     kind = ToolKind::kFunction;
+    declared_kind.reset();
+    generated_encoding = GeneratedCallEncoding::kStructured;
   }
 
   void GetApiData(flToolCallData& out) const {

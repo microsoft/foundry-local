@@ -99,13 +99,13 @@ Build and test on the `onnxruntime-linux-ARM64-CPU-2019` pool
 
 - `NodeTool@0` for Node 20.
 - Drop `js-prebuild-<rid>` contents into `sdk_v2/js/prebuilds/`.
-- Check out `test-data-shared` via `checkout-steps.yml`.
-- On macOS, `brew install git-lfs` before checkout (same as Python).
+- Fetch the model cache via `fetch-models-from-artifacts-feed.yml`.
+- On macOS, ensure the test data directory is present and writable before the run.
 - `npm ci --no-audit --no-fund` (no `--ignore-scripts` — install-native
   is allowed to run on the test side; it's a no-op when the prebuild is
   already in place).
 - `npm run build:ts`, then `npx vitest run --reporter=verbose` with
-  `FOUNDRY_TEST_DATA_DIR=$(testDataSharedDir)`.
+  `FOUNDRY_TEST_DATA_DIR=$(Build.SourcesDirectory)/test-data-shared`.
 
 ## Pack stage
 
@@ -140,7 +140,7 @@ signing.
 | `js_pack`                 | none                                                                          | n/a           | `.tgz` not signed by npm convention |
 
 Windows signing block is a near-copy of the SDK DLL signing step in
-[`steps-build-cs.yml`](templates/steps-build-cs.yml) — same
+[`steps-build-cs.yml`](../templates/steps-build-cs.yml) — same
 `ConnectedServiceName`, ESRP variable group
 (`FoundryLocal-ESRP-Signing`), and `signConfigType: inlineSignParams`
 shape.
@@ -148,13 +148,13 @@ shape.
 ## Files added / modified
 
 **New:**
-- [`.pipelines/v2/templates/stages-js.yml`](templates/stages-js.yml)
-- [`.pipelines/v2/templates/steps-build-js.yml`](templates/steps-build-js.yml)
-- [`.pipelines/v2/templates/steps-test-js.yml`](templates/steps-test-js.yml)
-- [`.pipelines/v2/templates/steps-pack-js.yml`](templates/steps-pack-js.yml)
+- [`.pipelines/templates/stages-js.yml`](../templates/stages-js.yml)
+- [`.pipelines/templates/steps-build-js.yml`](../templates/steps-build-js.yml)
+- [`.pipelines/templates/steps-test-js.yml`](../templates/steps-test-js.yml)
+- [`.pipelines/templates/steps-pack-js.yml`](../templates/steps-pack-js.yml)
 
 **Modified:**
-- [`.pipelines/v2/templates/stages-sdk-v2.yml`](templates/stages-sdk-v2.yml)
+- [`.pipelines/templates/stages-sdk-v2.yml`](../templates/stages-sdk-v2.yml)
   — appends `stages-js.yml`.
 - [`sdk_v2/js/script/gyp/print-import-lib-dir.mjs`](../../sdk_v2/js/script/gyp/print-import-lib-dir.mjs)
   — honors `FOUNDRY_LOCAL_LIB_DIR`.

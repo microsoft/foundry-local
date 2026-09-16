@@ -198,13 +198,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/checkout-steps.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
       parameters:
-        repoName: test-data-shared
+        scriptType: ps
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-x64'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
 
 - stage: python_test_win_arm64
   displayName: 'Python SDK: Test Windows ARM64'
@@ -224,13 +223,12 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
       parameters:
         scriptType: ps
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-win-arm64'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         pythonArchitecture: 'arm64'
 
 - stage: python_test_linux_x64
@@ -250,11 +248,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-x64'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         useSystemPython: true
 
 - stage: python_test_linux_arm64
@@ -275,11 +272,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-linux-arm64'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         useSystemPython: true
 
 - stage: python_test_osx_arm64
@@ -301,11 +297,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - template: ../../templates/fetch-models-from-artifacts-feed.yml@self
+    - template: fetch-models-from-artifacts-feed.yml
     - template: steps-test-python.yml
       parameters:
         wheelDir: '$(Pipeline.Workspace)/python-sdk-osx-arm64'
-        testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
         pythonArchitecture: 'arm64'
 
 # ================================================================
@@ -414,6 +409,10 @@ stages:
         versionSpec: '3.12'
         addToPath: true
         architecture: 'x64'
+    - task: PipAuthenticate@1
+      displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+      inputs:
+        artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
     - task: PowerShell@2
       displayName: 'Run packaged Python chat_completion sample'
       inputs:

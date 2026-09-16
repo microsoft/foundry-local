@@ -1,107 +1,79 @@
-# Steps to build, sign, and pack the C# SDK NuGet package.
-# When test-data-shared is checked out alongside self, ADO places repos under
-# $(Build.SourcesDirectory)/<repo-name>. The self repo is 'Foundry-Local'.
+# Inner steps to restore, build, sign, and pack the sdk_v2 C# SDK
+# (Microsoft.AI.Foundry.Local).
+#
+# The caller is responsible for placing the Foundry Local Runtime nupkg
+# (Microsoft.AI.Foundry.Local.Runtime) in `flNugetDir`, and for
+# downloading the `version-info` pipeline artifact so this template can
+# read $(Pipeline.Workspace)/version-info/sdkVersion.txt.
+
 parameters:
-- name: version
+- name: flNugetDir
   type: string
-- name: isRelease
-  type: boolean
-  default: false
-- name: isWinML
-  type: boolean
-  default: false
-- name: flcNugetDir
-  type: string
-  displayName: 'Path to directory containing the FLC .nupkg'
+  displayName: 'Path to directory containing the Foundry Local Runtime .nupkg'
 - name: outputDir
   type: string
   default: '$(Build.ArtifactStagingDirectory)/cs-sdk'
-  displayName: 'Path to directory for the packed SDK'
-- name: prereleaseId
-  type: string
-  default: ''
-- name: depsVersionsDir
-  type: string
-  default: ''
-  displayName: 'Path to deps-versions artifact directory'
-steps:
-# Set paths for multi-repo checkout
-- task: PowerShell@2
-  displayName: 'Set source paths'
-  inputs:
-    targetType: inline
-    script: |
-      $multiCheckout = "$(Build.SourcesDirectory)/Foundry-Local"
-      if (Test-Path $multiCheckout) {
-        $repoRoot = $multiCheckout
-      } else {
-        $repoRoot = "$(Build.SourcesDirectory)"
-      }
-      $testDataDir = "$(Build.SourcesDirectory)/test-data-shared"
-      Write-Host "##vso[task.setvariable variable=repoRoot]$repoRoot"
-      Write-Host "##vso[task.setvariable variable=testDataDir]$testDataDir"
+  displayName: 'Path to directory for the packed SDK nupkg'
 
-# Using the latest SDK does not prevent us from targeting other platforms.
-# It ensures that we've got the latest tooling, fixes, and performance enhancements.
+steps:
+
 - task: UseDotNet@2
   displayName: 'Use .NET 10 SDK'
   inputs:
     packageType: sdk
     version: '10.0.x'
 
-# Read version from the version-info artifact produced by compute_version stage.
-# Legacy SDKs read the `.v1.txt` flavor (sdk_v2 reads `.txt`).
+# Read version from the version-info artifact produced by compute_version.
 - task: PowerShell@2
   displayName: 'Set package version'
   inputs:
     targetType: inline
+    pwsh: true
     script: |
-      $v = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.v1.txt" -Raw).Trim()
+      $v = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
       Write-Host "Package version: $v"
       Write-Host "##vso[task.setvariable variable=packageVersion]$v"
 
-# Load dependency versions from deps_versions.json
-- template: update-deps-versions-steps.yml
-  parameters:
-    repoRoot: $(repoRoot)
-    artifactDir: ${{ parameters.depsVersionsDir }}
-    isWinML: ${{ parameters.isWinML }}
-
-# List downloaded artifact for debugging
+# List downloaded Foundry Local Runtime artifact for debugging.
 - task: PowerShell@2
-  displayName: 'List downloaded FLC artifact'
+  displayName: 'List downloaded Foundry Local Runtime artifact'
   inputs:
     targetType: inline
+    pwsh: true
     script: |
-      Write-Host "Contents of ${{ parameters.flcNugetDir }}:"
-      Get-ChildItem "${{ parameters.flcNugetDir }}" -Recurse | ForEach-Object { Write-Host $_.FullName }
+      Write-Host "Contents of ${{ parameters.flNugetDir }}:"
+      Get-ChildItem "${{ parameters.flNugetDir }}" -Recurse | ForEach-Object { Write-Host $_.FullName }
 
-# Create a temporary NuGet.config that includes the local FLC feed
+# Create a temporary NuGet.config that includes the local Foundry Local
+# Runtime feed. Locate the directory that actually contains the .nupkg so
+# the local feed points at the right level (artifacts can be nested one
+# directory deep when downloaded by templateContext).
 - task: PowerShell@2
-  displayName: 'Create NuGet.config with local FLC feed'
+  displayName: 'Create NuGet.config with local Foundry Local Runtime feed'
   inputs:
     targetType: inline
+    pwsh: true
     script: |
+      $pkgPattern = 'Microsoft.AI.Foundry.Local.Runtime*.nupkg'
+      $nupkg = Get-ChildItem "${{ parameters.flNugetDir }}" -Recurse -Filter $pkgPattern |
+        Where-Object { $_.Name -notlike '*.snupkg' } | Select-Object -First 1
+      if (-not $nupkg) { throw "No Microsoft.AI.Foundry.Local.Runtime*.nupkg found in ${{ parameters.flNugetDir }}" }
+      $flFeedDir = $nupkg.DirectoryName
+      Write-Host "Local Foundry Local Runtime feed directory: $flFeedDir"
+
       $nugetConfig = @"
       <?xml version="1.0" encoding="utf-8"?>
       <configuration>
         <packageSources>
           <clear />
-          <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-          <add key="LocalFLC" value="${{ parameters.flcNugetDir }}" />
+          <add key="LocalFLRuntime" value="$flFeedDir" />
           <add key="AIFoundryLocal_PublicPackages" value="https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/nuget/v3/index.json" />
         </packageSources>
       </configuration>
       "@
-      # Point the local NuGet feed at the directory that actually contains the .nupkg
-      $nupkg = Get-ChildItem "${{ parameters.flcNugetDir }}" -Recurse -Filter "Microsoft.AI.Foundry.Local.Core*.nupkg" -Exclude "*.snupkg" | Select-Object -First 1
-      if (-not $nupkg) { throw "No FLC .nupkg found in ${{ parameters.flcNugetDir }}" }
-      $flcFeedDir = $nupkg.DirectoryName
-      $nugetConfig = $nugetConfig -replace [regex]::Escape("${{ parameters.flcNugetDir }}"), $flcFeedDir
       $configPath = "$(Build.ArtifactStagingDirectory)/NuGet.config"
       Set-Content -Path $configPath -Value $nugetConfig
       Write-Host "##vso[task.setvariable variable=customNugetConfig]$configPath"
-      Write-Host "Local FLC feed directory: $flcFeedDir"
 
 - task: NuGetAuthenticate@1
   displayName: 'Authenticate NuGet feeds'
@@ -110,41 +82,33 @@ steps:
   displayName: 'Restore SDK'
   inputs:
     targetType: inline
+    pwsh: true
     script: |
-      $proj = "$(repoRoot)/sdk/cs/src/Microsoft.AI.Foundry.Local.csproj"
+      $proj = "$(Build.SourcesDirectory)/sdk_v2/cs/src/Microsoft.AI.Foundry.Local.csproj"
       if (-not (Test-Path $proj)) { throw "Project not found: $proj" }
       dotnet restore $proj `
         --configfile "$(customNugetConfig)" `
-        /p:UseWinML=${{ parameters.isWinML }}
+        /p:FoundryLocalRuntimeVersion=$(packageVersion) `
+        /p:FoundryLocalNativeBinDir=
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 - task: PowerShell@2
   displayName: 'Build SDK'
   inputs:
     targetType: inline
+    pwsh: true
     script: |
-      dotnet build "$(repoRoot)/sdk/cs/src/Microsoft.AI.Foundry.Local.csproj" `
+      dotnet build "$(Build.SourcesDirectory)/sdk_v2/cs/src/Microsoft.AI.Foundry.Local.csproj" `
         --no-restore --configuration Release `
-        /p:UseWinML=${{ parameters.isWinML }}
+        /p:FoundryLocalRuntimeVersion=$(packageVersion) `
+        /p:FoundryLocalNativeBinDir=
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Discover target framework directory
-- task: PowerShell@2
-  displayName: 'Find target framework'
-  inputs:
-    targetType: inline
-    script: |
-      $base = "$(repoRoot)/sdk/cs/src/bin/Release"
-      # The SDK targets netstandard2.0 and any compatible runtime.
-      # Find whichever TFM directory was produced by the build.
-      $tfmDir = Get-ChildItem $base -Directory | Select-Object -First 1
-      if (-not $tfmDir) { throw "No target framework directory found under $base" }
-      Write-Host "##vso[task.setvariable variable=TargetFramework]$($tfmDir.Name)"
-      Write-Host "Target framework: $($tfmDir.Name)"
-
-# Sign DLLs
+# Sign SDK DLLs across all target frameworks (net8.0, net9.0, netstandard2.0).
+# Pattern is a recursive glob so every TFM output directory is covered.
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
   displayName: 'Sign SDK DLLs'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
     UseMSIAuthentication: true
@@ -153,8 +117,11 @@ steps:
     EsrpClientId: '$(esrpClientId)'
     AuthAKVName: '$(esrpAkvName)'
     AuthSignCertName: '$(esrpSignCertName)'
-    FolderPath: '$(repoRoot)/sdk/cs/src/bin/Release/$(TargetFramework)'
-    Pattern: '*.dll'
+    FolderPath: '$(Build.SourcesDirectory)/sdk_v2/cs/src/bin/Release'
+    # Pattern is passed to .NET Directory.EnumerateFiles with SearchOption.AllDirectories,
+    # so it must be a plain filename (no '/' or '**'). Recursion across TFM subfolders is
+    # provided by the task itself when UseMinimatch=false.
+    Pattern: 'Microsoft.AI.Foundry.Local.dll'
     SessionTimeout: 90
     ServiceEndpointUrl: 'https://api.esrp.microsoft.com/api/v2'
     MaxConcurrency: 25
@@ -162,24 +129,27 @@ steps:
     inlineOperation: |
       [{"keyCode":"CP-230012","operationSetCode":"SigntoolSign","parameters":[{"parameterName":"OpusName","parameterValue":"Microsoft"},{"parameterName":"OpusInfo","parameterValue":"http://www.microsoft.com"},{"parameterName":"PageHash","parameterValue":"/NPH"},{"parameterName":"FileDigest","parameterValue":"/fd sha256"},{"parameterName":"TimeStamp","parameterValue":"/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"}],"toolName":"signtool.exe","toolVersion":"6.2.9304.0"}]
 
-# Pack NuGet
+# Pack NuGet.
 - task: PowerShell@2
   displayName: 'Pack NuGet'
   inputs:
     targetType: inline
+    pwsh: true
     script: |
-      dotnet pack "$(repoRoot)/sdk/cs/src/Microsoft.AI.Foundry.Local.csproj" `
+      dotnet pack "$(Build.SourcesDirectory)/sdk_v2/cs/src/Microsoft.AI.Foundry.Local.csproj" `
         --no-build --no-restore --configuration Release `
         --output "${{ parameters.outputDir }}" `
         /p:PackageVersion=$(packageVersion) `
-        /p:UseWinML=${{ parameters.isWinML }} `
+        /p:FoundryLocalRuntimeVersion=$(packageVersion) `
+        /p:FoundryLocalNativeBinDir= `
         /p:IncludeSymbols=true `
         /p:SymbolPackageFormat=snupkg
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Sign NuGet package
+# Sign the produced nupkg(s).
 - task: SFP.build-tasks.custom-build-task-1.EsrpCodeSigning@5
   displayName: 'Sign SDK NuGet package'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   inputs:
     ConnectedServiceName: 'OnnxrunTimeCodeSign_20240611'
     UseMSIAuthentication: true
@@ -196,4 +166,3 @@ steps:
     signConfigType: inlineSignParams
     inlineOperation: |
       [{"keyCode":"CP-401405","operationSetCode":"NuGetSign","parameters":[],"toolName":"sign","toolVersion":"6.2.9304.0"},{"keyCode":"CP-401405","operationSetCode":"NuGetVerify","parameters":[],"toolName":"sign","toolVersion":"6.2.9304.0"}]
-

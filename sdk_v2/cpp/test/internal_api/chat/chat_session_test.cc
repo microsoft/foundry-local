@@ -5,7 +5,12 @@
 // Integration tests run actual inference against the shared test model.
 
 #include "inferencing/generative/chat/chat_session.h"
+#include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/onnx_chat_generator.h"
+#include "inferencing/generative/openresponses/response_converter.h"
+#include "inferencing/generative/openresponses/response_store.h"
+#include "contracts/tool_definitions.h"
 #include "exception.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/chat/search_options.h"
@@ -34,6 +39,8 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <tuple>
+#include <unordered_set>
 #include <vector>
 
 using namespace fl;
@@ -41,6 +48,88 @@ using namespace fl;
 namespace {
 
 using Segment = ReasoningStreamSplitter::Segment;
+
+class RecordingLogger final : public ILogger {
+ public:
+  void Log(LogLevel level, std::string_view message) override {
+    entries.emplace_back(level, message);
+  }
+
+  std::vector<std::pair<LogLevel, std::string>> entries;
+};
+
+class FixedOutputGenerator final : public ChatGenerator {
+ public:
+  FixedOutputGenerator(std::string output, BackendTerminationCause cause,
+                       bool prompt_opens_reasoning = false)
+      : output_(std::move(output)),
+        cause_(cause),
+        prompt_opens_reasoning_(prompt_opens_reasoning) {}
+
+  bool IsDone() const override {
+    return canceled_ || generated_;
+  }
+
+  void GenerateNextToken() override {
+    generated_ = true;
+    current_token_ = 1;
+  }
+
+  std::string Decode() override {
+    current_token_.reset();
+    return output_;
+  }
+
+  std::optional<int32_t> CurrentTokenId() const override {
+    return current_token_;
+  }
+
+  int TokenCount() const override {
+    return kPromptTokens + (generated_ ? 1 : 0);
+  }
+
+  int PromptTokenCount() const override {
+    return kPromptTokens;
+  }
+
+  void Cancel() override {
+    canceled_ = true;
+  }
+
+  int AppendMessages(const std::vector<TranscriptMessage>&,
+                     const std::vector<TranscriptMessage>&,
+                     GenAIModelInstance&,
+                     const ToolCallContext&,
+                     const SearchOptions&) override {
+    generated_ = false;
+    canceled_ = false;
+    current_token_.reset();
+    return 1;
+  }
+
+  std::optional<ChatTurnUsage> GetTurnUsage() const override {
+    return ChatTurnUsage{
+        kPromptTokens,
+        generated_ ? 1 : 0,
+        cause_ == BackendTerminationCause::kNaturalEnd ? FOUNDRY_LOCAL_FINISH_STOP
+                                                       : FOUNDRY_LOCAL_FINISH_LENGTH,
+        canceled_ ? BackendTerminationCause::kCancellation : cause_,
+    };
+  }
+
+  bool PromptOpensReasoning() const override {
+    return prompt_opens_reasoning_;
+  }
+
+ private:
+  static constexpr int kPromptTokens = 4;
+  std::string output_;
+  BackendTerminationCause cause_;
+  bool prompt_opens_reasoning_;
+  bool generated_ = false;
+  bool canceled_ = false;
+  std::optional<int32_t> current_token_;
+};
 
 void AppendSegments(std::vector<Segment>& destination, const std::vector<Segment>& source) {
   for (const auto& segment : source) {
@@ -74,19 +163,19 @@ TEST(ChatSessionDecisionTest, JsonToolContextUsesOnlyTheCapturedSessionSnapshot)
   });
   registration.join();
 
-  const std::string serialized_tools =
-      R"([{"type":"function","function":{"name":"payload_tool","parameters":{}}}])";
+  std::vector<ToolDefinition> definitions{
+      {"payload_tool", {}, "{}", ToolKind::kFunction}};
   const auto local =
-      chat_session_internal::BuildJsonRequestToolDefinitions(serialized_tools, captured);
+      chat_session_internal::BuildJsonRequestToolDefinitions(definitions, captured);
 
   ASSERT_EQ(local.size(), 1u);
-  EXPECT_TRUE(local[0].name.empty());
-  EXPECT_EQ(local[0].json_schema, serialized_tools);
+  EXPECT_EQ(local[0].name, "payload_tool");
+  EXPECT_EQ(local[0].json_schema, "{}");
   EXPECT_EQ(local[0].kind, ToolKind::kFunction);
 
-  // A fresh snapshot sees the custom registration and preserves the existing JSON-path rejection.
+  // A fresh snapshot sees the custom registration and preserves JSON request isolation.
   EXPECT_THROW(chat_session_internal::BuildJsonRequestToolDefinitions(
-                   serialized_tools, registry.Definitions()),
+                   definitions, registry.Definitions()),
                fl::Exception);
 }
 
@@ -97,9 +186,146 @@ TEST(ChatSessionDecisionTest, EmptyJsonToolsIgnoreSessionFunctionAndCustomDefini
       {"apply_patch", "Apply a patch.", "", ToolKind::kCustom}};
 
   EXPECT_TRUE(
-      chat_session_internal::BuildJsonRequestToolDefinitions({}, function_definitions).empty());
+      chat_session_internal::BuildJsonRequestToolDefinitions(
+          std::vector<ToolDefinition>{}, function_definitions)
+          .empty());
   EXPECT_TRUE(
-      chat_session_internal::BuildJsonRequestToolDefinitions({}, custom_definitions).empty());
+      chat_session_internal::BuildJsonRequestToolDefinitions(
+          std::vector<ToolDefinition>{}, custom_definitions)
+          .empty());
+}
+
+TEST(ChatSessionDecisionTest, SupportedStrictFalseSurvivesPromptSerialization) {
+  std::vector<ToolDefinition> definitions{
+      {"strict_false", "", R"({"type":"object"})", ToolKind::kFunction, false, true, false},
+      {"unspecified", "", "{}", ToolKind::kFunction, false, false}};
+  ToolCallContext context;
+
+  chat_session_internal::PopulateToolDefinitions(definitions, context);
+
+  const auto tools = nlohmann::json::parse(context.tools_json);
+  EXPECT_EQ(tools[0], nlohmann::json::parse(
+                          R"({"type":"function","function":{"name":"strict_false",)"
+                          R"("parameters":{"type":"object"},"strict":false}})"));
+  EXPECT_FALSE(tools[1]["function"].contains("strict"));
+  EXPECT_FALSE(tools[1]["function"].contains("parameters"));
+}
+
+TEST(ChatSessionDecisionTest, StockApplyPatchGrammarDeclaresBuiltInRawDescriptor) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.text_output = true;
+  context.tool_kinds = {{"apply_patch", ToolKind::kCustom}};
+  context.custom_lark_grammars = {
+      {"apply_patch", std::string(tools::kStockGhcpApplyPatchLarkGrammar)}};
+
+  chat_session_internal::ResolveBuiltInRawEnvelope(context);
+
+  ASSERT_TRUE(context.raw_envelope.has_value());
+  EXPECT_EQ(context.raw_envelope->tool_name, "apply_patch");
+  EXPECT_EQ(context.raw_envelope->start_marker, "*** Begin Patch");
+  EXPECT_EQ(context.raw_envelope->end_marker, "*** End Patch");
+  EXPECT_NE(context.ActiveRawEnvelope(), nullptr);
+}
+
+TEST(ChatSessionDecisionTest, StockApplyPatchGrammarRejectsConflictingMetadataDescriptor) {
+  ToolCallContext context;
+  context.custom_lark_grammars = {
+      {"apply_patch", std::string(tools::kStockGhcpApplyPatchLarkGrammar)}};
+  context.raw_envelope =
+      RawEnvelopeDescriptor{"apply_patch", "BEGIN", "END"};
+
+  EXPECT_THROW(chat_session_internal::ResolveBuiltInRawEnvelope(context), fl::Exception);
+}
+
+TEST(ChatSessionDecisionTest, ForcedRawGuidanceUsesMatchingGrammarOrDisablesGuidance) {
+  RecordingLogger logger;
+  ToolCallContext with_grammar;
+  with_grammar.tool_output = true;
+  with_grammar.text_output = false;
+  with_grammar.tool_kinds = {{"edit", ToolKind::kCustom}};
+  with_grammar.raw_envelope = RawEnvelopeDescriptor{"edit", "BEGIN", "END"};
+  with_grammar.forced_tool = ForcedToolChoice{"edit", ToolKind::kCustom};
+  with_grammar.custom_lark_grammars = {{"edit", "start: \"BEGIN\" /(.|\\n)+/ \"END\""}};
+  with_grammar.guidance_type = "json_schema";
+  with_grammar.guidance_data = "{}";
+
+  chat_session_internal::ApplyRawEnvelopeGuidance(with_grammar, logger);
+
+  EXPECT_EQ(with_grammar.guidance_type, "lark_grammar");
+  EXPECT_EQ(with_grammar.guidance_data, "start: \"BEGIN\" /(.|\\n)+/ \"END\"");
+  EXPECT_FALSE(with_grammar.guidance_disabled);
+  EXPECT_TRUE(logger.entries.empty());
+
+  ToolCallContext without_grammar = with_grammar;
+  without_grammar.custom_lark_grammars.clear();
+  without_grammar.guidance_type = "json_schema";
+  without_grammar.guidance_data = "{}";
+
+  chat_session_internal::ApplyRawEnvelopeGuidance(without_grammar, logger);
+
+  EXPECT_TRUE(without_grammar.guidance_type.empty());
+  EXPECT_TRUE(without_grammar.guidance_data.empty());
+  EXPECT_TRUE(without_grammar.guidance_disabled);
+  ASSERT_EQ(logger.entries.size(), 1u);
+  EXPECT_EQ(logger.entries.front().first, LogLevel::Debug);
+  EXPECT_NE(logger.entries.front().second.find("json_schema"), std::string::npos);
+  EXPECT_NE(logger.entries.front().second.find("edit"), std::string::npos);
+}
+
+TEST(ChatSessionDecisionTest, ForcedMatchingRawEnvelopeStartsOutsidePromptOpenedReasoning) {
+  ToolCallContext built_in;
+  built_in.tool_output = true;
+  built_in.text_output = false;
+  built_in.tool_kinds = {{"apply_patch", ToolKind::kCustom}};
+  built_in.custom_lark_grammars = {
+      {"apply_patch", std::string(tools::kStockGhcpApplyPatchLarkGrammar)}};
+  built_in.forced_tool = ForcedToolChoice{"apply_patch", ToolKind::kCustom};
+  chat_session_internal::ResolveBuiltInRawEnvelope(built_in);
+  RecordingLogger logger;
+  chat_session_internal::ApplyRawEnvelopeGuidance(built_in, logger);
+
+  EXPECT_TRUE(built_in.HasForcedRawEnvelope());
+  EXPECT_FALSE(chat_session_internal::ShouldStartInsideReasoning(
+      built_in, /*prompt_opens_reasoning=*/true));
+
+  ToolCallContext explicit_descriptor;
+  explicit_descriptor.tool_output = true;
+  explicit_descriptor.text_output = false;
+  explicit_descriptor.tool_kinds = {{"edit", ToolKind::kCustom}};
+  explicit_descriptor.raw_envelope = RawEnvelopeDescriptor{"edit", "BEGIN", "END"};
+  explicit_descriptor.forced_tool = ForcedToolChoice{"edit", ToolKind::kCustom};
+
+  EXPECT_TRUE(explicit_descriptor.HasForcedRawEnvelope());
+  EXPECT_TRUE(chat_session_internal::ShouldStartInsideReasoning(
+      explicit_descriptor, /*prompt_opens_reasoning=*/true));
+}
+
+TEST(ChatSessionDecisionTest, NonForcedOrInactiveRawEnvelopeRetainsPromptOpenedReasoning) {
+  ToolCallContext context;
+  context.tool_output = true;
+  context.text_output = true;
+  context.tool_kinds = {{"apply_patch", ToolKind::kCustom}};
+  context.custom_lark_grammars = {
+      {"apply_patch", std::string(tools::kStockGhcpApplyPatchLarkGrammar)}};
+  chat_session_internal::ResolveBuiltInRawEnvelope(context);
+
+  EXPECT_FALSE(context.HasForcedRawEnvelope());
+  EXPECT_TRUE(chat_session_internal::ShouldStartInsideReasoning(
+      context, /*prompt_opens_reasoning=*/true));
+
+  context.forced_tool = ForcedToolChoice{"other", ToolKind::kCustom};
+  EXPECT_TRUE(chat_session_internal::ShouldStartInsideReasoning(
+      context, /*prompt_opens_reasoning=*/true));
+
+  context.forced_tool = ForcedToolChoice{"apply_patch", ToolKind::kFunction};
+  EXPECT_TRUE(chat_session_internal::ShouldStartInsideReasoning(
+      context, /*prompt_opens_reasoning=*/true));
+
+  context.forced_tool = ForcedToolChoice{"apply_patch", ToolKind::kCustom};
+  context.tool_output = false;
+  EXPECT_TRUE(chat_session_internal::ShouldStartInsideReasoning(
+      context, /*prompt_opens_reasoning=*/true));
 }
 
 TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStreaming) {
@@ -127,6 +353,355 @@ TEST(ChatSessionDecisionTest, InvalidLaterCustomCallPreventsTheWholeBatchFromStr
       },
       fl::Exception);
   EXPECT_EQ(streamed_calls, 0u);
+}
+
+TEST(ChatSessionDecisionTest, CustomBatchNormalizationUsesTheCompleteArgumentSource) {
+  ToolCallContext context;
+  context.tool_kinds = {{"custom", ToolKind::kCustom}};
+
+  ToolCallStreamAccumulator::Output output;
+
+  ParsedToolCall wrapper{"call_1", "custom", "parser projection"};
+  wrapper.argument_source = R"({"input":"plain text"})";
+  output.events.emplace_back(std::move(wrapper));
+
+  ParsedToolCall extra_member{"call_2", "custom", "parser projection"};
+  extra_member.argument_source = R"({"input":"plain text","extra":true})";
+  output.events.emplace_back(std::move(extra_member));
+
+  ParsedToolCall json_string{"call_3", "custom", "parser projection"};
+  json_string.argument_source = R"({"input":"{\"looks\":\"json\"}"})";
+  output.events.emplace_back(std::move(json_string));
+
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events[0]).arguments, "plain text");
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events[1]).arguments,
+            R"({"input":"plain text","extra":true})");
+  EXPECT_EQ(std::get<ParsedToolCall>(output.events[2]).arguments, R"({"looks":"json"})");
+}
+
+TEST(ChatSessionDecisionTest, CustomBatchNormalizationPreservesRawEnvelopeBytes) {
+  const std::string envelope = "{\n\"input\":\"replacement text\"\n}";
+  ToolCallContext context;
+  context.tool_kinds = {{"edit", ToolKind::kCustom}};
+
+  ToolCallStreamAccumulator::Output output;
+  ParsedToolCall raw_call{"call_1", "edit", envelope};
+  raw_call.argument_source = envelope;
+  raw_call.raw_envelope = true;
+  output.events.emplace_back(std::move(raw_call));
+
+  chat_session_internal::NormalizeToolOutputBatch(output, context);
+
+  const auto& normalized = std::get<ParsedToolCall>(output.events.front());
+  EXPECT_EQ(normalized.arguments, envelope);
+  EXPECT_EQ(normalized.argument_source, envelope);
+}
+
+TEST(ChatSessionDecisionTest, RawEligibleOutputStillRecognizesStructuredCalls) {
+  RawEnvelopeDetector raw_detector(
+      {"apply_patch", "*** Begin Patch", "*** End Patch"});
+  ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+  std::vector<ToolCallStreamAccumulator::Event> events;
+
+  const auto append = [&](ToolCallStreamAccumulator::Output output) {
+    events.insert(events.end(),
+                  std::make_move_iterator(output.events.begin()),
+                  std::make_move_iterator(output.events.end()));
+  };
+
+  append(chat_session_internal::PushToolOutput(
+      "<tool_call>{\"name\":\"lookup\",\n", &raw_detector,
+      structured_accumulator));
+  EXPECT_TRUE(chat_session_internal::InsideToolOutput(
+      &raw_detector, structured_accumulator));
+  append(chat_session_internal::PushToolOutput(
+      R"("arguments":{"key":"alpha"}}</tool_call>)",
+      &raw_detector, structured_accumulator));
+  append(chat_session_internal::FlushToolOutput(
+      &raw_detector, structured_accumulator));
+
+  ASSERT_EQ(events.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(events.front()));
+  const auto& call = std::get<ParsedToolCall>(events.front());
+  EXPECT_EQ(call.name, "lookup");
+  EXPECT_EQ(call.arguments, R"({"key":"alpha"})");
+  EXPECT_FALSE(call.raw_envelope);
+}
+
+TEST(ChatSessionDecisionTest, IncompleteRawCandidateCannotPromoteNestedStructuredCallAtTerminalFlush) {
+  RawEnvelopeDetector raw_detector(
+      {"apply_patch", "*** Begin Patch", "*** End Patch"});
+  ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+  const std::string input =
+      "*** Begin Patch\n"
+      R"(<tool_call>{"name":"lookup","arguments":{"key":"nested"}}</tool_call>)"
+      "\n";
+
+  EXPECT_TRUE(chat_session_internal::PushToolOutput(
+                  input, &raw_detector, structured_accumulator)
+                  .events.empty());
+
+  const auto output = chat_session_internal::FlushToolOutput(
+      &raw_detector, structured_accumulator);
+  ASSERT_EQ(output.events.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<std::string>(output.events.front()));
+  EXPECT_EQ(std::get<std::string>(output.events.front()), input);
+}
+
+TEST(ChatSessionDecisionTest, OverLimitRawCandidateCannotPromoteNestedStructuredCall) {
+  RawEnvelopeDetector raw_detector(
+      {"apply_patch", "*** Begin Patch", "*** End Patch"});
+  ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+  const std::string input =
+      std::string("*** Begin Patch\n") +
+      R"(<tool_call>{"name":"lookup","arguments":{"key":"nested"}}</tool_call>)" +
+      std::string(RawEnvelopeDetector::kMaxBufferedBytes, 'x');
+
+  auto output = chat_session_internal::PushToolOutput(
+      input, &raw_detector, structured_accumulator);
+  const auto terminal = chat_session_internal::FlushToolOutput(
+      &raw_detector, structured_accumulator);
+  output.events.insert(output.events.end(),
+                       std::make_move_iterator(terminal.events.begin()),
+                       std::make_move_iterator(terminal.events.end()));
+
+  ASSERT_EQ(output.events.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<std::string>(output.events.front()));
+  EXPECT_EQ(std::get<std::string>(output.events.front()), input);
+}
+
+TEST(ChatSessionDecisionTest, StructuredCallDisablesLaterRawRecognitionAndPreservesProducedOrder) {
+  RawEnvelopeDetector raw_detector(
+      {"apply_patch", "*** Begin Patch", "*** End Patch"});
+  ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+  const std::string structured =
+      R"(<tool_call>{"name":"lookup","arguments":{"key":"alpha"}}</tool_call>)";
+  const std::string raw =
+      "\n*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch";
+
+  const auto output = chat_session_internal::PushToolOutput(
+      structured + raw, &raw_detector, structured_accumulator);
+
+  ASSERT_FALSE(output.events.empty());
+  ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(output.events.front()));
+  EXPECT_FALSE(std::get<ParsedToolCall>(output.events.front()).raw_envelope);
+
+  std::string post_call_text;
+  for (size_t i = 1; i < output.events.size(); ++i) {
+    ASSERT_TRUE(std::holds_alternative<std::string>(output.events[i]));
+    post_call_text += std::get<std::string>(output.events[i]);
+  }
+  EXPECT_EQ(post_call_text, raw);
+}
+
+TEST(ChatSessionDecisionTest, RawCallDisablesLaterStructuredRecognitionAndPreservesProducedOrder) {
+  RawEnvelopeDetector raw_detector(
+      {"apply_patch", "*** Begin Patch", "*** End Patch"});
+  ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+  const std::string raw =
+      "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch";
+  const std::string structured =
+      R"(<tool_call>{"name":"lookup","arguments":{"key":"alpha"}}</tool_call>)";
+
+  auto output = chat_session_internal::PushToolOutput(
+      raw + "\n" + structured, &raw_detector, structured_accumulator);
+  auto terminal = chat_session_internal::FlushToolOutput(
+      &raw_detector, structured_accumulator);
+  output.events.insert(output.events.end(),
+                       std::make_move_iterator(terminal.events.begin()),
+                       std::make_move_iterator(terminal.events.end()));
+
+  ASSERT_FALSE(output.events.empty());
+  ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(output.events.front()));
+  EXPECT_TRUE(std::get<ParsedToolCall>(output.events.front()).raw_envelope);
+
+  std::string post_call_text;
+  for (size_t i = 1; i < output.events.size(); ++i) {
+    ASSERT_TRUE(std::holds_alternative<std::string>(output.events[i]));
+    post_call_text += std::get<std::string>(output.events[i]);
+  }
+  EXPECT_EQ(post_call_text, "\n" + structured);
+}
+
+TEST(ChatSessionDecisionTest, StructuredCandidateOwnsNestedRawEnvelopeAtEverySplit) {
+  const std::string input =
+      "<tool_call>{\"name\":\"lookup\",\"arguments\":{\n"
+      "*** Begin Patch\n"
+      "<tool_call>{\"name\":\"nested\",\"arguments\":{}}</tool_call>\n"
+      "*** End Patch\n"
+      "malformed}}</tool_call>";
+
+  for (size_t split = 0; split <= input.size(); ++split) {
+    RawEnvelopeDetector raw_detector(
+        {"apply_patch", "*** Begin Patch", "*** End Patch"});
+    ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+    std::vector<ToolCallStreamAccumulator::Event> events;
+    const auto append = [&](ToolCallStreamAccumulator::Output output) {
+      events.insert(events.end(),
+                    std::make_move_iterator(output.events.begin()),
+                    std::make_move_iterator(output.events.end()));
+    };
+
+    append(chat_session_internal::PushToolOutput(
+        input.substr(0, split), &raw_detector, structured_accumulator));
+    append(chat_session_internal::PushToolOutput(
+        input.substr(split), &raw_detector, structured_accumulator));
+    append(chat_session_internal::FlushToolOutput(
+        &raw_detector, structured_accumulator));
+
+    EXPECT_TRUE(std::ranges::none_of(events, [](const auto& event) {
+      const auto* call = std::get_if<ParsedToolCall>(&event);
+      return call != nullptr && call->raw_envelope;
+    })) << split;
+  }
+}
+
+TEST(ChatSessionDecisionTest, RawCandidateOwnsNestedStructuredEnvelopeAtEverySplit) {
+  const std::string input =
+      "*** Begin Patch\n"
+      "<tool_call>{\"name\":\"lookup\",\"arguments\":{}}</tool_call>\n"
+      "*** End Patch";
+
+  for (size_t split = 0; split <= input.size(); ++split) {
+    RawEnvelopeDetector raw_detector(
+        {"apply_patch", "*** Begin Patch", "*** End Patch"});
+    ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+    std::vector<ToolCallStreamAccumulator::Event> events;
+    const auto append = [&](ToolCallStreamAccumulator::Output output) {
+      events.insert(events.end(),
+                    std::make_move_iterator(output.events.begin()),
+                    std::make_move_iterator(output.events.end()));
+    };
+
+    append(chat_session_internal::PushToolOutput(
+        input.substr(0, split), &raw_detector, structured_accumulator));
+    append(chat_session_internal::PushToolOutput(
+        input.substr(split), &raw_detector, structured_accumulator));
+    append(chat_session_internal::FlushToolOutput(
+        &raw_detector, structured_accumulator));
+
+    ASSERT_EQ(events.size(), 1u) << split;
+    ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(events.front())) << split;
+    EXPECT_TRUE(std::get<ParsedToolCall>(events.front()).raw_envelope) << split;
+  }
+}
+
+TEST(ChatSessionDecisionTest, NonNaturalTerminalCausesRejectMarkerAtEof) {
+  const std::string input = "*** Begin Patch\npayload\n*** End Patch";
+  for (const auto& cause : {
+           std::tuple{true, false, false, std::optional<BackendTerminationCause>{}},
+           std::tuple{false, true, false, std::optional<BackendTerminationCause>{}},
+           std::tuple{false, false, true, std::optional<BackendTerminationCause>{}},
+           std::tuple{false, false, false,
+                      std::optional{BackendTerminationCause::kStopSequence}},
+           std::tuple{false, false, false,
+                      std::optional{BackendTerminationCause::kOutputTokenLimit}},
+           std::tuple{false, false, false,
+                      std::optional{BackendTerminationCause::kSessionTokenLimit}},
+           std::tuple{false, false, false,
+                      std::optional{BackendTerminationCause::kCancellation}},
+           std::tuple{false, false, false,
+                      std::optional{BackendTerminationCause::kFailure}},
+           std::tuple{false, false, false, std::optional<BackendTerminationCause>{}},
+       }) {
+    const auto [canceled, stop, host_limit, backend_termination] = cause;
+    RawEnvelopeDetector raw_detector(
+        {"apply_patch", "*** Begin Patch", "*** End Patch"});
+    ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+    auto output = chat_session_internal::PushToolOutput(
+        input, &raw_detector, structured_accumulator);
+    const bool natural = chat_session_internal::IsNaturalToolOutputEnd(
+        canceled, stop, host_limit, backend_termination);
+    auto terminal = chat_session_internal::FlushToolOutput(
+        &raw_detector, structured_accumulator, natural);
+    output.events.insert(output.events.end(),
+                         std::make_move_iterator(terminal.events.begin()),
+                         std::make_move_iterator(terminal.events.end()));
+
+    EXPECT_TRUE(std::ranges::none_of(output.events, [](const auto& event) {
+      return std::holds_alternative<ParsedToolCall>(event);
+    }));
+  }
+}
+
+TEST(ChatSessionDecisionTest, NaturalEosRecognizesMarkerAtEof) {
+  RawEnvelopeDetector raw_detector(
+      {"apply_patch", "*** Begin Patch", "*** End Patch"});
+  ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+  const std::string input = "*** Begin Patch\npayload\n*** End Patch";
+
+  auto output = chat_session_internal::PushToolOutput(
+      input, &raw_detector, structured_accumulator);
+  auto terminal = chat_session_internal::FlushToolOutput(
+      &raw_detector, structured_accumulator,
+      chat_session_internal::IsNaturalToolOutputEnd(
+          false, false, false, BackendTerminationCause::kNaturalEnd));
+  output.events.insert(output.events.end(),
+                       std::make_move_iterator(terminal.events.begin()),
+                       std::make_move_iterator(terminal.events.end()));
+
+  ASSERT_EQ(output.events.size(), 1u);
+  ASSERT_TRUE(std::holds_alternative<ParsedToolCall>(output.events.front()));
+  EXPECT_TRUE(std::get<ParsedToolCall>(output.events.front()).raw_envelope);
+}
+
+TEST(OnnxChatGeneratorDecisionTest, ExactEosAndLimitsHaveDistinctRawFinalizationCauses) {
+  using onnx_chat_generator_internal::ClassifyTurnTermination;
+
+  const auto eos = ClassifyTurnTermination(false, true, 32, 32, 128, 128, true);
+  EXPECT_EQ(eos.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(eos.cause, BackendTerminationCause::kNaturalEnd);
+
+  const auto output_limit =
+      ClassifyTurnTermination(false, false, 32, 32, 96, 128, true);
+  EXPECT_EQ(output_limit.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
+  EXPECT_EQ(output_limit.cause, BackendTerminationCause::kOutputTokenLimit);
+
+  const auto context_limit =
+      ClassifyTurnTermination(false, false, 31, 32, 128, 128, true);
+  EXPECT_EQ(context_limit.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
+  EXPECT_EQ(context_limit.cause, BackendTerminationCause::kSessionTokenLimit);
+
+  const auto unclassified =
+      ClassifyTurnTermination(false, false, 31, 32, 127, 128, true);
+  EXPECT_EQ(unclassified.finish_reason, std::nullopt);
+  EXPECT_EQ(unclassified.cause, BackendTerminationCause::kFailure);
+}
+
+TEST(ChatSessionDecisionTest, ReasoningBoundaryRejectsRawCandidateWithoutStructuredReparse) {
+  const std::string nested =
+      R"(<tool_call>{"name":"lookup","arguments":{}}</tool_call>)";
+  const std::vector<std::pair<std::string, std::string>> boundaries{
+      {"*** Begin Patch\n" + nested, "\npayload\n*** End Patch"},
+      {"*** Begin Patch\npayload\n", "*** End Patch"},
+      {"*** Begin Patch\npayload\n*** End Pa", "tch"},
+  };
+
+  for (const auto& [before_reasoning, after_reasoning] : boundaries) {
+    RawEnvelopeDetector raw_detector(
+        {"apply_patch", "*** Begin Patch", "*** End Patch"});
+    ToolCallStreamAccumulator structured_accumulator("<tool_call>", "</tool_call>");
+    std::vector<ToolCallStreamAccumulator::Event> events;
+    const auto append = [&](ToolCallStreamAccumulator::Output output) {
+      events.insert(events.end(),
+                    std::make_move_iterator(output.events.begin()),
+                    std::make_move_iterator(output.events.end()));
+    };
+
+    append(chat_session_internal::PushToolOutput(
+        before_reasoning, &raw_detector, structured_accumulator));
+    append(chat_session_internal::AbortRawToolOutput(&raw_detector));
+    append(chat_session_internal::PushToolOutput(
+        after_reasoning, &raw_detector, structured_accumulator));
+    append(chat_session_internal::FlushToolOutput(
+        &raw_detector, structured_accumulator));
+
+    EXPECT_TRUE(std::ranges::none_of(events, [](const auto& event) {
+      return std::holds_alternative<ParsedToolCall>(event);
+    })) << before_reasoning;
+  }
 }
 
 TEST(ChatSessionDecisionTest, InvalidLaterFunctionCallPreventsTheWholeBatchFromStreaming) {
@@ -403,6 +978,15 @@ class ChatSessionTest : public ::testing::Test {
 
   GenAIModelInstance& GetModel() { return *model_; }
   const Model& GetCatalogModel() { return catalog_model_; }
+  Model MakeReasoningCatalogModel() {
+    ModelInfo info;
+    info.task = "chat-completion";
+    info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT, 1);
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR, "<think>");
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR, "</think>");
+    return Model::FromModelInfo(
+        std::move(info), "", svc_.download_manager, svc_.model_load_manager);
+  }
 
   static inline std::unique_ptr<StderrLogger> logger_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
@@ -485,6 +1069,113 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(messages[1].VisibleText(), text);
+}
+
+TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoning) {
+  const std::string envelope =
+      "*** Begin Patch\n*** Delete File: old.txt\n*** End Patch";
+  TextChatGeneratorFactory factory =
+      [envelope](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
+        EXPECT_TRUE(use_full_context);
+        return std::make_unique<FixedOutputGenerator>(
+            envelope, BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/true);
+      };
+  auto catalog_model = MakeReasoningCatalogModel();
+  ChatSession session(catalog_model, GetModel(), *logger_, null_telemetry_, {},
+                      std::move(factory));
+  session.AddToolDefinition(tools::MakeCustomTool(
+      "apply_patch", "Apply a patch.", /*description_present=*/true,
+      std::string(tools::kStockGhcpApplyPatchLarkGrammar)));
+
+  std::string callback_call_id;
+  std::string callback_arguments;
+  session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+    const auto item = queue->TryPop();
+    if (item && item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      const auto& call = static_cast<const ToolCallItem&>(*item);
+      callback_call_id = call.call_id;
+      callback_arguments = call.arguments;
+    }
+
+    return 0;
+  });
+
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "make a patch"));
+  request.options.Add(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE, "required");
+  request.forced_tool_choice = ForcedToolChoice{"apply_patch", ToolKind::kCustom};
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  const auto response_call = std::ranges::find_if(response.items, [](const auto& item) {
+    return item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL;
+  });
+  ASSERT_NE(response_call, response.items.end());
+  const auto& call = static_cast<const ToolCallItem&>(**response_call);
+  EXPECT_EQ(callback_call_id, call.call_id);
+  EXPECT_EQ(callback_arguments, envelope);
+  EXPECT_EQ(call.arguments, envelope);
+  EXPECT_EQ(call.generated_encoding, GeneratedCallEncoding::kRawEnvelope);
+
+  ASSERT_EQ(session.Transcript().Messages().back().ToolCalls().size(), 1u);
+  const auto& transcript_call = *session.Transcript().Messages().back().ToolCalls().front();
+  EXPECT_EQ(transcript_call.call_id, call.call_id);
+  EXPECT_EQ(transcript_call.arguments, envelope);
+}
+
+TEST_F(ChatSessionTest, ChatCompletionsForcedRawCallPreservesJsonShapedPayloadAndPromptOpenedReasoning) {
+  const std::string envelope = "{\n\"input\":\"replacement text\"\n}";
+  const std::string output = "private reasoning</think>\n" + envelope;
+  TextChatGeneratorFactory factory =
+      [output](const auto&, const auto&, auto&, const auto&, bool use_full_context) {
+        EXPECT_FALSE(use_full_context);
+        return std::make_unique<FixedOutputGenerator>(
+            output, BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/true);
+      };
+  auto catalog_model = MakeReasoningCatalogModel();
+  ChatSession session(catalog_model, GetModel(), *logger_, null_telemetry_, {},
+                      std::move(factory));
+
+  const auto descriptor =
+      nlohmann::json{{"type", "raw_envelope"},
+                     {"tool_name", "edit"},
+                     {"start_marker", "{"},
+                     {"end_marker", "}"}}
+          .dump();
+  const auto request_json =
+      nlohmann::json{
+          {"model", GetModel().ModelId()},
+          {"messages", nlohmann::json::array({
+                           {{"role", "user"}, {"content", "replace the text"}},
+                       })},
+          {"tools", nlohmann::json::array({
+                        {{"type", "custom"},
+                         {"custom", {{"name", "edit"}, {"format", {{"type", "text"}}}}}},
+                    })},
+          {"tool_choice", {{"type", "custom"}, {"custom", {{"name", "edit"}}}}},
+          {"metadata", {{tools::kRawEnvelopeMetadataKey, descriptor}}}};
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      request_json.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  ASSERT_EQ(response.items.size(), 1u);
+  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  const auto& response_item = static_cast<const TextItem&>(*response.items.front());
+  const auto completion = nlohmann::json::parse(response_item.text);
+  const auto& message = completion.at("choices").at(0).at("message");
+  EXPECT_EQ(message.at("reasoning_content"), "private reasoning");
+  ASSERT_EQ(message.at("tool_calls").size(), 1u);
+  EXPECT_EQ(message.at("tool_calls").at(0).at("custom").at("name"), "edit");
+  EXPECT_EQ(message.at("tool_calls").at(0).at("custom").at("input"), envelope);
+  EXPECT_EQ(completion.at("choices").at(0).at("finish_reason"), "tool_calls");
 }
 
 TEST_F(ChatSessionTest, ChatCompletionRejectsAudioInput) {

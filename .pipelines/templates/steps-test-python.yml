@@ -3,15 +3,12 @@
 #
 # The caller is responsible for:
 #   * placing the built wheel (.whl) under `wheelDir`
-#   * populating the model cache directory at `testDataSharedDir`
+#   * pre-populating the model cache via fetch-models-from-artifacts-feed.yml
 
 parameters:
 - name: wheelDir
   type: string
   displayName: 'Path to directory containing the built foundry_local_sdk wheel'
-- name: testDataSharedDir
-  type: string
-  displayName: 'Absolute path to a checked-out test-data-shared working tree'
 - name: pythonArchitecture
   type: string
   default: 'x64'
@@ -50,6 +47,11 @@ steps:
 
         Write-Host "##vso[task.prependpath]$userBin"
         Write-Host "Using system Python: $python3Path"
+
+- task: PipAuthenticate@1
+  displayName: 'Authenticate AIFoundryLocal_PublicPackages for pip'
+  inputs:
+    artifactFeeds: 'AIFoundryLocal/AIFoundryLocal_PublicPackages'
 
 - task: PowerShell@2
   displayName: 'Bootstrap VC++ ARM64 runtime'
@@ -158,4 +160,4 @@ steps:
         }
   env:
     TF_BUILD: 'true'
-    FOUNDRY_TEST_DATA_DIR: ${{ parameters.testDataSharedDir }}
+    FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
