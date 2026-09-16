@@ -39,10 +39,10 @@ struct Request {
   /// Start indices, into `items`, of the replay segments the producer knows about. Ascending, and empty means the
   /// whole list is one segment.
   ///
-  /// A producer that reconstructs a stored conversation marks where each recorded turn's items begin. Consumers
-  /// must not group items across a boundary, so two recorded turns can never collapse into one message. A producer
-  /// with no boundary information — a caller resending a flat conversation — leaves this empty and gets
-  /// adjacency-based grouping instead.
+  /// A producer that reconstructs a stored conversation marks each recorded turn's input and generated output as
+  /// separate segments. Consumers must not group items across a boundary, so neither supplied assistant input nor
+  /// an earlier turn can collapse into the generated reply. A producer with no boundary information — a caller
+  /// resending a flat conversation — leaves this empty and gets adjacency-based grouping instead.
   ///
   /// An index may repeat or sit past the end of `items`: a recorded turn that contributed no items still separates
   /// the turns around it. Use BeginItemSegment rather than writing indices directly — it is what keeps them

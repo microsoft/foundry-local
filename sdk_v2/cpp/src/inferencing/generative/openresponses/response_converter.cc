@@ -433,12 +433,13 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
 
 /// Replay a whole reconstructed chain, hop by hop.
 ///
-/// Each hop is one recorded turn and becomes one replay segment, so ingestion regroups a hop's assistant output
-/// exactly as the live session committed it and never merges two hops into a single assistant message.
+/// Each hop's input and output occupy separate segments: generation opens a new assistant turn even after
+/// assistant input. Output items regroup within their segment, without merging into input or another hop.
 static void AddChainContextToRequest(Request& request, const ResponseChainContext& context) {
   for (const auto& hop : context) {
     request.BeginItemSegment();
     AddJsonItemsToRequest(request, hop.input_items);
+    request.BeginItemSegment();
     AddHopOutputToRequest(request, hop.output_items, hop.raw_envelope_call_ids);
   }
 }
