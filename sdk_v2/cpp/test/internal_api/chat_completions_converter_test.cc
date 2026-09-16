@@ -664,8 +664,8 @@ TEST(ChatCompletionsConverterTest, MapGuidance_JsonObject) {
   MapGuidance(req, session_request);
 
   EXPECT_STREQ(session_request.options.Find("guidance_type"), "json_schema");
-  // json_object maps to json_schema type but with no guidance_data
-  EXPECT_EQ(session_request.options.Find("guidance_data"), nullptr);
+  EXPECT_EQ(json::parse(session_request.options.Find("guidance_data")),
+            json({{"type", "object"}}));
 }
 
 TEST(ChatCompletionsConverterTest, MapGuidance_Text_SetsToolChoiceNone) {

@@ -102,6 +102,18 @@ struct ToolCallContext {
   /// User-specified guidance data (the LARK grammar string, JSON schema, etc.).
   std::string guidance_data;
 
+  bool HasExplicitGuidance() const {
+    return !guidance_type.empty() && !guidance_data.empty();
+  }
+
+  bool HasPartialExplicitGuidance() const {
+    return guidance_type.empty() != guidance_data.empty();
+  }
+
+  bool HasAnyExplicitGuidance() const {
+    return !guidance_type.empty() || !guidance_data.empty();
+  }
+
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }
 

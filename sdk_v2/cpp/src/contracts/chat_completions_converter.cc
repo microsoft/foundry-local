@@ -268,6 +268,7 @@ void MapGuidance(const ChatCompletionRequest& req, Request& session_request) {
     }
   } else if (rf_type == "json_object") {
     session_request.options["guidance_type"] = "json_schema";
+    session_request.options["guidance_data"] = R"({"type":"object"})";
   } else if (rf_type == "text") {
     session_request.options["tool_choice"] = "none";
   }

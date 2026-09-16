@@ -14,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Forward declarations for ORT GenAI types (defined in ort_genai.h)
@@ -22,6 +23,19 @@ struct OgaModel;
 namespace fl {
 
 class OnnxChatEngine;
+
+struct ModelCapabilities {
+  bool native_qwen_xml_tool_calls = false;
+  bool positional_tool_results = false;
+};
+
+namespace model_capabilities_internal {
+
+ModelCapabilities ResolveRenderedProbes(std::string_view model_type,
+                                        std::string_view tool_call_projection,
+                                        std::string_view tool_result_projection) noexcept;
+
+}  // namespace model_capabilities_internal
 
 /// A model that has been loaded into the ORT GenAI runtime.
 /// Owns the OgaModel and its preprocessing resources.
@@ -39,6 +53,9 @@ class GenAIModelInstance {
   const GenAIConfig& GetGenAIConfig() const { return genai_config_; }
   ExecutionProvider EP() const { return ep_; }
   bool IsMultiModal() const;
+  const std::string& ModelType() const { return model_type_; }
+  bool HasNativeQwenXmlToolCalls() const { return capabilities_.native_qwen_xml_tool_calls; }
+  bool HasPositionalToolResults() const { return capabilities_.positional_tool_results; }
 
   /// Cached tag token IDs and decoded strings for tool/reasoning detection.
   /// Populated once on first access using OGA tokenizer APIs.
@@ -88,7 +105,9 @@ class GenAIModelInstance {
   GenAIConfig genai_config_;
   ExecutionProvider ep_;
   std::unique_ptr<OgaModel> oga_model_;
+  std::string model_type_;
   std::unique_ptr<Preprocessor> preprocessor_;
+  ModelCapabilities capabilities_;
   std::unique_ptr<OnnxChatEngine> chat_engine_;
   TagInfo tag_info_;
   std::once_flag tag_info_init_flag_;
