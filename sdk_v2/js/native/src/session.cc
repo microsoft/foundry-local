@@ -315,7 +315,7 @@ ChatSession::ChatSession(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Chat
   }
   Napi::Object model_obj = info[0].As<Napi::Object>();
   Model* model = Napi::ObjectWrap<Model>::Unwrap(model_obj);
-  foundry_local::IModel* native = model != nullptr ? model->native_impl() : nullptr;
+  foundry_local::IModel* native = model != nullptr ? model->native_impl(env) : nullptr;
   if (native == nullptr) {
     Napi::TypeError::New(env, "ChatSession: Model is not initialized")
         .ThrowAsJavaScriptException();
@@ -497,7 +497,7 @@ EmbeddingsSession::EmbeddingsSession(const Napi::CallbackInfo& info)
   }
   Napi::Object model_obj = info[0].As<Napi::Object>();
   Model* model = Napi::ObjectWrap<Model>::Unwrap(model_obj);
-  foundry_local::IModel* native = model != nullptr ? model->native_impl() : nullptr;
+  foundry_local::IModel* native = model != nullptr ? model->native_impl(env) : nullptr;
   if (native == nullptr) {
     Napi::TypeError::New(env, "EmbeddingsSession: Model is not initialized")
         .ThrowAsJavaScriptException();
@@ -591,7 +591,7 @@ AudioSession::AudioSession(const Napi::CallbackInfo& info)
   }
   Napi::Object model_obj = info[0].As<Napi::Object>();
   Model* model = Napi::ObjectWrap<Model>::Unwrap(model_obj);
-  foundry_local::IModel* native = model != nullptr ? model->native_impl() : nullptr;
+  foundry_local::IModel* native = model != nullptr ? model->native_impl(env) : nullptr;
   if (native == nullptr) {
     Napi::TypeError::New(env, "AudioSession: Model is not initialized")
         .ThrowAsJavaScriptException();

@@ -34,7 +34,7 @@ public abstract class Session : IDisposable
     protected Session(IModel model)
     {
         var concrete = (Model)model;
-        _session = new NativeSession(concrete.NativeModel);
+        _session = concrete.WithNativeModel(nativeModel => new NativeSession(nativeModel));
     }
 
     /// <summary>

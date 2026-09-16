@@ -9,7 +9,11 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +21,67 @@
 namespace foundry_local_node {
 
 namespace {
+
+void ThrowDisposedManagerError(Napi::Env env) {
+  Napi::Error error = Napi::Error::New(env, "Manager has been disposed");
+  Napi::Object value = error.Value();
+  value.Set("name", Napi::String::New(env, "FoundryLocalError"));
+  value.Set("code", Napi::Number::New(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE));
+  error.ThrowAsJavaScriptException();
+}
+
+class WorkerStartGate {
+ public:
+  WorkerStartGate(Napi::Env env, Napi::Function callback)
+      : state_(std::make_shared<State>()),
+        tsfn_(Napi::ThreadSafeFunction::New(env, callback, "Model.unload.workerStarted", 1, 1)) {}
+
+  void SignalAndWait() {
+    auto state = state_;
+    napi_status status = tsfn_.BlockingCall([state](Napi::Env /*env*/, Napi::Function callback) {
+      AcknowledgeOnExit acknowledge{state};
+      callback.Call({});
+    });
+    if (status != napi_ok) {
+      tsfn_.Abort();
+      tsfn_ = Napi::ThreadSafeFunction();
+      throw std::runtime_error("Failed to invoke model worker-start callback");
+    }
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->condition.wait_for(lock, std::chrono::seconds(10), [state]() { return state->acknowledged; })) {
+      lock.unlock();
+      tsfn_.Abort();
+      tsfn_ = Napi::ThreadSafeFunction();
+      throw std::runtime_error("Timed out waiting for model worker-start callback");
+    }
+    lock.unlock();
+    tsfn_.Release();
+    tsfn_ = Napi::ThreadSafeFunction();
+  }
+
+ private:
+  struct State {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool acknowledged = false;
+  };
+
+  struct AcknowledgeOnExit {
+    std::shared_ptr<State> state;
+
+    ~AcknowledgeOnExit() {
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->acknowledged = true;
+      }
+      state->condition.notify_one();
+    }
+  };
+
+  std::shared_ptr<State> state_;
+  Napi::ThreadSafeFunction tsfn_;
+};
 
 const char* DeviceTypeToString(flDeviceType dt) {
   switch (dt) {
@@ -157,13 +222,16 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
 // Drain a ModelList into a JS array, with each entry wrapped as a JS Model
 // whose keepalive holds the shared ModelList.
 Napi::Array WrapModelList(Napi::Env env, std::shared_ptr<foundry_local::ModelList> list,
-                          Napi::ObjectReference manager) {
+                          Napi::ObjectReference manager, std::weak_ptr<foundry_local::Manager> manager_lifetime,
+                          std::shared_ptr<std::atomic_bool> disposed) {
   const auto& models = *list;
   Napi::Array arr = Napi::Array::New(env, models.size());
   for (size_t i = 0; i < models.size(); ++i) {
     ModelCtorToken token;
     token.impl = models[i].get();
     token.keepalive = list;  // shared_ptr copy keeps the ModelList alive
+    token.manager_lifetime = manager_lifetime;
+    token.disposed = disposed;
     // Cloning the manager ObjectReference per Model so each entry pins it.
     token.manager = Napi::Reference<Napi::Object>::New(manager.Value(), 1);
     arr.Set(static_cast<uint32_t>(i), Model::NewInstance(env, std::move(token)));
@@ -177,6 +245,8 @@ Napi::Function Model::Init(Napi::Env env) {
   return DefineClass(env, "Model",
                      {
                          InstanceMethod("getInfo", &Model::GetInfo),
+                         InstanceMethod("getStringProperty", &Model::GetStringProperty),
+                         InstanceMethod("getIntProperty", &Model::GetIntProperty),
                          InstanceMethod("isCached", &Model::IsCached),
                          InstanceMethod("isLoaded", &Model::IsLoaded),
                          InstanceMethod("getPath", &Model::GetPath),
@@ -205,17 +275,37 @@ Model::Model(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Model>(info) {
     return;
   }
   auto* token = info[0].As<Napi::External<ModelCtorToken>>().Data();
-  if (token == nullptr || token->impl == nullptr) {
+  if (token == nullptr || token->impl == nullptr || token->manager_lifetime.expired() || !token->disposed) {
     Napi::TypeError::New(env, "Model: invalid internal construction token").ThrowAsJavaScriptException();
     return;
   }
   impl_ = token->impl;
   keepalive_ = std::move(token->keepalive);
+  manager_lifetime_ = std::move(token->manager_lifetime);
+  disposed_ = std::move(token->disposed);
   manager_ = std::move(token->manager);
+}
+
+std::shared_ptr<foundry_local::Manager> Model::LockManager(Napi::Env env) const {
+  if (disposed_->load()) {
+    ThrowDisposedManagerError(env);
+    return nullptr;
+  }
+  auto manager = manager_lifetime_.lock();
+  if (!manager) {
+    ThrowDisposedManagerError(env);
+  }
+  return manager;
+}
+
+foundry_local::IModel* Model::native_impl(Napi::Env env) const {
+  return LockManager(env) ? impl_ : nullptr;
 }
 
 Napi::Value Model::GetInfo(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     foundry_local::ModelInfo mi = impl_->GetInfo();
     Napi::Object snapshot = SnapshotModelInfo(env, mi);
@@ -224,8 +314,45 @@ Napi::Value Model::GetInfo(const Napi::CallbackInfo& info) {
   });
 }
 
+Napi::Value Model::GetStringProperty(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() != 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "Model.getStringProperty(key: string)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
+  std::string key = info[0].As<Napi::String>();
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    auto value = impl_->GetInfo().GetStringProperty(key.c_str());
+    return value.has_value() ? Napi::String::New(env, std::string(*value)) : env.Undefined();
+  });
+}
+
+Napi::Value Model::GetIntProperty(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString() ||
+      (info.Length() >= 2 && !info[1].IsUndefined() && !info[1].IsNumber())) {
+    Napi::TypeError::New(env, "Model.getIntProperty(key: string, defaultValue?: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
+  std::string key = info[0].As<Napi::String>();
+  int64_t default_value = info.Length() >= 2 && !info[1].IsUndefined()
+                              ? info[1].As<Napi::Number>().Int64Value()
+                              : 0;
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    return Napi::Number::New(env,
+                 static_cast<double>(impl_->GetInfo().GetIntProperty(key.c_str(), default_value)));
+  });
+}
+
 Napi::Value Model::IsCached(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     return Napi::Boolean::New(env, impl_->IsCached());
   });
@@ -233,6 +360,8 @@ Napi::Value Model::IsCached(const Napi::CallbackInfo& info) {
 
 Napi::Value Model::IsLoaded(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     return Napi::Boolean::New(env, impl_->IsLoaded());
   });
@@ -240,6 +369,8 @@ Napi::Value Model::IsLoaded(const Napi::CallbackInfo& info) {
 
 Napi::Value Model::GetPath(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     std::string_view p = impl_->GetPath();
     return Napi::String::New(env, std::string(p));
@@ -248,10 +379,12 @@ Napi::Value Model::GetPath(const Napi::CallbackInfo& info) {
 
 Napi::Value Model::GetVariants(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   Napi::ObjectReference owner_clone = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     auto list = std::make_shared<foundry_local::ModelList>(impl_->GetVariants());
-    return WrapModelList(env, std::move(list), std::move(owner_clone));
+    return WrapModelList(env, std::move(list), std::move(owner_clone), manager, disposed_);
   });
 }
 
@@ -265,26 +398,46 @@ Napi::Value Model::GetVariants(const Napi::CallbackInfo& info) {
 
 Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   if (impl_ == nullptr) {
     Napi::Error::New(env, "Model: not initialized").ThrowAsJavaScriptException();
     return env.Undefined();
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
+    auto keepalive = keepalive_;
   return PromiseWorkerVoid::Run(
-      env, [m]() { m->Load(); }, std::move(owner));
+      env, [m, manager, keepalive]() { m->Load(); }, std::move(owner));
 }
 
 Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   if (impl_ == nullptr) {
     Napi::Error::New(env, "Model: not initialized").ThrowAsJavaScriptException();
     return env.Undefined();
   }
+  std::shared_ptr<WorkerStartGate> worker_start_gate;
+  if (info.Length() >= 1 && !info[0].IsUndefined()) {
+    if (!info[0].IsFunction()) {
+      Napi::TypeError::New(env, "Internal worker-start hook must be a function").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    worker_start_gate = std::make_shared<WorkerStartGate>(env, info[0].As<Napi::Function>());
+  }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
-  return PromiseWorkerVoid::Run(
-      env, [m]() { m->Unload(); }, std::move(owner));
+  auto keepalive = keepalive_;
+  return PromiseWorkerVoid::Run(env,
+                                [m, manager, keepalive, worker_start_gate]() {
+                                  if (worker_start_gate) {
+                                    worker_start_gate->SignalAndWait();
+                                  }
+                                  m->Unload();
+                                },
+                                std::move(owner));
 }
 
 namespace {
@@ -295,11 +448,14 @@ namespace {
 // worker queues and released in OnOK/OnError.
 class DownloadWorker : public Napi::AsyncWorker {
  public:
-  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, Napi::ObjectReference owner,
+  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, std::shared_ptr<void> keepalive,
+                 std::shared_ptr<foundry_local::Manager> manager_lifetime, Napi::ObjectReference owner,
                  Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
+        keepalive_(std::move(keepalive)),
+        manager_lifetime_(std::move(manager_lifetime)),
         owner_(std::move(owner)),
         tsfn_(std::move(tsfn)) {}
 
@@ -363,6 +519,8 @@ class DownloadWorker : public Napi::AsyncWorker {
 
   Napi::Promise::Deferred deferred_;
   foundry_local::IModel* impl_;
+  std::shared_ptr<void> keepalive_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
   std::string err_msg_;
@@ -374,6 +532,8 @@ class DownloadWorker : public Napi::AsyncWorker {
 
 Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   if (impl_ == nullptr) {
     Napi::Error::New(env, "Model: not initialized").ThrowAsJavaScriptException();
     return env.Undefined();
@@ -392,7 +552,7 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto* w = new DownloadWorker(env, impl_, std::move(owner), std::move(tsfn));
+  auto* w = new DownloadWorker(env, impl_, keepalive_, std::move(manager), std::move(owner), std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;
@@ -400,6 +560,8 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
 
 Napi::Value Model::RemoveFromCache(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   if (impl_ == nullptr) {
     Napi::Error::New(env, "Model: not initialized").ThrowAsJavaScriptException();
     return env.Undefined();
@@ -415,6 +577,8 @@ Napi::Value Model::RemoveFromCache(const Napi::CallbackInfo& info) {
 
 Napi::Value Model::SelectVariant(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  auto manager = LockManager(env);
+  if (!manager) return env.Undefined();
   if (impl_ == nullptr) {
     Napi::Error::New(env, "Model: not initialized").ThrowAsJavaScriptException();
     return env.Undefined();
@@ -428,7 +592,8 @@ Napi::Value Model::SelectVariant(const Napi::CallbackInfo& info) {
   }
 
   Model* variant = Napi::ObjectWrap<Model>::Unwrap(info[0].As<Napi::Object>());
-  if (variant == nullptr || variant->impl_ == nullptr) {
+  auto variant_manager = variant != nullptr ? variant->LockManager(env) : nullptr;
+  if (variant == nullptr || !variant_manager || variant->impl_ == nullptr) {
     Napi::TypeError::New(env, "Model.selectVariant: variant Model is not initialized")
         .ThrowAsJavaScriptException();
     return env.Undefined();

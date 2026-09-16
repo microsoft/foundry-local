@@ -8,7 +8,8 @@ import abc
 import enum
 import queue
 import threading
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -260,8 +261,9 @@ class Session(abc.ABC):
         if not isinstance(model, _ModelImpl):
             raise TypeError("model must be a native IModel instance")
 
-        out = ffi.new("flSession**")
-        api.check_status(api.inference.Session_Create(model._ptr, out))
+        with model._manager_lifetime():
+            out = ffi.new("flSession**")
+            api.check_status(api.inference.Session_Create(model._ptr, out))
         self._ptr = out[0]
         self._closed = False
 

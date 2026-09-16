@@ -78,6 +78,7 @@ describeIfBuilt("BYOM local catalog", () => {
       .setIntProperty(ModelInfoIntProperty.SupportsToolCalling, 1)
       .setIntProperty(ModelInfoIntProperty.SupportsReasoning, 1)
       .setIntProperty(ModelInfoIntProperty.SupportsHybridReasoning, 0)
+      .setStringProperty("custom_label", "preserved")
       .setIntProperty("custom_count", 42);
 
     const model = await localCatalog.registerModel(modelPath, modelId, metadata);
@@ -94,6 +95,8 @@ describeIfBuilt("BYOM local catalog", () => {
     expect(model.info.supportsToolCalling).toBe(true);
     expect(model.info.supportsReasoning).toBe(true);
     expect(model.info.supportsHybridReasoning).toBe(false);
+    expect(model.getStringProperty("custom_label")).toBe("preserved");
+    expect(model.getIntProperty("custom_count")).toBe(42);
     expect(model.isCached).toBe(true);
     expect(await model.isLoaded()).toBe(false);
     expect(model.path).toBe(modelPath);
@@ -108,6 +111,8 @@ describeIfBuilt("BYOM local catalog", () => {
     expect(roundTrip.info.supportsToolCalling).toBe(true);
     expect(roundTrip.info.supportsReasoning).toBe(true);
     expect(roundTrip.info.supportsHybridReasoning).toBe(false);
+    expect(roundTrip.getStringProperty("custom_label")).toBe("preserved");
+    expect(roundTrip.getIntProperty("custom_count")).toBe(42);
     await localCatalog.unregisterModel(modelId);
     registeredIds.delete(modelId);
     await expect(localCatalog.getModelVariant(modelId)).rejects.toThrow(modelId);
@@ -180,6 +185,21 @@ describeIfBuilt("BYOM local catalog", () => {
       code: 2,
       message: expect.stringMatching(/Injected ModelInfo snapshot failure/),
     });
+  });
+
+  it("rejects embedded NULs before native catalog or metadata dispatch", async () => {
+    using metadata = new MutableModelInfo();
+    expect(() => metadata.setStringProperty("bad\0key", "value")).toThrow(/embedded NUL/);
+    expect(() => metadata.setStringProperty("key", "bad\0value")).toThrow(/embedded NUL/);
+    expect(() => metadata.setIntProperty("bad\0key", 1)).toThrow(/embedded NUL/);
+    expect(() => localCatalog.registerModelSync(`${modelPath}\0suffix`, "nul-path:1", metadata)).toThrow(
+      /embedded NUL/,
+    );
+    expect(() => localCatalog.registerModelSync(modelPath, "nul-id:1\0suffix", metadata)).toThrow(/embedded NUL/);
+    await expect(localCatalog.getModel("alias\0suffix")).rejects.toThrow(/embedded NUL/);
+    await expect(localCatalog.getModelVariant("model:1\0suffix")).rejects.toThrow(/embedded NUL/);
+    await expect(localCatalog.getModelVersions("alias", "name\0suffix")).rejects.toThrow(/embedded NUL/);
+    await expect(localCatalog.unregisterModel("model:1\0suffix")).rejects.toThrow(/embedded NUL/);
   });
 });
 

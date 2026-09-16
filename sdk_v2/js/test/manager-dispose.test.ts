@@ -14,6 +14,7 @@ import { unwrapNativeCatalog } from "../src/catalog.js";
 import { isFoundryLocalError } from "../src/detail/errors.js";
 import { FoundryLocalManager } from "../src/foundryLocalManager.js";
 import { MutableModelInfo, unwrapMutableModelInfo } from "../src/modelInfo.js";
+import { unwrapNativeModel } from "../src/model.js";
 import { CatalogType } from "../src/types.js";
 
 import { haveNativePrereqs, nativePrereqsDiagnostic } from "./_fixtures/cacheOnlyManager.js";
@@ -69,6 +70,50 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     );
     const second = freshManager("after-retained-catalog");
     second.dispose();
+  });
+
+  it("retained model calls fail safely after manager disposal", async () => {
+    await withByomAssets(async (modelCacheDir, modelPath) => {
+      const first = FoundryLocalManager.create({ appName: "retained-model", modelCacheDir });
+      using metadata = new MutableModelInfo().setStringProperty("task", "chat-completion");
+      const retainedModel = first
+        .getCatalog(CatalogType.Local)
+        .registerModelSync(modelPath, "retained-model:1", metadata);
+      first.dispose();
+
+      expect(() => retainedModel.info).toThrowError(
+        expect.objectContaining({ name: "FoundryLocalError", code: 4, message: expect.stringMatching(/disposed/i) }),
+      );
+      expect(() => retainedModel.isCached).toThrowError(
+        expect.objectContaining({ name: "FoundryLocalError", code: 4, message: expect.stringMatching(/disposed/i) }),
+      );
+
+      using second = FoundryLocalManager.create({ appName: "after-retained-model", modelCacheDir });
+      await second.getCatalog(CatalogType.Local).unregisterModel("retained-model:1");
+    });
+  });
+
+  it("keeps native model operations alive when the manager is disposed after the worker starts", async () => {
+    await withByomAssets(async (modelCacheDir, modelPath) => {
+      const first = FoundryLocalManager.create({ appName: "dispose-during-model-operation", modelCacheDir });
+      using metadata = new MutableModelInfo()
+        .setStringProperty("task", "chat-completion")
+        .setStringProperty("custom_label", "recreated")
+        .setIntProperty("custom_count", 73);
+      const model = first
+        .getCatalog(CatalogType.Local)
+        .registerModelSync(modelPath, "dispose-during-model-operation:1", metadata);
+
+      await expect(unwrapNativeModel(model).unload(() => first.dispose())).resolves.toBeUndefined();
+
+      using second = FoundryLocalManager.create({ appName: "after-model-operation", modelCacheDir });
+      const secondCatalog = second.getCatalog(CatalogType.Local);
+      const recreated = await secondCatalog.getModelVariant("dispose-during-model-operation:1");
+      expect(recreated.info.id).toBe("dispose-during-model-operation:1");
+      expect(recreated.getStringProperty("custom_label")).toBe("recreated");
+      expect(recreated.getIntProperty("custom_count")).toBe(73);
+      await secondCatalog.unregisterModel("dispose-during-model-operation:1");
+    });
   });
 
   it("keeps native registration alive when the manager is disposed after the worker starts", async () => {

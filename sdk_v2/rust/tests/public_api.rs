@@ -83,7 +83,7 @@ async fn byom_registration_round_trips_and_preserves_assets() {
         .as_nanos();
     let name = format!("rust-byom-{}-{nonce}", process::id());
     let model_id = format!("{name}:7");
-    let manager = FoundryLocalManager::create(
+    let create_manager = || FoundryLocalManager::create(
         FoundryLocalConfig::new(format!("rust-byom-{nonce}"))
             .app_data_dir(temp.path().join("appdata").to_string_lossy())
             .model_cache_dir(temp.path().join("cache").join("models").to_string_lossy())
@@ -92,6 +92,7 @@ async fn byom_registration_round_trips_and_preserves_assets() {
             .service_endpoint("http://127.0.0.1:1"),
     )
     .expect("create cache-only manager");
+            let manager = create_manager();
     let catalog = manager.local_catalog().expect("get local catalog");
     assert_eq!(catalog.catalog_type(), CatalogType::Local);
 
@@ -101,8 +102,12 @@ async fn byom_registration_round_trips_and_preserves_assets() {
         .expect("set task")
         .set_string_property("display_name", "Rust BYOM")
         .expect("set display name")
+        .set_string_property("custom_marker", "persist-me")
+        .expect("set custom marker")
         .set_int_property("context_length", 4096)
-        .expect("set context length");
+        .expect("set context length")
+        .set_int_property("custom_count", 42)
+        .expect("set custom count");
 
     let model = catalog
         .register_model(&model_path.to_string_lossy(), &model_id, metadata)
@@ -116,12 +121,71 @@ async fn byom_registration_round_trips_and_preserves_assets() {
     assert_eq!(info.display_name.as_deref(), Some("Rust BYOM"));
     assert_eq!(info.context_length, Some(4096));
     assert_eq!(
+        model
+            .get_string_property("custom_marker")
+            .expect("read custom string")
+            .as_deref(),
+        Some("persist-me")
+    );
+    assert_eq!(
+        model
+            .get_int_property("custom_count", -1)
+            .expect("read custom integer"),
+        42
+    );
+    assert_eq!(
         fs::canonicalize(model.path().await.expect("read model path"))
             .expect("canonicalize model path"),
         fs::canonicalize(&model_path).expect("canonicalize expected path")
     );
 
-    catalog
+    let fresh = catalog
+        .get_model_variant(&model_id)
+        .await
+        .expect("fresh model lookup");
+    assert_eq!(
+        fresh
+            .get_string_property("custom_marker")
+            .expect("read fresh custom string")
+            .as_deref(),
+        Some("persist-me")
+    );
+    assert_eq!(
+        fresh
+            .get_int_property("custom_count", -1)
+            .expect("read fresh custom integer"),
+        42
+    );
+
+    drop(fresh);
+    drop(model);
+    drop(catalog);
+    manager.shutdown().expect("shut down first manager");
+    drop(manager);
+
+    let recreated_manager = create_manager();
+    let recreated_catalog = recreated_manager
+        .local_catalog()
+        .expect("get recreated local catalog");
+    let recreated = recreated_catalog
+        .get_model_variant(&model_id)
+        .await
+        .expect("lookup model after manager recreation");
+    assert_eq!(
+        recreated
+            .get_string_property("custom_marker")
+            .expect("read recreated custom string")
+            .as_deref(),
+        Some("persist-me")
+    );
+    assert_eq!(
+        recreated
+            .get_int_property("custom_count", -1)
+            .expect("read recreated custom integer"),
+        42
+    );
+
+    recreated_catalog
         .unregister_model(&model_id)
         .await
         .expect("unregister model");
@@ -130,11 +194,11 @@ async fn byom_registration_round_trips_and_preserves_assets() {
         fs::read(&sentinel_path).expect("read sentinel"),
         b"caller-owned asset"
     );
-    assert!(catalog.get_model_variant(&model_id).await.is_err());
+    assert!(recreated_catalog.get_model_variant(&model_id).await.is_err());
 
-    drop(model);
-    drop(catalog);
-    manager.shutdown().expect("shut down manager");
+    drop(recreated);
+    drop(recreated_catalog);
+    recreated_manager.shutdown().expect("shut down manager");
 }
 
 #[test]

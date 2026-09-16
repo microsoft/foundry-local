@@ -33,7 +33,9 @@ fixture references.
 from __future__ import annotations
 
 import json
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -138,4 +140,53 @@ class TestSingletonRecreate:
         assert recreated_lookup is not None
         assert recreated_lookup.info.get_string_property("custom_marker") == "persist-me"
         assert recreated_lookup.info.get_int_property("custom_count", -1) == 42
+        second_catalog.unregister_model(model_id)
+
+    def test_close_waits_for_model_call_and_rejects_later_borrowed_calls(self, restore_singleton, tmp_path):
+        config = restore_singleton
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        (model_path / "genai_config.json").write_text(
+            json.dumps({"model": {"type": "phi3"}}), encoding="utf-8"
+        )
+        model_id = f"python-close-race-{uuid.uuid4().hex}:1"
+
+        assert FoundryLocalManager.instance is not None
+        FoundryLocalManager.instance.close()
+        first = FoundryLocalManager(config)
+        first_catalog = first.get_catalog(CatalogType.LOCAL)
+        with ModelInfoBuilder() as metadata:
+            metadata.set_string_property("task", "chat-completion")
+            registered = first_catalog.register_model(model_path, model_id, metadata)
+
+        registered._before_native_call_for_test = first.close  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="active native call"):
+            _ = registered.is_cached
+        assert FoundryLocalManager.instance is first
+        registered._before_native_call_for_test = None  # type: ignore[attr-defined]
+
+        operation_entered = threading.Event()
+        close_attempting_lock = threading.Event()
+
+        def before_native_call() -> None:
+            operation_entered.set()
+            assert close_attempting_lock.wait(timeout=10)
+
+        registered._before_native_call_for_test = before_native_call  # type: ignore[attr-defined]
+        first._before_close_lock_for_test = close_attempting_lock.set
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            operation_future = executor.submit(lambda: registered.is_cached)
+            assert operation_entered.wait(timeout=10)
+            close_future = executor.submit(first.close)
+            assert operation_future.result(timeout=10) is True
+            close_future.result(timeout=10)
+        with pytest.raises(RuntimeError, match="closed"):
+            _ = registered.is_cached
+        with pytest.raises(RuntimeError, match="closed"):
+            first_catalog.list_models()
+
+        second = FoundryLocalManager(config)
+        second_catalog = second.get_catalog(CatalogType.LOCAL)
+        recreated = second_catalog.get_model_variant(model_id)
+        assert recreated is not None
         second_catalog.unregister_model(model_id)

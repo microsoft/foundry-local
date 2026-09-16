@@ -79,6 +79,8 @@ export interface ModelInfo {
   readonly inputModalities?: string;
   readonly outputModalities?: string;
   readonly capabilities?: string;
+  getStringProperty(key: string): string | undefined;
+  getIntProperty(key: string, defaultValue?: number): number;
 }
 
 /** Information about a discoverable execution provider. */

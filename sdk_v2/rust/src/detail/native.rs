@@ -12,7 +12,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::api::{cstr_to_string, Api};
+use super::api::{cstr_to_string, to_cstring, Api};
 use super::ffi::*;
 use super::manager::NativeManager;
 use crate::error::{FoundryLocalError, Result};
@@ -50,6 +50,19 @@ impl NativeModel {
         let status = unsafe { (self.api.model_api().GetInfo)(self.ptr, &mut info) };
         self.api.check(status)?;
         Ok(info)
+    }
+
+    pub(crate) fn get_string_property(&self, key: &str) -> Result<Option<String>> {
+        let key = to_cstring(key)?;
+        let info = self.info_ptr()?;
+        let value = unsafe { (self.api.model_api().Info_GetStringProperty)(info, key.as_ptr()) };
+        Ok(unsafe { cstr_to_string(value) })
+    }
+
+    pub(crate) fn get_int_property(&self, key: &str, default_value: i64) -> Result<i64> {
+        let key = to_cstring(key)?;
+        let info = self.info_ptr()?;
+        Ok(unsafe { (self.api.model_api().Info_GetIntProperty)(info, key.as_ptr(), default_value) })
     }
 
     pub(crate) fn is_cached(&self) -> Result<bool> {

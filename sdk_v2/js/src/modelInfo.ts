@@ -60,6 +60,7 @@ export class MutableModelInfo implements Disposable {
     if (typeof value !== "string") {
       throw new TypeError("ModelInfo string property value must be a string.");
     }
+    assertNoEmbeddedNul(value, "ModelInfo string property value");
     this.#native.setStringProperty(key, value);
     return this;
   }
@@ -92,6 +93,13 @@ export class MutableModelInfo implements Disposable {
 function assertPropertyKey(key: string): void {
   if (typeof key !== "string" || key.length === 0) {
     throw new TypeError("ModelInfo property key must be a non-empty string.");
+  }
+  assertNoEmbeddedNul(key, "ModelInfo property key");
+}
+
+function assertNoEmbeddedNul(value: string, name: string): void {
+  if (value.includes("\0")) {
+    throw new TypeError(`${name} must not contain an embedded NUL character.`);
   }
 }
 

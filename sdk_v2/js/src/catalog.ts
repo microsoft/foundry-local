@@ -50,9 +50,7 @@ export class Catalog {
    * "find or undefined" shape should iterate `getModels()` themselves.
    */
   async getModel(alias: string): Promise<IModel> {
-    if (typeof alias !== "string" || alias.trim() === "") {
-      throw new Error("Model alias must be a non-empty string.");
-    }
+    validateNonEmptyString(alias, "Model alias");
     const n = this.#native.getModel(alias);
     if (n === undefined) {
       throw new Error(`Model with alias '${alias}' not found.`);
@@ -62,9 +60,7 @@ export class Catalog {
 
   /** Look up a specific model variant by its full model id. Throws when not found. */
   async getModelVariant(modelId: string): Promise<IModel> {
-    if (typeof modelId !== "string" || modelId.trim() === "") {
-      throw new Error("Model ID must be a non-empty string.");
-    }
+    validateNonEmptyString(modelId, "Model ID");
     const n = this.#native.getModelVariant(modelId);
     if (n === undefined) {
       throw new Error(`Model variant with ID '${modelId}' not found.`);
@@ -89,8 +85,9 @@ export class Catalog {
    * defaults to 50 and acts as a per-variant cap; pass 0 or a negative value for no cap.
    */
   async getModelVersions(modelAlias: string, modelName?: string, maxVersions = 50): Promise<IModel[]> {
-    if (typeof modelAlias !== "string" || modelAlias.trim() === "") {
-      throw new Error("Model alias must be a non-empty string.");
+    validateNonEmptyString(modelAlias, "Model alias");
+    if (modelName !== undefined) {
+      validateNativeString(modelName, "Model name");
     }
     // The native parameter is int32_t; N-API's Int32Value() silently coerces
     // fractions, NaN, Infinity, and out-of-range values into a different cap.
@@ -154,6 +151,13 @@ function wrapAll(natives: readonly NativeModel[]): IModel[] {
 function validateNonEmptyString(value: string, name: string): void {
   if (typeof value !== "string" || value.trim() === "") {
     throw new TypeError(`${name} must be a non-empty string.`);
+  }
+  validateNativeString(value, name);
+}
+
+function validateNativeString(value: string, name: string): void {
+  if (value.includes("\0")) {
+    throw new TypeError(`${name} must not contain an embedded NUL character.`);
   }
 }
 

@@ -175,17 +175,12 @@ Select the local catalog to register an existing model directory. The directory 
 ```csharp
 var localCatalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
 
-var metadata = new ModelInfo
-{
-    Task = "chat-completion",
-    DisplayName = "My local model",
-    Runtime = new Runtime
-    {
-        DeviceType = DeviceType.CPU,
-        ExecutionProvider = "CPUExecutionProvider",
-    },
-};
-metadata.SetIntProperty(ModelInfoPropertyKeys.ContextLength, 4096);
+var metadata = new ModelInfoBuilder()
+    .SetStringProperty(ModelInfoPropertyKeys.Task, "chat-completion")
+    .SetStringProperty(ModelInfoPropertyKeys.DisplayName, "My local model")
+    .SetStringProperty(ModelInfoPropertyKeys.DeviceType, "CPU")
+    .SetStringProperty(ModelInfoPropertyKeys.ExecutionProvider, "CPUExecutionProvider")
+    .SetIntProperty(ModelInfoPropertyKeys.ContextLength, 4096);
 
 var model = await localCatalog.RegisterModelAsync(
     @"C:\models\my-model",

@@ -65,6 +65,11 @@ class ModelSettings:
     parameters: list[Parameter] | None = None
 
 
+def _validate_native_string(value: str, argument_name: str) -> None:
+    if "\x00" in value:
+        raise ValueError(f"{argument_name} must not contain an embedded NUL character")
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     """Point-in-time catalog metadata for a single model variant."""
@@ -101,6 +106,7 @@ class ModelInfo:
 
     def get_string_property(self, key: str) -> str | None:
         """Get a named property by key (for forward compatibility)."""
+        _validate_native_string(key, "key")
         field_name = {
             "model_provider": "provider_type",
             "type": "model_type",
@@ -113,6 +119,7 @@ class ModelInfo:
 
     def get_int_property(self, key: str, default: int = 0) -> int:
         """Get a named property as int (for forward compatibility)."""
+        _validate_native_string(key, "key")
         field_name = {
             "filesize_mb": "file_size_mb",
         }.get(key, key.replace("-", "_"))
@@ -158,6 +165,8 @@ class ModelInfoBuilder:
         self._ensure_open()
         from foundry_local_sdk._native.api import api
 
+        _validate_native_string(key, "key")
+        _validate_native_string(value, "value")
         key_bytes = key.encode("utf-8")
         value_bytes = value.encode("utf-8")
         api.check_status(api.model.Info_SetStringProperty(self._ptr, key_bytes, value_bytes))
@@ -168,6 +177,7 @@ class ModelInfoBuilder:
         self._ensure_open()
         from foundry_local_sdk._native.api import api
 
+        _validate_native_string(key, "key")
         key_bytes = key.encode("utf-8")
         api.check_status(api.model.Info_SetIntProperty(self._ptr, key_bytes, value))
         return self
@@ -177,6 +187,7 @@ class ModelInfoBuilder:
         self._ensure_open()
         from foundry_local_sdk._native.api import api, ffi
 
+        _validate_native_string(key, "key")
         key_bytes = key.encode("utf-8")
         value = api.model.Info_GetStringProperty(self._ptr, key_bytes)
         return ffi.string(value).decode("utf-8") if value != ffi.NULL else None
@@ -186,6 +197,7 @@ class ModelInfoBuilder:
         self._ensure_open()
         from foundry_local_sdk._native.api import api
 
+        _validate_native_string(key, "key")
         key_bytes = key.encode("utf-8")
         return int(api.model.Info_GetIntProperty(self._ptr, key_bytes, default))
 

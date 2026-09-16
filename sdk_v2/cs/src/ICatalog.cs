@@ -83,7 +83,7 @@ public interface ICatalog
     /// <param name="ct">Optional cancellation token.</param>
     /// <returns>A manager-owned model handle that remains valid for the manager's lifetime, including after unregister.</returns>
     /// <exception cref="FoundryLocalException">The catalog is not local or registration validation fails.</exception>
-    Task<IModel> RegisterModelAsync(string modelPath, string modelId, ModelInfo metadata,
+    Task<IModel> RegisterModelAsync(string modelPath, string modelId, ModelInfoBuilder metadata,
                                     CancellationToken? ct = null);
 
     /// <summary>

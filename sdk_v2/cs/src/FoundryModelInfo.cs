@@ -7,7 +7,6 @@
 namespace Microsoft.AI.Foundry.Local;
 
 using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Serialization;
 
 using NativeModelType = Microsoft.AI.Foundry.Local.Detail.Native.Model;
@@ -61,21 +60,6 @@ public record ModelSettings
 
 public record ModelInfo
 {
-    /// <summary>
-    /// Creates mutable metadata for local model registration. Model identity is supplied separately to
-    /// <see cref="ICatalog.RegisterModelAsync"/> and is populated by the catalog on the returned model.
-    /// </summary>
-    [SetsRequiredMembers]
-    public ModelInfo()
-    {
-        Id = string.Empty;
-        Name = string.Empty;
-        Alias = string.Empty;
-        ProviderType = string.Empty;
-        Uri = string.Empty;
-        ModelType = string.Empty;
-    }
-
     [JsonPropertyName("id")]
     public required string Id { get; init; }
 
@@ -156,48 +140,6 @@ public record ModelInfo
     public string? Capabilities { get; init; }
 
     /// <summary>
-    /// Sets a string metadata property. Well-known keys are available from
-    /// <see cref="ModelInfoPropertyKeys"/>; arbitrary keys are preserved for forward compatibility.
-    /// </summary>
-    /// <param name="key">Property key.</param>
-    /// <param name="value">Property value.</param>
-    /// <returns>This metadata instance.</returns>
-    public ModelInfo SetStringProperty(string key, string value)
-    {
-        if (string.IsNullOrEmpty(key))
-        {
-            throw new ArgumentException("Property key cannot be null or empty.", nameof(key));
-        }
-
-        Detail.Throw.IfNull(value);
-
-        StringProperties[key] = value;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets an integer metadata property. Well-known keys are available from
-    /// <see cref="ModelInfoPropertyKeys"/>; arbitrary keys are preserved for forward compatibility.
-    /// Boolean metadata uses 0 for false and 1 for true.
-    /// </summary>
-    /// <param name="key">Property key.</param>
-    /// <param name="value">Property value.</param>
-    /// <returns>This metadata instance.</returns>
-    public ModelInfo SetIntProperty(string key, long value)
-    {
-        if (string.IsNullOrEmpty(key))
-        {
-            throw new ArgumentException("Property key cannot be null or empty.", nameof(key));
-        }
-
-        IntProperties[key] = value;
-        return this;
-    }
-
-    internal Dictionary<string, string> StringProperties { get; } = new(StringComparer.Ordinal);
-    internal Dictionary<string, long> IntProperties { get; } = new(StringComparer.Ordinal);
-
-    /// <summary>
     /// Create a ModelInfo record from a native Model's info properties.
     /// </summary>
     internal static ModelInfo FromNative(NativeModelType nativeModel)
@@ -268,8 +210,42 @@ public record ModelInfo
 }
 
 /// <summary>
-/// Well-known property keys accepted by <see cref="ModelInfo.SetStringProperty"/> and
-/// <see cref="ModelInfo.SetIntProperty"/> when constructing metadata for local model registration.
+/// Mutable, caller-owned metadata used to register a local model.
+/// </summary>
+public sealed class ModelInfoBuilder
+{
+    internal Dictionary<string, string> StringProperties { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<string, long> IntProperties { get; } = new(StringComparer.Ordinal);
+
+    public ModelInfoBuilder SetStringProperty(string key, string value)
+    {
+        ValidateKey(key);
+        Detail.Throw.IfNull(value);
+        Detail.Throw.IfContainsEmbeddedNul(value);
+        StringProperties[key] = value;
+        return this;
+    }
+
+    public ModelInfoBuilder SetIntProperty(string key, long value)
+    {
+        ValidateKey(key);
+        IntProperties[key] = value;
+        return this;
+    }
+
+    private static void ValidateKey(string key)
+    {
+        if (string.IsNullOrEmpty(key))
+        {
+            throw new ArgumentException("Property key cannot be null or empty.", nameof(key));
+        }
+        Detail.Throw.IfContainsEmbeddedNul(key);
+    }
+}
+
+/// <summary>
+/// Well-known property keys accepted by <see cref="ModelInfoBuilder.SetStringProperty"/> and
+/// <see cref="ModelInfoBuilder.SetIntProperty"/> when constructing metadata for local model registration.
 /// </summary>
 public static class ModelInfoPropertyKeys
 {

@@ -15,7 +15,6 @@ using Microsoft.AI.Foundry.Local;
 using Microsoft.AI.Foundry.Local.Detail.Interop;
 
 using Api = Microsoft.AI.Foundry.Local.Detail.Native.Api;
-using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 using NativeSession = Microsoft.AI.Foundry.Local.Detail.Native.Session;
 
 #pragma warning disable IDISP001 // Dispose created — ownership transfers to Request/Queue
@@ -36,7 +35,7 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
     private enum SessionState { Created, Started, Stopped, Disposed }
 
     private readonly string _modelId;
-    private readonly NativeModel _nativeModel;
+    private readonly Model _model;
 
     private SessionState _state = SessionState.Created;
     private ItemQueue? _queue;
@@ -60,10 +59,10 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 
     public LiveAudioTranscriptionOptions Settings { get; } = new();
 
-    internal LiveAudioTranscriptionSession(string modelId, NativeModel nativeModel)
+    internal LiveAudioTranscriptionSession(string modelId, Model model)
     {
         _modelId = modelId;
-        _nativeModel = nativeModel;
+        _model = model;
     }
 
     public Task StartAsync(CancellationToken ct = default)
@@ -87,7 +86,7 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
                 AllowSynchronousContinuations = true
             });
 
-        _session = new NativeSession(_nativeModel);
+        _session = _model.WithNativeModel(nativeModel => new NativeSession(nativeModel));
 
         var channel = _channel;
 

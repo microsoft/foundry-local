@@ -4,9 +4,11 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
-from _thread import LockType
+from _thread import RLock as RLockType
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 from typing_extensions import deprecated
 
@@ -42,6 +44,14 @@ class IModel(ABC):
     @abstractmethod
     def info(self) -> ModelInfo:
         """Full model metadata."""
+
+    @abstractmethod
+    def get_string_property(self, key: str) -> str | None:
+        """Read a string metadata property by key."""
+
+    @abstractmethod
+    def get_int_property(self, key: str, default: int = 0) -> int:
+        """Read an integer metadata property by key."""
 
     @property
     @abstractmethod
@@ -164,7 +174,7 @@ def _model_info_from_native(
     native_model_ptr: object,
     *,
     ensure_manager_open: Callable[[], None] | None = None,
-    manager_lock: LockType | None = None,
+    manager_lock: RLockType | None = None,
 ) -> ModelInfo:
     """Read native metadata into a safe point-in-time value snapshot."""
     from foundry_local_sdk._native.api import api, ffi  # local to avoid circular imports
@@ -269,6 +279,7 @@ class _ModelImpl(IModel):
         # Callback references — stored to prevent premature GC.
         self._progress_cb = None
         self._progress_cb_handle = None
+        self._before_native_call_for_test: Callable[[], None] | None = None
 
     @property
     def _native_ptr(self) -> object:
@@ -285,9 +296,28 @@ class _ModelImpl(IModel):
         if manager is not None and getattr(manager, "_native_manager", None) is None:
             raise RuntimeError("FoundryLocalManager is closed")
 
-    def _manager_lock(self) -> LockType | None:
+    def _manager_lock(self) -> RLockType | None:
         manager = getattr(self._parent, "_parent", None)
         return getattr(manager, "_lock", None)
+
+    @contextmanager
+    def _manager_lifetime(self) -> Iterator[RLockType | None]:
+        manager = getattr(self._parent, "_parent", None)
+        manager_lock = self._manager_lock()
+        if manager_lock is not None:
+            with manager_lock:
+                self._ensure_manager_open()
+                state = getattr(manager, "_native_call_state")
+                state.depth = getattr(state, "depth", 0) + 1
+                try:
+                    if self._before_native_call_for_test is not None:
+                        self._before_native_call_for_test()
+                    yield manager_lock
+                finally:
+                    state.depth -= 1
+            return
+        self._ensure_manager_open()
+        yield None
 
     # ------------------------------------------------------------------
     # Identity properties — read from native ModelInfo
@@ -303,17 +333,18 @@ class _ModelImpl(IModel):
 
     @property
     def info(self) -> ModelInfo:
-        manager_lock = self._manager_lock()
-        if manager_lock is not None:
-            with manager_lock:
-                self._ensure_manager_open()
-                return _model_info_from_native(
-                    self._ptr,
-                    ensure_manager_open=self._ensure_manager_open,
-                    manager_lock=manager_lock,
-                )
-        self._ensure_manager_open()
-        return _model_info_from_native(self._ptr, ensure_manager_open=self._ensure_manager_open)
+        with self._manager_lifetime() as manager_lock:
+            return _model_info_from_native(
+                self._ptr,
+                ensure_manager_open=self._ensure_manager_open,
+                manager_lock=manager_lock,
+            )
+
+    def get_string_property(self, key: str) -> str | None:
+        return self.info.get_string_property(key)
+
+    def get_int_property(self, key: str, default: int = 0) -> int:
+        return self.info.get_int_property(key, default)
 
     # ------------------------------------------------------------------
     # Live state properties — always go to native for fresh data
@@ -321,21 +352,21 @@ class _ModelImpl(IModel):
 
     @property
     def is_cached(self) -> bool:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
-        out = ffi.new("int*")
-        api.check_status(api.model.IsCached(self._ptr, out))
-        return bool(out[0])
+        with self._manager_lifetime():
+            out = ffi.new("int*")
+            api.check_status(api.model.IsCached(self._ptr, out))
+            return bool(out[0])
 
     @property
     def is_loaded(self) -> bool:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
-        out = ffi.new("int*")
-        api.check_status(api.model.IsLoaded(self._ptr, out))
-        return bool(out[0])
+        with self._manager_lifetime():
+            out = ffi.new("int*")
+            api.check_status(api.model.IsLoaded(self._ptr, out))
+            return bool(out[0])
 
     # ------------------------------------------------------------------
     # Convenience pass-throughs from ModelInfo
@@ -366,7 +397,6 @@ class _ModelImpl(IModel):
     # ------------------------------------------------------------------
 
     def download(self, progress_callback: Callable[[float], None] | None = None) -> None:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         cb = ffi.NULL
@@ -388,33 +418,34 @@ class _ModelImpl(IModel):
             cb = _cb
             user_data = self._progress_cb_handle
 
-        api.check_status(api.model.Download(self._ptr, cb, user_data))
+        with self._manager_lifetime():
+            api.check_status(api.model.Download(self._ptr, cb, user_data))
 
     def get_path(self) -> str:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
-        out = ffi.new("const char**")
-        api.check_status(api.model.GetPath(self._ptr, out))
-        return ffi.string(out[0]).decode("utf-8") if out[0] != ffi.NULL else ""
+        with self._manager_lifetime():
+            out = ffi.new("const char**")
+            api.check_status(api.model.GetPath(self._ptr, out))
+            return ffi.string(out[0]).decode("utf-8") if out[0] != ffi.NULL else ""
 
     def load(self) -> None:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.model.Load(self._ptr))
+        with self._manager_lifetime():
+            api.check_status(api.model.Load(self._ptr))
 
     def unload(self) -> None:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.model.Unload(self._ptr))
+        with self._manager_lifetime():
+            api.check_status(api.model.Unload(self._ptr))
 
     def remove_from_cache(self) -> None:
-        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.model.RemoveFromCache(self._ptr))
+        with self._manager_lifetime():
+            api.check_status(api.model.RemoveFromCache(self._ptr))
 
     # ------------------------------------------------------------------
     # Variants — delegated to the native layer
@@ -422,7 +453,6 @@ class _ModelImpl(IModel):
 
     @property
     def variants(self) -> list[IModel]:
-        self._ensure_manager_open()
         """Return all device-optimised variants for this model.
 
         Calls the native ``GetVariants`` vtable function.  A model that is
@@ -430,19 +460,19 @@ class _ModelImpl(IModel):
         """
         from foundry_local_sdk._native.api import api, ffi
 
-        ml_out = ffi.new("flModelList**")
-        api.check_status(api.model.GetVariants(self._ptr, ml_out))
-        ml = ml_out[0]
-        try:
-            count = api.root.ModelList_Size(ml)
-            # Variants share this model's catalog as their parent — chain to the
-            # catalog, not to this model, so the reference graph stays flat.
-            return [_ModelImpl(api.root.ModelList_GetAt(ml, i), parent=self._parent) for i in range(count)]
-        finally:
-            api.root.ModelList_Release(ml)
+        with self._manager_lifetime():
+            ml_out = ffi.new("flModelList**")
+            api.check_status(api.model.GetVariants(self._ptr, ml_out))
+            ml = ml_out[0]
+            try:
+                count = api.root.ModelList_Size(ml)
+                # Variants share this model's catalog as their parent — chain to the
+                # catalog, not to this model, so the reference graph stays flat.
+                return [_ModelImpl(api.root.ModelList_GetAt(ml, i), parent=self._parent) for i in range(count)]
+            finally:
+                api.root.ModelList_Release(ml)
 
     def select_variant(self, variant: IModel) -> None:
-        self._ensure_manager_open()
         """Select a specific variant.  Delegates to the native ``SelectVariant`` vtable.
 
         Args:
@@ -453,9 +483,12 @@ class _ModelImpl(IModel):
         """
         if not isinstance(variant, _ModelImpl):
             raise FoundryLocalException("variant must be an IModel returned from this model's variants.")
+        if variant._parent is not self._parent:
+            raise FoundryLocalException("variant must belong to the same Catalog as this model.")
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.model.SelectVariant(self._ptr, variant._ptr))
+        with self._manager_lifetime():
+            api.check_status(api.model.SelectVariant(self._ptr, variant._ptr))
 
     # ------------------------------------------------------------------
     # OpenAI client factories

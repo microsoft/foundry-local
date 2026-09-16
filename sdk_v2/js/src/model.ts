@@ -69,6 +69,17 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
     promptTemplate: normalizePromptTemplate(raw.promptTemplate),
     modelSettings: normalizeModelSettings(raw.modelSettings),
     cached: raw.cached ?? native.isCached(),
+    getStringProperty: (key: string) => {
+      validateNativeString(key, "ModelInfo property key");
+      return native.getStringProperty(key);
+    },
+    getIntProperty: (key: string, defaultValue = 0) => {
+      validateNativeString(key, "ModelInfo property key");
+      if (!Number.isSafeInteger(defaultValue)) {
+        throw new TypeError("ModelInfo integer property default must be a safe integer.");
+      }
+      return native.getIntProperty(key, defaultValue);
+    },
     runtime:
       raw.runtime !== undefined
         ? {
@@ -80,6 +91,15 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
             executionProvider,
           },
   };
+}
+
+function validateNativeString(value: string, argumentName: string): void {
+  if (typeof value !== "string") {
+    throw new TypeError(`${argumentName} must be a string.`);
+  }
+  if (value.includes("\0")) {
+    throw new TypeError(`${argumentName} must not contain an embedded NUL character.`);
+  }
 }
 
 export class Model implements IModel {
@@ -106,6 +126,14 @@ export class Model implements IModel {
     // The native model is the source of truth. Read fresh every time so metadata stays correct after
     // selectVariant / download / cache changes. Each read returns a point-in-time snapshot.
     return normalizeModelInfo(this.#native.getInfo(), this.#native);
+  }
+
+  getStringProperty(key: string): string | undefined {
+    return this.info.getStringProperty(key);
+  }
+
+  getIntProperty(key: string, defaultValue = 0): number {
+    return this.info.getIntProperty(key, defaultValue);
   }
 
   get isCached(): boolean {

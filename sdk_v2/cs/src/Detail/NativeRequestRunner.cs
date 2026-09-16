@@ -13,7 +13,6 @@ using Microsoft.AI.Foundry.Local.Detail.Interop;
 using Microsoft.Extensions.Logging;
 
 using NativeApi = Microsoft.AI.Foundry.Local.Detail.Native.Api;
-using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 using NativeSession = Microsoft.AI.Foundry.Local.Detail.Native.Session;
 
 /// <summary>
@@ -28,7 +27,7 @@ internal static class NativeRequestRunner
     /// Run a single (non-streaming) request on the thread pool and deserialize the first response
     /// item via <paramref name="deserialize"/>.
     /// </summary>
-    internal static Task<T> RunAsync<T>(NativeModel nativeModel,
+    internal static Task<T> RunAsync<T>(Model model,
                                         string requestJson,
                                         Func<string, T> deserialize,
                                         ILogger logger,
@@ -36,23 +35,25 @@ internal static class NativeRequestRunner
     {
         return Task.Run(() =>
         {
-            using var session = new NativeSession(nativeModel);
-            using var jsonItem = TextItem.OpenAIJson(requestJson);
-            using var request = new Request();
-            request.AddItem(jsonItem);
-
-            var responsePtr = session.ProcessRequest(request.Ptr);
-            using var response = new Response(responsePtr);
-
-            using var responseItem = response.GetItem(0);
-
-            if (responseItem is not TextItem textItem)
+            return model.WithNativeModel(nativeModel =>
             {
-                throw new FoundryLocalException(
-                    $"Expected TextItem from native response, got {responseItem?.GetType().Name ?? "null"}.", logger);
-            }
+                using var session = new NativeSession(nativeModel);
+                using var jsonItem = TextItem.OpenAIJson(requestJson);
+                using var request = new Request();
+                request.AddItem(jsonItem);
 
-            return deserialize(textItem.Text);
+                var responsePtr = session.ProcessRequest(request.Ptr);
+                using var response = new Response(responsePtr);
+                using var responseItem = response.GetItem(0);
+
+                if (responseItem is not TextItem textItem)
+                {
+                    throw new FoundryLocalException(
+                        $"Expected TextItem from native response, got {responseItem?.GetType().Name ?? "null"}.", logger);
+                }
+
+                return deserialize(textItem.Text);
+            });
         }, ct ?? CancellationToken.None);
     }
 
@@ -62,7 +63,7 @@ internal static class NativeRequestRunner
     /// enumerator early cancels and joins the producer cleanly. <paramref name="deserialize"/> may
     /// return <c>null</c> to skip a chunk.
     /// </summary>
-    internal static async IAsyncEnumerable<T> RunStreamingAsync<T>(NativeModel nativeModel,
+    internal static async IAsyncEnumerable<T> RunStreamingAsync<T>(Model model,
                                                                    string requestJson,
                                                                    Func<string, T?> deserialize,
                                                                    ILogger logger,
@@ -83,9 +84,11 @@ internal static class NativeRequestRunner
 
         var producerTask = Task.Run(() =>
         {
-            try
+            model.WithNativeModel(nativeModel =>
             {
-                using var session = new NativeSession(nativeModel);
+                try
+                {
+                    using var session = new NativeSession(nativeModel);
 
                 FlStreamingCallback streamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
                 {
@@ -134,16 +137,18 @@ internal static class NativeRequestRunner
                 var responsePtr = session.ProcessRequest(request.Ptr);
                 NativeApi.Inference.ResponseRelease(responsePtr);
 
-                channel.Writer.TryComplete();
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                channel.Writer.TryComplete(new FoundryLocalException(runErrorMsg, ex, logger));
-            }
-            catch (OperationCanceledException)
-            {
-                channel.Writer.TryComplete();
-            }
+                    channel.Writer.TryComplete();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    channel.Writer.TryComplete(new FoundryLocalException(runErrorMsg, ex, logger));
+                }
+                catch (OperationCanceledException)
+                {
+                    channel.Writer.TryComplete();
+                }
+                return true;
+            });
         }, CancellationToken.None);
 
         try

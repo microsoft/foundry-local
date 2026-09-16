@@ -8,6 +8,7 @@ namespace Microsoft.AI.Foundry.Local;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
 using Microsoft.AI.Foundry.Local.Detail;
@@ -40,6 +41,7 @@ public class FoundryLocalManager : IDisposable
     internal Configuration Configuration => _config;
     internal ILogger Logger => _logger;
     internal NativeManager NativeManager => _nativeManager;
+    internal Action? BeforeNativeDisposeForTest { get; set; }
 
     public static bool IsInitialized => instance != null;
     public static FoundryLocalManager Instance => instance ??
@@ -169,7 +171,7 @@ public class FoundryLocalManager : IDisposable
     /// <returns>Array of EP bootstrapper info describing available EPs.</returns>
     public EpInfo[] DiscoverEps()
     {
-        return _nativeManager.GetDiscoverableEps();
+        return WithNativeManager(manager => manager.GetDiscoverableEps());
     }
 
     /// <summary>
@@ -178,13 +180,13 @@ public class FoundryLocalManager : IDisposable
     /// </summary>
     public void Shutdown()
     {
-        _nativeManager.Shutdown();
+        WithNativeManager(manager => manager.Shutdown());
     }
 
     /// <summary>
     /// Whether <see cref="Shutdown"/> has been called on the native manager.
     /// </summary>
-    public bool IsShutdownRequested => _nativeManager.IsShutdownRequested();
+    public bool IsShutdownRequested => WithNativeManager(manager => manager.IsShutdownRequested());
 
     /// <summary>
     /// Downloads and registers all available execution providers.
@@ -396,17 +398,26 @@ public class FoundryLocalManager : IDisposable
         var beforeEps = DiscoverEps();
 
         FlEpProgressCallback? nativeCallback = null;
+        Exception? callbackException = null;
         if (progressCallback != null)
         {
             nativeCallback = (epName, value, _) =>
             {
-                if (ct?.IsCancellationRequested ?? false)
+                try
                 {
+                    if (ct?.IsCancellationRequested ?? false)
+                    {
+                        return 1;
+                    }
+
+                    progressCallback(epName, value);
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    callbackException = ex;
                     return 1;
                 }
-
-                progressCallback(epName, value);
-                return 0;
             };
         }
 
@@ -414,7 +425,18 @@ public class FoundryLocalManager : IDisposable
 
         await Task.Run(() =>
         {
-            _nativeManager.DownloadAndRegisterEps(nameArray, nativeCallback);
+            try
+            {
+                WithNativeManager(manager => manager.DownloadAndRegisterEps(nameArray, nativeCallback));
+            }
+            catch when (callbackException != null)
+            {
+                ExceptionDispatchInfo.Capture(callbackException).Throw();
+            }
+            if (callbackException != null)
+            {
+                ExceptionDispatchInfo.Capture(callbackException).Throw();
+            }
         }, ct ?? CancellationToken.None).ConfigureAwait(false);
 
         var afterEps = DiscoverEps();
@@ -439,9 +461,10 @@ public class FoundryLocalManager : IDisposable
     {
         using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
 
-        await Task.Run(() => _nativeManager.StartService(), ct ?? CancellationToken.None).ConfigureAwait(false);
+        await Task.Run(() => WithNativeManager(manager => manager.StartService()),
+                   ct ?? CancellationToken.None).ConfigureAwait(false);
 
-        Urls = _nativeManager.GetServiceUrls();
+        Urls = WithNativeManager(manager => manager.GetServiceUrls());
     }
 
     private async Task StopWebServiceImplAsync(CancellationToken? ct = null)
@@ -453,7 +476,13 @@ public class FoundryLocalManager : IDisposable
 
         using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
 
-        await Task.Run(() => _nativeManager.StopService(), ct ?? CancellationToken.None).ConfigureAwait(false);
+        await Task.Run(() =>
+        {
+            lock (_nativeLifetimeLock)
+            {
+                _nativeManager.StopService();
+            }
+        }, ct ?? CancellationToken.None).ConfigureAwait(false);
 
         Urls = null;
     }
@@ -482,20 +511,20 @@ public class FoundryLocalManager : IDisposable
                 }
             }
 
-            if (_nativeManager != null)
-            {
-                try
-                {
-                    _nativeManager.Shutdown();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Error initiating native manager shutdown during Dispose.");
-                }
-            }
-
+            BeforeNativeDisposeForTest?.Invoke();
             lock (_nativeLifetimeLock)
             {
+                if (_nativeManager != null)
+                {
+                    try
+                    {
+                        _nativeManager.Shutdown();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error initiating native manager shutdown during Dispose.");
+                    }
+                }
                 _nativeManager?.Dispose();
                 _nativeConfig?.Dispose();
             }
@@ -517,7 +546,29 @@ public class FoundryLocalManager : IDisposable
 
     public void Dispose()
     {
+        if (Monitor.IsEntered(_nativeLifetimeLock))
+        {
+            throw new InvalidOperationException("Cannot dispose FoundryLocalManager during an active native call.");
+        }
         Dispose(disposing: true);
         GC.SuppressFinalize(this);
+    }
+
+    private T WithNativeManager<T>(Func<NativeManager, T> operation)
+    {
+        lock (_nativeLifetimeLock)
+        {
+            Detail.Throw.IfDisposed(Volatile.Read(ref _disposed) != 0, this);
+            return operation(_nativeManager);
+        }
+    }
+
+    private void WithNativeManager(Action<NativeManager> operation)
+    {
+        lock (_nativeLifetimeLock)
+        {
+            Detail.Throw.IfDisposed(Volatile.Read(ref _disposed) != 0, this);
+            operation(_nativeManager);
+        }
     }
 }

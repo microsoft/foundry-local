@@ -16,7 +16,6 @@ using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.OpenAI;
 using Microsoft.Extensions.Logging;
 
-using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 using OpenAIChatMessage = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ChatMessage;
 using OpenAIToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolChoice;
 
@@ -31,13 +30,13 @@ using OpenAIToolChoice = Betalgo.Ranul.OpenAI.ObjectModels.RequestModels.ToolCho
 public class OpenAIChatClient
 {
     private readonly string _modelId;
-    private readonly NativeModel _nativeModel;
+    private readonly Model _model;
     private readonly ILogger _logger;
 
-    internal OpenAIChatClient(string modelId, NativeModel nativeModel)
+    internal OpenAIChatClient(string modelId, Model model)
     {
         _modelId = modelId;
-        _nativeModel = nativeModel;
+        _model = model;
         _logger = FoundryLocalManager.Instance.Logger;
     }
 
@@ -116,7 +115,7 @@ public class OpenAIChatClient
             .ToJson();
 
         return NativeRequestRunner.RunAsync(
-            _nativeModel,
+            _model,
             chatRequestJson,
             json => JsonSerializer.Deserialize(json, JsonSerializationContext.Default.ChatCompletionCreateResponse)
                     ?? throw new FoundryLocalException("Failed to deserialize chat completion response."),
@@ -134,7 +133,7 @@ public class OpenAIChatClient
             .ToJson();
 
         return NativeRequestRunner.RunStreamingAsync<ChatCompletionCreateResponse>(
-            _nativeModel,
+            _model,
             chatRequestJson,
             json => JsonSerializer.Deserialize(json, JsonSerializationContext.Default.ChatCompletionCreateResponse),
             _logger,

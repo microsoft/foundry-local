@@ -74,17 +74,17 @@ def test_local_catalog_registers_and_unregisters_without_deleting_assets(manager
         assert info.task == "chat-completion"
         assert info.context_length == 2048
         assert info.display_name == "Python BYOM"
-        assert info.get_string_property("custom_marker") == "python-binding"
+        assert registered.get_string_property("custom_marker") == "python-binding"
         assert info.get_string_property("model_provider") == "LocalRegistration"
-        assert info.get_int_property("custom_count", -1) == 42
+        assert registered.get_int_property("custom_count", -1) == 42
         assert is_dataclass(info)
         assert asdict(info)["id"] == model_id
         assert Path(registered.get_path()).resolve() == model_path.resolve()
 
         round_trip = local_catalog.get_model_variant(model_id)
         assert round_trip is not None
-        assert round_trip.info.get_string_property("custom_marker") == "python-binding"
-        assert round_trip.info.get_int_property("custom_count", -1) == 42
+        assert round_trip.get_string_property("custom_marker") == "python-binding"
+        assert round_trip.get_int_property("custom_count", -1) == 42
 
         local_catalog.unregister_model(model_id)
         assert local_catalog.get_model_variant(model_id) is None
@@ -105,6 +105,32 @@ def test_public_catalog_rejects_registration_before_native_call(manager, tmp_pat
         metadata.set_string_property("task", "chat-completion")
         with pytest.raises(FoundryLocalException, match="local catalog"):
             manager.catalog.register_model(tmp_path, "not-local:1", metadata)
+
+
+def test_byom_strings_reject_embedded_nul_before_native_call(manager) -> None:
+    local_catalog = manager.get_catalog(CatalogType.LOCAL)
+    with ModelInfoBuilder() as metadata:
+        with pytest.raises(ValueError, match="embedded NUL"):
+            metadata.set_string_property("bad\x00key", "value")
+        with pytest.raises(ValueError, match="embedded NUL"):
+            metadata.set_string_property("key", "bad\x00value")
+        with pytest.raises(ValueError, match="embedded NUL"):
+            metadata.set_int_property("bad\x00key", 1)
+        with pytest.raises(ValueError, match="embedded NUL"):
+            metadata.get_string_property("bad\x00key")
+        with pytest.raises(ValueError, match="embedded NUL"):
+            local_catalog.register_model("path\x00suffix", "model:1", metadata)
+        with pytest.raises(ValueError, match="embedded NUL"):
+            local_catalog.register_model("path", "model:1\x00suffix", metadata)
+
+    with pytest.raises(ValueError, match="embedded NUL"):
+        local_catalog.get_model("alias\x00suffix")
+    with pytest.raises(ValueError, match="embedded NUL"):
+        local_catalog.get_model_variant("model:1\x00suffix")
+    with pytest.raises(ValueError, match="embedded NUL"):
+        local_catalog.get_model_versions("alias", "name\x00suffix")
+    with pytest.raises(ValueError, match="embedded NUL"):
+        local_catalog.unregister_model("model:1\x00suffix")
 
 
 def test_model_info_is_a_frozen_value_snapshot(manager) -> None:

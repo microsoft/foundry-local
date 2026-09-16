@@ -104,13 +104,15 @@ export interface NativeModelInfo {
 
 export interface NativeModel {
   getInfo(): NativeModelInfo;
+  getStringProperty(key: string): string | undefined;
+  getIntProperty(key: string, defaultValue?: number): number;
   isCached(): boolean;
   isLoaded(): boolean;
   getPath(): string;
   getVariants(): NativeModel[];
   selectVariant(variant: NativeModel): void;
   load(): Promise<void>;
-  unload(): Promise<void>;
+  unload(onWorkerStarted?: () => void): Promise<void>;
   download(progress?: (percent: number) => void): Promise<void>;
   removeFromCache(): void;
 }
