@@ -206,13 +206,12 @@ std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& m
 AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
                                        const std::string& filter_override,
                                        const IEpDetector& ep_detector,
-                                       ILogger& logger,
+                                       ILogger& /*logger*/,
                                        HttpPostResponseFn http_post,
                                        std::string catalog_region)
     : base_url_(base_url),
       model_filter_(CreateModelFilter(filter_override)),
       ep_detector_(ep_detector),
-      logger_(logger),
       http_post_response_(std::move(http_post)) {
   if (!http_post_response_) {
     http_post_response_ = [](const std::string& url, const std::string& body) {

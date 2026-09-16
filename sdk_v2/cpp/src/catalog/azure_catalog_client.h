@@ -73,7 +73,6 @@ class AzureCatalogClient : public ICatalogClient {
   std::string base_url_;
   std::vector<std::string> model_filter_;  // deployment-option filter values
   const IEpDetector& ep_detector_;
-  ILogger& logger_;
   HttpPostResponseFn http_post_response_;
 
   // Region state used for model-registry routing after catalog discovery.
