@@ -38,10 +38,13 @@ class PromiseWorker : public Napi::AsyncWorker {
  public:
   using Job = std::function<T()>;
   using Resolver = std::function<Napi::Value(Napi::Env, T&)>;
+  using CompletionCheck = std::function<void()>;
 
   static Napi::Promise Run(Napi::Env env, Job job, Resolver resolver,
-                           Napi::ObjectReference owner = Napi::ObjectReference()) {
-    auto* w = new PromiseWorker(env, std::move(job), std::move(resolver), std::move(owner));
+                           Napi::ObjectReference owner = Napi::ObjectReference(),
+                           CompletionCheck completion_check = CompletionCheck()) {
+    auto* w = new PromiseWorker(env, std::move(job), std::move(resolver), std::move(owner),
+                                std::move(completion_check));
     Napi::Promise p = w->deferred_.Promise();
     w->Queue();
     return p;
@@ -67,6 +70,21 @@ class PromiseWorker : public Napi::AsyncWorker {
   void OnOK() override {
     Napi::Env env = Env();
     Napi::HandleScope scope(env);
+    if (completion_check_) {
+      try {
+        completion_check_();
+      } catch (const foundry_local::Error& e) {
+        Napi::Error error = Napi::Error::New(env, e.what());
+        Napi::Object value = error.Value();
+        value.Set("name", Napi::String::New(env, "FoundryLocalError"));
+        value.Set("code", Napi::Number::New(env, static_cast<int>(e.Code())));
+        deferred_.Reject(value);
+        return;
+      } catch (const std::exception& e) {
+        deferred_.Reject(Napi::Error::New(env, e.what()).Value());
+        return;
+      }
+    }
     Napi::Value value = resolver_(env, *result_);
     deferred_.Resolve(value);
   }
@@ -86,17 +104,20 @@ class PromiseWorker : public Napi::AsyncWorker {
   }
 
  private:
-  PromiseWorker(Napi::Env env, Job job, Resolver resolver, Napi::ObjectReference owner)
+  PromiseWorker(Napi::Env env, Job job, Resolver resolver, Napi::ObjectReference owner,
+                CompletionCheck completion_check)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         job_(std::move(job)),
         resolver_(std::move(resolver)),
-        owner_(std::move(owner)) {}
+        owner_(std::move(owner)),
+        completion_check_(std::move(completion_check)) {}
 
   Napi::Promise::Deferred deferred_;
   Job job_;
   Resolver resolver_;
   Napi::ObjectReference owner_;  // pins parent ObjectWrap alive across the worker
+  CompletionCheck completion_check_;
   std::unique_ptr<T> result_;    // holds the move-only result between Execute and OnOK
   std::string err_msg_;
   int err_code_ = 0;

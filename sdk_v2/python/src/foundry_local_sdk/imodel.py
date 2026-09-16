@@ -4,6 +4,7 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
+from _thread import LockType
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Callable
 
@@ -159,38 +160,21 @@ Model = IModel
 # ---------------------------------------------------------------------------
 
 
-def _model_info_from_native(native_model_ptr: object) -> ModelInfo:
-    """Read the native ``flModelInfo`` for *native_model_ptr* and return a ``ModelInfo``."""
+def _model_info_from_native(
+    native_model_ptr: object,
+    *,
+    ensure_manager_open: Callable[[], None] | None = None,
+    manager_lock: LockType | None = None,
+) -> ModelInfo:
+    """Read native metadata into a safe point-in-time value snapshot."""
     from foundry_local_sdk._native.api import api, ffi  # local to avoid circular imports
 
     info_out = ffi.new("const flModelInfo**")
     api.check_status(api.model.GetInfo(native_model_ptr, info_out))
+    if info_out[0] == ffi.NULL:
+        raise FoundryLocalException("GetInfo returned no model metadata.")
     info = info_out[0]
 
-    # Core string identity fields
-    id_str = ffi.string(api.model.Info_GetId(info)).decode("utf-8")
-    name_str = ffi.string(api.model.Info_GetName(info)).decode("utf-8")
-    version = int(api.model.Info_GetVersion(info))
-    alias_str = ffi.string(api.model.Info_GetAlias(info)).decode("utf-8")
-
-    uri_ptr = api.model.Info_GetUri(info)
-    uri_str = ffi.string(uri_ptr).decode("utf-8") if uri_ptr != ffi.NULL else ""
-
-    # Device type enum mapping (from flDeviceType values in foundry_local_c.h). FOUNDRY_LOCAL_DEVICE_NOTSET
-    # (0) means "unspecified" — surface that as ``None`` rather than silently aliasing to CPU. Unknown values
-    # also map to ``None`` so a future native enum extension does not get silently misclassified.
-    device_type_val = int(api.model.Info_GetDeviceType(info))
-    device_type: DeviceType | None = {1: DeviceType.CPU, 2: DeviceType.GPU, 3: DeviceType.NPU}.get(
-        device_type_val
-    )
-
-    ep_ptr = api.model.Info_GetExecutionProvider(info)
-    ep_str = ffi.string(ep_ptr).decode("utf-8") if ep_ptr != ffi.NULL else ""
-
-    task_ptr = api.model.Info_GetTask(info)
-    task_str = ffi.string(task_ptr).decode("utf-8") if task_ptr != ffi.NULL else None
-
-    # Generic string/int property accessors — no status check, returns NULL / default_value
     def get_str(key: str) -> str | None:
         ptr = api.model.Info_GetStringProperty(info, key.encode("utf-8"))
         return ffi.string(ptr).decode("utf-8") if ptr != ffi.NULL else None
@@ -198,43 +182,69 @@ def _model_info_from_native(native_model_ptr: object) -> ModelInfo:
     def get_int(key: str, default: int = -1) -> int:
         return int(api.model.Info_GetIntProperty(info, key.encode("utf-8"), default))
 
-    # Optional int properties: sentinel -1 means "not set"
+    def read_string_property(key: str) -> str | None:
+        if manager_lock is not None:
+            with manager_lock:
+                if ensure_manager_open is not None:
+                    ensure_manager_open()
+                return get_str(key)
+        if ensure_manager_open is not None:
+            ensure_manager_open()
+        return get_str(key)
 
-    filesize_raw = get_int("filesize_mb")
-    max_tokens_raw = get_int("max_output_tokens")
-    context_length_raw = get_int("context_length")
-    supports_tool_raw = get_int("supports_tool_calling", -1)
-    created_at_raw = get_int("created_at_unix", 0)
+    def read_int_property(key: str, default: int) -> int:
+        if manager_lock is not None:
+            with manager_lock:
+                if ensure_manager_open is not None:
+                    ensure_manager_open()
+                return get_int(key, default)
+        if ensure_manager_open is not None:
+            ensure_manager_open()
+        return get_int(key, default)
 
-    # PromptTemplate is deprecated and intentionally not populated from native catalog data.
-    # Templates are applied internally by ChatSession; see foundry_local_sdk.model_info.PromptTemplate.
+    uri_ptr = api.model.Info_GetUri(info)
+    ep_ptr = api.model.Info_GetExecutionProvider(info)
+    task_ptr = api.model.Info_GetTask(info)
+    filesize = get_int("filesize_mb")
+    max_tokens = get_int("max_output_tokens")
+    context_length = get_int("context_length")
+    supports_tool_calling = get_int("supports_tool_calling", -1)
+    device_type = {1: DeviceType.CPU, 2: DeviceType.GPU, 3: DeviceType.NPU}.get(
+        int(api.model.Info_GetDeviceType(info))
+    )
 
-    return ModelInfo(
-        id=id_str,
-        name=name_str,
-        version=version,
-        alias=alias_str,
+    snapshot = ModelInfo(
+        id=ffi.string(api.model.Info_GetId(info)).decode("utf-8"),
+        name=ffi.string(api.model.Info_GetName(info)).decode("utf-8"),
+        version=int(api.model.Info_GetVersion(info)),
+        alias=ffi.string(api.model.Info_GetAlias(info)).decode("utf-8"),
         display_name=get_str("display_name"),
         provider_type=get_str("model_provider") or "",
-        uri=uri_str,
+        uri=ffi.string(uri_ptr).decode("utf-8") if uri_ptr != ffi.NULL else "",
         model_type=get_str("type") or "",
         prompt_template=None,
         publisher=get_str("publisher"),
-        model_settings=None,  # complex parsing deferred to Phase 3
+        model_settings=None,
         license=get_str("license"),
         license_description=get_str("license_description"),
-        task=task_str,
-        runtime=Runtime(device_type=device_type, execution_provider=ep_str),
-        file_size_mb=filesize_raw if filesize_raw >= 0 else None,
-        supports_tool_calling=None if supports_tool_raw < 0 else bool(supports_tool_raw),
-        max_output_tokens=max_tokens_raw if max_tokens_raw >= 0 else None,
+        task=ffi.string(task_ptr).decode("utf-8") if task_ptr != ffi.NULL else None,
+        runtime=Runtime(
+            device_type=device_type,
+            execution_provider=ffi.string(ep_ptr).decode("utf-8") if ep_ptr != ffi.NULL else "",
+        ),
+        file_size_mb=filesize if filesize >= 0 else None,
+        supports_tool_calling=None if supports_tool_calling < 0 else bool(supports_tool_calling),
+        max_output_tokens=max_tokens if max_tokens >= 0 else None,
         min_fl_version=get_str("min_fl_version"),
-        created_at_unix=max(created_at_raw, 0),
-        context_length=context_length_raw if context_length_raw >= 0 else None,
+        created_at_unix=max(get_int("created_at_unix", 0), 0),
+        context_length=context_length if context_length >= 0 else None,
         input_modalities=get_str("input_modalities"),
         output_modalities=get_str("output_modalities"),
         capabilities=get_str("capabilities"),
     )
+    object.__setattr__(snapshot, "_string_property_reader", read_string_property)
+    object.__setattr__(snapshot, "_int_property_reader", read_int_property)
+    return snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +255,12 @@ def _model_info_from_native(native_model_ptr: object) -> ModelInfo:
 class _ModelImpl(IModel):
     """Single native ``flModel*`` variant.  Does NOT own the pointer — Catalog does."""
 
-    def __init__(self, native_ptr: object, *, parent: object | None = None) -> None:
+    def __init__(
+        self,
+        native_ptr: object,
+        *,
+        parent: object | None = None,
+    ) -> None:
         self._ptr = native_ptr
         # Keep the owning Catalog alive while this model exists. The native flModel*
         # is owned by the catalog; without this reference, GC could release the
@@ -257,8 +272,22 @@ class _ModelImpl(IModel):
 
     @property
     def _native_ptr(self) -> object:
-        """Raw native ``flModel*`` pointer. Internal use only — keep an `IModel`\n        reference alive while the pointer is in use."""
+        """Raw native ``flModel*`` pointer.
+
+        Internal use only; keep an ``IModel`` reference alive while using it.
+        """
+        self._ensure_manager_open()
         return self._ptr
+
+    def _ensure_manager_open(self) -> None:
+        parent = self._parent
+        manager = getattr(parent, "_parent", None)
+        if manager is not None and getattr(manager, "_native_manager", None) is None:
+            raise RuntimeError("FoundryLocalManager is closed")
+
+    def _manager_lock(self) -> LockType | None:
+        manager = getattr(self._parent, "_parent", None)
+        return getattr(manager, "_lock", None)
 
     # ------------------------------------------------------------------
     # Identity properties — read from native ModelInfo
@@ -274,9 +303,17 @@ class _ModelImpl(IModel):
 
     @property
     def info(self) -> ModelInfo:
-        # The native model is the source of truth. Read fresh every time so metadata stays correct
-        # after select_variant / download / cache changes. Each read returns a point-in-time snapshot.
-        return _model_info_from_native(self._ptr)
+        manager_lock = self._manager_lock()
+        if manager_lock is not None:
+            with manager_lock:
+                self._ensure_manager_open()
+                return _model_info_from_native(
+                    self._ptr,
+                    ensure_manager_open=self._ensure_manager_open,
+                    manager_lock=manager_lock,
+                )
+        self._ensure_manager_open()
+        return _model_info_from_native(self._ptr, ensure_manager_open=self._ensure_manager_open)
 
     # ------------------------------------------------------------------
     # Live state properties — always go to native for fresh data
@@ -284,6 +321,7 @@ class _ModelImpl(IModel):
 
     @property
     def is_cached(self) -> bool:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         out = ffi.new("int*")
@@ -292,6 +330,7 @@ class _ModelImpl(IModel):
 
     @property
     def is_loaded(self) -> bool:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         out = ffi.new("int*")
@@ -327,6 +366,7 @@ class _ModelImpl(IModel):
     # ------------------------------------------------------------------
 
     def download(self, progress_callback: Callable[[float], None] | None = None) -> None:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         cb = ffi.NULL
@@ -351,6 +391,7 @@ class _ModelImpl(IModel):
         api.check_status(api.model.Download(self._ptr, cb, user_data))
 
     def get_path(self) -> str:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api, ffi
 
         out = ffi.new("const char**")
@@ -358,16 +399,19 @@ class _ModelImpl(IModel):
         return ffi.string(out[0]).decode("utf-8") if out[0] != ffi.NULL else ""
 
     def load(self) -> None:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api
 
         api.check_status(api.model.Load(self._ptr))
 
     def unload(self) -> None:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api
 
         api.check_status(api.model.Unload(self._ptr))
 
     def remove_from_cache(self) -> None:
+        self._ensure_manager_open()
         from foundry_local_sdk._native.api import api
 
         api.check_status(api.model.RemoveFromCache(self._ptr))
@@ -378,6 +422,7 @@ class _ModelImpl(IModel):
 
     @property
     def variants(self) -> list[IModel]:
+        self._ensure_manager_open()
         """Return all device-optimised variants for this model.
 
         Calls the native ``GetVariants`` vtable function.  A model that is
@@ -397,6 +442,7 @@ class _ModelImpl(IModel):
             api.root.ModelList_Release(ml)
 
     def select_variant(self, variant: IModel) -> None:
+        self._ensure_manager_open()
         """Select a specific variant.  Delegates to the native ``SelectVariant`` vtable.
 
         Args:

@@ -1,5 +1,111 @@
 use serde::{Deserialize, Serialize};
 
+use std::sync::Arc;
+
+use crate::detail::api::{to_cstring, Api};
+use crate::detail::ffi::{flModelInfo, FOUNDRY_LOCAL_CATALOG_LOCAL, FOUNDRY_LOCAL_CATALOG_PUBLIC};
+use crate::detail::manager::NativeManager;
+use crate::error::{FoundryLocalError, Result};
+
+/// Catalog source type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogType {
+    /// Public model catalog.
+    #[default]
+    Public,
+    /// Mutable catalog containing explicitly registered local models.
+    Local,
+}
+
+impl CatalogType {
+    pub(crate) fn as_native(self) -> crate::detail::ffi::flCatalogType {
+        match self {
+            Self::Public => FOUNDRY_LOCAL_CATALOG_PUBLIC,
+            Self::Local => FOUNDRY_LOCAL_CATALOG_LOCAL,
+        }
+    }
+}
+
+/// Mutable, caller-owned metadata used when registering a local model.
+///
+/// The metadata is consumed and copied by [`Catalog::register_model`](crate::Catalog::register_model), which keeps
+/// the native value alive until asynchronous registration finishes.
+pub struct ModelInfoBuilder {
+    inner: Arc<ModelInfoHandle>,
+}
+
+pub(crate) struct ModelInfoHandle {
+    api: Arc<Api>,
+    _manager: Arc<NativeManager>,
+    ptr: *mut flModelInfo,
+}
+
+// SAFETY: mutations require `&mut ModelInfoBuilder`; the shared handle only supports immutable pointer leasing while
+// registration runs, and native release occurs after the final lease is dropped.
+unsafe impl Send for ModelInfoBuilder {}
+unsafe impl Sync for ModelInfoBuilder {}
+unsafe impl Send for ModelInfoHandle {}
+unsafe impl Sync for ModelInfoHandle {}
+
+impl ModelInfoBuilder {
+    pub(crate) fn new(api: Arc<Api>, manager: Arc<NativeManager>) -> Result<Self> {
+        let mut ptr = std::ptr::null_mut();
+        let status = unsafe { (api.model_api().CreateModelInfo)(&mut ptr) };
+        api.check(status)?;
+        if ptr.is_null() {
+            return Err(FoundryLocalError::Internal {
+                reason: "CreateModelInfo returned a null pointer".into(),
+            });
+        }
+        Ok(Self {
+            inner: Arc::new(ModelInfoHandle {
+                api,
+                _manager: manager,
+                ptr,
+            }),
+        })
+    }
+
+    /// Set a string property. Arbitrary keys are supported in addition to the well-known constants.
+    pub fn set_string_property(&mut self, key: &str, value: &str) -> Result<&mut Self> {
+        let key = to_cstring(key)?;
+        let value = to_cstring(value)?;
+        let status = unsafe {
+            (self.inner.api.model_api().Info_SetStringProperty)(
+                self.inner.ptr,
+                key.as_ptr(),
+                value.as_ptr(),
+            )
+        };
+        self.inner.api.check(status)?;
+        Ok(self)
+    }
+
+    /// Set an integer property. Arbitrary keys are supported in addition to the well-known constants.
+    pub fn set_int_property(&mut self, key: &str, value: i64) -> Result<&mut Self> {
+        let key = to_cstring(key)?;
+        let status = unsafe {
+            (self.inner.api.model_api().Info_SetIntProperty)(self.inner.ptr, key.as_ptr(), value)
+        };
+        self.inner.api.check(status)?;
+        Ok(self)
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const flModelInfo {
+        self.inner.ptr
+    }
+}
+
+impl Drop for ModelInfoHandle {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { (self.api.model_api().ReleaseModelInfo)(self.ptr) };
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
 /// Hardware device type for model execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceType {

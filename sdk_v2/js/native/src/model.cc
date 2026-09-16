@@ -55,6 +55,11 @@ void SetOptionalBool(Napi::Env env, Napi::Object obj, const char* key,
   }
 }
 
+std::optional<bool> GetOptionalBoolProperty(const foundry_local::ModelInfo& info, const char* key) {
+  const int64_t value = info.GetIntProperty(key);
+  return value < 0 ? std::nullopt : std::optional<bool>(value != 0);
+}
+
 void SetPromptTemplate(Napi::Env env, Napi::Object obj, const foundry_local::ModelInfo& info) {
   auto system = info.GetPromptTemplate("system");
   auto user = info.GetPromptTemplate("user");
@@ -128,7 +133,15 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
   SetOptionalString(env, out, "modelProvider", info.ModelProvider());
   SetOptionalString(env, out, "minFLVersion", info.MinFlVersion());
   SetOptionalString(env, out, "parentUri", info.ParentUri());
+  SetOptionalString(env, out, "toolCallStart", info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR));
+  SetOptionalString(env, out, "toolCallEnd", info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR));
+  SetOptionalString(env, out, "reasoningStart", info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR));
+  SetOptionalString(env, out, "reasoningEnd", info.GetStringProperty(FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR));
   SetOptionalBool(env, out, "supportsToolCalling", info.SupportsToolCalling());
+  SetOptionalBool(env, out, "supportsReasoning",
+                  GetOptionalBoolProperty(info, FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT));
+  SetOptionalBool(env, out, "supportsHybridReasoning",
+                  GetOptionalBoolProperty(info, FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT));
   SetOptionalNumber(env, out, "fileSizeMb", info.FilesizeMb());
   SetOptionalNumber(env, out, "maxOutputTokens", info.MaxOutputTokens());
   SetOptionalNumber(env, out, "contextLength", info.ContextLength());

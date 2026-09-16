@@ -25,7 +25,7 @@ export interface NativeManagerCtor {
 
 export interface NativeManager {
   getWebServiceEndpoints(): string[];
-  getCatalog(): NativeCatalog;
+  getCatalog(type?: 0 | 1): NativeCatalog;
   startWebService(): void;
   stopWebService(): void;
   discoverEps(): Array<{ name: string; isRegistered: boolean }>;
@@ -35,6 +35,19 @@ export interface NativeManager {
   isShutdownRequested(): boolean;
   dispose(): void;
   isDisposed(): boolean;
+}
+
+export interface NativeMutableModelInfo {
+  setStringProperty(key: string, value: string): NativeMutableModelInfo;
+  setIntProperty(key: string, value: number): NativeMutableModelInfo;
+  dispose(): void;
+  isDisposed(): boolean;
+  /** @internal Test-only fault injection for the checked snapshot boundary. */
+  failNextSnapshotForTest(): void;
+}
+
+export interface NativeMutableModelInfoCtor {
+  new (): NativeMutableModelInfo;
 }
 
 // Raw snapshot returned by the native side. All optional fields are omitted
@@ -72,7 +85,13 @@ export interface NativeModelInfo {
   modelProvider?: string;
   minFLVersion?: string;
   parentUri?: string;
+  toolCallStart?: string;
+  toolCallEnd?: string;
+  reasoningStart?: string;
+  reasoningEnd?: string;
   supportsToolCalling?: boolean;
+  supportsReasoning?: boolean;
+  supportsHybridReasoning?: boolean;
   fileSizeMb?: number;
   maxOutputTokens?: number;
   createdAtUnix: number;
@@ -105,6 +124,15 @@ export interface NativeCatalog {
   getModelVariant(modelId: string): NativeModel | undefined;
   getLatestVersion(model: NativeModel): NativeModel | undefined;
   getModelVersions(modelAlias: string, modelName: string | null, maxVersions: number): Promise<NativeModel[]>;
+  registerModel(
+    modelPath: string,
+    modelId: string,
+    metadata: NativeMutableModelInfo,
+    onWorkerStarted?: () => void,
+  ): Promise<NativeModel>;
+  registerModelSync(modelPath: string, modelId: string, metadata: NativeMutableModelInfo): NativeModel;
+  unregisterModel(aliasOrModelId: string, onWorkerStarted?: () => void): Promise<void>;
+  unregisterModelSync(aliasOrModelId: string): void;
 }
 
 // ── Inference surface ───────────────────────────────────────────────────────
@@ -216,6 +244,7 @@ export interface NativeAddon {
     ...args: unknown[]
   ) => unknown;
   Model: new (...args: unknown[]) => unknown;
+  ModelInfo: NativeMutableModelInfoCtor;
   // `Request` IS directly constructible from JS — it's a stateful builder.
   Request: NativeRequestCtor;
   // `ItemQueue` is directly constructible — the public TS `ItemQueue` class

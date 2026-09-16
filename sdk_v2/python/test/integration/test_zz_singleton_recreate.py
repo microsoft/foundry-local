@@ -32,9 +32,18 @@ fixture references.
 """
 from __future__ import annotations
 
+import json
+import uuid
+
 import pytest
 
-from foundry_local_sdk import Configuration, FoundryLocalManager, LogLevel
+from foundry_local_sdk import (
+    CatalogType,
+    Configuration,
+    FoundryLocalManager,
+    LogLevel,
+    ModelInfoBuilder,
+)
 
 
 def _make_config(manager) -> Configuration:
@@ -91,3 +100,42 @@ class TestSingletonRecreate:
         with FoundryLocalManager(config) as m:
             assert FoundryLocalManager.instance is m
         assert FoundryLocalManager.instance is None
+
+    def test_custom_metadata_survives_manager_recreation(self, restore_singleton, tmp_path):
+        config = restore_singleton
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        (model_path / "genai_config.json").write_text(
+            json.dumps({"model": {"type": "phi3"}}), encoding="utf-8"
+        )
+        model_id = f"python-byom-recreate-{uuid.uuid4().hex}:1"
+
+        assert FoundryLocalManager.instance is not None
+        FoundryLocalManager.instance.close()
+        first = FoundryLocalManager(config)
+        first_catalog = first.get_catalog(CatalogType.LOCAL)
+        with ModelInfoBuilder() as metadata:
+            metadata.set_string_property("task", "chat-completion")
+            metadata.set_string_property("custom_marker", "persist-me")
+            metadata.set_int_property("custom_count", 42)
+            registered = first_catalog.register_model(model_path, model_id, metadata)
+
+        registered_info = registered.info
+        assert registered_info.get_string_property("custom_marker") == "persist-me"
+        same_manager_lookup = first_catalog.get_model_variant(model_id)
+        assert same_manager_lookup is not None
+        assert same_manager_lookup.info.get_int_property("custom_count", -1) == 42
+
+        first.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            registered_info.get_string_property("custom_marker")
+        with pytest.raises(RuntimeError, match="closed"):
+            registered_info.get_int_property("custom_count", -1)
+
+        second = FoundryLocalManager(config)
+        second_catalog = second.get_catalog(CatalogType.LOCAL)
+        recreated_lookup = second_catalog.get_model_variant(model_id)
+        assert recreated_lookup is not None
+        assert recreated_lookup.info.get_string_property("custom_marker") == "persist-me"
+        assert recreated_lookup.info.get_int_property("custom_count", -1) == 42
+        second_catalog.unregister_model(model_id)
