@@ -277,7 +277,7 @@ void ResolveBuiltInRawEnvelope(ToolCallContext& context) {
   context.raw_envelope = built_in;
 }
 
-void ApplyRawEnvelopeGuidance(ToolCallContext& context) {
+void ApplyRawEnvelopeGuidance(ToolCallContext& context, ILogger& logger) {
   const auto* raw = context.ActiveRawEnvelope();
   if (raw == nullptr || !context.forced_tool.has_value()) {
     return;
@@ -288,6 +288,12 @@ void ApplyRawEnvelopeGuidance(ToolCallContext& context) {
     context.guidance_type = "lark_grammar";
     context.guidance_data = grammar->second;
     return;
+  }
+
+  if (!context.guidance_type.empty()) {
+    logger.Log(LogLevel::Debug,
+               fmt::format("Discarding '{}' guidance because forced raw-envelope tool '{}' has no matching grammar",
+                           context.guidance_type, raw->tool_name));
   }
 
   context.guidance_type.clear();
@@ -357,8 +363,13 @@ ToolCallStreamAccumulator::Output RouteRawToolOutput(
     if (structured_call_completed) {
       auto disabled_output = raw_detector.DisableRecognition();
       for (auto& disabled_event : disabled_output.events) {
-        auto& disabled_text = std::get<std::string>(disabled_event);
-        AppendToolOutput(output, structured_accumulator.Push(disabled_text));
+        if (auto* disabled_text = std::get_if<std::string>(&disabled_event)) {
+          AppendToolOutput(output, structured_accumulator.Push(*disabled_text));
+        } else if (auto* rejected = std::get_if<RawEnvelopeDetector::RejectedCandidate>(&disabled_event)) {
+          AppendToolOutput(output, structured_accumulator.Push(rejected->text));
+        } else {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Disabling raw-envelope recognition unexpectedly produced a call");
+        }
       }
     }
   };
@@ -710,7 +721,7 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   // Read user-specified guidance from request parameters
   tool_ctx.guidance_type = GetOptionOrEmpty(request.options, "guidance_type");
   tool_ctx.guidance_data = GetOptionOrEmpty(request.options, "guidance_data");
-  chat_session_internal::ApplyRawEnvelopeGuidance(tool_ctx);
+  chat_session_internal::ApplyRawEnvelopeGuidance(tool_ctx, logger_);
 
   return tool_ctx;
 }

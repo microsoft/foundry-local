@@ -49,6 +49,15 @@ namespace {
 
 using Segment = ReasoningStreamSplitter::Segment;
 
+class RecordingLogger final : public ILogger {
+ public:
+  void Log(LogLevel level, std::string_view message) override {
+    entries.emplace_back(level, message);
+  }
+
+  std::vector<std::pair<LogLevel, std::string>> entries;
+};
+
 class FixedOutputGenerator final : public ChatGenerator {
  public:
   FixedOutputGenerator(std::string output, BackendTerminationCause cause,
@@ -230,6 +239,7 @@ TEST(ChatSessionDecisionTest, StockApplyPatchGrammarRejectsConflictingMetadataDe
 }
 
 TEST(ChatSessionDecisionTest, ForcedRawGuidanceUsesMatchingGrammarOrDisablesGuidance) {
+  RecordingLogger logger;
   ToolCallContext with_grammar;
   with_grammar.tool_output = true;
   with_grammar.text_output = false;
@@ -240,22 +250,27 @@ TEST(ChatSessionDecisionTest, ForcedRawGuidanceUsesMatchingGrammarOrDisablesGuid
   with_grammar.guidance_type = "json_schema";
   with_grammar.guidance_data = "{}";
 
-  chat_session_internal::ApplyRawEnvelopeGuidance(with_grammar);
+  chat_session_internal::ApplyRawEnvelopeGuidance(with_grammar, logger);
 
   EXPECT_EQ(with_grammar.guidance_type, "lark_grammar");
   EXPECT_EQ(with_grammar.guidance_data, "start: \"BEGIN\" /(.|\\n)+/ \"END\"");
   EXPECT_FALSE(with_grammar.guidance_disabled);
+  EXPECT_TRUE(logger.entries.empty());
 
   ToolCallContext without_grammar = with_grammar;
   without_grammar.custom_lark_grammars.clear();
   without_grammar.guidance_type = "json_schema";
   without_grammar.guidance_data = "{}";
 
-  chat_session_internal::ApplyRawEnvelopeGuidance(without_grammar);
+  chat_session_internal::ApplyRawEnvelopeGuidance(without_grammar, logger);
 
   EXPECT_TRUE(without_grammar.guidance_type.empty());
   EXPECT_TRUE(without_grammar.guidance_data.empty());
   EXPECT_TRUE(without_grammar.guidance_disabled);
+  ASSERT_EQ(logger.entries.size(), 1u);
+  EXPECT_EQ(logger.entries.front().first, LogLevel::Debug);
+  EXPECT_NE(logger.entries.front().second.find("json_schema"), std::string::npos);
+  EXPECT_NE(logger.entries.front().second.find("edit"), std::string::npos);
 }
 
 TEST(ChatSessionDecisionTest, ForcedMatchingRawEnvelopeStartsOutsidePromptOpenedReasoning) {
@@ -267,7 +282,8 @@ TEST(ChatSessionDecisionTest, ForcedMatchingRawEnvelopeStartsOutsidePromptOpened
       {"apply_patch", std::string(tools::kStockGhcpApplyPatchLarkGrammar)}};
   built_in.forced_tool = ForcedToolChoice{"apply_patch", ToolKind::kCustom};
   chat_session_internal::ResolveBuiltInRawEnvelope(built_in);
-  chat_session_internal::ApplyRawEnvelopeGuidance(built_in);
+  RecordingLogger logger;
+  chat_session_internal::ApplyRawEnvelopeGuidance(built_in, logger);
 
   EXPECT_TRUE(built_in.HasForcedRawEnvelope());
   EXPECT_FALSE(chat_session_internal::ShouldStartInsideReasoning(

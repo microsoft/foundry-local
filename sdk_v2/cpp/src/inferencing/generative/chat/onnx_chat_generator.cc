@@ -305,7 +305,6 @@ void OnnxChatGenerator::RewindTo(int token_count) {
 void OnnxChatGenerator::ResetTurnState() {
   current_token_.reset();
   last_generated_token_.reset();
-  cancelled_ = false;
 }
 
 // ---------------------------------------------------------------------------

@@ -313,7 +313,7 @@ class RawEnvelopeDetector {
     }
   }
 
-  bool CouldStillAffectFence() {
+  bool RetainOrOpenFence() {
     auto marker = std::string_view(pending_);
     size_t indentation = 0;
     while (indentation < marker.size() && indentation < 3 && marker[indentation] == ' ') {
@@ -390,7 +390,7 @@ class RawEnvelopeDetector {
       return;
     }
 
-    if (CouldStillAffectFence()) {
+    if (RetainOrOpenFence()) {
       return;
     }
 

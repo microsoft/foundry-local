@@ -119,7 +119,7 @@ std::vector<ToolDefinition> BuildJsonRequestToolDefinitions(
     std::vector<ToolDefinition> definitions, const std::vector<ToolDefinition>& session_snapshot);
 void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, ToolCallContext& context);
 void ResolveBuiltInRawEnvelope(ToolCallContext& context);
-void ApplyRawEnvelopeGuidance(ToolCallContext& context);
+void ApplyRawEnvelopeGuidance(ToolCallContext& context, ILogger& logger);
 bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_opens_reasoning);
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx);
