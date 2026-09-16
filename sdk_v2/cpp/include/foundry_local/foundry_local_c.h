@@ -1036,7 +1036,12 @@ struct flCatalogApi {
   /// Register a model in a local catalog without taking ownership of its assets.
   /// `model_path` must identify a model directory containing genai_config.json.
   /// `model_id` must use the canonical `<name>:<version>` format and be unique in the local catalog.
-  /// The metadata is copied; model identity and location are taken only from the explicit arguments.
+  /// `metadata.task` is required. Application-owned properties, including display name, publisher, runtime,
+  /// modalities, and arbitrary string or integer properties, are preserved; missing values receive authoritative
+  /// defaults when available.
+  /// Identity, alias, type, timestamps, context length, and prompt templates are derived by the SDK from the
+  /// arguments, registration time, and genai_config.json. Caller-supplied location and internal catalog metadata are
+  /// ignored.
   FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const char* model_path,
                 _In_ const char* model_id, _In_ const flModelInfo* metadata,
                 _Outptr_ flModel** out_model);

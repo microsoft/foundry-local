@@ -76,6 +76,7 @@ std::optional<std::string_view> DeviceTypeForExecutionProvider(std::string_view 
       return "GPU";
     case ExecutionProvider::kVitisAI:
     case ExecutionProvider::kRyzenAI:
+    case ExecutionProvider::kQNN:
       return "NPU";
     default:
       return std::nullopt;
@@ -103,6 +104,13 @@ void ApplyTaskDefaults(ModelInfo& info) {
     }
     if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
       info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "embeddings") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "embeddings");
     }
   }
 }
@@ -402,6 +410,9 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
   resolved.detected_region.clear();
   resolved.prompt_templates = {};
   resolved.model_settings = {};
+  if (genai_config.model) {
+    resolved.prompt_templates.CopyFromMap(genai_config.model->prompt_templates);
+  }
   resolved.alias = DeriveAlias(name);
   resolved.name = name;
   resolved.version = version;

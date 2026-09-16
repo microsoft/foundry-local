@@ -141,7 +141,9 @@ TEST_F(LocalModelCatalogTest, RegisterResolvesMetadataAndWritesLocalModelInfoCac
 
 TEST_F(LocalModelCatalogTest, RegistrationDerivesDefaultsAndPreservesApplicationOverrides) {
   std::ofstream(model_dir_ / "genai_config.json")
-      << R"({"model":{"type":"phi3","context_length":8192,"decoder":{"session_options":{"provider_options":[{"cuda":{}}]}}}})";
+      << R"({"model":{"type":"phi3","context_length":8192,)"
+         R"("prompt_templates":{"user":"<|user|>{Content}<|end|>"},)"
+         R"("decoder":{"session_options":{"provider_options":[{"cuda":{}}]}}}})";
 
   auto* derived = catalog_.RegisterModel(model_dir_.string(), "derived-model:1", MakeMetadata());
 
@@ -156,6 +158,12 @@ TEST_F(LocalModelCatalogTest, RegistrationDerivesDefaultsAndPreservesApplication
             "text");
   EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
             "text");
+  EXPECT_STREQ(derived->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
+
+  auto restored = MakeCatalog();
+  auto* restored_derived = restored.GetModelVariant("derived-model:1");
+  ASSERT_NE(restored_derived, nullptr);
+  EXPECT_STREQ(restored_derived->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
 
   auto overrides = MakeMetadata();
   overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, "Custom display name");
@@ -177,6 +185,27 @@ TEST_F(LocalModelCatalogTest, RegistrationDerivesDefaultsAndPreservesApplication
             "custom-input");
   EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
             "custom-output");
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesQnnDeviceType) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{"qnn":{}}]}}}})";
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "qnn-model:1", MakeMetadata());
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "QNNExecutionProvider");
+  EXPECT_EQ(model->Info().device_type, DeviceType::kNPU);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesEmbeddingModalities) {
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "embedding-model:1", MakeMetadata("embeddings"));
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "embeddings");
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationOverwritesSdkOwnedMetadata) {
