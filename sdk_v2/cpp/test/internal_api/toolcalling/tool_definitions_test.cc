@@ -72,13 +72,37 @@ TEST(CustomToolFormatTest, AcceptsTextFormat) {
   EXPECT_EQ(format, json::parse(R"({"type":"text"})"));
 }
 
-TEST(CustomToolFormatTest, RejectsGrammarFormats) {
+TEST(CustomToolFormatTest, RejectsArbitraryGrammarFormats) {
   EXPECT_INVALID_ARGUMENT(tools::ParseCustomToolFormat(
       json::parse(R"({"type":"grammar","grammar":{"syntax":"lark","definition":"start: X"}})"),
       "apply_patch"));
   EXPECT_INVALID_ARGUMENT(tools::ParseCustomToolFormat(
-      json::parse(R"({"type":"grammar","syntax":"lark","definition":"start: X"})"),
+      json::parse(R"({"type":"grammar","syntax":"regex","definition":"start: X"})"),
       "apply_patch"));
+}
+
+TEST(CustomToolFormatTest, AcceptsOnlyTheStockGrammarInTheOfficialShapeForEachSurface) {
+  const json nested = {
+      {"type", "grammar"},
+      {"grammar",
+       {{"syntax", "lark"}, {"definition", tools::kStockGhcpApplyPatchLarkGrammar}}}};
+  const json flat = {
+      {"type", "grammar"},
+      {"syntax", "lark"},
+      {"definition", tools::kStockGhcpApplyPatchLarkGrammar}};
+
+  EXPECT_EQ(tools::ParseCustomToolFormat(
+                nested, "apply_patch", tools::CustomToolFormatSurface::kChatCompletions),
+            nested);
+  EXPECT_EQ(tools::ParseCustomToolFormat(
+                flat, "apply_patch", tools::CustomToolFormatSurface::kResponses),
+            flat);
+  EXPECT_INVALID_ARGUMENT(tools::ParseCustomToolFormat(
+      flat, "apply_patch", tools::CustomToolFormatSurface::kChatCompletions));
+  EXPECT_INVALID_ARGUMENT(tools::ParseCustomToolFormat(
+      nested, "apply_patch", tools::CustomToolFormatSurface::kResponses));
+  EXPECT_INVALID_ARGUMENT(tools::ParseCustomToolFormat(
+      flat, "other_tool", tools::CustomToolFormatSurface::kResponses));
 }
 
 TEST(CustomToolFormatTest, RejectsUnknownFormatType) {
@@ -234,11 +258,57 @@ TEST(ToolDefinitionFilterTest, RetainAllowedToolsWithAnEmptyListKeepsNothing) {
 // Captured stock GHCP apply_patch declarations
 // ========================================================================
 
-TEST(CodingAgentToolDeclarationTest, RejectsCapturedChatGrammarDeclaration) {
-  EXPECT_INVALID_ARGUMENT(ChatRequestWithTools(test::kCodingAgentChatToolsJson));
+TEST(CodingAgentToolDeclarationTest, AcceptsCapturedChatGrammarDeclaration) {
+  const auto request = ChatRequestWithTools(test::kCodingAgentChatToolsJson);
+  ASSERT_TRUE(request.tools.has_value());
+  ASSERT_EQ(request.tools->size(), 1u);
+  EXPECT_EQ(tools::CustomToolLarkGrammar(request.tools->front().custom->format),
+            tools::kStockGhcpApplyPatchLarkGrammar);
 }
 
-TEST(CodingAgentToolDeclarationTest, RejectsCapturedResponsesGrammarDeclaration) {
-  EXPECT_INVALID_ARGUMENT(
-      ResponsesParamsWithTools(json::parse(test::kCodingAgentResponsesToolsJson)));
+TEST(CodingAgentToolDeclarationTest, AcceptsCapturedResponsesGrammarDeclaration) {
+  const auto request = ResponsesParamsWithTools(json::parse(test::kCodingAgentResponsesToolsJson));
+  ASSERT_TRUE(request.tools.has_value());
+  ASSERT_EQ(request.tools->size(), 1u);
+  EXPECT_EQ(tools::CustomToolLarkGrammar(request.tools->front().custom->format),
+            tools::kStockGhcpApplyPatchLarkGrammar);
+}
+
+TEST(CustomToolFormatTest, GenericCustomToolRejectsOtherwiseValidLarkGrammar) {
+  const json format{{"type", "grammar"},
+                    {"syntax", "lark"},
+                    {"definition", "start: \"BEGIN\" /(.|\\n)+/ \"END\""}};
+  EXPECT_INVALID_ARGUMENT(tools::ParseCustomToolFormat(
+      format, "other_tool", tools::CustomToolFormatSurface::kResponses));
+}
+
+TEST(RawEnvelopeDescriptorTest, AcceptsExactDescriptorWithoutVersionOrBufferFields) {
+  const auto descriptor = tools::ParseRawEnvelopeDescriptor(
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"<<<","end_marker":">>>"})");
+  EXPECT_EQ(descriptor.tool_name, "edit");
+  EXPECT_EQ(descriptor.start_marker, "<<<");
+  EXPECT_EQ(descriptor.end_marker, ">>>");
+}
+
+TEST(RawEnvelopeDescriptorTest, RejectsUnknownMissingAndUnsafeMembers) {
+  EXPECT_INVALID_ARGUMENT(tools::ParseRawEnvelopeDescriptor(
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"<<<","end_marker":">>>","version":1})"));
+  EXPECT_INVALID_ARGUMENT(tools::ParseRawEnvelopeDescriptor(
+      R"({"type":"raw_envelope","tool_name":"edit","start_marker":"<<<"})"));
+  EXPECT_INVALID_ARGUMENT(tools::ParseRawEnvelopeDescriptor(
+      "{\"type\":\"raw_envelope\",\"tool_name\":\"edit\",\"start_marker\":\"<\\n<\",\"end_marker\":\">>>\"}"));
+}
+
+TEST(RawEnvelopeDescriptorTest, RequiresEffectiveDeclaredCustomTool) {
+  const RawEnvelopeDescriptor descriptor{"edit", "BEGIN", "END"};
+  const std::vector<ToolDefinition> custom_tools{
+      tools::MakeCustomTool("edit", ""),
+  };
+  EXPECT_NO_THROW(tools::ValidateRawEnvelopeTool(descriptor, custom_tools));
+
+  const std::vector<ToolDefinition> function_tools{
+      tools::MakeFunctionTool("edit", "", "{}"),
+  };
+  EXPECT_INVALID_ARGUMENT(tools::ValidateRawEnvelopeTool(descriptor, function_tools));
+  EXPECT_INVALID_ARGUMENT(tools::ValidateRawEnvelopeTool(descriptor, {}));
 }

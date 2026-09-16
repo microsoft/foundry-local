@@ -8,6 +8,7 @@
 #include "catalog.h"
 #include "contracts/chat_completions.h"
 #include "contracts/chat_completions_converter.h"
+#include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session.h"
@@ -48,6 +49,15 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Pa
     req = req_json.get<ChatCompletionRequest>();
 
     auto definitions = chat_completions::ExtractToolDefinitions(req, prepared_request);
+    if (req.metadata.has_value()) {
+      const auto descriptor = req.metadata->find(tools::kRawEnvelopeMetadataKey);
+      if (descriptor != req.metadata->end()) {
+        prepared_request.raw_envelope_descriptor =
+            tools::ParseRawEnvelopeDescriptor(descriptor->second);
+        tools::ValidateRawEnvelopeTool(*prepared_request.raw_envelope_descriptor, definitions);
+      }
+    }
+
     ToolRegistry registry;
     for (auto& definition : definitions) {
       registry.Add(std::move(definition));

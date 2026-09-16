@@ -22,6 +22,8 @@ struct ParsedToolCall {
   std::string arguments;  // Existing semantic form: decoded string or compact JSON.
   /// Exact source bytes for valid JSON; canonical JSON for repaired calls.
   std::string argument_source;
+  /// Trusted generated-output provenance. Callers cannot set this through an item API.
+  bool raw_envelope = false;
 };
 
 /// Find a marker outside JSON string literals. Quote and escape state is

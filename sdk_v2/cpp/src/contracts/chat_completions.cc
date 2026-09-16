@@ -252,7 +252,8 @@ void from_json(const nlohmann::json& j, ChatCompletionCustomToolDef& c) {
   opt_str(j, "description", c.description);
 
   auto format = j.find("format");
-  c.format = tools::ParseCustomToolFormat(format == j.end() ? nlohmann::json() : *format, c.name);
+  c.format = tools::ParseCustomToolFormat(format == j.end() ? nlohmann::json() : *format, c.name,
+                                          tools::CustomToolFormatSurface::kChatCompletions);
 }
 
 // Tool entries are polymorphic: only the member matching `type` is present, so nothing here may

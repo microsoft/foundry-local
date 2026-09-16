@@ -31,6 +31,10 @@ struct Request {
   /// Request-local definitions already validated by an HTTP adapter. Used only to carry Chat
   /// declarations across the asynchronous streaming boundary without parsing or registering twice.
   std::optional<std::vector<ToolDefinition>> prepared_tool_definitions;
+  /// Set only by trusted JSON request converters, never from generic native options.
+  std::optional<ForcedToolChoice> forced_tool_choice;
+  /// Explicit request metadata descriptor, validated by the provider converter.
+  std::optional<RawEnvelopeDescriptor> raw_envelope_descriptor;
 
   /// Start indices, into `items`, of the replay segments the producer knows about. Ascending, and empty means the
   /// whole list is one segment.
@@ -57,6 +61,8 @@ struct Request {
       : items(std::move(other.items)),
         options(std::move(other.options)),
         prepared_tool_definitions(std::move(other.prepared_tool_definitions)),
+        forced_tool_choice(std::move(other.forced_tool_choice)),
+        raw_envelope_descriptor(std::move(other.raw_envelope_descriptor)),
         item_segment_starts(std::move(other.item_segment_starts)),
         canceled(other.canceled.load(std::memory_order_relaxed)),
         owned_items(std::move(other.owned_items)) {}
@@ -65,6 +71,8 @@ struct Request {
     items = std::move(other.items);
     options = std::move(other.options);
     prepared_tool_definitions = std::move(other.prepared_tool_definitions);
+    forced_tool_choice = std::move(other.forced_tool_choice);
+    raw_envelope_descriptor = std::move(other.raw_envelope_descriptor);
     item_segment_starts = std::move(other.item_segment_starts);
     canceled.store(other.canceled.load(std::memory_order_relaxed), std::memory_order_relaxed);
     owned_items = std::move(other.owned_items);

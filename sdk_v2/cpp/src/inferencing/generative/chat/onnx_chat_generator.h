@@ -27,6 +27,23 @@ struct OgaNamedTensors;
 
 namespace fl {
 
+namespace onnx_chat_generator_internal {
+
+struct TurnTermination {
+  std::optional<flFinishReason> finish_reason;
+  std::optional<BackendTerminationCause> cause;
+};
+
+TurnTermination ClassifyTurnTermination(bool cancelled,
+                                        bool eos_matched,
+                                        int generated_tokens,
+                                        int max_output_tokens,
+                                        int token_count,
+                                        int max_length,
+                                        bool done);
+
+}  // namespace onnx_chat_generator_internal
+
 /// Resolve the reasoning boundary markers for a request: request/catalog overrides first, then the markers the loaded
 /// GenAI model publishes. Single source of truth for both the prompt-state probe and the generation-time splitter.
 ///
@@ -51,6 +68,7 @@ class OnnxChatGenerator : public ChatGenerator {
   std::optional<int32_t> CurrentTokenId() const override;
   int TokenCount() const override;
   int PromptTokenCount() const override;
+  std::optional<ChatTurnUsage> GetTurnUsage() const override;
   void Cancel() override;
 
   /// Encode new messages and append their tokens to the generator's sequence.
@@ -115,6 +133,8 @@ class OnnxChatGenerator : public ChatGenerator {
                     std::unique_ptr<OgaTokenizerStream> stream,
                     GenAIModelInstance& model,
                     int prompt_token_count,
+                    int max_length,
+                    int max_output_tokens,
                     ReasoningMarkers reasoning_markers,
                     bool prompt_opens_reasoning,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
@@ -131,6 +151,8 @@ class OnnxChatGenerator : public ChatGenerator {
                                                        const std::vector<const ImageItem*>& images,
                                                        const std::vector<const AudioItem*>& audios);
 
+  void ResetTurnState();
+
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;
   std::unique_ptr<OgaTokenizerStream> stream_;
@@ -141,10 +163,14 @@ class OnnxChatGenerator : public ChatGenerator {
   std::unique_ptr<OgaNamedTensors> named_tensors_;
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
+  int turn_start_token_count_ = 0;
+  int max_length_ = 0;
+  int max_output_tokens_ = 0;
   // Kept so each appended turn can be re-probed for a template-opened reasoning block.
   ReasoningMarkers reasoning_markers_;
   bool prompt_opens_reasoning_ = false;
   std::optional<int32_t> current_token_;
+  std::optional<int32_t> last_generated_token_;
   std::atomic<bool> cancelled_{false};
 };
 
