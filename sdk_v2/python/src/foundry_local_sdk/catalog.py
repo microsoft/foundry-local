@@ -131,12 +131,7 @@ class Catalog:
         )
         if out[0] == ffi.NULL:
             raise FoundryLocalException("RegisterModel returned no model.")
-        return _ModelImpl(
-            out[0],
-            parent=self,
-            string_properties=metadata._string_properties,
-            int_properties=metadata._int_properties,
-        )
+        return _ModelImpl(out[0], parent=self)
 
     def unregister_model(self, alias_or_model_id: str) -> None:
         """Unregister a local model without deleting its assets.

@@ -101,32 +101,32 @@ class ModelInfo:
 
     def get_string_property(self, key: str) -> str | None:
         """Get a named property by key (for forward compatibility)."""
-        properties = getattr(self, "_string_properties", {})
-        if key in properties:
-            return properties[key]
         field_name = {
             "model_provider": "provider_type",
             "type": "model_type",
         }.get(key, key.replace("-", "_"))
         value = getattr(self, field_name, None)
-        return value if isinstance(value, str) else None
+        if isinstance(value, str):
+            return value
+        reader = getattr(self, "_string_property_reader", None)
+        return reader(key) if reader is not None else None
 
     def get_int_property(self, key: str, default: int = 0) -> int:
         """Get a named property as int (for forward compatibility)."""
-        properties = getattr(self, "_int_properties", {})
-        if key in properties:
-            return properties[key]
         field_name = {
             "filesize_mb": "file_size_mb",
         }.get(key, key.replace("-", "_"))
         value = getattr(self, field_name, None)
-        return int(value) if value is not None else default
+        if value is not None:
+            return int(value)
+        reader = getattr(self, "_int_property_reader", None)
+        return reader(key, default) if reader is not None else default
 
 
 class ModelInfoBuilder:
     """Caller-owned mutable native metadata for local model registration."""
 
-    __slots__ = ("_ptr", "_closed", "_string_properties", "_int_properties")
+    __slots__ = ("_closed", "_ptr")
 
     def __init__(self) -> None:
         from foundry_local_sdk._native.api import api, ffi
@@ -138,8 +138,6 @@ class ModelInfoBuilder:
 
         self._ptr: object = out[0]
         self._closed = False
-        self._string_properties: dict[str, str] = {}
-        self._int_properties: dict[str, int] = {}
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -163,7 +161,6 @@ class ModelInfoBuilder:
         key_bytes = key.encode("utf-8")
         value_bytes = value.encode("utf-8")
         api.check_status(api.model.Info_SetStringProperty(self._ptr, key_bytes, value_bytes))
-        self._string_properties[key] = value
         return self
 
     def set_int_property(self, key: str, value: int) -> ModelInfoBuilder:
@@ -173,7 +170,6 @@ class ModelInfoBuilder:
 
         key_bytes = key.encode("utf-8")
         api.check_status(api.model.Info_SetIntProperty(self._ptr, key_bytes, value))
-        self._int_properties[key] = value
         return self
 
     def get_string_property(self, key: str) -> str | None:

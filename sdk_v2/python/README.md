@@ -182,7 +182,8 @@ local_catalog.unregister_model(model.id)
 `manager.catalog` and `manager.get_catalog()` both return the public catalog for backward compatibility.
 `ModelInfoBuilder()` owns a mutable native metadata handle; call `close()` or use a `with` block. In contrast,
 `model.info` is a frozen point-in-time `ModelInfo` value that supports normal dataclass operations such as
-`dataclasses.asdict()` and remains safe after the native model or manager is released.
+`dataclasses.asdict()`. Its declared fields remain safe after the native model or manager is released. Arbitrary
+forward-compatible keys use guarded native lookup and therefore require the owning manager to remain open.
 
 ### Inspecting model metadata
 

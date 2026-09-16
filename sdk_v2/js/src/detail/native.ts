@@ -42,6 +42,8 @@ export interface NativeMutableModelInfo {
   setIntProperty(key: string, value: number): NativeMutableModelInfo;
   dispose(): void;
   isDisposed(): boolean;
+  /** @internal Test-only fault injection for the checked snapshot boundary. */
+  failNextSnapshotForTest(): void;
 }
 
 export interface NativeMutableModelInfoCtor {
@@ -83,7 +85,13 @@ export interface NativeModelInfo {
   modelProvider?: string;
   minFLVersion?: string;
   parentUri?: string;
+  toolCallStart?: string;
+  toolCallEnd?: string;
+  reasoningStart?: string;
+  reasoningEnd?: string;
   supportsToolCalling?: boolean;
+  supportsReasoning?: boolean;
+  supportsHybridReasoning?: boolean;
   fileSizeMb?: number;
   maxOutputTokens?: number;
   createdAtUnix: number;
@@ -116,9 +124,14 @@ export interface NativeCatalog {
   getModelVariant(modelId: string): NativeModel | undefined;
   getLatestVersion(model: NativeModel): NativeModel | undefined;
   getModelVersions(modelAlias: string, modelName: string | null, maxVersions: number): Promise<NativeModel[]>;
-  registerModel(modelPath: string, modelId: string, metadata: NativeMutableModelInfo): Promise<NativeModel>;
+  registerModel(
+    modelPath: string,
+    modelId: string,
+    metadata: NativeMutableModelInfo,
+    onWorkerStarted?: () => void,
+  ): Promise<NativeModel>;
   registerModelSync(modelPath: string, modelId: string, metadata: NativeMutableModelInfo): NativeModel;
-  unregisterModel(aliasOrModelId: string): Promise<void>;
+  unregisterModel(aliasOrModelId: string, onWorkerStarted?: () => void): Promise<void>;
   unregisterModelSync(aliasOrModelId: string): void;
 }
 

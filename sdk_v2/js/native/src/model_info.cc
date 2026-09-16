@@ -19,6 +19,7 @@ Napi::Function NativeModelInfo::Init(Napi::Env env) {
                          InstanceMethod("setIntProperty", &NativeModelInfo::SetIntProperty),
                          InstanceMethod("dispose", &NativeModelInfo::Dispose),
                          InstanceMethod("isDisposed", &NativeModelInfo::IsDisposed),
+                         InstanceMethod("failNextSnapshotForTest", &NativeModelInfo::FailNextSnapshotForTest),
                      });
 }
 
@@ -33,6 +34,10 @@ NativeModelInfo::NativeModelInfo(const Napi::CallbackInfo& info) : Napi::ObjectW
 
 std::shared_ptr<foundry_local::ModelInfo> NativeModelInfo::Snapshot() const {
   if (impl_ == nullptr) return nullptr;
+  if (fail_next_snapshot_for_test_) {
+    fail_next_snapshot_for_test_ = false;
+    throw foundry_local::Error("Injected ModelInfo snapshot failure", FOUNDRY_LOCAL_ERROR_INTERNAL);
+  }
   auto snapshot = std::make_shared<foundry_local::ModelInfo>();
   for (const auto& [key, value] : string_properties_) {
     snapshot->SetStringProperty(key.c_str(), value.c_str());
@@ -100,6 +105,15 @@ Napi::Value NativeModelInfo::Dispose(const Napi::CallbackInfo& info) {
 
 Napi::Value NativeModelInfo::IsDisposed(const Napi::CallbackInfo& info) {
   return Napi::Boolean::New(info.Env(), impl_ == nullptr);
+}
+
+Napi::Value NativeModelInfo::FailNextSnapshotForTest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) {
+    return env.Undefined();
+  }
+  fail_next_snapshot_for_test_ = true;
+  return env.Undefined();
 }
 
 }  // namespace foundry_local_node

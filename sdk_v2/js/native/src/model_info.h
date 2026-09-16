@@ -27,6 +27,7 @@ class NativeModelInfo : public Napi::ObjectWrap<NativeModelInfo> {
   Napi::Value SetIntProperty(const Napi::CallbackInfo& info);
   Napi::Value Dispose(const Napi::CallbackInfo& info);
   Napi::Value IsDisposed(const Napi::CallbackInfo& info);
+  Napi::Value FailNextSnapshotForTest(const Napi::CallbackInfo& info);
 
   bool ThrowIfDisposed(Napi::Env env) const;
 
@@ -34,6 +35,7 @@ class NativeModelInfo : public Napi::ObjectWrap<NativeModelInfo> {
   std::shared_ptr<foundry_local::ModelInfo> impl_;
   std::map<std::string, std::string> string_properties_;
   std::map<std::string, int64_t> int_properties_;
+  mutable bool fail_next_snapshot_for_test_ = false;
 };
 
 }  // namespace foundry_local_node

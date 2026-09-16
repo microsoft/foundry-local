@@ -81,6 +81,11 @@ def test_local_catalog_registers_and_unregisters_without_deleting_assets(manager
         assert asdict(info)["id"] == model_id
         assert Path(registered.get_path()).resolve() == model_path.resolve()
 
+        round_trip = local_catalog.get_model_variant(model_id)
+        assert round_trip is not None
+        assert round_trip.info.get_string_property("custom_marker") == "python-binding"
+        assert round_trip.info.get_int_property("custom_count", -1) == 42
+
         local_catalog.unregister_model(model_id)
         assert local_catalog.get_model_variant(model_id) is None
         assert config_path.is_file()

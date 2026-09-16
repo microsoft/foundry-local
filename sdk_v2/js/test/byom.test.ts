@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { Catalog } from "../src/catalog.js";
+import { type Catalog, unwrapNativeCatalog } from "../src/catalog.js";
 import {
   CatalogType,
   FoundryLocalManager,
@@ -12,6 +12,7 @@ import {
   MutableModelInfo,
 } from "../src/index.js";
 import { Model } from "../src/model.js";
+import { unwrapMutableModelInfo } from "../src/modelInfo.js";
 
 import {
   type CacheOnlyManagerFixture,
@@ -69,7 +70,14 @@ describeIfBuilt("BYOM local catalog", () => {
       .setStringProperty(ModelInfoStringProperty.Task, "chat-completion")
       .setStringProperty(ModelInfoStringProperty.DisplayName, "JS BYOM Async")
       .setStringProperty(ModelInfoStringProperty.InputModalities, "text")
+      .setStringProperty(ModelInfoStringProperty.ToolCallStart, "<tool>")
+      .setStringProperty(ModelInfoStringProperty.ToolCallEnd, "</tool>")
+      .setStringProperty(ModelInfoStringProperty.ReasoningStart, "<think>")
+      .setStringProperty(ModelInfoStringProperty.ReasoningEnd, "</think>")
       .setIntProperty(ModelInfoIntProperty.ContextLength, 4096)
+      .setIntProperty(ModelInfoIntProperty.SupportsToolCalling, 1)
+      .setIntProperty(ModelInfoIntProperty.SupportsReasoning, 1)
+      .setIntProperty(ModelInfoIntProperty.SupportsHybridReasoning, 0)
       .setIntProperty("custom_count", 42);
 
     const model = await localCatalog.registerModel(modelPath, modelId, metadata);
@@ -79,12 +87,27 @@ describeIfBuilt("BYOM local catalog", () => {
     expect(model.info.task).toBe("chat-completion");
     expect(model.info.displayName).toBe("JS BYOM Async");
     expect(model.info.contextLength).toBe(4096);
+    expect(model.info.toolCallStart).toBe("<tool>");
+    expect(model.info.toolCallEnd).toBe("</tool>");
+    expect(model.info.reasoningStart).toBe("<think>");
+    expect(model.info.reasoningEnd).toBe("</think>");
+    expect(model.info.supportsToolCalling).toBe(true);
+    expect(model.info.supportsReasoning).toBe(true);
+    expect(model.info.supportsHybridReasoning).toBe(false);
     expect(model.isCached).toBe(true);
     expect(await model.isLoaded()).toBe(false);
     expect(model.path).toBe(modelPath);
 
     metadata.dispose();
     expect(model.info.id).toBe(modelId);
+    const roundTrip = await localCatalog.getModelVariant(modelId);
+    expect(roundTrip.info.toolCallStart).toBe("<tool>");
+    expect(roundTrip.info.toolCallEnd).toBe("</tool>");
+    expect(roundTrip.info.reasoningStart).toBe("<think>");
+    expect(roundTrip.info.reasoningEnd).toBe("</think>");
+    expect(roundTrip.info.supportsToolCalling).toBe(true);
+    expect(roundTrip.info.supportsReasoning).toBe(true);
+    expect(roundTrip.info.supportsHybridReasoning).toBe(false);
     await localCatalog.unregisterModel(modelId);
     registeredIds.delete(modelId);
     await expect(localCatalog.getModelVariant(modelId)).rejects.toThrow(modelId);
@@ -121,6 +144,42 @@ describeIfBuilt("BYOM local catalog", () => {
     expect(metadata.disposed).toBe(true);
     expect(() => metadata.setStringProperty(ModelInfoStringProperty.Task, "chat-completion")).toThrow(/disposed/);
     expect(() => localCatalog.registerModelSync(modelPath, "disposed:1", metadata)).toThrow(/non-disposed/);
+  });
+
+  it("converts snapshot exceptions before sync or async registration starts", async () => {
+    using metadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
+    const nativeMetadata = unwrapMutableModelInfo(metadata);
+
+    let workerStarted = false;
+    nativeMetadata.failNextSnapshotForTest();
+    let asyncError: unknown;
+    try {
+      unwrapNativeCatalog(localCatalog).registerModel(modelPath, "snapshot-failure-async:1", nativeMetadata, () => {
+        workerStarted = true;
+      });
+    } catch (error) {
+      asyncError = error;
+    }
+    expect(asyncError).toMatchObject({
+      name: "FoundryLocalError",
+      code: 2,
+      message: expect.stringMatching(/Injected ModelInfo snapshot failure/),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(workerStarted).toBe(false);
+
+    nativeMetadata.failNextSnapshotForTest();
+    let syncError: unknown;
+    try {
+      localCatalog.registerModelSync(modelPath, "snapshot-failure-sync:1", metadata);
+    } catch (error) {
+      syncError = error;
+    }
+    expect(syncError).toMatchObject({
+      name: "FoundryLocalError",
+      code: 2,
+      message: expect.stringMatching(/Injected ModelInfo snapshot failure/),
+    });
   });
 });
 

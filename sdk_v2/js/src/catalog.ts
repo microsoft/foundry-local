@@ -11,6 +11,7 @@ import { Model, unwrapNativeModel, wrapNativeModel } from "./model.js";
 import { type MutableModelInfo, unwrapMutableModelInfo } from "./modelInfo.js";
 
 const internalCtorKey = Symbol("Catalog.internal");
+const nativeByCatalog = new WeakMap<Catalog, NativeCatalog>();
 
 export class Catalog {
   readonly #native: NativeCatalog;
@@ -21,6 +22,7 @@ export class Catalog {
       throw new TypeError("Catalog is internal — obtain instances via FoundryLocalManager.catalog");
     }
     this.#native = native;
+    nativeByCatalog.set(this, native);
   }
 
   /** Catalog name (e.g. `"AzureFoundryCatalog"`). */
@@ -134,6 +136,15 @@ export class Catalog {
 /** @internal — used by `FoundryLocalManager` to wrap a native catalog. */
 export function wrapNativeCatalog(native: NativeCatalog): Catalog {
   return new Catalog(internalCtorKey, native);
+}
+
+/** @internal Test-only access for exercising native async lifetime boundaries. */
+export function unwrapNativeCatalog(catalog: Catalog): NativeCatalog {
+  const native = nativeByCatalog.get(catalog);
+  if (native === undefined) {
+    throw new TypeError("Expected a Catalog instance");
+  }
+  return native;
 }
 
 function wrapAll(natives: readonly NativeModel[]): IModel[] {

@@ -64,7 +64,13 @@ export interface ModelInfo {
   readonly modelProvider?: string;
   readonly minFLVersion?: string;
   readonly parentUri?: string;
+  readonly toolCallStart?: string;
+  readonly toolCallEnd?: string;
+  readonly reasoningStart?: string;
+  readonly reasoningEnd?: string;
   readonly supportsToolCalling?: boolean;
+  readonly supportsReasoning?: boolean;
+  readonly supportsHybridReasoning?: boolean;
   readonly fileSizeMb?: number;
   readonly maxOutputTokens?: number;
   readonly createdAtUnix: number;

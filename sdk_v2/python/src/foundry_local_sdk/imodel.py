@@ -4,6 +4,7 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
+from _thread import LockType
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Callable
 
@@ -162,8 +163,8 @@ Model = IModel
 def _model_info_from_native(
     native_model_ptr: object,
     *,
-    string_properties: dict[str, str] | None = None,
-    int_properties: dict[str, int] | None = None,
+    ensure_manager_open: Callable[[], None] | None = None,
+    manager_lock: LockType | None = None,
 ) -> ModelInfo:
     """Read native metadata into a safe point-in-time value snapshot."""
     from foundry_local_sdk._native.api import api, ffi  # local to avoid circular imports
@@ -180,6 +181,26 @@ def _model_info_from_native(
 
     def get_int(key: str, default: int = -1) -> int:
         return int(api.model.Info_GetIntProperty(info, key.encode("utf-8"), default))
+
+    def read_string_property(key: str) -> str | None:
+        if manager_lock is not None:
+            with manager_lock:
+                if ensure_manager_open is not None:
+                    ensure_manager_open()
+                return get_str(key)
+        if ensure_manager_open is not None:
+            ensure_manager_open()
+        return get_str(key)
+
+    def read_int_property(key: str, default: int) -> int:
+        if manager_lock is not None:
+            with manager_lock:
+                if ensure_manager_open is not None:
+                    ensure_manager_open()
+                return get_int(key, default)
+        if ensure_manager_open is not None:
+            ensure_manager_open()
+        return get_int(key, default)
 
     uri_ptr = api.model.Info_GetUri(info)
     ep_ptr = api.model.Info_GetExecutionProvider(info)
@@ -221,8 +242,8 @@ def _model_info_from_native(
         output_modalities=get_str("output_modalities"),
         capabilities=get_str("capabilities"),
     )
-    object.__setattr__(snapshot, "_string_properties", dict(string_properties or {}))
-    object.__setattr__(snapshot, "_int_properties", dict(int_properties or {}))
+    object.__setattr__(snapshot, "_string_property_reader", read_string_property)
+    object.__setattr__(snapshot, "_int_property_reader", read_int_property)
     return snapshot
 
 
@@ -239,16 +260,12 @@ class _ModelImpl(IModel):
         native_ptr: object,
         *,
         parent: object | None = None,
-        string_properties: dict[str, str] | None = None,
-        int_properties: dict[str, int] | None = None,
     ) -> None:
         self._ptr = native_ptr
         # Keep the owning Catalog alive while this model exists. The native flModel*
         # is owned by the catalog; without this reference, GC could release the
         # catalog (and the manager behind it) first and dangle our pointer.
         self._parent = parent
-        self._string_properties = dict(string_properties or {})
-        self._int_properties = dict(int_properties or {})
         # Callback references — stored to prevent premature GC.
         self._progress_cb = None
         self._progress_cb_handle = None
@@ -268,6 +285,10 @@ class _ModelImpl(IModel):
         if manager is not None and getattr(manager, "_native_manager", None) is None:
             raise RuntimeError("FoundryLocalManager is closed")
 
+    def _manager_lock(self) -> LockType | None:
+        manager = getattr(self._parent, "_parent", None)
+        return getattr(manager, "_lock", None)
+
     # ------------------------------------------------------------------
     # Identity properties — read from native ModelInfo
     # ------------------------------------------------------------------
@@ -282,12 +303,17 @@ class _ModelImpl(IModel):
 
     @property
     def info(self) -> ModelInfo:
+        manager_lock = self._manager_lock()
+        if manager_lock is not None:
+            with manager_lock:
+                self._ensure_manager_open()
+                return _model_info_from_native(
+                    self._ptr,
+                    ensure_manager_open=self._ensure_manager_open,
+                    manager_lock=manager_lock,
+                )
         self._ensure_manager_open()
-        return _model_info_from_native(
-            self._ptr,
-            string_properties=self._string_properties,
-            int_properties=self._int_properties,
-        )
+        return _model_info_from_native(self._ptr, ensure_manager_open=self._ensure_manager_open)
 
     # ------------------------------------------------------------------
     # Live state properties — always go to native for fresh data
