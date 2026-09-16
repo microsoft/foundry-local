@@ -44,7 +44,7 @@ steps:
 - bash: |
     set -euo pipefail
     version=$(cat "$(Pipeline.Workspace)/version-info/sdkVersion.txt" | tr -d '[:space:]')
-    defines="$(cmakeFetchDefines) \"FOUNDRY_LOCAL_VERSION_STRING=$version\""
+    defines="$(cmakeFetchDefines) \"FOUNDRY_LOCAL_VERSION_OVERRIDE=$version\""
     echo "##vso[task.setvariable variable=cmakeFetchDefines]$defines"
     echo "cmakeFetchDefines = $defines"
   displayName: 'Append version define'

@@ -1,6 +1,6 @@
 {
   "name": "foundry-local-sdk",
-  "version": "2.0.0-dev.0",
+  "version": "2.0.1",
   "description": "Foundry Local SDK for Node.js (v2). Native bindings on top of the foundry_local C++ SDK.",
   "license": "MIT",
   "type": "module",

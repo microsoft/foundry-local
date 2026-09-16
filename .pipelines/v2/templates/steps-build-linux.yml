@@ -92,7 +92,7 @@ steps:
             "GENAI_FETCH_URL=$NUGET_CACHE/genai.zip" \
             "ORT_GENAI_VERSION=${{ parameters.genaiVersion }}" \
             "ORT_FETCH_URL=$NUGET_CACHE/ort.zip" \
-            "FOUNDRY_LOCAL_VERSION_STRING=$SDK_VERSION"
+            "FOUNDRY_LOCAL_VERSION_OVERRIDE=$SDK_VERSION"
       '
   displayName: 'Configure and build in manylinux 2.28'
 

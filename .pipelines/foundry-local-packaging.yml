@@ -29,7 +29,7 @@ parameters:
 - name: version
   displayName: 'Package version (sdk_v2/...)'
   type: string
-  default: '2.0.0'
+  default: '2.0.1'
 - name: versionV1
   displayName: 'Package version (sdk/...)'
   type: string
@@ -109,7 +109,7 @@ extends:
           name: onnxruntime-Win-CPU-2022
           os: windows
         steps:
-        - checkout: self
+        - checkout: none
           fetchDepth: 0
         - task: PowerShell@2
           name: setflags
@@ -187,7 +187,7 @@ extends:
             artifactName: 'version-info'
             targetPath: '$(Build.ArtifactStagingDirectory)/version-info'
         steps:
-        - checkout: none
+        - checkout: self
         - task: PowerShell@2
           displayName: 'Compute and write version files'
           inputs:

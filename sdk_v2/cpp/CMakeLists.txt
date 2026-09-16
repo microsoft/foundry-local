@@ -20,7 +20,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uw
 endif()
 list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
-project(foundry_local VERSION 0.1.0 LANGUAGES CXX C)
+project(foundry_local VERSION 2.0.1 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -380,12 +380,14 @@ endfunction()
 # --------------------------------------------------------------------------
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
-# CI overrides via -DFOUNDRY_LOCAL_VERSION_STRING=<full-version-string> so the
+# CI overrides via -DFOUNDRY_LOCAL_VERSION_OVERRIDE=<full-version-string> so the
 # binary's FoundryLocalGetVersionString() matches the .nupkg version (which
 # typically includes a dev/timestamp suffix). Defaults to PROJECT_VERSION for
 # local developer builds.
-set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
-    CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
+set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}")
+if(DEFINED FOUNDRY_LOCAL_VERSION_OVERRIDE)
+    set(FOUNDRY_LOCAL_VERSION_STRING "${FOUNDRY_LOCAL_VERSION_OVERRIDE}")
+endif()
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)

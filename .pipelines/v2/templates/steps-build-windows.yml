@@ -71,7 +71,7 @@ steps:
     pwsh: true
     script: |
       $version = (Get-Content "$(Pipeline.Workspace)/version-info/sdkVersion.txt" -Raw).Trim()
-      $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_STRING=$version`""
+      $defines = '$(cmakeFetchDefines)' + " `"FOUNDRY_LOCAL_VERSION_OVERRIDE=$version`""
       Write-Host "##vso[task.setvariable variable=cmakeFetchDefines]$defines"
       Write-Host "cmakeFetchDefines = $defines"
 

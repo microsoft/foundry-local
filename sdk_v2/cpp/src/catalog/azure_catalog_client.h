@@ -16,25 +16,24 @@
 
 namespace fl {
 
-/// Live Azure Foundry catalog client. Queries the catalog REST API
-/// (`asset-gallery/v1.0/models`) for the models available to the local
+/// Live Azure Foundry catalog client. Queries the regional index API
+/// (`index/v1.0/entities`) for the models available to the local
 /// hardware, paginating through results and converting each entry to ModelInfo.
 ///
 /// Uses one filter set per detected device, page size 50, and pagination via
-/// skip + continuationToken. The detected region is stamped onto results so
-/// downloads can target the matching regional model registry.
+/// skip + continuationToken. Regional catalog routing is handled by the service.
 class AzureCatalogClient : public ICatalogClient {
  public:
-  /// Response-aware HTTP POST. Used for region detection and catalog fetches.
+  /// Response-aware HTTP POST. Used for catalog fetches.
   using HttpPostResponseFn =
       std::function<http::HttpResponse(const std::string& url, const std::string& body)>;
 
-  /// @param base_url Catalog endpoint. Empty means the default V2 asset-gallery endpoint.
+  /// @param base_url Catalog endpoint. Empty uses the default Index API endpoint.
   /// @param filter_override Deployment-option override. Empty means `Foundry Local on Devices`.
   /// @param ep_detector Reports available device and execution-provider pairs.
   /// @param logger Logger.
   /// @param http_post HTTP POST implementation. The default uses `http::HttpPostWithResponse`.
-  /// @param catalog_region Catalog region. Empty or "auto" detects from Azure headers; any other value is explicit.
+  /// @param catalog_region Optional explicit model-registry region for downloads.
   AzureCatalogClient(const std::string& base_url,
                      const std::string& filter_override,
                      const IEpDetector& ep_detector,
@@ -72,7 +71,7 @@ class AzureCatalogClient : public ICatalogClient {
   std::vector<FetchedFilterSet> FetchAllFilterSets();
 
   std::string base_url_;
-  std::vector<std::string> model_filter_;  // deploymentOptions filter values
+  std::vector<std::string> model_filter_;  // deployment-option filter values
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   HttpPostResponseFn http_post_response_;

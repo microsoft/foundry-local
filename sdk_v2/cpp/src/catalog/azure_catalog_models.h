@@ -98,6 +98,7 @@ struct CatalogTags {
 };
 
 struct SystemCatalogData {
+  std::optional<std::string> alias;
   std::optional<std::string> publisher;
   std::optional<std::string> display_name;
   std::optional<int> max_output_tokens;

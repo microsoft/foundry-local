@@ -55,7 +55,7 @@ class AzureModelCatalog : public BaseModelCatalog {
     CatalogSource source;
   };
 
-  static constexpr const char* kDefaultCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+  static constexpr const char* kDefaultCatalogUrl = "https://eastus.api.azureml.ms/index/v1.0/entities";
   static constexpr const char* kDefaultCatalogFilter = "Foundry Local on Devices";
 
   CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
@@ -68,7 +68,7 @@ class AzureModelCatalog : public BaseModelCatalog {
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   bool cache_only_;
-  // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
+  // Optional explicit model-registry region used for downloads.
   std::string catalog_region_;
 };
 

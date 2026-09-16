@@ -33,7 +33,7 @@ namespace fs = std::filesystem;
 // The live catalog endpoint and an explicit region. Setting the region exercises the public
 // Configuration::SetCatalogRegion() override path; it matches the URL template so routing stays
 // consistent.
-constexpr const char* kLiveCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+constexpr const char* kLiveCatalogUrl = "https://eastus.api.azureml.ms/index/v1.0/entities";
 constexpr const char* kLiveCatalogRegion = "centralus";
 
 // A small model the repo already standardizes on (see SharedTestEnv). Used by the download test.

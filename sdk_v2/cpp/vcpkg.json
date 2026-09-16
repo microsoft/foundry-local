@@ -1,6 +1,6 @@
 {
   "name": "foundry-local",
-  "version-semver": "0.1.0",
+  "version-semver": "2.0.1",
   "description": "Foundry Local C++ SDK",
   "builtin-baseline": "256acc64012b23a13041d8705805e1f23b43a024",
   "dependencies": [
