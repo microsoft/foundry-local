@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 using namespace fl;
 
@@ -35,6 +36,89 @@ TEST(BuildToolJsonSchemaTest, InvalidJsonReturnsEmptyObject) {
   ToolCallContext ctx;
   ctx.tool_output = true;
   ctx.tools_json = "not json";
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThrowing) {
+  const std::vector<nlohmann::json> malformed_tools = {
+      1,
+      {{"function", 1}},
+      {{"type", "bogus"},
+       {"function",
+        {{"name", "fn"}, {"parameters", {{"type", "object"}}}}}},
+      {{"function", {{"name", 1}}}},
+      {{"function", {{"name", "fn"}, {"description", 1}}}},
+      {{"function", {{"name", "fn"}, {"parameters", 1}}}},
+      {{"function", {{"name", "fn"}, {"parameters", {{"type", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters", {{"type", "object"}, {"properties", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", 1}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters", {{"type", "object"}, {"required", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", nlohmann::json::object()},
+           {"required", nlohmann::json::array({"missing"})}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}, {"enum", "not-an-array"}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties",
+            {{"value", {{"type", "number"}, {"enum", nlohmann::json::array({1, 1.0})}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}, {"pattern", "["}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "object"}, {"dependentRequired", "invalid"}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"$ref", "#/$defs/value"}}}}},
+           {"$defs", {{"value", {{"type", "string"}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}}}}},
+           {"required", nlohmann::json::array({"value", "value"})}}}}}},
+  };
+
+  for (const auto& malformed : malformed_tools) {
+    SCOPED_TRACE(malformed.dump());
+    ToolCallContext ctx;
+    ctx.tool_output = true;
+    ctx.tools_json = nlohmann::json::array({malformed}).dump();
+
+    EXPECT_NO_THROW({ EXPECT_EQ(BuildToolJsonSchema(ctx), "{}"); });
+  }
+}
+
+TEST(BuildToolJsonSchemaTest, DuplicateFunctionNamesReturnEmptyObject) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"duplicate"}},)"
+      R"({"type":"function","function":{"name":"duplicate","parameters":{"type":"object"}}}])";
+
   EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
 }
 
@@ -65,6 +149,53 @@ TEST(BuildToolJsonSchemaTest, SingleToolProducesSchema) {
   auto& any_of = schema["items"]["anyOf"];
   ASSERT_EQ(any_of.size(), 1u);
   EXPECT_EQ(any_of[0]["properties"]["name"]["const"], "get_weather");
+}
+
+TEST(BuildToolJsonSchemaTest, DistinctLargeNumericEnumValuesProduceSchema) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"number","enum":[18446744073709551615,-1,9007199254740993,9007199254740992.0]}}}}}])";
+
+  EXPECT_NE(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, RootParameterConstraintsArePreserved) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"string"}},"minProperties":1,"additionalProperties":true}}}])";
+
+  const auto schema = nlohmann::json::parse(BuildToolJsonSchema(ctx));
+  const auto& parameters = schema["items"]["anyOf"][0]["properties"]["parameters"];
+  EXPECT_EQ(parameters["minProperties"], 1);
+  EXPECT_EQ(parameters["additionalProperties"], true);
+}
+
+TEST(BuildToolJsonSchemaTest, DuplicateEnumValuesAtMaximumDepthReturnEmptyObject) {
+  auto value = nlohmann::json(1);
+  for (size_t depth = 0; depth < 32; ++depth) {
+    value = nlohmann::json::array({std::move(value)});
+  }
+
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      nlohmann::json::array(
+          {{{"type", "function"},
+            {"function",
+             {{"name", "fn"},
+              {"parameters",
+               {{"type", "object"},
+                {"properties",
+                 {{"value",
+                   {{"type", "array"},
+                    {"enum", nlohmann::json::array({value, value})}}}}}}}}}}})
+          .dump();
+
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
 }
 
 TEST(BuildToolJsonSchemaTest, MultipleToolsProducesAnyOf) {
@@ -369,7 +500,6 @@ TEST(BuildLarkGrammarTest, PromptDoesNotOpenReasoningKeepsCotOpener) {
 // ========================================================================
 // ToolCallContext tests
 // ========================================================================
-
 
 TEST(ToolCallContextTest, DefaultsAreCorrect) {
   ToolCallContext ctx;

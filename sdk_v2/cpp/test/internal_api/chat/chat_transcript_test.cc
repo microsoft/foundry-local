@@ -98,6 +98,126 @@ TEST(ChatTemplateProjectionTest, MultipleToolCallsKeepEmissionOrder) {
             R"({"id":"call_2","type":"function","function":{"name":"second","arguments":{"b":2}}}]}])");
 }
 
+TEST(ChatTemplateProjectionTest, PositionalResultsFollowAssistantCallOrderWithoutMutatingCanonicalMessages) {
+  const std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+      TranscriptMessage::ToolResult("call_second", "SECOND_SENTINEL"),
+      TranscriptMessage::ToolResult("call_first", "FIRST_SENTINEL"),
+      UserMessage("continue")};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(projected[1].tool_call_id, "call_first");
+  EXPECT_EQ(projected[1].VisibleText(), "FIRST_SENTINEL");
+  EXPECT_EQ(projected[2].tool_call_id, "call_second");
+  EXPECT_EQ(projected[2].VisibleText(), "SECOND_SENTINEL");
+  EXPECT_EQ(messages[1].tool_call_id, "call_second");
+  EXPECT_EQ(messages[1].VisibleText(), "SECOND_SENTINEL");
+  EXPECT_EQ(messages[2].tool_call_id, "call_first");
+  EXPECT_EQ(messages[2].VisibleText(), "FIRST_SENTINEL");
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsUseCompleteCombinedHistoryAndCurrentInput) {
+  std::vector<TranscriptMessage> committed_history = {
+      UserMessage("run both"),
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")})};
+  std::vector<TranscriptMessage> current_input = {
+      TranscriptMessage::ToolResult("call_second", "SECOND_SENTINEL"),
+      TranscriptMessage::ToolResult("call_first", "FIRST_SENTINEL")};
+
+  auto combined = committed_history;
+  combined.insert(combined.end(), current_input.begin(), current_input.end());
+  const auto warm_projection = chat_internal::ProjectPositionalToolResults(combined);
+  const auto cold_projection = chat_internal::ProjectPositionalToolResults(
+      {committed_history[0], committed_history[1], current_input[0], current_input[1]});
+
+  EXPECT_EQ(BuildChatMessagesJson(warm_projection), BuildChatMessagesJson(cold_projection));
+  EXPECT_EQ(warm_projection[2].VisibleText(), "FIRST_SENTINEL");
+  EXPECT_EQ(warm_projection[3].VisibleText(), "SECOND_SENTINEL");
+}
+
+TEST(ChatTemplateProjectionTest, PositionalProjectionLeavesOutstandingMultiCallTurnAtEndUnchanged) {
+  const std::vector<TranscriptMessage> messages = {
+      UserMessage("run both"),
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")})};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
+}
+
+TEST(ChatTemplateProjectionTest, PositionalProjectionIgnoresUnrelatedLaterCallResults) {
+  const std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+      UserMessage("continue without those results"),
+      MakeAssistant("", {MakeCall("call_other", "other", "{}")}),
+      TranscriptMessage::ToolResult("call_other", "unrelated")};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
+}
+
+void ExpectAmbiguousPositionalResults(const std::vector<TranscriptMessage>& messages) {
+  try {
+    chat_internal::ProjectPositionalToolResults(messages);
+    FAIL() << "expected ambiguous positional results to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find(
+                  "positional tool results must immediately follow a multi-call assistant turn and contain each "
+                  "assistant call id exactly once"),
+              std::string::npos)
+        << ex.what();
+  }
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsRejectCompleteGroupAfterInterveningMessage) {
+  ExpectAmbiguousPositionalResults(
+      {MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+       UserMessage("intervening"),
+       TranscriptMessage::ToolResult("call_second", "two"),
+       TranscriptMessage::ToolResult("call_first", "one")});
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsRejectDuplicateCallIds) {
+  ExpectAmbiguousPositionalResults(
+      {MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+       TranscriptMessage::ToolResult("call_first", "one"),
+       TranscriptMessage::ToolResult("call_first", "duplicate")});
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsRejectMissingCallIds) {
+  ExpectAmbiguousPositionalResults(
+      {MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+       TranscriptMessage::ToolResult("call_first", "one")});
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsRejectUnknownCallIds) {
+  ExpectAmbiguousPositionalResults(
+      {MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+       TranscriptMessage::ToolResult("call_first", "one"),
+       TranscriptMessage::ToolResult("call_unknown", "unknown")});
+}
+
+TEST(ChatTemplateProjectionTest, PositionalResultsRejectNoncontiguousCallIds) {
+  ExpectAmbiguousPositionalResults(
+      {MakeAssistant("", {MakeCall("call_first", "first", "{}"), MakeCall("call_second", "second", "{}")}),
+       TranscriptMessage::ToolResult("call_first", "one"),
+       UserMessage("intervening"),
+       TranscriptMessage::ToolResult("call_second", "two")});
+}
+
+TEST(ChatTemplateProjectionTest, PositionalProjectionLeavesSingleCallGroupsInArrivalOrder) {
+  const std::vector<TranscriptMessage> messages = {
+      MakeAssistant("", {MakeCall("call_only", "only", "{}")}),
+      TranscriptMessage::ToolResult("call_other", "normal validation handles this")};
+
+  const auto projected = chat_internal::ProjectPositionalToolResults(messages);
+
+  EXPECT_EQ(BuildChatMessagesJson(projected), BuildChatMessagesJson(messages));
+}
+
 TEST(ChatTemplateProjectionTest, ReasoningIsNotProjectedEvenAlongsideToolCalls) {
   // Reasoning is the model's private scratchpad. A conversation rebuilt from storage cannot reproduce it, so
   // projecting it here would make a live session and a rebuilt one send different prompts. It stays on the

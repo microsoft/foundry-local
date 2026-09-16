@@ -20,10 +20,11 @@ namespace {
 
 std::string AdvertisedTool(const std::string& name) {
   return nlohmann::json::array({{
-      {"type", "function"},
-      {"name", name},
-      {"parameters", {{"type", "object"}}},
-  }}).dump();
+                                   {"type", "function"},
+                                   {"name", name},
+                                   {"parameters", {{"type", "object"}}},
+                               }})
+      .dump();
 }
 
 }  // namespace
@@ -218,7 +219,7 @@ TEST(ParseToolCallsTest, DoesNotAliasCanonicalExecCommandToShell) {
   std::string text =
       R"(<tool_call>{"name":"exec_command","arguments":{"cmd":"git diff"}}</tool_call>)";
   std::string tools =
-    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
   auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
 
   ASSERT_EQ(calls.size(), 1u);
@@ -230,10 +231,34 @@ TEST(ParseToolCallsTest, RepairedNameMustMatchAdvertisedTool) {
   std::string text =
       R"(<tool_call><"exec_command","arguments":{"cmd":"git diff"}</tool_call>)";
   std::string tools =
-    R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
+      R"([{"type":"function","name":"shell","parameters":{"type":"object"}}])";
   auto calls = ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
 
   EXPECT_TRUE(calls.empty());
+}
+
+TEST(ParseToolCallsTest, MalformedAdvertisedToolNamesRejectRepairWithoutThrowing) {
+  const std::string text =
+      R"(<tool_call>{"function":"advertised","arguments":{}}</tool_call>)";
+  const std::vector<std::string> malformed_tools = {
+      R"([{"name":1}])",
+      R"([{"function":{"name":1}}])",
+      R"([{"function":{"name":null}}])",
+      R"([{"function":1}])",
+      R"([{"type":"bogus","name":"advertised"}])",
+      R"([{"type":"bogus","function":{"name":"advertised"}}])",
+      R"([{"type":"function","name":"advertised","function":{"name":"inner"}}])",
+      R"([{"type":"function","name":"advertised","function":1}])",
+  };
+
+  for (const auto& tools : malformed_tools) {
+    SCOPED_TRACE(tools);
+    EXPECT_NO_THROW({
+      const auto calls =
+          ParseToolCalls(text, "<tool_call>", "</tool_call>", tools);
+      EXPECT_TRUE(calls.empty());
+    });
+  }
 }
 
 TEST(ParseToolCallsTest, RejectsRepairWhenToolMetadataIsEmpty) {

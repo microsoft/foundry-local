@@ -160,7 +160,17 @@ int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& n
                                          GenAIModelInstance& model,
                                          const ToolCallContext& tool_ctx,
                                          const SearchOptions& options) {
-  if (new_messages.empty() || full_messages.empty()) {
+  return AppendMessages(new_messages,
+                        chat_internal::PrepareChatMessages(full_messages, model.HasPositionalToolResults()),
+                        model, tool_ctx, options);
+}
+
+int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                                         const chat_internal::PreparedChatMessages& full_messages,
+                                         GenAIModelInstance& model,
+                                         const ToolCallContext& tool_ctx,
+                                         const SearchOptions& options) {
+  if (new_messages.empty() || full_messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
@@ -230,7 +240,16 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     const SearchOptions& options,
     GenAIModelInstance& model,
     const ToolCallContext& tool_ctx) {
-  if (messages.empty()) {
+  return Create(chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()),
+                options, model, tool_ctx);
+}
+
+std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
+    const chat_internal::PreparedChatMessages& messages,
+    const SearchOptions& options,
+    GenAIModelInstance& model,
+    const ToolCallContext& tool_ctx) {
+  if (messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
