@@ -10,8 +10,13 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -331,18 +336,40 @@ Napi::Value Manager::DiscoverEps(const Napi::CallbackInfo& info) {
 
 namespace {
 
+struct ProgressAcknowledgement {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool completed = false;
+};
+
+struct AcknowledgeProgressOnExit {
+  explicit AcknowledgeProgressOnExit(std::shared_ptr<ProgressAcknowledgement> value)
+      : acknowledgement(std::move(value)) {}
+
+  std::shared_ptr<ProgressAcknowledgement> acknowledgement;
+
+  ~AcknowledgeProgressOnExit() {
+    {
+      std::lock_guard<std::mutex> lock(acknowledgement->mutex);
+      acknowledgement->completed = true;
+    }
+    acknowledgement->condition.notify_one();
+  }
+};
+
 // AsyncWorker for DownloadAndRegisterEps with optional (epName, percent)
 // progress callback. Mirrors the pattern in model.cc's DownloadWorker.
 class EpDownloadWorker : public Napi::AsyncWorker {
  public:
   EpDownloadWorker(Napi::Env env, std::shared_ptr<foundry_local::Manager> impl, std::vector<std::string> ep_names,
-                   Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
+                   Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn, bool emit_test_progress)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(std::move(impl)),
         ep_names_(std::move(ep_names)),
         owner_(std::move(owner)),
-        tsfn_(std::move(tsfn)) {}
+        tsfn_(std::move(tsfn)),
+        emit_test_progress_(emit_test_progress) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
@@ -352,12 +379,25 @@ class EpDownloadWorker : public Napi::AsyncWorker {
       if (tsfn_) {
         progress_cb = [this](std::string_view ep_name, float percent) -> bool {
           std::string name(ep_name);
-          tsfn_.BlockingCall([name, percent](Napi::Env env, Napi::Function js_cb) {
+          auto acknowledgement = emit_test_progress_ ? std::make_shared<ProgressAcknowledgement>() : nullptr;
+          tsfn_.BlockingCall([name, percent, acknowledgement](Napi::Env env, Napi::Function js_cb) {
+            std::optional<AcknowledgeProgressOnExit> acknowledge;
+            if (acknowledgement != nullptr) acknowledge.emplace(acknowledgement);
             js_cb.Call({Napi::String::New(env, name), Napi::Number::New(env, static_cast<double>(percent))});
           });
+          if (acknowledgement != nullptr) {
+            std::unique_lock<std::mutex> lock(acknowledgement->mutex);
+            if (!acknowledgement->condition.wait_for(lock, std::chrono::seconds(10),
+                                                     [&]() { return acknowledgement->completed; })) {
+              throw std::runtime_error("Timed out waiting for EP test progress callback");
+            }
+          }
           return true;  // continue
         };
       }
+      // The internal test hook uses an unknown EP name so the native call performs no download after the
+      // acknowledged callback disposes the JavaScript manager.
+      if (emit_test_progress_) progress_cb("FoundryLocalTestExecutionProvider", 50.0F);
       impl_->DownloadAndRegisterEps(ep_names_, std::move(progress_cb));
     } catch (const foundry_local::Error& e) {
       err_code_ = static_cast<int>(e.Code());
@@ -410,6 +450,7 @@ class EpDownloadWorker : public Napi::AsyncWorker {
   std::string err_msg_;
   int err_code_ = 0;
   bool tagged_ = false;
+  bool emit_test_progress_ = false;
 };
 
 }  // namespace
@@ -459,8 +500,11 @@ Napi::Value Manager::DownloadAndRegisterEps(const Napi::CallbackInfo& info) {
                                          /*initial_thread_count=*/1);
   }
 
+  // Internal-only deterministic lifetime hook; the public TypeScript manager never supplies this argument.
+  bool emit_test_progress = info.Length() >= 3 && info[2].IsBoolean() && info[2].As<Napi::Boolean>().Value();
+
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
-  auto* w = new EpDownloadWorker(env, impl_, std::move(ep_names), std::move(owner), std::move(tsfn));
+  auto* w = new EpDownloadWorker(env, impl_, std::move(ep_names), std::move(owner), std::move(tsfn), emit_test_progress);
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;

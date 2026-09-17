@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { unwrapNativeCatalog } from "../src/catalog.js";
 import { isFoundryLocalError } from "../src/detail/errors.js";
+import { getAddon } from "../src/detail/native.js";
 import { FoundryLocalManager } from "../src/foundryLocalManager.js";
 import { Item } from "../src/items.js";
 import { Model, unwrapNativeModel } from "../src/model.js";
@@ -178,23 +179,24 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     });
   });
 
-  it("keeps EP registration alive when a progress callback disposes the manager", async (context) => {
-    const manager = freshManager("dispose-during-ep-download");
-    const registeredEp = manager.discoverEps().find((ep) => ep.isRegistered);
-    if (registeredEp === undefined) {
-      manager.dispose();
-      return context.skip("No registered discoverable EP is available on this host");
-    }
-
+  it("keeps EP registration alive when a progress callback disposes the manager", async () => {
+    const manager = new (getAddon().Manager)({ appName: "dispose-during-ep-download" });
     let progressCalled = false;
     await expect(
-      manager.downloadAndRegisterEps([registeredEp.name], () => {
-        progressCalled = true;
-        manager.dispose();
-      }),
-    ).resolves.toMatchObject({ success: true });
+      manager.downloadAndRegisterEps(
+        ["FoundryLocalTestExecutionProvider"],
+        () => {
+          progressCalled = true;
+          manager.dispose();
+        },
+        true,
+      ),
+    ).resolves.toBeUndefined();
     expect(progressCalled).toBe(true);
-    expect(manager.disposed).toBe(true);
+    expect(manager.isDisposed()).toBe(true);
+
+    const next = new (getAddon().Manager)({ appName: "after-dispose-during-ep-download" });
+    next.dispose();
   });
 
   it("reading urls after dispose() returns the cleared cache (no native call)", () => {

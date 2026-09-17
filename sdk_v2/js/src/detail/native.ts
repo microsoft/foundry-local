@@ -29,7 +29,12 @@ export interface NativeManager {
   startWebService(): void;
   stopWebService(): void;
   discoverEps(): Array<{ name: string; isRegistered: boolean }>;
-  downloadAndRegisterEps(names?: string[], onProgress?: (epName: string, percent: number) => void): Promise<void>;
+  downloadAndRegisterEps(
+    names?: string[],
+    onProgress?: (epName: string, percent: number) => void,
+    /** @internal Emit acknowledged progress without requiring an installed EP. */
+    emitTestProgress?: boolean,
+  ): Promise<void>;
   isEpDownloadInProgress(): boolean;
   shutdown(): void;
   isShutdownRequested(): boolean;
