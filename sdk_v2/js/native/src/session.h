@@ -30,10 +30,23 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <deque>
+#include <functional>
 #include <memory>
-#include <mutex>
 
 namespace foundry_local_node {
+
+class SessionScheduler {
+ public:
+  void Enqueue(std::function<void()> start);
+  void Complete();
+
+ private:
+  void StartNext();
+
+  std::deque<std::function<void()>> pending_;
+  bool running_ = false;
+};
 
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
@@ -56,7 +69,7 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   std::shared_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
-  std::shared_ptr<std::mutex> request_gate_ = std::make_shared<std::mutex>();
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -88,7 +101,6 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
-  std::shared_ptr<std::mutex> request_gate_ = std::make_shared<std::mutex>();
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -118,7 +130,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   std::shared_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
-  std::shared_ptr<std::mutex> request_gate_ = std::make_shared<std::mutex>();
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 }  // namespace foundry_local_node

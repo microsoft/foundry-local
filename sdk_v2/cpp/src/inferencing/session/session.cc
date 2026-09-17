@@ -170,14 +170,16 @@ void Session::ProcessRequest(const Request& request, Response& response) {
 
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
-    // If Cancel() already ran (shutdown began before this request was admitted), stamp it now so the
-    // generation loop exits at its first poll instead of running an uncanceled turn.
-    if (session_canceled_) {
-      request.Cancel(Request::CancellationReason::SessionShutdown);
+    const bool began = request.TryBegin();
+
+    if (!began && !request.IsCancellationRequested()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request is already being processed");
     }
 
-    if (!request.TryBegin() && !request.IsCancellationRequested()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request is already being processed");
+    // Stamp only an invocation that successfully claimed the request. This preserves an existing caller cancellation
+    // while ensuring a completed reusable request admitted after shutdown cannot enter the backend.
+    if (began && session_canceled_) {
+      request.Cancel(Request::CancellationReason::SessionShutdown);
     }
 
     active_requests_.insert(&request);

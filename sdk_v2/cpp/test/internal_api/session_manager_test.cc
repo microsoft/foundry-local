@@ -436,11 +436,16 @@ class CompletingSession : public Session {
       : Session(model, logger, telemetry) {}
 
   SessionType Type() const override { return SessionType::kChat; }
+  size_t ProcessCount() const { return process_count_; }
 
  protected:
   void ProcessRequestImpl(const Request& /*request*/, Response& response) override {
+    ++process_count_;
     response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
   }
+
+ private:
+  size_t process_count_ = 0;
 };
 
 flErrorCode ProcessAndGetCode(Session& session, const Request& request) {
@@ -559,6 +564,25 @@ TEST(SessionRequestLifecycleTest, PublishedCompletionMakesLateCancellationNoOp) 
   EXPECT_TRUE(request.IsCompleted());
   EXPECT_FALSE(request.Cancel());
   EXPECT_FALSE(request.IsCancellationRequested());
+}
+
+TEST(SessionRequestLifecycleTest, ReusedRequestAfterSessionCancelNeverReachesBackend) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  Response response;
+
+  session.ProcessRequest(request, response);
+  ASSERT_EQ(session.ProcessCount(), 1u);
+  ASSERT_TRUE(request.IsCompleted());
+
+  session.Cancel();
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::SessionShutdown);
+  EXPECT_EQ(session.ProcessCount(), 1u);
 }
 
 TEST(SessionRequestLifecycleTest, CallbackExceptionSurfacesOriginalCause) {

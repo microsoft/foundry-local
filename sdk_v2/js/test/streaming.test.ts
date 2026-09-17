@@ -47,6 +47,7 @@ function countUkTokens(text: string): number {
 // Used by the multi-turn streaming test: a context-dependent follow-up
 // ("What is the capital of each?") should mention the UK capitals.
 const UK_CAPITAL_TOKENS = ["london", "edinburgh", "cardiff", "belfast"] as const;
+const PRIMARY_COLOR_TOKENS = ["red", "blue", "yellow"] as const;
 
 function countUkCapitalTokens(text: string): number {
   const lower = text.toLowerCase();
@@ -287,8 +288,46 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
 
       expect(firstItems.length).toBeGreaterThan(0);
       expect(secondItems.length).toBeGreaterThan(0);
+      expect(countUkTokens(firstItems.map(extractText).join(""))).toBeGreaterThanOrEqual(2);
+      expect(
+        PRIMARY_COLOR_TOKENS.filter((token) => secondItems.map(extractText).join("").toLowerCase().includes(token))
+          .length,
+      ).toBeGreaterThanOrEqual(2);
       expect(firstResponse.finishReason).not.toBe("none");
       expect(secondResponse.finishReason).not.toBe("none");
+    },
+    4 * 60_000,
+  );
+
+  it(
+    "finishes accepted queued work after dispose and rejects future work",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const active = session.processStreamingRequest(buildPrompt());
+      const queued = session.processRequest(
+        new Request()
+          .addItem(Item.userMessage("Reply with the single word 'ok'."))
+          .setOptions({ search: { maxOutputTokens: 4, temperature: 0 } }),
+      );
+
+      session.dispose();
+      expect(session.disposed).toBe(true);
+
+      await expect(
+        session.processRequest(new Request().addItem(Item.userMessage("This must not be accepted."))),
+      ).rejects.toMatchObject({
+        name: "FoundryLocalError",
+        code: FlErrorCode.InvalidUsage,
+      });
+
+      const activeItems: Item[] = [];
+      for await (const item of active) activeItems.push(item);
+      const [activeResponse, queuedResponse] = await Promise.all([active.response, queued]);
+
+      expect(activeItems.length).toBeGreaterThan(0);
+      expect(activeResponse.finishReason).not.toBe("none");
+      expect(queuedResponse.finishReason).not.toBe("none");
+      expect(queuedResponse.output.map(extractText).join("").toLowerCase()).toContain("ok");
     },
     4 * 60_000,
   );
