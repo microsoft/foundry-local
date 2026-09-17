@@ -272,6 +272,7 @@ PosixOsInfo GetPosixOsInfo() {
   return out;
 }
 
+#if defined(__linux__) || defined(__ANDROID__)
 std::string ReadBoundedFile(const char* path) {
   constexpr size_t kMaxProbeBytes = 16 * 1024;
   std::ifstream input(path, std::ios::binary);
@@ -288,6 +289,7 @@ bool FileExists(const char* path) {
   std::ifstream input(path);
   return input.good();
 }
+#endif
 
 TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
   TelemetryInternal::HostEnvironmentEvidence evidence;
