@@ -82,7 +82,6 @@ class EmbeddingsHandler : public HttpRequestHandler {
     // 4. Create session and process each input
     try {
       auto session = CreateSessionWithTelemetry<EmbeddingsSession>(*model, *loaded, ctx_, session_ctx);
-      session->SetInvocationContext(session_ctx);
       SessionRegistration reg(ctx_.session_manager, *session);
 
       Request session_request;

@@ -99,6 +99,7 @@ std::unique_ptr<SessionType> CreateSessionWithTelemetry(const Model& model, GenA
   tracker.SetModelId(model.Id());
   try {
     auto session = std::make_unique<SessionType>(model, loaded, ctx.logger, ctx.telemetry);
+    session->SetInvocationContext(context);
     tracker.SetStatus(ActionStatus::kSuccess);
     return session;
   } catch (const std::exception& ex) {

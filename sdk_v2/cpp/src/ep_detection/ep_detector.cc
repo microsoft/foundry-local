@@ -24,7 +24,10 @@ EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
       bootstrappers_(std::move(bootstrappers)),
       logger_(logger),
       telemetry_(telemetry) {
-  // Name storage and element addresses remain stable for the detector's lifetime.
+  // Populate both cache vectors exact-sized from bootstrappers_. After this point
+  // size and element addresses (including the EpInfo::name string storage backing
+  // flEpInfo::name) are immutable for the detector's lifetime — only is_registered
+  // is ever updated, in place, under cache_mutex_.
   cached_eps_.reserve(bootstrappers_.size());
   cached_eps_c_.reserve(bootstrappers_.size());
 
@@ -107,6 +110,12 @@ std::map<std::string, std::vector<std::string>> EpDetector::GetAvailableDevicesT
 }
 
 const std::vector<EpInfo>& EpDetector::GetDiscoverableEps() const {
+  // Take the cache lock for strict correctness of the is_registered field reads.
+  // Vector size and element addresses are immutable after construction; only
+  // is_registered fields can be mutated (by DownloadAndRegisterEps under the same
+  // mutex). The lock is released when this function returns, so the snapshot may
+  // be stale by the time the caller reads individual fields — that is documented
+  // and acceptable.
   std::lock_guard<std::mutex> lock(cache_mutex_);
   return cached_eps_;
 }

@@ -344,10 +344,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
     if (!session) {
       session = CreateSessionWithTelemetry<ChatSession>(*model, *loaded, ctx_, session_context);
+    } else {
+      // A cached session must take this route's context, not the previous turn's.
+      session->SetInvocationContext(session_context);
     }
-
-    // A cached session must take this route's context, not the previous turn's.
-    session->SetInvocationContext(session_context);
 
     // Sessions can be reused via previous_response_id; clear any stale tool defs from the prior
     // turn before applying this request's tools so the request stays self-contained.

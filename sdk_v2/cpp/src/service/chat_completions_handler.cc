@@ -185,8 +185,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
   // 6. Run inference via ChatSession
   try {
     auto session = CreateSessionWithTelemetry<ChatSession>(*model, *loaded, ctx_, session_ctx);
-    ChatSession& session_ref = *session;
-    session_ref.SetInvocationContext(session_ctx);
 
     if (stream) {
       // The route action is recorded by the streaming thread when the stream
@@ -194,8 +192,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
       return HandleStreaming(std::move(*session), std::move(session_request), include_usage_in_stream,
                              std::move(tracker));
     } else {
-      SessionRegistration reg(ctx_.session_manager, session_ref);
-      auto response = HandleNonStreaming(session_ref, session_request);
+      SessionRegistration reg(ctx_.session_manager, *session);
+      auto response = HandleNonStreaming(*session, session_request);
       tracker->SetStatus(ResponseToActionStatus(response, session_request.canceled.load(std::memory_order_relaxed)));
       return response;
     }
