@@ -383,11 +383,14 @@
 								<div class="flex items-center justify-between">
 									<div>
 										<div class="text-muted-foreground text-xs font-medium">Model ID for SDK</div>
-										<div class="font-mono text-sm font-medium">{genericModelName}</div>
+										<div id={`model-id-${genericModelName}`} class="font-mono text-sm font-medium">
+											{genericModelName}
+										</div>
 									</div>
 									<Button
 										variant="outline"
 										size="sm"
+										aria-labelledby={`model-id-${genericModelName}`}
 										onclick={(e) => {
 											e.stopPropagation();
 											onCopyModelId(genericModelName);
@@ -427,7 +430,9 @@
 								<div class="bg-card hover:border-primary/50 rounded-lg border p-4 transition-all">
 									<div class="flex items-start justify-between">
 										<div class="flex-1">
-											<div class="font-mono text-sm font-medium">{variant.name}</div>
+											<div id={`model-id-${variant.name}`} class="font-mono text-sm font-medium">
+												{variant.name}
+											</div>
 											<div class="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-xs">
 												<span>Device:</span>
 												{#each variant.deviceSupport as device}
@@ -457,6 +462,7 @@
 										<Button
 											variant="outline"
 											size="sm"
+											aria-labelledby={`model-id-${variant.name}`}
 											onclick={(e) => {
 												e.stopPropagation();
 												onCopyModelId(variant.name);
@@ -497,6 +503,7 @@
 							<Button
 								variant="outline"
 								size="sm"
+								aria-labelledby={`model-id-${genericModelName}`}
 								onclick={(e) => {
 									e.stopPropagation();
 									onCopyModelId(genericModelName);
@@ -514,7 +521,9 @@
 						</div>
 
 						<div class="bg-muted/50 rounded-md p-3">
-							<div class="mb-2 font-mono text-sm font-medium">{genericModelName}</div>
+							<div id={`model-id-${genericModelName}`} class="mb-2 font-mono text-sm font-medium">
+								{genericModelName}
+							</div>
 							<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 								<code class="text-muted-foreground text-xs break-all sm:flex-1">
 									foundry run {genericModelName}
@@ -556,7 +565,9 @@
 							<div class="bg-card hover:border-primary/50 rounded-lg border p-4 transition-all">
 								<div class="mb-3 flex items-start justify-between">
 									<div class="flex-1">
-										<div class="font-mono text-sm font-medium">{variant.name}</div>
+											<div id={`model-id-${variant.name}`} class="font-mono text-sm font-medium">
+												{variant.name}
+											</div>
 										<div
 											class="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-xs"
 										>
@@ -588,6 +599,7 @@
 									<Button
 										variant="outline"
 										size="sm"
+											aria-labelledby={`model-id-${variant.name}`}
 										onclick={(e) => {
 											e.stopPropagation();
 											onCopyModelId(variant.name);
