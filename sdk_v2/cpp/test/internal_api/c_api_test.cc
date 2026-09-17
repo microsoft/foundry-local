@@ -341,7 +341,8 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   const auto app_data_path = root.path() / "appdata";
   const auto model_cache_path = root.path() / "cache" / "models";
   std::filesystem::create_directories(model_path);
-  std::ofstream(model_path / "genai_config.json") << R"({"model":{"type":"phi3"}})";
+  std::ofstream(model_path / "genai_config.json")
+      << R"({"model":{"type":"phi3","context_length":4096}})";
 
   const flApi* api = GetApi();
   const flConfigurationApi* config_api = api->GetConfigurationApi();
@@ -376,6 +377,7 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   ASSERT_FL_OK(api, model_api->Info_SetStringProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_TASK_STR,
                                                       "chat-completion"));
   ASSERT_FL_OK(api, model_api->Info_SetIntProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 17));
+  ASSERT_FL_OK(api, model_api->Info_SetIntProperty(metadata, FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 17));
 
   flModel* registered = nullptr;
   ASSERT_FL_OK(api, catalog_api->RegisterModel(catalog, model_path.string().c_str(), "c-api-model:3", metadata,
@@ -390,6 +392,14 @@ TEST(CApiTest, LocalCatalogRegistersListsAndUnregistersWithoutOwningAssets) {
   EXPECT_EQ(model_api->Info_GetVersion(registered_info), 3);
   EXPECT_STREQ(model_api->Info_GetTask(registered_info), "chat-completion");
   EXPECT_EQ(model_api->Info_GetIntProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, -1), 17);
+  EXPECT_EQ(model_api->Info_GetIntProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, -1), 4096);
+  EXPECT_STREQ(model_api->Info_GetStringProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR),
+               "c-api-model");
+  EXPECT_STREQ(model_api->Info_GetStringProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR), "local");
+  EXPECT_STREQ(model_api->Info_GetStringProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR),
+               "text");
+  EXPECT_STREQ(model_api->Info_GetStringProperty(registered_info, FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR),
+               "text");
 
   ModelListGuard models_guard(nullptr, [api](flModelList* value) { api->ModelList_Release(value); });
   flModelList* models = nullptr;

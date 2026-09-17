@@ -36,7 +36,8 @@ struct EPUtils {
       return ExecutionProvider::kCUDA;
     } else if (ep == "webgpu" ||
                ep == "WebGPU" ||
-               ep == "WebGPUExecutionProvider") {
+               ep == "WebGPUExecutionProvider" ||
+               ep == "WebGpuExecutionProvider") {
       return ExecutionProvider::kWebGPU;
     } else if (ep == "openvino" ||
                ep == "OpenVINO" ||
@@ -50,7 +51,8 @@ struct EPUtils {
                ep == "VitisAI" ||
                ep == "VitisAIExecutionProvider") {
       return ExecutionProvider::kVitisAI;
-    } else if (ep == "RyzenAI") {
+    } else if (ep == "RyzenAI" ||
+               ep == "RyzenAIExecutionProvider") {
       return ExecutionProvider::kRyzenAI;
     } else if (ep == "qnn" ||
                ep == "QNN" ||

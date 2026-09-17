@@ -58,15 +58,17 @@ class LocalModelCatalogTest : public ::testing::Test {
   LocalModelCatalog catalog_;
 };
 
-TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModelInfoCache) {
+TEST_F(LocalModelCatalogTest, RegisterResolvesMetadataAndWritesLocalModelInfoCache) {
   auto info = MakeMetadata();
   info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
   info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
   info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 321);
+  info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
   info.SetPropertyStr("custom_metadata", "preserved");
   info.SetPropertyInt("custom_count", 42);
   info.prompt_templates.Add("user", "<|user|>{Content}<|end|>");
   info.model_settings.Add("temperature", "0.5");
+  info.detected_region = "caller-region";
   info.SetPropertyStr("model_path", "ignored");
   info.SetPropertyStr("alias", "ignored");
   info.SetPropertyStr("version", "ignored");
@@ -83,11 +85,14 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   EXPECT_EQ(model->Info().alias, "my-model");
   EXPECT_EQ(model->Info().version, 7);
   EXPECT_EQ(model->Info().task, "chat-completion");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
+            "my-model-generic-cpu");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
             "text,image");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
             "text");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, int64_t{-1}), 321);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 4096);
   EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyStr("alias"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyStr("version"), nullptr);
@@ -95,6 +100,9 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   EXPECT_EQ(model->Info().GetPropertyInt("alias"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyInt("_local_registration_id"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyInt("version"), nullptr);
+  EXPECT_TRUE(model->Info().prompt_templates.empty());
+  EXPECT_TRUE(model->Info().model_settings.empty());
+  EXPECT_TRUE(model->Info().detected_region.empty());
   EXPECT_TRUE(model->IsCached());
   EXPECT_FALSE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
 
@@ -124,8 +132,125 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   ASSERT_NE(restored_model, nullptr);
   EXPECT_EQ(restored_model->Info().GetPropertyWithDefault("custom_metadata", std::string{}), "preserved");
   EXPECT_EQ(restored_model->Info().GetPropertyWithDefault("custom_count", int64_t{-1}), 42);
-  EXPECT_STREQ(restored_model->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
-  EXPECT_STREQ(restored_model->Info().model_settings.Find("temperature"), "0.5");
+  EXPECT_EQ(restored_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}),
+            4096);
+  EXPECT_TRUE(restored_model->Info().prompt_templates.empty());
+  EXPECT_TRUE(restored_model->Info().model_settings.empty());
+  EXPECT_TRUE(restored_model->Info().detected_region.empty());
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesDefaultsAndPreservesApplicationOverrides) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"type":"phi3","context_length":8192,)"
+         R"("prompt_templates":{"user":"<|user|>{Content}<|end|>"},)"
+         R"("decoder":{"session_options":{"provider_options":[{"cuda":{}}]}}}})";
+
+  auto* derived = catalog_.RegisterModel(model_dir_.string(), "derived-model:1", MakeMetadata());
+
+  ASSERT_NE(derived, nullptr);
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
+            "derived-model");
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, std::string{}), "local");
+  EXPECT_EQ(derived->Info().execution_provider, "CUDAExecutionProvider");
+  EXPECT_EQ(derived->Info().device_type, DeviceType::kGPU);
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 8192);
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_STREQ(derived->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
+
+  auto restored = MakeCatalog();
+  auto* restored_derived = restored.GetModelVariant("derived-model:1");
+  ASSERT_NE(restored_derived, nullptr);
+  EXPECT_STREQ(restored_derived->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
+
+  auto overrides = MakeMetadata();
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, "Custom display name");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "Contoso");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "CPUExecutionProvider");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "NPU");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "custom-input");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "custom-output");
+  auto* overridden = catalog_.RegisterModel(model_dir_.string(), "overridden-model:1", overrides);
+
+  ASSERT_NE(overridden, nullptr);
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
+            "Custom display name");
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, std::string{}),
+            "Contoso");
+  EXPECT_EQ(overridden->Info().execution_provider, "CPUExecutionProvider");
+  EXPECT_EQ(overridden->Info().device_type, DeviceType::kNPU);
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "custom-input");
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "custom-output");
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesQnnDeviceType) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{"qnn":{}}]}}}})";
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "qnn-model:1", MakeMetadata());
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "QNNExecutionProvider");
+  EXPECT_EQ(model->Info().device_type, DeviceType::kNPU);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesEmbeddingModalities) {
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "embedding-model:1", MakeMetadata("embeddings"));
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "embeddings");
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationOverwritesSdkOwnedMetadata) {
+  auto metadata = MakeMetadata();
+  metadata.model_id = "caller-id:99";
+  metadata.name = "caller-name";
+  metadata.version = 99;
+  metadata.alias = "caller-alias";
+  metadata.uri = "caller://uri";
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "CallerProvider");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "CallerEntity");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "CallerType");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, "2000-01-01T00:00:00Z");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, "caller-context");
+  metadata.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, 1);
+  metadata.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "sdk-owned-generic-cpu:4", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().model_id, "sdk-owned-generic-cpu:4");
+  EXPECT_EQ(model->Info().name, "sdk-owned-generic-cpu");
+  EXPECT_EQ(model->Info().version, 4);
+  EXPECT_EQ(model->Info().alias, "sdk-owned");
+  EXPECT_TRUE(model->Info().uri.empty());
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, std::string{}),
+            "LocalRegistration");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, std::string{}), "Model");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, std::string{}), "ONNX");
+  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
+  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 4096);
+  EXPECT_EQ(model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDoesNotUseCallerContextLengthWhenConfigOmitsIt) {
+  std::ofstream(model_dir_ / "genai_config.json") << R"({"model":{"type":"phi3"}})";
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "no-context:1", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), nullptr);
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationRequiresExistingDirectoryAndParseableConfig) {

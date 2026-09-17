@@ -808,7 +808,10 @@ class ICatalog {
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
 
-  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// Register existing local model assets. `model_id` must use `<name>:<version>` and `metadata.Task()` is required.
+  /// Application-owned properties are preserved and may receive authoritative defaults. Identity, alias, type,
+  /// timestamps, context length, and prompt templates are SDK-derived; caller location and internal metadata are
+  /// ignored.
   /// The catalog does not take ownership of `model_path` and never deletes its contents.
   virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
                                                 const ModelInfo& metadata) = 0;
