@@ -335,11 +335,11 @@ namespace {
 // progress callback. Mirrors the pattern in model.cc's DownloadWorker.
 class EpDownloadWorker : public Napi::AsyncWorker {
  public:
-  EpDownloadWorker(Napi::Env env, foundry_local::Manager* impl, std::vector<std::string> ep_names,
+  EpDownloadWorker(Napi::Env env, std::shared_ptr<foundry_local::Manager> impl, std::vector<std::string> ep_names,
                    Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
-        impl_(impl),
+        impl_(std::move(impl)),
         ep_names_(std::move(ep_names)),
         owner_(std::move(owner)),
         tsfn_(std::move(tsfn)) {}
@@ -403,7 +403,7 @@ class EpDownloadWorker : public Napi::AsyncWorker {
   }
 
   Napi::Promise::Deferred deferred_;
-  foundry_local::Manager* impl_;
+  std::shared_ptr<foundry_local::Manager> impl_;
   std::vector<std::string> ep_names_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
@@ -460,7 +460,7 @@ Napi::Value Manager::DownloadAndRegisterEps(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
-  auto* w = new EpDownloadWorker(env, impl_.get(), std::move(ep_names), std::move(owner), std::move(tsfn));
+  auto* w = new EpDownloadWorker(env, impl_, std::move(ep_names), std::move(owner), std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;

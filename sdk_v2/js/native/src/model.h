@@ -62,8 +62,9 @@ class Model : public Napi::ObjectWrap<Model> {
   // is in an invalid state.
   foundry_local::IModel* native_impl(Napi::Env env) const;
 
-  // Internal accessor used by Session / ChatSession ctors so they can clone
-  // the parent Manager ObjectReference and pin it for the session lifetime.
+  // Internal accessors used by session constructors to retain native ownership and observe explicit disposal.
+  std::shared_ptr<foundry_local::Manager> LockManager(Napi::Env env) const;
+  const std::shared_ptr<std::atomic_bool>& disposed_state() const noexcept { return disposed_; }
   const Napi::ObjectReference& manager() const noexcept { return manager_; }
 
  private:
@@ -80,8 +81,6 @@ class Model : public Napi::ObjectWrap<Model> {
   Napi::Value Unload(const Napi::CallbackInfo& info);
   Napi::Value Download(const Napi::CallbackInfo& info);
   Napi::Value RemoveFromCache(const Napi::CallbackInfo& info);
-
-  std::shared_ptr<foundry_local::Manager> LockManager(Napi::Env env) const;
 
   foundry_local::IModel* impl_ = nullptr;
   std::shared_ptr<void> keepalive_;

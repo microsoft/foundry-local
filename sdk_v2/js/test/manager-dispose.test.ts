@@ -13,11 +13,15 @@ import { describe, expect, it } from "vitest";
 import { unwrapNativeCatalog } from "../src/catalog.js";
 import { isFoundryLocalError } from "../src/detail/errors.js";
 import { FoundryLocalManager } from "../src/foundryLocalManager.js";
+import { Item } from "../src/items.js";
+import { Model, unwrapNativeModel } from "../src/model.js";
 import { MutableModelInfo, unwrapMutableModelInfo } from "../src/modelInfo.js";
-import { unwrapNativeModel } from "../src/model.js";
+import { Request } from "../src/request.js";
+import { ChatSession } from "../src/session.js";
 import { CatalogType } from "../src/types.js";
 
 import { haveNativePrereqs, nativePrereqsDiagnostic } from "./_fixtures/cacheOnlyManager.js";
+import { haveTestModelCache, setupRealModelManager, teardownRealModelManager } from "./_fixtures/realModelManager.js";
 
 const describeIfBuilt = haveNativePrereqs ? describe : describe.skip;
 
@@ -103,6 +107,7 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
       const model = first
         .getCatalog(CatalogType.Local)
         .registerModelSync(modelPath, "dispose-during-model-operation:1", metadata);
+      if (!(model instanceof Model)) throw new Error("Expected registration to return a Model");
 
       await expect(unwrapNativeModel(model).unload(() => first.dispose())).resolves.toBeUndefined();
 
@@ -173,6 +178,25 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     });
   });
 
+  it("keeps EP registration alive when a progress callback disposes the manager", async (context) => {
+    const manager = freshManager("dispose-during-ep-download");
+    const registeredEp = manager.discoverEps().find((ep) => ep.isRegistered);
+    if (registeredEp === undefined) {
+      manager.dispose();
+      return context.skip("No registered discoverable EP is available on this host");
+    }
+
+    let progressCalled = false;
+    await expect(
+      manager.downloadAndRegisterEps([registeredEp.name], () => {
+        progressCalled = true;
+        manager.dispose();
+      }),
+    ).resolves.toMatchObject({ success: true });
+    expect(progressCalled).toBe(true);
+    expect(manager.disposed).toBe(true);
+  });
+
   it("reading urls after dispose() returns the cleared cache (no native call)", () => {
     const mgr = freshManager("post-dispose-urls");
     mgr.dispose();
@@ -212,4 +236,45 @@ describeIfBuilt("FoundryLocalManager.dispose", () => {
     }
     expect(captured?.disposed).toBe(true);
   });
+});
+
+describe.skipIf(!haveTestModelCache)("FoundryLocalManager.dispose with active sessions", () => {
+  it(
+    "retained session calls fail safely after manager disposal",
+    async () => {
+      const fixture = await setupRealModelManager({ appName: "dispose-retained-session" });
+      const session = new ChatSession(fixture.model);
+      try {
+        fixture.manager.dispose();
+        expect(() => session.turnCount).toThrowError(
+          expect.objectContaining({ name: "FoundryLocalError", code: 4, message: expect.stringMatching(/disposed/i) }),
+        );
+      } finally {
+        session.dispose();
+        teardownRealModelManager(fixture);
+      }
+    },
+    5 * 60_000,
+  );
+
+  it(
+    "keeps an admitted request alive when the manager is disposed",
+    async () => {
+      const fixture = await setupRealModelManager({ appName: "dispose-during-session-request" });
+      const session = new ChatSession(fixture.model);
+      try {
+        const request = new Request()
+          .addItem(Item.userMessage("Reply with ok."))
+          .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+        const response = session.processRequest(request);
+        fixture.manager.dispose();
+
+        await expect(response).resolves.toMatchObject({ output: expect.any(Array) });
+      } finally {
+        session.dispose();
+        teardownRealModelManager(fixture);
+      }
+    },
+    5 * 60_000,
+  );
 });
