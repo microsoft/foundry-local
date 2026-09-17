@@ -52,7 +52,6 @@ std::string GenerateGuidV4() {
   uint64_t hi;
   uint64_t lo;
   try {
-    // Match ORT: source all 128 bits directly from random_device instead of expanding a smaller PRNG seed.
     std::random_device rd;
     hi = (static_cast<uint64_t>(rd()) << 32) | rd();
     lo = (static_cast<uint64_t>(rd()) << 32) | rd();
