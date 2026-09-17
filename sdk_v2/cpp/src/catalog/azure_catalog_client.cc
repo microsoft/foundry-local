@@ -166,8 +166,8 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(const IEpDetector& ep
     if (latest_only) {
       filters.push_back(MakeFilter("labels", {"latest"}));
     }
-    filters.push_back(MakeFilter("variantInformation/variantMetadata/device", {ToLower(device)}));
-    filters.push_back(MakeFilter("variantInformation/variantMetadata/executionProvider", eps));
+    filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}));
+    filters.push_back(MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps));
     filter_sets.push_back(std::move(filters));
   }
   return filter_sets;

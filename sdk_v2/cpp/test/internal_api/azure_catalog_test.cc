@@ -98,9 +98,9 @@ TEST(AzureCatalogClientTest, RequestUsesAssetGalleryContract) {
   EXPECT_EQ(filters[3]["values"], nlohmann::json({"true"}));
   EXPECT_EQ(filters[4]["field"], "labels");
   EXPECT_EQ(filters[4]["values"], nlohmann::json({"latest"}));
-  EXPECT_EQ(filters[5]["field"], "variantInformation/variantMetadata/device");
+  EXPECT_EQ(filters[5]["field"], "properties/variantInfo/variantMetadata/device");
   EXPECT_EQ(filters[5]["values"], nlohmann::json({"cpu"}));
-  EXPECT_EQ(filters[6]["field"], "variantInformation/variantMetadata/executionProvider");
+  EXPECT_EQ(filters[6]["field"], "properties/variantInfo/variantMetadata/executionProvider");
 }
 
 TEST(AzureCatalogClientTest, OverrideReplacesDeploymentOptionFilter) {

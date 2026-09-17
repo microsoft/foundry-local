@@ -382,12 +382,10 @@ endfunction()
 # --------------------------------------------------------------------------
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
-# CI overrides via -DFOUNDRY_LOCAL_VERSION_STRING=<full-version-string> so the
-# binary's FoundryLocalGetVersionString() matches the .nupkg version (which
-# typically includes a dev/timestamp suffix). Defaults to PROJECT_VERSION for
-# local developer builds.
+# Keep the runtime catalog-compatibility version aligned with the current SDK
+# version, regardless of a stale CMake cache or CI package-version override.
 set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
-    CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
+    CACHE STRING "Version string returned by FoundryLocalGetVersionString()" FORCE)
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)
