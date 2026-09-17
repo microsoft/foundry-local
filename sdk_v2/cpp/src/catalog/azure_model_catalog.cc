@@ -47,18 +47,14 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      ModelFactory model_factory,
                                      const IEpDetector& ep_detector,
                                      ILogger& logger,
-                                     bool cache_only,
-                                     std::string catalog_region,
-                                     bool disable_region_fallback)
+                                     bool cache_only)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
       model_factory_(std::move(model_factory)),
       ep_detector_(ep_detector),
       logger_(logger),
-      cache_only_(cache_only),
-      catalog_region_(std::move(catalog_region)),
-      disable_region_fallback_(disable_region_fallback) {
+      cache_only_(cache_only) {
   if (catalog_urls_.empty()) {
     catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
   }
@@ -72,7 +68,7 @@ AzureModelCatalog::~AzureModelCatalog() = default;
 
 std::unique_ptr<ICatalogClient> AzureModelCatalog::CreateCatalogClient(const std::string& url,
                                                                        const std::string& filter) const {
-  return MakeCatalogClient(url, filter, ep_detector_, logger_, cache_dir_, catalog_region_, disable_region_fallback_);
+  return MakeCatalogClient(url, filter, ep_detector_, logger_, cache_dir_);
 }
 
 AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapshot(
