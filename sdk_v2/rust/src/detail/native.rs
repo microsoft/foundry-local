@@ -62,7 +62,11 @@ impl NativeModel {
     pub(crate) fn get_int_property(&self, key: &str, default_value: i64) -> Result<i64> {
         let key = to_cstring(key)?;
         let info = self.info_ptr()?;
-        Ok(unsafe { (self.api.model_api().Info_GetIntProperty)(info, key.as_ptr(), default_value) })
+        Ok(
+            unsafe {
+                (self.api.model_api().Info_GetIntProperty)(info, key.as_ptr(), default_value)
+            },
+        )
     }
 
     pub(crate) fn is_cached(&self) -> Result<bool> {

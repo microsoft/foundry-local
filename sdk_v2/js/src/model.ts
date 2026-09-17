@@ -61,7 +61,7 @@ function normalizeModelSettings(raw: NativeModelInfo["modelSettings"]): ModelSet
 function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInfo {
   const deviceType = toDeviceType(raw.deviceType);
   const executionProvider = raw.executionProvider ?? "";
-  return {
+  const snapshot = {
     ...raw,
     deviceType,
     providerType: raw.providerType ?? raw.modelProvider ?? "",
@@ -69,17 +69,6 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
     promptTemplate: normalizePromptTemplate(raw.promptTemplate),
     modelSettings: normalizeModelSettings(raw.modelSettings),
     cached: raw.cached ?? native.isCached(),
-    getStringProperty: (key: string) => {
-      validateNativeString(key, "ModelInfo property key");
-      return native.getStringProperty(key);
-    },
-    getIntProperty: (key: string, defaultValue = 0) => {
-      validateNativeString(key, "ModelInfo property key");
-      if (!Number.isSafeInteger(defaultValue)) {
-        throw new TypeError("ModelInfo integer property default must be a safe integer.");
-      }
-      return native.getIntProperty(key, defaultValue);
-    },
     runtime:
       raw.runtime !== undefined
         ? {
@@ -91,6 +80,26 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
             executionProvider,
           },
   };
+  Object.defineProperties(snapshot, {
+    getStringProperty: {
+      enumerable: false,
+      value: (key: string) => {
+        validateNativeString(key, "ModelInfo property key");
+        return native.getStringProperty(key);
+      },
+    },
+    getIntProperty: {
+      enumerable: false,
+      value: (key: string, defaultValue = 0) => {
+        validateNativeString(key, "ModelInfo property key");
+        if (!Number.isSafeInteger(defaultValue)) {
+          throw new TypeError("ModelInfo integer property default must be a safe integer.");
+        }
+        return native.getIntProperty(key, defaultValue);
+      },
+    },
+  });
+  return snapshot as ModelInfo;
 }
 
 function validateNativeString(value: string, argumentName: string): void {

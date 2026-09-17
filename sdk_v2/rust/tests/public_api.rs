@@ -83,16 +83,18 @@ async fn byom_registration_round_trips_and_preserves_assets() {
         .as_nanos();
     let name = format!("rust-byom-{}-{nonce}", process::id());
     let model_id = format!("{name}:7");
-    let create_manager = || FoundryLocalManager::create(
-        FoundryLocalConfig::new(format!("rust-byom-{nonce}"))
-            .app_data_dir(temp.path().join("appdata").to_string_lossy())
-            .model_cache_dir(temp.path().join("cache").join("models").to_string_lossy())
-            .logs_dir(temp.path().join("logs").to_string_lossy())
-            .log_level(LogLevel::Warn)
-            .service_endpoint("http://127.0.0.1:1"),
-    )
-    .expect("create cache-only manager");
-            let manager = create_manager();
+    let create_manager = || {
+        FoundryLocalManager::create(
+            FoundryLocalConfig::new(format!("rust-byom-{nonce}"))
+                .app_data_dir(temp.path().join("appdata").to_string_lossy())
+                .model_cache_dir(temp.path().join("cache").join("models").to_string_lossy())
+                .logs_dir(temp.path().join("logs").to_string_lossy())
+                .log_level(LogLevel::Warn)
+                .service_endpoint("http://127.0.0.1:1"),
+        )
+        .expect("create cache-only manager")
+    };
+    let manager = create_manager();
     let catalog = manager.local_catalog().expect("get local catalog");
     assert_eq!(catalog.catalog_type(), CatalogType::Local);
 
@@ -194,7 +196,10 @@ async fn byom_registration_round_trips_and_preserves_assets() {
         fs::read(&sentinel_path).expect("read sentinel"),
         b"caller-owned asset"
     );
-    assert!(recreated_catalog.get_model_variant(&model_id).await.is_err());
+    assert!(recreated_catalog
+        .get_model_variant(&model_id)
+        .await
+        .is_err());
 
     drop(recreated);
     drop(recreated_catalog);
