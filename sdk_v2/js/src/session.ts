@@ -45,10 +45,9 @@ export interface StreamOptions {
  * once the native call completes — carrying stop reason, usage, and any
  * non-streamed items (e.g. the final aggregated text item).
  *
- * `response` settles after the iterator finishes draining. It rejects with
- * the same error the iterator would throw (including `AbortError` when the
- * stream is cancelled, and `OperationCancelled` when the consumer breaks
- * early without an `AbortSignal`).
+ * `response` settles after the native call completes and all queued item callbacks have run. Breaking iteration early
+ * requests cancellation, but native completion can win that race; in that case `response` resolves normally. Otherwise
+ * it rejects with the cancellation error (`AbortError` for an aborted signal or `OperationCancelled` for an early break).
  */
 export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
@@ -111,12 +110,12 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  * Drive a native streaming session and yield each item to the consumer.
  * Handles backpressure (the JS-side queue grows; the native TSFN backpressure
  * caps producer-side queueing), abort signal wiring, error mapping, and
- * deterministic cleanup on early break.
+ * cleanup on early break.
  *
  * The native call starts eagerly so the returned `response` promise is
  * meaningful even if the caller never iterates (e.g. awaits `.response`
- * directly). The promise settles only after the consumer has fully drained
- * the iterator, mirroring native finalize-on-drain semantics.
+ * directly). The promise settles after the native call and queued item callbacks complete, independently of whether the
+ * consumer drains the JS iterator.
  */
 function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
   const queue: Item[] = [];
@@ -278,8 +277,8 @@ export abstract class Session {
    *
    * Cancellation: pass `{ signal }`; aborting the signal cancels the native
    * request and causes the iterator to throw an `Error` with
-   * `name === "AbortError"`. Breaking out of the `for await` loop also
-   * cancels the underlying request.
+   * `name === "AbortError"`. Breaking out of the `for await` loop requests cancellation of the underlying request. If
+   * native completion wins the race, `response` resolves normally; otherwise it rejects with `OperationCancelled`.
    *
    * Non-cancellation failures throw a `FoundryLocalError`.
    */

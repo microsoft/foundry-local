@@ -22,6 +22,29 @@
 
 namespace fl {
 
+namespace {
+
+[[noreturn]] void ThrowCancellation(const Request& request) {
+  switch (request.GetCancellationReason()) {
+    case Request::CancellationReason::StreamingCallback:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled by streaming callback");
+    case Request::CancellationReason::StreamingCallbackException: {
+      const auto detail = request.CancellationDetail();
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               detail.empty() ? "streaming callback threw an exception"
+                              : fmt::format("streaming callback threw an exception: {}", detail));
+    }
+    case Request::CancellationReason::SessionShutdown:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled because the session is shutting down");
+    case Request::CancellationReason::None:
+    case Request::CancellationReason::Caller:
+    default:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled by caller");
+  }
+}
+
+}  // namespace
+
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
     : catalog_model_(catalog_model),
@@ -150,7 +173,7 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     // If Cancel() already ran (shutdown began before this request was admitted), stamp it now so the
     // generation loop exits at its first poll instead of running an uncanceled turn.
     if (session_canceled_) {
-      request.Cancel();
+      request.Cancel(Request::CancellationReason::SessionShutdown);
     }
 
     if (!request.TryBegin() && !request.IsCancellationRequested()) {
@@ -177,7 +200,7 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   Response staged_response;
   try {
     if (request.IsCancellationRequested()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled");
+      ThrowCancellation(request);
     }
 
     ValidateRequestItems(request);
@@ -185,7 +208,7 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     ProcessRequestImpl(request, staged_response);
 
     if (!request.TryComplete()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled");
+      ThrowCancellation(request);
     }
 
     response = std::move(staged_response);
@@ -199,7 +222,7 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     }
 
     try {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled");
+      ThrowCancellation(request);
     } catch (const std::exception& cancellation) {
       tracker.RecordException(cancellation);
       throw;
@@ -213,7 +236,7 @@ void Session::Cancel() {
   std::lock_guard<std::mutex> lock(*active_requests_mutex_);
   session_canceled_ = true;
   for (const Request* r : active_requests_) {
-    r->Cancel();
+    r->Cancel(Request::CancellationReason::SessionShutdown);
   }
 }
 

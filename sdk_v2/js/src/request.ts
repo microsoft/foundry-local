@@ -75,9 +75,10 @@ export class Request {
 
   /**
    * Cancel a request. Safe to call at any time; cancellation before processing
-   * is remembered and prevents the request from reaching the backend.
+   * is remembered, while cancellation after completion has no effect.
    * Cancellation makes the matching `Session.processRequest()` reject with a
-   * `FoundryLocalError` whose `code === FlErrorCode.OperationCancelled`.
+   * `FoundryLocalError` whose `code === FlErrorCode.OperationCancelled` and
+   * whose message identifies caller-requested cancellation.
    */
   cancel(): void {
     this.#native.cancel();

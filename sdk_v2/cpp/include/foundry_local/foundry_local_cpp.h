@@ -1028,7 +1028,8 @@ class Request {
   /// Options for this request. Overrides session options for the duration of this request.
   Request& SetOptions(const RequestOptions& options);
 
-  /// Cancel the current request. Inferencing will stop as soon as possible.
+  /// Cancel this request. Pre-processing cancellation is remembered; in-flight inference stops cooperatively and
+  /// cancellation after completion is a no-op.
   void Cancel();
 
   const flRequest* native_handle() const noexcept { return handle_.get(); }

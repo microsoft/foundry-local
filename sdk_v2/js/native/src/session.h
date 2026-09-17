@@ -8,7 +8,7 @@
 //     flSession_Create is fast.
 //   * session.processRequest(request) -> Promise<Response>  (PromiseWorker<Response>)
 //   * session.processStreamingRequest(request, onItem) -> Promise<Response> — streaming bridge via
-//     Napi::ThreadSafeFunction; resolves with the terminal Response after every item callback drains.
+//     Napi::ThreadSafeFunction; resolves with the terminal Response after every queued JS callback runs.
 //     The JS layer wraps this in an AsyncIterable whose `.response` promise carries the resolved value.
 //   * session.setOptions(kvp) — session-level options applied to subsequent sends.
 //   * ChatSession adds: turnCount(), undoTurns(count), addToolDefinition({...}).
@@ -21,7 +21,9 @@
 //
 // Lifetime: the ChatSession pins the parent Manager via an ObjectReference so
 // the underlying foundry_local::Model the C++ Session captured can't be
-// released out from under it.
+// released out from under it. Session implementations are shared with queued
+// workers so dispose() can detach the wrapper without blocking the JS thread
+// or invalidating work that was already accepted.
 #pragma once
 
 #include <napi.h>
@@ -29,6 +31,7 @@
 #include <foundry_local/foundry_local_cpp.h>
 
 #include <memory>
+#include <mutex>
 
 namespace foundry_local_node {
 
@@ -51,8 +54,9 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<std::mutex> request_gate_ = std::make_shared<std::mutex>();
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -82,8 +86,9 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<std::mutex> request_gate_ = std::make_shared<std::mutex>();
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -111,8 +116,9 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<std::mutex> request_gate_ = std::make_shared<std::mutex>();
 };
 
 }  // namespace foundry_local_node

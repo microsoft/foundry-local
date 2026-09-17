@@ -560,3 +560,22 @@ TEST(SessionRequestLifecycleTest, PublishedCompletionMakesLateCancellationNoOp) 
   EXPECT_FALSE(request.Cancel());
   EXPECT_FALSE(request.IsCancellationRequested());
 }
+
+TEST(SessionRequestLifecycleTest, CallbackExceptionSurfacesOriginalCause) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  ASSERT_TRUE(request.CancelFromStreamingCallbackException("callback exploded"));
+
+  try {
+    Response response;
+    session.ProcessRequest(request, response);
+    FAIL() << "expected callback failure";
+  } catch (const Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    EXPECT_NE(std::string(error.what()).find("streaming callback threw an exception: callback exploded"),
+              std::string::npos);
+  }
+}

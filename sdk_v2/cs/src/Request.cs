@@ -92,6 +92,10 @@ public sealed class Request : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Cancels this request. Cancellation before processing is remembered and prevents the request from reaching the
+    /// inference backend; cancellation after completion has no effect.
+    /// </summary>
     public void Cancel()
     {
         Api.CheckStatus(Api.Inference.RequestCancel(Ptr));

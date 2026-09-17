@@ -690,7 +690,23 @@ TEST(RequestTest, CancellationWinsBeforeCompletion) {
   EXPECT_TRUE(req.Cancel());
   EXPECT_TRUE(req.Cancel());
   EXPECT_TRUE(req.IsCancellationRequested());
+  EXPECT_EQ(req.GetCancellationReason(), Request::CancellationReason::Caller);
   EXPECT_FALSE(req.TryComplete());
+}
+
+TEST(RequestTest, CancellationPreservesActionableReason) {
+  Request callback_request;
+  EXPECT_TRUE(callback_request.Cancel(Request::CancellationReason::StreamingCallback));
+  EXPECT_EQ(callback_request.GetCancellationReason(), Request::CancellationReason::StreamingCallback);
+
+  Request exception_request;
+  EXPECT_TRUE(exception_request.CancelFromStreamingCallbackException("callback exploded"));
+  EXPECT_EQ(exception_request.GetCancellationReason(), Request::CancellationReason::StreamingCallbackException);
+  EXPECT_EQ(exception_request.CancellationDetail(), "callback exploded");
+
+  Request shutdown_request;
+  EXPECT_TRUE(shutdown_request.Cancel(Request::CancellationReason::SessionShutdown));
+  EXPECT_EQ(shutdown_request.GetCancellationReason(), Request::CancellationReason::SessionShutdown);
 }
 
 TEST(RequestTest, CompletionMakesLateCancellationANoOp) {

@@ -9,6 +9,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -43,6 +45,8 @@ TEST(CallbackHandlerTest, StdExceptionFromCallbackDoesNotTerminate) {
 
   EXPECT_GE(invocations.load(), 1);
   EXPECT_TRUE(request.IsCancellationRequested());
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::StreamingCallbackException);
+  EXPECT_EQ(request.CancellationDetail(), "boom");
 }
 
 TEST(CallbackHandlerTest, NonStdExceptionFromCallbackDoesNotTerminate) {
@@ -62,6 +66,8 @@ TEST(CallbackHandlerTest, NonStdExceptionFromCallbackDoesNotTerminate) {
 
   EXPECT_GE(invocations.load(), 1);
   EXPECT_TRUE(request.IsCancellationRequested());
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::StreamingCallbackException);
+  EXPECT_EQ(request.CancellationDetail(), "non-standard exception");
 }
 
 TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
@@ -110,6 +116,7 @@ TEST(CallbackHandlerTest, NormalCallbackCancelsViaReturnValue) {
 
   EXPECT_EQ(invocations.load(), 1);
   EXPECT_TRUE(request.IsCancellationRequested());
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::StreamingCallback);
 }
 
 TEST(CallbackHandlerTest, DrainPendingWaitsForDeliveryWithoutClosingTheQueue) {
@@ -131,4 +138,90 @@ TEST(CallbackHandlerTest, DrainPendingWaitsForDeliveryWithoutClosingTheQueue) {
   handler.PushItem(std::make_unique<TextItem>("terminal"));
   handler.Drain();
   EXPECT_EQ(invocations.load(), 2);
+}
+
+TEST(CallbackHandlerTest, CancellationDrainsSmallBufferedBacklog) {
+  Request request;
+  std::atomic<int> invocations{0};
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool callback_started = false;
+  bool release_callback = false;
+
+  auto fn = [&](flStreamingCallbackData data, void*) -> int {
+    auto* queue = reinterpret_cast<ItemQueue*>(data.item_queue);
+    (void)queue->TryPop();
+    ++invocations;
+
+    std::unique_lock<std::mutex> lock(mutex);
+    callback_started = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return release_callback; });
+    return 0;
+  };
+
+  CallbackHandler handler(request, fn, fl::test::NullLog());
+  handler.PushItem(std::make_unique<TextItem>("first"));
+  bool started = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    started = cv.wait_for(lock, std::chrono::seconds(2), [&] { return callback_started; });
+  }
+  EXPECT_TRUE(started);
+
+  for (size_t i = 0; i < 3; ++i) {
+    handler.PushItem(std::make_unique<TextItem>("buffered"));
+  }
+  request.Cancel();
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release_callback = true;
+  }
+  cv.notify_all();
+
+  handler.Drain();
+  EXPECT_EQ(invocations.load(), 4);
+}
+
+TEST(CallbackHandlerTest, CancellationDropsLargeBufferedBacklog) {
+  Request request;
+  std::atomic<int> invocations{0};
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool callback_started = false;
+  bool release_callback = false;
+
+  auto fn = [&](flStreamingCallbackData data, void*) -> int {
+    auto* queue = reinterpret_cast<ItemQueue*>(data.item_queue);
+    (void)queue->TryPop();
+    ++invocations;
+
+    std::unique_lock<std::mutex> lock(mutex);
+    callback_started = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return release_callback; });
+    return 0;
+  };
+
+  CallbackHandler handler(request, fn, fl::test::NullLog());
+  handler.PushItem(std::make_unique<TextItem>("first"));
+  bool started = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    started = cv.wait_for(lock, std::chrono::seconds(2), [&] { return callback_started; });
+  }
+  EXPECT_TRUE(started);
+
+  for (size_t i = 0; i <= CallbackHandler::kMaxCancellationDrainItems; ++i) {
+    handler.PushItem(std::make_unique<TextItem>("buffered"));
+  }
+  request.Cancel();
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release_callback = true;
+  }
+  cv.notify_all();
+
+  handler.Drain();
+  EXPECT_EQ(invocations.load(), 1);
 }

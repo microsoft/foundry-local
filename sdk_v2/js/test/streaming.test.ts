@@ -121,7 +121,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
-    "early break cancels the stream cleanly and the session remains usable",
+    "early break requests cancellation while permitting prior native completion",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
       const stream = session.processStreamingRequest(buildPrompt());
@@ -130,10 +130,18 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
         count++;
         if (count >= 1) break;
       }
-      await expect(stream.response).rejects.toMatchObject({
-        name: "FoundryLocalError",
-        code: FlErrorCode.OperationCancelled,
-      });
+      const outcome = await stream.response.then(
+        (response) => ({ response, error: null }),
+        (error: unknown) => ({ response: null, error }),
+      );
+      if (outcome.error !== null) {
+        expect(outcome.error).toMatchObject({
+          name: "FoundryLocalError",
+          code: FlErrorCode.OperationCancelled,
+        });
+      } else {
+        expect(outcome.response.finishReason).not.toBe("none");
+      }
 
       // After the break the session should accept a follow-up send.
       const resp = await session.processRequest(
@@ -255,6 +263,37 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
+    "serializes overlapping streams without replacing either callback",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const first = session.processStreamingRequest(buildPrompt());
+      const second = session.processStreamingRequest(
+        new Request()
+          .addItem(Item.userMessage("Name three primary colors."))
+          .setOptions({ search: { maxOutputTokens: 64, temperature: 0 } }),
+      );
+
+      const collect = async (stream: AsyncIterable<Item>): Promise<Item[]> => {
+        const items: Item[] = [];
+        for await (const item of stream) items.push(item);
+        return items;
+      };
+      const [firstItems, secondItems, firstResponse, secondResponse] = await Promise.all([
+        collect(first),
+        collect(second),
+        first.response,
+        second.response,
+      ]);
+
+      expect(firstItems.length).toBeGreaterThan(0);
+      expect(secondItems.length).toBeGreaterThan(0);
+      expect(firstResponse.finishReason).not.toBe("none");
+      expect(secondResponse.finishReason).not.toBe("none");
+    },
+    4 * 60_000,
+  );
+
+  it(
     "stream.response resolves without iteration (eager native start)",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
@@ -277,7 +316,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   }, 60_000);
 
   it(
-    "request.cancel rejects iteration and stream.response with OperationCancelled",
+    "request.cancel yields OperationCancelled unless native completion wins",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
       const req = new Request()
@@ -294,15 +333,30 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
         }
       };
 
-      await expect(iteration()).rejects.toMatchObject({
-        name: "FoundryLocalError",
-        code: FlErrorCode.OperationCancelled,
-      });
-      await expect(stream.response).rejects.toMatchObject({
-        name: "FoundryLocalError",
-        code: FlErrorCode.OperationCancelled,
-      });
-      expect(session.turnCount).toBe(0);
+      const iterationOutcome = await iteration().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      const responseOutcome = await stream.response.then(
+        (response) => ({ response, error: null }),
+        (error: unknown) => ({ response: null, error }),
+      );
+
+      if (responseOutcome.error !== null) {
+        expect(iterationOutcome).toMatchObject({
+          name: "FoundryLocalError",
+          code: FlErrorCode.OperationCancelled,
+        });
+        expect(responseOutcome.error).toMatchObject({
+          name: "FoundryLocalError",
+          code: FlErrorCode.OperationCancelled,
+        });
+        expect(session.turnCount).toBe(0);
+      } else {
+        expect(iterationOutcome).toBeNull();
+        expect(responseOutcome.response.finishReason).not.toBe("none");
+        expect(session.turnCount).toBe(1);
+      }
     },
     3 * 60_000,
   );

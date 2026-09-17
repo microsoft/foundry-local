@@ -886,7 +886,7 @@ struct flInferenceApi {
   /// Values are string representations; the implementation parses them for the appropriate type.
   /// The request copies the data — the caller may release the pairs after this call.
   FL_API_STATUS(Request_SetOptions, _In_ flRequest* request, _In_ const flKeyValuePairs* options);
-  /// Cancel an in-progress request.
+  /// Cancel a request. Pre-processing cancellation is remembered; cancellation after completion is a no-op.
   FL_API_STATUS(Request_Cancel, _In_ flRequest* request);
 
   /* Response */
