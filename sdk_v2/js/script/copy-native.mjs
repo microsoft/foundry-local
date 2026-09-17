@@ -30,10 +30,12 @@ const platformSegment = (() => {
   }
 })();
 
-const sourceDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin", config);
+const buildBinDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin");
+const multiConfigSourceDir = resolve(buildBinDir, config);
+const sourceDir = existsSync(multiConfigSourceDir) ? multiConfigSourceDir : buildBinDir;
 
 if (!existsSync(sourceDir)) {
-  console.error(`[copy-native] source directory not found: ${sourceDir}`);
+  console.error(`[copy-native] source directory not found: ${multiConfigSourceDir} or ${buildBinDir}`);
   console.error("[copy-native] Build the C++ SDK first:");
   console.error(`[copy-native]   python sdk_v2/cpp/build.py --configure --build --config ${config}`);
   process.exit(1);
@@ -61,11 +63,7 @@ const wanted = (() => {
     // Copy the versioned ORT soname (libonnxruntime.1.dylib) — the name libfoundry_local
     // records. The C++ build stages it as a symlink; copyFileSync dereferences it. The
     // unversioned alias is added as a symlink after the copy loop (see below).
-    return [
-      "libfoundry_local.dylib",
-      "libonnxruntime.1.dylib",
-      "libonnxruntime-genai.dylib",
-    ];
+    return ["libfoundry_local.dylib", "libonnxruntime.1.dylib", "libonnxruntime-genai.dylib"];
   }
   return ["libfoundry_local.so", "libonnxruntime.so.1", "libonnxruntime-genai.so"];
 })();
