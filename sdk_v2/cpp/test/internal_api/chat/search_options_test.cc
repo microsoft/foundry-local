@@ -200,6 +200,28 @@ TEST(SamplingPlanTest, PositiveTemperatureEnablesSampling) {
   EXPECT_TRUE(*plan.do_sample);
 }
 
+TEST(SamplingPlanTest, NeutralTemperaturePreservesModelSamplingDefault) {
+  SearchOptions options;
+  options.temperature = 1.0f;
+
+  const auto plan = ResolveSamplingPlan(options);
+  EXPECT_FALSE(plan.greedy);
+  EXPECT_FALSE(plan.do_sample.has_value());
+  ASSERT_TRUE(plan.temperature.has_value());
+  EXPECT_FLOAT_EQ(*plan.temperature, 1.0f);
+}
+
+TEST(SamplingPlanTest, ExplicitSamplingWithNeutralTemperatureRemainsExplicit) {
+  SearchOptions options;
+  options.do_sample = true;
+  options.temperature = 1.0f;
+
+  const auto plan = ResolveSamplingPlan(options);
+  EXPECT_FALSE(plan.greedy);
+  ASSERT_TRUE(plan.do_sample.has_value());
+  EXPECT_TRUE(*plan.do_sample);
+}
+
 TEST(SamplingPlanTest, OutOfRangeScalarsAreRejected) {
   for (float top_p : {-0.1f, 1.1f, std::numeric_limits<float>::infinity()}) {
     SearchOptions options;
@@ -213,7 +235,8 @@ TEST(SamplingPlanTest, OutOfRangeScalarsAreRejected) {
 }
 
 TEST(EngineTurnOptionsPlanTest, LeavesMaxOutputAndSamplingUnsetWhenCallerOmitsThem) {
-  const auto plan = BuildEngineTurnOptionsPlan(SearchOptions{}, ToolCallContext{}, ChatBackendKind::kEngine);
+  const auto plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, ToolCallContext{}, ChatBackendKind::kEngine, false);
   EXPECT_FALSE(plan.max_generated_tokens.has_value());
   EXPECT_FALSE(plan.sampling.do_sample.has_value());
   EXPECT_FALSE(plan.sampling.temperature.has_value());
@@ -226,7 +249,8 @@ TEST(EngineTurnOptionsPlanTest, RejectsNonpositiveExplicitMaxOutputTokens) {
   for (int max_output_tokens : {0, -1}) {
     SearchOptions options;
     options.max_output_tokens = max_output_tokens;
-    EXPECT_THROW(BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine), fl::Exception);
+    EXPECT_THROW(BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false),
+                 fl::Exception);
   }
 }
 
@@ -242,7 +266,7 @@ TEST(EngineTurnOptionsPlanTest, CarriesStopStringsSeedAndGuidanceOnDynamicBacken
   tool_ctx.guidance_type = "json_schema";
   tool_ctx.guidance_data = R"({"type":"object"})";
 
-  const auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, ChatBackendKind::kEngine);
+  const auto plan = BuildEngineTurnOptionsPlan(options, tool_ctx, ChatBackendKind::kEngine, false);
   ASSERT_TRUE(plan.max_generated_tokens.has_value());
   EXPECT_EQ(*plan.max_generated_tokens, 64);
   ASSERT_TRUE(plan.seed.has_value());
@@ -251,6 +275,7 @@ TEST(EngineTurnOptionsPlanTest, CarriesStopStringsSeedAndGuidanceOnDynamicBacken
   ASSERT_TRUE(plan.guidance.has_value());
   EXPECT_EQ(plan.guidance->type, "json_schema");
   EXPECT_EQ(plan.guidance->data, R"({"type":"object"})");
+  EXPECT_TRUE(plan.guidance->user_specified);
 }
 
 TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
@@ -258,7 +283,8 @@ TEST(EngineTurnOptionsPlanTest, NegativeSeedIsOmitted) {
     SearchOptions options;
     options.seed = seed;
 
-    const auto plan = BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine);
+    const auto plan =
+        BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false);
     EXPECT_FALSE(plan.seed.has_value());
   }
 }
@@ -267,7 +293,8 @@ TEST(EngineTurnOptionsPlanTest, ZeroSeedIsForwarded) {
   SearchOptions options;
   options.seed = 0;
 
-  const auto plan = BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine);
+  const auto plan =
+      BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false);
   ASSERT_TRUE(plan.seed.has_value());
   EXPECT_EQ(*plan.seed, 0);
 }
@@ -278,11 +305,67 @@ TEST(EngineTurnOptionsPlanTest, UserGuidanceAppliesWithoutToolOnlyMode) {
   tool_ctx.guidance_data = R"({"type":"object","required":["answer"]})";
 
   const auto plan =
-      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine);
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
 
   ASSERT_TRUE(plan.guidance.has_value());
   EXPECT_EQ(plan.guidance->type, "json_schema");
   EXPECT_EQ(plan.guidance->data, R"({"type":"object","required":["answer"]})");
+  EXPECT_TRUE(plan.guidance->user_specified);
+}
+
+TEST(EngineTurnOptionsPlanTest, ForcedRawToolWithoutCompatibleGrammarDisablesStructuredGuidance) {
+  ToolCallContext tool_ctx;
+  tool_ctx.text_output = false;
+  tool_ctx.tool_output = true;
+  tool_ctx.tools_json =
+      R"([{"type":"function","function":{"name":"edit","parameters":{"type":"object"}}}])";
+  tool_ctx.guidance_type = "json_schema";
+  tool_ctx.guidance_data = R"({"type":"object"})";
+  tool_ctx.guidance_disabled = true;
+
+  const auto plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+
+  EXPECT_FALSE(plan.guidance.has_value());
+}
+
+TEST(EngineTurnOptionsPlanTest, ForcedRawToolUsesItsCompatibleLarkGrammar) {
+  ToolCallContext tool_ctx;
+  tool_ctx.text_output = false;
+  tool_ctx.tool_output = true;
+  tool_ctx.guidance_type = "lark_grammar";
+  tool_ctx.guidance_data = "start: \"BEGIN\" /(.|\\n)+/ \"END\"";
+
+  const auto plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+
+  ASSERT_TRUE(plan.guidance.has_value());
+  EXPECT_EQ(plan.guidance->type, "lark_grammar");
+  EXPECT_EQ(plan.guidance->data, tool_ctx.guidance_data);
+}
+
+TEST(EngineTurnOptionsPlanTest, PromptOpenedReasoningOmitsTheGrammarOpener) {
+  ToolCallContext tool_ctx;
+  tool_ctx.text_output = false;
+  tool_ctx.tool_output = true;
+  tool_ctx.supports_reasoning = true;
+  tool_ctx.reasoning_start = "<think>";
+  tool_ctx.reasoning_end = "</think>";
+  tool_ctx.reasoning_start_token_id = 248058;
+  tool_ctx.reasoning_end_token_id = 248059;
+
+  const auto closed_plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, false);
+  const auto open_plan =
+      BuildEngineTurnOptionsPlan(SearchOptions{}, tool_ctx, ChatBackendKind::kEngine, true);
+
+  ASSERT_TRUE(closed_plan.guidance.has_value());
+  ASSERT_TRUE(open_plan.guidance.has_value());
+  EXPECT_FALSE(closed_plan.guidance->user_specified);
+  EXPECT_FALSE(open_plan.guidance->user_specified);
+  EXPECT_NE(closed_plan.guidance->data.find("cot: <[248058]> THINK_TEXT"), std::string::npos);
+  EXPECT_NE(open_plan.guidance->data.find("cot: THINK_TEXT <[248059]>"), std::string::npos);
+  EXPECT_EQ(open_plan.guidance->data.find("cot: <[248058]>"), std::string::npos);
 }
 
 TEST(EngineTurnOptionsPlanTest, NeutralPenaltiesDoNotOverrideModelDefaults) {
@@ -290,7 +373,8 @@ TEST(EngineTurnOptionsPlanTest, NeutralPenaltiesDoNotOverrideModelDefaults) {
   options.frequency_penalty = 0.0f;
   options.presence_penalty = 0.0f;
 
-  EXPECT_NO_THROW(BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine));
+  EXPECT_NO_THROW(
+      BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false));
 }
 
 TEST(EngineTurnOptionsPlanTest, RejectsNonzeroPenalties) {
@@ -301,7 +385,7 @@ TEST(EngineTurnOptionsPlanTest, RejectsNonzeroPenalties) {
     options.frequency_penalty = frequency;
     options.presence_penalty = presence;
 
-    EXPECT_THROW(BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine),
+    EXPECT_THROW(BuildEngineTurnOptionsPlan(options, ToolCallContext{}, ChatBackendKind::kEngine, false),
                  fl::Exception);
   }
 }
@@ -309,11 +393,13 @@ TEST(EngineTurnOptionsPlanTest, RejectsNonzeroPenalties) {
 TEST(EngineTurnOptionsPlanTest, RejectsTrueEarlyStoppingAndAcceptsNeutralFalse) {
   SearchOptions enabled;
   enabled.early_stopping = true;
-  EXPECT_THROW(BuildEngineTurnOptionsPlan(enabled, ToolCallContext{}, ChatBackendKind::kEngine), fl::Exception);
+  EXPECT_THROW(BuildEngineTurnOptionsPlan(enabled, ToolCallContext{}, ChatBackendKind::kEngine, false),
+               fl::Exception);
 
   SearchOptions disabled;
   disabled.early_stopping = false;
-  EXPECT_NO_THROW(BuildEngineTurnOptionsPlan(disabled, ToolCallContext{}, ChatBackendKind::kEngine));
+  EXPECT_NO_THROW(
+      BuildEngineTurnOptionsPlan(disabled, ToolCallContext{}, ChatBackendKind::kEngine, false));
 }
 
 TEST(SearchOptionsParsingTest, EngineSupportsPerTurnStopStringsAndSeed) {

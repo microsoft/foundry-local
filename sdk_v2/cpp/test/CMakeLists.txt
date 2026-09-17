@@ -76,7 +76,13 @@ add_executable(foundry_local_tests
     internal_api/time_utils_test.cc
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
+    internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/custom_tools_chat_test.cc
+    internal_api/toolcalling/custom_tools_responses_test.cc
+    internal_api/toolcalling/tool_definition_abi_test.cc
+    internal_api/toolcalling/tool_definitions_test.cc
+    internal_api/toolcalling/tool_registry_test.cc
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
     internal_api/web_service_test.cc
@@ -93,17 +99,11 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     )
 endif()
 
-if(FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE)
-    target_sources(foundry_local_tests PRIVATE
-        internal_api/chat/dynamic_engine_chat_test.cc
-    )
-endif()
+target_sources(foundry_local_tests PRIVATE
+    internal_api/chat/dynamic_engine_chat_test.cc
+)
 
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
-target_compile_definitions(
-    foundry_local_tests
-    PRIVATE FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_DYNAMIC_ENGINE}>
-)
 
 target_link_libraries(foundry_local_tests
     PRIVATE

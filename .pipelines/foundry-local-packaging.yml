@@ -1,11 +1,8 @@
 # Foundry Local Packaging Pipeline
 #
-# Builds Foundry Local Core from neutron-server (windows.ai.toolkit project),
-# then packages the C# and JS SDKs from this repo using the built Core.
+# Builds the sdk_v2 native runtime and packages the C#, JS, Python, and Rust SDKs.
 #
-# Produces artifacts: flc-nuget, flc-nuget-winml, flc-wheels, flc-wheels-winml,
-#   cs-sdk, cs-sdk-winml, js-sdk, js-sdk-winml, python-sdk, python-sdk-winml,
-#   rust-sdk, rust-sdk-winml
+# Produces the sdk_v2 native runtime, C#, JS, Python, and Rust artifacts.
 
 # CI: only auto-run on pushes to main / release branches. Without an explicit
 # trigger block, ADO defaults to "every commit on every branch", which fires
@@ -30,10 +27,6 @@ parameters:
   displayName: 'Package version (sdk_v2/...)'
   type: string
   default: '2.0.0'
-- name: versionV1
-  displayName: 'Package version (sdk/...)'
-  type: string
-  default: '1.3.0'
 - name: prereleaseId
   displayName: 'Pre-release identifier (e.g. rc1, beta).'
   type: string
@@ -42,28 +35,15 @@ parameters:
   displayName: 'Release build'
   type: boolean
   default: false
-- name: buildV1
-  displayName: 'Force build v1 sdk. If unchecked, auto-detected from PR changes.'
-  type: boolean
-  default: false
-- name: neutronServerBranch
-  displayName: 'Foundry Local Core branch (windows.ai.toolkit/neutron-server)'
-  type: string
-  default: 'dev/FoundryLocalCore/main'
 
 variables:
 - group: FoundryLocal-ESRP-Signing
-# C++ SDK (sdk_v2/cpp) native dependency versions. Release builds use the
-# stable pins from sdk_v2/deps_versions.json; non-release CI validates the
-# selected GenAI nightly before it becomes a stable SDK default.
+# C++ SDK (sdk_v2/cpp) native dependency versions. Must match the stable pins
+# in sdk_v2/deps_versions.json.
 - name: cppOrtVersion
-  value: '1.28.0'
-- ${{ if eq(parameters.isRelease, true) }}:
-  - name: cppGenaiVersion
-    value: '0.15.2'
-- ${{ else }}:
-  - name: cppGenaiVersion
-    value: '0.16.0-dev1001400138'
+  value: '1.30.0'
+- name: cppGenaiVersion
+  value: '0.16.0'
 - name: cppWinmlVersion
   value: '2.1.70'
 - name: cppBuildConfig
@@ -90,93 +70,13 @@ extends:
         break: false
         scanOutputDirectoryOnly: true
     stages:
-    # ── Detect Changed Paths ──
-    # Decides whether the legacy sdk/ branch should run. sdk_v2 always builds,
-    # so there is no buildV2 flag here. Emits one output variable on the
-    # `setflags` job: `buildV1` ("true"/"false").
-    #
-    # Rules:
-    #   * `buildV1` parameter set true => buildV1 = true.
-    #   * Otherwise => buildV1 = true iff this branch has changes under sdk/
-    #     relative to its base. Base is the PR target branch when available,
-    #     else origin/main. If that range is empty (e.g. post-merge CI build
-    #     of main itself), fall back to the latest commit's diff so a merge
-    #     that touched sdk/ still triggers v1. Branches forked off something
-    #     other than main and built outside a PR will over-trigger; that's
-    #     acceptable — release branches aren't expected to touch sdk/.
-    - stage: detect_changes
-      displayName: 'Detect Changed Paths'
-      dependsOn: []
-      jobs:
-      - job: setflags
-        displayName: 'Compute build flags'
-        pool:
-          name: onnxruntime-Win-CPU-2022
-          os: windows
-        steps:
-        - checkout: self
-          fetchDepth: 0
-        - task: PowerShell@2
-          name: setflags
-          displayName: 'Detect changed paths and set buildV1'
-          inputs:
-            targetType: inline
-            pwsh: true
-            script: |
-              $forceV1 = "${{ parameters.buildV1 }}" -eq "True"
-
-              if ($forceV1) {
-                $buildV1 = $true
-                Write-Host "Manual override: buildV1=$buildV1"
-              } else {
-                # Read via env var so PowerShell doesn't mis-parse the literal
-                # '$(System.PullRequest.TargetBranch)' as a subexpression when
-                # ADO leaves it unresolved on non-PR runs. Env var is empty
-                # (not undefined) when the variable isn't set.
-                $prTarget = $env:SYSTEM_PULLREQUEST_TARGETBRANCH
-                if (-not [string]::IsNullOrEmpty($prTarget)) {
-                  # Typically "refs/heads/<branch>"; normalize to a short name for git fetch + origin/<branch> refs.
-                  $baseBranch = $prTarget -replace '^refs/heads/', ''
-                  Write-Host "Base branch (from PR target): $baseBranch"
-                } else {
-                  $baseBranch = "main"
-                  Write-Host "Base branch (fallback): $baseBranch"
-                }
-
-                git fetch --no-tags --depth=50 origin $baseBranch 2>&1 | Out-Null
-                $diffRange = "origin/$baseBranch...HEAD"
-                $changed = @(git diff --name-only $diffRange)
-                Write-Host "Changed files vs $diffRange ($($changed.Count)):"
-                $changed | ForEach-Object { Write-Host "  $_" }
-
-                # On a build of the base branch itself (e.g. post-merge CI on main),
-                # the range above is empty. Fall back to the latest commit's diff so
-                # a merge that touched sdk/ still triggers v1.
-                if ($changed.Count -eq 0) {
-                  $diffRange = "HEAD~1...HEAD"
-                  $changed = @(git diff --name-only $diffRange)
-                  Write-Host "Empty range vs base; falling back to $diffRange ($($changed.Count)):"
-                  $changed | ForEach-Object { Write-Host "  $_" }
-                }
-
-                $buildV1 = @($changed | Where-Object { $_ -like 'sdk/*' }).Count -gt 0
-                Write-Host "Auto-detected: buildV1=$buildV1"
-              }
-
-              $v1 = $buildV1.ToString().ToLower()
-              Write-Host "##vso[task.setvariable variable=buildV1;isOutput=true]$v1"
-
     # ── Compute Version ──
     # A single version string is computed once and shared across all stages.
     # This prevents timestamp drift between standard and WinML builds.
     # Outputs (written to the `version-info` pipeline artifact):
-    #   sdk_v2 (no suffix; FLC is legacy-only and not emitted here):
+    #   sdk_v2:
     #     sdkVersion.txt    – semver for C#       (e.g. X.Y.Z-dev.202604061234)
     #     pyVersion.txt     – PEP 440 for Python  (e.g. X.Y.Z.dev202604061234)
-    #   Legacy sdk/ (.v1. suffix):
-    #     sdkVersion.v1.txt – semver for JS, C#, Rust
-    #     pyVersion.v1.txt  – PEP 440 for Python
-    #     flcVersion.v1.txt – NuGet/FLC style
     - stage: compute_version
       displayName: 'Compute Version'
       dependsOn: []
@@ -227,46 +127,19 @@ extends:
                 }
               }
 
-              $v2 = Compute-Versions "${{ parameters.version }}"   $false
-              $v1 = Compute-Versions "${{ parameters.versionV1 }}" $true
+              $v2 = Compute-Versions "${{ parameters.version }}" $false
 
               $outDir = "$(Build.ArtifactStagingDirectory)/version-info"
               New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-              # sdk_v2 versions (canonical, no suffix). No flcVersion — v2
-              # does not consume Foundry Local Core.
               Set-Content -Path "$outDir/sdkVersion.txt" -Value $v2.sdk -NoNewline
               Set-Content -Path "$outDir/pyVersion.txt"  -Value $v2.py  -NoNewline
 
-              # Legacy sdk/ versions (.v1. suffix).
-              Set-Content -Path "$outDir/sdkVersion.v1.txt" -Value $v1.sdk -NoNewline
-              Set-Content -Path "$outDir/pyVersion.v1.txt"  -Value $v1.py  -NoNewline
-              Set-Content -Path "$outDir/flcVersion.v1.txt" -Value $v1.flc -NoNewline
-
               Write-Host "v2 SDK version:    $($v2.sdk)"
               Write-Host "v2 Python version: $($v2.py)"
-              Write-Host "v1 SDK version:    $($v1.sdk)"
-              Write-Host "v1 Python version: $($v1.py)"
-              Write-Host "v1 FLC version:    $($v1.flc)"
-
-    # -- sdk_v1 (sdk/) C++ Core (FLC) + C# / JS / Python / Rust SDKs --
-    # Entire subgraph is gated by a single artificial root stage (`v1_gate`)
-    # defined inside stages-sdk-v1.yml. When detect_changes.buildV1 is false,
-    # v1_gate is skipped and every downstream v1 stage skips via the default
-    # `succeeded()` cascade.
-    - template: v1/templates/stages-sdk-v1.yml
-      parameters:
-        gateCondition: eq(dependencies.detect_changes.outputs['setflags.setflags.buildV1'], 'true')
-        gateDependsOn: [detect_changes]
-        version: ${{ parameters.versionV1 }}
-        prereleaseId: ${{ parameters.prereleaseId }}
-        isRelease: ${{ parameters.isRelease }}
-        neutronServerBranch: ${{ parameters.neutronServerBranch }}
-
-
     # ── sdk_v2 (C++ native + C# SDK + Python SDK) ──
     # Built unconditionally on every run; no detect_changes gate.
-    - template: v2/templates/stages-sdk-v2.yml
+    - template: templates/stages-sdk-v2.yml
       parameters:
         buildConfig: $(cppBuildConfig)
         ortVersion: $(cppOrtVersion)

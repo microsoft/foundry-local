@@ -10,6 +10,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 TEST(CppApiTest, TextItemDefaultRoundTrip) {
@@ -116,6 +117,73 @@ TEST(CppApiTest, ToolCallRoundTrip) {
   EXPECT_EQ(call_id, "call_42");
   EXPECT_EQ(name, "get_weather");
   EXPECT_EQ(arguments, R"({"city":"Seattle"})");
+}
+
+TEST(CppApiTest, ToolItemsRejectEmbeddedNulInsteadOfTruncating) {
+  const std::string invalid{"before\0after", 12};
+
+  for (const auto& make_item : std::vector<std::function<foundry_local::Item()>>{
+           [&] { return foundry_local::Item::ToolCall(invalid, "custom", "payload"); },
+           [&] { return foundry_local::Item::ToolCall("call_42", invalid, "payload"); },
+           [&] { return foundry_local::Item::ToolCall("call_42", "custom", invalid); },
+           [&] { return foundry_local::Item::ToolResult(invalid, "done"); },
+           [&] { return foundry_local::Item::ToolResult("call_42", invalid); },
+       }) {
+    try {
+      (void)make_item();
+      FAIL() << "expected embedded NUL rejection";
+    } catch (const foundry_local::Error& error) {
+      EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
+  }
+}
+
+TEST(CppApiTest, ToolItemsPreserveValidEmptyStrings) {
+  EXPECT_NO_THROW((void)foundry_local::Item::ToolCall("", "", ""));
+  EXPECT_NO_THROW((void)foundry_local::Item::ToolResult("", ""));
+}
+
+TEST(CppApiTest, ToolDefinitionDefaultsToFunctionAndStampsTheCurrentVersion) {
+  foundry_local::ToolDefinition function("get_weather", "Get the weather", R"({"type":"object"})");
+  EXPECT_EQ(function.kind, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
+
+  auto c_def = function.ToC();
+  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION));
+  EXPECT_STREQ(c_def.name, "get_weather");
+  EXPECT_STREQ(c_def.description, "Get the weather");
+  EXPECT_STREQ(c_def.json_schema, R"({"type":"object"})");
+  EXPECT_EQ(c_def.kind, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION);
+}
+
+TEST(CppApiTest, ToolDefinitionCustomFactoryEmitsAnExplicitKindAndNoSchema) {
+  auto custom = foundry_local::ToolDefinition::Custom("apply_patch", "Apply a patch");
+  EXPECT_EQ(custom.kind, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
+  EXPECT_TRUE(custom.json_schema.empty());
+
+  auto c_def = custom.ToC();
+  EXPECT_EQ(c_def.version, static_cast<uint32_t>(FOUNDRY_LOCAL_API_VERSION));
+  EXPECT_STREQ(c_def.name, "apply_patch");
+  EXPECT_STREQ(c_def.json_schema, "");
+  EXPECT_EQ(c_def.kind, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM);
+}
+
+TEST(CppApiTest, ToolDefinitionsRejectEmbeddedNulInsteadOfTruncating) {
+  const std::string invalid{"before\0after", 12};
+
+  for (const auto& definition : std::vector<foundry_local::ToolDefinition>{
+           {invalid, "description", "{}"},
+           {"tool", invalid, "{}"},
+           {"tool", "description", invalid},
+           foundry_local::ToolDefinition::Custom(invalid, "description"),
+           foundry_local::ToolDefinition::Custom("tool", invalid),
+       }) {
+    try {
+      (void)definition.ToC();
+      FAIL() << "expected embedded NUL rejection";
+    } catch (const foundry_local::Error& error) {
+      EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
+  }
 }
 
 TEST(CppApiTest, ToolResultRoundTrip) {

@@ -37,9 +37,21 @@ void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f) {
   f.arguments = j.at("arguments").get<std::string>();
 }
 
+void from_json(const nlohmann::json& j, ChatCompletionCustomCall& c) {
+  c.name = j.at("name").get<std::string>();
+  c.input = j.value("input", std::string());
+}
+
 void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
   tc.id = j.at("id").get<std::string>();
   tc.type = j.value("type", std::string("function"));
+
+  // A custom call carries raw text under "custom"; a function call carries JSON under "function".
+  if (tc.type == "custom") {
+    tc.custom = j.at("custom").get<ChatCompletionCustomCall>();
+    return;
+  }
+
   tc.function = j.at("function").get<ChatCompletionFunctionCall>();
 }
 
