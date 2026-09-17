@@ -6,7 +6,7 @@ The software may collect information about you and your use of the software and 
 
 ***
 
-Foundry Local collects a small number of trace events with the goal of improving product quality. Official packages on supported platforms include the cross-platform 1DS telemetry SDK. Collection is subject to user consent and handled following Microsoft's privacy practices.
+Foundry Local collects trace events with the goal of improving product quality. Official packages on supported platforms include the cross-platform 1DS telemetry SDK. Collection is subject to user consent and handled following Microsoft's privacy practices.
 
 Telemetry is turned **ON** by default.
 
@@ -22,24 +22,3 @@ Non-essential telemetry can be disabled as follows. Foundry Local may still send
   - JavaScript/TypeScript: `disableNonessentialTelemetry: true`
   - Python: `disable_nonessential_telemetry=True`
   - Native additional option: `DisableNonessentialTelemetry=true`
-
-#### Collected events
-
-| Event | Purpose |
-| --- | --- |
-| `ProcessInfo` | Startup application, operating-system, architecture, process, and coarse container/VM metadata |
-| `Action`, `Error` | Operation timing, outcome, resolved model ID, and redacted diagnostic errors |
-| `Session` | Embedded web-service usage-session start and end |
-| `Model`, `AudioModel` | Inference timing, token counts, execution provider, and audio-format metrics |
-| `Download` | Model download timing, byte/file counts, cache hits, and outcome |
-| `CatalogFetch` | Live catalog refreshes and cached-model lookups, including timing and outcome |
-| `EPDownloadAttempt`, `EPDownloadAndRegister` | Execution-provider download and registration outcomes |
-| `HardwareInfo` | Coarse CPU/GPU/NPU and execution-provider availability at startup |
-
-HTTP operations propagate a correlation ID to their nested inference events. SDK calls identify the calling language
-through a versioned user agent. Model IDs remain fields on `Action`; there is no separate `ModelId` event, and locale
-is not collected. General event families retain 100%. High-volume `OpenAIAudioTranscribe` and `AudioModel` events
-retain 0.1% as a correlated pair, selected deterministically by operation correlation ID.
-
-Telemetry strings are redacted at the final emission boundary, including strings in arrays and structured values.
-Each string is capped at 40,960 UTF-8 bytes without splitting a character or a redaction marker.
