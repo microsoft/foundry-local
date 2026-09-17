@@ -1947,14 +1947,17 @@ TEST_F(QwenNativeProductionIntegrationTest,
   session.SetStreamingCallback(
       [&streamed_chunks](flStreamingCallbackData event, void*) {
         auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        bool semantic_output_seen = false;
         while (auto item = queue->TryPop()) {
           if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
-            streamed_chunks.push_back(nlohmann::json::parse(
-                static_cast<const TextItem&>(*item).text));
+            auto chunk = nlohmann::json::parse(static_cast<const TextItem&>(*item).text);
+            const auto& delta = chunk.at("choices").at(0).at("delta");
+            semantic_output_seen |= !delta.value("content", "").empty();
+            streamed_chunks.push_back(std::move(chunk));
           }
         }
 
-        return 1;
+        return semantic_output_seen ? 1 : 0;
       });
 
   const auto body = nlohmann::json{

@@ -120,7 +120,7 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
   }
 
   if (schema.contains("anyOf")) {
-    if (depth != 0 || schema.contains("oneOf") || schema.contains("allOf") || schema.contains("not") ||
+    if (schema.contains("oneOf") || schema.contains("allOf") || schema.contains("not") ||
         schema.contains("if") || !schema["anyOf"].is_array() || schema["anyOf"].empty() ||
         std::ranges::any_of(schema.items(), [](const auto& item) {
           return item.key() != "anyOf" && !IsSupportedAnnotation(item.key());
@@ -150,6 +150,23 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
          IsSupportedParameterSchema(schema["items"], depth + 1);
 }
 
+bool HasNestedAnyOf(const Json& schema, size_t depth = 0) {
+  if (!schema.is_object()) {
+    return false;
+  }
+  if (depth != 0 && schema.contains("anyOf")) {
+    return true;
+  }
+  if (schema.contains("anyOf") &&
+      std::ranges::any_of(schema["anyOf"], [depth](const auto& branch) {
+        return HasNestedAnyOf(branch, depth + 1);
+      })) {
+    return true;
+  }
+
+  return schema.contains("items") && HasNestedAnyOf(schema["items"], depth + 1);
+}
+
 bool IsSupportedParametersObject(const Json& schema) {
   if (!schema.is_object() || HasUnsupportedComposition(schema)) {
     return false;
@@ -169,7 +186,8 @@ bool IsSupportedParametersObject(const Json& schema) {
 FunctionSchemas ParseFunctionSchemas(
     const std::string& tools_json,
     const std::unordered_map<std::string, ToolKind>& tool_kinds,
-    size_t& declaration_count) {
+    size_t& declaration_count,
+    bool recovery_aware) {
   FunctionSchemas schemas;
   const auto tools = Json::parse(tools_json, nullptr, false);
   if (!tools.is_array()) {
@@ -262,8 +280,9 @@ FunctionSchemas ParseFunctionSchemas(
 
     schema.properties = parameters["properties"];
     const bool properties_valid =
-        std::ranges::all_of(schema.properties.items(), [](const auto& property) {
-          return IsSupportedParameterSchema(property.value());
+        std::ranges::all_of(schema.properties.items(), [recovery_aware](const auto& property) {
+          return IsSupportedParameterSchema(property.value()) &&
+                 (!recovery_aware || !HasNestedAnyOf(property.value()));
         });
     bool required_valid = true;
     if (parameters.contains("required")) {
@@ -650,7 +669,7 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
     bool recovery_aware) {
   size_t declaration_count = 0;
-  auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count, recovery_aware);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
       std::ranges::any_of(schemas, [](const auto& schema) {
@@ -674,7 +693,8 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
   }
 
   size_t declaration_count = 0;
-  const auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  const auto schemas = ParseFunctionSchemas(
+      tools_json, tool_kinds, declaration_count, /*recovery_aware=*/true);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
       std::ranges::any_of(schemas, [](const auto& schema) {

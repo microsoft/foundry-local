@@ -710,8 +710,8 @@ TEST(QwenXmlToolCallAccumulatorTest, CopilotGlobAnyOfRejectsMalformedAndWrongUni
 TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText) {
   const std::string tools =
       R"([{"type":"function","function":{"name":"collect","parameters":{"type":"object","properties":{)"
-      R"("values":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}}})"
-      R"(},"required":["values"]}}}])";
+      R"("values":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}}},)"
+      R"("required":["values"]}}}])";
   const std::string generated =
       "<tool_call>\n"
       "<function=collect>\n"
@@ -720,6 +720,11 @@ TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText
       "</parameter>\n"
       "</function>\n"
       "</tool_call>";
+
+  EXPECT_TRUE(static_cast<bool>(
+      CreateQwenXmlToolCallPayloadParser(tools, {{"collect", ToolKind::kFunction}})));
+  EXPECT_FALSE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(
+      tools, {{"collect", ToolKind::kFunction}}, /*recovery_aware=*/true)));
 
   auto output = RunQwen({generated}, tools, {{"collect", ToolKind::kFunction}});
   EXPECT_TRUE(output.calls.empty());
