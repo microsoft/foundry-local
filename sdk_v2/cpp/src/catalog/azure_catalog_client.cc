@@ -70,10 +70,12 @@ std::vector<std::string> CreateModelFilter(const std::string& filter_override) {
   return values;
 }
 
-CatalogFilter MakeFilter(std::string field, std::vector<std::string> values) {
+CatalogFilter MakeFilter(std::string field,
+                         std::vector<std::string> values,
+                         std::string op = "eq") {
   CatalogFilter f;
   f.field = std::move(field);
-  f.op = "eq";
+  f.op = std::move(op);
   f.values = std::move(values);
   return f;
 }
@@ -148,26 +150,24 @@ std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_mo
   return infos;
 }
 
-/// Build per-device filter sets for catalog queries.
-/// `latest_only` controls whether to include the `labels=latest` filter (default true).
-/// Each filter set queries for variants on a specific device/EP pair; the catalog API matches on
-/// the (device, executionProvider) pair.
+/// Build the full-service Asset Gallery filter sets used for catalog queries.
 std::vector<std::vector<CatalogFilter>> BuildSearchFilters(const IEpDetector& ep_detector,
                                                            const std::vector<std::string>& model_filter,
                                                            bool latest_only = true) {
-  const auto deployment_options = ResolveDeploymentOptions(model_filter);
-
   std::vector<std::vector<CatalogFilter>> filter_sets;
   for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
-    std::vector<CatalogFilter> filters;
-
-    filters.push_back(MakeFilter("deploymentOptions", deployment_options));
+    std::vector<CatalogFilter> filters{
+        MakeFilter("type", {"models"}),
+        MakeFilter("kind", {"Versioned"}),
+        MakeFilter("annotations/systemCatalogData/deploymentOptions",
+                   ResolveDeploymentOptions(model_filter)),
+        MakeFilter("annotations/archived", {"true"}, "NotEquals"),
+    };
     if (latest_only) {
       filters.push_back(MakeFilter("labels", {"latest"}));
     }
     filters.push_back(MakeFilter("variantInformation/variantMetadata/device", {ToLower(device)}));
     filters.push_back(MakeFilter("variantInformation/variantMetadata/executionProvider", eps));
-
     filter_sets.push_back(std::move(filters));
   }
   return filter_sets;
@@ -183,7 +183,11 @@ std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& m
   }
 
   std::vector<CatalogFilter> filters;
-  filters.push_back(MakeFilter("deploymentOptions", ResolveDeploymentOptions(model_filter)));
+  filters.push_back(MakeFilter("type", {"models"}));
+  filters.push_back(MakeFilter("kind", {"Versioned"}));
+  filters.push_back(MakeFilter("annotations/systemCatalogData/deploymentOptions",
+                               ResolveDeploymentOptions(model_filter)));
+  filters.push_back(MakeFilter("annotations/archived", {"true"}, "NotEquals"));
   filters.push_back(MakeFilter("name", names));
   return filters;
 }
@@ -204,6 +208,7 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
     http_post_response_ = [](const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
       options.user_agent = kUserAgent;
+      options.headers["x-ms-use-full-service-contracts"] = "true";
       return http::HttpPostWithResponse(url, body, options);
     };
   }

@@ -172,6 +172,52 @@ void from_json(const nlohmann::json& j, VariantInformation& v) {
 }
 
 void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
+  if (j.contains("properties") && j["properties"].is_object()) {
+    const auto& properties = j["properties"];
+    const auto& annotations = j.value("annotations", nlohmann::json::object());
+    const auto& system_data = annotations.value("systemCatalogData", nlohmann::json::object());
+    const auto& tags = annotations.value("tags", nlohmann::json::object());
+
+    opt_str(j, "assetId", m.asset_id);
+    opt_str(properties, "name", m.name);
+    opt_str(system_data, "alias", m.alias);
+    opt_str(system_data, "displayName", m.display_name);
+    opt_str(system_data, "publisher", m.publisher);
+    opt_str(system_data, "license", m.license);
+    opt_str(system_data, "licenseDescription", m.license_description);
+    opt_str(system_data, "minFLVersion", m.min_fl_version);
+    opt_bool(system_data, "supportsToolCalling", m.supports_tool_calling);
+    opt_bool(system_data, "supportsReasoning", m.supports_reasoning);
+    opt_str(properties.value("creationContext", nlohmann::json::object()), "createdTime", m.created_time);
+
+    if (properties.contains("version")) {
+      if (properties["version"].is_string()) {
+        m.version = properties["version"].get<std::string>();
+      } else if (properties["version"].is_number_integer()) {
+        m.version = std::to_string(properties["version"].get<int>());
+      }
+    }
+    if (system_data.contains("inferenceTasks") && system_data["inferenceTasks"].is_array()) {
+      m.inference_tasks = system_data["inferenceTasks"].get<std::vector<std::string>>();
+    }
+    if (system_data.contains("modelCapabilities") && system_data["modelCapabilities"].is_array()) {
+      m.model_capabilities = system_data["modelCapabilities"].get<std::vector<std::string>>();
+    }
+    if (properties.contains("variantInfo") && properties["variantInfo"].is_object()) {
+      m.variant_information = properties["variantInfo"].get<VariantInformation>();
+    }
+    if (!m.supports_reasoning && tags.contains("supportsReasoning") &&
+      tags["supportsReasoning"].is_string()) {
+      const auto value = ToLower(tags["supportsReasoning"].get<std::string>());
+      if (value == "true") {
+        m.supports_reasoning = true;
+      } else if (value == "false") {
+        m.supports_reasoning = false;
+      }
+    }
+    return;
+  }
+
   opt_str(j, "assetId", m.asset_id);
   opt_str(j, "name", m.name);
   opt_str(j, "alias", m.alias);
@@ -179,7 +225,10 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
   opt_str(j, "version", m.version);
   opt_str(j, "publisher", m.publisher);
   opt_str(j, "license", m.license);
+  opt_str(j, "licenseDescription", m.license_description);
   opt_str(j, "minFLVersion", m.min_fl_version);
+  opt_bool(j, "supportsToolCalling", m.supports_tool_calling);
+  opt_bool(j, "supportsReasoning", m.supports_reasoning);
   opt_str(j, "createdTime", m.created_time);
 
   if (j.contains("inferenceTasks") && j["inferenceTasks"].is_array()) {
@@ -207,7 +256,9 @@ void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
   opt_int(j, "totalCount", r.total_count);
   opt_str(j, "continuationToken", r.continuation_token);
 
-  if (j.contains("summaries") && j["summaries"].is_array()) {
+  if (j.contains("value") && j["value"].is_array()) {
+    r.models = j["value"].get<std::vector<CatalogLocalModel>>();
+  } else if (j.contains("summaries") && j["summaries"].is_array()) {
     r.models = j["summaries"].get<std::vector<CatalogLocalModel>>();
   }
 }
@@ -285,6 +336,11 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = *cm.license;
   }
 
+  if (cm.license_description && !cm.license_description->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR] =
+        *cm.license_description;
+  }
+
   if (cm.min_fl_version && !cm.min_fl_version->empty()) {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.min_fl_version;
   }
@@ -304,6 +360,16 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
         ContainsStringIgnoreCase(cm.model_capabilities, "reasoning") ? 1 : 0;
   }
+
+        if (cm.supports_tool_calling) {
+          info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] =
+          *cm.supports_tool_calling ? 1 : 0;
+        }
+
+        if (cm.supports_reasoning) {
+          info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
+          *cm.supports_reasoning ? 1 : 0;
+        }
 
   if (cm.model_limits) {
     if (!cm.model_limits->supported_input_modalities.empty()) {

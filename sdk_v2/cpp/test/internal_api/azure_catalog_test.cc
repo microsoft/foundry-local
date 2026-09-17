@@ -85,14 +85,21 @@ TEST(AzureCatalogClientTest, RequestUsesAssetGalleryContract) {
 
   EXPECT_EQ(captured["pageSize"], 50);
   const auto& filters = captured["filters"];
-  ASSERT_EQ(filters.size(), 4u);
-  EXPECT_EQ(filters[0]["field"], "deploymentOptions");
-  EXPECT_EQ(filters[0]["values"], nlohmann::json({"Foundry Local on Devices"}));
-  EXPECT_EQ(filters[1]["field"], "labels");
-  EXPECT_EQ(filters[1]["values"], nlohmann::json({"latest"}));
-  EXPECT_EQ(filters[2]["field"], "variantInformation/variantMetadata/device");
-  EXPECT_EQ(filters[2]["values"], nlohmann::json({"cpu"}));
-  EXPECT_EQ(filters[3]["field"], "variantInformation/variantMetadata/executionProvider");
+  ASSERT_EQ(filters.size(), 7u);
+  EXPECT_EQ(filters[0]["field"], "type");
+  EXPECT_EQ(filters[0]["values"], nlohmann::json({"models"}));
+  EXPECT_EQ(filters[1]["field"], "kind");
+  EXPECT_EQ(filters[1]["values"], nlohmann::json({"Versioned"}));
+  EXPECT_EQ(filters[2]["field"], "annotations/systemCatalogData/deploymentOptions");
+  EXPECT_EQ(filters[2]["values"], nlohmann::json({"Foundry Local on Devices"}));
+  EXPECT_EQ(filters[3]["field"], "annotations/archived");
+  EXPECT_EQ(filters[3]["operator"], "NotEquals");
+  EXPECT_EQ(filters[3]["values"], nlohmann::json({"true"}));
+  EXPECT_EQ(filters[4]["field"], "labels");
+  EXPECT_EQ(filters[4]["values"], nlohmann::json({"latest"}));
+  EXPECT_EQ(filters[5]["field"], "variantInformation/variantMetadata/device");
+  EXPECT_EQ(filters[5]["values"], nlohmann::json({"cpu"}));
+  EXPECT_EQ(filters[6]["field"], "variantInformation/variantMetadata/executionProvider");
 }
 
 TEST(AzureCatalogClientTest, OverrideReplacesDeploymentOptionFilter) {
@@ -107,7 +114,7 @@ TEST(AzureCatalogClientTest, OverrideReplacesDeploymentOptionFilter) {
 
   client.FetchAllModels();
 
-  EXPECT_EQ(captured["filters"][0]["values"], nlohmann::json({"Custom One", "Custom Two"}));
+  EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"Custom One", "Custom Two"}));
 }
 
 TEST(AzureCatalogClientTest, UsesOneFilterSetPerDeviceAndProvider) {
@@ -123,9 +130,9 @@ TEST(AzureCatalogClientTest, UsesOneFilterSetPerDeviceAndProvider) {
   client.FetchAllModels();
 
   ASSERT_EQ(requests.size(), 3u);
-  EXPECT_EQ(requests[0]["filters"][2]["values"], nlohmann::json({"cpu"}));
-  EXPECT_EQ(requests[1]["filters"][2]["values"], nlohmann::json({"gpu"}));
-  EXPECT_EQ(requests[2]["filters"][2]["values"], nlohmann::json({"npu"}));
+  EXPECT_EQ(requests[0]["filters"][5]["values"], nlohmann::json({"cpu"}));
+  EXPECT_EQ(requests[1]["filters"][5]["values"], nlohmann::json({"gpu"}));
+  EXPECT_EQ(requests[2]["filters"][5]["values"], nlohmann::json({"npu"}));
 }
 
 TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
@@ -173,6 +180,40 @@ TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 2048);
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.1.0");
+}
+
+TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFields) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/phi-4-mini-generic-cpu/versions/2",
+      "annotations": {
+        "tags": {"supportsReasoning": "false", "promptTemplate": "{}", "toolCallStart": "<tool>"},
+        "systemCatalogData": {
+          "alias": "phi-4-mini", "license": "MIT", "licenseDescription": "License terms",
+          "minFLVersion": "0.1.0", "supportsToolCalling": true,
+          "reasoningStart": "<think>", "inferenceTasks": ["chat-completion"]
+        }
+      },
+      "properties": {
+        "name": "phi-4-mini-generic-cpu", "version": 2,
+        "creationContext": {"createdTime": "2026-06-02T07:03:01Z"},
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
+
+  const auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 1u);
+  const auto& info = model_infos.front();
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR), "License terms");
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
+  EXPECT_FALSE(info.string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR));
+  EXPECT_FALSE(info.string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR));
 }
 
 TEST(AzureCatalogClientTest, FiltersModelsAboveCurrentMinFlVersion) {
@@ -260,9 +301,9 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsUsesNamesButReturnsExactVersions) {
   const auto models = client.FetchModelsByIds({"phi-4-mini:1"});
   ASSERT_EQ(models.size(), 1u);
   EXPECT_EQ(models.front().model_id, "phi-4-mini:1");
-  ASSERT_EQ(captured["filters"].size(), 2u);
-  EXPECT_EQ(captured["filters"][1]["field"], "name");
-  EXPECT_EQ(captured["filters"][1]["values"], nlohmann::json({"phi-4-mini"}));
+  ASSERT_EQ(captured["filters"].size(), 5u);
+  EXPECT_EQ(captured["filters"][4]["field"], "name");
+  EXPECT_EQ(captured["filters"][4]["values"], nlohmann::json({"phi-4-mini"}));
 }
 
 TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyDoesNotIssueRequest) {

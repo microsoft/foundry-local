@@ -77,7 +77,10 @@ struct CatalogLocalModel {
   std::optional<std::string> version;  // numeric string, e.g. "4"
   std::optional<std::string> publisher;
   std::optional<std::string> license;
+  std::optional<std::string> license_description;
   std::optional<std::string> min_fl_version;
+  std::optional<bool> supports_tool_calling;
+  std::optional<bool> supports_reasoning;
   std::optional<std::string> created_time;
   std::vector<std::string> inference_tasks;
   std::vector<std::string> model_capabilities;
