@@ -115,6 +115,6 @@ test('shared skip link is hidden until keyboard focus and targets both main land
 test('dropdown menus remain scrollable within the viewport below the sticky header', () => {
 	const content = readSource('../src/lib/components/ui/dropdown-menu/dropdown-menu-content.svelte');
 
-	assert.match(content, /max-h-\[calc\(100dvh-4rem\)\]/);
+	assert.match(content, /max-h-\[var\(--bits-dropdown-menu-content-available-height\)\]/);
 	assert.match(content, /overflow-y-auto/);
 });
