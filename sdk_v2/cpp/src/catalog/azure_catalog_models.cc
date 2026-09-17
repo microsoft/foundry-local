@@ -174,6 +174,7 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
   opt_str(j, "version", m.version);
   opt_str(j, "publisher", m.publisher);
   opt_str(j, "license", m.license);
+  opt_str(j, "minFLVersion", m.min_fl_version);
   opt_str(j, "createdTime", m.created_time);
 
   if (j.contains("inferenceTasks") && j["inferenceTasks"].is_array()) {
@@ -277,6 +278,10 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
 
   if (cm.license && !cm.license->empty()) {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = *cm.license;
+  }
+
+  if (cm.min_fl_version && !cm.min_fl_version->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.min_fl_version;
   }
 
   if (cm.publisher && !cm.publisher->empty()) {

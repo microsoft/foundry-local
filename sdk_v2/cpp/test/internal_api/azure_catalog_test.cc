@@ -142,6 +142,7 @@ TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
       "version": "2",
       "publisher": "Microsoft",
       "license": "MIT",
+      "minFLVersion": "0.1.0",
       "createdTime": "2026-06-02T07:03:01.3390586+00:00",
       "inferenceTasks": ["chat-completion"],
       "modelCapabilities": ["tool-calling", "reasoning"],
@@ -171,6 +172,31 @@ TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 2048);
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.1.0");
+}
+
+TEST(AzureCatalogClientTest, FiltersModelsAboveCurrentMinFlVersion) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(R"({"summaries":[
+                                {
+                                  "assetId":"azureml://registries/azureml/models/future/versions/1",
+                                  "name":"future", "alias":"future", "version":"1",
+                                  "minFLVersion":"999.0.0", "variantInformation":{}
+                                },
+                                {
+                                  "assetId":"azureml://registries/azureml/models/current/versions/1",
+                                  "name":"current", "alias":"current", "version":"1",
+                                  "variantInformation":{}
+                                }
+                              ]})");
+                            });
+
+  const auto models = client.FetchAllModelInfos();
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models.front().name, "current");
 }
 
 TEST(AzureCatalogClientTest, FallsBackToParentNameWhenAliasIsNotReturned) {

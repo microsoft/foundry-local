@@ -4,6 +4,7 @@
 
 #include "http/http_client.h"
 #include "utils.h"
+#include "version.h"
 
 #include <nlohmann/json.hpp>
 
@@ -12,7 +13,9 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -94,9 +97,49 @@ std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
   return body.dump();
 }
 
+struct SemVer {
+  int major = 0;
+  int minor = 0;
+  int patch = 0;
+};
+
+std::optional<SemVer> ParseSemVer(const std::string& version) {
+  int major = 0;
+  int minor = 0;
+  int patch = 0;
+  char first_dot = '\0';
+  char second_dot = '\0';
+  std::istringstream stream(version);
+  if (!(stream >> major >> first_dot >> minor >> second_dot >> patch) ||
+      first_dot != '.' || second_dot != '.' || !stream.eof() ||
+      major < 0 || minor < 0 || patch < 0) {
+    return std::nullopt;
+  }
+  return SemVer{major, minor, patch};
+}
+
+bool MeetsMinFlVersion(const CatalogLocalModel& model) {
+  if (!model.min_fl_version || model.min_fl_version->empty()) {
+    return true;
+  }
+
+  static const std::optional<SemVer> current = ParseSemVer(FOUNDRY_LOCAL_VERSION);
+  const auto minimum = ParseSemVer(*model.min_fl_version);
+  if (!current || !minimum) {
+    return false;
+  }
+
+  return std::tie(current->major, current->minor, current->patch) >=
+         std::tie(minimum->major, minimum->minor, minimum->patch);
+}
+
 std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_models) {
   std::vector<ModelInfo> infos;
   for (const auto& model : raw_models) {
+    if (!MeetsMinFlVersion(model)) {
+      continue;
+    }
+
     if (auto info = CatalogModelToModelInfo(model)) {
       infos.push_back(std::move(*info));
     }
