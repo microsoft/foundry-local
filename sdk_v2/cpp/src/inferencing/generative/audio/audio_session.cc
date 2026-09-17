@@ -488,7 +488,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "streaming_pcm",
       .language = language == effective_kvp.end() ? "" : language->second,
-      .duration_ms = AudioDurationMsFromSamples(audio_samples),
+      .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
       .sample_rate = kStreamingSampleRate,
       .channels = kStreamingChannels,
   };
@@ -741,7 +741,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
     }
   }
 
-  auto samples = LoadPcmWavAsFloatSamples(req.filename);
+  auto samples = AudioInternal::LoadPcmWavAsFloatSamples(req.filename);
   auto& oga_model = Model().GetOgaModel();
   auto processor = OgaStreamingProcessor::Create(oga_model);
   auto tokenizer = OgaTokenizer::Create(oga_model);
@@ -782,7 +782,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "openai_json_file",
       .language = language,
-      .duration_ms = AudioDurationMsFromSamples(audio_samples),
+      .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
       .sample_rate = kStreamingSampleRate,
       .channels = kStreamingChannels,
   };
@@ -794,7 +794,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
                                                       FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
 }
 
-int64_t AudioSession::AudioDurationMsFromSamples(int64_t samples) {
+int64_t AudioInternal::AudioDurationMsFromSamples(int64_t samples) {
   // All PCM paths validate mono 16 kHz. Count converted samples, not file bytes (WAV may also be float32).
   return samples / (kStreamingSampleRate / 1000);
 }
@@ -823,7 +823,7 @@ void AudioSession::RecordAdditionalModelUsage(const Response& response, const Mo
   Telemetry().RecordAudioUsage(info);
 }
 
-std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
+std::vector<float> AudioInternal::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
   std::ifstream in(audio_file_path, std::ios::binary);
   if (!in) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,

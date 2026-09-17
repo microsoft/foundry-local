@@ -8,6 +8,7 @@
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
+#include "inferencing/generative/audio/pcm_utils.h"
 #include "inferencing/model_load_manager.h"
 #include "items/audio_item.h"
 #include "items/bytes_item.h"
@@ -36,19 +37,6 @@
 #include <nlohmann/json.hpp>
 
 using namespace fl;
-
-namespace fl {
-class AudioSessionTestAccessor {
- public:
-  static std::vector<float> LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
-    return AudioSession::LoadPcmWavAsFloatSamples(audio_file_path);
-  }
-
-  static int64_t AudioDurationMsFromSamples(int64_t samples) {
-    return AudioSession::AudioDurationMsFromSamples(samples);
-  }
-};
-}  // namespace fl
 
 namespace {
 
@@ -832,7 +820,7 @@ TEST_F(AudioSessionTest, LoadPcmWavAsFloatSamples_DecodesFloat32Path) {
   const std::vector<float> input = {-0.75f, -0.25f, 0.0f, 0.25f, 0.75f};
   WriteWavFloat32(temp.path(), /*sample_rate_hz=*/16000, /*channels=*/1, input);
 
-  auto samples = fl::AudioSessionTestAccessor::LoadPcmWavAsFloatSamples(temp.path().string());
+  auto samples = AudioInternal::LoadPcmWavAsFloatSamples(temp.path().string());
   ASSERT_EQ(samples.size(), input.size());
   for (size_t i = 0; i < input.size(); ++i) {
     EXPECT_NEAR(samples[i], input[i], 1e-6f);
@@ -869,12 +857,12 @@ TEST_F(AudioSessionTest, NemotronOpenAIJsonRejectsOversizedWavDataChunkBeforeAll
 // ===========================================================================
 
 TEST(AudioTelemetryTest, PcmDurationCountsSamplesIncludingEmptyAndSubMillisecondInput) {
-  EXPECT_EQ(AudioSessionTestAccessor::AudioDurationMsFromSamples(0), 0);
-  EXPECT_EQ(AudioSessionTestAccessor::AudioDurationMsFromSamples(15), 0);
-  EXPECT_EQ(AudioSessionTestAccessor::AudioDurationMsFromSamples(16), 1);
-  EXPECT_EQ(AudioSessionTestAccessor::AudioDurationMsFromSamples(16000), 1000);
-  EXPECT_EQ(AudioSessionTestAccessor::AudioDurationMsFromSamples(24016), 1501);
-  EXPECT_EQ(AudioSessionTestAccessor::AudioDurationMsFromSamples(std::numeric_limits<int64_t>::max()),
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(0), 0);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(15), 0);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(16), 1);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(16000), 1000);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(24016), 1501);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(std::numeric_limits<int64_t>::max()),
             std::numeric_limits<int64_t>::max() / 16);
 }
 

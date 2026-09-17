@@ -727,9 +727,9 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesDeterministicProviderO
   EXPECT_EQ(property_names, (std::vector<std::string>{"EventInfo.Level", "ProviderOptions", "clientApiKey"}));
 }
 
-TEST(TelemetrySamplingTest, UsesOnePercentDefaultAndProcessRates) {
-  EXPECT_DOUBLE_EQ(TelemetryInternal::kTelemetrySampleRatePercent, 1.0);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::kProcessEventSampleRatePercent, 1.0);
+TEST(TelemetrySamplingTest, RetainsAllNonAudioEvents) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kTelemetrySampleRatePercent, 100.0);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kProcessEventSampleRatePercent, 100.0);
 }
 
 TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
@@ -740,7 +740,7 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
 TEST(TelemetrySamplingTest, HeavilySamplesCorrelatedCoreAudioEvents) {
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 0.1);
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForEvent("AudioModel"), 0.1);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 1.0);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
 
   bool retained = false;
   bool dropped = false;

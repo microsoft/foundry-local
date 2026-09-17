@@ -38,8 +38,8 @@ Non-essential telemetry can be disabled as follows. Foundry Local may still send
 
 HTTP operations propagate a correlation ID to their nested inference events. SDK calls identify the calling language
 through a versioned user agent. Model IDs remain fields on `Action`; there is no separate `ModelId` event, and locale
-is not collected. Events are deterministically sampled by process or operation correlation ID. Most event families
-retain 1%; high-volume `OpenAIAudioTranscribe` and `AudioModel` events retain 0.1% as a correlated pair.
+is not collected. General event families retain 100%. High-volume `OpenAIAudioTranscribe` and `AudioModel` events
+retain 0.1% as a correlated pair, selected deterministically by operation correlation ID.
 
 Telemetry strings are redacted at the final emission boundary, including strings in arrays and structured values.
 Each string is capped at 40,960 UTF-8 bytes without splitting a character or a redaction marker.

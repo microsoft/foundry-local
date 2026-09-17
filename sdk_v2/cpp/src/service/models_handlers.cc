@@ -68,6 +68,7 @@ class LoadModelHandler : public HttpRequestHandler {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
+    tracker.SetModelId(model->Id());
 
     if (model->IsLoaded()) {
       tracker.SetStatus(ActionStatus::kSkipped);
@@ -82,13 +83,11 @@ class LoadModelHandler : public HttpRequestHandler {
 
     try {
       model->Load();
-      tracker.SetModelId(name);
       tracker.SetStatus(ActionStatus::kSuccess);
 
       ctx_.logger.Log(LogLevel::Information, fmt::format("Model loaded via web service: {}", name));
       return JsonResponse(Status::CODE_200, {{"status", "loaded"}});
     } catch (const std::exception& ex) {
-      tracker.SetModelId(name);
       tracker.RecordException(ex);
 
       ctx_.logger.Log(LogLevel::Error, fmt::format("Failed to load model {}: {}", name, ex.what()));
@@ -125,6 +124,7 @@ class UnloadModelHandler : public HttpRequestHandler {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
+    tracker.SetModelId(model->Id());
 
     if (!model->IsLoaded()) {
       tracker.SetStatus(ActionStatus::kSkipped);
@@ -134,13 +134,11 @@ class UnloadModelHandler : public HttpRequestHandler {
 
     try {
       model->Unload();
-      tracker.SetModelId(name);
       tracker.SetStatus(ActionStatus::kSuccess);
 
       ctx_.logger.Log(LogLevel::Information, fmt::format("Model unloaded via web service: {}", name));
       return JsonResponse(Status::CODE_200, {{"status", "unloaded"}});
     } catch (const std::exception& ex) {
-      tracker.SetModelId(name);
       tracker.RecordException(ex);
 
       ctx_.logger.Log(LogLevel::Error, fmt::format("Failed to unload model {}: {}", name, ex.what()));

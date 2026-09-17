@@ -1426,6 +1426,39 @@ TEST_P(WebServiceTelemetryTest, ClientErrorRetainsHttpResponseAndRecordsDirectAt
   EXPECT_TRUE(events.models.empty());
 }
 
+TEST(WebServiceTelemetryTest, KnownModelManagementOutcomesRecordResolvedModelId) {
+  test::FakeServiceBindings bindings;
+  test::MockCatalog catalog;
+  catalog.AddModel(Model::FromModelInfo(test::MakeTestModelInfo("alpha-model"), "", bindings.download_manager,
+                                        bindings.model_load_manager));
+  SessionManager sessions(bindings.logger);
+  WebUsageTelemetry telemetry;
+  auto cache = test::TempPath::CreateTempDir("fl_model_telemetry_");
+  WebService service(catalog, fl::test::NullLog(), cache.string(), bindings.model_load_manager,
+                     sessions, telemetry, []() {});
+  const auto urls = service.Start({"http://127.0.0.1:0"});
+  ASSERT_EQ(urls.size(), 1u);
+  httplib::Client client(urls[0]);
+  client.set_read_timeout(10, 0);
+
+  const auto load_response = client.Get("/models/load/alpha-model");
+  ASSERT_TRUE(load_response);
+  EXPECT_EQ(load_response->status, 400);
+  const auto unload_response = client.Get("/models/unload/alpha-model");
+  ASSERT_TRUE(unload_response);
+  EXPECT_EQ(unload_response->status, 200);
+  service.Stop();
+
+  const auto events = telemetry.Events();
+  ASSERT_EQ(events.actions.size(), 2u);
+  EXPECT_EQ(events.actions[0].action, Action::kModelLoad);
+  EXPECT_EQ(events.actions[0].status, ActionStatus::kClientError);
+  EXPECT_EQ(events.actions[0].model_id, "alpha-model:1");
+  EXPECT_EQ(events.actions[1].action, Action::kModelUnload);
+  EXPECT_EQ(events.actions[1].status, ActionStatus::kSkipped);
+  EXPECT_EQ(events.actions[1].model_id, "alpha-model:1");
+}
+
 INSTANTIATE_TEST_SUITE_P(
     RejectedRequests, WebServiceTelemetryTest,
     ::testing::Values(
