@@ -454,6 +454,14 @@ TEST(TelemetryMetadataTest, HostAppVersionIsAlwaysPopulated) {
   EXPECT_FALSE(metadata.version.empty());
 }
 
+#ifdef _WIN32
+TEST(TelemetryMetadataTest, ProcessNamePreservesExecutableExtensionOnWindows) {
+  auto info = BuildProcessInfo(BuildTelemetryMetadata("foundry-local-test"), /*include_device_id_status=*/false);
+
+  EXPECT_TRUE(info.process_name.ends_with(".exe")) << info.process_name;
+}
+#endif
+
 TEST(TelemetryGuidTest, GeneratesRfc4122VersionFourValues) {
   const auto first = GenerateGuidV4();
   const auto second = GenerateGuidV4();
@@ -729,7 +737,6 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesDeterministicProviderO
 
 TEST(TelemetrySamplingTest, RetainsAllNonAudioEvents) {
   EXPECT_DOUBLE_EQ(TelemetryInternal::kTelemetrySampleRatePercent, 100.0);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::kProcessEventSampleRatePercent, 100.0);
 }
 
 TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
@@ -737,9 +744,9 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
   EXPECT_TRUE(TelemetryInternal::ShouldSampleTelemetryEvent("app-session", "corr-1", 100.0));
 }
 
-TEST(TelemetrySamplingTest, HeavilySamplesCorrelatedCoreAudioEvents) {
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 0.1);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForEvent("AudioModel"), 0.1);
+TEST(TelemetrySamplingTest, SamplesOnlyCorrelatedAudioEventsAtOnePercent) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 1.0);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kAudioSampleRatePercent, 1.0);
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
 
   bool retained = false;

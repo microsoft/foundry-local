@@ -271,7 +271,6 @@ set(FOUNDRY_LOCAL_SOURCES
     src/telemetry/ep_download_tracker.cc
     src/telemetry/invocation_context.cc
     src/telemetry/telemetry_environment.cc
-    src/telemetry/telemetry_event_properties_sanitizer.cc
     src/telemetry/telemetry_logger.cc
     src/telemetry/telemetry_metadata.cc
     src/utils.cc

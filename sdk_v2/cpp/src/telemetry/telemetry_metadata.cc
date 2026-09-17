@@ -14,7 +14,6 @@
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
-#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -52,15 +51,7 @@ std::string GetProcessName() {
   if (path.empty()) {
     return "unknown";
   }
-  auto process_name = std::filesystem::path(path).filename().string();
-  constexpr std::string_view executable_extension = ".exe";
-  if (process_name.size() > executable_extension.size()) {
-    const auto extension = process_name.substr(process_name.size() - executable_extension.size());
-    if (TelemetryInternal::ToLowerAscii(extension) == executable_extension) {
-      process_name.resize(process_name.size() - executable_extension.size());
-    }
-  }
-  return process_name;
+  return std::filesystem::path(path).filename().string();
 }
 
 std::string ReadRegistryString(HKEY root, const char* subkey, const char* value_name) {

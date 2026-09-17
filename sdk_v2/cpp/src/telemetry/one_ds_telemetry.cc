@@ -97,11 +97,11 @@ std::string GetToken() {
 void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
   mat_logger->SetContext("AppName", ScrubStringForTelemetry(m.app_name));
   mat_logger->SetContext("AppVersion", ScrubStringForTelemetry(m.app_version));
-  mat_logger->SetContext("FoundryLocalVersion", ScrubStringForTelemetry(m.version));
-  mat_logger->SetContext("AppSessionGuid", ScrubStringForTelemetry(m.app_session_guid));
-  mat_logger->SetContext("OsName", ScrubStringForTelemetry(m.os_name));
-  mat_logger->SetContext("OsVersion", ScrubStringForTelemetry(m.os_version));
-  mat_logger->SetContext("CpuArch", ScrubStringForTelemetry(m.cpu_arch));
+  mat_logger->SetContext("FoundryLocalVersion", m.version);
+  mat_logger->SetContext("AppSessionGuid", m.app_session_guid);
+  mat_logger->SetContext("OsName", m.os_name);
+  mat_logger->SetContext("OsVersion", m.os_version);
+  mat_logger->SetContext("CpuArch", m.cpu_arch);
 }
 
 EventProperties MakeEvent(
@@ -135,7 +135,7 @@ void CleanupLogManager(MatILogManager* log_manager, ILogConfiguration& config) n
 }
 
 bool ShouldSampleEvent(std::string_view app_session_guid, std::string_view correlation_id,
-                       double sample_rate_percent = TelemetryInternal::kTelemetrySampleRatePercent) {
+                       double sample_rate_percent) {
   return TelemetryInternal::ShouldSampleTelemetryEvent(
       app_session_guid, correlation_id.empty() ? app_session_guid : correlation_id, sample_rate_percent);
 }
@@ -289,13 +289,14 @@ void OneDsTelemetry::RecordAction(Action action, ActionStatus status, const Invo
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id,
-                         TelemetryInternal::SampleRateForAction(ActionToString(action)))) {
+  const auto action_name = ActionToString(action);
+  const auto sample_rate_percent = TelemetryInternal::SampleRateForAction(action_name);
+  if (sample_rate_percent < 100.0 &&
+      !ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id, sample_rate_percent)) {
     return;
   }
-  const auto sample_rate_percent = TelemetryInternal::SampleRateForAction(ActionToString(action));
   auto ev = MakeEvent("Action", sample_rate_percent);
-  ev.SetProperty("Action", std::string(ActionToString(action)));
+  ev.SetProperty("Action", std::string(action_name));
   ev.SetProperty("Status", std::string(ActionStatusToString(status)));
   ev.SetProperty("UserAgent", context.user_agent);
   ev.SetProperty("CorrelationId", context.correlation_id);
@@ -315,7 +316,8 @@ void OneDsTelemetry::RecordException(Action action, const std::exception& except
     return;
   }
   const auto sample_rate_percent = TelemetryInternal::SampleRateForAction(ActionToString(action));
-  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id, sample_rate_percent)) {
+  if (sample_rate_percent < 100.0 &&
+      !ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id, sample_rate_percent)) {
     return;
   }
   auto ev = MakeEvent("Error", sample_rate_percent);
@@ -335,9 +337,6 @@ void OneDsTelemetry::RecordModelUsage(const ModelUsageInfo& info) {
   local_log_.RecordModelUsage(info);
   auto lock = LockForLogging();
   if (!lock.owns_lock()) {
-    return;
-  }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
   auto ev = MakeEvent("Model");
@@ -364,7 +363,7 @@ void OneDsTelemetry::RecordAudioUsage(const AudioUsageInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  const auto sample_rate_percent = TelemetryInternal::SampleRateForEvent("AudioModel");
+  constexpr auto sample_rate_percent = TelemetryInternal::kAudioSampleRatePercent;
   if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id, sample_rate_percent)) {
     return;
   }
@@ -393,9 +392,6 @@ void OneDsTelemetry::RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) 
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
-    return;
-  }
   auto ev = MakeEvent("EPDownloadAttempt");
   ev.SetProperty("UserAgent", info.user_agent);
   ev.SetProperty("CorrelationId", info.correlation_id);
@@ -413,9 +409,6 @@ void OneDsTelemetry::RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo
   local_log_.RecordEpDownloadAndRegister(info);
   auto lock = LockForLogging();
   if (!lock.owns_lock()) {
-    return;
-  }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
   auto ev = MakeEvent("EPDownloadAndRegister");
@@ -436,9 +429,6 @@ void OneDsTelemetry::RecordDownload(const DownloadInfo& info) {
   local_log_.RecordDownload(info);
   auto lock = LockForLogging();
   if (!lock.owns_lock()) {
-    return;
-  }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
     return;
   }
   auto ev = MakeEvent("Download");
@@ -464,9 +454,6 @@ void OneDsTelemetry::RecordCatalogFetch(const CatalogFetchInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
-    return;
-  }
   auto ev = MakeEvent("CatalogFetch");
   ev.SetProperty("Operation", info.operation);
   ev.SetProperty("Endpoint", info.endpoint);
@@ -487,11 +474,7 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid,
-                         TelemetryInternal::kProcessEventSampleRatePercent)) {
-    return;
-  }
-  auto ev = MakeEvent("ProcessInfo", TelemetryInternal::kProcessEventSampleRatePercent);
+  auto ev = MakeEvent("ProcessInfo");
   ev.SetProperty("appVersion", info.app_version);
   ev.SetProperty("appName", info.app_name);
   ev.SetProperty("osName", info.os_name);
@@ -518,11 +501,7 @@ void OneDsTelemetry::RecordHardwareInfo(const HardwareInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid,
-                         TelemetryInternal::kProcessEventSampleRatePercent)) {
-    return;
-  }
-  auto ev = MakeEvent("HardwareInfo", TelemetryInternal::kProcessEventSampleRatePercent);
+  auto ev = MakeEvent("HardwareInfo");
   ev.SetProperty("DeviceTypes", info.device_types);
   ev.SetProperty("ExecutionProviders", info.execution_providers);
   ev.SetProperty("DeviceTypeCount", static_cast<int64_t>(info.device_type_count));
@@ -539,9 +518,6 @@ void OneDsTelemetry::StartSession() {
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid)) {
-    return;
-  }
   // LogSession(Started) opens an app-usage session; the SDK stamps ext.app.sesId
   // on subsequent events and records session duration on End.
   auto ev = MakeEvent("Session");
@@ -553,9 +529,6 @@ void OneDsTelemetry::EndSession() {
   local_log_.EndSession();
   auto lock = LockForLogging();
   if (!lock.owns_lock()) {
-    return;
-  }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid)) {
     return;
   }
   auto ev = MakeEvent("Session");
