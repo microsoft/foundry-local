@@ -232,6 +232,10 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
     }
     if (auto* semantic_context = impl_->logger->GetSemanticContext(); semantic_context != nullptr) {
       TelemetryInternal::SuppressUnneededCommonContext(*semantic_context);
+      TelemetryInternal::SetApplicationNameFromProcessName(
+          *semantic_context,
+          ScrubStringForTelemetry(
+              BuildProcessInfo(metadata_, /*include_device_id_status=*/false).process_name));
       if (!disable_nonessential_telemetry) {
         const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
         if (!hashed_device_id.empty()) {
@@ -310,10 +314,11 @@ void OneDsTelemetry::RecordException(Action action, const std::exception& except
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id)) {
+  const auto sample_rate_percent = TelemetryInternal::SampleRateForAction(ActionToString(action));
+  if (!ShouldSampleEvent(metadata_.app_session_guid, context.correlation_id, sample_rate_percent)) {
     return;
   }
-  auto ev = MakeEvent("Error");
+  auto ev = MakeEvent("Error", sample_rate_percent);
   ev.SetProperty("Action", std::string(ActionToString(action)));
   ev.SetProperty("UserAgent", context.user_agent);
   ev.SetProperty("CorrelationId", context.correlation_id);
@@ -359,10 +364,11 @@ void OneDsTelemetry::RecordAudioUsage(const AudioUsageInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id)) {
+  const auto sample_rate_percent = TelemetryInternal::SampleRateForEvent("AudioModel");
+  if (!ShouldSampleEvent(metadata_.app_session_guid, info.correlation_id, sample_rate_percent)) {
     return;
   }
-  auto ev = MakeEvent("AudioModel");
+  auto ev = MakeEvent("AudioModel", sample_rate_percent);
   ev.SetProperty("ModelId", info.model_id);
   ev.SetProperty("ExecutionProvider", info.execution_provider);
   ev.SetProperty("UserAgent", info.user_agent);
@@ -481,7 +487,11 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  auto ev = MakeEvent("ProcessInfo");
+  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid,
+                         TelemetryInternal::kProcessEventSampleRatePercent)) {
+    return;
+  }
+  auto ev = MakeEvent("ProcessInfo", TelemetryInternal::kProcessEventSampleRatePercent);
   ev.SetProperty("appVersion", info.app_version);
   ev.SetProperty("appName", info.app_name);
   ev.SetProperty("osName", info.os_name);
@@ -489,6 +499,14 @@ void OneDsTelemetry::RecordProcessInfo(const ProcessInfo& info) {
   ev.SetProperty("architecture", info.cpu_arch);
   ev.SetProperty("processName", info.process_name);
   ev.SetProperty("DeviceInfo.Status", info.device_id_status);
+  ev.SetProperty("isContainer", info.is_container);
+  ev.SetProperty("containerType", info.container_type);
+  ev.SetProperty("isVirtualMachine", info.is_virtual_machine);
+  ev.SetProperty("virtualizationType", info.virtualization_type);
+  ev.SetProperty("isEmulator", info.is_emulator);
+  ev.SetProperty("hostEnvironment", info.host_environment);
+  ev.SetProperty("environmentDetectionConfidence", info.environment_detection_confidence);
+  ev.SetProperty("deviceIdScope", info.device_id_scope);
   ev.SetProperty("cpuCount", static_cast<int64_t>(info.cpu_count));
   ev.SetProperty("totalMemoryMB", info.total_memory_mb);
   SafeLog(impl_->logger, ev);
@@ -500,7 +518,11 @@ void OneDsTelemetry::RecordHardwareInfo(const HardwareInfo& info) {
   if (!lock.owns_lock()) {
     return;
   }
-  auto ev = MakeEvent("HardwareInfo");
+  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid,
+                         TelemetryInternal::kProcessEventSampleRatePercent)) {
+    return;
+  }
+  auto ev = MakeEvent("HardwareInfo", TelemetryInternal::kProcessEventSampleRatePercent);
   ev.SetProperty("DeviceTypes", info.device_types);
   ev.SetProperty("ExecutionProviders", info.execution_providers);
   ev.SetProperty("DeviceTypeCount", static_cast<int64_t>(info.device_type_count));
@@ -517,6 +539,9 @@ void OneDsTelemetry::StartSession() {
   if (!lock.owns_lock()) {
     return;
   }
+  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid)) {
+    return;
+  }
   // LogSession(Started) opens an app-usage session; the SDK stamps ext.app.sesId
   // on subsequent events and records session duration on End.
   auto ev = MakeEvent("Session");
@@ -528,6 +553,9 @@ void OneDsTelemetry::EndSession() {
   local_log_.EndSession();
   auto lock = LockForLogging();
   if (!lock.owns_lock()) {
+    return;
+  }
+  if (!ShouldSampleEvent(metadata_.app_session_guid, metadata_.app_session_guid)) {
     return;
   }
   auto ev = MakeEvent("Session");

@@ -159,6 +159,68 @@ TEST(TelemetryEnvironmentTest, DetectsSharedOrtTelemetryOptOut) {
   EXPECT_TRUE(TelemetryEnvironment::IsTelemetryDisabledByEnvVar());
 }
 
+TEST(TelemetryEnvironmentTest, ClassifiesContainersAndVirtualMachines) {
+  using TelemetryInternal::ClassifyHostEnvironment;
+  using TelemetryInternal::HostEnvironmentEvidence;
+
+  {
+    HostEnvironmentEvidence evidence;
+    evidence.kubernetes = true;
+    const auto info = ClassifyHostEnvironment(evidence);
+    EXPECT_TRUE(info.is_container);
+    EXPECT_STREQ(info.container_type, "kubernetes");
+    EXPECT_STREQ(info.environment_class, "container");
+    EXPECT_STREQ(info.detection_confidence, "high");
+    EXPECT_STREQ(info.device_id_scope, "container");
+  }
+  {
+    HostEnvironmentEvidence evidence;
+    evidence.podman_marker = true;
+    evidence.dmi = "Amazon EC2";
+    const auto info = ClassifyHostEnvironment(evidence);
+    EXPECT_TRUE(info.is_container);
+    EXPECT_TRUE(info.is_virtual_machine);
+    EXPECT_STREQ(info.container_type, "podman");
+    EXPECT_STREQ(info.virtualization_type, "amazonEC2");
+    EXPECT_STREQ(info.environment_class, "containerOnVirtualMachine");
+  }
+  {
+    HostEnvironmentEvidence evidence;
+    evidence.dmi = "Microsoft Corporation Virtual Machine";
+    const auto info = ClassifyHostEnvironment(evidence);
+    EXPECT_TRUE(info.is_virtual_machine);
+    EXPECT_STREQ(info.virtualization_type, "hyperV");
+    EXPECT_STREQ(info.environment_class, "virtualMachine");
+    EXPECT_STREQ(info.device_id_scope, "virtualMachine");
+  }
+  {
+    HostEnvironmentEvidence evidence;
+    evidence.kernel_release = "6.6.87.2-microsoft-standard-WSL2";
+    const auto info = ClassifyHostEnvironment(evidence);
+    EXPECT_TRUE(info.is_virtual_machine);
+    EXPECT_STREQ(info.virtualization_type, "wsl");
+  }
+}
+
+TEST(TelemetryEnvironmentTest, ClassifiesEmulatorAndUndetectedHostWithoutClaimingPhysicalDevice) {
+  TelemetryInternal::HostEnvironmentEvidence evidence;
+  evidence.android_emulator = true;
+  const auto emulator = TelemetryInternal::ClassifyHostEnvironment(evidence);
+  EXPECT_TRUE(emulator.is_virtual_machine);
+  EXPECT_TRUE(emulator.is_emulator);
+  EXPECT_STREQ(emulator.virtualization_type, "androidEmulator");
+  EXPECT_STREQ(emulator.environment_class, "emulator");
+
+  const auto undetected =
+      TelemetryInternal::ClassifyHostEnvironment(TelemetryInternal::HostEnvironmentEvidence{});
+  EXPECT_FALSE(undetected.is_container);
+  EXPECT_FALSE(undetected.is_virtual_machine);
+  EXPECT_FALSE(undetected.is_emulator);
+  EXPECT_STREQ(undetected.environment_class, "undetected");
+  EXPECT_STREQ(undetected.detection_confidence, "none");
+  EXPECT_STREQ(undetected.device_id_scope, "installation");
+}
+
 TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
   constexpr std::array<const char*, 14> environment_variables = {
       "ORT_TELEMETRY_DISABLED",
@@ -326,6 +388,13 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   info.cpu_arch = "amd64";
   info.process_name = "foundry_local_test.exe";
   info.device_id_status = "Existing";
+  info.is_container = true;
+  info.is_virtual_machine = true;
+  info.container_type = "kubernetes";
+  info.virtualization_type = "hyperV";
+  info.host_environment = "containerOnVirtualMachine";
+  info.environment_detection_confidence = "high";
+  info.device_id_scope = "container";
   info.cpu_count = 8;
   info.total_memory_mb = 32768;
 
@@ -336,6 +405,10 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   EXPECT_NE(logger.entries[0].message.find("AppVersion=4.5.6"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("ProcessName=foundry_local_test.exe"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("DeviceIdStatus=Existing"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("ContainerType=kubernetes"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("VirtualizationType=hyperV"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("HostEnvironment=containerOnVirtualMachine"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("DeviceIdScope=container"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("CpuCount=8"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("TotalMemoryMB=32768"), std::string::npos);
 }
@@ -381,6 +454,20 @@ TEST(TelemetryMetadataTest, HostAppVersionIsAlwaysPopulated) {
   EXPECT_FALSE(metadata.version.empty());
 }
 
+TEST(TelemetryGuidTest, GeneratesRfc4122VersionFourValues) {
+  const auto first = GenerateGuidV4();
+  const auto second = GenerateGuidV4();
+
+  ASSERT_EQ(first.size(), 36u);
+  EXPECT_EQ(first[8], '-');
+  EXPECT_EQ(first[13], '-');
+  EXPECT_EQ(first[18], '-');
+  EXPECT_EQ(first[23], '-');
+  EXPECT_EQ(first[14], '4');
+  EXPECT_NE(std::string_view{"89ab"}.find(first[19]), std::string_view::npos);
+  EXPECT_NE(first, second);
+}
+
 TEST(TelemetryContextTest, SuppressesUnneededCommonContextWithoutChangingExplicitIdentity) {
   struct RecordingContext {
     std::map<std::string, std::string> fields;
@@ -390,9 +477,11 @@ TEST(TelemetryContextTest, SuppressesUnneededCommonContextWithoutChangingExplici
   context.fields["DeviceInfo.Id"] = "device-id";
 
   TelemetryInternal::SuppressUnneededCommonContext(context);
+  TelemetryInternal::SetApplicationNameFromProcessName(context, "foundry_local_test");
 
   ASSERT_EQ(context.fields.size(), 7u);
   EXPECT_EQ(context.fields.at("AppInfo.Id"), "application-id");
+  EXPECT_EQ(context.fields.at("AppInfo.Name"), "foundry_local_test");
   EXPECT_EQ(context.fields.at("DeviceInfo.Id"), "device-id");
   for (const auto* field : TelemetryInternal::kSuppressedCommonContextFields) {
     EXPECT_TRUE(context.fields.at(field).empty()) << field;
@@ -638,8 +727,9 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesDeterministicProviderO
   EXPECT_EQ(property_names, (std::vector<std::string>{"EventInfo.Level", "ProviderOptions", "clientApiKey"}));
 }
 
-TEST(TelemetrySamplingTest, SamplesAllEventsAtCurrentDefaultRate) {
-  EXPECT_TRUE(TelemetryInternal::ShouldSampleTelemetryEvent("app-session", "corr-1"));
+TEST(TelemetrySamplingTest, UsesOnePercentDefaultAndProcessRates) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kTelemetrySampleRatePercent, 1.0);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kProcessEventSampleRatePercent, 1.0);
 }
 
 TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
@@ -647,15 +737,17 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
   EXPECT_TRUE(TelemetryInternal::ShouldSampleTelemetryEvent("app-session", "corr-1", 100.0));
 }
 
-TEST(TelemetrySamplingTest, SamplesCoreAudioTranscribeAtTwoPercent) {
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 2.0);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
+TEST(TelemetrySamplingTest, HeavilySamplesCorrelatedCoreAudioEvents) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 0.1);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForEvent("AudioModel"), 0.1);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 1.0);
 
   bool retained = false;
   bool dropped = false;
-  for (int i = 0; i < 10'000 && (!retained || !dropped); ++i) {
+  for (int i = 0; i < 100'000 && (!retained || !dropped); ++i) {
     const bool sampled = TelemetryInternal::ShouldSampleTelemetryEvent(
-        "app-session", "audio-correlation-" + std::to_string(i), 2.0);
+        "app-session", "audio-correlation-" + std::to_string(i),
+        TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"));
     retained = retained || sampled;
     dropped = dropped || !sampled;
   }
