@@ -386,9 +386,10 @@ TEST(QwenXmlToolCallAccumulatorTest, SchemaTypesAreDecodedAsCompatibleJson) {
       "</tool_call>";
   auto output = RunQwen({generated});
   ASSERT_EQ(output.calls.size(), 1u);
-  EXPECT_EQ(output.calls[0].arguments,
-            R"({"array":[1,"two"],"boolean":true,"integer":-2,"nothing":null,"number":1.5,)"
-            R"("object":{"key":3},"text":"{\"looks\":\"json\"}"})");
+  const std::string expected =
+      "{\"array\":[1,\"two\"],\"boolean\":true,\"integer\":-2,\"nothing\":null,\"number\":1.5,"
+      "\"object\":{\"key\":3},\"text\":\"{\\\"looks\\\":\\\"json\\\"}\"}";
+  EXPECT_EQ(output.calls[0].arguments, expected);
   EXPECT_TRUE(output.visible.empty());
 }
 
