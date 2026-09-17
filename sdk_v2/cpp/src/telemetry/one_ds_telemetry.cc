@@ -17,9 +17,14 @@
 #include <ILogManager.hpp>
 #include <LogManagerProvider.hpp>
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <string_view>
+
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <unistd.h>
+#endif
 
 #include <CommonFields.h>
 #include <ILogger.hpp>
@@ -32,11 +37,14 @@ namespace {
 
 using MatILogManager = ::Microsoft::Applications::Events::ILogManager;
 using MatILogger = ::Microsoft::Applications::Events::ILogger;
+using ::Microsoft::Applications::Events::CFG_BOOL_ENABLE_TRACE;
 using ::Microsoft::Applications::Events::CFG_BOOL_SESSION_RESET_ENABLED;
 using ::Microsoft::Applications::Events::CFG_INT_MAX_TEARDOWN_TIME;
 using ::Microsoft::Applications::Events::CFG_INT_SDK_MODE;
 using ::Microsoft::Applications::Events::CFG_INT_TRACE_LEVEL_MASK;
+using ::Microsoft::Applications::Events::CFG_MAP_HTTP;
 using ::Microsoft::Applications::Events::CFG_STR_CACHE_FILE_PATH;
+using ::Microsoft::Applications::Events::CFG_STR_HTTP_SSL_CAINFO;
 using ::Microsoft::Applications::Events::CFG_STR_PRIMARY_TOKEN;
 using ::Microsoft::Applications::Events::EventPriority;
 using ::Microsoft::Applications::Events::EventProperties;
@@ -93,6 +101,31 @@ std::string GetToken() {
   return decoded;
 #endif
 }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+std::string GetCertificateAuthorityBundlePath() {
+  if (const char* ssl_cert_file = std::getenv("SSL_CERT_FILE");
+      ssl_cert_file != nullptr && access(ssl_cert_file, R_OK) == 0) {
+    return ssl_cert_file;
+  }
+
+  constexpr const char* kCertificateAuthorityBundlePaths[] = {
+      "/etc/ssl/certs/ca-certificates.crt",
+      "/etc/pki/tls/certs/ca-bundle.crt",
+      "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+      "/etc/ssl/ca-bundle.pem",
+      "/etc/pki/tls/cacert.pem",
+      "/etc/ssl/cert.pem",
+      "/var/lib/ca-certificates/ca-bundle.pem",
+  };
+  for (const char* path : kCertificateAuthorityBundlePaths) {
+    if (access(path, R_OK) == 0) {
+      return path;
+    }
+  }
+  return {};
+}
+#endif
 
 void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
   mat_logger->SetContext("AppName", ScrubStringForTelemetry(m.app_name));
@@ -204,9 +237,15 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
     auto& config = impl_->config;
     config[CFG_STR_PRIMARY_TOKEN] = token;
     config[CFG_BOOL_SESSION_RESET_ENABLED] = true;
+    config[CFG_BOOL_ENABLE_TRACE] = false;
     config[CFG_INT_TRACE_LEVEL_MASK] = 0;
     config[CFG_INT_SDK_MODE] = SdkModeTypes_CS;
     config[CFG_INT_MAX_TEARDOWN_TIME] = kMaxTeardownUploadTimeSec;
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (const auto ca_bundle = GetCertificateAuthorityBundlePath(); !ca_bundle.empty()) {
+      config[CFG_MAP_HTTP][CFG_STR_HTTP_SSL_CAINFO] = ca_bundle;
+    }
+#endif
     if (const auto cache_dir = TelemetryDeviceId::EnsureCacheDirectory(); !cache_dir.empty()) {
       const auto cache_file_name =
           disable_nonessential_telemetry ? "foundry-local-processinfo.db" : "foundry-local.db";
