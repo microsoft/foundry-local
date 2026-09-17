@@ -53,7 +53,12 @@ std::optional<int> ParseIntString(const std::optional<std::string>& value) {
   }
 
   try {
-    return std::stoi(*value);
+    std::size_t parsed_characters = 0;
+    const int parsed = std::stoi(*value, &parsed_characters);
+    if (parsed_characters != value->size()) {
+      return std::nullopt;
+    }
+    return parsed;
   } catch (...) {
     return std::nullopt;
   }

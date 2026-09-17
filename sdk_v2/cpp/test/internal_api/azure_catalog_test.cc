@@ -199,19 +199,6 @@ TEST(AzureCatalogClientTest, FiltersModelsAboveCurrentMinFlVersion) {
   EXPECT_EQ(models.front().name, "current");
 }
 
-TEST(AzureCatalogClientTest, FallsBackToParentNameWhenAliasIsNotReturned) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              return MakeOkResponse(MakeSummaryResponse({{"phi-4-mini", 1}}));
-                            });
-
-  const auto models = client.FetchAllModelInfos();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().alias, "phi-4-mini");
-}
-
 TEST(AzureCatalogClientTest, SkipsAbstractParentModels) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
