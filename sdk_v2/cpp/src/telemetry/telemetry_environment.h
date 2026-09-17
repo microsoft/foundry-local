@@ -176,8 +176,7 @@ inline HostEnvironmentInfo ClassifyHostEnvironment(const HostEnvironmentEvidence
 
 }  // namespace TelemetryInternal
 
-/// Static helpers for telemetry runtime gating. Ported from neutron-server's
-/// TelemetryEnvironment.cs so the CI suppression behavior matches across stacks.
+/// Static helpers for telemetry runtime gating.
 class TelemetryEnvironment {
  public:
   /// Returns true if any well-known CI environment variable is set to a truthy
