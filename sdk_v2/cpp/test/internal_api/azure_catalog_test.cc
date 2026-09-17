@@ -32,6 +32,7 @@ std::string MakeSummaryResponse(const std::vector<std::pair<std::string, int>>& 
     summaries.push_back({
         {"assetId", "azureml://registries/azureml/models/" + name + "/versions/" + std::to_string(version)},
         {"name", name},
+        {"alias", name},
         {"version", std::to_string(version)},
         {"variantInformation", {
             {"parents", {{{"assetId", "azureml://registries/azureml/models/" + name + "/versions/1"}}}},
