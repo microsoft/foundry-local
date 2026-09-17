@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
 #include "items/item.h"
 #include "util/key_value_pairs.h"
 
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,6 +50,13 @@ struct Request {
 
   std::vector<Item*> items;  // all items (borrowed pointers)
   KeyValuePairs options;
+  /// Request-local definitions already validated by an HTTP adapter. Used only to carry Chat
+  /// declarations across the asynchronous streaming boundary without parsing or registering twice.
+  std::optional<std::vector<ToolDefinition>> prepared_tool_definitions;
+  /// Set only by trusted JSON request converters, never from generic native options.
+  std::optional<ForcedToolChoice> forced_tool_choice;
+  /// Explicit request metadata descriptor, validated by the provider converter.
+  std::optional<RawEnvelopeDescriptor> raw_envelope_descriptor;
 
   /// Start indices, into `items`, of the replay segments the producer knows about. Ascending, and empty means the
   /// whole list is one segment.
@@ -67,6 +76,9 @@ struct Request {
   Request(Request&& other) noexcept
       : items(std::move(other.items)),
         options(std::move(other.options)),
+        prepared_tool_definitions(std::move(other.prepared_tool_definitions)),
+        forced_tool_choice(std::move(other.forced_tool_choice)),
+        raw_envelope_descriptor(std::move(other.raw_envelope_descriptor)),
         item_segment_starts(std::move(other.item_segment_starts)),
         state_(other.state_.load(std::memory_order_relaxed)),
         cancellation_detail_(std::move(other.cancellation_detail_)),
@@ -75,6 +87,9 @@ struct Request {
   Request& operator=(Request&& other) noexcept {
     items = std::move(other.items);
     options = std::move(other.options);
+    prepared_tool_definitions = std::move(other.prepared_tool_definitions);
+    forced_tool_choice = std::move(other.forced_tool_choice);
+    raw_envelope_descriptor = std::move(other.raw_envelope_descriptor);
     item_segment_starts = std::move(other.item_segment_starts);
     state_.store(other.state_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     cancellation_detail_ = std::move(other.cancellation_detail_);

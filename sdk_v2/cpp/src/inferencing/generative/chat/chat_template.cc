@@ -12,10 +12,23 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <unordered_map>
 
 namespace fl {
 
 namespace chat_internal {
+
+namespace {
+
+constexpr std::string_view kAmbiguousPositionalResults =
+    "positional tool results must immediately follow a multi-call assistant turn and contain each assistant call id "
+    "exactly once";
+
+[[noreturn]] void ThrowAmbiguousPositionalResults() {
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, kAmbiguousPositionalResults);
+}
+
+}  // namespace
 
 std::optional<size_t> FindUnmatchedPromptSuffix(std::span<const int32_t> resident_tokens,
                                                 std::span<const int32_t> full_prompt) noexcept {
@@ -27,6 +40,74 @@ std::optional<size_t> FindUnmatchedPromptSuffix(std::span<const int32_t> residen
   return resident_tokens.size();
 }
 
+std::vector<TranscriptMessage> ProjectPositionalToolResults(const std::vector<TranscriptMessage>& messages) {
+  auto projected = messages;
+
+  for (size_t assistant_index = 0; assistant_index < messages.size(); ++assistant_index) {
+    const auto& assistant = messages[assistant_index];
+    const auto calls = assistant.ToolCalls();
+    if (assistant.role != FOUNDRY_LOCAL_ROLE_ASSISTANT || calls.size() < 2) {
+      continue;
+    }
+
+    const auto results_begin = assistant_index + 1;
+    auto results_end = results_begin;
+    while (results_end < messages.size() && messages[results_end].role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      ++results_end;
+    }
+
+    std::unordered_map<std::string_view, size_t> call_positions;
+    for (size_t call_position = 0; call_position < calls.size(); ++call_position) {
+      if (!call_positions.emplace(calls[call_position]->call_id, call_position).second) {
+        ThrowAmbiguousPositionalResults();
+      }
+    }
+
+    // An outstanding parallel-call turn is valid only while none of its results appears later. Results for other
+    // turns are unrelated and must not make this group ambiguous.
+    if (results_end == results_begin) {
+      const auto has_noncontiguous_result =
+          std::any_of(messages.begin() + results_begin, messages.end(), [&](const auto& message) {
+            return message.role == FOUNDRY_LOCAL_ROLE_TOOL &&
+                   call_positions.contains(message.tool_call_id);
+          });
+      if (has_noncontiguous_result) {
+        ThrowAmbiguousPositionalResults();
+      }
+
+      continue;
+    }
+
+    if (results_end - results_begin != calls.size()) {
+      ThrowAmbiguousPositionalResults();
+    }
+
+    std::vector<bool> matched_calls(calls.size());
+    for (auto result_index = results_begin; result_index < results_end; ++result_index) {
+      const auto call_position = call_positions.find(messages[result_index].tool_call_id);
+      if (call_position == call_positions.end() || matched_calls[call_position->second]) {
+        ThrowAmbiguousPositionalResults();
+      }
+
+      projected[results_begin + call_position->second] = messages[result_index];
+      matched_calls[call_position->second] = true;
+    }
+
+    assistant_index = results_end - 1;
+  }
+
+  return projected;
+}
+
+PreparedChatMessages PrepareChatMessages(std::vector<TranscriptMessage> messages,
+                                         bool positional_tool_results) {
+  if (positional_tool_results) {
+    messages = ProjectPositionalToolResults(messages);
+  }
+
+  return PreparedChatMessages(std::move(messages));
+}
+
 }  // namespace chat_internal
 
 namespace {
@@ -35,6 +116,10 @@ nlohmann::ordered_json BuildToolCallsJson(const TranscriptMessage& message) {
   auto tool_calls = nlohmann::ordered_json::array();
 
   for (const auto* call : message.ToolCalls()) {
+    if (call->generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
+      continue;
+    }
+
     nlohmann::ordered_json entry;
     entry["id"] = call->call_id;
     entry["type"] = "function";
@@ -50,6 +135,12 @@ nlohmann::ordered_json BuildMessageJson(const TranscriptMessage& message) {
   nlohmann::ordered_json entry;
   entry["role"] = Utils::RoleToString(message.role);
   entry["content"] = message.VisibleText();
+
+  for (const auto* call : message.ToolCalls()) {
+    if (call->generated_encoding == GeneratedCallEncoding::kRawEnvelope) {
+      entry["content"] = entry["content"].get<std::string>() + call->arguments;
+    }
+  }
 
   if (!message.name.empty()) {
     entry["name"] = message.name;
@@ -70,7 +161,10 @@ nlohmann::ordered_json BuildMessageJson(const TranscriptMessage& message) {
   // Reasoning is never projected back into a prompt, not even alongside the calls it produced. It is the model's
   // private scratchpad: it is typed, stored, and surfaced to the caller, but a conversation replayed from storage
   // cannot reproduce it, so replaying it here would make a warm session and a rebuilt one send different prompts.
-  entry["tool_calls"] = BuildToolCallsJson(message);
+  auto tool_calls = BuildToolCallsJson(message);
+  if (!tool_calls.empty()) {
+    entry["tool_calls"] = std::move(tool_calls);
+  }
   return entry;
 }
 
@@ -116,11 +210,18 @@ std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const std::string& tools_json) {
-  if (messages.empty()) {
+  return BuildChatPrompt(
+      chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()), model, tools_json);
+}
+
+std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
+                            GenAIModelInstance& model,
+                            const std::string& tools_json) {
+  if (messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
-  std::string messages_str = BuildChatMessagesJson(messages);
+  std::string messages_str = BuildChatMessagesJson(messages.Messages());
   const char* tools_ptr = tools_json.empty() ? nullptr : tools_json.c_str();
 
   // ApplyChatTemplate uses the model's built-in template (template_str=nullptr) and appends the assistant

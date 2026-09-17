@@ -27,6 +27,23 @@ struct OgaNamedTensors;
 
 namespace fl {
 
+namespace onnx_chat_generator_internal {
+
+struct TurnTermination {
+  std::optional<flFinishReason> finish_reason;
+  std::optional<BackendTerminationCause> cause;
+};
+
+TurnTermination ClassifyTurnTermination(bool cancelled,
+                                        bool eos_matched,
+                                        int generated_tokens,
+                                        int max_output_tokens,
+                                        int token_count,
+                                        int max_length,
+                                        bool done);
+
+}  // namespace onnx_chat_generator_internal
+
 /// Resolve the reasoning boundary markers for a request: request/catalog overrides first, then the markers the loaded
 /// GenAI model publishes. Single source of truth for both the prompt-state probe and the generation-time splitter.
 ///
@@ -51,16 +68,22 @@ class OnnxChatGenerator : public ChatGenerator {
   std::optional<int32_t> CurrentTokenId() const override;
   int TokenCount() const override;
   int PromptTokenCount() const override;
+  std::optional<ChatTurnUsage> GetTurnUsage() const override;
   void Cancel() override;
 
   /// Encode new messages and append their tokens to the generator's sequence.
   /// Used for continuous decoding — only the new turn's messages are encoded and appended.
   /// Returns the number of new prompt tokens appended.
   int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
-                     const std::vector<TranscriptMessage>& full_messages,
+                     const chat_internal::PreparedChatMessages& full_messages,
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                     const std::vector<TranscriptMessage>& full_messages,
+                     GenAIModelInstance& model,
+                     const ToolCallContext& tool_ctx,
+                     const SearchOptions& options);
 
   /// Rewind the generator to a previous token position.
   /// Used for error recovery — restores the KV cache to the state before the last turn.
@@ -83,6 +106,11 @@ class OnnxChatGenerator : public ChatGenerator {
   ///                       Used for continuous decoding with cached generators.
   /// @throws fl::Exception on invalid request or configuration error
   static std::unique_ptr<OnnxChatGenerator> Create(const std::vector<TranscriptMessage>& messages,
+                                                   const SearchOptions& options,
+                                                   GenAIModelInstance& model,
+                                                   const ToolCallContext& tool_ctx = {},
+                                                   bool use_full_context = false);
+  static std::unique_ptr<OnnxChatGenerator> Create(const chat_internal::PreparedChatMessages& messages,
                                                    const SearchOptions& options,
                                                    GenAIModelInstance& model,
                                                    const ToolCallContext& tool_ctx = {},
@@ -115,6 +143,8 @@ class OnnxChatGenerator : public ChatGenerator {
                     std::unique_ptr<OgaTokenizerStream> stream,
                     GenAIModelInstance& model,
                     int prompt_token_count,
+                    int max_length,
+                    int max_output_tokens,
                     ReasoningMarkers reasoning_markers,
                     bool prompt_opens_reasoning,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
@@ -131,6 +161,8 @@ class OnnxChatGenerator : public ChatGenerator {
                                                        const std::vector<const ImageItem*>& images,
                                                        const std::vector<const AudioItem*>& audios);
 
+  void ResetTurnState();
+
   std::unique_ptr<OgaGeneratorParams> gen_params_;
   std::unique_ptr<OgaGenerator> generator_;
   std::unique_ptr<OgaTokenizerStream> stream_;
@@ -141,10 +173,14 @@ class OnnxChatGenerator : public ChatGenerator {
   std::unique_ptr<OgaNamedTensors> named_tensors_;
   GenAIModelInstance& model_;  // non-owning reference — model outlives generator
   int prompt_token_count_ = 0;
+  int turn_start_token_count_ = 0;
+  int max_length_ = 0;
+  int max_output_tokens_ = 0;
   // Kept so each appended turn can be re-probed for a template-opened reasoning block.
   ReasoningMarkers reasoning_markers_;
   bool prompt_opens_reasoning_ = false;
   std::optional<int32_t> current_token_;
+  std::optional<int32_t> last_generated_token_;
   std::atomic<bool> cancelled_{false};
 };
 
