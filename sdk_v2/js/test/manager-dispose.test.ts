@@ -12,12 +12,12 @@ import { describe, expect, it } from "vitest";
 
 import { unwrapNativeCatalog } from "../src/catalog.js";
 import { isFoundryLocalError } from "../src/detail/errors.js";
-import { getAddon } from "../src/detail/native.js";
+import { type NativeSession, getAddon } from "../src/detail/native.js";
 import { FoundryLocalManager } from "../src/foundryLocalManager.js";
 import { Item } from "../src/items.js";
 import { Model, unwrapNativeModel } from "../src/model.js";
 import { MutableModelInfo, unwrapMutableModelInfo } from "../src/modelInfo.js";
-import { Request } from "../src/request.js";
+import { Request, unwrapNativeRequest } from "../src/request.js";
 import { ChatSession } from "../src/session.js";
 import { CatalogType } from "../src/types.js";
 
@@ -274,6 +274,71 @@ describe.skipIf(!haveTestModelCache)("FoundryLocalManager.dispose with active se
         await expect(response).resolves.toMatchObject({ output: expect.any(Array) });
       } finally {
         session.dispose();
+        teardownRealModelManager(fixture);
+      }
+    },
+    5 * 60_000,
+  );
+
+  it(
+    "keeps an admitted request alive when the session is disposed",
+    async () => {
+      const fixture = await setupRealModelManager({ appName: "dispose-during-session-request" });
+      const session = new ChatSession(fixture.model);
+      try {
+        const request = new Request()
+          .addItem(Item.userMessage("Reply with ok."))
+          .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+        const response = session.processRequest(request);
+        session.dispose();
+
+        await expect(response).resolves.toMatchObject({ output: expect.any(Array) });
+      } finally {
+        session.dispose();
+        teardownRealModelManager(fixture);
+      }
+    },
+    5 * 60_000,
+  );
+
+  it(
+    "keeps an admitted streaming request alive when the session is disposed",
+    async () => {
+      const fixture = await setupRealModelManager({ appName: "dispose-during-session-stream" });
+      const session = new ChatSession(fixture.model);
+      try {
+        const request = new Request()
+          .addItem(Item.userMessage("Reply with ok."))
+          .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+        const stream = session.processStreamingRequest(request);
+        session.dispose();
+
+        await expect(stream.response).resolves.toMatchObject({ output: expect.any(Array) });
+      } finally {
+        session.dispose();
+        teardownRealModelManager(fixture);
+      }
+    },
+    5 * 60_000,
+  );
+
+  it.skipIf((globalThis as { gc?: () => void }).gc === undefined)(
+    "keeps an admitted request alive when the session is garbage collected",
+    async () => {
+      const fixture = await setupRealModelManager({ appName: "gc-during-session-request" });
+      try {
+        let session: ChatSession | undefined = new ChatSession(fixture.model);
+        let nativeSession: NativeSession | undefined = (session as unknown as { native: NativeSession }).native;
+        const request = new Request()
+          .addItem(Item.userMessage("Reply with ok."))
+          .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+        const response = nativeSession.processRequest(unwrapNativeRequest(request));
+        session = undefined;
+        nativeSession = undefined;
+        (globalThis as { gc: () => void }).gc();
+
+        await expect(response).resolves.toMatchObject({ output: expect.any(Array) });
+      } finally {
         teardownRealModelManager(fixture);
       }
     },

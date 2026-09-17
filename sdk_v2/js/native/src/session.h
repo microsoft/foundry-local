@@ -51,10 +51,10 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
   std::shared_ptr<foundry_local::Manager> manager_lifetime_;
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -84,10 +84,10 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
   std::shared_ptr<foundry_local::Manager> manager_lifetime_;
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -115,10 +115,10 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
   std::shared_ptr<foundry_local::Manager> manager_lifetime_;
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
 };
 
 }  // namespace foundry_local_node
