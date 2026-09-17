@@ -1797,7 +1797,8 @@ TEST_F(QwenNativeProductionIntegrationTest,
   } catch (const fl::Exception& error) {
     EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
     failure_message = error.what();
-    EXPECT_NE(std::string(error.what()).find("Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
+    EXPECT_NE(std::string(error.what()).find(
+                  "Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
               std::string::npos);
   }
 

@@ -120,7 +120,7 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
   }
 
   if (schema.contains("anyOf")) {
-    if (schema.contains("oneOf") || schema.contains("allOf") || schema.contains("not") ||
+    if (depth != 0 || schema.contains("oneOf") || schema.contains("allOf") || schema.contains("not") ||
         schema.contains("if") || !schema["anyOf"].is_array() || schema["anyOf"].empty() ||
         std::ranges::any_of(schema.items(), [](const auto& item) {
           return item.key() != "anyOf" && !IsSupportedAnnotation(item.key());

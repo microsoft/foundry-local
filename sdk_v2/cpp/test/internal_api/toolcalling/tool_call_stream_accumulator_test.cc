@@ -724,6 +724,24 @@ TEST(QwenXmlToolCallAccumulatorTest, NestedAnyOfArrayItemsRemainExactVisibleText
   auto output = RunQwen({generated}, tools, {{"collect", ToolKind::kFunction}});
   EXPECT_TRUE(output.calls.empty());
   EXPECT_EQ(output.visible, generated);
+
+  auto recovery_accumulator =
+      MakeQwenAccumulator(tools, {{"collect", ToolKind::kFunction}}, /*recovery_aware=*/true);
+  const std::string malformed =
+      "<tool_call>\n"
+      "<function=collect>\n"
+      "<param=values>\n"
+      "[\"src\",1]\n"
+      "</param>\n"
+      "</function>\n"
+      "</tool_call>";
+  auto recovery_outputs = RunChunks(recovery_accumulator, {malformed});
+  EXPECT_FALSE(AnyMalformed(recovery_outputs));
+  EXPECT_EQ(CollectVisible(recovery_outputs), malformed);
+  EXPECT_TRUE(CollectCalls(recovery_outputs).empty());
+
+  const auto guided = R"([{"name":"collect","parameters":{"values":["src",1]}}])";
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(guided, tools, {{"collect", ToolKind::kFunction}}).empty());
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ProductionNormalizedCustomToolIsDecoded) {
