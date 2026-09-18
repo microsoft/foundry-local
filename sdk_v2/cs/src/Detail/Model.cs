@@ -8,6 +8,7 @@ namespace Microsoft.AI.Foundry.Local;
 
 using System.Runtime.ExceptionServices;
 
+using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.Extensions.Logging;
 
 using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
@@ -15,10 +16,9 @@ using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 public class Model : IModel
 {
     private readonly ILogger _logger;
-    private readonly object _nativeLifetimeLock;
-    private readonly Func<bool> _isManagerDisposed;
+    private readonly ManagerLifetime _nativeLifetime;
     internal NativeModel NativeModel { get; }
-    internal object NativeLifetimeLock => _nativeLifetimeLock;
+    internal ManagerLifetime NativeLifetime => _nativeLifetime;
     internal Action? BeforeNativeCallForTest { get; set; }
 
     private IReadOnlyList<IModel>? _variants;
@@ -46,33 +46,32 @@ public class Model : IModel
     {
         get
         {
-            lock (_nativeLifetimeLock)
+            using var lease = AcquireManagerLease(trackReentrancy: true);
+            BeforeNativeCallForTest?.Invoke();
+            if (_variants == null)
             {
-                ThrowIfManagerDisposed();
-                if (_variants == null)
-                {
-                    using var list = NativeModel.GetVariants();
-                    _variants = list.Models.Select(CreateModel).ToList();
-                }
-
-                return _variants;
+                using var list = NativeModel.GetVariants();
+                _variants = list.Models.Select(CreateModel).ToList();
             }
+
+            return _variants;
         }
     }
 
-    internal Model(NativeModel nativeModel, ILogger logger, object nativeLifetimeLock,
-                   Func<bool> isManagerDisposed)
+    internal Model(NativeModel nativeModel, ILogger logger, ManagerLifetime nativeLifetime)
     {
         NativeModel = nativeModel;
         _logger = logger;
-        _nativeLifetimeLock = nativeLifetimeLock;
-        _isManagerDisposed = isManagerDisposed;
+        _nativeLifetime = nativeLifetime;
     }
 
     internal T WithNativeModel<T>(Func<NativeModel, T> operation) =>
         WithManagerLock(() => operation(NativeModel));
 
-    internal bool HasSameManager(Model other) => ReferenceEquals(_nativeLifetimeLock, other._nativeLifetimeLock);
+    internal ManagerLifetime.Lease AcquireManagerLease(bool trackReentrancy = false) =>
+        _nativeLifetime.Acquire(this, trackReentrancy);
+
+    internal bool HasSameManager(Model other) => ReferenceEquals(_nativeLifetime, other._nativeLifetime);
 
     public void SelectVariant(IModel variant)
     {
@@ -225,30 +224,19 @@ public class Model : IModel
     }
 
     private IModel CreateModel(NativeModel model) =>
-        new Model(model, _logger, _nativeLifetimeLock, _isManagerDisposed);
+        new Model(model, _logger, _nativeLifetime);
 
     private T WithManagerLock<T>(Func<T> operation)
     {
-        lock (_nativeLifetimeLock)
-        {
-            ThrowIfManagerDisposed();
-            BeforeNativeCallForTest?.Invoke();
-            return operation();
-        }
+        using var lease = AcquireManagerLease(trackReentrancy: true);
+        BeforeNativeCallForTest?.Invoke();
+        return operation();
     }
 
     private void WithManagerLock(Action operation)
     {
-        lock (_nativeLifetimeLock)
-        {
-            ThrowIfManagerDisposed();
-            BeforeNativeCallForTest?.Invoke();
-            operation();
-        }
-    }
-
-    private void ThrowIfManagerDisposed()
-    {
-        Detail.Throw.IfDisposed(_isManagerDisposed(), this);
+        using var lease = AcquireManagerLease(trackReentrancy: true);
+        BeforeNativeCallForTest?.Invoke();
+        operation();
     }
 }

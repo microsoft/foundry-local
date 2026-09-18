@@ -1,13 +1,13 @@
 // Dev-time only. Copies foundry_local.{dll,so,dylib} AND its ORT/GenAI/WinML
-// siblings from sdk_v2/cpp/build/<Platform>/<Config>/bin/
-// <Config>/ into sdk_v2/js/prebuilds/<process.platform>-<process.arch>/ so
+// siblings from sdk_v2/cpp/build/<Platform>/<Config>/bin[/<Config>]/
+// into sdk_v2/js/prebuilds/<process.platform>-<process.arch>/ so
 // `npm test` works locally without the developer having to configure
 // Configuration.libraryPath or set env vars.
 //
 // NOT used by CI publish — see pack-prebuilds.mjs. The published npm tarball
 // only ships foundry_local.{dll,so,dylib}; ORT/GenAI/WinML are the user's
 // responsibility at runtime per the legacy libraryPath contract.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -96,7 +96,8 @@ if (copied === 0) {
 if (process.platform === "darwin") {
   const versioned = resolve(destDir, "libonnxruntime.1.dylib");
   const unversioned = resolve(destDir, "libonnxruntime.dylib");
-  if (existsSync(versioned) && !existsSync(unversioned)) {
+  if (existsSync(versioned)) {
+    rmSync(unversioned, { force: true });
     symlinkSync("libonnxruntime.1.dylib", unversioned);
     console.log("[copy-native] linked libonnxruntime.dylib -> libonnxruntime.1.dylib");
   }

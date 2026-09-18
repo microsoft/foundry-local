@@ -49,6 +49,8 @@ export interface NativeMutableModelInfo {
   isDisposed(): boolean;
   /** @internal Test-only fault injection for the checked snapshot boundary. */
   failNextSnapshotForTest(): void;
+  /** @internal Test-only path for native int64 values that JavaScript numbers cannot represent. */
+  setIntPropertyForTest(key: string, value: bigint): NativeMutableModelInfo;
 }
 
 export interface NativeMutableModelInfoCtor {
@@ -202,7 +204,7 @@ export interface NativeItemQueue {
 }
 
 export interface NativeSession {
-  processRequest(request: NativeRequest): Promise<NativeResponse>;
+  processRequest(request: NativeRequest, workerStartedForTest?: (release: () => void) => void): Promise<NativeResponse>;
   processStreamingRequest(request: NativeRequest, onItem: (item: unknown) => void): Promise<NativeResponse>;
   setOptions(options: NativeRequestOptions): void;
   dispose(): void;

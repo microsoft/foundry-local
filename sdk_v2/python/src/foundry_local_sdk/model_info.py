@@ -4,6 +4,9 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -133,9 +136,13 @@ class ModelInfo:
 class ModelInfoBuilder:
     """Caller-owned mutable native metadata for local model registration."""
 
-    __slots__ = ("_closed", "_ptr")
+    __slots__ = ("_closed", "_lock", "_ptr")
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._ptr: object | None = None
+        self._closed = True
+
         from foundry_local_sdk._native.api import api, ffi
 
         out = ffi.new("flModelInfo**")
@@ -143,18 +150,25 @@ class ModelInfoBuilder:
         if out[0] == ffi.NULL:
             raise RuntimeError("CreateModelInfo returned a null pointer")
 
-        self._ptr: object = out[0]
+        self._ptr = out[0]
         self._closed = False
 
-    def _ensure_open(self) -> None:
-        if self._closed:
+    def _ensure_open(self) -> object:
+        if self._closed or self._ptr is None:
             raise RuntimeError("ModelInfoBuilder is closed")
+        return self._ptr
+
+    @contextmanager
+    def _native_lifetime(self) -> Iterator[object]:
+        """Lease the native metadata pointer for one complete binding call."""
+        with self._lock:
+            yield self._ensure_open()
 
     @property
     def _native_ptr(self) -> object:
         """Native handle for internal binding calls."""
-        self._ensure_open()
-        return self._ptr
+        with self._lock:
+            return self._ensure_open()
 
     def set_string_property(self, key: str, value: str) -> ModelInfoBuilder:
         """Set a string metadata property and return ``self``.
@@ -162,58 +176,61 @@ class ModelInfoBuilder:
         Well-known keys are documented in the BYOM section of the SDK README;
         arbitrary keys are preserved for forward compatibility.
         """
-        self._ensure_open()
         from foundry_local_sdk._native.api import api
 
         _validate_native_string(key, "key")
         _validate_native_string(value, "value")
         key_bytes = key.encode("utf-8")
         value_bytes = value.encode("utf-8")
-        api.check_status(api.model.Info_SetStringProperty(self._ptr, key_bytes, value_bytes))
+        with self._native_lifetime() as ptr:
+            api.check_status(api.model.Info_SetStringProperty(ptr, key_bytes, value_bytes))
         return self
 
     def set_int_property(self, key: str, value: int) -> ModelInfoBuilder:
         """Set an integer metadata property and return ``self``."""
-        self._ensure_open()
         from foundry_local_sdk._native.api import api
 
         _validate_native_string(key, "key")
         key_bytes = key.encode("utf-8")
-        api.check_status(api.model.Info_SetIntProperty(self._ptr, key_bytes, value))
+        with self._native_lifetime() as ptr:
+            api.check_status(api.model.Info_SetIntProperty(ptr, key_bytes, value))
         return self
 
     def get_string_property(self, key: str) -> str | None:
         """Get a string metadata property, or ``None`` when it is not set."""
-        self._ensure_open()
         from foundry_local_sdk._native.api import api, ffi
 
         _validate_native_string(key, "key")
         key_bytes = key.encode("utf-8")
-        value = api.model.Info_GetStringProperty(self._ptr, key_bytes)
-        return ffi.string(value).decode("utf-8") if value != ffi.NULL else None
+        with self._native_lifetime() as ptr:
+            value = api.model.Info_GetStringProperty(ptr, key_bytes)
+            return ffi.string(value).decode("utf-8") if value != ffi.NULL else None
 
     def get_int_property(self, key: str, default: int = 0) -> int:
         """Get an integer metadata property, or ``default`` when it is not set."""
-        self._ensure_open()
         from foundry_local_sdk._native.api import api
 
         _validate_native_string(key, "key")
         key_bytes = key.encode("utf-8")
-        return int(api.model.Info_GetIntProperty(self._ptr, key_bytes, default))
+        with self._native_lifetime() as ptr:
+            return int(api.model.Info_GetIntProperty(ptr, key_bytes, default))
 
     def close(self) -> None:
         """Release caller-owned metadata exactly once and invalidate this wrapper."""
-        if self._closed:
-            return
+        with self._lock:
+            if self._closed or self._ptr is None:
+                return
 
-        from foundry_local_sdk._native.api import api
+            from foundry_local_sdk._native.api import api
 
-        api.model.ReleaseModelInfo(self._ptr)
-
-        self._closed = True
+            ptr = self._ptr
+            self._ptr = None
+            self._closed = True
+            api.model.ReleaseModelInfo(ptr)
 
     def __enter__(self) -> ModelInfoBuilder:
-        self._ensure_open()
+        with self._lock:
+            self._ensure_open()
         return self
 
     def __exit__(self, *_: object) -> None:

@@ -92,8 +92,11 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
       enumerable: false,
       value: (key: string, defaultValue = 0) => {
         validateNativeString(key, "ModelInfo property key");
+        if (typeof defaultValue !== "number") {
+          throw new TypeError("ModelInfo integer property default must be a number.");
+        }
         if (!Number.isSafeInteger(defaultValue)) {
-          throw new TypeError("ModelInfo integer property default must be a safe integer.");
+          throw new RangeError("ModelInfo integer property default must be a safe integer.");
         }
         return native.getIntProperty(key, defaultValue);
       },

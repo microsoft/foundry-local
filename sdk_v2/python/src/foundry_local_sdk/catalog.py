@@ -77,16 +77,10 @@ class Catalog:
     @contextmanager
     def _manager_lifetime(self) -> Iterator[None]:
         manager = self._parent
-        manager_lock = getattr(manager, "_lock", None)
-        if manager_lock is not None:
-            with manager_lock:
-                self._ensure_manager_open()
-                state = getattr(manager, "_native_call_state")
-                state.depth = getattr(state, "depth", 0) + 1
-                try:
-                    yield
-                finally:
-                    state.depth -= 1
+        native_call = getattr(manager, "_native_call", None)
+        if native_call is not None:
+            with native_call():
+                yield
             return
         self._ensure_manager_open()
         yield
@@ -142,15 +136,16 @@ class Catalog:
         model_id_bytes = model_id.encode("utf-8")
         out = ffi.new("flModel**")
         with self._manager_lifetime():
-            api.check_status(
-                api.catalog.RegisterModel(
-                    self._ptr,
-                    model_path_bytes,
-                    model_id_bytes,
-                    metadata._native_ptr,
-                    out,
+            with metadata._native_lifetime() as metadata_ptr:
+                api.check_status(
+                    api.catalog.RegisterModel(
+                        self._ptr,
+                        model_path_bytes,
+                        model_id_bytes,
+                        metadata_ptr,
+                        out,
+                    )
                 )
-            )
             if out[0] == ffi.NULL:
                 raise FoundryLocalException("RegisterModel returned no model.")
             return _ModelImpl(out[0], parent=self)

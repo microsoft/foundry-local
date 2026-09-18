@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import threading
+import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
@@ -48,6 +49,11 @@ class FoundryLocalManager:
         self._catalogs: dict[CatalogType, Catalog] = {}
         self._before_close_lock_for_test: Callable[[], None] | None = None
         self._native_call_state = threading.local()
+        self._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
+        self._sessions: weakref.WeakSet[object] = weakref.WeakSet()
+        self._close_started = threading.Event()
+        self._close_started_lock = threading.Lock()
+        self._closing = False
         self.urls: list[str] | None = None
 
         with FoundryLocalManager._lock:
@@ -115,7 +121,7 @@ class FoundryLocalManager:
         with FoundryLocalManager._lock:
             if not isinstance(catalog_type, CatalogType):
                 raise TypeError("catalog_type must be a CatalogType")
-            if self._native_manager is None:
+            if self._native_manager is None or self._close_started.is_set():
                 raise RuntimeError("FoundryLocalManager is closed")
 
             cached = self._catalogs.get(catalog_type)
@@ -135,14 +141,32 @@ class FoundryLocalManager:
 
     @contextmanager
     def _native_call(self) -> Iterator[object]:
+        if self._close_started.is_set():
+            raise RuntimeError("FoundryLocalManager is closed")
         with FoundryLocalManager._lock:
-            if self._native_manager is None:
+            if self._native_manager is None or self._close_started.is_set():
                 raise RuntimeError("FoundryLocalManager is closed")
             self._native_call_state.depth = getattr(self._native_call_state, "depth", 0) + 1
             try:
                 yield self._native_manager
             finally:
                 self._native_call_state.depth -= 1
+
+    def _register_session(self, session: object) -> None:
+        with FoundryLocalManager._lock:
+            if self._native_manager is None or self._close_started.is_set():
+                raise RuntimeError("FoundryLocalManager is closed")
+            self._sessions.add(session)
+
+    def _release_session(self, session: object, native_session: object) -> None:
+        from foundry_local_sdk._native.api import api
+
+        with FoundryLocalManager._lock:
+            try:
+                api.inference.Session_Release(native_session)
+            finally:
+                self._sessions.discard(session)
+                self._lifetime_changed.notify_all()
 
     # ------------------------------------------------------------------
     # EP discovery and registration
@@ -345,6 +369,17 @@ class FoundryLocalManager:
             raise RuntimeError("Cannot close FoundryLocalManager during an active native call")
         if self._before_close_lock_for_test is not None:
             self._before_close_lock_for_test()
+
+        with self._close_started_lock:
+            owns_close = not self._close_started.is_set()
+            self._close_started.set()
+
+        if not owns_close:
+            with FoundryLocalManager._lock:
+                while self._native_manager is not None:
+                    self._lifetime_changed.wait()
+            return
+
         with FoundryLocalManager._lock:
             # Idempotent — close() called twice or after a failed __init__.
             if self._native_manager is None:
@@ -352,16 +387,24 @@ class FoundryLocalManager:
                     FoundryLocalManager.instance = None
                 return
 
-            # Drive the orchestrated drain on the native side. Log shutdown errors
-            # rather than swallowing them silently — we still need to release the
-            # handle, but the failure must surface somewhere.
+            self._closing = True
+
+            sessions = list(self._sessions)
+
+        for session in sessions:
+            close = getattr(session, "_close", None)
+            if close is not None:
+                close()
+
+        with FoundryLocalManager._lock:
+            while self._sessions:
+                self._lifetime_changed.wait()
             try:
                 api.check_status(api.root.Manager_Shutdown(self._native_manager))
             except Exception as exc:
                 logging.getLogger("foundry_local_sdk").warning(
                     "Manager_Shutdown failed during close(); releasing handle anyway: %s", exc
                 )
-
             try:
                 api.root.Manager_Release(self._native_manager)
             finally:
@@ -369,6 +412,7 @@ class FoundryLocalManager:
                 self._catalogs.clear()
                 if FoundryLocalManager.instance is self:
                     FoundryLocalManager.instance = None
+                self._lifetime_changed.notify_all()
 
     def __enter__(self) -> "FoundryLocalManager":
         return self

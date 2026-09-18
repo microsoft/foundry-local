@@ -84,71 +84,71 @@ internal static class NativeRequestRunner
 
         var producerTask = Task.Run(() =>
         {
-            model.WithNativeModel(nativeModel =>
+            try
             {
-                try
+                model.WithNativeModel(nativeModel =>
                 {
                     using var session = new NativeSession(nativeModel);
 
-                FlStreamingCallback streamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
-                {
-                    bool errored = false;
-
-                    try
+                    FlStreamingCallback streamingCallback = (FlStreamingCallbackData data, IntPtr userData) =>
                     {
-                        if (data.ItemQueue != IntPtr.Zero)
+                        bool errored = false;
+
+                        try
                         {
-                            while (NativeApi.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
+                            if (data.ItemQueue != IntPtr.Zero)
                             {
-                                using var item = Item.FromNative(itemPtr, ownsHandle: true);
-
-                                if (item is not TextItem textItem)
+                                while (NativeApi.Item.QueueTryPop(data.ItemQueue, out var itemPtr))
                                 {
-                                    logger.LogWarning(
-                                        "Streaming callback received unexpected item type {Type}; skipping.",
-                                        item?.GetType().Name ?? "null");
-                                    continue;
-                                }
+                                    using var item = Item.FromNative(itemPtr, ownsHandle: true);
 
-                                var chunk = deserialize(textItem.Text);
+                                    if (item is not TextItem textItem)
+                                    {
+                                        logger.LogWarning(
+                                            "Streaming callback received unexpected item type {Type}; skipping.",
+                                            item?.GetType().Name ?? "null");
+                                        continue;
+                                    }
 
-                                if (chunk != null)
-                                {
-                                    channel.Writer.TryWrite(chunk);
+                                    var chunk = deserialize(textItem.Text);
+
+                                    if (chunk != null)
+                                    {
+                                        channel.Writer.TryWrite(chunk);
+                                    }
                                 }
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        errored = true;
-                        channel.Writer.TryComplete(new FoundryLocalException(callbackErrorMsg, ex, logger));
-                    }
+                        catch (Exception ex)
+                        {
+                            errored = true;
+                            channel.Writer.TryComplete(new FoundryLocalException(callbackErrorMsg, ex, logger));
+                        }
 
-                    return errored || stopToken.IsCancellationRequested ? 1 : 0;
-                };
+                        return errored || stopToken.IsCancellationRequested ? 1 : 0;
+                    };
 
-                session.SetStreamingCallback(streamingCallback);
+                    session.SetStreamingCallback(streamingCallback);
 
-                using var jsonItem = TextItem.OpenAIJson(requestJson);
-                using var request = new Request();
-                request.AddItem(jsonItem);
+                    using var jsonItem = TextItem.OpenAIJson(requestJson);
+                    using var request = new Request();
+                    request.AddItem(jsonItem);
 
-                var responsePtr = session.ProcessRequest(request.Ptr);
-                NativeApi.Inference.ResponseRelease(responsePtr);
+                    var responsePtr = session.ProcessRequest(request.Ptr);
+                    NativeApi.Inference.ResponseRelease(responsePtr);
 
                     channel.Writer.TryComplete();
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    channel.Writer.TryComplete(new FoundryLocalException(runErrorMsg, ex, logger));
-                }
-                catch (OperationCanceledException)
-                {
-                    channel.Writer.TryComplete();
-                }
-                return true;
-            });
+                    return true;
+                });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                channel.Writer.TryComplete(new FoundryLocalException(runErrorMsg, ex, logger));
+            }
+            catch (OperationCanceledException)
+            {
+                channel.Writer.TryComplete();
+            }
         }, CancellationToken.None);
 
         try

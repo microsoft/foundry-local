@@ -10,7 +10,9 @@
 #include <foundry_local/foundry_local_cpp.h>
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -21,6 +23,23 @@
 namespace foundry_local_node {
 
 namespace {
+
+constexpr int64_t kMaxSafeInteger = 9007199254740991LL;
+
+Napi::Number SafeInt64ToNumber(Napi::Env env, int64_t value, const char* field) {
+  if (value < -kMaxSafeInteger || value > kMaxSafeInteger) {
+    throw Napi::RangeError::New(env, std::string(field) + " exceeds JavaScript's safe integer range");
+  }
+  return Napi::Number::New(env, static_cast<double>(value));
+}
+
+int64_t SafeNumberToInt64(Napi::Env env, const Napi::Value& value, const char* field) {
+  const double raw = value.As<Napi::Number>().DoubleValue();
+  if (!std::isfinite(raw) || std::trunc(raw) != raw || std::abs(raw) > static_cast<double>(kMaxSafeInteger)) {
+    throw Napi::RangeError::New(env, std::string(field) + " must be a safe integer");
+  }
+  return static_cast<int64_t>(raw);
+}
 
 void ThrowDisposedManagerError(Napi::Env env) {
   Napi::Error error = Napi::Error::New(env, "Manager has been disposed");
@@ -109,7 +128,7 @@ void SetOptionalString(Napi::Env env, Napi::Object obj, const char* key,
 void SetOptionalNumber(Napi::Env env, Napi::Object obj, const char* key,
                        const std::optional<int64_t>& value) {
   if (value.has_value()) {
-    obj.Set(key, Napi::Number::New(env, static_cast<double>(*value)));
+    obj.Set(key, SafeInt64ToNumber(env, *value, key));
   }
 }
 
@@ -184,7 +203,7 @@ Napi::Object SnapshotModelInfo(Napi::Env env, const foundry_local::ModelInfo& in
   runtime.Set("executionProvider", Napi::String::New(env, std::string(info.ExecutionProvider().value_or(""))));
   out.Set("runtime", runtime);
 
-  out.Set("createdAtUnix", Napi::Number::New(env, static_cast<double>(info.CreatedAtUnix())));
+  out.Set("createdAtUnix", SafeInt64ToNumber(env, info.CreatedAtUnix(), "createdAtUnix"));
   out.Set("isTestModel", Napi::Boolean::New(env, info.IsTestModel()));
 
   // Optional fields.
@@ -340,12 +359,17 @@ Napi::Value Model::GetIntProperty(const Napi::CallbackInfo& info) {
   auto manager = LockManager(env);
   if (!manager) return env.Undefined();
   std::string key = info[0].As<Napi::String>();
-  int64_t default_value = info.Length() >= 2 && !info[1].IsUndefined()
-                              ? info[1].As<Napi::Number>().Int64Value()
-                              : 0;
+  int64_t default_value = 0;
+  if (info.Length() >= 2 && !info[1].IsUndefined()) {
+    try {
+      default_value = SafeNumberToInt64(env, info[1], "Model.getIntProperty defaultValue");
+    } catch (const Napi::Error& error) {
+      error.ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+  }
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    return Napi::Number::New(env,
-                 static_cast<double>(impl_->GetInfo().GetIntProperty(key.c_str(), default_value)));
+    return SafeInt64ToNumber(env, impl_->GetInfo().GetIntProperty(key.c_str(), default_value), key.c_str());
   });
 }
 

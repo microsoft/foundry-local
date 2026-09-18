@@ -32,6 +32,10 @@
 
 namespace foundry_local_node {
 
+struct SessionOperationState {
+  std::atomic_bool busy = false;
+};
+
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
   static Napi::Function Init(Napi::Env env);
@@ -55,6 +59,7 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
   std::shared_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<SessionOperationState> operation_state_ = std::make_shared<SessionOperationState>();
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -88,6 +93,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
   std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<SessionOperationState> operation_state_ = std::make_shared<SessionOperationState>();
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -119,6 +125,7 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
   std::shared_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<SessionOperationState> operation_state_ = std::make_shared<SessionOperationState>();
 };
 
 }  // namespace foundry_local_node

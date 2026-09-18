@@ -4,10 +4,9 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
-from _thread import RLock as RLockType
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING
 
 from typing_extensions import deprecated
@@ -173,8 +172,7 @@ Model = IModel
 def _model_info_from_native(
     native_model_ptr: object,
     *,
-    ensure_manager_open: Callable[[], None] | None = None,
-    manager_lock: RLockType | None = None,
+    manager_native_call: Callable[[], AbstractContextManager[object]] | None = None,
 ) -> ModelInfo:
     """Read native metadata into a safe point-in-time value snapshot."""
     from foundry_local_sdk._native.api import api, ffi  # local to avoid circular imports
@@ -193,23 +191,15 @@ def _model_info_from_native(
         return int(api.model.Info_GetIntProperty(info, key.encode("utf-8"), default))
 
     def read_string_property(key: str) -> str | None:
-        if manager_lock is not None:
-            with manager_lock:
-                if ensure_manager_open is not None:
-                    ensure_manager_open()
+        if manager_native_call is not None:
+            with manager_native_call():
                 return get_str(key)
-        if ensure_manager_open is not None:
-            ensure_manager_open()
         return get_str(key)
 
     def read_int_property(key: str, default: int) -> int:
-        if manager_lock is not None:
-            with manager_lock:
-                if ensure_manager_open is not None:
-                    ensure_manager_open()
+        if manager_native_call is not None:
+            with manager_native_call():
                 return get_int(key, default)
-        if ensure_manager_open is not None:
-            ensure_manager_open()
         return get_int(key, default)
 
     uri_ptr = api.model.Info_GetUri(info)
@@ -296,28 +286,18 @@ class _ModelImpl(IModel):
         if manager is not None and getattr(manager, "_native_manager", None) is None:
             raise RuntimeError("FoundryLocalManager is closed")
 
-    def _manager_lock(self) -> RLockType | None:
-        manager = getattr(self._parent, "_parent", None)
-        return getattr(manager, "_lock", None)
-
     @contextmanager
-    def _manager_lifetime(self) -> Iterator[RLockType | None]:
+    def _manager_lifetime(self) -> Iterator[None]:
         manager = getattr(self._parent, "_parent", None)
-        manager_lock = self._manager_lock()
-        if manager_lock is not None:
-            with manager_lock:
-                self._ensure_manager_open()
-                state = getattr(manager, "_native_call_state")
-                state.depth = getattr(state, "depth", 0) + 1
-                try:
-                    if self._before_native_call_for_test is not None:
-                        self._before_native_call_for_test()
-                    yield manager_lock
-                finally:
-                    state.depth -= 1
+        native_call = getattr(manager, "_native_call", None)
+        if native_call is not None:
+            with native_call():
+                if self._before_native_call_for_test is not None:
+                    self._before_native_call_for_test()
+                yield
             return
         self._ensure_manager_open()
-        yield None
+        yield
 
     # ------------------------------------------------------------------
     # Identity properties — read from native ModelInfo
@@ -333,11 +313,11 @@ class _ModelImpl(IModel):
 
     @property
     def info(self) -> ModelInfo:
-        with self._manager_lifetime() as manager_lock:
+        manager = getattr(self._parent, "_parent", None)
+        with self._manager_lifetime():
             return _model_info_from_native(
                 self._ptr,
-                ensure_manager_open=self._ensure_manager_open,
-                manager_lock=manager_lock,
+                manager_native_call=getattr(manager, "_native_call", None),
             )
 
     def get_string_property(self, key: str) -> str | None:

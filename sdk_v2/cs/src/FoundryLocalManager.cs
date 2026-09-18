@@ -29,11 +29,10 @@ public class FoundryLocalManager : IDisposable
     private readonly Configuration _config;
     private NativeConfig _nativeConfig = default!;
     private NativeManager _nativeManager = default!;
-    private readonly object _nativeLifetimeLock = new();
+    private readonly ManagerLifetime _nativeLifetime = new();
     private Catalog? _publicCatalog;
     private Catalog? _localCatalog;
     private readonly AsyncLock _lock = new();
-    private int _disposed;
     private readonly ILogger _logger;
 
     private static readonly char[] s_urlSeparator = { ';' };
@@ -353,6 +352,10 @@ public class FoundryLocalManager : IDisposable
             throw new ArgumentOutOfRangeException(nameof(catalogType), catalogType, "Unknown catalog type.");
         }
 
+        using (_nativeLifetime.Acquire(this, trackReentrancy: true))
+        {
+        }
+
         var catalog = catalogType == CatalogType.Public ? _publicCatalog : _localCatalog;
         if (catalog != null)
         {
@@ -366,15 +369,12 @@ public class FoundryLocalManager : IDisposable
         {
             catalog = await Task.Run(() =>
             {
-                lock (_nativeLifetimeLock)
+                return WithNativeManager(manager =>
                 {
-                    Detail.Throw.IfDisposed(Volatile.Read(ref _disposed) != 0, this);
-
                     var nativeType = catalogType == CatalogType.Public ? FlCatalogType.Public : FlCatalogType.Local;
-                    var nativeCatalog = _nativeManager.GetCatalog(nativeType);
-                    return new Catalog(nativeCatalog, _logger, _nativeLifetimeLock,
-                                       () => Volatile.Read(ref _disposed) != 0);
-                }
+                    var nativeCatalog = manager.GetCatalog(nativeType);
+                    return new Catalog(nativeCatalog, _logger, _nativeLifetime);
+                });
             }, ct ?? CancellationToken.None).ConfigureAwait(false);
 
             if (catalogType == CatalogType.Public)
@@ -469,66 +469,51 @@ public class FoundryLocalManager : IDisposable
 
     private async Task StopWebServiceImplAsync(CancellationToken? ct = null)
     {
+        using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
+        using var lease = _nativeLifetime.Acquire(this);
+
         if (Urls == null)
         {
             throw new FoundryLocalException("Web service is not running.", _logger);
         }
 
-        using var disposable = await asyncLock.LockAsync().ConfigureAwait(false);
-
-        await Task.Run(() =>
-        {
-            lock (_nativeLifetimeLock)
-            {
-                _nativeManager.StopService();
-            }
-        }, ct ?? CancellationToken.None).ConfigureAwait(false);
+        await Task.Run(() => _nativeManager.StopService(), ct ?? CancellationToken.None).ConfigureAwait(false);
 
         Urls = null;
     }
 
     protected virtual void Dispose(bool disposing)
     {
-        // this is possibly overly cautious, but we free native handles here so want to make sure we get it right
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+#pragma warning disable IDISP023 // No manager finalizer exists; Dispose(bool) synchronously drains owned leases.
+        if (!_nativeLifetime.TryBeginDispose())
         {
             return;
         }
 
         if (disposing)
         {
-            if (Urls != null)
+            BeforeNativeDisposeForTest?.Invoke();
+
+            if (_nativeManager != null)
             {
                 try
                 {
-                    // Run on a thread-pool thread so that synchronously waiting on the asyncLock
-                    // cannot deadlock with an awaited continuation captured on the caller's context.
-                    Task.Run(() => StopWebServiceImplAsync()).GetAwaiter().GetResult();
+                    _nativeManager.Shutdown();
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error stopping web service during Dispose.");
+                    _logger.LogWarning(ex, "Error initiating native manager shutdown during Dispose.");
                 }
             }
 
-            BeforeNativeDisposeForTest?.Invoke();
-            lock (_nativeLifetimeLock)
-            {
-                if (_nativeManager != null)
-                {
-                    try
-                    {
-                        _nativeManager.Shutdown();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Error initiating native manager shutdown during Dispose.");
-                    }
-                }
-                _nativeManager?.Dispose();
-                _nativeConfig?.Dispose();
-            }
+            Urls = null;
+            _nativeLifetime.DisposeSessions();
+            _nativeLifetime.WaitForLeases();
+            _nativeManager?.Dispose();
+            _nativeConfig?.Dispose();
+            _nativeLifetime.Dispose();
             _lock.Dispose();
+#pragma warning restore IDISP023
 
             // Allow CreateAsync to construct a fresh instance after dispose. The native singleton
             // (Manager::Shutdown + Manager::Instance) already supports re-creation; the C# static
@@ -546,29 +531,19 @@ public class FoundryLocalManager : IDisposable
 
     public void Dispose()
     {
-        if (Monitor.IsEntered(_nativeLifetimeLock))
-        {
-            throw new InvalidOperationException("Cannot dispose FoundryLocalManager during an active native call.");
-        }
         Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
 
     private T WithNativeManager<T>(Func<NativeManager, T> operation)
     {
-        lock (_nativeLifetimeLock)
-        {
-            Detail.Throw.IfDisposed(Volatile.Read(ref _disposed) != 0, this);
-            return operation(_nativeManager);
-        }
+        using var lease = _nativeLifetime.Acquire(this, trackReentrancy: true);
+        return operation(_nativeManager);
     }
 
     private void WithNativeManager(Action<NativeManager> operation)
     {
-        lock (_nativeLifetimeLock)
-        {
-            Detail.Throw.IfDisposed(Volatile.Read(ref _disposed) != 0, this);
-            operation(_nativeManager);
-        }
+        using var lease = _nativeLifetime.Acquire(this, trackReentrancy: true);
+        operation(_nativeManager);
     }
 }

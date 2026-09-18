@@ -6,7 +6,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <string>
 
@@ -20,6 +19,7 @@ Napi::Function NativeModelInfo::Init(Napi::Env env) {
                          InstanceMethod("dispose", &NativeModelInfo::Dispose),
                          InstanceMethod("isDisposed", &NativeModelInfo::IsDisposed),
                          InstanceMethod("failNextSnapshotForTest", &NativeModelInfo::FailNextSnapshotForTest),
+                         InstanceMethod("setIntPropertyForTest", &NativeModelInfo::SetIntPropertyForTest),
                      });
 }
 
@@ -114,6 +114,29 @@ Napi::Value NativeModelInfo::FailNextSnapshotForTest(const Napi::CallbackInfo& i
   }
   fail_next_snapshot_for_test_ = true;
   return env.Undefined();
+}
+
+Napi::Value NativeModelInfo::SetIntPropertyForTest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() != 2 || !info[0].IsString() || !info[1].IsBigInt()) {
+    Napi::TypeError::New(env, "setIntPropertyForTest(key: string, value: bigint)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  bool lossless = false;
+  const int64_t value = info[1].As<Napi::BigInt>().Int64Value(&lossless);
+  if (!lossless) {
+    Napi::RangeError::New(env, "setIntPropertyForTest: value must fit in int64").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  std::string key = info[0].As<Napi::String>();
+  return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
+    impl_->SetIntProperty(key.c_str(), value);
+    int_properties_[key] = value;
+    return info.This();
+  });
 }
 
 }  // namespace foundry_local_node

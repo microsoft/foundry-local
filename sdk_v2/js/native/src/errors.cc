@@ -30,6 +30,8 @@ T CallChecked(Napi::Env env, const std::function<T()>& fn) {
     return fn();
   } catch (const foundry_local::Error& e) {
     MakeFoundryLocalError(env, e).ThrowAsJavaScriptException();
+  } catch (const Napi::Error& e) {
+    e.ThrowAsJavaScriptException();
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
   } catch (...) {
@@ -43,6 +45,8 @@ void CallCheckedVoid(Napi::Env env, const std::function<void()>& fn) {
     fn();
   } catch (const foundry_local::Error& e) {
     MakeFoundryLocalError(env, e).ThrowAsJavaScriptException();
+  } catch (const Napi::Error& e) {
+    e.ThrowAsJavaScriptException();
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
   } catch (...) {

@@ -28,6 +28,7 @@ class NativeModelInfo : public Napi::ObjectWrap<NativeModelInfo> {
   Napi::Value Dispose(const Napi::CallbackInfo& info);
   Napi::Value IsDisposed(const Napi::CallbackInfo& info);
   Napi::Value FailNextSnapshotForTest(const Napi::CallbackInfo& info);
+  Napi::Value SetIntPropertyForTest(const Napi::CallbackInfo& info);
 
   bool ThrowIfDisposed(Napi::Env env) const;
 

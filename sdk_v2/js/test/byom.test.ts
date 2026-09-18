@@ -187,6 +187,39 @@ describeIfBuilt("BYOM local catalog", () => {
     });
   });
 
+  it("rejects int64 metadata that cannot be represented as a safe JavaScript number", async () => {
+    const propertyModelId = "js-byom-unsafe-int64-property:1";
+    registeredIds.add(propertyModelId);
+    using metadata = new MutableModelInfo()
+      .setStringProperty(ModelInfoStringProperty.Task, "chat-completion")
+      .setIntProperty("custom_safe", Number.MAX_SAFE_INTEGER);
+    const nativeMetadata = unwrapMutableModelInfo(metadata);
+    nativeMetadata.setIntPropertyForTest("custom_unsafe", 9_007_199_254_740_992n);
+
+    const propertyModel = await localCatalog.registerModel(modelPath, propertyModelId, metadata);
+    expect(propertyModel.getIntProperty("custom_safe")).toBe(Number.MAX_SAFE_INTEGER);
+    expect(() => propertyModel.getIntProperty("custom_unsafe")).toThrow(RangeError);
+    expect(() => propertyModel.getIntProperty("missing", Number.MAX_SAFE_INTEGER + 1)).toThrow(RangeError);
+    expect(() => propertyModel.getIntProperty("missing", Number.NaN)).toThrow(RangeError);
+    await localCatalog.unregisterModel(propertyModelId);
+    registeredIds.delete(propertyModelId);
+
+    const snapshotModelId = "js-byom-unsafe-int64-snapshot:1";
+    registeredIds.add(snapshotModelId);
+    using snapshotMetadata = new MutableModelInfo().setStringProperty(
+      ModelInfoStringProperty.Task,
+      "chat-completion",
+    );
+    unwrapMutableModelInfo(snapshotMetadata).setIntPropertyForTest(
+      ModelInfoIntProperty.ContextLength,
+      9_007_199_254_740_992n,
+    );
+    const snapshotModel = await localCatalog.registerModel(modelPath, snapshotModelId, snapshotMetadata);
+    expect(() => snapshotModel.info).toThrow(RangeError);
+    await localCatalog.unregisterModel(snapshotModelId);
+    registeredIds.delete(snapshotModelId);
+  });
+
   it("rejects embedded NULs before native catalog or metadata dispatch", async () => {
     using metadata = new MutableModelInfo();
     expect(() => metadata.setStringProperty("bad\0key", "value")).toThrow(/embedded NUL/);

@@ -30,10 +30,12 @@ const platformSegment = (() => {
   }
 })();
 
-const sourceDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin", config);
+const buildBinDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin");
+const multiConfigSourceDir = resolve(buildBinDir, config);
+const sourceDir = existsSync(multiConfigSourceDir) ? multiConfigSourceDir : buildBinDir;
 
 if (!existsSync(sourceDir)) {
-  console.error(`[pack-prebuilds] source directory not found: ${sourceDir}`);
+  console.error(`[pack-prebuilds] source directory not found: ${multiConfigSourceDir} or ${buildBinDir}`);
   console.error("[pack-prebuilds] Build the C++ SDK first:");
   console.error(`[pack-prebuilds]   python sdk_v2/cpp/build.py --configure --build --config ${config}`);
   process.exit(1);

@@ -196,7 +196,7 @@ public record ModelInfo
                 DeviceType = deviceType,
                 ExecutionProvider = info.ExecutionProvider ?? string.Empty,
             },
-            FileSizeMb = filesizeMb >= 0 ? (int)filesizeMb : null,
+            FileSizeMb = ToNullableFileSizeMb(filesizeMb),
             SupportsToolCalling = supportsToolCalling,
             MaxOutputTokens = maxOutputTokens >= 0 ? maxOutputTokens : null,
             MinFLVersion = info.MinFlVersion,
@@ -207,6 +207,9 @@ public record ModelInfo
             Capabilities = info.GetStringProperty("capabilities"),
         };
     }
+
+    internal static int? ToNullableFileSizeMb(long value) =>
+        value is >= 0 and <= int.MaxValue ? (int)value : null;
 }
 
 /// <summary>

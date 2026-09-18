@@ -281,6 +281,27 @@ describe.skipIf(!haveTestModelCache)("FoundryLocalManager.dispose with active se
   );
 
   it(
+    "keeps an admitted streaming request alive when the manager is disposed",
+    async () => {
+      const fixture = await setupRealModelManager({ appName: "dispose-during-manager-stream" });
+      const session = new ChatSession(fixture.model);
+      try {
+        const request = new Request()
+          .addItem(Item.userMessage("Reply with ok."))
+          .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+        const stream = session.processStreamingRequest(request);
+        fixture.manager.dispose();
+
+        await expect(stream.response).resolves.toMatchObject({ output: expect.any(Array) });
+      } finally {
+        session.dispose();
+        teardownRealModelManager(fixture);
+      }
+    },
+    5 * 60_000,
+  );
+
+  it(
     "keeps an admitted request alive when the session is disposed",
     async () => {
       const fixture = await setupRealModelManager({ appName: "dispose-during-session-request" });
@@ -327,16 +348,57 @@ describe.skipIf(!haveTestModelCache)("FoundryLocalManager.dispose with active se
     async () => {
       const fixture = await setupRealModelManager({ appName: "gc-during-session-request" });
       try {
+        expect(globalThis.gc).toBeTypeOf("function");
+        const gc = (globalThis as { gc: () => void }).gc;
+        const collected = new Set<string>();
+        const registry = new FinalizationRegistry<string>((label) => collected.add(label));
         let session: ChatSession | undefined = new ChatSession(fixture.model);
         let nativeSession: NativeSession | undefined = (session as unknown as { native: NativeSession }).native;
+        const weakSession = new WeakRef(session);
+        const weakNativeSession = new WeakRef(nativeSession);
+        registry.register(session, "session");
+        registry.register(nativeSession, "nativeSession");
         const request = new Request()
           .addItem(Item.userMessage("Reply with ok."))
           .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
-        const response = nativeSession.processRequest(unwrapNativeRequest(request));
+        let resolveCollectionCheck!: () => void;
+        let rejectCollectionCheck!: (error: unknown) => void;
+        const collectionCheck = new Promise<void>((resolve, reject) => {
+          resolveCollectionCheck = resolve;
+          rejectCollectionCheck = reject;
+        });
+        let responseSettled = false;
+        const response = nativeSession.processRequest(unwrapNativeRequest(request), (release) => {
+          void (async () => {
+            try {
+              for (let attempt = 0; attempt < 100 && collected.size < 2; attempt++) {
+                gc();
+                await new Promise<void>((resolve) => setImmediate(resolve));
+              }
+              expect(responseSettled).toBe(false);
+              expect(collected).toEqual(new Set(["session", "nativeSession"]));
+              expect(weakSession.deref()).toBeUndefined();
+              expect(weakNativeSession.deref()).toBeUndefined();
+              resolveCollectionCheck();
+            } catch (error) {
+              rejectCollectionCheck(error);
+            } finally {
+              release();
+            }
+          })();
+        });
+        void response.then(
+          () => {
+            responseSettled = true;
+          },
+          () => {
+            responseSettled = true;
+          },
+        );
         session = undefined;
         nativeSession = undefined;
-        (globalThis as { gc: () => void }).gc();
 
+        await collectionCheck;
         await expect(response).resolves.toMatchObject({ output: expect.any(Array) });
       } finally {
         teardownRealModelManager(fixture);

@@ -34,9 +34,7 @@ using System.Threading.Channels;
 public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
 {
     private readonly Session _session;
-    private readonly Channel<Item> _channel;
-    private readonly CancellationTokenSource _cts;
-    private readonly Task _producerTask;
+    private readonly Session.StreamingOperation _operation;
     private readonly TaskCompletionSource<Response> _tcs;
     private int _enumerated;
     private int _finalResponseObserved;
@@ -45,15 +43,11 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
     private int _disposed;
 
     internal StreamingResponse(Session session,
-                               Channel<Item> channel,
-                               CancellationTokenSource cts,
-                               Task producerTask,
+                               Session.StreamingOperation operation,
                                TaskCompletionSource<Response> tcs)
     {
         _session = session;
-        _channel = channel;
-        _cts = cts;
-        _producerTask = producerTask;
+        _operation = operation;
         _tcs = tcs;
     }
 
@@ -119,7 +113,7 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
         try
         {
 #pragma warning disable IDISP007 // Ownership transferred from Session via the StreamingResponse ctor.
-            _cts.Dispose();
+            _operation.Cts.Dispose();
 #pragma warning restore IDISP007
         }
         catch
@@ -133,11 +127,11 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
         using var reg = ct.Register(static s =>
         {
             try { ((CancellationTokenSource)s!).Cancel(); } catch { }
-        }, _cts);
+        }, _operation.Cts);
 
         try
         {
-            await foreach (var item in _channel.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
+            await foreach (var item in _operation.Channel.Reader.ReadAllAsync(_operation.Cts.Token).ConfigureAwait(false))
             {
                 yield return item;
             }
@@ -169,29 +163,29 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
         // native callback worker thread and could truncate a still-in-flight ProcessRequest.
         if (Volatile.Read(ref _drainedNaturally) == 0)
         {
-            try { _cts.Cancel(); } catch { }
+            _operation.Cancel();
         }
 
         // Drain and dispose any items still buffered so native handles don't leak.
-        while (_channel.Reader.TryRead(out var leftover))
+        while (_operation.Channel.Reader.TryRead(out var leftover))
         {
             leftover.Dispose();
         }
 
         try
         {
-            await _producerTask.ConfigureAwait(false);
+            await _operation.ProducerTask.ConfigureAwait(false);
         }
         catch
         {
             // Producer exceptions are routed via channel completion / FinalResponse; swallow on cleanup.
         }
 
-        while (_channel.Reader.TryRead(out var leftover))
+        while (_operation.Channel.Reader.TryRead(out var leftover))
         {
             leftover.Dispose();
         }
 
-        _session.ClearStreamingState();
+        _session.ReleaseStreamingOperation(_operation);
     }
 }

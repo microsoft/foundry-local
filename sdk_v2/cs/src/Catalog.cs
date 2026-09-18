@@ -9,6 +9,7 @@ namespace Microsoft.AI.Foundry.Local;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
+using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.Extensions.Logging;
 
 using NativeCatalog = Microsoft.AI.Foundry.Local.Detail.Native.Catalog;
@@ -19,18 +20,15 @@ internal sealed class Catalog : ICatalog
 {
     private readonly NativeCatalog _nativeCatalog;
     private readonly ILogger _logger;
-    private readonly object _nativeLifetimeLock;
-    private readonly Func<bool> _isManagerDisposed;
+    private readonly ManagerLifetime _nativeLifetime;
 
     public string Name { get; }
 
-    internal Catalog(NativeCatalog nativeCatalog, ILogger logger, object nativeLifetimeLock,
-                     Func<bool> isManagerDisposed)
+    internal Catalog(NativeCatalog nativeCatalog, ILogger logger, ManagerLifetime nativeLifetime)
     {
         _nativeCatalog = nativeCatalog;
         _logger = logger;
-        _nativeLifetimeLock = nativeLifetimeLock;
-        _isManagerDisposed = isManagerDisposed;
+        _nativeLifetime = nativeLifetime;
         Name = _nativeCatalog.GetName();
     }
 
@@ -39,9 +37,8 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     using var list = _nativeCatalog.GetModels();
                     return list.Models.Select(CreateModel).ToList();
                 }
@@ -54,9 +51,8 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     using var list = _nativeCatalog.GetCachedModels();
                     return list.Models.Select(CreateModel).ToList();
                 }
@@ -69,9 +65,8 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     using var list = _nativeCatalog.GetLoadedModels();
                     return list.Models.Select(CreateModel).ToList();
                 }
@@ -89,9 +84,8 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     using var list = _nativeCatalog.GetModelVersions(modelAlias, modelName, maxVersions);
                     return list.Models.Select(CreateModel).ToList();
                 }
@@ -105,9 +99,8 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     var model = _nativeCatalog.GetModel(modelAlias);
                     return model != null ? CreateModel(model) : null;
                 }
@@ -121,9 +114,8 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     var model = _nativeCatalog.GetModelVariant(modelId);
                     return model != null ? CreateModel(model) : null;
                 }
@@ -136,11 +128,10 @@ internal sealed class Catalog : ICatalog
         return await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     var inputModel = (Model)model;
-                    if (!ReferenceEquals(_nativeLifetimeLock, inputModel.NativeLifetimeLock))
+                    if (!ReferenceEquals(_nativeLifetime, inputModel.NativeLifetime))
                     {
                         throw new ArgumentException("Model must belong to this catalog's manager.", nameof(model));
                     }
@@ -166,9 +157,8 @@ internal sealed class Catalog : ICatalog
             () =>
             {
                 NativeModel model;
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     model = _nativeCatalog.RegisterModel(modelPath, modelId, nativeMetadata);
                 }
                 return CreateModel(model);
@@ -182,22 +172,19 @@ internal sealed class Catalog : ICatalog
         await Utils.CallWithExceptionHandlingAsync(
             () =>
             {
-                lock (_nativeLifetimeLock)
+                using (AcquireManagerLease())
                 {
-                    ThrowIfManagerDisposed();
                     _nativeCatalog.UnregisterModel(aliasOrModelId);
                 }
             },
             $"Error unregistering model '{aliasOrModelId}'.", _logger, ct).ConfigureAwait(false);
     }
 
-    private void ThrowIfManagerDisposed()
-    {
-        Detail.Throw.IfDisposed(_isManagerDisposed(), this);
-    }
+    private ManagerLifetime.Lease AcquireManagerLease() =>
+        _nativeLifetime.Acquire(this, trackReentrancy: true);
 
     private IModel CreateModel(NativeModel model) =>
-        new Model(model, _logger, _nativeLifetimeLock, _isManagerDisposed);
+        new Model(model, _logger, _nativeLifetime);
 
     private static void PopulateNativeMetadata(NativeModelInfo nativeMetadata, ModelInfoBuilder metadata)
     {
