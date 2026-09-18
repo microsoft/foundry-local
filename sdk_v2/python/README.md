@@ -119,6 +119,7 @@ cancel_event = Event()
 
 def on_progress(percent: float) -> None:
     print(f"\rDownloading: {percent:.1f}%", end="", flush=True)
+    cancel_event.set()
 
 model.download(progress_callback=on_progress, cancel_event=cancel_event)
 ```

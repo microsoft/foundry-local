@@ -172,16 +172,13 @@ export class Model implements IModel {
     await this.#native.unload();
   }
 
-  async download(): Promise<void>;
-  async download(signal: AbortSignal): Promise<void>;
-  async download(progressCallback: (progress: number) => void, signal?: AbortSignal): Promise<void>;
-  async download(progressCallback: undefined, signal: AbortSignal): Promise<void>;
+  async download(signal?: AbortSignal): Promise<void>;
+  async download(progressCallback: ((progress: number) => void) | undefined, signal?: AbortSignal): Promise<void>;
   async download(
     progressCallbackOrSignal?: ((progress: number) => void) | AbortSignal,
     signal?: AbortSignal,
   ): Promise<void> {
-    const progressCallback =
-      typeof progressCallbackOrSignal === "function" ? progressCallbackOrSignal : undefined;
+    const progressCallback = typeof progressCallbackOrSignal === "function" ? progressCallbackOrSignal : undefined;
     const abortSignal = isAbortSignal(progressCallbackOrSignal) ? progressCallbackOrSignal : signal;
 
     if (
