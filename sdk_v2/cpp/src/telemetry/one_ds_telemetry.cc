@@ -37,6 +37,7 @@ namespace {
 
 using MatILogManager = ::Microsoft::Applications::Events::ILogManager;
 using MatILogger = ::Microsoft::Applications::Events::ILogger;
+using ::Microsoft::Applications::Events::CFG_BOOL_ENABLE_NET_DETECT;
 using ::Microsoft::Applications::Events::CFG_BOOL_ENABLE_TRACE;
 using ::Microsoft::Applications::Events::CFG_BOOL_SESSION_RESET_ENABLED;
 using ::Microsoft::Applications::Events::CFG_INT_MAX_TEARDOWN_TIME;
@@ -241,6 +242,10 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
     config[CFG_INT_TRACE_LEVEL_MASK] = 0;
     config[CFG_INT_SDK_MODE] = SdkModeTypes_CS;
     config[CFG_INT_MAX_TEARDOWN_TIME] = kMaxTeardownUploadTimeSec;
+#ifdef _WIN32
+    // The 1DS network detector leaves a netprofm.dll allocation at process exit.
+    config[CFG_BOOL_ENABLE_NET_DETECT] = false;
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
     if (const auto ca_bundle = GetCertificateAuthorityBundlePath(); !ca_bundle.empty()) {
       config[CFG_MAP_HTTP][CFG_STR_HTTP_SSL_CAINFO] = ca_bundle;
