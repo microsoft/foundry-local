@@ -93,8 +93,7 @@ public sealed class Request : IDisposable
     }
 
     /// <summary>
-    /// Cancels this request. Cancellation before processing is remembered and prevents the request from reaching the
-    /// inference backend; cancellation after completion has no effect.
+    /// Cancels this request's in-flight invocation. This has no effect while the request is idle or after completion.
     /// </summary>
     public void Cancel()
     {

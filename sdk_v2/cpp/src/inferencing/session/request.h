@@ -117,25 +117,35 @@ struct Request {
     item_segment_starts.push_back(items.size());
   }
 
-  /// Atomically wins cancellation against terminal publication. Returns false after completion has won.
+  /// Cancels only the invocation currently being processed. Idle and completed requests are unchanged.
   bool Cancel(CancellationReason reason = CancellationReason::Caller) const noexcept {
     const auto canceled_state = CanceledState(reason);
-    auto state = state_.load(std::memory_order_acquire);
-    while (state == State::Ready || state == State::Running) {
-      if (state_.compare_exchange_weak(state, canceled_state,
+    auto expected = State::Running;
+    if (state_.compare_exchange_strong(expected, canceled_state,
                                        std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {
-        return true;
-      }
+      return true;
     }
 
-    return IsCanceledState(state);
+    return IsCanceledState(expected);
   }
 
   bool CancelFromStreamingCallbackException(std::string_view detail) const noexcept {
     try {
       std::lock_guard<std::mutex> lock(cancellation_detail_mutex_);
+      auto expected = state_.load(std::memory_order_acquire);
+      if (expected != State::Running) {
+        return IsCanceledState(expected);
+      }
+
       cancellation_detail_ = detail;
+      if (state_.compare_exchange_strong(expected, State::CanceledByStreamingCallbackException,
+                                         std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) {
+        return true;
+      }
+
+      return IsCanceledState(expected);
     } catch (...) {
       // Cancellation itself must remain reliable if preserving diagnostic text runs out of memory.
     }
@@ -157,9 +167,11 @@ struct Request {
   }
 
   /// Starts first-time processing or reuses a request whose previous operation completed.
-  bool TryBegin() const noexcept {
+  bool TryBegin() const {
+    std::lock_guard<std::mutex> lock(cancellation_detail_mutex_);
     auto state = state_.load(std::memory_order_acquire);
     while (state == State::Ready || state == State::Completed) {
+      cancellation_detail_.clear();
       if (state_.compare_exchange_weak(state, State::Running,
                                        std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {

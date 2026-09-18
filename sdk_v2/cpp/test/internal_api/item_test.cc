@@ -683,12 +683,21 @@ TEST(RequestTest, MixedOwnedAndBorrowedItems) {
   EXPECT_TRUE(req.items[1]->type == FOUNDRY_LOCAL_ITEM_MESSAGE);
 }
 
-TEST(RequestTest, CancellationWinsBeforeCompletion) {
+TEST(RequestTest, ReadyCancellationIsNoOpAndTryBeginSucceeds) {
   Request req;
   EXPECT_FALSE(req.IsCancellationRequested());
 
+  EXPECT_FALSE(req.Cancel());
+  EXPECT_FALSE(req.IsCancellationRequested());
+  EXPECT_TRUE(req.TryBegin());
+}
+
+TEST(RequestTest, CancellationWinsBeforeCompletion) {
+  Request req;
+  ASSERT_TRUE(req.TryBegin());
+
   EXPECT_TRUE(req.Cancel());
-  EXPECT_TRUE(req.Cancel());
+  EXPECT_TRUE(req.Cancel(Request::CancellationReason::SessionShutdown));
   EXPECT_TRUE(req.IsCancellationRequested());
   EXPECT_EQ(req.GetCancellationReason(), Request::CancellationReason::Caller);
   EXPECT_FALSE(req.TryComplete());
@@ -696,20 +705,24 @@ TEST(RequestTest, CancellationWinsBeforeCompletion) {
 
 TEST(RequestTest, CancellationPreservesActionableReason) {
   Request callback_request;
+  ASSERT_TRUE(callback_request.TryBegin());
   EXPECT_TRUE(callback_request.Cancel(Request::CancellationReason::StreamingCallback));
   EXPECT_EQ(callback_request.GetCancellationReason(), Request::CancellationReason::StreamingCallback);
 
   Request exception_request;
+  ASSERT_TRUE(exception_request.TryBegin());
   EXPECT_TRUE(exception_request.CancelFromStreamingCallbackException("callback exploded"));
+  EXPECT_TRUE(exception_request.CancelFromStreamingCallbackException("replacement detail"));
   EXPECT_EQ(exception_request.GetCancellationReason(), Request::CancellationReason::StreamingCallbackException);
   EXPECT_EQ(exception_request.CancellationDetail(), "callback exploded");
 
   Request shutdown_request;
+  ASSERT_TRUE(shutdown_request.TryBegin());
   EXPECT_TRUE(shutdown_request.Cancel(Request::CancellationReason::SessionShutdown));
   EXPECT_EQ(shutdown_request.GetCancellationReason(), Request::CancellationReason::SessionShutdown);
 }
 
-TEST(RequestTest, CompletionMakesLateCancellationANoOp) {
+TEST(RequestTest, CompletedCancellationIsNoOpAndRequestCanBeReused) {
   Request req;
 
   ASSERT_TRUE(req.TryBegin());
@@ -720,6 +733,8 @@ TEST(RequestTest, CompletionMakesLateCancellationANoOp) {
   EXPECT_FALSE(req.TryBegin());
   req.PublishCompletion();
   EXPECT_TRUE(req.IsCompleted());
+  EXPECT_FALSE(req.Cancel());
+  EXPECT_FALSE(req.IsCancellationRequested());
   EXPECT_TRUE(req.TryBegin());
 }
 

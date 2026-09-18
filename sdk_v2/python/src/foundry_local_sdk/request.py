@@ -105,9 +105,8 @@ class Request:
     def cancel(self) -> None:
         """Cancel this request.
 
-        Cancellation before processing is remembered and prevents the request
-        from reaching the inference backend. Cancellation after completion has
-        no effect.
+        Only an invocation currently being processed is affected. Calling this
+        while the request is idle or after completion has no effect.
         """
         self._check_open()
         from foundry_local_sdk._native.api import api

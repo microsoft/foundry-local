@@ -180,7 +180,7 @@ describeIfBuilt("Request round-trip through the native layer", () => {
     expect(req.itemCount).toBe(3);
   });
 
-  it("cancel before attachment is accepted", () => {
+  it("cancel while idle is an accepted no-op", () => {
     const req = new Request();
     expect(() => req.cancel()).not.toThrow();
   });

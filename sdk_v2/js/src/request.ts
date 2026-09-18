@@ -74,11 +74,9 @@ export class Request {
   }
 
   /**
-   * Cancel a request. Safe to call at any time; cancellation before processing
-   * is remembered, while cancellation after completion has no effect.
-   * Cancellation makes the matching `Session.processRequest()` reject with a
-   * `FoundryLocalError` whose `code === FlErrorCode.OperationCancelled` and
-   * whose message identifies caller-requested cancellation.
+   * Cancel this request's invocation only while it is inside native `Session::ProcessRequest`. Calling this while the
+   * request is idle, waiting in a session's native FIFO, or already completed has no effect. Active cancellation makes
+   * the matching `Session.processRequest()` reject with `code === FlErrorCode.OperationCancelled`.
    */
   cancel(): void {
     this.#native.cancel();

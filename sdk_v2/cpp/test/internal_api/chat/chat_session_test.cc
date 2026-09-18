@@ -1888,8 +1888,8 @@ TEST_F(QwenNativeProductionIntegrationTest,
   Response response;
   ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.IsCancellationRequested());
-  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::Caller);
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 2);
   EXPECT_EQ(counters->closed, 1);
   EXPECT_EQ(counters->canceled, 1);
@@ -1928,8 +1928,8 @@ TEST_F(QwenNativeProductionIntegrationTest,
   Response response;
   ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.IsCancellationRequested());
-  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::StreamingCallback);
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
@@ -1987,8 +1987,8 @@ TEST_F(QwenNativeProductionIntegrationTest,
   Response response;
   ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.IsCancellationRequested());
-  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::StreamingCallback);
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);

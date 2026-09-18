@@ -1712,7 +1712,7 @@ TEST(CApiTest, ItemQueuePushPopAndFinish) {
 // Inference API — Request_Cancel
 // ========================================================================
 
-TEST(CApiTest, RequestCancelBeforeAttachmentSucceeds) {
+TEST(CApiTest, RequestCancelWhileIdleSucceeds) {
   const flApi* api = GetApi();
   const flInferenceApi* inf_api = api->GetInferenceApi();
 
@@ -1720,7 +1720,7 @@ TEST(CApiTest, RequestCancelBeforeAttachmentSucceeds) {
   ASSERT_TRUE(IsOk(inf_api->Request_Create(&req)));
   ASSERT_NE(req, nullptr);
 
-  // Cancellation is remembered until a session would otherwise attach the request.
+  // Idle cancellation is a successful no-op.
   EXPECT_TRUE(IsOk(inf_api->Request_Cancel(req)));
 
   inf_api->Request_Release(req);

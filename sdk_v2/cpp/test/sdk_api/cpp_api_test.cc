@@ -284,9 +284,9 @@ TEST(CppApiTest, RequestSetOptions) {
   request.SetOptions(opts);
 }
 
-TEST(CppApiTest, RequestCancelBeforeAttachmentSucceeds) {
+TEST(CppApiTest, RequestCancelWhileIdleSucceeds) {
   foundry_local::Request request;
-  // Cancellation is remembered until a session would otherwise attach the request.
+  // Idle cancellation is a successful no-op.
   EXPECT_NO_THROW(request.Cancel());
 }
 

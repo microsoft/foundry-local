@@ -33,6 +33,7 @@ CallbackHandler::CallbackFn MakeThrowingCallback(std::atomic<int>& invocations) 
 
 TEST(CallbackHandlerTest, StdExceptionFromCallbackDoesNotTerminate) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
 
   {
@@ -51,6 +52,7 @@ TEST(CallbackHandlerTest, StdExceptionFromCallbackDoesNotTerminate) {
 
 TEST(CallbackHandlerTest, NonStdExceptionFromCallbackDoesNotTerminate) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
 
   auto fn = [&invocations](flStreamingCallbackData, void*) -> int {
@@ -72,6 +74,7 @@ TEST(CallbackHandlerTest, NonStdExceptionFromCallbackDoesNotTerminate) {
 
 TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
 
   CallbackHandler handler(request, MakeThrowingCallback(invocations), fl::test::NullLog());
@@ -98,6 +101,7 @@ TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
 
 TEST(CallbackHandlerTest, NormalCallbackCancelsViaReturnValue) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
 
   auto fn = [&invocations, &request](flStreamingCallbackData data, void*) -> int {
@@ -121,6 +125,7 @@ TEST(CallbackHandlerTest, NormalCallbackCancelsViaReturnValue) {
 
 TEST(CallbackHandlerTest, DrainPendingWaitsForDeliveryWithoutClosingTheQueue) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
 
   auto fn = [&invocations](flStreamingCallbackData data, void*) -> int {
@@ -142,6 +147,7 @@ TEST(CallbackHandlerTest, DrainPendingWaitsForDeliveryWithoutClosingTheQueue) {
 
 TEST(CallbackHandlerTest, CancellationDrainsSmallBufferedBacklog) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
   std::mutex mutex;
   std::condition_variable cv;
@@ -185,6 +191,7 @@ TEST(CallbackHandlerTest, CancellationDrainsSmallBufferedBacklog) {
 
 TEST(CallbackHandlerTest, CancellationDropsLargeBufferedBacklog) {
   Request request;
+  ASSERT_TRUE(request.TryBegin());
   std::atomic<int> invocations{0};
   std::mutex mutex;
   std::condition_variable cv;

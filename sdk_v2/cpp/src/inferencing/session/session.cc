@@ -170,15 +170,13 @@ void Session::ProcessRequest(const Request& request, Response& response) {
 
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
-    const bool began = request.TryBegin();
-
-    if (!began && !request.IsCancellationRequested()) {
+    if (!request.TryBegin()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request is already being processed");
     }
 
-    // Stamp only an invocation that successfully claimed the request. This preserves an existing caller cancellation
-    // while ensuring a completed reusable request admitted after shutdown cannot enter the backend.
-    if (began && session_canceled_) {
+    // A late shutdown admission must first claim the request, then be canceled under the same lock that protects
+    // active registration. This keeps TryBegin as the sole admission gate while preventing backend entry.
+    if (session_canceled_) {
       request.Cancel(Request::CancellationReason::SessionShutdown);
     }
 
@@ -190,10 +188,22 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   struct ActiveRequestGuard {
     Session& session;
     const Request& request;
-    ~ActiveRequestGuard() {
+
+    void Deregister() {
+      if (!registered) {
+        return;
+      }
+
       std::lock_guard<std::mutex> active_lock(*session.active_requests_mutex_);
       session.active_requests_.erase(&request);
+      registered = false;
     }
+
+    ~ActiveRequestGuard() {
+      Deregister();
+    }
+
+    bool registered = true;
   } active_guard{*this, request};
 
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
@@ -214,10 +224,12 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     }
 
     response = std::move(staged_response);
+    active_guard.Deregister();
     request.PublishCompletion();
     tracker.SetStatus(ActionStatus::kSuccess);
   } catch (const std::exception& ex) {
     if (request.TryComplete()) {
+      active_guard.Deregister();
       request.PublishCompletion();
       tracker.RecordException(ex);
       throw;
@@ -226,6 +238,8 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     try {
       ThrowCancellation(request);
     } catch (const std::exception& cancellation) {
+      active_guard.Deregister();
+      request.PublishCompletion();
       tracker.RecordException(cancellation);
       throw;
     }

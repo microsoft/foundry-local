@@ -119,9 +119,9 @@ underlying C ABI call is a memory copy, not I/O.
   native streaming-callback push lands on a `Napi::ThreadSafeFunction`
   acquired in the session's constructor and released when the iterable is
   closed.
-- Cancellation: each async API accepts an `AbortSignal`. The signal is
-  bound to `Request::Cancel()`, which the C++ wrapper translates into a
-  cancellation signal observed by the streaming callback.
+- Cancellation: streaming APIs accept an `AbortSignal`. A signal already aborted at call time rejects before native
+  work is submitted. Once submitted, the signal calls `Request::Cancel()`, which affects only an invocation currently
+  inside native `Session::ProcessRequest`; work still waiting in the native session FIFO is not canceled.
 - Live PCM input (audio transcription with chunks arriving over time) is
   expressed by adding an `AudioItem` descriptor to the `Request` and
   pushing PCM bytes through a paired `ItemQueue`. The session consumes the
