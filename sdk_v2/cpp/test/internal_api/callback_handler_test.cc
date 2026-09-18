@@ -93,6 +93,7 @@ TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
   handler.PushItem(std::make_unique<TextItem>("second"));
   handler.PushItem(std::make_unique<TextItem>("third"));
 
+  handler.DrainPending();
   handler.Drain();
 
   // Worker exited after the throw — no further callback invocations.

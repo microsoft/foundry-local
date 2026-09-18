@@ -530,6 +530,28 @@ class ThrowThenCompleteSession : public Session {
   size_t process_count_ = 0;
 };
 
+class NonStdThrowThenCompleteSession : public Session {
+ public:
+  NonStdThrowThenCompleteSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  size_t ProcessCount() const { return process_count_; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& response) override {
+    ++process_count_;
+    if (process_count_ == 1) {
+      throw 42;
+    }
+
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  size_t process_count_ = 0;
+};
+
 flErrorCode ProcessAndGetCode(Session& session, const Request& request) {
   try {
     Response response;
@@ -724,6 +746,26 @@ TEST(SessionRequestLifecycleTest, OrdinaryExceptionAllowsRequestReuse) {
         session.ProcessRequest(request, response);
       },
       std::runtime_error);
+  EXPECT_TRUE(request.IsCompleted());
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
+  EXPECT_EQ(session.ProcessCount(), 2u);
+}
+
+TEST(SessionRequestLifecycleTest, NonStdExceptionAllowsRequestReuse) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  NonStdThrowThenCompleteSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  try {
+    Response response;
+    session.ProcessRequest(request, response);
+    FAIL() << "expected non-standard exception";
+  } catch (int value) {
+    EXPECT_EQ(value, 42);
+  }
   EXPECT_TRUE(request.IsCompleted());
 
   EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);

@@ -60,7 +60,8 @@ struct CallbackHandler {
   /// Push an item into the queue and wake the worker.
   /// Called from the generator thread — returns immediately.
   void PushItem(std::unique_ptr<Item> item) {
-    if (request_.IsCancellationRequested()) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (disabled_after_exception_ || request_.IsCancellationRequested()) {
       return;
     }
 
@@ -95,8 +96,7 @@ struct CallbackHandler {
       // The callback pops from the queue — that is the established contract.
       while (queue_->Size() > 0) {
         if (request_.IsCancellationRequested() && queue_->Size() > kMaxCancellationDrainItems) {
-          DropPendingItems();
-          SetCallbackInProgress(false);
+          DropPendingItemsAndNotify(false);
           break;
         }
 
@@ -111,13 +111,11 @@ struct CallbackHandler {
                       fmt::format("streaming callback threw an exception; cancelling request: {}",
                                   e.what()));
           DisableAfterException(e.what());
-          SetCallbackInProgress(false);
           return;
         } catch (...) {
           logger_.Log(LogLevel::Warning,
                       "streaming callback threw a non-std exception; cancelling request");
           DisableAfterException("non-standard exception");
-          SetCallbackInProgress(false);
           return;
         }
 
@@ -136,12 +134,19 @@ struct CallbackHandler {
   /// and drops any items still queued so the destructor can join cleanly.
   void DisableAfterException(std::string_view detail) {
     request_.CancelFromStreamingCallbackException(detail);
-    DropPendingItems();
+    DropPendingItemsAndNotify(true);
   }
 
-  void DropPendingItems() {
-    while (queue_->TryPop()) {
+  void DropPendingItemsAndNotify(bool disable_after_exception) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      disabled_after_exception_ = disabled_after_exception_ || disable_after_exception;
+      while (queue_->TryPop()) {
+      }
+      callback_in_progress_ = false;
     }
+
+    callback_cv_.notify_all();
   }
 
   void SetCallbackInProgress(bool value) {
@@ -165,6 +170,7 @@ struct CallbackHandler {
   std::mutex callback_mutex_;
   std::condition_variable callback_cv_;
   bool callback_in_progress_ = false;
+  bool disabled_after_exception_ = false;
   std::thread worker_;
 };
 

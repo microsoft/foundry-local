@@ -13,6 +13,7 @@
 #include "model.h"
 #include "telemetry/telemetry.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "util/scope_guard.h"
 #include "utils.h"
 
 #include <fmt/format.h>
@@ -168,11 +169,30 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     lock.lock();
   }
 
+  bool admitted = false;
+  bool registered = false;
+  auto finish_lifecycle = [&]() noexcept {
+    if (!admitted) {
+      return;
+    }
+
+    if (registered) {
+      std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+      active_requests_.erase(&request);
+      registered = false;
+    }
+
+    request.PublishCompletion();
+    admitted = false;
+  };
+  ScopeGuard lifecycle_guard([&]() noexcept { finish_lifecycle(); });
+
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
     if (!request.TryBegin()) {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request is already being processed");
     }
+    admitted = true;
 
     // A late shutdown admission must first claim the request, then be canceled under the same lock that protects
     // active registration. This keeps TryBegin as the sole admission gate while preventing backend entry.
@@ -181,30 +201,8 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     }
 
     active_requests_.insert(&request);
+    registered = true;
   }
-
-  // RAII: deregister the request even if ProcessRequestImpl throws, so Cancel() never
-  // dereferences a dangling Request after this call unwinds.
-  struct ActiveRequestGuard {
-    Session& session;
-    const Request& request;
-
-    void Deregister() {
-      if (!registered) {
-        return;
-      }
-
-      std::lock_guard<std::mutex> active_lock(*session.active_requests_mutex_);
-      session.active_requests_.erase(&request);
-      registered = false;
-    }
-
-    ~ActiveRequestGuard() {
-      Deregister();
-    }
-
-    bool registered = true;
-  } active_guard{*this, request};
 
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
   tracker.SetModelId(CatalogModel().Id());
@@ -224,13 +222,13 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     }
 
     response = std::move(staged_response);
-    active_guard.Deregister();
-    request.PublishCompletion();
+    finish_lifecycle();
+    lifecycle_guard.Dismiss();
     tracker.SetStatus(ActionStatus::kSuccess);
   } catch (const std::exception& ex) {
     if (request.TryComplete()) {
-      active_guard.Deregister();
-      request.PublishCompletion();
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
       tracker.RecordException(ex);
       throw;
     }
@@ -238,8 +236,8 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     try {
       ThrowCancellation(request);
     } catch (const std::exception& cancellation) {
-      active_guard.Deregister();
-      request.PublishCompletion();
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
       tracker.RecordException(cancellation);
       throw;
     }

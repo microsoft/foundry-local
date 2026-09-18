@@ -19,10 +19,8 @@ export interface IModel {
   get capabilities(): string | null;
   get supportsToolCalling(): boolean | null;
 
-  download(): Promise<void>;
-  download(signal: AbortSignal): Promise<void>;
-  download(progressCallback: (progress: number) => void, signal?: AbortSignal): Promise<void>;
-  download(progressCallback: undefined, signal: AbortSignal): Promise<void>;
+  download(signal?: AbortSignal): Promise<void>;
+  download(progressCallback: ((progress: number) => void) | undefined, signal?: AbortSignal): Promise<void>;
   get path(): string;
   load(): Promise<void>;
   removeFromCache(): void;
