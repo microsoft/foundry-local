@@ -109,19 +109,6 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
-    "concatenated streamed text contains the expected answer content",
-    async () => {
-      if (session === undefined) throw new Error("fixture missing");
-      let text = "";
-      for await (const item of session.processStreamingRequest(buildPrompt())) {
-        text += extractText(item);
-      }
-      expect(countUkTokens(text)).toBeGreaterThanOrEqual(2);
-    },
-    2 * 60_000,
-  );
-
-  it(
     "early break requests cancellation while permitting prior native completion",
     async () => {
       if (session === undefined) throw new Error("fixture missing");

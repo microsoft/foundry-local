@@ -9,7 +9,6 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
-#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -284,41 +283,27 @@ namespace {
 class DownloadWorker : public Napi::AsyncWorker {
  public:
   DownloadWorker(Napi::Env env, foundry_local::IModel* impl, Napi::ObjectReference owner,
-                 Napi::ThreadSafeFunction tsfn, std::shared_ptr<std::atomic<bool>> abort_requested,
-                 Napi::ObjectReference abort_signal, Napi::FunctionReference abort_listener)
+                 Napi::ThreadSafeFunction tsfn)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
         impl_(impl),
         owner_(std::move(owner)),
-        tsfn_(std::move(tsfn)),
-        abort_requested_(std::move(abort_requested)),
-        abort_signal_(std::move(abort_signal)),
-        abort_listener_(std::move(abort_listener)) {}
+        tsfn_(std::move(tsfn)) {}
 
   Napi::Promise Promise() { return deferred_.Promise(); }
 
   void Execute() override {
     try {
-      const bool has_cancellation = abort_requested_ != nullptr;
-      auto progress_cb = (tsfn_ || has_cancellation) ? std::function<int(float)>([this](float percent) {
-        if (IsAbortRequested()) {
-          cancelled_by_signal_ = true;
-          return 1;
-        }
-        if (tsfn_) {
-          // BlockingCall keeps backpressure on the worker thread: if JS is slow to drain the queue we'll wait rather
-          // than dropping reports.
-          tsfn_.BlockingCall([percent](Napi::Env env, Napi::Function js_cb) {
-            js_cb.Call({Napi::Number::New(env, static_cast<double>(percent))});
-          });
-        }
-        if (IsAbortRequested()) {
-          cancelled_by_signal_ = true;
-          return 1;
-        }
-        return 0;
+      auto progress_cb = tsfn_ ? std::function<int(float)>([this](float percent) {
+        // BlockingCall keeps backpressure on the worker thread: if JS is
+        // slow to drain the queue we'll wait rather than dropping reports.
+        // Callback return value is unused on the JS side; we always continue.
+        tsfn_.BlockingCall([percent](Napi::Env env, Napi::Function js_cb) {
+          js_cb.Call({Napi::Number::New(env, static_cast<double>(percent))});
+        });
+        return 0;  // 0 = continue per flProgressCallback contract.
       })
-                                                       : std::function<int(float)>(nullptr);
+                               : std::function<int(float)>(nullptr);
       impl_->Download(std::move(progress_cb));
     } catch (const foundry_local::Error& e) {
       err_code_ = static_cast<int>(e.Code());
@@ -336,20 +321,18 @@ class DownloadWorker : public Napi::AsyncWorker {
 
   void OnOK() override {
     Napi::HandleScope scope(Env());
-    CleanupJsReferences();
+    ReleaseTsfn();
     deferred_.Resolve(Env().Undefined());
   }
 
   void OnError(const Napi::Error& /*unused*/) override {
     Napi::Env env = Env();
     Napi::HandleScope scope(env);
-    CleanupJsReferences();
+    ReleaseTsfn();
     if (tagged_) {
       Napi::Error err = Napi::Error::New(env, err_msg_);
       Napi::Object value = err.Value();
-      const bool is_signal_cancellation =
-          cancelled_by_signal_ && err_code_ == FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
-      value.Set("name", Napi::String::New(env, is_signal_cancellation ? "AbortError" : "FoundryLocalError"));
+      value.Set("name", Napi::String::New(env, "FoundryLocalError"));
       value.Set("code", Napi::Number::New(env, err_code_));
       deferred_.Reject(value);
     } else {
@@ -358,21 +341,7 @@ class DownloadWorker : public Napi::AsyncWorker {
   }
 
  private:
-  bool IsAbortRequested() const {
-    return abort_requested_ != nullptr && abort_requested_->load(std::memory_order_acquire);
-  }
-
-  void CleanupJsReferences() {
-    if (!abort_signal_.IsEmpty() && !abort_listener_.IsEmpty()) {
-      Napi::Object signal = abort_signal_.Value();
-      Napi::Value remove_value = signal.Get("removeEventListener");
-      if (remove_value.IsFunction()) {
-        remove_value.As<Napi::Function>().Call(
-            signal, {Napi::String::New(Env(), "abort"), abort_listener_.Value()});
-      }
-      abort_listener_.Reset();
-      abort_signal_.Reset();
-    }
+  void ReleaseTsfn() {
     if (tsfn_) {
       tsfn_.Release();
       tsfn_ = Napi::ThreadSafeFunction();
@@ -383,13 +352,9 @@ class DownloadWorker : public Napi::AsyncWorker {
   foundry_local::IModel* impl_;
   Napi::ObjectReference owner_;
   Napi::ThreadSafeFunction tsfn_;
-  std::shared_ptr<std::atomic<bool>> abort_requested_;
-  Napi::ObjectReference abort_signal_;
-  Napi::FunctionReference abort_listener_;
   std::string err_msg_;
   int err_code_ = 0;
   bool tagged_ = false;
-  bool cancelled_by_signal_ = false;
 };
 
 }  // namespace
@@ -413,40 +378,8 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
 
-  std::shared_ptr<std::atomic<bool>> abort_requested;
-  Napi::ObjectReference abort_signal;
-  Napi::FunctionReference abort_listener;
-  if (info.Length() >= 2 && !info[1].IsUndefined() && !info[1].IsNull()) {
-    if (!info[1].IsObject()) {
-      Napi::TypeError::New(env, "Model.download: signal must be an AbortSignal").ThrowAsJavaScriptException();
-      return env.Undefined();
-    }
-    Napi::Object signal = info[1].As<Napi::Object>();
-    Napi::Value aborted = signal.Get("aborted");
-    Napi::Value add_value = signal.Get("addEventListener");
-    Napi::Value remove_value = signal.Get("removeEventListener");
-    if (!aborted.IsBoolean() || !add_value.IsFunction() || !remove_value.IsFunction()) {
-      Napi::TypeError::New(env, "Model.download: signal must be an AbortSignal").ThrowAsJavaScriptException();
-      return env.Undefined();
-    }
-
-    abort_requested = std::make_shared<std::atomic<bool>>(aborted.As<Napi::Boolean>().Value());
-    Napi::Function listener = Napi::Function::New(
-        env, [abort_requested](const Napi::CallbackInfo&) {
-          abort_requested->store(true, std::memory_order_release);
-        });
-    add_value.As<Napi::Function>().Call(
-        signal, {Napi::String::New(env, "abort"), listener});
-    if (signal.Get("aborted").As<Napi::Boolean>().Value()) {
-      abort_requested->store(true, std::memory_order_release);
-    }
-    abort_signal = Napi::Persistent(signal);
-    abort_listener = Napi::Persistent(listener);
-  }
-
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto* w = new DownloadWorker(env, impl_, std::move(owner), std::move(tsfn), std::move(abort_requested),
-                               std::move(abort_signal), std::move(abort_listener));
+  auto* w = new DownloadWorker(env, impl_, std::move(owner), std::move(tsfn));
   Napi::Promise p = w->Promise();
   w->Queue();
   return p;

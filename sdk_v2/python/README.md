@@ -110,20 +110,6 @@ with ChatSession(model) as session:
 model.unload()
 ```
 
-Pass a `threading.Event` as `cancel_event` to cancel an active download at the next native progress checkpoint:
-
-```python
-from threading import Event
-
-cancel_event = Event()
-
-def on_progress(percent: float) -> None:
-    print(f"\rDownloading: {percent:.1f}%", end="", flush=True)
-    cancel_event.set()
-
-model.download(progress_callback=on_progress, cancel_event=cancel_event)
-```
-
 Runnable end-to-end examples live under [`samples/python/`](https://github.com/microsoft/Foundry-Local/tree/main/samples/python).
 
 ## Usage

@@ -4,7 +4,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Catalog } from "../src/catalog.js";
-import { FlErrorCode } from "../src/detail/errors.js";
 import { Model } from "../src/model.js";
 
 import {
@@ -87,28 +86,6 @@ describeIfBuilt("Model (cache-only)", () => {
 
   it("path returns a string", () => {
     expect(typeof model.path).toBe("string");
-  });
-
-  it("download() maps AbortSignal cancellation from a native progress checkpoint to AbortError", async () => {
-    const controller = new AbortController();
-
-    await expect(
-      model.download((progress) => {
-        if (progress === 0) controller.abort();
-      }, controller.signal),
-    ).rejects.toMatchObject({
-      name: "AbortError",
-      code: FlErrorCode.OperationCancelled,
-    });
-    expect(model.isCached).toBe(false);
-  });
-
-  it("download() rejects a pre-aborted AbortSignal before native submission", async () => {
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(model.download(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
-    expect(model.isCached).toBe(false);
   });
 
   it("id and alias match info", () => {
