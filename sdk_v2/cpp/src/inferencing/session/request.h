@@ -213,6 +213,7 @@ struct Request {
       case CancellationReason::SessionShutdown:
         return State::CanceledBySessionShutdown;
       case CancellationReason::None:
+        // Cancel() always means cancellation; defensively classify a missing or unknown reason as caller-initiated.
       case CancellationReason::Caller:
       default:
         return State::CanceledByCaller;
