@@ -47,7 +47,8 @@ export interface StreamOptions {
  *
  * `response` settles after the native call completes and all queued item callbacks have run. Breaking iteration early
  * requests cancellation, but native completion can win that race; in that case `response` resolves normally. Otherwise
- * it rejects with the cancellation error (`AbortError` for an aborted signal or `OperationCancelled` for an early break).
+ * it rejects with the cancellation error (`AbortError` for an aborted signal or `OperationCancelled` for an early
+ * break).
  */
 export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;

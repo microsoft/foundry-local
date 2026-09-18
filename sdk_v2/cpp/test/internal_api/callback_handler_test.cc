@@ -222,6 +222,7 @@ TEST(CallbackHandlerTest, CancellationDropsLargeBufferedBacklog) {
   }
   cv.notify_all();
 
+  handler.DrainPending();
   handler.Drain();
   EXPECT_EQ(invocations.load(), 1);
 }

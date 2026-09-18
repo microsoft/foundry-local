@@ -96,6 +96,7 @@ struct CallbackHandler {
       while (queue_->Size() > 0) {
         if (request_.IsCancellationRequested() && queue_->Size() > kMaxCancellationDrainItems) {
           DropPendingItems();
+          SetCallbackInProgress(false);
           break;
         }
 
