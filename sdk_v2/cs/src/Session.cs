@@ -208,6 +208,10 @@ public abstract class Session : IDisposable
     /// on the same session are not supported).
     /// </exception>
     public StreamingResponse ProcessStreamingRequestAsync(Request request, CancellationToken ct = default)
+        => ProcessStreamingRequestAsync(request, beforeTerminalPublication: null, ct);
+
+    internal StreamingResponse ProcessStreamingRequestAsync(Request request, Action? beforeTerminalPublication,
+                                                             CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
         var requestLease = request.AcquireLease();
@@ -254,54 +258,62 @@ public abstract class Session : IDisposable
             Exception? error = null;
             var wasCancelled = false;
 
-            using (requestLease)
+            try
             {
-                operation.SetCurrentThread();
-                try
+                using (requestLease)
                 {
-                    using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                    var responsePtr = _session.ProcessRequest(requestLease.Ptr);
+                    operation.SetCurrentThread();
+                    try
+                    {
+                        using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
+                        var responsePtr = _session.ProcessRequest(requestLease.Ptr);
 
-                    wasCancelled = cts.IsCancellationRequested;
-                    if (wasCancelled)
-                    {
-                        Api.Inference.ResponseRelease(responsePtr);
-                    }
-                    else
-                    {
+                        wasCancelled = cts.IsCancellationRequested;
+                        if (wasCancelled)
+                        {
+                            Api.Inference.ResponseRelease(responsePtr);
+                        }
+                        else
+                        {
 #pragma warning disable IDISP004 // Ownership transferred to FinalResponse consumer (or DisposeAsync).
-                        response = new Response(responsePtr);
+                            response = new Response(responsePtr);
 #pragma warning restore IDISP004
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        wasCancelled = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        error = new FoundryLocalException("Error executing streaming request.", ex);
+                    }
+                    finally
+                    {
+                        channel.Writer.TryComplete(error);
+                        operation.ClearCurrentThread();
                     }
                 }
-                catch (OperationCanceledException)
-                {
-                    wasCancelled = true;
-                }
-                catch (Exception ex)
-                {
-                    error = new FoundryLocalException("Error executing streaming request.", ex);
-                }
-                finally
-                {
-                    channel.Writer.TryComplete(error);
-                    operation.ClearCurrentThread();
-                    stream.MarkProducerCompleted();
-                    ReleaseStreamingOperation(stream);
-                }
-            }
 
-            if (error != null)
-            {
-                tcs.TrySetException(error);
+                beforeTerminalPublication?.Invoke();
+
+                if (error != null)
+                {
+                    tcs.TrySetException(error);
+                }
+                else if (wasCancelled)
+                {
+                    tcs.TrySetCanceled(cts.Token);
+                }
+                else
+                {
+                    tcs.TrySetResult(response!);
+                }
             }
-            else if (wasCancelled)
+            finally
             {
-                tcs.TrySetCanceled(cts.Token);
-            }
-            else
-            {
-                tcs.TrySetResult(response!);
+                ReleaseStreamingOperation(stream);
+                stream.MarkProducerCompleted();
             }
         }, CancellationToken.None);
 
