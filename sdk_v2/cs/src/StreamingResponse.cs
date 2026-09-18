@@ -52,9 +52,10 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
     }
 
     /// <summary>
-    /// Resolves to the terminal <see cref="Response"/> after the iterator is fully drained
-    /// (or the stream is cancelled / errors). Carries <see cref="FinishReason"/>, usage, and
-    /// any non-streamed items.
+    /// Resolves to the terminal <see cref="Response"/> after native processing completes
+    /// (or the stream is cancelled / errors). If iteration has not started, awaiting this task
+    /// discards buffered incremental items. Carries <see cref="FinishReason"/>, usage, and any
+    /// non-streamed items.
     ///
     /// If the stream is cancelled, this task faults with <see cref="OperationCanceledException"/>.
     /// If the request errors, it faults with the same exception the iterator would throw.
@@ -66,7 +67,22 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
         get
         {
             Interlocked.Exchange(ref _finalResponseObserved, 1);
-            return _tcs.Task;
+            return ObserveFinalResponseAsync();
+        }
+    }
+
+    private async Task<Response> ObserveFinalResponseAsync()
+    {
+        try
+        {
+            return await _tcs.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Volatile.Read(ref _enumerated) == 0)
+            {
+                await CleanupAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -110,16 +126,6 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
             }
         }
 
-        try
-        {
-#pragma warning disable IDISP007 // Ownership transferred from Session via the StreamingResponse ctor.
-            _operation.Cts.Dispose();
-#pragma warning restore IDISP007
-        }
-        catch
-        {
-            // Disposing an already-disposed CTS is a no-op; swallow defensively.
-        }
     }
 
     private async IAsyncEnumerable<Item> EnumerateAsync([EnumeratorCancellation] CancellationToken ct = default)
@@ -187,5 +193,8 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
         }
 
         _session.ReleaseStreamingOperation(_operation);
+#pragma warning disable IDISP007 // Ownership transferred from Session via the StreamingResponse ctor.
+        _operation.Cts.Dispose();
+#pragma warning restore IDISP007
     }
 }

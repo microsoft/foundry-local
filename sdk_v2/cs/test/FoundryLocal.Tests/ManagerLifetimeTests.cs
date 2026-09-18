@@ -140,6 +140,27 @@ internal sealed class ManagerLifetimeTests
     }
 
     [Test]
+    public async Task Request_DisposeWaitsForActiveLease()
+    {
+        var request = new Request();
+        using var lease = request.AcquireLease();
+        using var disposeStarted = new ManualResetEventSlim(false);
+
+        var disposeTask = Task.Run(() =>
+        {
+            disposeStarted.Set();
+            request.Dispose();
+        });
+
+        disposeStarted.Wait();
+        await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+        lease.Dispose();
+        await disposeTask;
+        await Assert.That(() => request.AcquireLease()).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
     public async Task NativeRequestRunner_LeaseAcquisitionFailure_CompletesStreamWithError()
     {
         using var lifetime = new ManagerLifetime();

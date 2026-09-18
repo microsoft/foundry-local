@@ -50,6 +50,7 @@ class FoundryLocalManager:
         self._before_close_lock_for_test: Callable[[], None] | None = None
         self._native_call_state = threading.local()
         self._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
+        self._active_native_calls = 0
         self._sessions: weakref.WeakSet[object] = weakref.WeakSet()
         self._close_started = threading.Event()
         self._close_started_lock = threading.Lock()
@@ -141,16 +142,20 @@ class FoundryLocalManager:
 
     @contextmanager
     def _native_call(self) -> Iterator[object]:
-        if self._close_started.is_set():
-            raise RuntimeError("FoundryLocalManager is closed")
         with FoundryLocalManager._lock:
             if self._native_manager is None or self._close_started.is_set():
                 raise RuntimeError("FoundryLocalManager is closed")
+            native_manager = self._native_manager
+            self._active_native_calls += 1
             self._native_call_state.depth = getattr(self._native_call_state, "depth", 0) + 1
-            try:
-                yield self._native_manager
-            finally:
-                self._native_call_state.depth -= 1
+        try:
+            yield native_manager
+        finally:
+            self._native_call_state.depth -= 1
+            with FoundryLocalManager._lock:
+                self._active_native_calls -= 1
+                if self._active_native_calls == 0:
+                    self._lifetime_changed.notify_all()
 
     def _register_session(self, session: object) -> None:
         with FoundryLocalManager._lock:
@@ -398,6 +403,8 @@ class FoundryLocalManager:
 
         with FoundryLocalManager._lock:
             while self._sessions:
+                self._lifetime_changed.wait()
+            while self._active_native_calls:
                 self._lifetime_changed.wait()
             try:
                 api.check_status(api.root.Manager_Shutdown(self._native_manager))

@@ -148,24 +148,43 @@ public abstract class Session : IDisposable
     public async Task<Response> ProcessRequestAsync(Request request, CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
-        var operation = _operationGate.Acquire(this, assignCurrentThread: false);
+        var requestLease = request.AcquireLease();
+        var operation = AcquireOperation(requestLease);
 
         return await Task.Run(() =>
         {
-            operation.SetCurrentThread();
-            try
+            using (requestLease)
             {
-                ct.ThrowIfCancellationRequested();
-                using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                var responsePtr = _session.ProcessRequest(request.Ptr);
-                return new Response(responsePtr);
-            }
-            finally
-            {
-                operation.ClearCurrentThread();
-                operation.Dispose();
+                operation.SetCurrentThread();
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
+                    var responsePtr = _session.ProcessRequest(requestLease.Ptr);
+                    return new Response(responsePtr);
+                }
+                finally
+                {
+                    operation.ClearCurrentThread();
+                    operation.Dispose();
+                }
             }
         }, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private SessionOperationGate.Operation AcquireOperation(Request.Lease requestLease)
+    {
+        try
+        {
+            return _operationGate.Acquire(this, assignCurrentThread: false);
+        }
+        catch
+        {
+#pragma warning disable IDISP007 // Ownership transfers to this rollback helper until operation admission succeeds.
+            requestLease.Dispose();
+#pragma warning restore IDISP007
+            throw;
+        }
     }
 
     /// <summary>
@@ -173,7 +192,8 @@ public abstract class Session : IDisposable
     /// iterator yields <see cref="Item"/>s as they are produced and whose
     /// <see cref="StreamingResponse.FinalResponse"/> resolves to the terminal
     /// <see cref="Response"/> (carrying <see cref="FinishReason"/>, usage, and any aggregated
-    /// items) after the iterator drains.
+    /// items) after native processing completes. Awaiting only the final response discards any
+    /// buffered incremental items and releases the session for another operation.
     ///
     /// Requires <see cref="SetStreaming"/> to have been called with <c>true</c>.
     /// Concurrent streaming requests on the same session are not supported.
@@ -190,17 +210,20 @@ public abstract class Session : IDisposable
     public StreamingResponse ProcessStreamingRequestAsync(Request request, CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
+        var requestLease = request.AcquireLease();
 
 #pragma warning disable IDISP001 // Ownership transfers to StreamingOperation and then StreamingResponse.
 #pragma warning disable IDISP016 // The operation is disposed only on the throwing precondition branch.
     var operation = _operationGate.TryAcquire(this, assignCurrentThread: false);
     if (operation == null)
     {
+        requestLease.Dispose();
         throw new InvalidOperationException("Concurrent streaming requests on the same session are not supported.");
     }
 
         if (_nativeStreamingCallback == null)
         {
+            requestLease.Dispose();
             operation.Dispose();
             throw new InvalidOperationException(
                 "Streaming not enabled. Call SetStreaming(true) before ProcessStreamingRequestAsync.");
@@ -211,13 +234,14 @@ public abstract class Session : IDisposable
             {
                 SingleWriter = true,
                 SingleReader = true,
-                AllowSynchronousContinuations = true,
+                AllowSynchronousContinuations = false,
             });
 
         var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var stream = new StreamingOperation(channel, cts, operation);
         if (!_streamSlot.TrySet(stream))
         {
+            requestLease.Dispose();
             stream.Dispose();
             throw new InvalidOperationException("A streaming response still owns this session.");
         }
@@ -226,53 +250,58 @@ public abstract class Session : IDisposable
 
         _ = Task.Run(() =>
         {
-            operation.SetCurrentThread();
-            try
+            Response? response = null;
+            Exception? error = null;
+            var wasCancelled = false;
+
+            using (requestLease)
             {
+                operation.SetCurrentThread();
                 try
                 {
                     using var managerLease = _managerLifetime.Acquire(this, trackReentrancy: true);
-                    var responsePtr = _session.ProcessRequest(request.Ptr);
+                    var responsePtr = _session.ProcessRequest(requestLease.Ptr);
 
-                    // Capture cancellation before channel completion, which can synchronously run cleanup.
-                    var wasCancelledBeforeReturn = cts.IsCancellationRequested;
-
-                    channel.Writer.TryComplete();
-
-                    if (wasCancelledBeforeReturn)
+                    wasCancelled = cts.IsCancellationRequested;
+                    if (wasCancelled)
                     {
                         Api.Inference.ResponseRelease(responsePtr);
-                        tcs.TrySetCanceled(cts.Token);
                     }
                     else
                     {
 #pragma warning disable IDISP004 // Ownership transferred to FinalResponse consumer (or DisposeAsync).
-                        tcs.TrySetResult(new Response(responsePtr));
+                        response = new Response(responsePtr);
 #pragma warning restore IDISP004
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    channel.Writer.TryComplete();
-                    tcs.TrySetCanceled(cts.Token);
-                    return;
+                    wasCancelled = true;
                 }
                 catch (Exception ex)
                 {
-                    var wrapped = new FoundryLocalException("Error executing streaming request.", ex);
-                    channel.Writer.TryComplete(wrapped);
-                    tcs.TrySetException(wrapped);
-                    return;
+                    error = new FoundryLocalException("Error executing streaming request.", ex);
                 }
-            }
-            finally
-            {
-                operation.ClearCurrentThread();
-                stream.MarkProducerCompleted();
-                if (_operationGate.IsClosed)
+                finally
                 {
+                    channel.Writer.TryComplete(error);
+                    operation.ClearCurrentThread();
+                    stream.MarkProducerCompleted();
                     ReleaseStreamingOperation(stream);
                 }
+            }
+
+            if (error != null)
+            {
+                tcs.TrySetException(error);
+            }
+            else if (wasCancelled)
+            {
+                tcs.TrySetCanceled(cts.Token);
+            }
+            else
+            {
+                tcs.TrySetResult(response!);
             }
         }, CancellationToken.None);
 

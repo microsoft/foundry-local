@@ -234,6 +234,27 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
+    public async Task Chat_Streaming_FinalResponseWithoutEnumeration_ReleasesSession()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+        using var final = await stream.FinalResponse;
+        session.SetStreaming(false);
+
+        using var nextRequest = new Request();
+        nextRequest.AddItem(MessageItem.User("Reply with one word."));
+        using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(nextResponse).IsNotNull();
+    }
+
+    [Test]
     public async Task Chat_Streaming_EarlyBreak_FinalResponse_Cancels()
     {
         using var session = new ChatSession(model!);

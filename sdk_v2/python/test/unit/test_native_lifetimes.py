@@ -53,6 +53,7 @@ def _new_manager() -> FoundryLocalManager:
     manager._before_close_lock_for_test = None
     manager._native_call_state = threading.local()
     manager._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
+    manager._active_native_calls = 0
     manager._sessions = weakref.WeakSet()
     manager._close_started = threading.Event()
     manager._close_started_lock = threading.Lock()
@@ -201,6 +202,39 @@ def test_manager_close_waits_for_active_call_before_shutdown(monkeypatch: pytest
 
     assert shutdown_called.is_set()
     assert manager_released.is_set()
+
+
+def test_manager_native_calls_overlap_and_close_waits_for_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    both_admitted = threading.Barrier(3)
+    release_calls = threading.Event()
+    shutdown_called = threading.Event()
+    fake_api = SimpleNamespace(
+        root=SimpleNamespace(
+            Manager_Shutdown=lambda _manager: shutdown_called.set() or ffi.NULL,
+            Manager_Release=lambda _manager: None,
+        ),
+        check_status=lambda status: assert_null(status),
+    )
+    _patch_api(monkeypatch, fake_api)
+    manager = _new_manager()
+
+    def active_call() -> None:
+        with manager._native_call():
+            both_admitted.wait(timeout=5)
+            assert release_calls.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        calls = [executor.submit(active_call) for _ in range(2)]
+        both_admitted.wait(timeout=5)
+        close_future = executor.submit(manager.close)
+        assert manager._close_started.wait(timeout=5)
+        assert not shutdown_called.is_set()
+        release_calls.set()
+        for call in calls:
+            call.result(timeout=5)
+        close_future.result(timeout=5)
+
+    assert shutdown_called.is_set()
 
 
 def test_manager_close_waits_for_blocked_session_process_request_before_releasing_session(
