@@ -9,12 +9,14 @@
 #include "utils/string_utils.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using fl::test::ToLower;
@@ -202,6 +204,7 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
 
   auto pcm = LoadPcm();
   auto chunks = SplitIntoChunks(pcm, 3200);
+  ASSERT_GT(chunks.size(), 1u);
 
   auto audio = Item::AudioFromData("pcm", nullptr, 0, /*sample_rate=*/16000, /*channels=*/1);
   ItemQueue queue;
@@ -220,6 +223,20 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
   for (size_t i = 0; i < half; ++i) {
     queue.Push(Item::Bytes(FOUNDRY_LOCAL_ITEM_BYTES, chunks[i].data(), chunks[i].size()));
   }
+
+  const auto admission_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (queue.Size() == half && std::chrono::steady_clock::now() < admission_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  if (queue.Size() == half) {
+    queue.MarkFinished();
+    future.wait();
+    FAIL() << "Audio session did not consume input before the cancellation deadline";
+  }
+
+  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
+      << "Audio session completed before cancellation";
 
   request.Cancel();
   queue.MarkFinished();
