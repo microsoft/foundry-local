@@ -241,6 +241,21 @@ void Session::ProcessRequest(const Request& request, Response& response) {
       tracker.RecordException(cancellation);
       throw;
     }
+  } catch (...) {
+    if (request.TryComplete()) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      throw;
+    }
+
+    try {
+      ThrowCancellation(request);
+    } catch (const std::exception& cancellation) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(cancellation);
+      throw;
+    }
   }
 }
 

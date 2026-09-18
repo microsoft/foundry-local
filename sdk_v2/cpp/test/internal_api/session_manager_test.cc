@@ -552,6 +552,33 @@ class NonStdThrowThenCompleteSession : public Session {
   size_t process_count_ = 0;
 };
 
+class NonStdThrowAfterCancelSession : public Session {
+ public:
+  NonStdThrowAfterCancelSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  bool InFlight() const { return in_flight_.load(std::memory_order_acquire); }
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& /*response*/) override {
+    in_flight_.store(true, std::memory_order_release);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!request.IsCancellationRequested()) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw 42;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    throw 42;
+  }
+
+ private:
+  std::atomic<bool> in_flight_{false};
+};
+
 flErrorCode ProcessAndGetCode(Session& session, const Request& request) {
   try {
     Response response;
@@ -770,6 +797,21 @@ TEST(SessionRequestLifecycleTest, NonStdExceptionAllowsRequestReuse) {
 
   EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
   EXPECT_EQ(session.ProcessCount(), 2u);
+}
+
+TEST(SessionRequestLifecycleTest, CancellationWinsOverNonStdException) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  NonStdThrowAfterCancelSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  auto processing = std::async(std::launch::async, [&] { return ProcessAndGetCode(session, request); });
+  ASSERT_TRUE(WaitUntil([&] { return session.InFlight(); }, std::chrono::seconds(2)));
+  ASSERT_TRUE(request.Cancel());
+
+  EXPECT_EQ(processing.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(request.IsCompleted());
 }
 
 TEST(SessionRequestLifecycleTest, CallbackExceptionSurfacesOriginalCauseAndAllowsReuse) {
