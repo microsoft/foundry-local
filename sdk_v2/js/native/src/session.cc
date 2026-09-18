@@ -297,32 +297,50 @@ struct StreamCtx {
   bool errored = false;
 };
 
-void FinalizeStream(Napi::Env env, void* /*data*/, StreamCtx* ctx) {
-  Napi::HandleScope scope(env);
-  if (ctx->errored) {
-    if (ctx->tagged) {
-      Napi::Error err = Napi::Error::New(env, ctx->err_msg);
-      Napi::Object v = err.Value();
-      v.Set("name", Napi::String::New(env, "FoundryLocalError"));
-      v.Set("code", Napi::Number::New(env, ctx->err_code));
-      ctx->deferred.Reject(v);
-    } else {
-      ctx->deferred.Reject(Napi::Error::New(env, ctx->err_msg).Value());
+class StreamFinalizeGuard {
+ public:
+  explicit StreamFinalizeGuard(StreamCtx* ctx) : ctx_(ctx) {}
+
+  ~StreamFinalizeGuard() {
+    if (ctx_->scheduler != nullptr) {
+      auto scheduler = std::move(ctx_->scheduler);
+      scheduler->Complete();
     }
-  } else if (ctx->response != nullptr) {
-    ctx->deferred.Resolve(ResponseToJs(env, *ctx->response));
-  } else {
-    // Should not happen: successful path always captures a Response. Guard
-    // anyway so we never leave the deferred pending.
-    ctx->deferred.Resolve(env.Undefined());
+    delete ctx_;
   }
 
-  if (ctx->scheduler != nullptr) {
-    auto scheduler = std::move(ctx->scheduler);
-    scheduler->Complete();
-  }
+ private:
+  StreamCtx* ctx_;
+};
 
-  delete ctx;
+void FinalizeStream(Napi::Env env, void* /*data*/, StreamCtx* ctx) {
+  StreamFinalizeGuard finalize_guard(ctx);
+  Napi::HandleScope scope(env);
+  try {
+    if (ctx->errored) {
+      if (ctx->tagged) {
+        Napi::Error err = Napi::Error::New(env, ctx->err_msg);
+        Napi::Object v = err.Value();
+        v.Set("name", Napi::String::New(env, "FoundryLocalError"));
+        v.Set("code", Napi::Number::New(env, ctx->err_code));
+        ctx->deferred.Reject(v);
+      } else {
+        ctx->deferred.Reject(Napi::Error::New(env, ctx->err_msg).Value());
+      }
+    } else if (ctx->response != nullptr) {
+      ctx->deferred.Resolve(ResponseToJs(env, *ctx->response));
+    } else {
+      // Should not happen: successful path always captures a Response. Guard anyway so we never leave the deferred
+      // pending.
+      ctx->deferred.Resolve(env.Undefined());
+    }
+  } catch (const Napi::Error& e) {
+    ctx->deferred.Reject(e.Value());
+  } catch (const std::exception& e) {
+    ctx->deferred.Reject(Napi::Error::New(env, e.what()).Value());
+  } catch (...) {
+    ctx->deferred.Reject(Napi::Error::New(env, "Failed to settle native streaming response").Value());
+  }
 }
 
 template <typename SessT>
