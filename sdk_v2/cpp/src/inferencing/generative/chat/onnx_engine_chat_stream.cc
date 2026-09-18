@@ -183,7 +183,7 @@ int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& n
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
-  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
+  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx);
   auto sequences = EncodePrompt(prompt, model);
   const int count = static_cast<int>(sequences->SequenceCount(0));
   const auto* data = sequences->SequenceData(0);
@@ -267,7 +267,7 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model does not own a chat Engine");
   }
 
-  auto prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  auto prompt = BuildChatPrompt(messages, model, tool_ctx);
   auto sequences = EncodePrompt(prompt, model);
   const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
   const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);

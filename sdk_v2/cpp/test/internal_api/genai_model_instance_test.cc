@@ -58,6 +58,14 @@ constexpr std::string_view kQwenToolResultProjection =
     "<tool_response>\n"
     "probe-result-second\n"
     "</tool_response><|im_end|>\n";
+  constexpr std::string_view kQwenReasoningProjection =
+    "<|im_start|>assistant\n<think>\nreasoning-probe-private-a\n</think>\n\n"
+    "reasoning-probe-visible-a<|im_end|>\n"
+    "<|im_start|>assistant\n<think>\nreasoning-probe-private-b\n</think>\n\n"
+    "reasoning-probe-visible-b<|im_end|>\n";
+  constexpr std::string_view kQwenNoPreserveReasoningProjection =
+    "<|im_start|>assistant\nreasoning-probe-visible-a<|im_end|>\n"
+    "<|im_start|>assistant\nreasoning-probe-visible-b<|im_end|>\n";
 
 std::filesystem::path FindModelConfigDirectory(
     const std::filesystem::path& package_path) {
@@ -117,6 +125,30 @@ TEST(ModelCapabilitiesTest, ResultProjectionMismatchDisablesOnlyPositionalToolRe
   EXPECT_FALSE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, QualifiedQwenReasoningProbeEnablesHistoryPreservation) {
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, kQwenToolResultProjection,
+      kQwenReasoningProjection, kQwenNoPreserveReasoningProjection);
+
+  EXPECT_TRUE(capabilities.preserves_reasoning_history);
+}
+
+TEST(ModelCapabilitiesTest, ReasoningPreservationProbeFailsClosed) {
+  const auto missing_default_reasoning = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, kQwenToolResultProjection,
+      kQwenNoPreserveReasoningProjection, kQwenNoPreserveReasoningProjection);
+  const auto ignores_opt_out = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, kQwenToolResultProjection,
+      kQwenReasoningProjection, kQwenReasoningProjection);
+  const auto wrong_model_type = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3", kQwenToolCallProjection, kQwenToolResultProjection,
+      kQwenReasoningProjection, kQwenNoPreserveReasoningProjection);
+
+  EXPECT_FALSE(missing_default_reasoning.preserves_reasoning_history);
+  EXPECT_FALSE(ignores_opt_out.preserves_reasoning_history);
+  EXPECT_FALSE(wrong_model_type.preserves_reasoning_history);
+}
+
 TEST(ModelCapabilitiesTest, QualifiedQwenPackageResolvesBothProductionCapabilities) {
   constexpr const char* kQwenModelAlias = "qwen3.5-0.8b-generic-cpu-2";
   constexpr const char* kQualifiedModelPath = "FOUNDRY_QUALIFIED_QWEN_MODEL_PATH";
@@ -140,6 +172,7 @@ TEST(ModelCapabilitiesTest, QualifiedQwenPackageResolvesBothProductionCapabiliti
   EXPECT_EQ(result.model->ModelType(), "qwen3_5_text");
   EXPECT_TRUE(result.model->HasNativeQwenXmlToolCalls());
   EXPECT_TRUE(result.model->HasPositionalToolResults());
+  EXPECT_TRUE(result.model->PreservesReasoningHistory());
   EXPECT_TRUE(load_manager.UnloadModel(kQwenModelAlias));
 }
 

@@ -225,6 +225,30 @@ std::string StoredItemText(const nlohmann::json& item) {
   return ReadStoredContent(item).text;
 }
 
+/// Recover the reasoning body carried by a Responses reasoning item's summary entries.
+std::string StoredReasoningText(const nlohmann::json& item) {
+  std::string text;
+  const auto summary = item.find("summary");
+  if (summary == item.end() || !summary->is_array()) {
+    return text;
+  }
+
+  for (const auto& part : *summary) {
+    if (part.is_object() && part.value("type", "") == "summary_text") {
+      text += part.value("text", "");
+    }
+  }
+  return text;
+}
+
+std::unique_ptr<MessageItem> MakeReasoningMessage(std::string reasoning) {
+  auto message = std::make_unique<MessageItem>();
+  message->role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+  message->content.push_back(
+      MessagePart::Own(std::make_unique<TextItem>(std::move(reasoning), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
+  return message;
+}
+
 /// Rebuild a stored `function_call` item.
 ///
 /// A hop's stored items are replayed as the hop recorded them, whether the call came from the model's own output or
@@ -341,8 +365,7 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     }
 
     if (type == "reasoning") {
-      // The text is private, but the assistant turn that produced it happened. Keep the boundary only.
-      request.AddOwnedItem(MakeAssistantTurnBoundary());
+      request.AddOwnedItem(MakeReasoningMessage(StoredReasoningText(entry)));
       continue;
     }
 
@@ -410,7 +433,8 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
       }
 
       if (type == "reasoning") {
-        // Never replayed: the boundary below already records that the turn happened.
+        request.AddOwnedItem(MakeReasoningMessage(StoredReasoningText(entry)));
+        emitted = true;
         continue;
       }
 
@@ -625,6 +649,8 @@ static void AddTypedInputItems(Request& request,
     } else if (auto* fc_result = std::get_if<FunctionCallResultInputItem>(&input_item)) {
       auto i = std::make_unique<ToolResultItem>(fc_result->call_id, fc_result->output);
       request.AddOwnedItem(std::move(i));
+    } else if (auto* reasoning = std::get_if<ReasoningInputItem>(&input_item)) {
+      request.AddOwnedItem(MakeReasoningMessage(reasoning->text));
     } else if (auto* custom_result = std::get_if<CustomToolCallResultInputItem>(&input_item)) {
       // A custom tool's result is ordinary text like any other tool result; only the wire item type
       // it arrived under differs.

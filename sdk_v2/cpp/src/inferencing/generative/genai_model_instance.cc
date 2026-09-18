@@ -32,6 +32,14 @@ constexpr const char* kToolResultProbeMessages = R"([
   {"role":"tool","tool_call_id":"probe-call-b","content":"probe-result-first"},
   {"role":"tool","tool_call_id":"probe-call-a","content":"probe-result-second"}
 ])";
+constexpr const char* kReasoningProbeMessages = R"([
+  {"role":"user","content":"reasoning-probe-user-a"},
+  {"role":"assistant","reasoning_content":"reasoning-probe-private-a","content":"reasoning-probe-visible-a"},
+  {"role":"user","content":"reasoning-probe-user-b"},
+  {"role":"assistant","reasoning_content":"reasoning-probe-private-b","content":"reasoning-probe-visible-b"},
+  {"role":"user","content":"reasoning-probe-user-c"}
+])";
+constexpr const char* kDisableReasoningPreservation = R"({"preserve_thinking":false})";
 
 constexpr std::string_view kExpectedToolCallBlock =
     "<tool_call>\n"
@@ -67,16 +75,34 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
     return {};
   }
 
+  ModelCapabilities capabilities;
   try {
     const auto tool_call_projection =
         preprocessor.ApplyChatTemplate(kToolCallProbeMessages, /*tools_json=*/nullptr, /*add_generation_prompt=*/false);
     const auto tool_result_projection = preprocessor.ApplyChatTemplate(
         kToolResultProbeMessages, /*tools_json=*/nullptr, /*add_generation_prompt=*/false);
-    return model_capabilities_internal::ResolveRenderedProbes(
+    capabilities = model_capabilities_internal::ResolveRenderedProbes(
         model_type, tool_call_projection, tool_result_projection);
   } catch (...) {
     return {};
   }
+
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+  try {
+    const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
+      kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
+      /*add_generation_prompt=*/false);
+    const auto no_preserve_reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
+      kReasoningProbeMessages, /*tools_json=*/nullptr, kDisableReasoningPreservation,
+      /*add_generation_prompt=*/false);
+    capabilities.preserves_reasoning_history = model_capabilities_internal::ResolveRenderedProbes(
+        model_type, {}, {}, reasoning_projection, no_preserve_reasoning_projection).preserves_reasoning_history;
+  } catch (...) {
+    capabilities.preserves_reasoning_history = false;
+  }
+#endif
+
+  return capabilities;
 }
 
 }  // namespace
@@ -84,7 +110,9 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
 ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
     std::string_view model_type,
     std::string_view tool_call_projection,
-    std::string_view tool_result_projection) noexcept {
+  std::string_view tool_result_projection,
+  std::string_view reasoning_projection,
+  std::string_view no_preserve_reasoning_projection) noexcept {
   if (model_type != kQwen35TextModelType) {
     return {};
   }
@@ -98,7 +126,16 @@ ModelCapabilities model_capabilities_internal::ResolveRenderedProbes(
       tool_result_projection.find("probe-call-a") == std::string_view::npos &&
       tool_result_projection.find("probe-call-b") == std::string_view::npos;
 
-  return {native_qwen_xml_tool_calls, positional_tool_results};
+  const bool preserves_reasoning_history =
+      ContainsInOrder(reasoning_projection,
+                      {"reasoning-probe-private-a", "reasoning-probe-visible-a",
+                       "reasoning-probe-private-b", "reasoning-probe-visible-b"}) &&
+      no_preserve_reasoning_projection.find("reasoning-probe-private-a") == std::string_view::npos &&
+      no_preserve_reasoning_projection.find("reasoning-probe-private-b") == std::string_view::npos &&
+      ContainsInOrder(no_preserve_reasoning_projection,
+                      {"reasoning-probe-visible-a", "reasoning-probe-visible-b"});
+
+  return {native_qwen_xml_tool_calls, positional_tool_results, preserves_reasoning_history};
 }
 
 // ---------------------------------------------------------------------------

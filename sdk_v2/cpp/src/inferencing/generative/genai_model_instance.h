@@ -27,13 +27,16 @@ class OnnxChatEngine;
 struct ModelCapabilities {
   bool native_qwen_xml_tool_calls = false;
   bool positional_tool_results = false;
+  bool preserves_reasoning_history = false;
 };
 
 namespace model_capabilities_internal {
 
 ModelCapabilities ResolveRenderedProbes(std::string_view model_type,
                                         std::string_view tool_call_projection,
-                                        std::string_view tool_result_projection) noexcept;
+                                        std::string_view tool_result_projection,
+                                        std::string_view reasoning_projection = {},
+                                        std::string_view no_preserve_reasoning_projection = {}) noexcept;
 
 }  // namespace model_capabilities_internal
 
@@ -56,6 +59,7 @@ class GenAIModelInstance {
   const std::string& ModelType() const { return model_type_; }
   bool HasNativeQwenXmlToolCalls() const { return capabilities_.native_qwen_xml_tool_calls; }
   bool HasPositionalToolResults() const { return capabilities_.positional_tool_results; }
+  bool PreservesReasoningHistory() const { return capabilities_.preserves_reasoning_history; }
 
   /// Cached tag token IDs and decoded strings for tool/reasoning detection.
   /// Populated once on first access using OGA tokenizer APIs.
