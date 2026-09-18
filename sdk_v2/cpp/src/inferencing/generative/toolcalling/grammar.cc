@@ -5,9 +5,409 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <sstream>
+#include <unordered_set>
 
 namespace fl {
+
+namespace {
+
+using Json = nlohmann::json;
+
+constexpr size_t kMaxSchemaNesting = 32;
+constexpr size_t kMaxSchemaCollectionSize = 64;
+constexpr size_t kMaxSchemaStringLength = 64 * 1024;
+
+const Json* FindObjectMember(const Json& object, std::string_view name) {
+  const auto member = object.find(name);
+  return member == object.end() ? nullptr : &*member;
+}
+
+bool IsValidRequiredList(const Json& required) {
+  if (!required.is_array() || required.size() > kMaxSchemaCollectionSize) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  for (const auto& name : required) {
+    if (!name.is_string()) {
+      return false;
+    }
+
+    const auto& value = name.get_ref<const std::string&>();
+    if (value.size() > kMaxSchemaStringLength || !seen.insert(value).second) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool HasUndeclaredRequiredProperty(const Json& schema) {
+  const auto* required = FindObjectMember(schema, "required");
+  if (required == nullptr) {
+    return false;
+  }
+
+  const auto* properties = FindObjectMember(schema, "properties");
+  return std::ranges::any_of(*required, [properties](const Json& name) {
+    return properties == nullptr || !properties->contains(name.get_ref<const std::string&>());
+  });
+}
+
+bool IsUniqueStringArray(const Json& values) {
+  if (!values.is_array()) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  return std::ranges::all_of(values, [&seen](const auto& value) {
+    return value.is_string() &&
+           seen.insert(value.template get_ref<const std::string&>()).second;
+  });
+}
+
+bool IsFloatEqualToUnsigned(double floating, uint64_t integer) {
+  constexpr double kUint64Limit = 18446744073709551616.0;
+  return std::isfinite(floating) && floating >= 0 && floating < kUint64Limit &&
+         std::trunc(floating) == floating && static_cast<uint64_t>(floating) == integer;
+}
+
+bool IsFloatEqualToSigned(double floating, int64_t integer) {
+  constexpr double kInt64LowerBound = -9223372036854775808.0;
+  constexpr double kInt64UpperLimit = 9223372036854775808.0;
+  return std::isfinite(floating) && floating >= kInt64LowerBound && floating < kInt64UpperLimit &&
+         std::trunc(floating) == floating && static_cast<int64_t>(floating) == integer;
+}
+
+bool AreJsonNumbersEqual(const Json& left, const Json& right) {
+  if (left.is_number_float()) {
+    const auto floating = left.get<double>();
+    if (right.is_number_float()) {
+      return floating == right.get<double>();
+    }
+    return right.is_number_unsigned()
+               ? IsFloatEqualToUnsigned(floating, right.get<uint64_t>())
+               : IsFloatEqualToSigned(floating, right.get<int64_t>());
+  }
+  if (right.is_number_float()) {
+    return AreJsonNumbersEqual(right, left);
+  }
+  if (left.is_number_unsigned()) {
+    if (right.is_number_unsigned()) {
+      return left.get<uint64_t>() == right.get<uint64_t>();
+    }
+
+    const auto signed_value = right.get<int64_t>();
+    return signed_value >= 0 && left.get<uint64_t>() == static_cast<uint64_t>(signed_value);
+  }
+  if (right.is_number_unsigned()) {
+    return AreJsonNumbersEqual(right, left);
+  }
+
+  return left.get<int64_t>() == right.get<int64_t>();
+}
+
+bool AreJsonValuesEqual(const Json& left, const Json& right, size_t depth = 0) {
+  if (depth > kMaxSchemaNesting) {
+    return false;
+  }
+  if (left.is_number() && right.is_number()) {
+    return AreJsonNumbersEqual(left, right);
+  }
+  if (left.type() != right.type()) {
+    return false;
+  }
+  if (left.is_array()) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin(), [depth](const auto& lhs, const auto& rhs) {
+             return AreJsonValuesEqual(lhs, rhs, depth + 1);
+           });
+  }
+  if (left.is_object()) {
+    if (left.size() != right.size()) {
+      return false;
+    }
+    return std::ranges::all_of(left.items(), [&](const auto& item) {
+      const auto member = right.find(item.key());
+      return member != right.end() && AreJsonValuesEqual(item.value(), *member, depth + 1);
+    });
+  }
+
+  return left == right;
+}
+
+bool IsJsonValueWithinBounds(const Json& value, size_t depth = 0) {
+  if (value.is_string()) {
+    return value.get_ref<const std::string&>().size() <= kMaxSchemaStringLength;
+  }
+  if (depth >= kMaxSchemaNesting) {
+    return !value.is_structured();
+  }
+  if (value.is_array()) {
+    if (value.size() > kMaxSchemaCollectionSize) {
+      return false;
+    }
+
+    return std::ranges::all_of(value, [depth](const auto& element) {
+      return IsJsonValueWithinBounds(element, depth + 1);
+    });
+  }
+  if (value.is_object()) {
+    if (value.size() > kMaxSchemaCollectionSize) {
+      return false;
+    }
+
+    return std::ranges::all_of(value.items(), [depth](const auto& member) {
+      return member.key().size() <= kMaxSchemaStringLength &&
+             IsJsonValueWithinBounds(member.value(), depth + 1);
+    });
+  }
+
+  return true;
+}
+
+bool IsUniqueNonemptyArray(const Json& values) {
+  if (!values.is_array() || values.empty() || values.size() > kMaxSchemaCollectionSize) {
+    return false;
+  }
+
+  for (auto current = values.begin(); current != values.end(); ++current) {
+    if (!IsJsonValueWithinBounds(*current)) {
+      return false;
+    }
+    if (std::find_if(values.begin(), current, [&](const auto& prior) {
+          return AreJsonValuesEqual(prior, *current);
+        }) != current) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsNonnegativeInteger(const Json& value) {
+  return value.is_number_unsigned() || (value.is_number_integer() && value.get<int64_t>() >= 0);
+}
+
+bool IsValidSchemaType(const Json& type) {
+  static const std::unordered_set<std::string_view> kTypes = {
+      "array",
+      "boolean",
+      "integer",
+      "null",
+      "number",
+      "object",
+      "string",
+  };
+  if (type.is_string()) {
+    return kTypes.contains(type.get_ref<const std::string&>());
+  }
+  if (!type.is_array() || type.empty()) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  for (const auto& entry : type) {
+    if (!entry.is_string()) {
+      return false;
+    }
+
+    const auto& name = entry.get_ref<const std::string&>();
+    if (!kTypes.contains(name) || !seen.insert(name).second) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
+  if (depth >= kMaxSchemaNesting) {
+    return false;
+  }
+  if (schema.is_boolean()) {
+    return true;
+  }
+  if (!schema.is_object() || !IsJsonValueWithinBounds(schema) || schema.contains("$ref")) {
+    return false;
+  }
+
+  if (const auto* pattern = FindObjectMember(schema, "pattern");
+      pattern != nullptr && !pattern->is_string()) {
+    return false;
+  }
+
+  if (const auto* format = FindObjectMember(schema, "format");
+      format != nullptr && (!format->is_string() || format->get_ref<const std::string&>().empty())) {
+    return false;
+  }
+
+  if (const auto* type = FindObjectMember(schema, "type");
+      type != nullptr && !IsValidSchemaType(*type)) {
+    return false;
+  }
+
+  if (const auto* values = FindObjectMember(schema, "enum");
+      values != nullptr && !IsUniqueNonemptyArray(*values)) {
+    return false;
+  }
+
+  for (const auto keyword : {"multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && (!value->is_number() || (keyword == std::string_view("multipleOf") && *value <= 0))) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"maxLength", "minLength", "maxItems", "minItems", "maxContains", "minContains",
+                             "maxProperties", "minProperties"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && !IsNonnegativeInteger(*value)) {
+      return false;
+    }
+  }
+
+  if (const auto* unique_items = FindObjectMember(schema, "uniqueItems");
+      unique_items != nullptr && !unique_items->is_boolean()) {
+    return false;
+  }
+
+  const auto is_schema_map = [depth](const Json& schemas) {
+    return schemas.is_object() &&
+           std::ranges::all_of(schemas.items(), [depth](const auto& entry) {
+             return IsStructurallyValidSchema(entry.value(), depth + 1);
+           });
+  };
+
+  for (const auto keyword : {"properties", "patternProperties", "dependentSchemas", "$defs"}) {
+    const auto* schemas = FindObjectMember(schema, keyword);
+    if (schemas != nullptr && !is_schema_map(*schemas)) {
+      return false;
+    }
+  }
+
+  if (const auto* required = FindObjectMember(schema, "required");
+      required != nullptr && !IsValidRequiredList(*required)) {
+    return false;
+  }
+
+  for (const auto keyword : {"items", "contains", "if", "then", "else", "not", "propertyNames"}) {
+    const auto* subschema = FindObjectMember(schema, keyword);
+    if (subschema != nullptr && !IsStructurallyValidSchema(*subschema, depth + 1)) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"anyOf", "oneOf", "allOf", "prefixItems"}) {
+    const auto* alternatives = FindObjectMember(schema, keyword);
+    if (alternatives == nullptr) {
+      continue;
+    }
+    if (!alternatives->is_array() || alternatives->empty() ||
+        !std::ranges::all_of(*alternatives, [depth](const auto& alternative) {
+          return IsStructurallyValidSchema(alternative, depth + 1);
+        })) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"additionalProperties", "unevaluatedProperties", "unevaluatedItems"}) {
+    const auto* subschema = FindObjectMember(schema, keyword);
+    if (subschema != nullptr && !subschema->is_boolean() &&
+        !IsStructurallyValidSchema(*subschema, depth + 1)) {
+      return false;
+    }
+  }
+
+  if (const auto* dependencies = FindObjectMember(schema, "dependentRequired");
+      dependencies != nullptr) {
+    if (!dependencies->is_object()) {
+      return false;
+    }
+
+    for (const auto& dependency : dependencies->items()) {
+      if (!IsUniqueStringArray(dependency.value())) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+bool TryReadFunctionDefinition(const Json& tool,
+                               std::string& name,
+                               std::string& description,
+                               Json& parameters) {
+  if (!tool.is_object()) {
+    return false;
+  }
+
+  const Json* function = &tool;
+  if (const auto* nested = FindObjectMember(tool, "function")) {
+    const auto* type = FindObjectMember(tool, "type");
+    if (type == nullptr || !type->is_string() ||
+        type->get_ref<const std::string&>() != "function") {
+      return false;
+    }
+    if (!nested->is_object()) {
+      return false;
+    }
+
+    function = nested;
+  } else if (const auto* type = FindObjectMember(tool, "type");
+             type != nullptr &&
+             (!type->is_string() ||
+              type->get_ref<const std::string&>() != "function")) {
+    return false;
+  }
+
+  const auto* name_value = FindObjectMember(*function, "name");
+  if (name_value == nullptr || !name_value->is_string()) {
+    return false;
+  }
+
+  name = name_value->get<std::string>();
+  if (name.empty()) {
+    return false;
+  }
+
+  if (const auto* description_value = FindObjectMember(*function, "description")) {
+    if (!description_value->is_string()) {
+      return false;
+    }
+
+    description = description_value->get<std::string>();
+  }
+
+  const auto* parameters_value = FindObjectMember(*function, "parameters");
+  if (parameters_value == nullptr || parameters_value->is_null() ||
+      (parameters_value->is_object() && parameters_value->empty())) {
+    return true;
+  }
+
+  if (!parameters_value->is_object()) {
+    return false;
+  }
+
+  const auto* type = FindObjectMember(*parameters_value, "type");
+  if (type == nullptr || !type->is_string() ||
+      type->get_ref<const std::string&>() != "object") {
+    return false;
+  }
+
+  if (!IsStructurallyValidSchema(*parameters_value)) {
+    return false;
+  }
+
+  parameters = *parameters_value;
+  return true;
+}
+
+}  // namespace
 
 std::string EscapeLarkLiteral(const std::string& text) {
   std::string out;
@@ -108,19 +508,15 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   }
 
   // Parse the tools JSON to extract function schemas
-  nlohmann::json tools;
-  try {
-    tools = nlohmann::json::parse(ctx.tools_json);
-  } catch (const nlohmann::json::parse_error&) {
-    return "{}";
-  }
+  const auto tools = Json::parse(ctx.tools_json, nullptr, false);
 
-  if (!tools.is_array() || tools.empty()) {
+  if (tools.is_discarded() || !tools.is_array() || tools.empty()) {
     return "{}";
   }
 
   // Build anyOf schemas — one entry per tool
-  nlohmann::json schemas = nlohmann::json::array();
+  Json schemas = Json::array();
+  std::unordered_set<std::string> names;
 
   for (const auto& tool : tools) {
     // Support both OpenAI-function style and direct-name style for tool definitions.
@@ -156,27 +552,12 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
     // }
     std::string name;
     std::string description;
-    nlohmann::json parameters;
-
-    if (tool.contains("function") && tool["function"].is_object()) {
-      const auto& fn = tool["function"];
-      name = fn.value("name", "");
-      description = fn.value("description", "");
-
-      if (fn.contains("parameters") && fn["parameters"].is_object()) {
-        parameters = fn["parameters"];
-      }
-    } else {
-      name = tool.value("name", "");
-      description = tool.value("description", "");
-
-      if (tool.contains("parameters") && tool["parameters"].is_object()) {
-        parameters = tool["parameters"];
-      }
+    Json parameters;
+    if (!TryReadFunctionDefinition(tool, name, description, parameters)) {
+      return "{}";
     }
-
-    if (name.empty()) {
-      continue;
+    if (!names.insert(name).second) {
+      return "{}";
     }
 
     // Build the grammar schema for this tool
@@ -188,29 +569,21 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
 
     // Only add `parameters` to `properties` object if it exists in the original tool
     // and if type has been set (since type is required if providing parameters)
-    bool has_params = parameters.is_object() &&
-                      parameters.contains("type") &&
-                      !parameters["type"].get<std::string>().empty();
+    const bool has_params = parameters.is_object() && !parameters.empty();
 
     if (has_params) {
-      nlohmann::json param_schema;
-      param_schema["type"] = parameters.value("type", "object");
-
-      if (parameters.contains("properties")) {
-        param_schema["properties"] = parameters["properties"];
+      Json param_schema = parameters;
+      if (!param_schema.contains("additionalProperties") &&
+          !HasUndeclaredRequiredProperty(param_schema)) {
+        param_schema["additionalProperties"] = false;
       }
 
-      if (parameters.contains("required")) {
-        param_schema["required"] = parameters["required"];
-      }
-
-      param_schema["additionalProperties"] = false;
       properties["parameters"] = param_schema;
       required_fields.push_back("parameters");
     }
 
     // Create `schema` for tool
-    nlohmann::json schema = {
+    Json schema = {
         {"description", description},
         {"type", "object"},
         {"properties", properties},
@@ -226,7 +599,7 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   }
 
   // Construct grammar for guidance
-  nlohmann::json grammar = {
+  Json grammar = {
       {"x-guidance", {{"whitespace_flexible", false}, {"key_separator", ": "}, {"item_separator", ", "}}},
       {"type", "array"},
       {"items", {{"anyOf", schemas}}},
