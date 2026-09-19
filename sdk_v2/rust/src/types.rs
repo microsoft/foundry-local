@@ -67,7 +67,8 @@ impl ModelInfoBuilder {
     /// Set an integer property. Arbitrary keys are supported in addition to the well-known constants.
     pub fn set_int_property(&mut self, key: &str, value: i64) -> Result<&mut Self> {
         let key = to_cstring(key)?;
-        let status = unsafe { (self.api.model_api().Info_SetIntProperty)(self.ptr, key.as_ptr(), value) };
+        let status =
+            unsafe { (self.api.model_api().Info_SetIntProperty)(self.ptr, key.as_ptr(), value) };
         self.api.check(status)?;
         Ok(self)
     }

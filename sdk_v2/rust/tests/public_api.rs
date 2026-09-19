@@ -21,7 +21,6 @@ impl TempTestDir {
         fs::create_dir(&path).expect("create temporary BYOM directory");
         Self { path }
     }
-
 }
 
 impl Drop for TempTestDir {
