@@ -230,6 +230,7 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
   }
 
   if (queue.Size() == half) {
+    request.Cancel();
     queue.MarkFinished();
     future.wait();
     FAIL() << "Audio session did not consume input before the cancellation deadline";
