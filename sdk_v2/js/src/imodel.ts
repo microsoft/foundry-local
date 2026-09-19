@@ -19,7 +19,7 @@ export interface IModel {
   get capabilities(): string | null;
   get supportsToolCalling(): boolean | null;
 
-  download(progressCallback?: (progress: number) => void): Promise<void>;
+  download(progressCallback?: (progress: number) => void, signal?: AbortSignal): Promise<void>;
   get path(): string;
   load(): Promise<void>;
   removeFromCache(): void;
