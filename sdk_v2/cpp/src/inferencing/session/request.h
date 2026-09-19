@@ -8,9 +8,12 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fl {
@@ -26,6 +29,25 @@ inline constexpr const char* kSystemPromptOption = "system_prompt";
 /// Generic inference request — pure input data.
 /// Items are stored as borrowed pointers. Owned items are kept alive in owned_items.
 struct Request {
+  enum class CancellationReason : uint8_t {
+    None,
+    Caller,
+    StreamingCallback,
+    StreamingCallbackException,
+    SessionShutdown,
+  };
+
+  enum class State : uint8_t {
+    Ready,
+    Running,
+    CanceledByCaller,
+    CanceledByStreamingCallback,
+    CanceledByStreamingCallbackException,
+    CanceledBySessionShutdown,
+    Completing,
+    Completed,
+  };
+
   std::vector<Item*> items;  // all items (borrowed pointers)
   KeyValuePairs options;
   /// Request-local definitions already validated by an HTTP adapter. Used only to carry Chat
@@ -49,12 +71,6 @@ struct Request {
   /// ascending and consistent with `items`.
   std::vector<size_t> item_segment_starts;
 
-  /// Cancellation flag — set by the C API or streaming callback handler to cancel
-  /// an in-flight request. Checked in generation loops. Atomic because it is written
-  /// by one thread (callback worker or C API) and read by another (generator loop).
-  /// Uses relaxed ordering since it is a one-way flag and exact timing doesn't matter.
-  mutable std::atomic<bool> canceled{false};
-
   Request() = default;
 
   Request(Request&& other) noexcept
@@ -64,7 +80,8 @@ struct Request {
         forced_tool_choice(std::move(other.forced_tool_choice)),
         raw_envelope_descriptor(std::move(other.raw_envelope_descriptor)),
         item_segment_starts(std::move(other.item_segment_starts)),
-        canceled(other.canceled.load(std::memory_order_relaxed)),
+        state_(other.state_.load(std::memory_order_relaxed)),
+        cancellation_detail_(std::move(other.cancellation_detail_)),
         owned_items(std::move(other.owned_items)) {}
 
   Request& operator=(Request&& other) noexcept {
@@ -74,7 +91,8 @@ struct Request {
     forced_tool_choice = std::move(other.forced_tool_choice);
     raw_envelope_descriptor = std::move(other.raw_envelope_descriptor);
     item_segment_starts = std::move(other.item_segment_starts);
-    canceled.store(other.canceled.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    state_.store(other.state_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    cancellation_detail_ = std::move(other.cancellation_detail_);
     owned_items = std::move(other.owned_items);
     return *this;
   }
@@ -99,7 +117,134 @@ struct Request {
     item_segment_starts.push_back(items.size());
   }
 
+  /// Cancels only the invocation currently being processed. Idle and completed requests are unchanged.
+  bool Cancel(CancellationReason reason = CancellationReason::Caller) const noexcept {
+    const auto canceled_state = CanceledState(reason);
+    auto expected = State::Running;
+    if (state_.compare_exchange_strong(expected, canceled_state,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+      return true;
+    }
+
+    return IsCanceledState(expected);
+  }
+
+  bool CancelFromStreamingCallbackException(std::string_view detail) const noexcept {
+    try {
+      std::lock_guard<std::mutex> lock(cancellation_detail_mutex_);
+      auto expected = state_.load(std::memory_order_acquire);
+      if (expected != State::Running) {
+        return IsCanceledState(expected);
+      }
+
+      cancellation_detail_ = detail;
+      if (state_.compare_exchange_strong(expected, State::CanceledByStreamingCallbackException,
+                                         std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) {
+        return true;
+      }
+
+      return IsCanceledState(expected);
+    } catch (...) {
+      // Cancellation itself must remain reliable if preserving diagnostic text runs out of memory.
+    }
+
+    return Cancel(CancellationReason::StreamingCallbackException);
+  }
+
+  bool IsCancellationRequested() const noexcept {
+    return IsCanceledState(state_.load(std::memory_order_acquire));
+  }
+
+  CancellationReason GetCancellationReason() const noexcept {
+    return ReasonFromState(state_.load(std::memory_order_acquire));
+  }
+
+  std::string CancellationDetail() const {
+    std::lock_guard<std::mutex> lock(cancellation_detail_mutex_);
+    return cancellation_detail_;
+  }
+
+  /// Starts first-time processing or reuses a request whose previous operation completed.
+  bool TryBegin() const {
+    std::lock_guard<std::mutex> lock(cancellation_detail_mutex_);
+    auto state = state_.load(std::memory_order_acquire);
+    while (state == State::Ready || state == State::Completed) {
+      cancellation_detail_.clear();
+      if (state_.compare_exchange_weak(state, State::Running,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /// Atomically claims the normal or error terminal boundary. Returns false when cancellation won first.
+  bool TryComplete() const noexcept {
+    auto expected = State::Running;
+    if (state_.compare_exchange_strong(expected, State::Completing,
+                                       std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+      return true;
+    }
+
+    return expected == State::Completing;
+  }
+
+  /// Makes a claimed completion reusable after the outer request call has finished publishing its result.
+  void PublishCompletion() const noexcept {
+    state_.store(State::Completed, std::memory_order_release);
+  }
+
+  bool IsCompleted() const noexcept {
+    return state_.load(std::memory_order_acquire) == State::Completed;
+  }
+
  private:
+  static State CanceledState(CancellationReason reason) noexcept {
+    switch (reason) {
+      case CancellationReason::StreamingCallback:
+        return State::CanceledByStreamingCallback;
+      case CancellationReason::StreamingCallbackException:
+        return State::CanceledByStreamingCallbackException;
+      case CancellationReason::SessionShutdown:
+        return State::CanceledBySessionShutdown;
+      case CancellationReason::None:
+        // Cancel() always means cancellation; defensively classify a missing or unknown reason as caller-initiated.
+      case CancellationReason::Caller:
+      default:
+        return State::CanceledByCaller;
+    }
+  }
+
+  static bool IsCanceledState(State state) noexcept {
+    return state == State::CanceledByCaller ||
+           state == State::CanceledByStreamingCallback ||
+           state == State::CanceledByStreamingCallbackException ||
+           state == State::CanceledBySessionShutdown;
+  }
+
+  static CancellationReason ReasonFromState(State state) noexcept {
+    switch (state) {
+      case State::CanceledByCaller:
+        return CancellationReason::Caller;
+      case State::CanceledByStreamingCallback:
+        return CancellationReason::StreamingCallback;
+      case State::CanceledByStreamingCallbackException:
+        return CancellationReason::StreamingCallbackException;
+      case State::CanceledBySessionShutdown:
+        return CancellationReason::SessionShutdown;
+      default:
+        return CancellationReason::None;
+    }
+  }
+
+  mutable std::atomic<State> state_{State::Ready};
+  mutable std::mutex cancellation_detail_mutex_;
+  mutable std::string cancellation_detail_;
   std::vector<std::unique_ptr<Item>> owned_items;  // owned items (lifetime)
 };
 

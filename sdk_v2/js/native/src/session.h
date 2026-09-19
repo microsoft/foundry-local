@@ -6,9 +6,9 @@
 // Surface:
 //   * new ChatSession(model) — sync construction; underlying
 //     flSession_Create is fast.
-//   * session.processRequest(request) -> Promise<Response>  (PromiseWorker<Response>)
+//   * session.processRequest(request) -> Promise<Response> — scheduled on a per-session worker queue.
 //   * session.processStreamingRequest(request, onItem) -> Promise<Response> — streaming bridge via
-//     Napi::ThreadSafeFunction; resolves with the terminal Response after every item callback drains.
+//     Napi::ThreadSafeFunction; resolves with the terminal Response after every queued JS callback runs.
 //     The JS layer wraps this in an AsyncIterable whose `.response` promise carries the resolved value.
 //   * session.setOptions(kvp) — session-level options applied to subsequent sends.
 //   * ChatSession adds: turnCount(), undoTurns(count), addToolDefinition({...}).
@@ -21,16 +21,32 @@
 //
 // Lifetime: the ChatSession pins the parent Manager via an ObjectReference so
 // the underlying foundry_local::Model the C++ Session captured can't be
-// released out from under it.
+// released out from under it. Session implementations are shared with queued
+// workers so dispose() can detach the wrapper without blocking the JS thread
+// or invalidating work that was already accepted.
 #pragma once
 
 #include <napi.h>
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <deque>
+#include <functional>
 #include <memory>
 
 namespace foundry_local_node {
+
+class SessionScheduler {
+ public:
+  void Enqueue(std::function<void()> start);
+  void Complete();
+
+ private:
+  void StartNext();
+
+  std::deque<std::function<void()>> pending_;
+  bool running_ = false;
+};
 
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
@@ -51,8 +67,9 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -82,7 +99,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
   Napi::ObjectReference manager_;
 };
 
@@ -111,8 +128,9 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 }  // namespace foundry_local_node

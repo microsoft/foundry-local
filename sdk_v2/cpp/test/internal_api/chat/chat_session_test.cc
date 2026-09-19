@@ -235,6 +235,16 @@ void AppendSegments(std::vector<Segment>& destination, const std::vector<Segment
   }
 }
 
+template <typename Action>
+void ExpectOperationCancelled(Action&& action) {
+  try {
+    action();
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
+}
+
 std::vector<ToolCallStreamAccumulator::Event> RunToolOutput(
     const std::vector<std::string>& chunks, const std::string& tools = {},
     const std::unordered_map<std::string, ToolKind>& kinds = {}) {
@@ -1068,31 +1078,28 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
 
   struct TestCase {
     const char* name;
-    bool canceled;
     bool has_tool_calls;
     bool stop_sequence_matched;
     bool host_output_limit_reached;
     std::optional<flFinishReason> backend_finish_reason;
     flFinishReason expected;
   };
-
   const std::vector<TestCase> cases = {
-      {"cancellation wins", true, true, true, true, FOUNDRY_LOCAL_FINISH_NONE, FOUNDRY_LOCAL_FINISH_NONE},
-      {"tool calls win over stop", false, true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"tool calls win over stop", true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"tool calls win over host limit", false, true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"tool calls win over host limit", true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"stop wins over host limit", false, false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"stop wins over host limit", false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_STOP},
-      {"host limit produces length", false, false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"host limit produces length", false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_LENGTH},
-      {"backend reason survives natural completion", false, false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"backend reason survives natural completion", false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_STOP},
   };
 
   for (const auto& test : cases) {
     SCOPED_TRACE(test.name);
-    EXPECT_EQ(ResolveGeneratedFinishReason(test.canceled, test.has_tool_calls, test.stop_sequence_matched,
+    EXPECT_EQ(ResolveGeneratedFinishReason(test.has_tool_calls, test.stop_sequence_matched,
                                            test.host_output_limit_reached, test.backend_finish_reason,
                                            /*completion_tokens=*/32, /*max_output_tokens=*/32),
               test.expected);
@@ -1849,7 +1856,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
         std::function<void()> hook;
         if (index == 1) {
           hook = [&] {
-            active_request->canceled.store(true, std::memory_order_relaxed);
+            active_request->Cancel();
           };
         }
 
@@ -1879,9 +1886,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   auto request = MakeStatefulRequest("route this");
   active_request = &request;
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 2);
   EXPECT_EQ(counters->closed, 1);
   EXPECT_EQ(counters->canceled, 1);
@@ -1918,17 +1926,15 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
   auto request = MakeStatefulRequest("route this");
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
   EXPECT_EQ(streamed_text, "safe prefix");
-  ASSERT_EQ(response.items.size(), 1u);
-  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
-  EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
-            output);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_EQ(session.TurnCount(), 0u);
   EXPECT_TRUE(session.Transcript().Empty());
@@ -1979,9 +1985,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   request.AddOwnedItem(std::make_unique<TextItem>(
       body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
@@ -1996,10 +2003,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_EQ(streamed_content, "safe prefix");
   EXPECT_EQ(streamed_content.find("<tool_call>"), std::string::npos);
   EXPECT_EQ(streamed_content.find("<function="), std::string::npos);
-  ASSERT_EQ(response.items.size(), 1u);
-  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
-  EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
-            output);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_TRUE(session.Transcript().Empty());
 }
@@ -3621,12 +3625,12 @@ TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancell
   session.SetStreamingCallback(callback_fn);
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  // Should have stopped early
+  // The canceled response is not published.
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-  // we check cancellation at the start of each loop and we don't use std::atomic to make processing cheaper
-  // so allow for a couple of extra tokens to come through after the cancellation condition is met
+  EXPECT_TRUE(response.items.empty());
+  // Cancellation is observed between token steps, so allow for a couple of extra tokens after the callback.
   EXPECT_LE(tokens_received, 6);
 
   // The appended canceled turn commits nothing; only the seed turn remains.
@@ -3672,9 +3676,10 @@ TEST_F(ChatSessionTest, CancellationFromTheLastQueuedCallbackPreventsCommit) {
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(session.MessageCount(), 0u);
   EXPECT_EQ(session.TurnCount(), 0u);
 }
@@ -3719,9 +3724,10 @@ TEST_F(ChatSessionTest, OpenAIJsonCancellationFromLastContentCallbackPublishesNo
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   ASSERT_EQ(delivered.size(), 2u);
   EXPECT_EQ(delivered[0]["choices"][0]["delta"]["role"], "assistant");
   EXPECT_FALSE(delivered[0]["choices"][0]["finish_reason"].is_string());

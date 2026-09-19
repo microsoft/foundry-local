@@ -5,7 +5,6 @@
 #include "addon_data.h"
 #include "catalog.h"
 #include "errors.h"
-#include "promise_worker.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>

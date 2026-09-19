@@ -23,10 +23,10 @@ std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
     case OgaFinishReason_MaxGeneratedTokens:
     case OgaFinishReason_MaxSessionTokens:
       return FOUNDRY_LOCAL_FINISH_LENGTH;
-    case OgaFinishReason_Cancelled:
-      return FOUNDRY_LOCAL_FINISH_NONE;
     case OgaFinishReason_Failed:
       return FOUNDRY_LOCAL_FINISH_ERROR;
+    case OgaFinishReason_Cancelled:
+      return std::nullopt;
     default:
       return std::nullopt;
   }
