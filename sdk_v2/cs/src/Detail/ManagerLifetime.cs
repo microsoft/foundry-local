@@ -14,17 +14,6 @@ internal sealed class ManagerLifetime : IDisposable
     private int _leaseCount;
     private bool _disposeStarted;
 
-    internal bool IsDisposeStarted
-    {
-        get
-        {
-            lock (_sync)
-            {
-                return _disposeStarted;
-            }
-        }
-    }
-
     internal Lease Acquire(object owner, bool trackReentrancy = false)
     {
         lock (_sync)

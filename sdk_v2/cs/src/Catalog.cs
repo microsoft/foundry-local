@@ -35,42 +35,33 @@ internal sealed class Catalog : ICatalog
     public async Task<List<IModel>> ListModelsAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
-                {
-                    using var list = _nativeCatalog.GetModels();
-                    return list.Models.Select(CreateModel).ToList();
-                }
-            },
+                using var list = _nativeCatalog.GetModels();
+                return list.Models.Select(CreateModel).ToList();
+            }),
             "Error listing models.", _logger, ct).ConfigureAwait(false);
     }
 
     public async Task<List<IModel>> GetCachedModelsAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
-                {
-                    using var list = _nativeCatalog.GetCachedModels();
-                    return list.Models.Select(CreateModel).ToList();
-                }
-            },
+                using var list = _nativeCatalog.GetCachedModels();
+                return list.Models.Select(CreateModel).ToList();
+            }),
             "Error getting cached models.", _logger, ct).ConfigureAwait(false);
     }
 
     public async Task<List<IModel>> GetLoadedModelsAsync(CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
-                {
-                    using var list = _nativeCatalog.GetLoadedModels();
-                    return list.Models.Select(CreateModel).ToList();
-                }
-            },
+                using var list = _nativeCatalog.GetLoadedModels();
+                return list.Models.Select(CreateModel).ToList();
+            }),
             "Error getting loaded models.", _logger, ct).ConfigureAwait(false);
     }
 
@@ -82,14 +73,11 @@ internal sealed class Catalog : ICatalog
             Detail.Throw.IfContainsEmbeddedNul(modelName);
         }
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
-                {
-                    using var list = _nativeCatalog.GetModelVersions(modelAlias, modelName, maxVersions);
-                    return list.Models.Select(CreateModel).ToList();
-                }
-            },
+                using var list = _nativeCatalog.GetModelVersions(modelAlias, modelName, maxVersions);
+                return list.Models.Select(CreateModel).ToList();
+            }),
             $"Error getting model versions for alias '{modelAlias}'.", _logger, ct).ConfigureAwait(false);
     }
 
@@ -97,14 +85,11 @@ internal sealed class Catalog : ICatalog
     {
         Detail.Throw.IfContainsEmbeddedNul(modelAlias);
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
-                {
-                    var model = _nativeCatalog.GetModel(modelAlias);
-                    return model != null ? CreateModel(model) : null;
-                }
-            },
+                var model = _nativeCatalog.GetModel(modelAlias);
+                return model != null ? CreateModel(model) : null;
+            }),
             $"Error getting model with alias '{modelAlias}'.", _logger, ct).ConfigureAwait(false);
     }
 
@@ -112,33 +97,27 @@ internal sealed class Catalog : ICatalog
     {
         Detail.Throw.IfContainsEmbeddedNul(modelId);
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
-                {
-                    var model = _nativeCatalog.GetModelVariant(modelId);
-                    return model != null ? CreateModel(model) : null;
-                }
-            },
+                var model = _nativeCatalog.GetModelVariant(modelId);
+                return model != null ? CreateModel(model) : null;
+            }),
             $"Error getting model variant with ID '{modelId}'.", _logger, ct).ConfigureAwait(false);
     }
 
     public async Task<IModel> GetLatestVersionAsync(IModel model, CancellationToken? ct = null)
     {
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
+            () => WithNativeCatalog(() =>
             {
-                using (AcquireManagerLease())
+                var inputModel = (Model)model;
+                if (!ReferenceEquals(_nativeLifetime, inputModel.NativeLifetime))
                 {
-                    var inputModel = (Model)model;
-                    if (!ReferenceEquals(_nativeLifetime, inputModel.NativeLifetime))
-                    {
-                        throw new ArgumentException("Model must belong to this catalog's manager.", nameof(model));
-                    }
-                    var latest = _nativeCatalog.GetLatestVersion(inputModel.NativeModel);
-                    return CreateModel(latest);
+                    throw new ArgumentException("Model must belong to this catalog's manager.", nameof(model));
                 }
-            },
+                var latest = _nativeCatalog.GetLatestVersion(inputModel.NativeModel);
+                return CreateModel(latest);
+            }),
             $"Error getting latest version for model with name '{model.Info.Name}'.",
             _logger, ct).ConfigureAwait(false);
     }
@@ -154,15 +133,8 @@ internal sealed class Catalog : ICatalog
         PopulateNativeMetadata(nativeMetadata, metadata);
 
         return await Utils.CallWithExceptionHandlingAsync(
-            () =>
-            {
-                NativeModel model;
-                using (AcquireManagerLease())
-                {
-                    model = _nativeCatalog.RegisterModel(modelPath, modelId, nativeMetadata);
-                }
-                return CreateModel(model);
-            },
+            () => WithNativeCatalog(
+                () => CreateModel(_nativeCatalog.RegisterModel(modelPath, modelId, nativeMetadata))),
             $"Error registering model '{modelId}'.", _logger, ct).ConfigureAwait(false);
     }
 
@@ -170,18 +142,28 @@ internal sealed class Catalog : ICatalog
     {
         Detail.Throw.IfContainsEmbeddedNul(aliasOrModelId);
         await Utils.CallWithExceptionHandlingAsync(
-            () =>
-            {
-                using (AcquireManagerLease())
-                {
-                    _nativeCatalog.UnregisterModel(aliasOrModelId);
-                }
-            },
+            () => WithNativeCatalog(() => _nativeCatalog.UnregisterModel(aliasOrModelId)),
             $"Error unregistering model '{aliasOrModelId}'.", _logger, ct).ConfigureAwait(false);
     }
 
     private ManagerLifetime.Lease AcquireManagerLease() =>
         _nativeLifetime.Acquire(this, trackReentrancy: true);
+
+    private TResult WithNativeCatalog<TResult>(Func<TResult> operation)
+    {
+        using (AcquireManagerLease())
+        {
+            return operation();
+        }
+    }
+
+    private void WithNativeCatalog(Action operation)
+    {
+        using (AcquireManagerLease())
+        {
+            operation();
+        }
+    }
 
     private IModel CreateModel(NativeModel model) =>
         new Model(model, _logger, _nativeLifetime);

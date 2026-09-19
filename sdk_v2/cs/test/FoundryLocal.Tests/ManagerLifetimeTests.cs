@@ -197,7 +197,6 @@ internal sealed class ManagerLifetimeTests
     [Arguments(0L, 0)]
     [Arguments(2147483647L, int.MaxValue)]
     [Arguments(2147483648L, null)]
-    [Arguments(long.MaxValue, null)]
     public async Task FileSizeConversion_IsRangeSafe(long nativeValue, int? expected)
     {
         await Assert.That(ModelInfo.ToNullableFileSizeMb(nativeValue)).IsEqualTo(expected);

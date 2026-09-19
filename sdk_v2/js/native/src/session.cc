@@ -63,14 +63,6 @@ Napi::Value ResponseToJs(Napi::Env env, foundry_local::Response& resp) {
   return out;
 }
 
-void ThrowFoundryLocalError(Napi::Env env, int code, const std::string& msg) {
-  Napi::Error err = Napi::Error::New(env, msg);
-  Napi::Object value = err.Value();
-  value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-  value.Set("code", Napi::Number::New(env, code));
-  err.ThrowAsJavaScriptException();
-}
-
 class SessionOperationLease {
  public:
   explicit SessionOperationLease(std::shared_ptr<SessionOperationState> state) : state_(std::move(state)) {}
@@ -256,11 +248,7 @@ void FinalizeStream(Napi::Env env, void* /*data*/, StreamCtx* ctx) {
   Napi::HandleScope scope(env);
   if (ctx->errored) {
     if (ctx->tagged) {
-      Napi::Error err = Napi::Error::New(env, ctx->err_msg);
-      Napi::Object v = err.Value();
-      v.Set("name", Napi::String::New(env, "FoundryLocalError"));
-      v.Set("code", Napi::Number::New(env, ctx->err_code));
-      ctx->deferred.Reject(v);
+      ctx->deferred.Reject(MakeFoundryLocalError(env, ctx->err_code, ctx->err_msg).Value());
     } else {
       ctx->deferred.Reject(Napi::Error::New(env, ctx->err_msg).Value());
     }

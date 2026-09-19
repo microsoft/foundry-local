@@ -206,10 +206,7 @@ describeIfBuilt("BYOM local catalog", () => {
 
     const snapshotModelId = "js-byom-unsafe-int64-snapshot:1";
     registeredIds.add(snapshotModelId);
-    using snapshotMetadata = new MutableModelInfo().setStringProperty(
-      ModelInfoStringProperty.Task,
-      "chat-completion",
-    );
+    using snapshotMetadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
     unwrapMutableModelInfo(snapshotMetadata).setIntPropertyForTest(
       ModelInfoIntProperty.ContextLength,
       9_007_199_254_740_992n,

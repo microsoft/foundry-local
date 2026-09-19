@@ -252,6 +252,15 @@ def _model_info_from_native(
 # ---------------------------------------------------------------------------
 
 
+def _consume_model_list(model_list, api, parent: object | None = None) -> list[IModel]:
+    """Drain a native model list into wrappers and always release it."""
+    try:
+        count = api.root.ModelList_Size(model_list)
+        return [_ModelImpl(api.root.ModelList_GetAt(model_list, index), parent=parent) for index in range(count)]
+    finally:
+        api.root.ModelList_Release(model_list)
+
+
 class _ModelImpl(IModel):
     """Single native ``flModel*`` variant.  Does NOT own the pointer — Catalog does."""
 
@@ -269,16 +278,6 @@ class _ModelImpl(IModel):
         # Callback references — stored to prevent premature GC.
         self._progress_cb = None
         self._progress_cb_handle = None
-        self._before_native_call_for_test: Callable[[], None] | None = None
-
-    @property
-    def _native_ptr(self) -> object:
-        """Raw native ``flModel*`` pointer.
-
-        Internal use only; keep an ``IModel`` reference alive while using it.
-        """
-        self._ensure_manager_open()
-        return self._ptr
 
     def _ensure_manager_open(self) -> None:
         parent = self._parent
@@ -292,8 +291,6 @@ class _ModelImpl(IModel):
         native_call = getattr(manager, "_native_call", None)
         if native_call is not None:
             with native_call():
-                if self._before_native_call_for_test is not None:
-                    self._before_native_call_for_test()
                 yield
             return
         self._ensure_manager_open()
@@ -443,14 +440,8 @@ class _ModelImpl(IModel):
         with self._manager_lifetime():
             ml_out = ffi.new("flModelList**")
             api.check_status(api.model.GetVariants(self._ptr, ml_out))
-            ml = ml_out[0]
-            try:
-                count = api.root.ModelList_Size(ml)
-                # Variants share this model's catalog as their parent — chain to the
-                # catalog, not to this model, so the reference graph stays flat.
-                return [_ModelImpl(api.root.ModelList_GetAt(ml, i), parent=self._parent) for i in range(count)]
-            finally:
-                api.root.ModelList_Release(ml)
+            # Variants share this model's catalog as their parent, keeping the reference graph flat.
+            return _consume_model_list(ml_out[0], api, parent=self._parent)
 
     def select_variant(self, variant: IModel) -> None:
         """Select a specific variant.  Delegates to the native ``SelectVariant`` vtable.

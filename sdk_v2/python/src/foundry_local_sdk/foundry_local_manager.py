@@ -47,14 +47,12 @@ class FoundryLocalManager:
         # _initialize() raises before the native handle is assigned.
         self._native_manager: object | None = None
         self._catalogs: dict[CatalogType, Catalog] = {}
-        self._before_close_lock_for_test: Callable[[], None] | None = None
         self._native_call_state = threading.local()
         self._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
         self._active_native_calls = 0
         self._sessions: weakref.WeakSet[object] = weakref.WeakSet()
         self._close_started = threading.Event()
         self._close_started_lock = threading.Lock()
-        self._closing = False
         self.urls: list[str] | None = None
 
         with FoundryLocalManager._lock:
@@ -372,8 +370,6 @@ class FoundryLocalManager:
 
         if getattr(self._native_call_state, "depth", 0) > 0:
             raise RuntimeError("Cannot close FoundryLocalManager during an active native call")
-        if self._before_close_lock_for_test is not None:
-            self._before_close_lock_for_test()
 
         with self._close_started_lock:
             owns_close = not self._close_started.is_set()
@@ -391,8 +387,6 @@ class FoundryLocalManager:
                 if FoundryLocalManager.instance is self:
                     FoundryLocalManager.instance = None
                 return
-
-            self._closing = True
 
             sessions = list(self._sessions)
 

@@ -11,33 +11,16 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, sym
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { cppBuildConfig, resolveCppRuntimeBinDir } from "./native-build-layout.mjs";
+
 const here = fileURLToPath(new URL(".", import.meta.url));
 const pkgRoot = resolve(here, "..");
-const repoRoot = resolve(pkgRoot, "..", "..");
-
-const config = process.env.FOUNDRY_LOCAL_CPP_CONFIG ?? "RelWithDebInfo";
-
-const platformSegment = (() => {
-  switch (process.platform) {
-    case "win32":
-      return "Windows";
-    case "linux":
-      return "Linux";
-    case "darwin":
-      return "macOS";
-    default:
-      throw new Error(`Unsupported platform: ${process.platform}`);
-  }
-})();
-
-const buildBinDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin");
-const multiConfigSourceDir = resolve(buildBinDir, config);
-const sourceDir = existsSync(multiConfigSourceDir) ? multiConfigSourceDir : buildBinDir;
+const sourceDir = resolveCppRuntimeBinDir();
 
 if (!existsSync(sourceDir)) {
-  console.error(`[copy-native] source directory not found: ${multiConfigSourceDir} or ${buildBinDir}`);
+  console.error(`[copy-native] source directory not found: ${sourceDir}`);
   console.error("[copy-native] Build the C++ SDK first:");
-  console.error(`[copy-native]   python sdk_v2/cpp/build.py --configure --build --config ${config}`);
+  console.error(`[copy-native]   python sdk_v2/cpp/build.py --configure --build --config ${cppBuildConfig}`);
   process.exit(1);
 }
 

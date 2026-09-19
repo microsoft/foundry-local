@@ -49,7 +49,7 @@ impl Catalog {
 
     /// Create mutable metadata backed by the same native runtime as this catalog.
     pub fn create_model_info(&self) -> Result<ModelInfoBuilder> {
-        ModelInfoBuilder::new(Arc::clone(&self.native.api), self.native.manager())
+        ModelInfoBuilder::new(Arc::clone(&self.native.api))
     }
 
     /// Refresh the catalog from the native core.

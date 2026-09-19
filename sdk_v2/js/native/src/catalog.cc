@@ -7,15 +7,12 @@
 #include "model.h"
 #include "model_info.h"
 #include "promise_worker.h"
+#include "worker_start_gate.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
-#include <chrono>
-#include <condition_variable>
 #include <memory>
-#include <mutex>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -85,79 +82,6 @@ Napi::ObjectReference CloneManager(const Napi::ObjectReference& mgr) {
   return Napi::Reference<Napi::Object>::New(mgr.Value(), 1);
 }
 
-void ThrowDisposedManagerError(Napi::Env env) {
-  Napi::Error error = Napi::Error::New(env, "Manager has been disposed");
-  Napi::Object value = error.Value();
-  value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-  value.Set("code", Napi::Number::New(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE));
-  error.ThrowAsJavaScriptException();
-}
-
-class WorkerStartGate {
- public:
-  WorkerStartGate(Napi::Env env, Napi::Function callback, const char* resource_name)
-      : state_(std::make_shared<State>()),
-        tsfn_(Napi::ThreadSafeFunction::New(env, callback, resource_name, 1, 1)) {}
-
-  void SignalAndWait() {
-    auto state = state_;
-    napi_status status = tsfn_.BlockingCall([state](Napi::Env /*env*/, Napi::Function callback) {
-      AcknowledgeOnExit acknowledge{state};
-      callback.Call({});
-    });
-    if (status != napi_ok) {
-      tsfn_.Abort();
-      tsfn_ = Napi::ThreadSafeFunction();
-      throw std::runtime_error("Failed to invoke catalog worker-start callback");
-    }
-
-    std::unique_lock<std::mutex> lock(state->mutex);
-    if (!state->condition.wait_for(lock, std::chrono::seconds(10), [state]() { return state->acknowledged; })) {
-      lock.unlock();
-      tsfn_.Abort();
-      tsfn_ = Napi::ThreadSafeFunction();
-      throw std::runtime_error("Timed out waiting for catalog worker-start callback");
-    }
-    lock.unlock();
-    tsfn_.Release();
-    tsfn_ = Napi::ThreadSafeFunction();
-  }
-
- private:
-  struct State {
-    std::mutex mutex;
-    std::condition_variable condition;
-    bool acknowledged = false;
-  };
-
-  struct AcknowledgeOnExit {
-    std::shared_ptr<State> state;
-
-    ~AcknowledgeOnExit() {
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        state->acknowledged = true;
-      }
-      state->condition.notify_one();
-    }
-  };
-
-  std::shared_ptr<State> state_;
-  Napi::ThreadSafeFunction tsfn_;
-};
-
-std::shared_ptr<WorkerStartGate> ReadWorkerStartGate(const Napi::CallbackInfo& info, size_t index,
-                                                     const char* resource_name) {
-  if (info.Length() <= index || info[index].IsUndefined()) {
-    return nullptr;
-  }
-  if (!info[index].IsFunction()) {
-    Napi::TypeError::New(info.Env(), "Internal worker-start hook must be a function").ThrowAsJavaScriptException();
-    return nullptr;
-  }
-  return std::make_shared<WorkerStartGate>(info.Env(), info[index].As<Napi::Function>(), resource_name);
-}
-
 }  // namespace
 
 Napi::Function Catalog::Init(Napi::Env env) {
@@ -207,12 +131,12 @@ Catalog::Catalog(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Catalog>(inf
 
 std::shared_ptr<foundry_local::Manager> Catalog::LockManager(Napi::Env env) const {
   if (disposed_->load()) {
-    ThrowDisposedManagerError(env);
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
     return nullptr;
   }
   auto manager = manager_lifetime_.lock();
   if (!manager) {
-    ThrowDisposedManagerError(env);
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
   }
   return manager;
 }
@@ -432,7 +356,7 @@ Napi::Value Catalog::RegisterModel(const Napi::CallbackInfo& info) {
   if (!manager) {
     return env.Undefined();
   }
-  auto worker_start_gate = ReadWorkerStartGate(info, 3, "Catalog.registerModel.workerStarted");
+  auto worker_start_gate = ReadWorkerStartGate(info, 3, "Catalog.registerModel.workerStarted", "catalog");
   if (env.IsExceptionPending()) {
     return env.Undefined();
   }
@@ -490,7 +414,7 @@ Napi::Value Catalog::UnregisterModel(const Napi::CallbackInfo& info) {
   if (!manager) {
     return env.Undefined();
   }
-  auto worker_start_gate = ReadWorkerStartGate(info, 1, "Catalog.unregisterModel.workerStarted");
+  auto worker_start_gate = ReadWorkerStartGate(info, 1, "Catalog.unregisterModel.workerStarted", "catalog");
   if (env.IsExceptionPending()) {
     return env.Undefined();
   }

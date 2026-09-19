@@ -136,12 +136,11 @@ class ModelInfo:
 class ModelInfoBuilder:
     """Caller-owned mutable native metadata for local model registration."""
 
-    __slots__ = ("_closed", "_lock", "_ptr")
+    __slots__ = ("_lock", "_ptr")
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._ptr: object | None = None
-        self._closed = True
 
         from foundry_local_sdk._native.api import api, ffi
 
@@ -151,10 +150,9 @@ class ModelInfoBuilder:
             raise RuntimeError("CreateModelInfo returned a null pointer")
 
         self._ptr = out[0]
-        self._closed = False
 
     def _ensure_open(self) -> object:
-        if self._closed or self._ptr is None:
+        if self._ptr is None:
             raise RuntimeError("ModelInfoBuilder is closed")
         return self._ptr
 
@@ -163,12 +161,6 @@ class ModelInfoBuilder:
         """Lease the native metadata pointer for one complete binding call."""
         with self._lock:
             yield self._ensure_open()
-
-    @property
-    def _native_ptr(self) -> object:
-        """Native handle for internal binding calls."""
-        with self._lock:
-            return self._ensure_open()
 
     def set_string_property(self, key: str, value: str) -> ModelInfoBuilder:
         """Set a string metadata property and return ``self``.
@@ -218,14 +210,13 @@ class ModelInfoBuilder:
     def close(self) -> None:
         """Release caller-owned metadata exactly once and invalidate this wrapper."""
         with self._lock:
-            if self._closed or self._ptr is None:
+            if self._ptr is None:
                 return
 
             from foundry_local_sdk._native.api import api
 
             ptr = self._ptr
             self._ptr = None
-            self._closed = True
             api.model.ReleaseModelInfo(ptr)
 
     def __enter__(self) -> ModelInfoBuilder:

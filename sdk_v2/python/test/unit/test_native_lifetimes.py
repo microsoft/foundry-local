@@ -50,14 +50,12 @@ def _new_manager() -> FoundryLocalManager:
     manager = FoundryLocalManager.__new__(FoundryLocalManager)
     manager._native_manager = object()
     manager._catalogs = {}
-    manager._before_close_lock_for_test = None
     manager._native_call_state = threading.local()
     manager._lifetime_changed = threading.Condition(FoundryLocalManager._lock)
     manager._active_native_calls = 0
     manager._sessions = weakref.WeakSet()
     manager._close_started = threading.Event()
     manager._close_started_lock = threading.Lock()
-    manager._closing = False
     return manager
 
 
@@ -168,9 +166,9 @@ def test_manager_close_from_active_native_call_is_rejected(monkeypatch: pytest.M
         manager.close()
 
 
-def test_manager_close_waits_for_active_call_before_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
-    active_call_entered = threading.Event()
-    finish_active_call = threading.Event()
+def test_manager_native_calls_overlap_and_close_waits_for_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    both_admitted = threading.Barrier(3)
+    release_calls = [threading.Event(), threading.Event()]
     shutdown_called = threading.Event()
     manager_released = threading.Event()
     fake_api = SimpleNamespace(
@@ -181,60 +179,73 @@ def test_manager_close_waits_for_active_call_before_shutdown(monkeypatch: pytest
         check_status=lambda status: assert_null(status),
     )
     _patch_api(monkeypatch, fake_api)
-
     manager = _new_manager()
 
-    def active_call() -> None:
+    def active_call(index: int) -> None:
         with manager._native_call():
-            active_call_entered.set()
-            assert finish_active_call.wait(timeout=5)
+            both_admitted.wait(timeout=5)
+            assert release_calls[index].wait(timeout=5)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        active_future = executor.submit(active_call)
-        assert active_call_entered.wait(timeout=5)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        calls = [executor.submit(active_call, index) for index in range(2)]
+        both_admitted.wait(timeout=5)
         close_future = executor.submit(manager.close)
         assert manager._close_started.wait(timeout=5)
         assert not shutdown_called.is_set()
         assert not manager_released.is_set()
-        finish_active_call.set()
-        active_future.result(timeout=5)
+        release_calls[0].set()
+        calls[0].result(timeout=5)
+        assert not shutdown_called.is_set()
+        assert not manager_released.is_set()
+        release_calls[1].set()
+        calls[1].result(timeout=5)
         close_future.result(timeout=5)
 
     assert shutdown_called.is_set()
     assert manager_released.is_set()
 
 
-def test_manager_native_calls_overlap_and_close_waits_for_all(monkeypatch: pytest.MonkeyPatch) -> None:
-    both_admitted = threading.Barrier(3)
-    release_calls = threading.Event()
+def test_model_call_blocks_close_and_borrowed_wrappers_reject_afterward(monkeypatch: pytest.MonkeyPatch) -> None:
+    model_call_entered = threading.Event()
+    finish_model_call = threading.Event()
     shutdown_called = threading.Event()
+
+    def is_cached(_model, out):
+        model_call_entered.set()
+        assert finish_model_call.wait(timeout=5)
+        out[0] = 1
+        return ffi.NULL
+
     fake_api = SimpleNamespace(
         root=SimpleNamespace(
             Manager_Shutdown=lambda _manager: shutdown_called.set() or ffi.NULL,
             Manager_Release=lambda _manager: None,
         ),
+        model=SimpleNamespace(IsCached=is_cached),
+        catalog=SimpleNamespace(GetModels=lambda *_args: pytest.fail("catalog dispatched after manager close")),
         check_status=lambda status: assert_null(status),
     )
     _patch_api(monkeypatch, fake_api)
     manager = _new_manager()
+    catalog = Catalog.__new__(Catalog)
+    catalog._ptr = ffi.cast("flCatalog *", 2)
+    catalog._parent = manager
+    model = _ModelImpl(ffi.cast("flModel *", 1), parent=catalog)
 
-    def active_call() -> None:
-        with manager._native_call():
-            both_admitted.wait(timeout=5)
-            assert release_calls.wait(timeout=5)
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        calls = [executor.submit(active_call) for _ in range(2)]
-        both_admitted.wait(timeout=5)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        model_future = executor.submit(lambda: model.is_cached)
+        assert model_call_entered.wait(timeout=5)
         close_future = executor.submit(manager.close)
         assert manager._close_started.wait(timeout=5)
         assert not shutdown_called.is_set()
-        release_calls.set()
-        for call in calls:
-            call.result(timeout=5)
+        finish_model_call.set()
+        assert model_future.result(timeout=5) is True
         close_future.result(timeout=5)
 
-    assert shutdown_called.is_set()
+    with pytest.raises(RuntimeError, match="closed"):
+        _ = model.is_cached
+    with pytest.raises(RuntimeError, match="closed"):
+        catalog.list_models()
 
 
 def test_manager_close_waits_for_blocked_session_process_request_before_releasing_session(

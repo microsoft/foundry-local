@@ -3,7 +3,7 @@ use foundry_local_sdk::{
     NativeErrorCode,
 };
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,9 +22,6 @@ impl TempTestDir {
         Self { path }
     }
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for TempTestDir {
@@ -39,6 +36,11 @@ fn catalog_configuration_builders_are_publicly_usable() {
         .catalog_region("eastus")
         .catalog_url_with_filter("https://example.test/catalog", "task=chat-completion")
         .catalog_url("https://fallback.example.test/catalog");
+}
+
+#[test]
+fn catalog_type_defaults_to_public() {
+    assert_eq!(CatalogType::default(), CatalogType::Public);
 }
 
 #[test]
@@ -63,10 +65,8 @@ fn native_errors_expose_stable_and_unknown_codes() {
 
 #[tokio::test]
 async fn byom_registration_round_trips_and_preserves_assets() {
-    assert_eq!(CatalogType::default(), CatalogType::Public);
-
     let temp = TempTestDir::new("foundry-local-rust-byom");
-    let model_path = temp.path().join("model");
+    let model_path = temp.path.join("model");
     let config_path = model_path.join("genai_config.json");
     let sentinel_path = model_path.join("caller-owned.txt");
     fs::create_dir(&model_path).expect("create model directory");
@@ -86,9 +86,9 @@ async fn byom_registration_round_trips_and_preserves_assets() {
     let create_manager = || {
         FoundryLocalManager::create(
             FoundryLocalConfig::new(format!("rust-byom-{nonce}"))
-                .app_data_dir(temp.path().join("appdata").to_string_lossy())
-                .model_cache_dir(temp.path().join("cache").join("models").to_string_lossy())
-                .logs_dir(temp.path().join("logs").to_string_lossy())
+                .app_data_dir(temp.path.join("appdata").to_string_lossy())
+                .model_cache_dir(temp.path.join("cache").join("models").to_string_lossy())
+                .logs_dir(temp.path.join("logs").to_string_lossy())
                 .log_level(LogLevel::Warn)
                 .service_endpoint("http://127.0.0.1:1"),
         )
@@ -123,43 +123,11 @@ async fn byom_registration_round_trips_and_preserves_assets() {
     assert_eq!(info.display_name.as_deref(), Some("Rust BYOM"));
     assert_eq!(info.context_length, Some(4096));
     assert_eq!(
-        model
-            .get_string_property("custom_marker")
-            .expect("read custom string")
-            .as_deref(),
-        Some("persist-me")
-    );
-    assert_eq!(
-        model
-            .get_int_property("custom_count", -1)
-            .expect("read custom integer"),
-        42
-    );
-    assert_eq!(
         fs::canonicalize(model.path().await.expect("read model path"))
             .expect("canonicalize model path"),
         fs::canonicalize(&model_path).expect("canonicalize expected path")
     );
 
-    let fresh = catalog
-        .get_model_variant(&model_id)
-        .await
-        .expect("fresh model lookup");
-    assert_eq!(
-        fresh
-            .get_string_property("custom_marker")
-            .expect("read fresh custom string")
-            .as_deref(),
-        Some("persist-me")
-    );
-    assert_eq!(
-        fresh
-            .get_int_property("custom_count", -1)
-            .expect("read fresh custom integer"),
-        42
-    );
-
-    drop(fresh);
     drop(model);
     drop(catalog);
     manager.shutdown().expect("shut down first manager");

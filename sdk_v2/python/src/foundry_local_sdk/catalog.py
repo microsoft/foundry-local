@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from enum import IntEnum
 
 from foundry_local_sdk.exception import FoundryLocalException
-from foundry_local_sdk.imodel import IModel, _ModelImpl
+from foundry_local_sdk.imodel import IModel, _ModelImpl, _consume_model_list
 from foundry_local_sdk.model_info import ModelInfoBuilder, _validate_native_string
 
 
@@ -19,20 +19,6 @@ class CatalogType(IntEnum):
 
     PUBLIC = 0
     LOCAL = 1
-
-
-def _consume_model_list(ml, api, ffi, parent: object | None = None) -> list[IModel]:
-    """Drain a native flModelList* into _ModelImpl wrappers, then release it.
-
-    ``parent`` is the owning ``Catalog`` (or other object) whose lifetime must
-    outlive the returned models — each ``_ModelImpl`` keeps a strong reference
-    to it to prevent the underlying native pointer from being released early.
-    """
-    try:
-        count = api.root.ModelList_Size(ml)
-        return [_ModelImpl(api.root.ModelList_GetAt(ml, i), parent=parent) for i in range(count)]
-    finally:
-        api.root.ModelList_Release(ml)
 
 
 class Catalog:
@@ -100,7 +86,7 @@ class Catalog:
         with self._manager_lifetime():
             ml_out = ffi.new("flModelList**")
             api.check_status(api.catalog.GetModels(self._ptr, ml_out))
-            return _consume_model_list(ml_out[0], api, ffi, parent=self)
+            return _consume_model_list(ml_out[0], api, parent=self)
 
     def register_model(
         self,
@@ -248,7 +234,7 @@ class Catalog:
         with self._manager_lifetime():
             ml_out = ffi.new("flModelList**")
             api.check_status(api.catalog.GetCachedModels(self._ptr, ml_out))
-            return _consume_model_list(ml_out[0], api, ffi, parent=self)
+            return _consume_model_list(ml_out[0], api, parent=self)
 
     def get_loaded_models(self) -> list[IModel]:
         """Get a list of currently loaded models.
@@ -261,7 +247,7 @@ class Catalog:
         with self._manager_lifetime():
             ml_out = ffi.new("flModelList**")
             api.check_status(api.catalog.GetLoadedModels(self._ptr, ml_out))
-            return _consume_model_list(ml_out[0], api, ffi, parent=self)
+            return _consume_model_list(ml_out[0], api, parent=self)
 
     def get_model_versions(
         self,
@@ -301,4 +287,4 @@ class Catalog:
                     ml_out,
                 )
             )
-            return _consume_model_list(ml_out[0], api, ffi, parent=self)
+            return _consume_model_list(ml_out[0], api, parent=self)

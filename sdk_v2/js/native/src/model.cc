@@ -5,17 +5,14 @@
 #include "addon_data.h"
 #include "errors.h"
 #include "promise_worker.h"
+#include "worker_start_gate.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
-#include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,67 +37,6 @@ int64_t SafeNumberToInt64(Napi::Env env, const Napi::Value& value, const char* f
   }
   return static_cast<int64_t>(raw);
 }
-
-void ThrowDisposedManagerError(Napi::Env env) {
-  Napi::Error error = Napi::Error::New(env, "Manager has been disposed");
-  Napi::Object value = error.Value();
-  value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-  value.Set("code", Napi::Number::New(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE));
-  error.ThrowAsJavaScriptException();
-}
-
-class WorkerStartGate {
- public:
-  WorkerStartGate(Napi::Env env, Napi::Function callback)
-      : state_(std::make_shared<State>()),
-        tsfn_(Napi::ThreadSafeFunction::New(env, callback, "Model.unload.workerStarted", 1, 1)) {}
-
-  void SignalAndWait() {
-    auto state = state_;
-    napi_status status = tsfn_.BlockingCall([state](Napi::Env /*env*/, Napi::Function callback) {
-      AcknowledgeOnExit acknowledge{state};
-      callback.Call({});
-    });
-    if (status != napi_ok) {
-      tsfn_.Abort();
-      tsfn_ = Napi::ThreadSafeFunction();
-      throw std::runtime_error("Failed to invoke model worker-start callback");
-    }
-
-    std::unique_lock<std::mutex> lock(state->mutex);
-    if (!state->condition.wait_for(lock, std::chrono::seconds(10), [state]() { return state->acknowledged; })) {
-      lock.unlock();
-      tsfn_.Abort();
-      tsfn_ = Napi::ThreadSafeFunction();
-      throw std::runtime_error("Timed out waiting for model worker-start callback");
-    }
-    lock.unlock();
-    tsfn_.Release();
-    tsfn_ = Napi::ThreadSafeFunction();
-  }
-
- private:
-  struct State {
-    std::mutex mutex;
-    std::condition_variable condition;
-    bool acknowledged = false;
-  };
-
-  struct AcknowledgeOnExit {
-    std::shared_ptr<State> state;
-
-    ~AcknowledgeOnExit() {
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        state->acknowledged = true;
-      }
-      state->condition.notify_one();
-    }
-  };
-
-  std::shared_ptr<State> state_;
-  Napi::ThreadSafeFunction tsfn_;
-};
 
 const char* DeviceTypeToString(flDeviceType dt) {
   switch (dt) {
@@ -307,12 +243,12 @@ Model::Model(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Model>(info) {
 
 std::shared_ptr<foundry_local::Manager> Model::LockManager(Napi::Env env) const {
   if (disposed_->load()) {
-    ThrowDisposedManagerError(env);
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
     return nullptr;
   }
   auto manager = manager_lifetime_.lock();
   if (!manager) {
-    ThrowDisposedManagerError(env);
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Manager has been disposed");
   }
   return manager;
 }
@@ -430,9 +366,8 @@ Napi::Value Model::Load(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
-    auto keepalive = keepalive_;
-  return PromiseWorkerVoid::Run(
-      env, [m, manager, keepalive]() { m->Load(); }, std::move(owner));
+  auto keepalive = keepalive_;
+  return PromiseWorkerVoid::Run(env, [m, manager, keepalive]() { m->Load(); }, std::move(owner));
 }
 
 Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
@@ -443,14 +378,8 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
     Napi::Error::New(env, "Model: not initialized").ThrowAsJavaScriptException();
     return env.Undefined();
   }
-  std::shared_ptr<WorkerStartGate> worker_start_gate;
-  if (info.Length() >= 1 && !info[0].IsUndefined()) {
-    if (!info[0].IsFunction()) {
-      Napi::TypeError::New(env, "Internal worker-start hook must be a function").ThrowAsJavaScriptException();
-      return env.Undefined();
-    }
-    worker_start_gate = std::make_shared<WorkerStartGate>(env, info[0].As<Napi::Function>());
-  }
+  auto worker_start_gate = ReadWorkerStartGate(info, 0, "Model.unload.workerStarted", "model");
+  if (env.IsExceptionPending()) return env.Undefined();
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   foundry_local::IModel* m = impl_;
   auto keepalive = keepalive_;
@@ -463,96 +392,6 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
                                 },
                                 std::move(owner));
 }
-
-namespace {
-
-// AsyncWorker variant that drives IModel::Download with an optional JS
-// progress callback. The callback runs on the libuv worker thread; we bounce
-// each (float percent) to JS via a ThreadSafeFunction acquired before the
-// worker queues and released in OnOK/OnError.
-class DownloadWorker : public Napi::AsyncWorker {
- public:
-  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, std::shared_ptr<void> keepalive,
-                 std::shared_ptr<foundry_local::Manager> manager_lifetime, Napi::ObjectReference owner,
-                 Napi::ThreadSafeFunction tsfn)
-      : Napi::AsyncWorker(env),
-        deferred_(Napi::Promise::Deferred::New(env)),
-        impl_(impl),
-        keepalive_(std::move(keepalive)),
-        manager_lifetime_(std::move(manager_lifetime)),
-        owner_(std::move(owner)),
-        tsfn_(std::move(tsfn)) {}
-
-  Napi::Promise Promise() { return deferred_.Promise(); }
-
-  void Execute() override {
-    try {
-      auto progress_cb = tsfn_ ? std::function<int(float)>([this](float percent) {
-        // BlockingCall keeps backpressure on the worker thread: if JS is
-        // slow to drain the queue we'll wait rather than dropping reports.
-        // Callback return value is unused on the JS side; we always continue.
-        tsfn_.BlockingCall([percent](Napi::Env env, Napi::Function js_cb) {
-          js_cb.Call({Napi::Number::New(env, static_cast<double>(percent))});
-        });
-        return 0;  // 0 = continue per flProgressCallback contract.
-      })
-                               : std::function<int(float)>(nullptr);
-      impl_->Download(std::move(progress_cb));
-    } catch (const foundry_local::Error& e) {
-      err_code_ = static_cast<int>(e.Code());
-      err_msg_ = e.what();
-      tagged_ = true;
-      SetError(err_msg_);
-    } catch (const std::exception& e) {
-      err_msg_ = e.what();
-      SetError(err_msg_);
-    } catch (...) {
-      err_msg_ = "Unknown native exception";
-      SetError(err_msg_);
-    }
-  }
-
-  void OnOK() override {
-    Napi::HandleScope scope(Env());
-    ReleaseTsfn();
-    deferred_.Resolve(Env().Undefined());
-  }
-
-  void OnError(const Napi::Error& /*unused*/) override {
-    Napi::Env env = Env();
-    Napi::HandleScope scope(env);
-    ReleaseTsfn();
-    if (tagged_) {
-      Napi::Error err = Napi::Error::New(env, err_msg_);
-      Napi::Object value = err.Value();
-      value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-      value.Set("code", Napi::Number::New(env, err_code_));
-      deferred_.Reject(value);
-    } else {
-      deferred_.Reject(Napi::Error::New(env, err_msg_).Value());
-    }
-  }
-
- private:
-  void ReleaseTsfn() {
-    if (tsfn_) {
-      tsfn_.Release();
-      tsfn_ = Napi::ThreadSafeFunction();
-    }
-  }
-
-  Napi::Promise::Deferred deferred_;
-  foundry_local::IModel* impl_;
-  std::shared_ptr<void> keepalive_;
-  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
-  Napi::ObjectReference owner_;
-  Napi::ThreadSafeFunction tsfn_;
-  std::string err_msg_;
-  int err_code_ = 0;
-  bool tagged_ = false;
-};
-
-}  // namespace
 
 Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
@@ -576,10 +415,27 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   }
 
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto* w = new DownloadWorker(env, impl_, keepalive_, std::move(manager), std::move(owner), std::move(tsfn));
-  Napi::Promise p = w->Promise();
-  w->Queue();
-  return p;
+  auto progress = std::make_shared<Napi::ThreadSafeFunction>(std::move(tsfn));
+  foundry_local::IModel* model = impl_;
+  auto keepalive = keepalive_;
+  return PromiseWorkerVoid::Run(
+      env,
+      [model, manager, keepalive, progress]() {
+        auto progress_callback = *progress ? std::function<int(float)>([progress](float percent) {
+          progress->BlockingCall([percent](Napi::Env env, Napi::Function callback) {
+            callback.Call({Napi::Number::New(env, static_cast<double>(percent))});
+          });
+          return 0;
+        })
+                                           : std::function<int(float)>(nullptr);
+        model->Download(std::move(progress_callback));
+      },
+      std::move(owner), [progress]() {
+        if (*progress) {
+          progress->Release();
+          *progress = Napi::ThreadSafeFunction();
+        }
+      });
 }
 
 Napi::Value Model::RemoveFromCache(const Napi::CallbackInfo& info) {

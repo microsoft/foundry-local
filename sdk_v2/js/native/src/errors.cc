@@ -9,27 +9,24 @@
 
 namespace foundry_local_node {
 
-namespace {
-
-// Build a Napi::Error from a foundry_local::Error, tagging it with a stable
-// `name === "FoundryLocalError"` and exposing the wrapper's flErrorCode as
-// `code`. JS-side code can branch on either.
-Napi::Error MakeFoundryLocalError(Napi::Env env, const foundry_local::Error& e) {
-  Napi::Error err = Napi::Error::New(env, e.what());
+Napi::Error MakeFoundryLocalError(Napi::Env env, int code, const std::string& message) {
+  Napi::Error err = Napi::Error::New(env, message);
   Napi::Object value = err.Value();
   value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-  value.Set("code", Napi::Number::New(env, static_cast<int>(e.Code())));
+  value.Set("code", Napi::Number::New(env, code));
   return err;
 }
 
-}  // namespace
+void ThrowFoundryLocalError(Napi::Env env, int code, const std::string& message) {
+  MakeFoundryLocalError(env, code, message).ThrowAsJavaScriptException();
+}
 
 template <typename T>
 T CallChecked(Napi::Env env, const std::function<T()>& fn) {
   try {
     return fn();
   } catch (const foundry_local::Error& e) {
-    MakeFoundryLocalError(env, e).ThrowAsJavaScriptException();
+    ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
   } catch (const Napi::Error& e) {
     e.ThrowAsJavaScriptException();
   } catch (const std::exception& e) {
@@ -44,7 +41,7 @@ void CallCheckedVoid(Napi::Env env, const std::function<void()>& fn) {
   try {
     fn();
   } catch (const foundry_local::Error& e) {
-    MakeFoundryLocalError(env, e).ThrowAsJavaScriptException();
+    ThrowFoundryLocalError(env, static_cast<int>(e.Code()), e.what());
   } catch (const Napi::Error& e) {
     e.ThrowAsJavaScriptException();
   } catch (const std::exception& e) {
