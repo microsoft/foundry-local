@@ -9,6 +9,7 @@
 #include "inferencing/model_load_manager.h"
 #include "inferencing/session/session_manager.h"
 #include "items/message_item.h"
+#include "items/text_item.h"
 #include "manager.h"
 #include "model.h"
 #include "telemetry/telemetry.h"
@@ -18,9 +19,61 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <chrono>
+#include <limits>
 #include <memory>
 
 namespace fl {
+
+namespace {
+
+void LogUsageTelemetryFailure(ILogger& logger) noexcept {
+  try {
+    logger.Log(LogLevel::Warning, "Unable to record inference usage telemetry");
+  } catch (...) {
+    // Even a caller-provided diagnostic logger must not change a completed inference result.
+  }
+}
+
+// Only retain the count, not another copy of prompt content for telemetry.
+struct RequestMessageCount {
+  uint64_t count = 0;
+};
+
+void from_json(const nlohmann::json& json, RequestMessageCount& result) {
+  const auto messages = json.find("messages");
+  if (messages == json.end()) {
+    return;
+  }
+
+  if (!messages->is_array()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "messages must be an array");
+  }
+
+  result.count = messages->size();
+}
+
+uint64_t CountRequestMessages(const Request& request) {
+  uint64_t count = 0;
+  for (const auto* item : request.items) {
+    if (!item) {
+      continue;
+    }
+
+    if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE || item->type == FOUNDRY_LOCAL_ITEM_TOOL_RESULT) {
+      ++count;
+    } else if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+      const auto& text = static_cast<const TextItem&>(*item);
+      if (text.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON) {
+        count += nlohmann::json::parse(text.text).get<RequestMessageCount>().count;
+      }
+    }
+  }
+
+  return count;
+}
+
+}  // namespace
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
@@ -167,18 +220,68 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     }
   } active_guard{*this, request};
 
-  ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
+  ActionTracker tracker(Action::kSessionProcessRequest, telemetry_, TakeInvocationContext());
   tracker.SetModelId(CatalogModel().Id());
 
+  const auto start = std::chrono::steady_clock::now();
   try {
     ValidateRequestItems(request);
 
     ProcessRequestImpl(request, response);
 
-    tracker.SetStatus(ActionStatus::kSuccess);
+    tracker.SetStatus(request.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
+                                                                       : ActionStatus::kSuccess);
   } catch (const std::exception& ex) {
     tracker.RecordException(ex);
     throw;
+  }
+
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  RecordUsage(request, response, tracker.Context(),
+              std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+}
+
+InvocationContext Session::TakeInvocationContext() {
+  std::lock_guard<std::mutex> lock(*invocation_context_mutex_);
+  auto context = invocation_context_ ? std::move(*invocation_context_) : InvocationContext::Direct();
+  invocation_context_.reset();
+  return context;
+}
+
+int32_t Session::TelemetryTokenCount(int64_t count) {
+  return static_cast<int32_t>(std::clamp<int64_t>(count, 0, std::numeric_limits<int32_t>::max()));
+}
+
+void Session::RecordUsage(const Request& request, const Response& response,
+                          const InvocationContext& context, int64_t total_time_ms) {
+  // This boundary covers metric preparation as well as emission; neither may change inference results.
+  try {
+    ModelUsageInfo usage;
+    usage.model_id = CatalogModel().Id();
+    usage.execution_provider = ExecutionProvider();
+    if (usage.execution_provider.empty()) {
+      usage.execution_provider = CatalogModel().Info().execution_provider;
+    }
+
+    usage.user_agent = context.user_agent;
+    usage.correlation_id = context.correlation_id;
+    usage.indirect = context.indirect;
+    usage.stream = static_cast<bool>(callback_fn_);
+    usage.num_messages = CountRequestMessages(request);
+    usage.total_time_ms = total_time_ms;
+    usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
+    usage.input_token_count = TelemetryTokenCount(response.usage.prompt_tokens);
+    // TTFT and memory remain unknown; token counts come from the current backend's per-turn accounting.
+    try {
+      telemetry_.RecordModelUsage(usage);
+    } catch (...) {
+      // Keep the modality-specific event independent of failure in the generic telemetry sink.
+      LogUsageTelemetryFailure(logger_);
+    }
+
+    RecordAdditionalModelUsage(response, usage);
+  } catch (...) {
+    LogUsageTelemetryFailure(logger_);
   }
 }
 

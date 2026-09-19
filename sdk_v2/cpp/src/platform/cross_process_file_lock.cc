@@ -20,7 +20,12 @@ std::unique_ptr<CrossProcessFileLock> CrossProcessFileLock::WaitForDirectoryLock
     const CancellationPredicate& is_cancelled,
     ILogger& logger,
     std::chrono::milliseconds poll_interval,
-    std::chrono::milliseconds timeout) {
+    std::chrono::milliseconds timeout,
+    WaitExitReason* exit_reason) {
+  if (exit_reason != nullptr) {
+    *exit_reason = WaitExitReason::kNone;
+  }
+
   auto deadline = std::chrono::steady_clock::now() + timeout;
   // `is_cancelled` is the caller's progress callback, which also serves as the
   // liveness heartbeat — it emits 0% on every invocation. We therefore poll it
@@ -31,6 +36,9 @@ std::unique_ptr<CrossProcessFileLock> CrossProcessFileLock::WaitForDirectoryLock
   // to decouple the heartbeat from.
   while (true) {
     if (is_cancelled && is_cancelled()) {
+      if (exit_reason != nullptr) {
+        *exit_reason = WaitExitReason::kCanceled;
+      }
       FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "lock acquisition cancelled");
     }
     auto lock = CrossProcessFileLock::TryAcquireForDirectory(directory, logger);
@@ -38,6 +46,9 @@ std::unique_ptr<CrossProcessFileLock> CrossProcessFileLock::WaitForDirectoryLock
       return lock;
     }
     if (std::chrono::steady_clock::now() >= deadline) {
+      if (exit_reason != nullptr) {
+        *exit_reason = WaitExitReason::kTimedOut;
+      }
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
                "timed out waiting for cross-process download lock on '" + directory.string() + "'");
     }

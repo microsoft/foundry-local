@@ -4,6 +4,7 @@
 #include "inferencing/generative/audio/audio_session.h"
 
 #include "contracts/audio_transcriptions.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/audio/onnx_audio_generator.h"
 #include "inferencing/generative/audio/pcm_utils.h"
 #include "inferencing/generative/genai_model_instance.h"
@@ -15,6 +16,7 @@
 #include "items/speech_segment_item.h"
 #include "items/text_item.h"
 #include "model.h"
+#include "telemetry/telemetry.h"
 #include "util/file_uri.h"
 #include "utils.h"
 
@@ -62,6 +64,8 @@ std::unique_ptr<SpeechResultItem> BuildSpeechResult(
 // (~10s on Whisper, ~5s on Nemotron streaming) produces under 256 tokens, so most short-form
 // transcriptions avoid any reallocation. Longer transcriptions still grow geometrically.
 constexpr size_t kInitialTokenCapacity = 256;
+constexpr int32_t kStreamingSampleRate = 16000;
+constexpr int32_t kStreamingChannels = 1;
 constexpr size_t kMaxWavDataBytes = 64ull * 1024ull * 1024ull;
 constexpr size_t kMaxWavSamples = kMaxWavDataBytes / sizeof(float);
 
@@ -81,6 +85,7 @@ std::string JoinTokens(const std::vector<std::string>& token_texts) {
 
 const std::unordered_map<std::string, std::string>& NemotronLanguageIdMap() {
   // Language id 5 is intentionally missing because upstream Nemotron lang_id assignments skip it.
+  // clang-format off
   static const std::unordered_map<std::string, std::string> kMap = {
       {"en", "0"},       {"en-us", "0"},    {"en-gb", "1"},    {"es-es", "2"},   {"es", "3"},
       {"es-us", "3"},    {"zh-cn", "4"},    {"hi", "6"},       {"hi-in", "6"},   {"ar", "7"},
@@ -99,6 +104,7 @@ const std::unordered_map<std::string, std::string>& NemotronLanguageIdMap() {
       {"mt", "102"},     {"mt-mt", "102"},  {"nb", "103"},     {"nb-no", "103"}, {"nn", "104"},
       {"nn-no", "104"},
   };
+  // clang-format on
   return kMap;
 }
 
@@ -120,7 +126,6 @@ bool IsLanguageToken(const std::string& token) {
 
 }  // namespace
 
-
 AudioSession::AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model,
                            ILogger& logger, ITelemetry& telemetry)
     : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
@@ -140,7 +145,8 @@ AudioSession::AudioSession(AudioSession&& other) noexcept
       logger_(other.logger_),
       model_(other.model_),
       owns_session_(other.owns_session_),
-      session_options_(std::move(other.session_options_)) {
+      session_options_(std::move(other.session_options_)),
+      audio_telemetry_details_(std::move(other.audio_telemetry_details_)) {
   other.owns_session_ = false;
 }
 
@@ -148,11 +154,17 @@ SessionType AudioSession::Type() const {
   return SessionType::kAudio;
 }
 
+std::string AudioSession::ExecutionProvider() const {
+  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProvider()));
+}
+
 void AudioSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
   session_options_ = SearchOptions::FromParameters(options);
 }
 
 void AudioSession::ProcessRequestImpl(const Request& request, Response& response) {
+  audio_telemetry_details_.reset();
+
   // OpenAI audio transcription JSON pass-through: a TEXT item tagged OPENAI_JSON.
   for (const auto* item : request.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
@@ -237,6 +249,10 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   std::string audio_path = PathFromFileUri(audio_item.uri);
 
   auto generator = OnnxAudioGenerator::Create(audio_path, temperature, Model(), language);
+  audio_telemetry_details_ = AudioTelemetryDetails{
+      .source = "file",
+      .language = language,
+  };
   int prompt_tokens = generator->PromptTokenCount();
 
   // Token-by-token generation with optional streaming.
@@ -348,11 +364,13 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   // Streaming ASR has no text prompt (input is audio), so prompt_tokens stays 0.
   // We track every decoded token (whether it produced visible text or not) as completion_tokens.
   int completion_tokens = 0;
+  int64_t audio_samples = 0;
 
   // 3. If the AudioItem itself has initial data, process it first
   if (format_item.data && format_item.data_size > 0) {
     auto float_samples = ConvertS16LEToFloat(
         static_cast<const uint8_t*>(format_item.data), format_item.data_size);
+    audio_samples += static_cast<int64_t>(float_samples.size());
     ProcessChunk(*processor, *generator, *tokenizer_stream,
                  float_samples, token_texts, segments, streaming_callback, request, completion_tokens);
   }
@@ -377,6 +395,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
     auto& bytes = static_cast<BytesItem&>(*item);
     auto float_samples = ConvertS16LEToFloat(
         static_cast<const uint8_t*>(bytes.data), bytes.data_size);
+    audio_samples += static_cast<int64_t>(float_samples.size());
 
     ProcessChunk(*processor, *generator, *tokenizer_stream,
                  float_samples, token_texts, segments, streaming_callback, request, completion_tokens);
@@ -407,6 +426,14 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   response.usage.prompt_tokens = 0;
   response.usage.completion_tokens = completion_tokens;
   response.usage.total_tokens = completion_tokens;
+  const auto language = effective_kvp.find("language");
+  audio_telemetry_details_ = AudioTelemetryDetails{
+      .source = "streaming_pcm",
+      .language = language == effective_kvp.end() ? "" : language->second,
+      .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
+      .sample_rate = kStreamingSampleRate,
+      .channels = kStreamingChannels,
+  };
 
   logger_.Log(LogLevel::Debug, fmt::format("Streaming audio transcription complete, text length: {}",
                                            response.items.empty() ? 0 : full_text_size));
@@ -443,10 +470,10 @@ void AudioSession::DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tok
     }
 
     int32_t token_id = next_tokens[0];
+    ++completion_tokens;
     const char* token_text = tokenizer_stream.Decode(token_id);
 
     if (token_text && token_text[0] != '\0') {
-      ++completion_tokens;
       segments.push_back(MakeNoneSegment(token_text));
 
       if (callback) {
@@ -500,6 +527,10 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
 
   // Create the audio generator
   auto generator = OnnxAudioGenerator::Create(req.filename, temperature, Model(), language);
+  audio_telemetry_details_ = AudioTelemetryDetails{
+      .source = "openai_json_file",
+      .language = language,
+  };
   int prompt_tokens = generator->PromptTokenCount();
 
   auto streaming_callback = CreateCallbackHandler(original_request);
@@ -556,7 +587,6 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
               fmt::format("Audio transcription stats: Total Tokens: {}, Prompt Tokens: {}, Completion Tokens: {}",
                           total_tokens, prompt_tokens, completion_tokens));
 }
-
 
 bool AudioSession::IsNemotronSpeechModel() const {
   const auto& cfg = Model().GetGenAIConfig();
@@ -653,7 +683,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
     }
   }
 
-  auto samples = LoadPcmWavAsFloatSamples(req.filename);
+  auto samples = AudioInternal::LoadPcmWavAsFloatSamples(req.filename);
   auto& oga_model = Model().GetOgaModel();
   auto processor = OgaStreamingProcessor::Create(oga_model);
   auto tokenizer = OgaTokenizer::Create(oga_model);
@@ -671,6 +701,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   std::string text;
   text.reserve(512);
   int completion_tokens = 0;
+  int64_t audio_samples = 0;
 
   constexpr size_t kNemotronSamplesPerChunk = 1600;  // 100ms at 16kHz
   for (size_t offset = 0; offset < samples.size() && !original_request.canceled;
@@ -678,6 +709,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
     size_t count = std::min(kNemotronSamplesPerChunk, samples.size() - offset);
     RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *tokenizer_stream, text,
                           streaming_callback, response_id, original_request, completion_tokens);
+    audio_samples += static_cast<int64_t>(count);
   }
   if (!original_request.canceled) {
     RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
@@ -689,6 +721,13 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   response.usage.prompt_tokens = 0;
   response.usage.completion_tokens = completion_tokens;
   response.usage.total_tokens = completion_tokens;
+  audio_telemetry_details_ = AudioTelemetryDetails{
+      .source = "openai_json_file",
+      .language = language,
+      .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
+      .sample_rate = kStreamingSampleRate,
+      .channels = kStreamingChannels,
+  };
 
   AudioTranscriptionResponse output;
   output.id = response_id;
@@ -697,7 +736,36 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
                                                       FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
 }
 
-std::vector<float> AudioSession::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
+int64_t AudioInternal::AudioDurationMsFromSamples(int64_t samples) {
+  // All PCM paths validate mono 16 kHz. Count converted samples, not file bytes (WAV may also be float32).
+  return samples / (kStreamingSampleRate / 1000);
+}
+
+void AudioSession::RecordAdditionalModelUsage(const Response& response, const ModelUsageInfo& usage) {
+  if (!audio_telemetry_details_) {
+    return;
+  }
+
+  AudioUsageInfo info;
+  info.model_id = usage.model_id;
+  info.execution_provider = usage.execution_provider;
+  info.user_agent = usage.user_agent;
+  info.correlation_id = usage.correlation_id;
+  info.indirect = usage.indirect;
+  info.stream = usage.stream;
+  info.total_time_ms = usage.total_time_ms;
+  info.total_tokens = usage.total_tokens;
+  info.input_token_count = usage.input_token_count;
+  info.completion_token_count = TelemetryTokenCount(response.usage.completion_tokens);
+  info.audio_source = audio_telemetry_details_->source;
+  info.language = audio_telemetry_details_->language;
+  info.audio_duration_ms = audio_telemetry_details_->duration_ms;
+  info.sample_rate = audio_telemetry_details_->sample_rate;
+  info.channels = audio_telemetry_details_->channels;
+  Telemetry().RecordAudioUsage(info);
+}
+
+std::vector<float> AudioInternal::LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
   std::ifstream in(audio_file_path, std::ios::binary);
   if (!in) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,

@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "inferencing/session/response.h"
 #include "inferencing/session/tool_registry.h"
 #include "inferencing/session/types.h"
+#include "telemetry/invocation_context.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
@@ -24,6 +26,7 @@ namespace fl {
 class ILogger;     // forward declaration
 class ITelemetry;  // forward declaration
 class Model;       // forward declaration
+struct ModelUsageInfo;
 
 /// Base class for model inference sessions.
 /// Manages lifecycle, request dispatch, streaming callbacks, and tool definitions.
@@ -106,6 +109,14 @@ class Session {
     callback_user_data_ = user_data;
   }
 
+  /// Stage telemetry context for the next operation (including a cached session's next turn).
+  /// HTTP callers exclusively own the session while staging an indirect child of the route context.
+  /// Without a staged context, each ProcessRequest creates an independent direct context.
+  void SetInvocationContext(InvocationContext context) {
+    std::lock_guard<std::mutex> lock(*invocation_context_mutex_);
+    invocation_context_ = std::move(context);
+  }
+
  protected:
   Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
           bool allow_concurrent_requests = false);
@@ -137,6 +148,14 @@ class Session {
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
 
+  virtual std::string ExecutionProvider() const { return {}; }
+
+  /// Called inside the telemetry-only failure boundary after inference has populated the response.
+  virtual void RecordAdditionalModelUsage(const Response& /*response*/, const ModelUsageInfo& /*usage*/) {}
+
+  ITelemetry& Telemetry() { return telemetry_; }
+  static int32_t TelemetryTokenCount(int64_t count);
+
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.
   std::unique_ptr<CallbackHandler> CreateCallbackHandler(const Request& request) {
@@ -156,6 +175,9 @@ class Session {
   /// Reject items (and message content parts) whose type the model's task does not advertise as an
   /// input. Currently applies to chat tasks only.
   void ValidateRequestItems(const Request& request) const;
+  InvocationContext TakeInvocationContext();
+  void RecordUsage(const Request& request, const Response& response,
+                   const InvocationContext& context, int64_t total_time_ms);
 
   const fl::Model& catalog_model_;
   ILogger& logger_;
@@ -164,6 +186,8 @@ class Session {
   KeyValuePairs session_options_;
   StreamingCallbackFn callback_fn_;
   void* callback_user_data_ = nullptr;
+  std::optional<InvocationContext> invocation_context_;
+  std::unique_ptr<std::mutex> invocation_context_mutex_ = std::make_unique<std::mutex>();
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 

@@ -6,6 +6,7 @@
 #include "contracts/chat_completions.h"
 #include "contracts/tool_definitions.h"
 #include "contracts/chat_completions_converter.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/media_input.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
@@ -860,6 +861,10 @@ ChatSession::ChatSession(ChatSession&& other) noexcept
 
 SessionType ChatSession::Type() const {
   return SessionType::kChat;
+}
+
+std::string ChatSession::ExecutionProvider() const {
+  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProvider()));
 }
 
 void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {

@@ -265,6 +265,7 @@ public class FoundryLocalManager : IDisposable
             // Merge AdditionalSettings with user-supplied entries.
             // Done as a local dict so we don't mutate the user-supplied AdditionalSettings.
             var additionalSettings = new Dictionary<string, string>(StringComparer.Ordinal);
+            additionalSettings["UserAgent"] = $"foundry-local-csharp/{AssemblyVersion}";
             if (_config.AdditionalSettings != null)
             {
                 foreach (var kvp in _config.AdditionalSettings)

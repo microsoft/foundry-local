@@ -12,6 +12,10 @@
 #include <oatpp/web/protocol/http/outgoing/Response.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 
+#include "model.h"
+#include "service/web_service.h"
+#include "telemetry/telemetry_action_tracker.h"
+
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -22,6 +26,8 @@
 #include <string>
 
 namespace fl {
+
+class GenAIModelInstance;
 
 using oatpp::web::protocol::http::Status;
 using oatpp::web::server::HttpRequestHandler;
@@ -52,6 +58,54 @@ inline std::shared_ptr<HttpRequestHandler::OutgoingResponse> ErrorResponse(const
 
   nlohmann::json body = {{"error", error_obj}};
   return JsonResponse(status, body);
+}
+
+inline ActionStatus ResponseToActionStatus(const std::shared_ptr<HttpRequestHandler::OutgoingResponse>& response,
+                                           bool canceled = false) {
+  if (!response) {
+    return ActionStatus::kFailure;
+  }
+
+  const auto code = response->getStatus().code;
+  if (code == 408 || code == 504) {
+    return ActionStatus::kTimeout;
+  }
+
+  if (code >= 500) {
+    return ActionStatus::kFailure;
+  }
+
+  if (code >= 400) {
+    return ActionStatus::kClientError;
+  }
+
+  return canceled ? ActionStatus::kCanceled : ActionStatus::kSuccess;
+}
+
+inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::IncomingRequest>& request) {
+  if (!request) {
+    return {};
+  }
+
+  const auto user_agent = request->getHeader("User-Agent");
+  return user_agent ? *user_agent : std::string{};
+}
+
+/// Track construction separately from processing, with the route's indirect context for both.
+template <typename SessionType>
+std::unique_ptr<SessionType> CreateSessionWithTelemetry(const Model& model, GenAIModelInstance& loaded,
+                                                        ServiceContext& ctx, const InvocationContext& context) {
+  ActionTracker tracker(Action::kSessionCreate, ctx.telemetry, context);
+  tracker.SetModelId(model.Id());
+  try {
+    auto session = std::make_unique<SessionType>(model, loaded, ctx.logger, ctx.telemetry);
+    session->SetInvocationContext(context);
+    tracker.SetStatus(ActionStatus::kSuccess);
+    return session;
+  } catch (const std::exception& ex) {
+    tracker.RecordException(ex);
+    throw;
+  }
 }
 
 /// Map a failure raised during request handling to an HTTP status.

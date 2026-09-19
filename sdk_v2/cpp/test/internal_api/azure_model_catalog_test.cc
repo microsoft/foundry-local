@@ -83,9 +83,10 @@ class TestAzureModelCatalog final : public AzureModelCatalog {
                         const IEpDetector& ep_detector,
                         ILogger& logger,
                         bool cache_only,
+                        ITelemetry& telemetry,
                         ClientFactory client_factory)
       : AzureModelCatalog(std::move(catalog_urls), std::move(cache_dir), std::move(model_factory), ep_detector, logger,
-                          cache_only),
+                          cache_only, "", false, telemetry),
         client_factory_(std::move(client_factory)) {}
 
  protected:
@@ -96,6 +97,15 @@ class TestAzureModelCatalog final : public AzureModelCatalog {
 
  private:
   ClientFactory client_factory_;
+};
+
+class RecordingCatalogTelemetry final : public TelemetryLogger {
+ public:
+  RecordingCatalogTelemetry() : TelemetryLogger("catalog-test", fl::test::NullLog()) {}
+
+  void RecordCatalogFetch(const CatalogFetchInfo& info) override { calls.push_back(info); }
+
+  std::vector<CatalogFetchInfo> calls;
 };
 
 ModelInfo MakeModelInfo(const std::string& model_id,
@@ -190,14 +200,72 @@ class AzureModelCatalogTest : public ::testing::Test {
 
     return std::make_unique<TestAzureModelCatalog>(std::move(catalog_urls), cache_directory_.string(),
                                                    std::move(model_factory), services_.ep_detector, services_.logger,
-                                                   cache_only, std::move(client_factory));
+                                                   cache_only, telemetry_, std::move(client_factory));
   }
 
   fl::test::TempPath cache_directory_ = fl::test::TempPath::CreateTempDir("fl_azure_model_catalog_");
   fl::test::FakeServiceBindings services_;
+  RecordingCatalogTelemetry telemetry_;
   std::unordered_map<std::string, std::shared_ptr<CatalogBehavior>> behaviors_;
   int factory_calls_ = 0;
 };
+
+TEST_F(AzureModelCatalogTest, LiveFetchRecordsPublicDimensionsAndBucketsCustomUrls) {
+  const std::string azure_url = "https://ai.azure.com/api/eastus/ux/v1.0?token=private";
+  const std::string custom_url = "https://private.example/tenant/private-models?token=private";
+  AddBehavior(azure_url);
+  AddBehavior(custom_url);
+  auto catalog = CreateCatalog({{azure_url, std::nullopt}, {custom_url, std::nullopt}});
+
+  catalog->ListModels();
+
+  ASSERT_EQ(telemetry_.calls.size(), 2u);
+  const auto& azure = telemetry_.calls[0];
+  EXPECT_EQ(azure.operation, "FetchAll");
+  EXPECT_EQ(azure.endpoint, "ai.azure.com");
+  EXPECT_EQ(azure.region, "eastus");
+  EXPECT_EQ(azure.format, "ux/v1.0");
+  EXPECT_EQ(azure.status, ActionStatus::kSuccess);
+  EXPECT_EQ(azure.model_count, 0);
+  EXPECT_GE(azure.duration_ms, 0);
+  EXPECT_FALSE(azure.user_agent.empty());
+  EXPECT_FALSE(azure.correlation_id.empty());
+  const auto& custom = telemetry_.calls[1];
+  EXPECT_EQ(custom.endpoint, "custom");
+  EXPECT_TRUE(custom.region.empty());
+  EXPECT_TRUE(custom.format.empty());
+  EXPECT_EQ(custom.correlation_id, azure.correlation_id);
+}
+
+TEST_F(AzureModelCatalogTest, FailedLiveFetchRecordsFailureBeforeSnapshotFallback) {
+  const std::string url = "https://private.example/models";
+  AddBehavior(url, true);
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+
+  catalog->ListModels();
+
+  ASSERT_EQ(telemetry_.calls.size(), 1u);
+  EXPECT_EQ(telemetry_.calls[0].status, ActionStatus::kDependencyFailure);
+  EXPECT_EQ(telemetry_.calls[0].error_message, "catalog request failed");
+  EXPECT_EQ(telemetry_.calls[0].endpoint, "custom");
+}
+
+TEST_F(AzureModelCatalogTest, CachedModelLookupSharesRefreshCorrelation) {
+  const std::string url = "https://ai.azure.com/api/eastus/ux/v1.0";
+  auto behavior = AddBehavior(url);
+  behavior->models_by_id = {MakeModelInfo("old-model:1", "old-model", 1, "old", "Azure")};
+  AddLocalModel("old-model:1", "old-model-1");
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+
+  catalog->ListModels();
+
+  ASSERT_EQ(telemetry_.calls.size(), 2u);
+  EXPECT_EQ(telemetry_.calls[0].operation, "FetchAll");
+  EXPECT_EQ(telemetry_.calls[1].operation, "FetchByIds");
+  EXPECT_EQ(telemetry_.calls[1].status, ActionStatus::kSuccess);
+  EXPECT_EQ(telemetry_.calls[1].model_count, 1);
+  EXPECT_EQ(telemetry_.calls[1].correlation_id, telemetry_.calls[0].correlation_id);
+}
 
 TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWithoutRewritingSnapshot) {
   const auto gpu_info =

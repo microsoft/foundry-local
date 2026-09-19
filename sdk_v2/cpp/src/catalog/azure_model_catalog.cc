@@ -6,6 +6,7 @@
 #include "catalog/local_model_scanner.h"
 #include "model.h"
 #include "model_info.h"
+#include "telemetry/telemetry.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
@@ -18,6 +19,45 @@
 namespace fl {
 
 namespace {
+
+CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string& correlation_id) {
+  CatalogFetchInfo info;
+  info.user_agent = DefaultUserAgent();
+  info.correlation_id = correlation_id;
+  std::string rest = url;
+  if (auto scheme = rest.find("://"); scheme != std::string::npos) {
+    rest = rest.substr(scheme + 3);
+  }
+  if (auto query = rest.find_first_of("?#"); query != std::string::npos) {
+    rest.resize(query);
+  }
+
+  std::string path;
+  if (auto slash = rest.find('/'); slash == std::string::npos) {
+    info.endpoint = rest;
+  } else {
+    info.endpoint = rest.substr(0, slash);
+    path = rest.substr(slash + 1);
+  }
+  if (auto at = info.endpoint.rfind('@'); at != std::string::npos) {
+    info.endpoint = info.endpoint.substr(at + 1);
+  }
+  if (info.endpoint != "ai.azure.com") {
+    info.endpoint = "custom";
+    return info;
+  }
+
+  // Only the public Azure catalog contributes endpoint dimensions; custom hosts and paths stay private.
+  if (path.starts_with("api/")) {
+    path.erase(0, 4);
+    const auto slash = path.find('/');
+    info.region = path.substr(0, slash);
+    info.format = slash == std::string::npos ? std::string{} : path.substr(slash + 1);
+  } else {
+    info.format = path;
+  }
+  return info;
+}
 
 std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) {
   std::vector<ModelInfo> deduplicated;
@@ -49,7 +89,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      ILogger& logger,
                                      bool cache_only,
                                      std::string catalog_region,
-                                     bool disable_region_fallback)
+                                     bool disable_region_fallback,
+                                     ITelemetry& telemetry)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
@@ -58,7 +99,8 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
       logger_(logger),
       cache_only_(cache_only),
       catalog_region_(std::move(catalog_region)),
-      disable_region_fallback_(disable_region_fallback) {
+      disable_region_fallback_(disable_region_fallback),
+      telemetry_(telemetry) {
   if (catalog_urls_.empty()) {
     catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
   }
@@ -80,11 +122,14 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
   if (!cache_only_) {
     std::vector<ModelInfo> live_model_infos;
     bool any_url_succeeded = false;
+    const auto correlation_id = GenerateGuidV4();
 
     for (const auto& [url, filter] : catalog_urls_) {
       try {
         auto client = CreateCatalogClient(url, filter.value_or(""));
-        auto model_infos = FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_);
+        const auto telemetry_info = BuildCatalogFetchInfo(url, correlation_id);
+        auto model_infos =
+            FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_, telemetry_, telemetry_info);
         any_url_succeeded = true;
 
         live_model_infos.insert(live_model_infos.end(), std::make_move_iterator(model_infos.begin()),
@@ -117,7 +162,7 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
 }
 
 std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
-                                                                const LocalModels& local_models) const {
+                                                                 const LocalModels& local_models) const {
   std::vector<Model> models;
   models.reserve(model_infos.size());
 

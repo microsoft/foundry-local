@@ -7,6 +7,8 @@
 #include <ort_genai_c.h>
 
 #include <atomic>
+#include <set>
+#include <sstream>
 #include <string_view>
 
 #include "catalog.h"
@@ -69,6 +71,38 @@ bool IsGenAIVerboseLoggingEnabled() {
 bool IsAdditionalOptionEnabled(const Configuration& config, const std::string& option_name) {
   const auto it = config.additional_options.find(option_name);
   return it != config.additional_options.cend() && IsTruthyConfigValue(it->second);
+}
+
+std::string JoinTelemetryValues(const std::set<std::string>& values) {
+  std::ostringstream joined;
+  bool first = true;
+  for (const auto& value : values) {
+    if (!first) {
+      joined << ",";
+    }
+    first = false;
+    joined << value;
+  }
+  return joined.str();
+}
+
+HardwareInfo BuildHardwareInfo(const std::map<std::string, std::vector<std::string>>& devices_to_eps) {
+  HardwareInfo info;
+  std::set<std::string> device_types;
+  std::set<std::string> execution_providers;
+  for (const auto& [device_type, providers] : devices_to_eps) {
+    device_types.insert(device_type);
+    info.has_cpu |= device_type == "CPU";
+    info.has_gpu |= device_type == "GPU";
+    info.has_npu |= device_type == "NPU";
+    execution_providers.insert(providers.begin(), providers.end());
+  }
+
+  info.device_type_count = static_cast<int32_t>(device_types.size());
+  info.execution_provider_count = static_cast<int32_t>(execution_providers.size());
+  info.device_types = JoinTelemetryValues(device_types);
+  info.execution_providers = JoinTelemetryValues(execution_providers);
+  return info;
 }
 
 OrtLoggingLevel GetDefaultOrtLoggingLevel(bool genai_verbose_logging_enabled) {
@@ -184,6 +218,8 @@ std::unique_ptr<Manager> Manager::s_instance_;
 
 Manager::Manager(const Configuration& config) : config_(config) {
   config_.Validate();
+  const auto user_agent = config_.additional_options.find("UserAgent");
+  SetDefaultUserAgent(user_agent == config_.additional_options.end() ? std::string{} : user_agent->second);
 
   const bool genai_verbose_logging = IsGenAIVerboseLoggingEnabled();
   const auto logger_level = genai_verbose_logging ? LogLevel::Verbose : config_.log_level;
@@ -281,7 +317,32 @@ Manager::Manager(const Configuration& config) : config_(config) {
   }
 #endif
 
-  ep_detector_ = std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_);
+  const bool disable_nonessential_telemetry =
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
+  const bool telemetry_hard_disabled =
+      TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
+  try {
+    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
+                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
+  } catch (const std::exception& ex) {
+    logger_->Log(LogLevel::Warning,
+                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
+  } catch (...) {
+    logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
+  }
+
+  ep_detector_ =
+      std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), *logger_, *telemetry_);
+  if (!disable_nonessential_telemetry && !telemetry_hard_disabled) {
+    try {
+      telemetry_->RecordHardwareInfo(BuildHardwareInfo(ep_detector_->GetAvailableDevicesToEPs()));
+    } catch (const std::exception& ex) {
+      logger_->Log(LogLevel::Warning, fmt::format("telemetry HardwareInfo failed during initialization: {}", ex.what()));
+    } catch (...) {
+      logger_->Log(LogLevel::Warning, "telemetry HardwareInfo failed during initialization.");
+    }
+  }
 
   // Read configurable download concurrency (default 64)
   int download_concurrency = 64;
@@ -303,29 +364,15 @@ Manager::Manager(const Configuration& config) : config_(config) {
 
   download_manager_ =
       std::make_unique<DownloadManager>(*config_.model_cache_dir, config_.catalog_region.value_or("auto"),
-                                        download_concurrency, *logger_, disable_region_fallback);
+                                        download_concurrency, *logger_, *telemetry_, disable_region_fallback);
   model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
   session_manager_ = std::make_unique<SessionManager>(*logger_);
-  const bool disable_nonessential_telemetry =
-      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
-  const bool telemetry_hard_disabled =
-      TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
-  telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
-  try {
-    telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),
-                                                   !disable_nonessential_telemetry && !telemetry_hard_disabled));
-  } catch (const std::exception& ex) {
-    logger_->Log(LogLevel::Warning,
-                 fmt::format("telemetry ProcessInfo failed during Manager initialization: {}", ex.what()));
-  } catch (...) {
-    logger_->Log(LogLevel::Warning, "telemetry ProcessInfo failed during Manager initialization.");
-  }
 
   public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
       *ep_detector_, *logger_, config_.external_service_url.has_value(), config_.catalog_region.value_or("auto"),
-      disable_region_fallback);
+      disable_region_fallback, *telemetry_);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {
