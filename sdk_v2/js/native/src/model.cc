@@ -10,7 +10,9 @@
 #include <foundry_local/foundry_local_cpp.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -277,6 +279,41 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
 
 namespace {
 
+class ProgressDispatch {
+ public:
+  explicit ProgressDispatch(float percent) : percent_(percent) {}
+
+  float Percent() const { return percent_; }
+
+  void Wait() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    completed_cv_.wait(lock, [this] { return completed_; });
+  }
+
+  void Complete() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      completed_ = true;
+    }
+    completed_cv_.notify_one();
+  }
+
+ private:
+  const float percent_;
+  std::mutex mutex_;
+  std::condition_variable completed_cv_;
+  bool completed_ = false;
+};
+
+class ProgressDispatchCompletion {
+ public:
+  explicit ProgressDispatchCompletion(ProgressDispatch& dispatch) : dispatch_(dispatch) {}
+  ~ProgressDispatchCompletion() { dispatch_.Complete(); }
+
+ private:
+  ProgressDispatch& dispatch_;
+};
+
 // AsyncWorker variant that drives IModel::Download with an optional JS
 // progress callback. The callback runs on the libuv worker thread; we bounce
 // each (float percent) to JS via a ThreadSafeFunction acquired before the
@@ -306,11 +343,19 @@ class DownloadWorker : public Napi::AsyncWorker {
           return 1;
         }
         if (tsfn_) {
-          // BlockingCall keeps backpressure on the worker thread: if JS is slow to drain the queue we'll wait rather
-          // than dropping reports.
-          tsfn_.BlockingCall([percent](Napi::Env env, Napi::Function js_cb) {
-            js_cb.Call({Napi::Number::New(env, static_cast<double>(percent))});
-          });
+          ProgressDispatch dispatch(percent);
+          const napi_status status = tsfn_.BlockingCall(
+              &dispatch, [](Napi::Env env, Napi::Function js_cb, ProgressDispatch* pending) {
+                ProgressDispatchCompletion completion(*pending);
+                if (env == nullptr || js_cb.IsEmpty()) {
+                  return;
+                }
+                js_cb.Call({Napi::Number::New(env, static_cast<double>(pending->Percent()))});
+              });
+          if (status != napi_ok) {
+            return 1;
+          }
+          dispatch.Wait();
         }
         if (IsAbortRequested()) {
           cancelled_by_signal_ = true;
