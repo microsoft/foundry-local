@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from threading import Event
+from threading import Event, Lock
 from typing import TYPE_CHECKING, Callable
 
 from typing_extensions import deprecated
@@ -343,21 +343,25 @@ class _ModelImpl(IModel):
         if progress_callback is not None or cancel_event is not None:
             callback_state = (progress_callback, cancel_event)
             progress_cb_handle = ffi.new_handle(callback_state)
+            callback_lock = Lock()
 
             def _progress_callback(value: float, ud: object) -> int:
                 nonlocal callback_error
-                try:
-                    fn, event = ffi.from_handle(ud)
-                    if event is not None and event.is_set():
+                with callback_lock:
+                    if callback_error is not None:
                         return 1
-                    if fn is not None:
-                        fn(float(value))
-                    if event is not None and event.is_set():
+                    try:
+                        fn, event = ffi.from_handle(ud)
+                        if event is not None and event.is_set():
+                            return 1
+                        if fn is not None:
+                            fn(float(value))
+                        if event is not None and event.is_set():
+                            return 1
+                        return 0
+                    except BaseException as exc:
+                        callback_error = exc
                         return 1
-                    return 0
-                except BaseException as exc:
-                    callback_error = exc
-                    return 1
 
             _cb = ffi.callback("flProgressCallback")(_progress_callback)
             cb = _cb
