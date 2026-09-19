@@ -7,11 +7,13 @@
 #include "model_info.h"
 #include "util/region_fallback.h"
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace fl {
 
@@ -54,6 +56,19 @@ class DownloadManager {
   std::string DownloadModel(const ModelInfo& info,
                             std::function<int(float)> progress_cb = nullptr,
                             const std::string& user_agent = "");
+
+  /// Download a model with telemetry attribution and an optional progress callback.
+  std::string DownloadModel(const ModelInfo& info,
+                            const std::string& user_agent,
+                            std::function<int(float)> progress_cb = nullptr) {
+    return DownloadModel(info, std::move(progress_cb), user_agent);
+  }
+
+  std::string DownloadModel(const ModelInfo& info,
+                            std::nullptr_t,
+                            const std::string& user_agent = "") {
+    return DownloadModel(info, std::function<int(float)>{}, user_agent);
+  }
 
   /// Check if a model is cached locally (directory exists and download is complete).
   bool IsModelCached(const ModelInfo& info) const;

@@ -931,7 +931,7 @@ TEST(DownloadManagerTest, CanceledDownloadRecordsCanceledEvent) {
   info.model_id = "canceled-model:1";
   info.uri = "azureml://registries/test/models/canceled-model/versions/1";
 
-  EXPECT_THROW(manager.DownloadModel(info, [](float) { return 1; }, "test-client/1"), fl::Exception);
+  EXPECT_THROW(manager.DownloadModel(info, "test-client/1", [](float) { return 1; }), fl::Exception);
 
   ASSERT_EQ(telemetry.calls.size(), 1u);
   EXPECT_EQ(telemetry.calls[0].status, ActionStatus::kCanceled);
@@ -1350,6 +1350,35 @@ TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
   EXPECT_EQ(result, model_dir.string());
   EXPECT_TRUE(mock_raw->downloaded_blobs.empty())
       << "Model became available while waiting; the post-lock recheck must skip the download";
+}
+
+TEST(DownloadManagerTest, CanceledCrossProcessLockWaitRecordsSkippedWait) {
+  auto tmpdir = TempPath::CreateTempDir();
+  RecordingDownloadTelemetry telemetry;
+  DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), telemetry);
+
+  ModelInfo info;
+  info.model_id = "canceled-wait-model:1";
+  info.name = "canceled-wait-model";
+  info.uri = "azureml://registries/test/models/canceled-wait-model/versions/1";
+  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = "Pub";
+
+  auto model_dir = fs::path(tmpdir.string()) / "Pub" / "canceled-wait-model-1";
+  fs::create_directories(model_dir);
+  auto held = CrossProcessFileLock::TryAcquireForDirectory(model_dir, fl::test::NullLog());
+  ASSERT_NE(held, nullptr);
+
+  EXPECT_THROW(
+      manager.DownloadModel(info, [](float) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return 1;
+      }),
+      fl::Exception);
+
+  ASSERT_EQ(telemetry.calls.size(), 1u);
+  EXPECT_EQ(telemetry.calls[0].status, ActionStatus::kCanceled);
+  EXPECT_EQ(telemetry.calls[0].download_wait_result, "Skipped");
+  EXPECT_GE(telemetry.calls[0].lock_wait_ms, 10);
 }
 
 // HasInferenceModelJson must return false instead of throwing when the path

@@ -335,11 +335,23 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     // (WaitForDirectoryLock) never runs while the mutex is held — the in-line acquire
     // at the top is the non-blocking TryAcquireForDirectory. Keep it that way.
     download_guard.unlock();
+    CrossProcessFileLock::WaitExitReason wait_exit_reason = CrossProcessFileLock::WaitExitReason::kNone;
     try {
-      lock = CrossProcessFileLock::WaitForDirectoryLock(model_path, cancel_pred, logger_);
+      lock = CrossProcessFileLock::WaitForDirectoryLock(
+          model_path, cancel_pred, logger_, std::chrono::milliseconds{1250}, std::chrono::hours{3}, &wait_exit_reason);
     } catch (const std::exception& ex) {
       record_lock_wait();
-      tracker.SetDownloadWaitResult("Failed");
+      switch (wait_exit_reason) {
+        case CrossProcessFileLock::WaitExitReason::kCanceled:
+          tracker.SetDownloadWaitResult("Skipped");
+          break;
+        case CrossProcessFileLock::WaitExitReason::kTimedOut:
+          tracker.SetDownloadWaitResult("TimedOut");
+          break;
+        default:
+          tracker.SetDownloadWaitResult("Failed");
+          break;
+      }
       tracker.RecordException(ex);
       throw;
     }
