@@ -21,7 +21,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use crate::detail::api::{Api, Kvps};
-use crate::detail::ffi::{FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION};
+use crate::detail::ffi::{
+    flRequestPreflightResult, FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, FOUNDRY_LOCAL_TOOL_KIND_FUNCTION,
+};
 use crate::detail::model::Model;
 use crate::detail::session::{run_item_streaming, NativeItemQueue, NativeRequest, NativeSession};
 use crate::detail::task::spawn_blocking;
@@ -45,6 +47,36 @@ use crate::response::Response;
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<NativeSession>,
+}
+
+/// Exact token-budget preflight for a request captured against a chat session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestPreflightResult {
+    /// Exact prompt tokens after native request preparation.
+    pub prompt_tokens: i64,
+    /// Tokens reserved for generated output.
+    pub output_reserve_tokens: i64,
+    /// Total tokens required by the request.
+    pub required_tokens: i64,
+    /// Model context-window limit.
+    pub context_limit_tokens: i64,
+    /// Whether the required tokens fit within the context limit.
+    pub fits: bool,
+    /// Tokens over budget, or zero when the request fits.
+    pub deficit_tokens: i64,
+}
+
+impl From<flRequestPreflightResult> for RequestPreflightResult {
+    fn from(value: flRequestPreflightResult) -> Self {
+        Self {
+            prompt_tokens: value.prompt_tokens,
+            output_reserve_tokens: value.output_reserve_tokens,
+            required_tokens: value.required_tokens,
+            context_limit_tokens: value.context_limit_tokens,
+            fits: value.fits,
+            deficit_tokens: value.deficit_tokens,
+        }
+    }
 }
 
 impl Session {
@@ -551,6 +583,31 @@ impl ChatSession {
     pub async fn undo_turns(&self, count: usize) -> Result<()> {
         let inner = Arc::clone(&self.session.inner);
         spawn_blocking(move || inner.undo_turns(count)).await
+    }
+
+    /// Capture this request and the current conversation state, then execute an exact token-budget
+    /// preflight on a blocking worker.
+    ///
+    /// Capture is completed synchronously before this method returns its future. The native
+    /// operation owns its in-memory state independently of later source-handle mutation or
+    /// destruction. URI-backed media is resolved during execution and is not frozen at capture.
+    /// Execution is one-shot. The captured operation may execute and be released on a worker thread,
+    /// but exclusive Rust ownership prevents execution from racing with release.
+    pub fn preflight_request(
+        &self,
+        request: Request,
+    ) -> impl std::future::Future<Output = Result<RequestPreflightResult>> + Send + 'static {
+        let inner = &self.session.inner;
+        let captured = (|| {
+            let native = NativeRequest::new(Arc::clone(&inner.api))?;
+            populate_native_request(&inner.api, &native, &request)?;
+            inner.create_request_preflight(&native)
+        })();
+
+        async move {
+            let preflight = captured?;
+            spawn_blocking(move || preflight.execute().map(RequestPreflightResult::from)).await
+        }
     }
 
     /// Consume this handle, yielding the underlying base [`Session`].

@@ -22,6 +22,7 @@ The Foundry Local Rust SDK provides an async Rust interface for running AI model
 - **Embedded web service** — Start a local HTTP server for OpenAI-compatible API access
 - **WinML support** — Automatic execution provider download on Windows for NPU/GPU acceleration
 - **Configurable inference** — Control temperature, max tokens, top-k, top-p, frequency penalty, random seed, and more
+- **Exact request preflight** — Capture a chat request and session state, then asynchronously query its native token budget before generation
 - **Async-first** — Every operation is `async`; designed for use with the `tokio` runtime
 - **Safe FFI** — Dynamically loads the native Foundry Local engine (`foundry_local`) with a safe Rust wrapper
 
@@ -643,8 +644,8 @@ engine's dependencies regardless of rpath/search-path setup. On platforms where 
 ### Runtime Loading
 
 At runtime, the SDK uses `libloading` to dynamically load the `foundry_local` library, resolve the
-API function table via `FoundryLocalGetApi`, and cache the sub-API tables. No static linking or
-system-wide installation is required.
+API version 2 function table via `FoundryLocalGetApi`, and cache the sub-API tables. No static
+linking or system-wide installation is required.
 
 ## Platform Support
 
