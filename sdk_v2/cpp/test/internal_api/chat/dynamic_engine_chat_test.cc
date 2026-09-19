@@ -6,6 +6,7 @@
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_engine_chat_stream.h"
 #include "inferencing/model_load_manager.h"
+#include "c_api_types.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "items/text_item.h"
@@ -193,6 +194,44 @@ class DynamicEngineChatTest : public ::testing::Test {
   TelemetryLogger telemetry_{"dynamic-engine-test", test::NullLog()};
 };
 
+TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce) {
+  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  ASSERT_NE(api, nullptr);
+  const auto* inference_api = api->GetInferenceApi();
+
+  auto session = std::make_unique<ChatSession>(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto request = std::make_unique<Request>(MakeRequest("Count this exact prompt.", 17));
+  request->canceled.store(true, std::memory_order_relaxed);
+  EXPECT_FALSE(request->CaptureChatSnapshot().canceled.load(std::memory_order_relaxed));
+  const auto expected_prompt_tokens =
+      static_cast<int64_t>(EncodeUserPrompt("Count this exact prompt.", ModelInstance()).size());
+
+  flRequestPreflight* preflight = nullptr;
+  ASSERT_EQ(inference_api->Session_CreateRequestPreflight(
+                AsHandle<flSession>(session.get()), AsHandle<flRequest>(request.get()), &preflight),
+            nullptr);
+  ASSERT_NE(preflight, nullptr);
+
+  request.reset();
+  session.reset();
+
+  flRequestPreflightResult result{};
+  result.version = FOUNDRY_LOCAL_API_VERSION;
+  ASSERT_EQ(inference_api->RequestPreflight_Execute(preflight, &result), nullptr);
+  EXPECT_EQ(result.prompt_tokens, expected_prompt_tokens);
+  EXPECT_EQ(result.output_reserve_tokens, 17);
+  EXPECT_EQ(result.required_tokens, result.prompt_tokens + result.output_reserve_tokens);
+  EXPECT_TRUE(result.fits);
+  EXPECT_EQ(result.deficit_tokens, 0);
+
+  auto* repeated = inference_api->RequestPreflight_Execute(preflight, &result);
+  ASSERT_NE(repeated, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(repeated), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  api->Status_Release(repeated);
+
+  inference_api->RequestPreflight_Release(preflight);
+}
+
 TEST_F(DynamicEngineChatTest, RetainedContinuationReportsFreshPromptUsageParity) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
 
@@ -213,6 +252,11 @@ TEST_F(DynamicEngineChatTest, RetainedContinuationReportsFreshPromptUsageParity)
   const auto expected_second_prompt_tokens = EncodeMessages(full_history, ModelInstance()).size();
 
   auto second = MakeRequest(kSecondPrompt);
+  const auto second_budget = session.CreateRequestPreflight(second)->Execute();
+  EXPECT_EQ(second_budget.prompt_tokens, expected_second_prompt_tokens);
+  EXPECT_EQ(second_budget.output_reserve_tokens, 32);
+  EXPECT_EQ(session.TurnCount(), 1u);
+
   Response second_response;
   session.ProcessRequest(second, second_response);
 

@@ -1161,6 +1161,20 @@ inline flRequest* detail::CreateRequest() {
 }
 
 // ===========================================================================
+// RequestPreflight
+// ===========================================================================
+
+inline RequestPreflight::RequestPreflight(flRequestPreflight* preflight)
+    : handle_(preflight, detail::inference_api()->RequestPreflight_Release) {}
+
+inline flRequestPreflightResult RequestPreflight::Execute() {
+  flRequestPreflightResult result{};
+  result.version = FOUNDRY_LOCAL_API_VERSION;
+  Check(detail::inference_api()->RequestPreflight_Execute(handle_.get_mutable(), &result));
+  return result;
+}
+
+// ===========================================================================
 // Response
 // ===========================================================================
 
@@ -1268,6 +1282,16 @@ inline size_t ChatSession::TurnCount() const {
 
 inline void ChatSession::UndoTurns(size_t count) {
   Check(detail::inference_api()->Session_UndoTurns(handle_.get_mutable(), count));
+}
+
+inline RequestPreflight ChatSession::CaptureRequestPreflight(const Request& request) const {
+  flRequestPreflight* preflight = nullptr;
+  Check(detail::inference_api()->Session_CreateRequestPreflight(handle_.get(), request.native_handle(), &preflight));
+  return RequestPreflight(preflight);
+}
+
+inline flRequestPreflightResult ChatSession::PreflightRequest(const Request& request) const {
+  return CaptureRequestPreflight(request).Execute();
 }
 
 // ===========================================================================

@@ -209,6 +209,21 @@ public struct FlUsage
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public struct FlRequestPreflightResult
+{
+    public uint Version;
+    // 4 bytes implicit padding
+    public long PromptTokens;
+    public long OutputReserveTokens;
+    public long RequiredTokens;
+    public long ContextLimitTokens;
+    [MarshalAs(UnmanagedType.U1)]
+    public bool Fits;
+    // 7 bytes implicit padding
+    public long DeficitTokens;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 public struct FlBytesData
 {
     public uint Version;
@@ -690,6 +705,17 @@ public delegate UIntPtr FlInference_SessionGetTurnCountDelegate(IntPtr session);
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
 public delegate IntPtr FlInference_SessionUndoTurnsDelegate(IntPtr session, UIntPtr count);
 
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlInference_SessionCreateRequestPreflightDelegate(
+    IntPtr session, IntPtr request, out IntPtr outPreflight);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate IntPtr FlInference_RequestPreflightExecuteDelegate(
+    IntPtr preflight, ref FlRequestPreflightResult outResult);
+
+[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+public delegate void FlInference_RequestPreflightReleaseDelegate(IntPtr preflight);
+
 // --- Configuration API (flConfigurationApi) delegates ---
 
 [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -942,6 +968,11 @@ public struct FlInferenceApi
     public FlInference_SessionRemoveToolDefinitionDelegate SessionRemoveToolDefinition;
     public FlInference_SessionGetTurnCountDelegate SessionGetTurnCount;
     public FlInference_SessionUndoTurnsDelegate SessionUndoTurns;
+
+    // Request preflight (appended in V2)
+    public FlInference_SessionCreateRequestPreflightDelegate SessionCreateRequestPreflight;
+    public FlInference_RequestPreflightExecuteDelegate RequestPreflightExecute;
+    public FlInference_RequestPreflightReleaseDelegate RequestPreflightRelease;
 }
 
 /// <summary>Configuration API table.</summary>

@@ -236,6 +236,30 @@ chatClient.Settings.TopP = 0.9f;
 chatClient.Settings.FrequencyPenalty = 0.0f; // Nonzero OpenAI penalties are not currently supported.
 ```
 
+#### Exact request preflight
+
+Use `ChatSession.PreflightRequestAsync` to ask the native runtime for the exact token budget of
+a request in the session's current conversation state. The request and session state are captured
+synchronously; the potentially expensive calculation then runs asynchronously. The source request
+and session may be disposed after the method returns. The caller must not dispose
+`FoundryLocalManager` until the returned task completes.
+
+```csharp
+using var session = new ChatSession(model);
+using var request = new Request()
+    .AddItem(MessageItem.User("Explain async/await in C#."));
+
+var preflight = await session.PreflightRequestAsync(request);
+
+Console.WriteLine(
+    $"Prompt: {preflight.PromptTokens}, reserve: {preflight.OutputReserveTokens}, " +
+    $"required: {preflight.RequiredTokens}, limit: {preflight.ContextLimitTokens}, " +
+    $"fits: {preflight.Fits}, deficit: {preflight.DeficitTokens}");
+```
+
+The values are returned directly by the native preflight ABI. The C# SDK does not apply defaults,
+recalculate the budget, rewrite the request, or impose a local fit policy.
+
 ### Audio Transcription
 
 ```csharp
