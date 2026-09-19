@@ -69,6 +69,11 @@ extends:
       binskim:
         break: false
         scanOutputDirectoryOnly: true
+      spotBugs:
+        enabled: false
+        justificationForDisabling: >-
+          Guardian cannot currently process the generated SpotBugs report and
+          returns gdn.unknownFormatResult instead of actionable findings.
     stages:
     # ── Compute Version ──
     # A single version string is computed once and shared across all stages.

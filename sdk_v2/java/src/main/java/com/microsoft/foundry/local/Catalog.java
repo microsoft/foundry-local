@@ -1,0 +1,78 @@
+// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+package com.microsoft.foundry.local;
+
+import com.sun.jna.Pointer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Pattern;
+
+/** Borrowed from a manager. Queries may fetch public catalog metadata, never model weights. */
+public final class Catalog {
+    private static final Pattern EXACT_MODEL_ID =
+            Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]*:(0|[1-9][0-9]*)");
+    private final FoundryLocalManager owner;
+    private final Pointer handle;
+
+    Catalog(FoundryLocalManager owner, Pointer handle) { this.owner = owner; this.handle = handle; }
+
+    /**
+     * No alias fallback: the returned native identity must equal the requested name:version.
+     *
+     * @throws ModelNotFoundException if the exact ID is valid but unavailable
+     */
+    public Model getModel(String exactId) {
+        NativeApi.outsideCallback();
+        validateExactId(exactId);
+        synchronized (owner) {
+            owner.checkOpen();
+            Pointer modelHandle = owner.api.output(
+                    owner.api.catalog, NativeApi.CatalogApi.GET_MODEL_VARIANT, handle, exactId);
+            Model model = new Model(owner, requireModelHandle(exactId, modelHandle));
+            if (!model.info().id().equals(exactId)) {
+                throw new IllegalStateException("Catalog returned a different model ID");
+            }
+            return model;
+        }
+    }
+
+    private static void validateExactId(String exactId) {
+        if (exactId == null || !EXACT_MODEL_ID.matcher(exactId).matches()) {
+            throw new IllegalArgumentException("A canonical model ID in name:version form is required");
+        }
+        try {
+            Integer.parseInt(exactId.substring(exactId.indexOf(':') + 1));
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("The model ID version is out of range", e);
+        }
+    }
+
+    static Pointer requireModelHandle(String exactId, Pointer handle) {
+        if (handle == null) throw new ModelNotFoundException(exactId);
+        return handle;
+    }
+
+    public List<ModelInfo> models() {
+        NativeApi.outsideCallback();
+        synchronized (owner) {
+            owner.checkOpen();
+            NativeApi api = owner.api;
+            Pointer list = api.create(api.catalog, NativeApi.CatalogApi.GET_MODELS, handle);
+            try {
+                List<ModelInfo> models = new ArrayList<>();
+                long size = api.root.size(NativeApi.Root.MODEL_LIST_SIZE, list);
+                for (long i = 0; i < size; i++) {
+                    Model alias = new Model(owner, api.root.pointer(NativeApi.Root.MODEL_LIST_GET_AT, list, i));
+                    Pointer variants = api.create(api.model, NativeApi.ModelApi.GET_VARIANTS, alias.handle);
+                    try {
+                        for (long j = 0; j < api.root.size(NativeApi.Root.MODEL_LIST_SIZE, variants); j++) {
+                            models.add(new Model(
+                                    owner,
+                                    api.root.pointer(NativeApi.Root.MODEL_LIST_GET_AT, variants, j)).info());
+                        }
+                    } finally { api.root.call(NativeApi.Root.MODEL_LIST_RELEASE, variants); }
+                }
+                return List.copyOf(models);
+            } finally { api.root.call(NativeApi.Root.MODEL_LIST_RELEASE, list); }
+        }
+    }
+}
