@@ -388,7 +388,7 @@ internal sealed class ChatSessionTests
         using var nativeReturned = new ManualResetEventSlim(false);
         using var allowTerminalPublication = new ManualResetEventSlim(false);
 
-        var stream = session.ProcessStreamingRequestAsync(
+        var stream = session.ProcessStreamingRequestCore(
             request,
             beforeTerminalPublication: () =>
             {

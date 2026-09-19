@@ -208,10 +208,10 @@ public abstract class Session : IDisposable
     /// on the same session are not supported).
     /// </exception>
     public StreamingResponse ProcessStreamingRequestAsync(Request request, CancellationToken ct = default)
-        => ProcessStreamingRequestAsync(request, beforeTerminalPublication: null, ct);
+        => ProcessStreamingRequestCore(request, beforeTerminalPublication: null, ct);
 
-    internal StreamingResponse ProcessStreamingRequestAsync(Request request, Action? beforeTerminalPublication,
-                                                             CancellationToken ct = default)
+    internal StreamingResponse ProcessStreamingRequestCore(Request request, Action? beforeTerminalPublication,
+                                                            CancellationToken ct = default)
     {
         Detail.Throw.IfNull(request);
         var requestLease = request.AcquireLease();
