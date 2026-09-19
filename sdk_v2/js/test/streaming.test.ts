@@ -3,8 +3,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { FlErrorCode, isFoundryLocalError } from "../src/detail/errors.js";
+import type { NativeChatSession } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
-import { Request } from "../src/request.js";
+import { Request, unwrapNativeRequest } from "../src/request.js";
 import { ChatSession } from "../src/session.js";
 
 import {
@@ -225,6 +226,58 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
+    "rejects overlapping operations on the same session before queueing",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const nativeSession = (session as unknown as { native: NativeChatSession }).native;
+      const request = new Request()
+        .addItem(Item.userMessage("Reply with a short greeting."))
+        .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+      let signalWorkerStarted!: (release: () => void) => void;
+      const workerStarted = new Promise<(release: () => void) => void>((resolve) => {
+        signalWorkerStarted = resolve;
+      });
+      const active = nativeSession.processRequest(unwrapNativeRequest(request), signalWorkerStarted);
+      const release = await workerStarted;
+      try {
+        const nativePrompt = unwrapNativeRequest(buildPrompt());
+        expect(() => nativeSession.processStreamingRequest(nativePrompt, () => {})).toThrowError(
+          expect.objectContaining({ name: "FoundryLocalError", code: FlErrorCode.InvalidUsage }),
+        );
+        expect(() => nativeSession.processStreamingRequest(nativePrompt, () => {})).toThrowError(/active operation/i);
+        expect(() => nativeSession.processRequest(nativePrompt)).toThrowError(/active operation/i);
+        expect(() => session?.setOptions({ search: { maxOutputTokens: 8 } })).toThrowError(/active operation/i);
+        expect(() =>
+          session?.addToolDefinition({ name: "blocked", description: "blocked", jsonSchema: "{}" }),
+        ).toThrowError(/active operation/i);
+        expect(() => session?.turnCount).toThrowError(/active operation/i);
+      } finally {
+        release();
+      }
+
+      await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
+      await expect(session.processRequest(request)).resolves.toMatchObject({ output: expect.any(Array) });
+    },
+    3 * 60_000,
+  );
+
+  it(
+    "clears streaming state after native inference rejects",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const failed = session.processStreamingRequest(new Request());
+      await expect(failed.response).rejects.toMatchObject({ name: "FoundryLocalError" });
+
+      const items: Item[] = [];
+      for await (const item of session.processStreamingRequest(buildPrompt())) {
+        items.push(item);
+      }
+      expect(items.length).toBeGreaterThanOrEqual(2);
+    },
+    3 * 60_000,
+  );
+
+  it(
     "stream.response resolves with finishReason and usage after full iteration",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
@@ -237,9 +290,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(["stop", "length", "toolCalls", "error", "none"]).toContain(resp.finishReason);
       expect(resp.usage.promptTokens).toBeGreaterThan(0);
       expect(resp.usage.completionTokens).toBeGreaterThan(0);
-      expect(resp.usage.totalTokens).toBeGreaterThanOrEqual(
-        resp.usage.promptTokens + resp.usage.completionTokens,
-      );
+      expect(resp.usage.totalTokens).toBeGreaterThanOrEqual(resp.usage.promptTokens + resp.usage.completionTokens);
       // The Response's text should match what we accumulated from the stream
       // (modulo possible model post-processing — assert non-empty overlap on
       // the boundary tokens rather than strict equality).
@@ -264,17 +315,13 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
     3 * 60_000,
   );
 
-  it(
-    "stream.response rejects with AbortError when pre-aborted",
-    async () => {
-      if (session === undefined) throw new Error("fixture missing");
-      const ctrl = new AbortController();
-      ctrl.abort();
-      const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
-      await expect(stream.response).rejects.toMatchObject({ name: "AbortError" });
-    },
-    60_000,
-  );
+  it("stream.response rejects with AbortError when pre-aborted", async () => {
+    if (session === undefined) throw new Error("fixture missing");
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const stream = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
+    await expect(stream.response).rejects.toMatchObject({ name: "AbortError" });
+  }, 60_000);
 
   it(
     "stream.response resolves with finishReason='none' when request.cancel() is called mid-stream",
@@ -334,9 +381,11 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       });
 
       const req = new Request()
-        .addItem(Item.systemMessage(
-          "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question.",
-        ))
+        .addItem(
+          Item.systemMessage(
+            "You are a helpful AI assistant. If necessary, you can use any provided tools to answer the question.",
+          ),
+        )
         .addItem(Item.userMessage("What is the answer to 7 multiplied by 6?"))
         .setOptions({
           search: { temperature: 0, maxOutputTokens: 256 },
@@ -362,7 +411,8 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(itemCount).toBeGreaterThan(0);
       expect(streamedToolCalls.length).toBeGreaterThanOrEqual(1);
 
-      const streamed = streamedToolCalls[0]!;
+      const streamed = streamedToolCalls[0];
+      if (streamed === undefined) throw new Error("Expected a streamed tool call");
       expect(streamed.name).toBe("multiply_numbers");
       expect(streamed.arguments.length).toBeGreaterThan(0);
       expect(streamed.callId.length).toBeGreaterThan(0);
@@ -373,13 +423,12 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       const resp = await stream.response;
       expect(resp.finishReason).toBe("toolCalls");
 
-      const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> =>
-        it.type === "toolCall",
-      );
+      const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> => it.type === "toolCall");
       expect(finalToolCall).toBeDefined();
-      expect(finalToolCall!.name).toBe(streamed.name);
-      expect(finalToolCall!.arguments).toBe(streamed.arguments);
-      expect(finalToolCall!.callId).toBe(streamed.callId);
+      if (finalToolCall === undefined) throw new Error("Expected a final tool call");
+      expect(finalToolCall.name).toBe(streamed.name);
+      expect(finalToolCall.arguments).toBe(streamed.arguments);
+      expect(finalToolCall.callId).toBe(streamed.callId);
     },
     3 * 60_000,
   );

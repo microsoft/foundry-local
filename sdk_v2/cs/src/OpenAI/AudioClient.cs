@@ -14,7 +14,6 @@ using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.OpenAI;
 using Microsoft.Extensions.Logging;
 
-using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 
 /// <summary>
 /// Audio Client that uses the OpenAI API.
@@ -27,13 +26,13 @@ using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 public class OpenAIAudioClient
 {
     private readonly string _modelId;
-    private readonly NativeModel _nativeModel;
+    private readonly Model _model;
     private readonly ILogger _logger;
 
-    internal OpenAIAudioClient(string modelId, NativeModel nativeModel)
+    internal OpenAIAudioClient(string modelId, Model model)
     {
         _modelId = modelId;
-        _nativeModel = nativeModel;
+        _model = model;
         _logger = FoundryLocalManager.Instance.Logger;
     }
 
@@ -92,7 +91,7 @@ public class OpenAIAudioClient
     /// <returns>A streaming session that must be disposed when done.</returns>
     public LiveAudioTranscriptionSession CreateLiveTranscriptionSession()
     {
-        return new LiveAudioTranscriptionSession(_modelId, _nativeModel);
+        return new LiveAudioTranscriptionSession(_modelId, _model);
     }
 
     private Task<AudioCreateTranscriptionResponse> TranscribeAudioImplAsync(string audioFilePath,
@@ -103,7 +102,7 @@ public class OpenAIAudioClient
             .ToJson();
 
         return NativeRequestRunner.RunAsync(
-            _nativeModel,
+            _model,
             requestJson,
             json => JsonSerializer.Deserialize(json, JsonSerializationContext.Default.AudioCreateTranscriptionResponse)
                     ?? throw new FoundryLocalException("Failed to deserialize audio transcription response."),
@@ -119,7 +118,7 @@ public class OpenAIAudioClient
             .ToJson();
 
         return NativeRequestRunner.RunStreamingAsync<AudioCreateTranscriptionResponse>(
-            _nativeModel,
+            _model,
             requestJson,
             json => JsonSerializer.Deserialize(json, JsonSerializationContext.Default.AudioCreateTranscriptionResponse),
             _logger,

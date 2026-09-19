@@ -234,6 +234,27 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
+    public async Task Chat_Streaming_FinalResponseWithoutEnumeration_ReleasesSession()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+        using var final = await stream.FinalResponse;
+        session.SetStreaming(false);
+
+        using var nextRequest = new Request();
+        nextRequest.AddItem(MessageItem.User("Reply with one word."));
+        using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(nextResponse).IsNotNull();
+    }
+
+    [Test]
     public async Task Chat_Streaming_EarlyBreak_FinalResponse_Cancels()
     {
         using var session = new ChatSession(model!);
@@ -352,6 +373,54 @@ internal sealed class ChatSessionTests
                 }
             }
             await Assert.That(count).IsGreaterThan(0);
+        }
+    }
+
+    [Test]
+    public async Task Chat_Streaming_DisposeAsync_WaitsForTerminalPublication()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        using var nativeReturned = new ManualResetEventSlim(false);
+        using var allowTerminalPublication = new ManualResetEventSlim(false);
+
+        var stream = session.ProcessStreamingRequestCore(
+            request,
+            beforeTerminalPublication: () =>
+            {
+                nativeReturned.Set();
+                allowTerminalPublication.Wait(TimeSpan.FromSeconds(30));
+            });
+
+        try
+        {
+            var reachedPublication = await Task.Run(
+                () => nativeReturned.Wait(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+            await Assert.That(reachedPublication).IsTrue();
+
+            var disposeTask = stream.DisposeAsync().AsTask();
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+            allowTerminalPublication.Set();
+            await disposeTask.ConfigureAwait(false);
+
+            using var disposedFinal = await stream.FinalResponse.ConfigureAwait(false);
+            await Assert.That(disposedFinal.Ptr).IsEqualTo(IntPtr.Zero);
+
+            session.SetStreaming(false);
+            using var nextRequest = new Request();
+            nextRequest.AddItem(MessageItem.User("Reply with one word."));
+            using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+            await Assert.That(nextResponse).IsNotNull();
+        }
+        finally
+        {
+            allowTerminalPublication.Set();
+            await stream.DisposeAsync();
         }
     }
 
