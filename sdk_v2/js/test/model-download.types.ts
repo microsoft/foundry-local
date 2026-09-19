@@ -5,16 +5,19 @@ declare const progress: (percent: number) => void;
 declare const maybeProgress: ((percent: number) => void) | undefined;
 declare const signal: AbortSignal;
 declare const maybeSignal: AbortSignal | undefined;
-declare const secondSignal: AbortSignal;
 
 void model.download();
 void model.download(undefined);
-void model.download(signal);
-void model.download(maybeSignal);
 void model.download(progress);
 void model.download(maybeProgress);
 void model.download(progress, signal);
 void model.download(undefined, signal);
+void model.download(progress, maybeSignal);
 
-// @ts-expect-error A second signal is only valid when the first argument is a progress callback.
-void model.download(signal, secondSignal);
+// Existing structural implementations remain compatible after adding the optional signal parameter.
+declare const legacyDownload: (progressCallback?: (percent: number) => void) => Promise<void>;
+const compatibleDownload: IModel["download"] = legacyDownload;
+void compatibleDownload;
+
+// @ts-expect-error AbortSignal remains the optional second argument so the original callback-first API is preserved.
+void model.download(signal);

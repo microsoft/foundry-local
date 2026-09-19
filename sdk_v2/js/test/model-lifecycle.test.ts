@@ -69,7 +69,7 @@ describe.skipIf(!haveTestModelCache)("Model lifecycle (real model)", () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(m.download(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(m.download(undefined, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("calling load() on an already-loaded model is idempotent (or surfaces a clear error)", async () => {

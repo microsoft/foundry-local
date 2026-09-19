@@ -107,7 +107,7 @@ describeIfBuilt("Model (cache-only)", () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(model.download(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(model.download(undefined, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(model.isCached).toBe(false);
   });
 

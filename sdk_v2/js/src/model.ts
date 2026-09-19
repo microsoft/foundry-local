@@ -172,33 +172,18 @@ export class Model implements IModel {
     await this.#native.unload();
   }
 
-  async download(signal?: AbortSignal): Promise<void>;
-  async download(progressCallback: ((progress: number) => void) | undefined, signal?: AbortSignal): Promise<void>;
   async download(
-    progressCallbackOrSignal?: ((progress: number) => void) | AbortSignal,
+    progressCallback?: (progress: number) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    const progressCallback = typeof progressCallbackOrSignal === "function" ? progressCallbackOrSignal : undefined;
-    const abortSignal = isAbortSignal(progressCallbackOrSignal) ? progressCallbackOrSignal : signal;
-
-    if (
-      progressCallbackOrSignal !== undefined &&
-      typeof progressCallbackOrSignal !== "function" &&
-      !isAbortSignal(progressCallbackOrSignal)
-    ) {
-      throw new TypeError("Model.download: first argument must be a progress callback or AbortSignal");
-    }
     if (signal !== undefined && !isAbortSignal(signal)) {
       throw new TypeError("Model.download: second argument must be an AbortSignal");
     }
-    if (isAbortSignal(progressCallbackOrSignal) && signal !== undefined) {
-      throw new TypeError("Model.download: signal must not be provided twice");
-    }
-    if (abortSignal?.aborted === true) {
+    if (signal?.aborted === true) {
       throw makeAbortError("Model download aborted before start");
     }
 
-    await this.#native.download(progressCallback, abortSignal);
+    await this.#native.download(progressCallback, signal);
   }
 
   removeFromCache(): void {
