@@ -257,9 +257,6 @@ class _ModelImpl(IModel):
         # is owned by the catalog; without this reference, GC could release the
         # catalog (and the manager behind it) first and dangle our pointer.
         self._parent = parent
-        # Callback references — stored to prevent premature GC.
-        self._progress_cb = None
-        self._progress_cb_handle = None
 
     @property
     def _native_ptr(self) -> object:
