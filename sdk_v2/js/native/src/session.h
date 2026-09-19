@@ -7,6 +7,8 @@
 //   * new ChatSession(model) — sync construction; underlying
 //     flSession_Create is fast.
 //   * session.processRequest(request) -> Promise<Response>  (PromiseWorker<Response>)
+//   * session.preflightRequest(request) -> Promise<RequestPreflightResult> —
+//     captures in-memory state synchronously, then executes it on a worker.
 //   * session.processStreamingRequest(request, onItem) -> Promise<Response> — streaming bridge via
 //     Napi::ThreadSafeFunction; resolves with the terminal Response after every item callback drains.
 //     The JS layer wraps this in an AsyncIterable whose `.response` promise carries the resolved value.
@@ -40,6 +42,7 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
  private:
   Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
+  Napi::Value PreflightRequest(const Napi::CallbackInfo& info);
   Napi::Value ProcessStreamingRequest(const Napi::CallbackInfo& info);
   Napi::Value SetOptions(const Napi::CallbackInfo& info);
   Napi::Value AddToolDefinition(const Napi::CallbackInfo& info);

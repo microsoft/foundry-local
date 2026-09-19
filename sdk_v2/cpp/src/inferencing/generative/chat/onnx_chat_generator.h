@@ -4,6 +4,7 @@
 
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/prepared_chat_prompt.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
@@ -79,6 +80,11 @@ class OnnxChatGenerator : public ChatGenerator {
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  int AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                           const PreparedChatPrompt& prompt,
+                           GenAIModelInstance& model,
+                           const ToolCallContext& tool_ctx,
+                           const SearchOptions& options) override;
   int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                      const std::vector<TranscriptMessage>& full_messages,
                      GenAIModelInstance& model,
@@ -126,6 +132,12 @@ class OnnxChatGenerator : public ChatGenerator {
       const ToolCallContext& tool_ctx = {},
       bool use_full_context = false);
 
+  static std::unique_ptr<OnnxChatGenerator> CreatePrepared(PreparedChatPrompt prepared,
+                                                           const SearchOptions& options,
+                                                           GenAIModelInstance& model,
+                                                           const ToolCallContext& tool_ctx = {},
+                                                           bool use_full_context = false);
+
   // ---- Static helpers exposed for unit testing ----
 
   /// Build the JSON messages array fed to OgaTokenizer::ApplyChatTemplate when
@@ -148,18 +160,6 @@ class OnnxChatGenerator : public ChatGenerator {
                     ReasoningMarkers reasoning_markers,
                     bool prompt_opens_reasoning,
                     std::unique_ptr<OgaNamedTensors> named_tensors = nullptr);
-
-  // Shared implementation for text and media creation paths. The caller supplies the fully rendered prompt because
-  // the two paths project their messages differently: text builds from the transcript, media rewrites MessageItems
-  // so the template inserts media sentinels. Both share search-options validation, guidance setup, media tensor
-  // preparation, and generator construction.
-  static std::unique_ptr<OnnxChatGenerator> CreateImpl(const std::string& prompt,
-                                                       const SearchOptions& options,
-                                                       GenAIModelInstance& model,
-                                                       const ToolCallContext& tool_ctx,
-                                                       bool use_full_context,
-                                                       const std::vector<const ImageItem*>& images,
-                                                       const std::vector<const AudioItem*>& audios);
 
   void ResetTurnState();
 

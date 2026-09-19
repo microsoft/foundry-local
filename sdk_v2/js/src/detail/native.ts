@@ -120,6 +120,15 @@ export interface NativeResponse {
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
+export interface NativeRequestPreflightResult {
+  promptTokens: number;
+  outputReserveTokens: number;
+  requiredTokens: number;
+  contextLimitTokens: number;
+  fits: boolean;
+  deficitTokens: number;
+}
+
 export interface NativeRequestCtor {
   new (): NativeRequest;
 }
@@ -175,6 +184,7 @@ export interface NativeSession {
 }
 
 export interface NativeChatSession extends NativeSession {
+  preflightRequest(request: NativeRequest): Promise<NativeRequestPreflightResult>;
   addToolDefinition(
     definition:
       | {

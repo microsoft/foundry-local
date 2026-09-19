@@ -1903,6 +1903,51 @@ FL_API_STATUS_IMPL(Session_UndoTurnsImpl, flSession* session, size_t count) {
   API_IMPL_END
 }
 
+FL_API_STATUS_IMPL(Session_CreateRequestPreflightImpl, const flSession* session, const flRequest* request,
+                   flRequestPreflight** out_preflight) {
+  API_IMPL_BEGIN
+  if (!out_preflight) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null out_preflight");
+  }
+
+  *out_preflight = nullptr;
+  if (!session || !request) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+
+  auto operation = AsImpl(session)->CreateRequestPreflight(*AsImpl(request));
+  *out_preflight = reinterpret_cast<flRequestPreflight*>(operation.release());
+  return nullptr;
+  API_IMPL_END
+}
+
+FL_API_STATUS_IMPL(RequestPreflight_ExecuteImpl, flRequestPreflight* preflight,
+                   flRequestPreflightResult* out_result) {
+  API_IMPL_BEGIN
+  if (!preflight || !out_result) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
+  }
+  if (out_result->version != FOUNDRY_LOCAL_API_VERSION) {
+    return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "out_result->version is not supported");
+  }
+
+  auto* operation = reinterpret_cast<fl::Session::RequestPreflightOperation*>(preflight);
+  const auto result = operation->Execute();
+  out_result->version = FOUNDRY_LOCAL_API_VERSION;
+  out_result->prompt_tokens = result.prompt_tokens;
+  out_result->output_reserve_tokens = result.output_reserve_tokens;
+  out_result->required_tokens = result.required_tokens;
+  out_result->context_limit_tokens = result.context_limit_tokens;
+  out_result->fits = result.fits;
+  out_result->deficit_tokens = result.deficit_tokens;
+  return nullptr;
+  API_IMPL_END
+}
+
+static void FL_API_CALL RequestPreflight_ReleaseImpl(flRequestPreflight* preflight) FL_NO_EXCEPTION {
+  delete reinterpret_cast<fl::Session::RequestPreflightOperation*>(preflight);
+}
+
 static const flInferenceApi g_inference_api = {
     Request_CreateImpl,
     Request_ReleaseImpl,
@@ -1926,10 +1971,18 @@ static const flInferenceApi g_inference_api = {
     Session_RemoveToolDefinitionImpl,
     Session_GetTurnCountImpl,
     Session_UndoTurnsImpl,
+    Session_CreateRequestPreflightImpl,
+    RequestPreflight_ExecuteImpl,
+    RequestPreflight_ReleaseImpl,
 };
 
 static_assert(offsetof(flInferenceApi, Session_UndoTurns) / sizeof(void*) == 21,
-              "Size of version 1 Inference API cannot change");
+              "Version 1 Inference API prefix cannot change");
+static_assert(offsetof(flInferenceApi, Session_CreateRequestPreflight) / sizeof(void*) == 22,
+              "Version 2 Inference API must append after the version 1 prefix");
+static_assert(sizeof(flInferenceApi) ==
+                  offsetof(flInferenceApi, Session_CreateRequestPreflight) + 3 * sizeof(void*),
+              "Version 2 Inference API must append exactly three preflight functions");
 
 // ========================================================================
 // Sub-API accessors

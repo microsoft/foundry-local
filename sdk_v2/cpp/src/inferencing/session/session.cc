@@ -86,6 +86,21 @@ void Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
 
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflight(const Request& request) const {
+  auto lock = LockRequestMutex();
+  if (Type() != SessionType::kChat) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+
+  auto snapshot = request.CaptureChatSnapshot();
+  ValidateRequestItems(snapshot);
+  return CreateRequestPreflightImpl(std::move(snapshot));
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflightImpl(Request) const {
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+}
+
 void Session::AddToolDefinition(ToolDefinition tool_def) {
   tool_registry_.Add(std::move(tool_def));
 }

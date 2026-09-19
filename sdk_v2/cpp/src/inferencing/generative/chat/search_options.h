@@ -91,6 +91,15 @@ struct SearchOptions {
   bool HasSameRetainedGenerationSettings(const SearchOptions& other, ChatBackendKind backend_kind) const;
 };
 
+struct RequestBudget {
+  int64_t prompt_tokens = 0;
+  int64_t output_reserve_tokens = 0;
+  int64_t required_tokens = 0;
+  int64_t context_limit_tokens = 0;
+  bool fits = false;
+  int64_t deficit_tokens = 0;
+};
+
 inline constexpr int kDefaultChatTextMaxOutputTokens = 2048;
 inline constexpr int kDefaultChatMediaMaxOutputTokens = 3072;
 
@@ -103,8 +112,20 @@ constexpr int GetDefaultMaxOutputTokens(bool has_media) noexcept {
 int ResolveMaxOutputTokens(const SearchOptions& options,
                            int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
 
-/// Return the model's total context window from genai_config.json.
+/// Return the model's total context window from search.max_length.
 int GetModelMaxContextLength(const GenAIConfig& config);
+
+/// Compute the checked prompt plus output token budget.
+RequestBudget ComputeRequestBudget(int64_t prompt_tokens,
+                                   int64_t output_reserve_tokens,
+                                   int64_t context_limit_tokens);
+
+/// Resolve the output reserve using the same explicit limits and backend defaults as generation.
+int64_t ResolveOutputReserve(const SearchOptions& options,
+                             ChatBackendKind backend_kind,
+                             bool has_media,
+                             int64_t prompt_tokens,
+                             int64_t context_limit_tokens);
 
 /// Resolve the guidance configuration that should apply to a single tool-only turn.
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,

@@ -14,10 +14,7 @@
 use core::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
-/// The library is built against this API version (`FOUNDRY_LOCAL_API_VERSION`).
-///
-/// This is both the version requested from `FoundryLocalGetApi` and the version stamped on every
-/// versioned struct built here, so the two can never disagree.
+/// API version requested from `FoundryLocalGetApi` and stamped on versioned C structs.
 pub const FOUNDRY_LOCAL_API_VERSION: u32 = 2;
 
 // ── Opaque handle types ──────────────────────────────────────────────────────
@@ -42,6 +39,7 @@ opaque_type!(flModel);
 opaque_type!(flModelInfo);
 opaque_type!(flModelList);
 opaque_type!(flRequest);
+opaque_type!(flRequestPreflight);
 opaque_type!(flResponse);
 opaque_type!(flSession);
 opaque_type!(flStatus);
@@ -180,6 +178,17 @@ pub struct flUsage {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub total_tokens: i64,
+}
+
+#[repr(C)]
+pub struct flRequestPreflightResult {
+    pub version: u32,
+    pub prompt_tokens: i64,
+    pub output_reserve_tokens: i64,
+    pub required_tokens: i64,
+    pub context_limit_tokens: i64,
+    pub fits: bool,
+    pub deficit_tokens: i64,
 }
 
 #[repr(C)]
@@ -620,6 +629,16 @@ pub struct flInferenceApiVtable {
     pub Session_GetTurnCount: unsafe extern "system" fn(session: *const flSession) -> usize,
     pub Session_UndoTurns:
         unsafe extern "system" fn(session: *mut flSession, count: usize) -> flStatusPtr,
+    pub Session_CreateRequestPreflight: unsafe extern "system" fn(
+        session: *const flSession,
+        request: *const flRequest,
+        out_preflight: *mut *mut flRequestPreflight,
+    ) -> flStatusPtr,
+    pub RequestPreflight_Execute: unsafe extern "system" fn(
+        preflight: *mut flRequestPreflight,
+        out_result: *mut flRequestPreflightResult,
+    ) -> flStatusPtr,
+    pub RequestPreflight_Release: unsafe extern "system" fn(instance: *mut flRequestPreflight),
 }
 
 /// Configuration API table (`flConfigurationApi`).

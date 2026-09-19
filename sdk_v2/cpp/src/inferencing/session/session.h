@@ -17,6 +17,7 @@
 #include "inferencing/session/response.h"
 #include "inferencing/session/tool_registry.h"
 #include "inferencing/session/types.h"
+#include "inferencing/generative/chat/search_options.h"
 #include "util/key_value_pairs.h"
 
 namespace fl {
@@ -34,6 +35,21 @@ class Model;       // forward declaration
 ///   - Future: predictive inference, realtime audio, multi-modal
 class Session {
  public:
+  class RequestPreflightOperation {
+   public:
+    virtual ~RequestPreflightOperation() = default;
+
+    RequestPreflightOperation(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation& operator=(const RequestPreflightOperation&) = delete;
+    RequestPreflightOperation(RequestPreflightOperation&&) = delete;
+    RequestPreflightOperation& operator=(RequestPreflightOperation&&) = delete;
+
+    virtual RequestBudget Execute() = 0;
+
+   protected:
+    RequestPreflightOperation() = default;
+  };
+
   virtual ~Session();
 
   Session(Session&&) = default;
@@ -53,6 +69,9 @@ class Session {
   /// Waiting here keeps the Request reference valid for the lifetime of any
   /// in-flight callbacks and ensures the Response is fully populated on return.
   void ProcessRequest(const Request& request, Response& response);
+
+  /// Capture a chat request and session state under the same serialization boundary as generation and undo.
+  std::unique_ptr<RequestPreflightOperation> CreateRequestPreflight(const Request& request) const;
 
   /// Signal every in-flight request on this session to cancel. Only sets each request's atomic
   /// cancel flag — never blocks and never joins — so it is safe to call from a shutdown path while
@@ -96,6 +115,7 @@ class Session {
 
   /// Session-level parameters overlaid onto each request.
   void SetSessionOptions(const KeyValuePairs& options) {
+    auto lock = LockRequestMutex();
     session_options_ = options;
     SetSessionOptionsImpl(session_options_);
   }
@@ -120,22 +140,15 @@ class Session {
   /// Returns a copy of session options with request options overlaid (request wins on conflict).
   /// Derived classes call this when they want a single resolved option set.
   KeyValuePairs MergedOptions(const KeyValuePairs& request_options) const {
-    if (request_options.empty()) {
-      return session_options_;
-    }
-
-    KeyValuePairs merged = session_options_;
-    for (const auto& [key, value] : request_options) {
-      merged.Add(key, value);
-    }
-
-    return merged;
+    return MergeKeyValuePairs(session_options_, request_options);
   }
 
   /// Derived classes implement the actual generation logic.
   /// `on_token` is the resolved streaming callback (may be empty).
   /// Requests are serialized if the derived class does not opt into concurrency via allow_concurrent_requests_.
   virtual void ProcessRequestImpl(const Request& request, Response& response) = 0;
+
+  virtual std::unique_ptr<RequestPreflightOperation> CreateRequestPreflightImpl(Request request) const;
 
   /// Create a per-request callback handler. Returns nullptr if no callback is set.
   /// The handler is owned by the caller (unique_ptr) and drains+joins on destruction.

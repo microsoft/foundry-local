@@ -50,6 +50,29 @@ TEST(SearchOptionsParsingTest, ExplicitOutputLimitOverridesTurnDefault) {
   EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/true)), 64);
 }
 
+TEST(SearchOptionsParsingTest, RequestBudgetReportsExactFitAndDeficit) {
+  const auto exact = ComputeRequestBudget(90, 10, 100);
+  EXPECT_TRUE(exact.fits);
+  EXPECT_EQ(exact.required_tokens, 100);
+  EXPECT_EQ(exact.deficit_tokens, 0);
+
+  const auto over = ComputeRequestBudget(91, 10, 100);
+  EXPECT_FALSE(over.fits);
+  EXPECT_EQ(over.required_tokens, 101);
+  EXPECT_EQ(over.deficit_tokens, 1);
+}
+
+TEST(SearchOptionsParsingTest, OutputReserveMatchesBackendGenerationPolicy) {
+  SearchOptions explicit_limit;
+  explicit_limit.max_output_tokens = 64;
+  EXPECT_EQ(ResolveOutputReserve(explicit_limit, ChatBackendKind::kEngine, false, 25, 100), 64);
+
+  const SearchOptions defaults;
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, false, 25, 100), 2048);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, true, 25, 100), 3072);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 25, 100), 75);
+}
+
 TEST(SearchOptionsParsingTest, RetainedGenerationSettingsAreBackendAware) {
   SearchOptions first;
   first.temperature = 0.5f;
