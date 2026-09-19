@@ -89,7 +89,7 @@ TEST(CallbackHandlerTest, FurtherPushesAfterExceptionAreNoOps) {
 
   const int invocations_after_first = invocations.load();
 
-  // Subsequent pushes must be dropped (canceled is set, so PushItem skips).
+  // Subsequent pushes must be dropped once the request's cancellation state is set.
   handler.PushItem(std::make_unique<TextItem>("second"));
   handler.PushItem(std::make_unique<TextItem>("third"));
 

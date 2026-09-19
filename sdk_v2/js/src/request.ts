@@ -75,8 +75,8 @@ export class Request {
 
   /**
    * Cancel this request's invocation only while it is inside native `Session::ProcessRequest`. Calling this while the
-   * request is idle, waiting in a session's native FIFO, or already completed has no effect. Active cancellation makes
-   * the matching `Session.processRequest()` reject with `code === FlErrorCode.OperationCancelled`.
+   * request is idle, waiting in the addon's per-session queue, or already completed has no effect. Active cancellation
+   * makes the matching `Session.processRequest()` reject with `code === FlErrorCode.OperationCancelled`.
    */
   cancel(): void {
     this.#native.cancel();

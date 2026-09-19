@@ -48,8 +48,8 @@ export interface StreamOptions {
  *
  * `response` settles after the native call completes and all queued item callbacks have run. Breaking iteration early
  * requests cancellation of an active native invocation, but native completion can win that race. A request still
- * waiting in the native session FIFO is unaffected. When cancellation wins, `response` rejects with `AbortError` for
- * an aborted signal or `OperationCancelled` for an early break.
+ * waiting in the addon's per-session queue is unaffected. When cancellation wins, `response` rejects with
+ * `AbortError` for an aborted signal or `OperationCancelled` for an early break.
  */
 export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
@@ -278,10 +278,10 @@ export abstract class Session {
    * native call completes.
    *
    * Cancellation: pass `{ signal }`; aborting while the invocation is active cancels the native request and causes the
-   * iterator to throw an `Error` with `name === "AbortError"`. Aborting while work is only waiting in the native FIFO
-   * does not prevent execution. A signal already aborted at call time rejects before submission. Breaking out of the
-   * `for await` loop similarly requests active cancellation. If native completion wins the race, `response` resolves
-   * normally; otherwise it rejects with `OperationCancelled`.
+   * iterator to throw an `Error` with `name === "AbortError"`. Aborting while work is only waiting in the addon's
+   * per-session queue does not prevent execution. A signal already aborted at call time rejects before submission.
+   * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
+   * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
    *
    * Non-cancellation failures throw a `FoundryLocalError`.
    */

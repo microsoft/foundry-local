@@ -167,9 +167,9 @@ class Session {
   const bool allow_concurrent_requests_;
   mutable std::unique_ptr<std::mutex> request_mutex_ = std::make_unique<std::mutex>();
 
-  // In-flight requests tracked so Cancel() can flip their cancel flags from another thread. Guarded
-  // by its own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several
-  // at once, and Cancel() must run without waiting on an active generation holding request_mutex_.
+  // In-flight requests tracked so Cancel() can transition their lifecycle state from another thread. Guarded by its
+  // own mutex (not request_mutex_) because concurrent sessions (e.g. audio) may hold several at once, and Cancel()
+  // must run without waiting on an active generation holding request_mutex_.
   // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
   std::unordered_set<const Request*> active_requests_;
   mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
