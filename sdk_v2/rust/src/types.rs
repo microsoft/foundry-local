@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use crate::detail::api::{to_cstring, Api};
 use crate::detail::ffi::{flModelInfo, FOUNDRY_LOCAL_CATALOG_LOCAL, FOUNDRY_LOCAL_CATALOG_PUBLIC};
-use crate::detail::manager::NativeManager;
 use crate::error::{FoundryLocalError, Result};
 
 /// Catalog source type.
