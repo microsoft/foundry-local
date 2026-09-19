@@ -6,7 +6,7 @@
 // Surface:
 //   * new ChatSession(model) — sync construction; underlying
 //     flSession_Create is fast.
-//   * session.processRequest(request) -> Promise<Response>  (PromiseWorker<Response>)
+//   * session.processRequest(request) -> Promise<Response> — scheduled on a per-session worker queue.
 //   * session.processStreamingRequest(request, onItem) -> Promise<Response> — streaming bridge via
 //     Napi::ThreadSafeFunction; resolves with the terminal Response after every queued JS callback runs.
 //     The JS layer wraps this in an AsyncIterable whose `.response` promise carries the resolved value.
