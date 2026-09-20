@@ -382,22 +382,20 @@ internal sealed class ChatSessionTests
         using var request = new Request();
         request.AddItem(MessageItem.User("Reply with one word."));
 
-        using var nativeReturned = new ManualResetEventSlim(false);
+        var nativeReturned = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var allowTerminalPublication = new ManualResetEventSlim(false);
 
         var stream = session.ProcessStreamingRequestCore(
             request,
             beforeTerminalPublication: () =>
             {
-                nativeReturned.Set();
-                allowTerminalPublication.Wait(TimeSpan.FromSeconds(30));
+                nativeReturned.TrySetResult(true);
+                allowTerminalPublication.Wait();
             });
 
         try
         {
-            var reachedPublication = await Task.Run(
-                () => nativeReturned.Wait(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
-            await Assert.That(reachedPublication).IsTrue();
+            await nativeReturned.Task.ConfigureAwait(false);
 
             var disposeTask = stream.DisposeAsync().AsTask();
             await Assert.That(disposeTask.IsCompleted).IsFalse();
