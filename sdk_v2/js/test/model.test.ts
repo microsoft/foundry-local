@@ -89,17 +89,43 @@ describeIfBuilt("Model (cache-only)", () => {
     expect(typeof model.path).toBe("string");
   });
 
-  it("download() maps AbortSignal cancellation from a native progress checkpoint to AbortError", async () => {
+  it("download() maps timer-driven cancellation at a native progress checkpoint to AbortError", async () => {
     const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 0);
+
+    try {
+      await expect(model.download(controller.signal)).rejects.toMatchObject({
+        name: "AbortError",
+        code: FlErrorCode.OperationCancelled,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
+    expect(model.isCached).toBe(false);
+  });
+
+  it("download() rejects with the same error thrown by the progress callback", async () => {
+    const callbackError = new Error("progress callback failed");
 
     await expect(
-      model.download((progress) => {
-        if (progress === 0) controller.abort();
-      }, controller.signal),
-    ).rejects.toMatchObject({
-      name: "AbortError",
-      code: FlErrorCode.OperationCancelled,
-    });
+      model.download(() => {
+        throw callbackError;
+      }),
+    ).rejects.toBe(callbackError);
+    expect(model.isCached).toBe(false);
+  });
+
+  it("download() propagates signal registration errors before creating native progress resources", async () => {
+    const registrationError = new Error("signal registration failed");
+    const signal = {
+      aborted: false,
+      addEventListener: () => {
+        throw registrationError;
+      },
+      removeEventListener: () => {},
+    } as unknown as AbortSignal;
+
+    await expect(model.download(() => {}, signal)).rejects.toBe(registrationError);
     expect(model.isCached).toBe(false);
   });
 

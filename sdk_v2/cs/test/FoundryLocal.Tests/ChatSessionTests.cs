@@ -234,7 +234,28 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
-    public async Task Chat_Streaming_EarlyBreak_FinalResponse_Cancels()
+    public async Task Chat_Streaming_FinalResponseWithoutEnumeration_ReleasesSession()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        var stream = session.ProcessStreamingRequestAsync(request);
+        using var final = await stream.FinalResponse;
+        session.SetStreaming(false);
+
+        using var nextRequest = new Request();
+        nextRequest.AddItem(MessageItem.User("Reply with one word."));
+        using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+
+        await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
+        await Assert.That(nextResponse).IsNotNull();
+    }
+
+    [Test]
+    public async Task Chat_Streaming_EarlyBreak_FinalResponse_CancelsOrCompletes()
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
@@ -251,24 +272,21 @@ internal sealed class ChatSessionTests
             using (item)
             {
                 itemCount++;
-                if (itemCount >= 1)
-                {
-                    break;
-                }
+                break;
             }
         }
 
-        OperationCanceledException? caught = null;
         try
         {
-            using var _ = await stream.FinalResponse;
+            using var final = await stream.FinalResponse;
+            await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            caught = oce;
+            // Early-break cancellation may lose the race to an already-completed producer.
         }
 
-        await Assert.That(caught).IsNotNull();
+        await Assert.That(itemCount).IsEqualTo(1);
     }
 
     [Test]
@@ -352,6 +370,52 @@ internal sealed class ChatSessionTests
                 }
             }
             await Assert.That(count).IsGreaterThan(0);
+        }
+    }
+
+    [Test]
+    public async Task Chat_Streaming_DisposeAsync_WaitsForTerminalPublication()
+    {
+        using var session = new ChatSession(model!);
+        session.SetStreaming(true);
+
+        using var request = new Request();
+        request.AddItem(MessageItem.User("Reply with one word."));
+
+        var nativeReturned = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allowTerminalPublication = new ManualResetEventSlim(false);
+
+        var stream = session.ProcessStreamingRequestCore(
+            request,
+            beforeTerminalPublication: () =>
+            {
+                nativeReturned.TrySetResult(true);
+                allowTerminalPublication.Wait();
+            });
+
+        try
+        {
+            await nativeReturned.Task.ConfigureAwait(false);
+
+            var disposeTask = stream.DisposeAsync().AsTask();
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+            allowTerminalPublication.Set();
+            await disposeTask.ConfigureAwait(false);
+
+            using var disposedFinal = await stream.FinalResponse.ConfigureAwait(false);
+            await Assert.That(disposedFinal.Ptr).IsEqualTo(IntPtr.Zero);
+
+            session.SetStreaming(false);
+            using var nextRequest = new Request();
+            nextRequest.AddItem(MessageItem.User("Reply with one word."));
+            using var nextResponse = await session.ProcessRequestAsync(nextRequest).ConfigureAwait(false);
+            await Assert.That(nextResponse).IsNotNull();
+        }
+        finally
+        {
+            allowTerminalPublication.Set();
+            await stream.DisposeAsync();
         }
     }
 

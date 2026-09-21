@@ -10,6 +10,8 @@ export interface IModel {
   get id(): string;
   get alias(): string;
   get info(): ModelInfo;
+  getStringProperty(key: string): string | undefined;
+  getIntProperty(key: string, defaultValue?: number): number;
   get isCached(): boolean;
   isLoaded(): Promise<boolean>;
 
@@ -19,6 +21,11 @@ export interface IModel {
   get capabilities(): string | null;
   get supportsToolCalling(): boolean | null;
 
+  /**
+   * Downloads the model. Cancellation is cooperative and is observed at native download progress checkpoints.
+   * Registry resolution, blob listing, or blob property lookup already in progress must finish before cancellation is observed.
+   */
+  download(signal?: AbortSignal): Promise<void>;
   download(progressCallback?: (progress: number) => void, signal?: AbortSignal): Promise<void>;
   get path(): string;
   load(): Promise<void>;

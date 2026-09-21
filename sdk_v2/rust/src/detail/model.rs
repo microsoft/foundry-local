@@ -221,6 +221,16 @@ impl Model {
         build_model_info(&variant.native.api, &variant.native)
     }
 
+    /// Read a string metadata property by key. Arbitrary registration keys are supported.
+    pub fn get_string_property(&self, key: &str) -> Result<Option<String>> {
+        self.selected_native().get_string_property(key)
+    }
+
+    /// Read an integer metadata property by key, returning `default_value` when it is absent.
+    pub fn get_int_property(&self, key: &str, default_value: i64) -> Result<i64> {
+        self.selected_native().get_int_property(key, default_value)
+    }
+
     /// Maximum context length (in tokens), or `None` if unknown.
     pub fn context_length(&self) -> Option<u64> {
         self.selected_variant().info.context_length

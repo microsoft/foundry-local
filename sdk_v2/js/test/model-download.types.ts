@@ -13,11 +13,8 @@ void model.download(maybeProgress);
 void model.download(progress, signal);
 void model.download(undefined, signal);
 void model.download(progress, maybeSignal);
-
-// Existing structural implementations remain compatible after adding the optional signal parameter.
-declare const legacyDownload: (progressCallback?: (percent: number) => void) => Promise<void>;
-const compatibleDownload: IModel["download"] = legacyDownload;
-void compatibleDownload;
-
-// @ts-expect-error AbortSignal remains the optional second argument so the original callback-first API is preserved.
 void model.download(signal);
+void model.download(maybeSignal);
+
+// @ts-expect-error Non-callback, non-signal values are rejected.
+void model.download(42);
