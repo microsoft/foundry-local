@@ -138,6 +138,8 @@ steps:
         Get-ChildItem -Path $env:FOUNDRY_TEST_DATA_DIR -Force | ForEach-Object { Write-Host "  $($_.FullName)" }
         npx --no-install vitest run --reporter=verbose
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        npm run test:gc
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     env:
       FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'
 
@@ -161,6 +163,7 @@ steps:
       set -euo pipefail
       cd "$(Build.SourcesDirectory)/sdk_v2/js"
       npx --no-install vitest run --reporter=verbose
+      npm run test:gc
     displayName: 'Run vitest'
     env:
       FOUNDRY_TEST_DATA_DIR: '$(Build.SourcesDirectory)/test-data-shared'

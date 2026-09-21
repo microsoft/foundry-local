@@ -35,7 +35,8 @@
     "build:ts": "tsc -p tsconfig.build.json",
     "build": "npm run copy-native:dev && npm run build:native && npm run build:ts",
     "test:types": "tsc -p tsconfig.types.json",
-    "test": "npm run test:types && vitest run --fileParallelism=false --pool=forks --reporter=dot",
+    "test": "npm run test:types && vitest run --fileParallelism=false --pool=forks --reporter=dot && npm run test:gc",
+    "test:gc": "node --expose-gc ./node_modules/vitest/vitest.mjs run test/manager-dispose.test.ts --fileParallelism=false --pool=threads --reporter=dot --testNamePattern=\"garbage collected\"",
     "test:watch": "vitest",
     "lint": "biome check src test script",
     "format": "biome format --write src test script"

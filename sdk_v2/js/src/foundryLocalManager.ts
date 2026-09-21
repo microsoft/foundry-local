@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { type Catalog, wrapNativeCatalog } from "./catalog.js";
 import { FOUNDRY_LOCAL_CONFIG_KEYS, type FoundryLocalConfig } from "./configuration.js";
 import { type NativeManager, configureNativeLoader, getAddon, getPreloadedLibraryPath } from "./detail/native.js";
-import type { EpDownloadResult, EpInfo } from "./types.js";
+
+import { CatalogType, type EpDownloadResult, type EpInfo } from "./types.js";
 
 function readSdkVersion(): string {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -58,7 +59,7 @@ function installExitHandlersOnce(): void {
 
 export class FoundryLocalManager {
   readonly #native: NativeManager;
-  #catalog: Catalog | undefined;
+  readonly #catalogs = new Map<CatalogType, Catalog>();
   #urls: string[] = [];
 
   constructor(config: FoundryLocalConfig) {
@@ -136,10 +137,20 @@ export class FoundryLocalManager {
 
   /** The model catalog. Lazily wraps the native handle and is cached. */
   get catalog(): Catalog {
-    if (this.#catalog === undefined) {
-      this.#catalog = wrapNativeCatalog(this.#native.getCatalog());
+    return this.getCatalog();
+  }
+
+  /** Return the selected manager-owned catalog. Omitting `type` preserves the public-catalog default. */
+  getCatalog(type: CatalogType = CatalogType.Public): Catalog {
+    if (type !== CatalogType.Public && type !== CatalogType.Local) {
+      throw new TypeError("Catalog type must be CatalogType.Public or CatalogType.Local.");
     }
-    return this.#catalog;
+    let catalog = this.#catalogs.get(type);
+    if (catalog === undefined) {
+      catalog = wrapNativeCatalog(this.#native.getCatalog(type));
+      this.#catalogs.set(type, catalog);
+    }
+    return catalog;
   }
 
   /** URLs the embedded web service is bound to. Empty when not running. */
@@ -241,7 +252,7 @@ export class FoundryLocalManager {
       liveManager = undefined;
     }
     this.#native.dispose();
-    this.#catalog = undefined;
+    this.#catalogs.clear();
     this.#urls = [];
   }
 

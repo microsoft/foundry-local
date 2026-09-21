@@ -10,6 +10,8 @@ export interface IModel {
   get id(): string;
   get alias(): string;
   get info(): ModelInfo;
+  getStringProperty(key: string): string | undefined;
+  getIntProperty(key: string, defaultValue?: number): number;
   get isCached(): boolean;
   isLoaded(): Promise<boolean>;
 

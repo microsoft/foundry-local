@@ -61,7 +61,7 @@ public sealed class ChatSession : Session
         ValidateNativeString(name, nameof(name));
         ValidateNativeString(description, nameof(description));
         ValidateNativeString(jsonSchema, nameof(jsonSchema));
-        GetNativeSession().AddToolDefinition(name, description, jsonSchema);
+        ExecuteNative(session => session.AddToolDefinition(name, description, jsonSchema));
         return this;
     }
 
@@ -77,7 +77,7 @@ public sealed class ChatSession : Session
         ThrowIfDisposed();
         ValidateNativeString(name, nameof(name));
         ValidateNativeString(description, nameof(description));
-        GetNativeSession().AddToolDefinition(name, description, string.Empty, FlToolKind.Custom);
+        ExecuteNative(session => session.AddToolDefinition(name, description, string.Empty, FlToolKind.Custom));
         return this;
     }
 
@@ -90,7 +90,7 @@ public sealed class ChatSession : Session
     {
         ThrowIfDisposed();
         ValidateNativeString(toolName, nameof(toolName));
-        return GetNativeSession().RemoveToolDefinition(toolName);
+        return ExecuteNative(session => session.RemoveToolDefinition(toolName));
     }
 
     private static void ValidateNativeString(string value, string paramName)
@@ -113,7 +113,7 @@ public sealed class ChatSession : Session
         get
         {
             ThrowIfDisposed();
-            return GetNativeSession().TurnCount;
+            return ExecuteNative(session => session.TurnCount);
         }
     }
 
@@ -124,6 +124,6 @@ public sealed class ChatSession : Session
     public void UndoTurns(ulong count)
     {
         ThrowIfDisposed();
-        GetNativeSession().UndoTurns(count);
+        ExecuteNative(session => session.UndoTurns(count));
     }
 }

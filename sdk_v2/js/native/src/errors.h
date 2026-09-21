@@ -11,8 +11,12 @@
 #include <napi.h>
 
 #include <functional>
+#include <string>
 
 namespace foundry_local_node {
+
+Napi::Error MakeFoundryLocalError(Napi::Env env, int code, const std::string& message);
+void ThrowFoundryLocalError(Napi::Env env, int code, const std::string& message);
 
 // Run `fn` and translate any thrown exception into a Napi error pending on
 // `env`, then return a default-constructed T. Callers should test for a
