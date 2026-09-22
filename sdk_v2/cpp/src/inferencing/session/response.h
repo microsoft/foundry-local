@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -27,7 +26,6 @@ struct Response {
   std::vector<std::unique_ptr<Item>> items;
   flFinishReason finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
   TokenUsage usage;
-  std::optional<uint64_t> input_message_count;
   // arbitrary response metadata (e.g. completion_id, created, model).
   // internal usage only currently but can be surfaced if needed.
   KeyValuePairs metadata;

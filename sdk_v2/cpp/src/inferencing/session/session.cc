@@ -264,8 +264,7 @@ void Session::RecordUsage(const Request& request, const Response& response,
     usage.correlation_id = context.correlation_id;
     usage.indirect = context.indirect;
     usage.stream = static_cast<bool>(callback_fn_);
-    usage.num_messages =
-        response.input_message_count.has_value() ? *response.input_message_count : CountRequestMessages(request);
+    usage.num_messages = CountRequestMessages(request);
     usage.total_time_ms = total_time_ms;
     usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
     usage.input_token_count = TelemetryTokenCount(response.usage.prompt_tokens);
