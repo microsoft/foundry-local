@@ -82,6 +82,15 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('sort-order control has a purpose-based accessible name', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/aria-label=\{`Sort order: \$\{sortOrder === 'asc' \? 'ascending' : 'descending'\}`\}/
+	);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 

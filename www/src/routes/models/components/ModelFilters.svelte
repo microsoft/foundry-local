@@ -139,6 +139,7 @@
 					<Button
 						variant="outline"
 						class="h-10 w-16"
+						aria-label={`Sort order: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
 						onclick={() => (sortOrder = sortOrder === 'asc' ? 'desc' : 'asc')}
 					>
 						{sortOrder === 'asc' ? '↑' : '↓'}
