@@ -82,6 +82,21 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('model-card copy buttons describe their Foundry run commands', () => {
+	const modelCard = readSource('../src/routes/models/components/ModelCard.svelte');
+
+	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{genericModelName\}`\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{genericModelName\}`\} class="sr-only">\s*\{formatModelCommand\(genericModelName\)\}/
+	);
+	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{variant\.name\}`\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{variant\.name\}`\} class="sr-only">\s*\{formatModelCommand\(variant\.name\)\}/
+	);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 

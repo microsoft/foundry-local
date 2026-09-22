@@ -524,24 +524,20 @@ class StreamWorker : public Napi::AsyncWorker {
       }
 
       auto tsfn = tsfn_;
-      sess_->SetStreamingCallback([tsfn](flStreamingCallbackData data) -> int {
-        if (data.item_queue == nullptr) return 0;
-        flItem* raw = nullptr;
-        while (foundry_local::detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw)) {
-          if (raw == nullptr) break;
-          auto* item = new foundry_local::Item(*raw);
-          napi_status status = tsfn.BlockingCall(
-              item, [](Napi::Env env, Napi::Function jsCb, foundry_local::Item* it) {
-                Napi::HandleScope scope(env);
-                Napi::Value js_item = ItemToJs(env, *it);
-                delete it;
-                jsCb.Call({js_item});
-              });
-          if (status != napi_ok) {
-            delete item;
-            return 1;
-          }
-          raw = nullptr;
+      auto* ctx = ctx_;
+      sess_->SetStreamingCallback([tsfn, ctx](foundry_local::Item item) -> int {
+        (void)ctx;
+        auto* streamed_item = new foundry_local::Item(std::move(item));
+        napi_status status = tsfn.BlockingCall(
+            streamed_item, [](Napi::Env env, Napi::Function jsCb, foundry_local::Item* item) {
+              Napi::HandleScope scope(env);
+              Napi::Value js_item = ItemToJs(env, *item);
+              delete item;
+              jsCb.Call({js_item});
+            });
+        if (status != napi_ok) {
+          delete streamed_item;
+          return 1;
         }
 
         return 0;
