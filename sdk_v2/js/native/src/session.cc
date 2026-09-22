@@ -851,6 +851,11 @@ Napi::Value ChatSession::RemoveToolDefinition(const Napi::CallbackInfo& info) {
 Napi::Value ChatSession::TurnCount(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (ThrowIfDisposed(env)) return env.Undefined();
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "turnCount is unavailable while session work is active");
+    return env.Undefined();
+  }
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
     return Napi::Number::New(env, static_cast<double>(impl_->TurnCount()));
   });
@@ -859,6 +864,11 @@ Napi::Value ChatSession::TurnCount(const Napi::CallbackInfo& info) {
 Napi::Value ChatSession::UndoTurns(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (ThrowIfDisposed(env)) return env.Undefined();
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "undoTurns is unavailable while session work is active");
+    return env.Undefined();
+  }
   if (info.Length() < 1 || !info[0].IsNumber()) {
     Napi::TypeError::New(env, "undoTurns(count: number)").ThrowAsJavaScriptException();
     return env.Undefined();

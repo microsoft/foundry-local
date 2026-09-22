@@ -124,6 +124,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   let done = false;
   let nativeError: unknown = null;
   let cancelQueued = (): boolean => false;
+  let cancellationRetry: ReturnType<typeof setImmediate> | undefined;
 
   const wake = (): void => {
     if (waiter !== null) {
@@ -133,14 +134,30 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
     }
   };
 
-  const onAbort = (): void => {
-    if (cancelQueued()) {
+  const cancelUntilSettled = (): void => {
+    if (done) {
       return;
     }
     try {
       request.cancel();
     } catch {
       // Cancel is best-effort; the request may already be complete.
+    }
+    if (!done) {
+      cancellationRetry = setImmediate(cancelUntilSettled);
+    }
+  };
+
+  const stopCancellationRetry = (): void => {
+    if (cancellationRetry !== undefined) {
+      clearImmediate(cancellationRetry);
+      cancellationRetry = undefined;
+    }
+  };
+
+  const onAbort = (): void => {
+    if (!cancelQueued()) {
+      cancelUntilSettled();
     }
   };
   if (signal !== undefined) {
@@ -185,6 +202,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
     nativePromise.then(
       (resp: unknown) => {
         done = true;
+        stopCancellationRetry();
         responseResolve(resp as Response);
         wake();
       },
@@ -192,6 +210,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
         const mapped = mapError(err);
         nativeError = mapped;
         done = true;
+        stopCancellationRetry();
         responseReject(mapped);
         wake();
       },
@@ -225,11 +244,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
         // call settle so the response promise observers don't hang. The
         // response promise will reject with the cancellation error via the
         // native `.then` error handler.
-        try {
-          request.cancel();
-        } catch {
-          // ignore
-        }
+        cancelUntilSettled();
         while (!done) {
           await new Promise<void>((resolve) => {
             waiter = resolve;

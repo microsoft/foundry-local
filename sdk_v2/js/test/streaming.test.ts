@@ -285,9 +285,9 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       const firstWorkerStarted = new Promise<() => void>((resolve) => {
         signalFirstWorkerStarted = resolve;
       });
+      const turnsBeforeAbort = session.turnCount;
       const active = nativeSession.processRequest(unwrapNativeRequest(buildPrompt()), signalFirstWorkerStarted);
       const releaseFirst = await firstWorkerStarted;
-      const turnsBeforeAbort = session.turnCount;
 
       const ctrl = new AbortController();
       const queued = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
@@ -297,11 +297,34 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
         name: "AbortError",
         code: FlErrorCode.OperationCancelled,
       });
-      expect(session.turnCount).toBe(turnsBeforeAbort);
 
       releaseFirst();
       await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
       expect(session.turnCount).toBe(turnsBeforeAbort + 1);
+    },
+    3 * 60_000,
+  );
+
+  it(
+    "rejects turn accessors while session work is active",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const activeSession = session;
+      const nativeSession = (activeSession as unknown as { native: NativeChatSession }).native;
+      let signalWorkerStarted!: (release: () => void) => void;
+      const workerStarted = new Promise<() => void>((resolve) => {
+        signalWorkerStarted = resolve;
+      });
+      const active = nativeSession.processRequest(unwrapNativeRequest(buildPrompt()), signalWorkerStarted);
+      const release = await workerStarted;
+
+      try {
+        expect(() => activeSession.turnCount).toThrow(/session work is active/);
+        expect(() => activeSession.undoTurns(1)).toThrow(/session work is active/);
+      } finally {
+        release();
+      }
+      await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
     },
     3 * 60_000,
   );

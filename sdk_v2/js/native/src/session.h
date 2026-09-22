@@ -42,6 +42,7 @@ class SessionScheduler {
   uint64_t Enqueue(std::function<void()> start, std::function<void()> cancel = {});
   bool Cancel(uint64_t id);
   void Complete();
+  bool Busy() const noexcept { return running_ || !pending_.empty(); }
 
  private:
   struct Entry {
