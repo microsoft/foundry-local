@@ -364,7 +364,9 @@ TEST(ResponseConverterTest, ToSessionRequest_ReasoningEffortControlsThinking) {
   ResponseCreateParams params;
   params.model = "m";
   params.input = std::string("hi");
-  params.reasoning = ReasoningConfig{.effort = "medium"};
+  ReasoningConfig reasoning;
+  reasoning.effort = "medium";
+  params.reasoning = std::move(reasoning);
 
   auto request = ToSessionRequest(params);
   const auto kwargs = json::parse(request.options.Find("chat_template_kwargs"));
@@ -376,7 +378,9 @@ TEST(ResponseConverterTest, ToSessionRequest_RejectsUnsupportedReasoningEffort) 
   ResponseCreateParams params;
   params.model = "m";
   params.input = std::string("hi");
-  params.reasoning = ReasoningConfig{.effort = "extreme"};
+  ReasoningConfig reasoning;
+  reasoning.effort = "extreme";
+  params.reasoning = std::move(reasoning);
 
   EXPECT_THROW((void)ToSessionRequest(params), fl::Exception);
 }
