@@ -58,6 +58,16 @@ class SessionScheduler {
   bool running_ = false;
 };
 
+class SessionActivity {
+ public:
+  void Start() noexcept { active_.fetch_add(1, std::memory_order_relaxed); }
+  void Complete() noexcept { active_.fetch_sub(1, std::memory_order_relaxed); }
+  bool Busy() const noexcept { return active_.load(std::memory_order_relaxed) != 0; }
+
+ private:
+  std::atomic_size_t active_ = 0;
+};
+
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
   static Napi::Function Init(Napi::Env env);
@@ -115,6 +125,7 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
   std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<SessionActivity> activity_ = std::make_shared<SessionActivity>();
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.

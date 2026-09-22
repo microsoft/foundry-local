@@ -200,10 +200,15 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
                            std::shared_ptr<foundry_local::Manager> manager_lifetime,
                            Napi::ObjectReference manager, Napi::ObjectReference request,
                            std::shared_ptr<SessionScheduler> scheduler,
+                           std::shared_ptr<SessionActivity> activity,
                            std::shared_ptr<SessionWorkerGate> worker_gate) {
     auto* worker =
         new SessionPromiseWorker(env, std::move(sess), req, std::move(manager_lifetime), std::move(manager),
-                                 std::move(request), std::move(scheduler), std::move(worker_gate));
+                                 std::move(request), std::move(scheduler), std::move(activity),
+                                 std::move(worker_gate));
+    if (worker->activity_ != nullptr) {
+      worker->activity_->Start();
+    }
     Napi::Promise promise = worker->deferred_.Promise();
     try {
       if (worker->scheduler_ != nullptr) {
@@ -252,6 +257,7 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
     }
 
     CompleteScheduler();
+    CompleteActivity();
   }
 
   void OnError(const Napi::Error& /*unused*/) override {
@@ -268,6 +274,7 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
     }
 
     CompleteScheduler();
+    CompleteActivity();
   }
 
  private:
@@ -275,6 +282,7 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
                        std::shared_ptr<foundry_local::Manager> manager_lifetime,
                        Napi::ObjectReference manager, Napi::ObjectReference request,
                        std::shared_ptr<SessionScheduler> scheduler,
+                       std::shared_ptr<SessionActivity> activity,
                        std::shared_ptr<SessionWorkerGate> worker_gate)
       : Napi::AsyncWorker(env),
         deferred_(Napi::Promise::Deferred::New(env)),
@@ -284,6 +292,7 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
         manager_(std::move(manager)),
         request_(std::move(request)),
         scheduler_(std::move(scheduler)),
+        activity_(std::move(activity)),
         worker_gate_(std::move(worker_gate)) {}
 
   void Start() {
@@ -292,10 +301,12 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
     } catch (const std::exception& e) {
       deferred_.Reject(Napi::Error::New(Env(), e.what()).Value());
       CompleteScheduler();
+      CompleteActivity();
       delete this;
     } catch (...) {
       deferred_.Reject(Napi::Error::New(Env(), "Failed to queue native request").Value());
       CompleteScheduler();
+      CompleteActivity();
       delete this;
     }
   }
@@ -308,8 +319,16 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
     }
   }
 
+  void CompleteActivity() {
+    if (!activity_completed_ && activity_ != nullptr) {
+      activity_completed_ = true;
+      activity_->Complete();
+    }
+  }
+
   void FailBeforeQueue(const std::string& message) {
     scheduler_.reset();
+    CompleteActivity();
     deferred_.Reject(Napi::Error::New(Env(), message).Value());
     delete this;
   }
@@ -321,18 +340,21 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
   Napi::ObjectReference manager_;
   Napi::ObjectReference request_;
   std::shared_ptr<SessionScheduler> scheduler_;
+  std::shared_ptr<SessionActivity> activity_;
   std::shared_ptr<SessionWorkerGate> worker_gate_;
   Result response_;
   std::string err_msg_;
   int err_code_ = 0;
   bool tagged_ = false;
   bool scheduler_completed_ = false;
+  bool activity_completed_ = false;
 };
 
 template <typename SessT>
 Napi::Value ProcessRequestOn(Napi::Env env, std::shared_ptr<SessT> sess, const Napi::Value& request_arg,
                              std::shared_ptr<foundry_local::Manager> manager_lifetime,
                              Napi::ObjectReference manager_ref, std::shared_ptr<SessionScheduler> scheduler,
+                             std::shared_ptr<SessionActivity> activity = nullptr,
                              Napi::Function worker_started = Napi::Function()) {
   foundry_local::Request* req = UnwrapRequest(env, request_arg);
   if (req == nullptr) return env.Undefined();  // pending exception
@@ -342,7 +364,7 @@ Napi::Value ProcessRequestOn(Napi::Env env, std::shared_ptr<SessT> sess, const N
 
   return SessionPromiseWorker<SessT>::Run(env, std::move(sess), req, std::move(manager_lifetime),
                                           std::move(manager_ref), std::move(req_pin), std::move(scheduler),
-                                          std::move(worker_gate));
+                                          std::move(activity), std::move(worker_gate));
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -756,7 +778,7 @@ Napi::Value ChatSession::ProcessRequest(const Napi::CallbackInfo& info) {
   auto impl = impl_;
   auto scheduler = scheduler_;
   return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_, std::move(owner),
-                          std::move(scheduler), worker_started);
+                          std::move(scheduler), nullptr, worker_started);
 }
 
 Napi::Value ChatSession::ProcessStreamingRequest(const Napi::CallbackInfo& info) {
@@ -774,6 +796,11 @@ Napi::Value ChatSession::SetOptions(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) return env.Undefined();
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(env, "setOptions(options: RequestOptions)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "setOptions is unavailable while session work is active");
     return env.Undefined();
   }
   Napi::Object opts = info[0].As<Napi::Object>();
@@ -972,7 +999,7 @@ Napi::Value EmbeddingsSession::ProcessRequest(const Napi::CallbackInfo& info) {
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   auto impl = impl_;
   return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_, std::move(owner), nullptr,
-                          worker_started);
+                          activity_, worker_started);
 }
 
 Napi::Value EmbeddingsSession::SetOptions(const Napi::CallbackInfo& info) {
@@ -980,6 +1007,11 @@ Napi::Value EmbeddingsSession::SetOptions(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) return env.Undefined();
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(env, "setOptions(options: RequestOptions)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (activity_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "setOptions is unavailable while session work is active");
     return env.Undefined();
   }
   Napi::Object opts = info[0].As<Napi::Object>();
@@ -1088,7 +1120,7 @@ Napi::Value AudioSession::ProcessRequest(const Napi::CallbackInfo& info) {
   auto impl = impl_;
   auto scheduler = scheduler_;
   return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_, std::move(owner),
-                          std::move(scheduler), worker_started);
+                          std::move(scheduler), nullptr, worker_started);
 }
 
 Napi::Value AudioSession::ProcessStreamingRequest(const Napi::CallbackInfo& info) {
@@ -1106,6 +1138,11 @@ Napi::Value AudioSession::SetOptions(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) return env.Undefined();
   if (info.Length() < 1 || !info[0].IsObject()) {
     Napi::TypeError::New(env, "setOptions(options: RequestOptions)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "setOptions is unavailable while session work is active");
     return env.Undefined();
   }
   Napi::Object opts = info[0].As<Napi::Object>();

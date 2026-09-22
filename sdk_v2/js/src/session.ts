@@ -124,7 +124,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   let done = false;
   let nativeError: unknown = null;
   let cancelQueued = (): boolean => false;
-  let cancellationRetry: ReturnType<typeof setImmediate> | undefined;
+  let cancellationRetry: ReturnType<typeof setTimeout> | undefined;
 
   const wake = (): void => {
     if (waiter !== null) {
@@ -135,7 +135,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   };
 
   const cancelUntilSettled = (): void => {
-    if (done) {
+    if (done || cancellationRetry !== undefined) {
       return;
     }
     try {
@@ -144,13 +144,16 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
       // Cancel is best-effort; the request may already be complete.
     }
     if (!done) {
-      cancellationRetry = setImmediate(cancelUntilSettled);
+      cancellationRetry = setTimeout(() => {
+        cancellationRetry = undefined;
+        cancelUntilSettled();
+      }, 10);
     }
   };
 
   const stopCancellationRetry = (): void => {
     if (cancellationRetry !== undefined) {
-      clearImmediate(cancellationRetry);
+      clearTimeout(cancellationRetry);
       cancellationRetry = undefined;
     }
   };

@@ -306,7 +306,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
-    "rejects turn accessors while session work is active",
+    "rejects synchronous session access while work is active",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
       const activeSession = session;
@@ -319,6 +319,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       const release = await workerStarted;
 
       try {
+        expect(() => activeSession.setOptions({ search: { temperature: 0 } })).toThrow(/session work is active/);
         expect(() => activeSession.turnCount).toThrow(/session work is active/);
         expect(() => activeSession.undoTurns(1)).toThrow(/session work is active/);
       } finally {
