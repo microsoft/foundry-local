@@ -93,6 +93,7 @@ include(cmake/Sanitizers.cmake)
 # --------------------------------------------------------------------------
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
+find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
 
@@ -319,6 +320,7 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
             nlohmann_json::nlohmann_json
             Azure::azure-core
             Azure::azure-storage-blobs
+            semver::semver
             spdlog::spdlog
             LibArchive::LibArchive
             ${CMAKE_DL_LIBS}
@@ -385,7 +387,7 @@ endfunction()
 # Keep the runtime catalog-compatibility version aligned with the current SDK
 # version, regardless of a stale CMake cache or CI package-version override.
 set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
-    CACHE STRING "Version string returned by FoundryLocalGetVersionString()" FORCE)
+    CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)

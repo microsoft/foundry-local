@@ -9,12 +9,18 @@
 #include "logger.h"
 #include "model_info.h"
 
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace fl {
+
+/// Returns whether a current Semantic Version meets a catalog minimum version.
+/// Invalid versions are incompatible.
+bool IsFoundryLocalVersionCompatible(const std::string& current_version,
+                                     const std::string& minimum_version);
 
 /// Live Azure Foundry catalog client. Queries the Asset Gallery API
 /// (`asset-gallery/v1.0/models`) for the models available to the local
@@ -37,11 +43,13 @@ class AzureCatalogClient : public ICatalogClient {
   /// @param ep_detector Reports available device and execution-provider pairs.
   /// @param logger Logger.
   /// @param http_post HTTP POST implementation. The default uses `http::HttpPostWithResponse`.
+  /// @param retry_config Bounded retry policy for transport, throttling, and server failures.
   AzureCatalogClient(const std::string& base_url,
                      const std::string& filter_override,
                      const IEpDetector& ep_detector,
                      ILogger& logger,
-                     HttpPostResponseFn http_post = {});
+                     HttpPostResponseFn http_post = {},
+                     http::RetryConfig retry_config = {});
 
   /// Fetch every catalog model entry visible to the local hardware (raw form,
   /// before conversion to ModelInfo). One filter set per device, fully paginated.
@@ -63,12 +71,14 @@ class AzureCatalogClient : public ICatalogClient {
  private:
   /// Run all pages of one filter set.
   std::vector<CatalogLocalModel> FetchFilterSet(const std::vector<CatalogFilter>& filters);
+  http::HttpResponse PostWithRetry(const std::string& body);
 
   std::string base_url_;
   std::vector<std::string> model_filter_;  // deploymentOptions filter values
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   HttpPostResponseFn http_post_response_;
+  http::RetryConfig retry_config_;
 };
 
 }  // namespace fl

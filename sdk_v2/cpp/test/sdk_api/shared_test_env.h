@@ -278,7 +278,7 @@ class SharedTestEnv : public ::testing::Environment {
     // surface during test runs and end up in the rotating log file.
     config.SetDefaultLogLevel(FOUNDRY_LOCAL_LOG_INFO);
 
-    config.AddCatalogUrl("https://ai.azure.com/api/centralus/ux/v1.0");
+    config.AddCatalogUrl("https://api.catalog.azureml.ms/asset-gallery/v1.0/models");
 
     // Point the model cache at the shared test data directory when available.
     auto cache_dir = fl::test::SafeGetEnv("FOUNDRY_TEST_DATA_DIR");

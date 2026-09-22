@@ -70,6 +70,8 @@ struct VariantInformation {
 /// `variantInformation` or `alias` are not runnable catalog variants and are
 /// skipped during conversion.
 struct CatalogLocalModel {
+  // Populated from the response's azureml-served-by-cluster header, not JSON.
+  std::string detected_region;
   std::optional<std::string> asset_id;
   std::optional<std::string> name;
   std::optional<std::string> alias;
@@ -81,6 +83,7 @@ struct CatalogLocalModel {
   std::optional<std::string> min_fl_version;
   std::optional<bool> supports_tool_calling;
   std::optional<bool> supports_reasoning;
+  std::optional<bool> is_test_model;
   std::optional<std::string> created_time;
   std::vector<std::string> inference_tasks;
   std::vector<std::string> model_capabilities;

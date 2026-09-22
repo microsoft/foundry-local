@@ -3,19 +3,21 @@
 #include "catalog/azure_catalog_client.h"
 
 #include "http/http_client.h"
+#include "util/region_fallback.h"
 #include "utils.h"
 #include "version.h"
 
 #include <nlohmann/json.hpp>
+#include <semver/semver.hpp>
 
 #include <algorithm>
-#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <sstream>
+#include <regex>
+#include <set>
 #include <string>
-#include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,6 +27,7 @@ namespace {
 
 constexpr int kPageSize = 50;
 constexpr const char* kDefaultDeploymentOption = "Foundry Local on Devices";
+constexpr const char* kServedByClusterHeader = "azureml-served-by-cluster";
 
 // The catalog and registry gateways reject requests without this User-Agent (HTTP 400).
 constexpr const char* kUserAgent = "AzureAiStudio";
@@ -99,25 +102,20 @@ std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
   return body.dump();
 }
 
-struct SemVer {
-  int major = 0;
-  int minor = 0;
-  int patch = 0;
-};
-
-std::optional<SemVer> ParseSemVer(const std::string& version) {
-  int major = 0;
-  int minor = 0;
-  int patch = 0;
-  char first_dot = '\0';
-  char second_dot = '\0';
-  std::istringstream stream(version);
-  if (!(stream >> major >> first_dot >> minor >> second_dot >> patch) ||
-      first_dot != '.' || second_dot != '.' || !stream.eof() ||
-      major < 0 || minor < 0 || patch < 0) {
-    return std::nullopt;
+std::string ExtractRegionFromResponse(const http::HttpResponse& response) {
+  const auto header = response.headers.find(kServedByClusterHeader);
+  if (header == response.headers.end()) {
+    return {};
   }
-  return SemVer{major, minor, patch};
+
+  static const std::regex kClusterPattern(R"(vienna-([[:alnum:]]+)-[[:digit:]]+)",
+                                          std::regex::icase);
+  std::smatch match;
+  if (!std::regex_search(header->second, match, kClusterPattern)) {
+    return {};
+  }
+
+  return ToLower(match[1].str());
 }
 
 bool MeetsMinFlVersion(const CatalogLocalModel& model) {
@@ -125,14 +123,7 @@ bool MeetsMinFlVersion(const CatalogLocalModel& model) {
     return true;
   }
 
-  static const std::optional<SemVer> current = ParseSemVer(FOUNDRY_LOCAL_VERSION);
-  const auto minimum = ParseSemVer(*model.min_fl_version);
-  if (!current || !minimum) {
-    return false;
-  }
-
-  return std::tie(current->major, current->minor, current->patch) >=
-         std::tie(minimum->major, minimum->minor, minimum->patch);
+  return IsFoundryLocalVersionCompatible(FOUNDRY_LOCAL_VERSION, *model.min_fl_version);
 }
 
 std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_models) {
@@ -194,16 +185,27 @@ std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& m
 
 }  // namespace
 
+bool IsFoundryLocalVersionCompatible(const std::string& current_version,
+                                     const std::string& minimum_version) {
+  try {
+    return semver::version::parse(current_version) >= semver::version::parse(minimum_version);
+  } catch (const semver::semver_exception&) {
+    return false;
+  }
+}
+
 AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
                                        const std::string& filter_override,
                                        const IEpDetector& ep_detector,
                                        ILogger& logger,
-                                       HttpPostResponseFn http_post)
+                                       HttpPostResponseFn http_post,
+                                       http::RetryConfig retry_config)
     : base_url_(base_url),
       model_filter_(CreateModelFilter(filter_override)),
       ep_detector_(ep_detector),
       logger_(logger),
-      http_post_response_(std::move(http_post)) {
+      http_post_response_(std::move(http_post)),
+      retry_config_(retry_config) {
   if (!http_post_response_) {
     http_post_response_ = [](const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
@@ -214,30 +216,53 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
   }
 }
 
+http::HttpResponse AzureCatalogClient::PostWithRetry(const std::string& body) {
+  std::optional<http::HttpResponse> successful_response;
+  http::RetryWithBackoff(
+      [&]() -> http::RetryAttempt {
+        auto response = http_post_response_(base_url_, body);
+        if (response.status >= 200 && response.status < 300) {
+          successful_response = std::move(response);
+          return {http::RetryDecision::Success, {}, {}};
+        }
+
+        return {IsRegionRetryableStatus(response.status) ? http::RetryDecision::RetryTransient
+                                                          : http::RetryDecision::FailPermanent,
+                {}, http::DescribeFailure(response)};
+      },
+      retry_config_, logger_);
+  return std::move(*successful_response);
+}
+
 std::vector<CatalogLocalModel> AzureCatalogClient::FetchFilterSet(const std::vector<CatalogFilter>& filters) {
   std::vector<CatalogLocalModel> models;
   std::optional<std::string> continuation_token;
+  std::set<std::string> seen_continuation_tokens;
 
   while (true) {
     const std::string body = BuildRequestBody(filters, continuation_token);
-    http::HttpResponse response = http_post_response_(base_url_, body);
+    http::HttpResponse response = PostWithRetry(body);
 
-    if (response.status == 0 || response.status < 200 || response.status >= 300) {
-      logger_.Log(LogLevel::Warning,
-                 "catalog request to " + base_url_ + " failed: " + http::DescribeFailure(response));
-      FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
-               "catalog request to " + base_url_ + " failed: " + http::DescribeFailure(response));
+    AzureCatalogResponse parsed;
+    try {
+      parsed = nlohmann::json::parse(response.body).get<AzureCatalogResponse>();
+    } catch (const nlohmann::json::exception&) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               "catalog response must be valid JSON with an array-valued 'value' or 'summaries' field");
     }
-
-    const auto parsed = nlohmann::json::parse(response.body).get<AzureCatalogResponse>();
-    if (parsed.models.empty()) {
-      break;
+    const auto detected_region = ExtractRegionFromResponse(response);
+    for (auto& model : parsed.models) {
+      model.detected_region = detected_region;
     }
 
     models.insert(models.end(), parsed.models.begin(), parsed.models.end());
 
     // A missing or empty continuation token means "done".
     if (parsed.continuation_token && !parsed.continuation_token->empty()) {
+      if (!seen_continuation_tokens.insert(*parsed.continuation_token).second) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
+             "catalog response repeated continuation token: " + *parsed.continuation_token);
+      }
       continuation_token = parsed.continuation_token;
     } else {
       break;
@@ -277,11 +302,12 @@ std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
 std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
     const std::string& model_alias,
     const std::string& model_name,
-    int /*max_versions*/) {
+  int max_versions) {
   // The catalog has no server-side alias field, so fetch every version for each
   // device/EP pair (labels=latest removed) and filter client-side by the alias
   // (and optionally variant name) that CatalogModelToModelInfo derived.
-  std::vector<ModelInfo> result;
+  std::map<std::string, std::vector<ModelInfo>> versions_by_name;
+  std::unordered_set<std::string> seen_model_ids;
 
   for (const auto& filters : BuildSearchFilters(ep_detector_, model_filter_, /*latest_only=*/false)) {
     auto infos = ToModelInfos(FetchFilterSet(filters));
@@ -295,8 +321,26 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
         continue;
       }
 
-      result.push_back(std::move(info));
+      if (seen_model_ids.insert(info.model_id).second) {
+        versions_by_name[info.name].push_back(std::move(info));
+      }
     }
+  }
+
+  std::vector<ModelInfo> result;
+  for (auto& [name, versions] : versions_by_name) {
+    std::sort(versions.begin(), versions.end(), [](const ModelInfo& left, const ModelInfo& right) {
+      if (left.version != right.version) {
+        return left.version > right.version;
+      }
+      return left.model_id < right.model_id;
+    });
+
+    const auto count = max_versions > 0
+                           ? std::min(versions.size(), static_cast<std::size_t>(max_versions))
+                           : versions.size();
+    result.insert(result.end(), std::make_move_iterator(versions.begin()),
+                  std::make_move_iterator(versions.begin() + count));
   }
 
   return result;

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #include "catalog/azure_catalog_models.h"
 
+#include "exception.h"
 #include "util/json_helpers.h"
 #include "utils.h"
 
@@ -9,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -48,20 +50,20 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
 /// Parse a numeric string field (e.g. the catalog's string-typed "version"). Returns
 /// nullopt on absence or malformed input.
 std::optional<int> ParseIntString(const std::optional<std::string>& value) {
-  if (!value || value->empty()) {
+  if (!value || value->empty() ||
+      !std::all_of(value->begin(), value->end(), [](char character) {
+        return character >= '0' && character <= '9';
+      })) {
     return std::nullopt;
   }
 
-  try {
-    std::size_t parsed_characters = 0;
-    const int parsed = std::stoi(*value, &parsed_characters);
-    if (parsed_characters != value->size()) {
-      return std::nullopt;
-    }
-    return parsed;
-  } catch (...) {
+  int parsed = 0;
+  const auto [end, error] = std::from_chars(value->data(), value->data() + value->size(), parsed);
+  if (error != std::errc{} || end != value->data() + value->size()) {
     return std::nullopt;
   }
+
+  return parsed;
 }
 
 std::string JoinStrings(const std::vector<std::string>& values) {
@@ -203,6 +205,9 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     if (system_data.contains("modelCapabilities") && system_data["modelCapabilities"].is_array()) {
       m.model_capabilities = system_data["modelCapabilities"].get<std::vector<std::string>>();
     }
+    if (system_data.contains("modelLimits") && system_data["modelLimits"].is_object()) {
+      m.model_limits = system_data["modelLimits"].get<ModelLimits>();
+    }
     if (properties.contains("variantInfo") && properties["variantInfo"].is_object()) {
       m.variant_information = properties["variantInfo"].get<VariantInformation>();
     }
@@ -214,6 +219,10 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
       } else if (value == "false") {
         m.supports_reasoning = false;
       }
+    }
+    if (tags.contains("foundryLocal") && tags["foundryLocal"].is_string() &&
+        tags["foundryLocal"].get<std::string>() == "test") {
+      m.is_test_model = true;
     }
     return;
   }
@@ -253,6 +262,11 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
 }
 
 void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
+  if (!j.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "catalog response must contain an array-valued 'value' or 'summaries' field");
+  }
+
   opt_int(j, "totalCount", r.total_count);
   opt_str(j, "continuationToken", r.continuation_token);
 
@@ -260,6 +274,9 @@ void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
     r.models = j["value"].get<std::vector<CatalogLocalModel>>();
   } else if (j.contains("summaries") && j["summaries"].is_array()) {
     r.models = j["summaries"].get<std::vector<CatalogLocalModel>>();
+  } else {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "catalog response must contain an array-valued 'value' or 'summaries' field");
   }
 }
 
@@ -287,7 +304,10 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     return std::nullopt;
   }
 
-  const int version = ParseIntString(cm.version).value_or(0);
+  const auto version = ParseIntString(cm.version);
+  if (!version) {
+    return std::nullopt;
+  }
 
   // Extract parent model URI (used for alias and stored as a property).
   std::string parent_uri;
@@ -296,11 +316,12 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
   }
 
   ModelInfo info;
-  info.model_id = *cm.name + ":" + std::to_string(version);
+  info.model_id = *cm.name + ":" + std::to_string(*version);
   info.name = *cm.name;
-  info.version = version;
+  info.version = *version;
   info.alias = *cm.alias;
   info.uri = *cm.asset_id;
+  info.detected_region = cm.detected_region;
 
   // Device type, execution provider, and model type from variant metadata.
   if (cm.variant_information->variant_metadata) {
@@ -370,6 +391,10 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
           info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
           *cm.supports_reasoning ? 1 : 0;
         }
+
+  if (cm.is_test_model && *cm.is_test_model) {
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT] = 1;
+  }
 
   if (cm.model_limits) {
     if (!cm.model_limits->supported_input_modalities.empty()) {
