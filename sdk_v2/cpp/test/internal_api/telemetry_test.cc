@@ -652,6 +652,7 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutCh
                     DataCategory_PartB);
   event.SetProperty("ExecutionProvider", "CPUExecutionProvider");
   event.SetProperty("auth.token", "placeholder");
+  event.SetProperty("RequestError", "failed at https://account@example.invalid?query=value");
   event.SetProperty("TotalTokens", int64_t{42});
 
   const auto before = event.GetProperties(DataCategory_PartC);
@@ -669,6 +670,7 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutCh
   EXPECT_STREQ(after.at("ModelId").as_string, "metadata from [path]");
   EXPECT_STREQ(after.at("ExecutionProvider").as_string, "CPUExecutionProvider");
   EXPECT_STREQ(after.at("auth.token").as_string, "[secret]");
+  EXPECT_STREQ(after.at("RequestError").as_string, "failed at [url]");
   EXPECT_EQ(after.at("ModelId").piiKind, PiiKind_GenericData);
   EXPECT_EQ(after.at("ModelId").dataCategory, DataCategory_PartB);
   EXPECT_EQ(after.at("TotalTokens").as_int64, 42);

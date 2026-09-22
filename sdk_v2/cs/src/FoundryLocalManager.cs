@@ -8,6 +8,7 @@ namespace Microsoft.AI.Foundry.Local;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
@@ -23,8 +24,11 @@ public class FoundryLocalManager : IDisposable
     private static volatile FoundryLocalManager? instance;
     private static readonly AsyncLock asyncLock = new();
 
-    internal static readonly string AssemblyVersion =
-        typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString() ?? "unknown";
+    internal static readonly string SdkVersion =
+        typeof(FoundryLocalManager).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion
+        ?? typeof(FoundryLocalManager).Assembly.GetName().Version?.ToString()
+        ?? "unknown";
 
     private readonly Configuration _config;
     private NativeConfig _nativeConfig = default!;
@@ -279,7 +283,7 @@ public class FoundryLocalManager : IDisposable
             // Merge AdditionalSettings with user-supplied entries.
             // Done as a local dict so we don't mutate the user-supplied AdditionalSettings.
             var additionalSettings = new Dictionary<string, string>(StringComparer.Ordinal);
-            additionalSettings["UserAgent"] = $"foundry-local-csharp/{AssemblyVersion}";
+            additionalSettings["UserAgent"] = $"foundry-local-csharp/{SdkVersion}";
             if (_config.AdditionalSettings != null)
             {
                 foreach (var kvp in _config.AdditionalSettings)

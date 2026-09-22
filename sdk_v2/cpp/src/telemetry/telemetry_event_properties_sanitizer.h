@@ -64,6 +64,37 @@ inline bool IsSecretProperty(std::string_view name) {
   return false;
 }
 
+inline size_t FindUrlAnchor(std::string_view value) {
+  size_t separator = value.find("://");
+  while (separator != std::string_view::npos) {
+    size_t start = separator;
+    while (start > 0) {
+      const unsigned char character = static_cast<unsigned char>(value[start - 1]);
+      if (!std::isalnum(character) && value[start - 1] != '+' && value[start - 1] != '-' &&
+          value[start - 1] != '.') {
+        break;
+      }
+      --start;
+    }
+    if (start < separator && std::isalpha(static_cast<unsigned char>(value[start]))) {
+      return start;
+    }
+    separator = value.find("://", separator + 3);
+  }
+  return std::string_view::npos;
+}
+
+inline std::string SanitizeString(std::string_view value) {
+  const size_t url_anchor = FindUrlAnchor(value);
+  if (url_anchor == std::string_view::npos) {
+    return ScrubStringForTelemetry(value);
+  }
+
+  std::string without_url(value.substr(0, url_anchor));
+  without_url += "[url]";
+  return ScrubStringForTelemetry(without_url);
+}
+
 inline void SanitizeProperties(::Microsoft::Applications::Events::EventProperties& event_properties,
                                ::Microsoft::Applications::Events::DataCategory category) {
   using ::Microsoft::Applications::Events::EventProperty;
@@ -76,14 +107,14 @@ inline void SanitizeProperties(::Microsoft::Applications::Events::EventPropertie
     const bool secret_property = IsSecretProperty(name);
     if (property.type == EventProperty::TYPE_STRING) {
       const auto value = property.as_string == nullptr ? std::string_view{} : std::string_view(property.as_string);
-      const auto sanitized_value = secret_property ? std::string{"[secret]"} : ScrubStringForTelemetry(value);
+      const auto sanitized_value = secret_property ? std::string{"[secret]"} : SanitizeString(value);
       property = EventProperty(sanitized_value, property.piiKind, property.dataCategory);
     } else if (property.type == EventProperty::TYPE_STRING_ARRAY) {
       std::vector<std::string> sanitized_values;
       if (property.as_stringArray != nullptr) {
         sanitized_values.reserve(property.as_stringArray->size());
         for (const auto& value : *property.as_stringArray) {
-          sanitized_values.push_back(secret_property ? std::string{"[secret]"} : ScrubStringForTelemetry(value));
+          sanitized_values.push_back(secret_property ? std::string{"[secret]"} : SanitizeString(value));
         }
       }
 
