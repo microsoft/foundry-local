@@ -85,9 +85,14 @@ test('model task and capability filters have associated labels', () => {
 test('download menu copy actions participate in keyboard menu navigation', () => {
 	const downloadDropdown = readSource('../src/lib/components/download-dropdown.svelte');
 
-	assert.match(
-		downloadDropdown,
-		/<DropdownMenu\.Item[\s\S]*?onclick=\{\(\) => copyToClipboard\(item\.crossPlatformCommand, item\.crossPlatformId\)\}[\s\S]*?aria-label=\{`Copy \$\{item\.label\} installation command`\}/
+	const copyItem = getOpeningTag(downloadDropdown, 'DropdownMenu.Item');
+	assert.ok(
+		copyItem.source.includes(
+			'onclick={() => copyToClipboard(item.crossPlatformCommand, item.crossPlatformId)}'
+		)
+	);
+	assert.ok(
+		copyItem.source.includes('aria-label={`Copy ${item.label} installation command`}')
 	);
 	assert.doesNotMatch(
 		downloadDropdown,
