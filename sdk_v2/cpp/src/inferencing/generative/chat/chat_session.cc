@@ -738,6 +738,8 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
   if (!result.canceled && canceled.load(std::memory_order_relaxed)) {
     result.canceled = true;
     generator->Cancel();
+  } else if (stop_sequence_matched && !generator->IsDone()) {
+    generator->Cancel();
   }
 
   std::optional<BackendTerminationCause> termination;
@@ -765,10 +767,6 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
       /*canceled=*/false, stop_sequence_matched,
       /*host_output_limit_reached=*/false, termination);
   result.reasoning_tokens = splitter.ReasoningTokenCount();
-
-  if (stop_sequence_matched && !generator->IsDone()) {
-    generator->Cancel();
-  }
 
   auto calls = ParseStrictGuidedToolCalls(structured_output, tool_ctx);
   if (!natural_end || calls.empty()) {
@@ -1288,10 +1286,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   bool semantic_output_seen = false;
   bool malformed_tool_output_seen = false;
 
-  // The assistant-turn ordering invariant (see AssistantTurnGuard), enforced while the turn is produced rather than
-  // after it has been streamed. A prefill the reply will merge into is part of the same assistant turn, so its calls
-  // close this turn's visible text too.
-  auto turn_guard = AssistantTurnGuard::ForReplyTo(inputs, ingest.last_segment_start);
+  // The template opens a new assistant turn, so only calls generated in this reply close its visible text.
+  AssistantTurnGuard turn_guard;
 
   // Marker IDs are derived from the configured strings with the model tokenizer. This detects special markers even
   // when their decoded chunks are empty, while non-reasoning models retain the DEFAULT passthrough. The splitter is
@@ -1418,8 +1414,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     streaming_callback->DrainPending();
   }
 
+  // Engine generation runs asynchronously, and GetTurnUsage waits for it to finish. Stop an abandoned turn before
+  // waiting, including when post-call text ended the reply without canceling the request itself.
   const bool canceled_after_drain = request.canceled.load(std::memory_order_relaxed);
   if (canceled_after_drain) {
+    cached_generator_->Cancel();
+  } else if ((stop_sequence_matched || host_output_limit_reached || turn_guard.TurnEnded()) &&
+             !cached_generator_->IsDone()) {
     cached_generator_->Cancel();
   }
 
@@ -1433,8 +1434,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     backend_termination = turn_usage->termination_cause;
   }
 
-  const bool natural_tool_output_end = chat_session_internal::IsNaturalToolOutputEnd(
-      request.canceled, stop_sequence_matched, host_output_limit_reached, backend_termination);
+  const bool natural_tool_output_end =
+      !turn_guard.TurnEnded() && chat_session_internal::IsNaturalToolOutputEnd(
+                                     request.canceled, stop_sequence_matched, host_output_limit_reached,
+                                     backend_termination);
   flush_accumulator(natural_tool_output_end);
   int accepted_reasoning_tokens = splitter.ReasoningTokenCount();
 
@@ -1557,10 +1560,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
           backend_kind, grammar_was_active, reasoning_was_active, stop_sequence_matched,
           host_output_limit_reached);
 
-  // The reply may only merge into an input message from the last replay segment — this request's own input. Merging
-  // into an earlier hop's assistant message would glue two recorded turns together.
   transcript_.CommitTurn(std::move(inputs), std::move(assistant_message),
-                         {pre_turn_token_count, total_tokens}, ingest.last_segment_start);
+                         {pre_turn_token_count, total_tokens});
   turn_committed = true;
 
   if (discard_after_success || media_turn || generated_tool_calls || turn_guard.TurnEnded()) {
@@ -1699,10 +1700,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   bool semantic_output_seen = false;
   bool malformed_tool_output_seen = false;
 
-  // A trailing assistant message is a prefill. If it already carries a tool call, visible text generated after it
-  // would be merged into that same turn when the client replays the response, so seed the same ordering guard used
-  // by the stateful path.
-  auto turn_guard = AssistantTurnGuard::ForReplyTo(messages, 0);
+  AssistantTurnGuard turn_guard;
 
   // Use the same typed segments for streaming and final response construction.
   auto splitter = CreateReasoningSplitter(tool_ctx, Model(), generator->PromptOpensReasoning());
@@ -1812,9 +1810,12 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     streaming_callback->DrainPending();
   }
 
+  // Cancel host-ended turns before waiting for asynchronous Engine usage.
   const bool canceled_after_drain =
       original_request.canceled.load(std::memory_order_relaxed);
   if (canceled_after_drain) {
+    generator->Cancel();
+  } else if ((stop_sequence_matched || turn_guard.TurnEnded()) && !generator->IsDone()) {
     generator->Cancel();
   }
 
@@ -1828,9 +1829,10 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     backend_termination = turn_usage->termination_cause;
   }
 
-  const bool natural_tool_output_end = chat_session_internal::IsNaturalToolOutputEnd(
-      original_request.canceled, stop_sequence_matched, /*host_output_limit_reached=*/false,
-      backend_termination);
+  const bool natural_tool_output_end =
+      !turn_guard.TurnEnded() && chat_session_internal::IsNaturalToolOutputEnd(
+                                     original_request.canceled, stop_sequence_matched,
+                                     /*host_output_limit_reached=*/false, backend_termination);
   process_tool_output(chat_session_internal::FlushToolOutput(
       active_raw_detector, tool_accumulator, natural_tool_output_end));
   int accepted_reasoning_tokens = splitter.ReasoningTokenCount();

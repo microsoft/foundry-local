@@ -383,20 +383,6 @@ bool TurnCanGenerate(const std::vector<TranscriptMessage>& inputs, const TurnCon
          CarriesRespondableContent(inputs);
 }
 
-const TranscriptMessage* AssistantPrefillForReply(const std::vector<TranscriptMessage>& inputs, size_t merge_floor) {
-  if (inputs.size() <= merge_floor || inputs.back().role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-    return nullptr;
-  }
-
-  // A generated reply has no participant name, so it continues whatever name the prefill carries.
-  return &inputs.back();
-}
-
-AssistantTurnGuard AssistantTurnGuard::ForReplyTo(const std::vector<TranscriptMessage>& inputs, size_t merge_floor) {
-  const auto* prefill = AssistantPrefillForReply(inputs, merge_floor);
-  return AssistantTurnGuard(prefill != nullptr && prefill->HasToolCalls());
-}
-
 void ValidateRenderableTurn(const TranscriptMessage& message) {
   if (!message.HasVisibleTextAfterToolCall()) {
     return;
@@ -507,41 +493,25 @@ void ChatTranscript::ValidateGeneratedOutput(const TranscriptMessage& output) co
   StageTurn({}, &output, issued, outstanding);
 }
 
-void ChatTranscript::CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens,
-                                size_t reply_merge_floor) {
-  // Build every part of the post-commit state separately. Validation, copying, vector growth, assistant merging, and
-  // call-state updates may all throw; none of them may partially publish a turn.
+void ChatTranscript::CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens) {
+  // Build every part of the post-commit state separately. Validation, copying, vector growth, and call-state updates
+  // may all throw; none of them may partially publish a turn.
   auto messages = messages_;
   auto turns = turns_;
   auto issued = issued_;
   auto outstanding = outstanding_;
   StageTurn(inputs, &output, issued, outstanding);
 
-  // A reply that merges into a trailing assistant prefill becomes one message with it, so the ordering invariant
-  // applies to the merged result rather than to the two halves. Checked before anything is appended, so a rejected
-  // turn still leaves the transcript untouched.
-  if (const auto* prefill = AssistantPrefillForReply(inputs, reply_merge_floor);
-      prefill != nullptr && ContinuesAssistantTurn(*prefill, output)) {
-    TranscriptMessage merged = *prefill;
-    auto reply = output;
-    MergeAssistantTurn(merged, std::move(reply));
-    ValidateRenderableTurn(merged);
-  }
-
   Turn turn;
   turn.message_start = messages.size();
   turn.tokens = tokens;
-
-  // The floor is expressed against `inputs`; translate it to an index in the committed list. Inputs are appended
-  // as ingestion produced them — it already applied the merge rule within each segment it knew about.
-  const size_t floor = turn.message_start + std::min(reply_merge_floor, inputs.size());
 
   messages.reserve(messages.size() + inputs.size() + 1);
   for (auto& message : inputs) {
     messages.push_back(std::move(message));
   }
 
-  AppendWithinSegment(messages, std::move(output), floor);
+  messages.push_back(std::move(output));
   turns.push_back(turn);
 
   if (fault_injector_) {

@@ -27,6 +27,7 @@
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
 #include <memory>
 #include <utility>
 
@@ -39,8 +40,10 @@ struct ModelCtorToken {
   // or a std::shared_ptr<foundry_local::ModelList>) alive for the JS Model's
   // lifetime.
   std::shared_ptr<void> keepalive;
-  // Pins the parent Manager so its native handle (and the Catalog's flCatalog*
-  // which the IModel views into) cannot be released first.
+  // Models hold weak native ownership and reject new operations after explicit disposal.
+  std::weak_ptr<foundry_local::Manager> manager_lifetime;
+  std::shared_ptr<std::atomic_bool> disposed;
+  // Pins the parent Manager JavaScript object for wrapper reachability.
   Napi::ObjectReference manager;
 };
 
@@ -57,14 +60,17 @@ class Model : public Napi::ObjectWrap<Model> {
   // Internal accessor used when one Model needs to be passed back to a
   // Catalog method (e.g. GetLatestVersion). Returns nullptr if the wrapper
   // is in an invalid state.
-  foundry_local::IModel* native_impl() const noexcept { return impl_; }
+  foundry_local::IModel* native_impl(Napi::Env env) const;
 
-  // Internal accessor used by Session / ChatSession ctors so they can clone
-  // the parent Manager ObjectReference and pin it for the session lifetime.
+  // Internal accessors used by session constructors to retain native ownership and observe explicit disposal.
+  std::shared_ptr<foundry_local::Manager> LockManager(Napi::Env env) const;
+  const std::shared_ptr<std::atomic_bool>& disposed_state() const noexcept { return disposed_; }
   const Napi::ObjectReference& manager() const noexcept { return manager_; }
 
  private:
   Napi::Value GetInfo(const Napi::CallbackInfo& info);
+  Napi::Value GetStringProperty(const Napi::CallbackInfo& info);
+  Napi::Value GetIntProperty(const Napi::CallbackInfo& info);
   Napi::Value IsCached(const Napi::CallbackInfo& info);
   Napi::Value IsLoaded(const Napi::CallbackInfo& info);
   Napi::Value GetPath(const Napi::CallbackInfo& info);
@@ -78,6 +84,8 @@ class Model : public Napi::ObjectWrap<Model> {
 
   foundry_local::IModel* impl_ = nullptr;
   std::shared_ptr<void> keepalive_;
+  std::weak_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> disposed_;
   Napi::ObjectReference manager_;
 };
 

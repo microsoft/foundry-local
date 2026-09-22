@@ -12,6 +12,7 @@ native library reads, and the version stamped on it has to be the version reques
 from __future__ import annotations
 
 import importlib
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -92,6 +93,9 @@ class TestToolDefinitionAbi:
         session = ChatSession.__new__(ChatSession)
         session._closed = False
         session._ptr = ffi.cast("flSession *", 1)
+        session._manager = None
+        session._operation_lock = threading.RLock()
+        session._native_call_state = threading.local()
         session._stream_thread = None
         session._stream_request = None
 
@@ -147,6 +151,9 @@ class TestToolDefinitionAbi:
         session = ChatSession.__new__(ChatSession)
         session._closed = False
         session._ptr = ffi.cast("flSession *", 1)
+        session._manager = None
+        session._operation_lock = threading.RLock()
+        session._native_call_state = threading.local()
         session._stream_thread = None
         session._stream_request = None
 

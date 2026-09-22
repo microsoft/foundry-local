@@ -73,7 +73,7 @@ TranscriptToolCall SuppliedCall(const std::string& call_id, const std::string& n
 
 /// The messages a live session would hand the template for the next turn: the request's system prefix, everything
 /// the transcript committed, then that turn's own input. Mirrors ChatSession exactly — the prefix is request state
-/// and is never committed, and each turn's reply merges with the same rule CommitTurn applies.
+/// and is never committed, and each turn's reply is a separate assistant message.
 std::vector<TranscriptMessage> WarmMessages(const std::vector<ReplayTurn>& turns,
                                             const std::vector<TranscriptMessage>& next_inputs,
                                             const std::string& instructions = {}) {
@@ -544,11 +544,10 @@ TEST(ReplayEquivalenceTest, InstructionsComeFromTheCurrentRequestOnlyAndCallerSy
 }
 
 // ========================================================================
-// Assistant prefill — a caller supplies assistant content the model
-// continues. One assistant turn, committed and replayed as one message.
+// Assistant input and generated output — the template opens a new turn.
 // ========================================================================
 
-TEST(ReplayEquivalenceTest, GeneratedReplyContinuesATrailingAssistantInputMessage) {
+TEST(ReplayEquivalenceTest, GeneratedReplyFollowsATrailingAssistantInputMessage) {
   ChatTranscript transcript;
 
   TranscriptMessage prefill;
@@ -561,14 +560,16 @@ TEST(ReplayEquivalenceTest, GeneratedReplyContinuesATrailingAssistantInputMessag
 
   transcript.CommitTurn({UserMessage("Finish this."), prefill}, reply, {});
 
-  ASSERT_EQ(transcript.MessageCount(), 2u) << "the reply must not become a second adjacent assistant message";
-  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Sure, here it is.");
+  ASSERT_EQ(transcript.MessageCount(), 3u);
+  EXPECT_EQ(transcript.Messages()[1].VisibleText(), "Sure, ");
+  EXPECT_EQ(transcript.Messages()[2].VisibleText(), "here it is.");
   EXPECT_EQ(BuildChatMessagesJson(transcript.Messages()),
             R"([{"role":"user","content":"Finish this."},)"
-            R"({"role":"assistant","content":"Sure, here it is."}])");
+            R"({"role":"assistant","content":"Sure, "},)"
+            R"({"role":"assistant","content":"here it is."}])");
 }
 
-TEST(ReplayEquivalenceTest, AssistantPrefillReplaysAsOneMessage) {
+TEST(ReplayEquivalenceTest, AssistantInputAndReplyReplayAsSeparateMessages) {
   ReplayTurn turn;
   turn.input_items = json::array({{{"type", "message"}, {"role", "user"}, {"content", "Finish this."}},
                                   {{"type", "message"}, {"role", "assistant"}, {"content", "Sure, "}}});
@@ -582,11 +583,53 @@ TEST(ReplayEquivalenceTest, AssistantPrefillReplaysAsOneMessage) {
   turn.live_output.AppendText("here it is.");
 
   ExpectWarmAndColdAgree({turn}, "Thanks.");
+
+  ResponseCreateParams params;
+  params.model = "test-model";
+  params.input = std::string("Thanks.");
+  EXPECT_EQ(BuildChatMessagesJson(ColdMessages({turn}, params)),
+            R"([{"role":"user","content":"Finish this."},)"
+            R"({"role":"assistant","content":"Sure, "},)"
+            R"({"role":"assistant","content":"here it is."},)"
+            R"({"role":"user","content":"Thanks."}])");
+}
+
+TEST(ReplayEquivalenceTest, CallsAndEmptyRepliesKeepTheirBoundaryAfterAssistantInput) {
+  for (const auto& output : std::vector<json>{
+           json::array(),
+           json::array({OutputReasoning("private")}),
+           json::array({OutputFunctionCall("call_1", "lookup", "{}")}),
+           json::array({OutputMessage("Checking."), OutputFunctionCall("call_1", "lookup", "{}")})}) {
+    SCOPED_TRACE(output.dump());
+    ReplayTurn turn;
+    turn.input_items = json::array({{{"type", "message"}, {"role", "assistant"}, {"content", "Earlier."}}});
+    turn.output_items = output;
+    turn.live_inputs = {TranscriptMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "Earlier.")};
+    turn.live_output.role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+    for (const auto& item : output) {
+      if (item["type"] == "message") {
+        turn.live_output.AppendText("Checking.");
+      } else if (item["type"] == "function_call") {
+        turn.live_output.AppendToolCall(SuppliedCall("call_1", "lookup", "{}"));
+      } else {
+        turn.live_output.AppendReasoning("private");
+      }
+    }
+
+    ExpectWarmAndColdAgree({turn}, "Next.");
+    ResponseCreateParams params;
+    params.model = "test-model";
+    params.input = std::string("Next.");
+    auto messages = ColdMessages({turn}, params);
+    ASSERT_EQ(messages.size(), 3u);
+    EXPECT_EQ(messages[0].VisibleText(), "Earlier.");
+    EXPECT_FALSE(messages[0].HasToolCalls());
+    EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
+  }
 }
 
 TEST(ReplayEquivalenceTest, GeneratedReplyDoesNotMergeIntoAReplayedEarlierTurn) {
-  // The reply may only continue an input message from this request's own segment. A chain whose last replayed
-  // message is an earlier turn's assistant output must stay separate from what the model produces now.
+  // A chain whose last replayed message is an earlier turn's assistant output stays separate from the new reply.
   ReplayTurn turn = TextOnlyTurn();
   auto context = StoredChainContext({turn});
 
@@ -602,7 +645,7 @@ TEST(ReplayEquivalenceTest, GeneratedReplyDoesNotMergeIntoAReplayedEarlierTurn) 
   reply.AppendText("New answer.");
 
   ChatTranscript transcript;
-  transcript.CommitTurn(ingest.messages, reply, {}, ingest.last_segment_start);
+  transcript.CommitTurn(ingest.messages, reply, {});
 
   EXPECT_EQ(BuildChatMessagesJson(transcript.Messages()),
             R"([{"role":"user","content":"Hi"},)"
