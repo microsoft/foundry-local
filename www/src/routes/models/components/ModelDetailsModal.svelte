@@ -390,7 +390,7 @@
 									<Button
 										variant="outline"
 										size="sm"
-										aria-labelledby={`model-id-${genericModelName}`}
+										aria-describedby={`model-id-${genericModelName}`}
 										onclick={(e) => {
 											e.stopPropagation();
 											onCopyModelId(genericModelName);
@@ -462,7 +462,7 @@
 										<Button
 											variant="outline"
 											size="sm"
-											aria-labelledby={`model-id-${variant.name}`}
+											aria-describedby={`model-id-${variant.name}`}
 											onclick={(e) => {
 												e.stopPropagation();
 												onCopyModelId(variant.name);
@@ -503,7 +503,7 @@
 							<Button
 								variant="outline"
 								size="sm"
-								aria-labelledby={`model-id-${genericModelName}`}
+								aria-describedby={`model-id-${genericModelName}`}
 								onclick={(e) => {
 									e.stopPropagation();
 									onCopyModelId(genericModelName);
@@ -599,7 +599,7 @@
 									<Button
 										variant="outline"
 										size="sm"
-											aria-labelledby={`model-id-${variant.name}`}
+											aria-describedby={`model-id-${variant.name}`}
 										onclick={(e) => {
 											e.stopPropagation();
 											onCopyModelId(variant.name);

@@ -82,13 +82,14 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
-test('ModelDetailsModal associates visible model IDs with Copy ID buttons', () => {
+test('ModelDetailsModal describes Copy ID buttons with visible model IDs', () => {
 	const modelDetailsModal = readSource('../src/routes/models/components/ModelDetailsModal.svelte');
 
 	assert.match(modelDetailsModal, /id=\{`model-id-\$\{genericModelName\}`\}/);
 	assert.match(modelDetailsModal, /id=\{`model-id-\$\{variant\.name\}`\}/);
-	assert.match(modelDetailsModal, /aria-labelledby=\{`model-id-\$\{genericModelName\}`\}/);
-	assert.match(modelDetailsModal, /aria-labelledby=\{`model-id-\$\{variant\.name\}`\}/);
+	assert.match(modelDetailsModal, /aria-describedby=\{`model-id-\$\{genericModelName\}`\}/);
+	assert.match(modelDetailsModal, /aria-describedby=\{`model-id-\$\{variant\.name\}`\}/);
+	assert.doesNotMatch(modelDetailsModal, /aria-labelledby=\{`model-id-/);
 });
 
 test('shared skip link is hidden until keyboard focus and targets both main landmarks', () => {
