@@ -11,8 +11,10 @@
 
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
@@ -78,7 +80,10 @@ impl Session {
         // shared with the drop guard before the blocking work begins.
         let native = Arc::new(NativeRequest::new(Arc::clone(&inner.api))?);
         let native_task = Arc::clone(&native);
+        let cancel_state = Arc::new(CancelState::new(Arc::clone(&native)));
+        let worker_cancel_state = Arc::clone(&cancel_state);
         let handle = tokio::task::spawn_blocking(move || {
+            let _completion = WorkerCompletion::new(Arc::clone(&worker_cancel_state));
             let _guard = inner.lock_ops();
             populate_native_request(&inner.api, &native_task, &request)?;
             let response = inner.process_request(&native_task)?;
@@ -87,7 +92,7 @@ impl Session {
 
         // Cancel the in-flight request if this future is dropped before the
         // worker finishes; disarmed on normal completion. See `CancelGuard`.
-        let guard = CancelGuard::new(native);
+        let guard = CancelGuard::new(cancel_state);
         let joined = handle.await;
         guard.disarm();
         joined.map_err(|e| FoundryLocalError::Internal {
@@ -180,16 +185,13 @@ fn populate_native_request(
 /// completion on the detached worker. Disarmed once the worker completes
 /// normally.
 struct CancelGuard {
-    native: Arc<NativeRequest>,
+    state: Arc<CancelState>,
     armed: bool,
 }
 
 impl CancelGuard {
-    fn new(native: Arc<NativeRequest>) -> Self {
-        Self {
-            native,
-            armed: true,
-        }
+    fn new(state: Arc<CancelState>) -> Self {
+        Self { state, armed: true }
     }
 
     fn disarm(mut self) {
@@ -200,8 +202,59 @@ impl CancelGuard {
 impl Drop for CancelGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.native.cancel();
+            self.state.cancel_until_worker_finishes();
         }
+    }
+}
+
+struct CancelState {
+    native: Arc<NativeRequest>,
+    worker_finished: AtomicBool,
+}
+
+impl CancelState {
+    fn new(native: Arc<NativeRequest>) -> Self {
+        Self {
+            native,
+            worker_finished: AtomicBool::new(false),
+        }
+    }
+
+    fn cancel_until_worker_finishes(self: &Arc<Self>) {
+        self.native.cancel();
+        if self.worker_finished.load(Ordering::Acquire) {
+            return;
+        }
+
+        let state = Arc::clone(self);
+        let _ = std::thread::Builder::new()
+            .name("foundry-local-cancel".into())
+            .spawn(move || {
+                while !state.worker_finished.load(Ordering::Acquire) {
+                    state.native.cancel();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+    }
+
+    fn mark_worker_finished(&self) {
+        self.worker_finished.store(true, Ordering::Release);
+    }
+}
+
+struct WorkerCompletion {
+    state: Arc<CancelState>,
+}
+
+impl WorkerCompletion {
+    fn new(state: Arc<CancelState>) -> Self {
+        Self { state }
+    }
+}
+
+impl Drop for WorkerCompletion {
+    fn drop(&mut self) {
+        self.state.mark_worker_finished();
     }
 }
 
