@@ -259,12 +259,12 @@
 											</svg>
 											<span class="relative z-10 min-w-0 truncate">Auto-select Best Variant</span>
 										{/if}
-										<span id={`run-command-${genericModelName}`} class="sr-only">
-											{formatModelCommand(genericModelName)}
-										</span>
 									</Button>
 								{/snippet}
 							</Tooltip.Trigger>
+							<span id={`run-command-${genericModelName}`} class="sr-only">
+								{formatModelCommand(genericModelName)}
+							</span>
 							<Tooltip.Portal>
 								<Tooltip.Content side="top" align="center" sideOffset={6}>
 									<code class="tooltip-code">{formatModelCommand(genericModelName)}</code>
@@ -309,12 +309,12 @@
 													{/if}
 													<span class="min-w-0 truncate">{getVariantLabel(variant)}</span>
 												{/if}
-												<span id={`run-command-${variant.name}`} class="sr-only">
-													{formatModelCommand(variant.name)}
-												</span>
 											</Button>
 										{/snippet}
 									</Tooltip.Trigger>
+									<span id={`run-command-${variant.name}`} class="sr-only">
+										{formatModelCommand(variant.name)}
+									</span>
 									<Tooltip.Portal>
 										<Tooltip.Content side="top" align="center" sideOffset={6}>
 											<code class="tooltip-code">{formatModelCommand(variant.name)}</code>

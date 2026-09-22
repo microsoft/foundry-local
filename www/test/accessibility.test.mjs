@@ -86,11 +86,15 @@ test('model-card copy buttons describe their Foundry run commands', () => {
 	const modelCard = readSource('../src/routes/models/components/ModelCard.svelte');
 
 	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{genericModelName\}`\}/);
-	assert.match(modelCard, /id=\{`run-command-\$\{genericModelName\}`\} class="sr-only"/);
-	assert.match(modelCard, /\{formatModelCommand\(genericModelName\)\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{genericModelName\}`\} class="sr-only">\s*\{formatModelCommand\(genericModelName\)\}/
+	);
 	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{variant\.name\}`\}/);
-	assert.match(modelCard, /id=\{`run-command-\$\{variant\.name\}`\} class="sr-only"/);
-	assert.match(modelCard, /\{formatModelCommand\(variant\.name\)\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{variant\.name\}`\} class="sr-only">\s*\{formatModelCommand\(variant\.name\)\}/
+	);
 });
 
 test('back-to-top control has a visible keyboard focus indicator', () => {
