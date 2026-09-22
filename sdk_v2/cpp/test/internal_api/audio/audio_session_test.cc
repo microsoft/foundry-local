@@ -866,6 +866,14 @@ TEST(AudioTelemetryTest, PcmDurationCountsSamplesIncludingEmptyAndSubMillisecond
             std::numeric_limits<int64_t>::max() / 16);
 }
 
+TEST(AudioTelemetryTest, LanguageIncludesOnlySupportedCodes) {
+  EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("en"), "en");
+  EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("EN-US"), "en-us");
+  EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("fr-ca"), "fr-ca");
+  EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry("transcribe my private meeting").empty());
+  EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry("en?customer=private").empty());
+}
+
 TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {
   if (!model_) {
     GTEST_SKIP() << "Audio model not loaded";

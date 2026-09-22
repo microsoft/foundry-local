@@ -254,15 +254,9 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
   // are recorded as failures; the happy path explicitly sets kSuccess / kSkipped.
   DownloadTracker tracker(info.model_id, user_agent, telemetry_);
   tracker.SetMaxConcurrency(static_cast<int32_t>(max_concurrency_));
-  auto download_start = clock::now();
   auto record_lock_wait = [&]() {
     tracker.SetLockWaitMs(std::chrono::duration_cast<std::chrono::milliseconds>(
                               clock::now() - lock_wait_start)
-                              .count());
-  };
-  auto record_download_elapsed = [&]() {
-    tracker.SetDownloadMs(std::chrono::duration_cast<std::chrono::milliseconds>(
-                              clock::now() - download_start)
                               .count());
   };
   auto record_stats = [&](const BlobDownloadStats& stats) {
@@ -343,7 +337,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
       record_lock_wait();
       switch (wait_exit_reason) {
         case CrossProcessFileLock::WaitExitReason::kCanceled:
-          tracker.SetDownloadWaitResult("Skipped");
+          tracker.SetDownloadWaitResult("Canceled");
           break;
         case CrossProcessFileLock::WaitExitReason::kTimedOut:
           tracker.SetDownloadWaitResult("TimedOut");
@@ -426,8 +420,7 @@ std::string DownloadManager::DownloadModel(const ModelInfo& info,
     return ResolveEffectiveModelPath(model_path);
   } catch (const std::exception& e) {
     record_stats(stats);
-    record_download_elapsed();
-    tracker.SetDownloadWaitResult("Failed");
+    tracker.SetDownloadWaitResult(ActionStatusFromException(e) == ActionStatus::kCanceled ? "Canceled" : "Failed");
     tracker.RecordException(e);
     // Leave the signal file in place so the incomplete download is detected
     throw;

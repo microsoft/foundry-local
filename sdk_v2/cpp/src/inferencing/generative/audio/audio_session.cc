@@ -126,6 +126,12 @@ bool IsLanguageToken(const std::string& token) {
 
 }  // namespace
 
+std::string AudioInternal::SanitizeLanguageForTelemetry(const std::string& language) {
+  const auto normalized = ToLowerAscii(language);
+  return NemotronLanguageIdMap().contains(normalized) || IsWhisperLanguageSupported(normalized) ? normalized
+                                                                                                : std::string{};
+}
+
 AudioSession::AudioSession(const fl::Model& catalog_model, GenAIModelInstance& model,
                            ILogger& logger, ITelemetry& telemetry)
     : Session(catalog_model, logger, telemetry), logger_(logger), model_(model) {
@@ -251,7 +257,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   auto generator = OnnxAudioGenerator::Create(audio_path, temperature, Model(), language);
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "file",
-      .language = language,
+      .language = AudioInternal::SanitizeLanguageForTelemetry(language),
   };
   int prompt_tokens = generator->PromptTokenCount();
 
@@ -429,7 +435,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   const auto language = effective_kvp.find("language");
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "streaming_pcm",
-      .language = language == effective_kvp.end() ? "" : language->second,
+      .language = language == effective_kvp.end() ? "" : AudioInternal::SanitizeLanguageForTelemetry(language->second),
       .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
       .sample_rate = kStreamingSampleRate,
       .channels = kStreamingChannels,
@@ -529,7 +535,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   auto generator = OnnxAudioGenerator::Create(req.filename, temperature, Model(), language);
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "openai_json_file",
-      .language = language,
+      .language = AudioInternal::SanitizeLanguageForTelemetry(language),
   };
   int prompt_tokens = generator->PromptTokenCount();
 
@@ -723,7 +729,7 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   response.usage.total_tokens = completion_tokens;
   audio_telemetry_details_ = AudioTelemetryDetails{
       .source = "openai_json_file",
-      .language = language,
+      .language = AudioInternal::SanitizeLanguageForTelemetry(language),
       .duration_ms = AudioInternal::AudioDurationMsFromSamples(audio_samples),
       .sample_rate = kStreamingSampleRate,
       .channels = kStreamingChannels,

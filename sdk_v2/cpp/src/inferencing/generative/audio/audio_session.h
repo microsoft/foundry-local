@@ -25,6 +25,12 @@ struct AudioItem;
 struct ItemQueue;
 struct SpeechSegmentItem;
 
+namespace AudioInternal {
+
+std::string SanitizeLanguageForTelemetry(const std::string& language);
+
+}  // namespace AudioInternal
+
 /// Audio transcription session.
 /// Stateless — each request processes one audio file independently (no history).
 /// Input: a Request with an AUDIO item (file path in uri) and optional parameters

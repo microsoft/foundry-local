@@ -175,8 +175,12 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
   const auto attempt_start = std::chrono::steady_clock::now();
   const std::string telemetry_correlation_id = GenerateGuidV4();
   const int telemetry_num_providers =
-      names != nullptr ? static_cast<int>(names->size() + result.failed_eps.size())
-                       : static_cast<int>(bootstrappers_.size());
+      names != nullptr
+          ? static_cast<int>(std::count_if(bootstrappers_.begin(), bootstrappers_.end(), [&](const auto& bs) {
+                               return std::find(names->begin(), names->end(), bs->Name()) != names->end();
+                             }) +
+                             result.failed_eps.size())
+          : static_cast<int>(bootstrappers_.size());
   int telemetry_attempts = 0;
   int telemetry_succeeded = 0;
   int telemetry_failed = static_cast<int>(result.failed_eps.size());
@@ -313,7 +317,9 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     result.status = "EP download cancelled by user";
     telemetry_status = ActionStatus::kCanceled;
   } else if (result.failed_eps.empty()) {
-    result.status = "All requested EPs registered successfully";
+    result.status = names != nullptr && telemetry_num_providers == 0
+                        ? "No recognized EPs requested"
+                        : "All recognized EPs registered successfully";
     telemetry_status = ActionStatus::kSuccess;
   } else {
     result.status = "Some EPs failed to register";

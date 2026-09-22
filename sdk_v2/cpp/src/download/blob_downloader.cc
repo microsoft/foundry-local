@@ -542,7 +542,14 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   stats.enumeration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                              clock::now() - enum_start)
                              .count();
-  auto download_start = clock::now();
+  struct DownloadTimer {
+    int64_t& elapsed_ms;
+    clock::time_point start = clock::now();
+
+    ~DownloadTimer() {
+      elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - start).count();
+    }
+  } download_timer{stats.download_ms};
 
   // Step 5: Skip blobs already present at the expected size. Their bytes
   // count toward "downloaded" so the percentage stays accurate when this is a
@@ -570,9 +577,6 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
     if (options.progress) {
       options.progress(100.0f);
     }
-    stats.download_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            clock::now() - download_start)
-                            .count();
     return;
   }
 
@@ -646,10 +650,6 @@ void DownloadBlobsToDirectory(IBlobDownloader& downloader,
   if (options.progress) {
     options.progress(100.0f);
   }
-
-  stats.download_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          clock::now() - download_start)
-                          .count();
 }
 
 }  // namespace fl

@@ -20,10 +20,16 @@ namespace fl {
 
 namespace {
 
-CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string& correlation_id) {
+CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string& correlation_id,
+                                       bool is_default_catalog) {
   CatalogFetchInfo info;
   info.user_agent = DefaultUserAgent();
   info.correlation_id = correlation_id;
+  if (!is_default_catalog) {
+    info.endpoint = "custom";
+    return info;
+  }
+
   std::string rest = url;
   if (auto scheme = rest.find("://"); scheme != std::string::npos) {
     rest = rest.substr(scheme + 3);
@@ -127,7 +133,7 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
     for (const auto& [url, filter] : catalog_urls_) {
       try {
         auto client = CreateCatalogClient(url, filter.value_or(""));
-        const auto telemetry_info = BuildCatalogFetchInfo(url, correlation_id);
+        const auto telemetry_info = BuildCatalogFetchInfo(url, correlation_id, url == kDefaultCatalogUrl);
         auto model_infos =
             FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_, telemetry_, telemetry_info);
         any_url_succeeded = true;

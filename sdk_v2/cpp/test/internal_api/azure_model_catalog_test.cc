@@ -210,7 +210,7 @@ class AzureModelCatalogTest : public ::testing::Test {
   int factory_calls_ = 0;
 };
 
-TEST_F(AzureModelCatalogTest, LiveFetchRecordsPublicDimensionsAndBucketsCustomUrls) {
+TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
   const std::string azure_url = "https://ai.azure.com/api/eastus/ux/v1.0?token=private";
   const std::string custom_url = "https://private.example/tenant/private-models?token=private";
   AddBehavior(azure_url);
@@ -222,9 +222,9 @@ TEST_F(AzureModelCatalogTest, LiveFetchRecordsPublicDimensionsAndBucketsCustomUr
   ASSERT_EQ(telemetry_.calls.size(), 2u);
   const auto& azure = telemetry_.calls[0];
   EXPECT_EQ(azure.operation, "FetchAll");
-  EXPECT_EQ(azure.endpoint, "ai.azure.com");
-  EXPECT_EQ(azure.region, "eastus");
-  EXPECT_EQ(azure.format, "ux/v1.0");
+  EXPECT_EQ(azure.endpoint, "custom");
+  EXPECT_TRUE(azure.region.empty());
+  EXPECT_TRUE(azure.format.empty());
   EXPECT_EQ(azure.status, ActionStatus::kSuccess);
   EXPECT_EQ(azure.model_count, 0);
   EXPECT_GE(azure.duration_ms, 0);
@@ -235,6 +235,19 @@ TEST_F(AzureModelCatalogTest, LiveFetchRecordsPublicDimensionsAndBucketsCustomUr
   EXPECT_TRUE(custom.region.empty());
   EXPECT_TRUE(custom.format.empty());
   EXPECT_EQ(custom.correlation_id, azure.correlation_id);
+}
+
+TEST_F(AzureModelCatalogTest, LiveFetchRecordsDimensionsForDefaultCatalogOnly) {
+  const std::string default_url = "https://ai.azure.com/api/centralus/ux/v1.0";
+  AddBehavior(default_url);
+  auto catalog = CreateCatalog({});
+
+  catalog->ListModels();
+
+  ASSERT_EQ(telemetry_.calls.size(), 1u);
+  EXPECT_EQ(telemetry_.calls[0].endpoint, "ai.azure.com");
+  EXPECT_EQ(telemetry_.calls[0].region, "centralus");
+  EXPECT_EQ(telemetry_.calls[0].format, "ux/v1.0");
 }
 
 TEST_F(AzureModelCatalogTest, FailedLiveFetchRecordsFailureBeforeSnapshotFallback) {

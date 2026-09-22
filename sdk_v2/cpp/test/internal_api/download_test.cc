@@ -196,6 +196,17 @@ class CancelCheckingMockDownloader : public IBlobDownloader {
   }
 };
 
+class FailingTransferDownloader : public IBlobDownloader {
+ public:
+  std::vector<BlobItemInfo> ListBlobs(const std::string&) override { return {{"weights.bin", 100}}; }
+
+  void DownloadBlob(const std::string&, const std::string&, const std::string&, int, BlobBytesWrittenFn,
+                    std::atomic<bool>*) override {
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    throw std::runtime_error("simulated transfer failure");
+  }
+};
+
 /// EP detector returning all device types so the catalog returns the full model list.
 class AllDevicesEpDetector : public IEpDetector {
  public:
@@ -712,6 +723,18 @@ TEST(BlobDownloadTest, CancellationStopsRemainingBlobs) {
       << "No blobs should have been downloaded — cancellation fired at 0% before any blob started";
 }
 
+TEST(BlobDownloadTest, FailedTransferPreservesTransferDuration) {
+  auto tmpdir = TempPath::CreateTempDir();
+  FailingTransferDownloader downloader;
+  BlobDownloadStats stats;
+
+  EXPECT_THROW(
+      DownloadBlobsToDirectory(downloader, "https://test.blob/c?sig=x", tmpdir.string(), BlobDownloadOptions{}, stats),
+      std::runtime_error);
+
+  EXPECT_GE(stats.download_ms, 20);
+}
+
 TEST(BlobDownloadTest, CancelledFlagAbortsInFlightDownload) {
   auto tmpdir = TempPath::CreateTempDir();
   CancelCheckingMockDownloader mock;
@@ -937,7 +960,8 @@ TEST(DownloadManagerTest, CanceledDownloadRecordsCanceledEvent) {
   EXPECT_EQ(telemetry.calls[0].status, ActionStatus::kCanceled);
   EXPECT_EQ(telemetry.calls[0].model_id, info.model_id);
   EXPECT_EQ(telemetry.calls[0].user_agent, "test-client/1");
-  EXPECT_EQ(telemetry.calls[0].download_wait_result, "Failed");
+  EXPECT_EQ(telemetry.calls[0].download_wait_result, "Canceled");
+  EXPECT_EQ(telemetry.calls[0].download_ms, 0);
 }
 
 // --- Region resolution: detected region drives the download endpoint ---
@@ -1352,7 +1376,7 @@ TEST(DownloadManagerTest, WaitsForCrossProcessLockThenServesCachedResult) {
       << "Model became available while waiting; the post-lock recheck must skip the download";
 }
 
-TEST(DownloadManagerTest, CanceledCrossProcessLockWaitRecordsSkippedWait) {
+TEST(DownloadManagerTest, CanceledCrossProcessLockWaitRecordsCanceledWait) {
   auto tmpdir = TempPath::CreateTempDir();
   RecordingDownloadTelemetry telemetry;
   DownloadManager manager(tmpdir.string(), "eastus", 64, fl::test::NullLog(), telemetry);
@@ -1377,7 +1401,7 @@ TEST(DownloadManagerTest, CanceledCrossProcessLockWaitRecordsSkippedWait) {
 
   ASSERT_EQ(telemetry.calls.size(), 1u);
   EXPECT_EQ(telemetry.calls[0].status, ActionStatus::kCanceled);
-  EXPECT_EQ(telemetry.calls[0].download_wait_result, "Skipped");
+  EXPECT_EQ(telemetry.calls[0].download_wait_result, "Canceled");
   EXPECT_GE(telemetry.calls[0].lock_wait_ms, 10);
 }
 
