@@ -336,11 +336,12 @@
 
 		<!-- Filter Summary -->
 		<div class="border-border/40 mt-4 flex items-center justify-between border-t pt-4">
-			<div class="text-sm text-gray-600 dark:text-gray-400">
+			<div role="status" class="text-sm text-gray-600 dark:text-gray-400">
 				{#if isFiltering}
 					<span class="inline-flex items-center">
 						<div
 							class="border-primary mr-2 size-4 animate-spin rounded-full border-2 border-t-transparent"
+							aria-hidden="true"
 						></div>
 						Filtering...
 					</span>

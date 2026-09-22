@@ -82,6 +82,15 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('model filter results are announced through a live status region', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/<div role="status"[^>]*>[\s\S]*?\{#if isFiltering\}[\s\S]*?\{filteredCount\} model/
+	);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 
