@@ -90,7 +90,7 @@
 
 			<!-- Sort -->
 			<div>
-				<Label>Sort By</Label>
+				<Label id="sort-by">Sort By</Label>
 				<div class="flex gap-2">
 					<DropdownMenu.Root>
 						<DropdownMenu.Trigger>
@@ -98,9 +98,10 @@
 								<Button
 									{...props}
 									variant="outline"
+									aria-labelledby="sort-by sort-by-value"
 									class="h-10 w-full justify-between font-normal"
 								>
-									<span>
+									<span id="sort-by-value">
 										{#if sortBy === 'lastModified'}
 											Last Modified
 										{:else if sortBy === 'name'}
@@ -166,12 +167,17 @@
 
 			<!-- Family Filter -->
 			<div>
-				<Label for="family">Model Family</Label>
+				<Label id="model-family">Model Family</Label>
 				<DropdownMenu.Root>
 					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
-							<Button {...props} variant="outline" class="h-10 w-full justify-between font-normal">
-								<span>
+							<Button
+								{...props}
+								variant="outline"
+								aria-labelledby="model-family model-family-value"
+								class="h-10 w-full justify-between font-normal"
+							>
+								<span id="model-family-value">
 									{selectedFamily ? getFamilyDisplayName(selectedFamily) : 'All Families'}
 								</span>
 								<ChevronDown class="ml-2 size-4 opacity-50" />
@@ -201,12 +207,17 @@
 
 			<!-- Acceleration Filter -->
 			<div>
-				<Label for="acceleration">Acceleration</Label>
+				<Label id="acceleration">Acceleration</Label>
 				<DropdownMenu.Root>
 					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
-							<Button {...props} variant="outline" class="h-10 w-full justify-between font-normal">
-								<span>
+							<Button
+								{...props}
+								variant="outline"
+								aria-labelledby="acceleration acceleration-value"
+								class="h-10 w-full justify-between font-normal"
+							>
+								<span id="acceleration-value">
 									{selectedAcceleration
 										? foundryModelService.getAccelerationDisplayName(selectedAcceleration)
 										: 'All Accelerations'}

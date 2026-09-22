@@ -82,6 +82,17 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('model dropdown triggers are labelled by their visible labels and values', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(modelFilters, /<Label id="sort-by">Sort By<\/Label>/);
+	assert.match(modelFilters, /aria-labelledby="sort-by sort-by-value"/);
+	assert.match(modelFilters, /<Label id="model-family">Model Family<\/Label>/);
+	assert.match(modelFilters, /aria-labelledby="model-family model-family-value"/);
+	assert.match(modelFilters, /<Label id="acceleration">Acceleration<\/Label>/);
+	assert.match(modelFilters, /aria-labelledby="acceleration acceleration-value"/);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 
