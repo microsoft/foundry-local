@@ -565,9 +565,9 @@
 							<div class="bg-card hover:border-primary/50 rounded-lg border p-4 transition-all">
 								<div class="mb-3 flex items-start justify-between">
 									<div class="flex-1">
-											<div id={`model-id-${variant.name}`} class="font-mono text-sm font-medium">
-												{variant.name}
-											</div>
+										<div id={`model-id-${variant.name}`} class="font-mono text-sm font-medium">
+											{variant.name}
+										</div>
 										<div
 											class="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-xs"
 										>
