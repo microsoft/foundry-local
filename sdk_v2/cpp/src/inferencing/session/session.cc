@@ -35,7 +35,6 @@ void LogUsageTelemetryFailure(ILogger& logger) noexcept {
   }
 }
 
-// Only retain the count, not another copy of prompt content for telemetry.
 struct RequestMessageCount {
   uint64_t count = 0;
 };
@@ -45,11 +44,9 @@ void from_json(const nlohmann::json& json, RequestMessageCount& result) {
   if (messages == json.end()) {
     return;
   }
-
   if (!messages->is_array()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "messages must be an array");
   }
-
   result.count = messages->size();
 }
 
@@ -267,7 +264,8 @@ void Session::RecordUsage(const Request& request, const Response& response,
     usage.correlation_id = context.correlation_id;
     usage.indirect = context.indirect;
     usage.stream = static_cast<bool>(callback_fn_);
-    usage.num_messages = CountRequestMessages(request);
+    usage.num_messages =
+        response.input_message_count.has_value() ? *response.input_message_count : CountRequestMessages(request);
     usage.total_time_ms = total_time_ms;
     usage.total_tokens = TelemetryTokenCount(response.usage.total_tokens);
     usage.input_token_count = TelemetryTokenCount(response.usage.prompt_tokens);

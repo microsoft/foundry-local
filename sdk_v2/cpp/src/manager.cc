@@ -318,9 +318,9 @@ Manager::Manager(const Configuration& config) : config_(config) {
 #endif
 
   const bool disable_nonessential_telemetry =
-      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry");
-  const bool telemetry_hard_disabled =
-      TelemetryEnvironment::IsCiEnvironment() || TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+      config_.disable_nonessential_telemetry || IsAdditionalOptionEnabled(config_, "DisableNonessentialTelemetry") ||
+      TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+  const bool telemetry_hard_disabled = TelemetryEnvironment::IsCiEnvironment();
   telemetry_ = std::make_unique<OneDsTelemetry>(config_.app_name, *logger_, disable_nonessential_telemetry);
   try {
     telemetry_->RecordProcessInfo(BuildProcessInfo(BuildTelemetryMetadata(config_.app_name),

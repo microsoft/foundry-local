@@ -21,7 +21,7 @@ class OneDsTelemetry : public ITelemetry {
   /// @param app_name      Configuration::app_name; stamped as AppName on every event.
   /// @param logger        Diagnostic logger; used by the embedded TelemetryLogger mirror.
   /// @param disable_nonessential_telemetry  When true, non-essential uploads are suppressed; ProcessInfo still
-  ///                           uploads and events are still written to the local diagnostic logger.
+  ///                                        uploads and events are still written to the local diagnostic logger.
   OneDsTelemetry(const std::string& app_name,
                  ILogger& logger,
                  bool disable_nonessential_telemetry = false);
@@ -60,11 +60,11 @@ class OneDsTelemetry : public ITelemetry {
   std::shared_lock<std::shared_mutex> LockForLogging(bool require_upload = true) const;
 
   TelemetryLogger local_log_;
-  TelemetryMetadata metadata_;       // Cached at construction.
+  TelemetryMetadata metadata_;  // Cached at construction.
   std::unique_ptr<Impl> impl_;
   std::atomic<bool> initialized_{false};
   std::atomic<bool> upload_enabled_{true};  // False when non-essential uploads are suppressed.
-  mutable std::shared_mutex mutex_;  // Serializes logging calls with teardown.
+  mutable std::shared_mutex mutex_;         // Serializes logging calls with teardown.
   ILogger& logger_;
 };
 

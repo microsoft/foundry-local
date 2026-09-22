@@ -1565,6 +1565,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   // Parse the OpenAI chat completions request
   auto req_json = nlohmann::json::parse(request_json);
   auto req = req_json.get<ChatCompletionRequest>();
+  response.input_message_count = req.messages.size();
 
   // Apply catalog defaults passed via request options
   chat_completions::ApplyCatalogDefaults(req, CatalogModel().Info().model_settings);

@@ -213,14 +213,16 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
                 "[Telemetry] CI environment detected; 1DS upload disabled (events still logged locally)");
     return;
   }
-  if (TelemetryEnvironment::IsTelemetryDisabledByEnvVar()) {
-    logger_.Log(LogLevel::Information,
-                "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; 1DS upload disabled "
-                "(events still logged locally)");
-    return;
-  }
+  const bool disabled_by_environment = TelemetryEnvironment::IsTelemetryDisabledByEnvVar();
+  disable_nonessential_telemetry = disable_nonessential_telemetry || disabled_by_environment;
   if (disable_nonessential_telemetry) {
     upload_enabled_.store(false, std::memory_order_release);
+  }
+  if (disabled_by_environment) {
+    logger_.Log(LogLevel::Information,
+                "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; non-essential 1DS upload disabled "
+                "(ProcessInfo still uploads)");
+  } else if (disable_nonessential_telemetry) {
     logger_.Log(LogLevel::Information,
                 "[Telemetry] Disabled via configuration; non-essential 1DS upload disabled "
                 "(ProcessInfo still uploads)");

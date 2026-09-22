@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 #include <windows.h>
 #include <sysinfoapi.h>
 #include <winternl.h>
@@ -36,7 +36,7 @@ namespace fl {
 
 namespace {
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 std::string GetProcessPath() {
   std::array<char, MAX_PATH> path{};
   DWORD length = ::GetModuleFileNameA(nullptr, path.data(), static_cast<DWORD>(path.size()));
@@ -228,6 +228,38 @@ TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
                  ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "SystemProductName") + " " +
                  ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "BaseBoardManufacturer");
   return TelemetryInternal::ClassifyHostEnvironment(evidence);
+}
+#elif defined(_WIN32)
+std::string GetProcessName() {
+  return "unknown";
+}
+
+std::string GetHostAppVersion() {
+  return {};
+}
+
+int64_t GetTotalMemoryMB() {
+  return -1;
+}
+
+std::string GetWindowsVersion() {
+  return "unknown";
+}
+
+std::string GetCpuArch() {
+#if defined(_M_AMD64)
+  return "amd64";
+#elif defined(_M_ARM64)
+  return "arm64";
+#elif defined(_M_IX86)
+  return "x86";
+#else
+  return "unknown";
+#endif
+}
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  return TelemetryInternal::ClassifyHostEnvironment({});
 }
 #else
 std::string GetProcessName() {

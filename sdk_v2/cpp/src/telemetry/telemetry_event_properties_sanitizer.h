@@ -7,6 +7,8 @@
 #include <EventProperties.hpp>
 #include <EventProperty.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <map>
 #include <string>
 #include <string_view>
@@ -15,6 +17,52 @@
 namespace fl::TelemetryInternal {
 
 namespace detail {
+
+inline bool IsSecretProperty(std::string_view name) {
+  std::string normalized(name);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+
+  constexpr std::string_view secret_names[] = {
+      "access-key",
+      "access_key",
+      "accesskey",
+      "access-token",
+      "access_token",
+      "account-key",
+      "account_key",
+      "accountkey",
+      "api-key",
+      "api_key",
+      "apikey",
+      "auth",
+      "authorization",
+      "client-secret",
+      "client_secret",
+      "connection-string",
+      "connection_string",
+      "connectionstring",
+      "credential",
+      "credentials",
+      "password",
+      "passwd",
+      "private-key",
+      "private_key",
+      "privatekey",
+      "pwd",
+      "secret",
+      "sig",
+      "signature",
+      "token",
+  };
+  for (const auto secret_name : secret_names) {
+    if (normalized == secret_name ||
+        (normalized.size() > secret_name.size() && normalized.ends_with(secret_name))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 inline void SanitizeProperties(::Microsoft::Applications::Events::EventProperties& event_properties,
                                ::Microsoft::Applications::Events::DataCategory category) {
@@ -25,7 +73,7 @@ inline void SanitizeProperties(::Microsoft::Applications::Events::EventPropertie
   auto& properties =
       const_cast<std::map<std::string, EventProperty>&>(event_properties.GetProperties(category));
   for (auto& [name, property] : properties) {
-    const bool secret_property = telemetry_detail::IsSecretKey(name);
+    const bool secret_property = IsSecretProperty(name);
     if (property.type == EventProperty::TYPE_STRING) {
       const auto value = property.as_string == nullptr ? std::string_view{} : std::string_view(property.as_string);
       const auto sanitized_value = secret_property ? std::string{"[secret]"} : ScrubStringForTelemetry(value);

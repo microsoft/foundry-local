@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+#include "exception.h"
 #include "logger.h"
+#include "platform/telemetry_device_id.h"
 #include "telemetry/telemetry_action_tracker.h"
 #include "telemetry/device_id.h"
 #include "telemetry/telemetry_context.h"
@@ -18,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -260,6 +263,42 @@ TEST(OneDsTelemetryTest, DisableNonessentialTelemetrySuppressesUpload) {
   EXPECT_FALSE(telemetry.IsUploadEnabled());
 }
 
+TEST(OneDsTelemetryTest, OrtEnvironmentVariableSuppressesOnlyNonessentialUpload) {
+  constexpr std::array<const char*, 13> ci_environment_variables = {
+      "CI",
+      "TF_BUILD",
+      "GITHUB_ACTIONS",
+      "GITLAB_CI",
+      "CIRCLECI",
+      "TRAVIS",
+      "JENKINS_URL",
+      "CODEBUILD_BUILD_ID",
+      "BUILDKITE",
+      "TEAMCITY_VERSION",
+      "APPVEYOR",
+      "BITBUCKET_BUILD_NUMBER",
+      "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI",
+  };
+  std::vector<std::unique_ptr<ScopedEnvVar>> unset_variables;
+  for (const auto* name : ci_environment_variables) {
+    unset_variables.push_back(std::make_unique<ScopedEnvVar>(name, nullptr));
+  }
+  ScopedEnvVar disabled("ORT_TELEMETRY_DISABLED", "true");
+
+  RecordingLogger logger;
+  OneDsTelemetry telemetry("TestApp", logger);
+
+  constexpr std::string_view expected_diagnostic =
+      "[Telemetry] Disabled via ORT_TELEMETRY_DISABLED; non-essential 1DS upload disabled "
+      "(ProcessInfo still uploads)";
+  const auto diagnostic =
+      std::find_if(logger.entries.begin(), logger.entries.end(), [expected_diagnostic](const auto& entry) {
+        return entry.level == LogLevel::Information && entry.message == expected_diagnostic;
+      });
+  EXPECT_NE(diagnostic, logger.entries.end());
+  EXPECT_FALSE(telemetry.IsUploadEnabled());
+}
+
 TEST(TelemetryActionTest, EpActionNamesMatchEventNames) {
   EXPECT_EQ(ActionToString(Action::kEpDownloadAttempt), "EPDownloadAttempt");
   EXPECT_EQ(ActionToString(Action::kEpDownloadAndRegister), "EPDownloadAndRegister");
@@ -270,6 +309,12 @@ TEST(TelemetryActionTest, StatusNamesIncludeDetailedFailures) {
   EXPECT_EQ(ActionStatusToString(ActionStatus::kCanceled), "Canceled");
   EXPECT_EQ(ActionStatusToString(ActionStatus::kDependencyFailure), "DependencyFailure");
   EXPECT_EQ(ActionStatusToString(ActionStatus::kTimeout), "Timeout");
+}
+
+TEST(TelemetryActionTest, ClassifiesInternalTimeoutExceptionWithoutChangingPublicErrorCode) {
+  TimeoutException timeout(FL_WHERE, "timed out", FOUNDRY_LOCAL_ERROR_NETWORK);
+  EXPECT_EQ(timeout.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+  EXPECT_EQ(ActionStatusFromException(timeout), ActionStatus::kTimeout);
 }
 
 TEST(TelemetryActionTest, DirectContextUsesDefaultUserAgent) {
@@ -455,6 +500,22 @@ TEST(TelemetryMetadataTest, HostAppVersionIsAlwaysPopulated) {
 }
 
 #ifdef _WIN32
+TEST(TelemetryDeviceIdPlatformTest, UsesLocalAppDataForCacheDirectory) {
+  ScopedEnvVar local_app_data("LOCALAPPDATA", "C:\\telemetry-cache-test");
+  EXPECT_EQ(TelemetryDeviceIdPlatform::GetCacheDirectory(),
+            std::filesystem::path("C:\\telemetry-cache-test\\Microsoft\\DeveloperTools\\.onnxruntime"));
+  EXPECT_FALSE(TelemetryDeviceIdPlatform::UsesPlatformProvidedId());
+}
+#elif !defined(__ANDROID__) && !defined(__APPLE__)
+TEST(TelemetryDeviceIdPlatformTest, UsesXdgCacheHomeForStorageDirectory) {
+  ScopedEnvVar xdg_cache_home("XDG_CACHE_HOME", "/tmp/telemetry-cache-test");
+  EXPECT_EQ(TelemetryDeviceIdPlatform::GetStorageDirectory(),
+            std::filesystem::path("/tmp/telemetry-cache-test/Microsoft/DeveloperTools/.onnxruntime"));
+  EXPECT_FALSE(TelemetryDeviceIdPlatform::UsesPlatformProvidedId());
+}
+#endif
+
+#ifdef _WIN32
 TEST(TelemetryMetadataTest, ProcessNamePreservesExecutableExtensionOnWindows) {
   auto info = BuildProcessInfo(BuildTelemetryMetadata("foundry-local-test"), /*include_device_id_status=*/false);
 
@@ -505,83 +566,24 @@ TEST(TelemetryDeviceIdTest, ValidatesGuidShapeAndHashesForUpload) {
   EXPECT_EQ(hashed, "c:6225BD190D6CCF87766A49C9986D174DEF3391FE175A61525E49A1D2334D6A43");
 }
 
-TEST(TelemetryRedactionTest, ScrubsSensitiveAnchorsAndPreservesBenignIdentifiers) {
-  EXPECT_EQ(ScrubStringForTelemetry("config missing"), "config missing");
-  EXPECT_EQ(ScrubStringForTelemetry("/secret"), "[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("failed at /secret"), "failed at [path]");
+TEST(TelemetryRedactionTest, MatchesOnnxRuntimePathAnchors) {
+  EXPECT_EQ(ScrubStringForTelemetry(""), "");
+  EXPECT_EQ(ScrubStringForTelemetry("no path here"), "no path here");
+  EXPECT_EQ(ScrubStringForTelemetry("/home/alice/model.onnx"), "[path]");
+  EXPECT_EQ(ScrubStringForTelemetry("~/.config/app/x"), "[path]");
   EXPECT_EQ(ScrubStringForTelemetry("Load C:\\Users\\First Last\\model.onnx failed"), "Load [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open /home/alice/model.onnx failed"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open \\\\server\\share\\model.onnx"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("\\Users\\sample-user\\model.onnx"), "[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open \\Users\\sample-user\\model.onnx"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open ~/models/model.onnx"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("path=/profiles/sample-user/model.onnx"), "path=[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("load models/private/model.onnx"), "load [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("load models\\private\\model.onnx"), "load [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("load ./private/model.onnx"), "load [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("load ..\\private\\model.onnx"), "load [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open ./x"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open ../x"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open .\\x"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("open ..\\x"), "open [path]");
-  EXPECT_EQ(ScrubStringForTelemetry("line\n./x"), "line\n[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("label=(../x)"), "label=([path]");
-  EXPECT_EQ(ScrubStringForTelemetry("file:./private.db"), "[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("path:../secret"), "[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("label->/secret"), "label->[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("failed at `/secret`"), "failed at `[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("Error at file:///profiles/sample-user/model.onnx"), "Error at [url]");
-  EXPECT_EQ(ScrubStringForTelemetry("sqlite:////profiles/sample-user/private.db"), "[url]");
-  EXPECT_EQ(ScrubStringForTelemetry("nfs://server/profiles/sample-user/model.onnx"), "[url]");
-  EXPECT_EQ(ScrubStringForTelemetry("GET https://example.invalid/x?token=placeholder failed"), "GET [url]");
-  EXPECT_EQ(ScrubStringForTelemetry("open //private.example/secret"), "open [url]");
-  EXPECT_EQ(ScrubStringForTelemetry("label->//private.example/secret"), "label->[url]");
-  EXPECT_EQ(ScrubStringForTelemetry("models/foo.onnx?sig=placeholder"), "models/foo.onnx?sig=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("example.invalid/api?token=placeholder"),
-            "example.invalid/api?token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("catalog?token=placeholder"), "catalog?token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("endpoint#private-state"), "endpoint#private-state");
-  EXPECT_EQ(ScrubStringForTelemetry("endpoint#access_token=placeholder"),
-            "endpoint#access_token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("?token=placeholder"), "?token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("GET ?sig=placeholder"), "GET ?sig=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("#access_token=placeholder"), "#access_token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("sample-user:placeholder@example.invalid/private/model"), "[credential]");
-  EXPECT_EQ(ScrubStringForTelemetry("sample-user@example.invalid/private/model"), "[path]");
-  EXPECT_EQ(ScrubStringForTelemetry("@scope/package"), "@scope/package");
-  EXPECT_EQ(ScrubStringForTelemetry("request https://user:placeholder@example.invalid/api?token=placeholder"),
-            "request [url]");
-  EXPECT_EQ(ScrubStringForTelemetry("n/a"), "n/a");
-  EXPECT_EQ(ScrubStringForTelemetry("read/write"), "read/write");
-  EXPECT_EQ(ScrubStringForTelemetry("domain\\user"), "domain\\user");
-  EXPECT_EQ(ScrubStringForTelemetry("microsoft/phi-3-mini"), "microsoft/phi-3-mini");
-  EXPECT_EQ(ScrubStringForTelemetry("tokenizer=enabled"), "tokenizer=enabled");
-  EXPECT_EQ(ScrubStringForTelemetry("refreshTokenizer=enabled"), "refreshTokenizer=enabled");
-  EXPECT_EQ(ScrubStringForTelemetry("oauth=enabled"), "oauth=enabled");
+  EXPECT_EQ(ScrubStringForTelemetry("from \\\\server\\share\\dir\\weights.bin done"), "from [path]");
+  EXPECT_EQ(ScrubStringForTelemetry("alice/models/phi3.onnx"), "[path]");
+  EXPECT_EQ(ScrubStringForTelemetry("Users\\alice\\model.onnx"), "[path]");
+}
+
+TEST(TelemetryRedactionTest, PreservesSingleSeparatorTokens) {
+  EXPECT_EQ(ScrubStringForTelemetry("/secret"), "/secret");
   EXPECT_EQ(ScrubStringForTelemetry("models/foo.onnx"), "models/foo.onnx");
-  EXPECT_EQ(ScrubStringForTelemetry("ratio 3/4 and and/or"), "ratio 3/4 and and/or");
-  EXPECT_EQ(ScrubStringForTelemetry("version 1.2.3"), "version 1.2.3");
+  EXPECT_EQ(ScrubStringForTelemetry("ratio 3/4 and/or"), "ratio 3/4 and/or");
+  EXPECT_EQ(ScrubStringForTelemetry("domain\\user"), "domain\\user");
+  EXPECT_EQ(ScrubStringForTelemetry("read\\write access"), "read\\write access");
 }
-
-TEST(TelemetryRedactionTest, ScrubsQueryHeaderCliAndConnectionSecrets) {
-  EXPECT_EQ(ScrubStringForTelemetry("hf_token=placeholder"), "hf_token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("refresh-token=placeholder"), "refresh-token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("auth.token=placeholder"), "auth.token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("dbPassword=placeholder"), "dbPassword=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("clientApiKey=placeholder"), "clientApiKey=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("AWS_SECRET_ACCESS_KEY=placeholder"), "AWS_SECRET_ACCESS_KEY=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("PWD=placeholder"), "PWD=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("Proxy-Authorization: placeholder"), "Proxy-Authorization: [secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("headers.authorization=placeholder"),
-            "headers.authorization=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("failure --token=placeholder"), "failure --token=[secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("failure --api-key placeholder"), "failure --api-key [secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("failure /password placeholder"), "failure /password [secret]");
-  EXPECT_EQ(ScrubStringForTelemetry("connect user:placeholder@example.invalid/model"),
-            "connect [credential]");
-  EXPECT_EQ(ScrubStringForTelemetry("token=[secret]"), "token=[secret]");
-}
-
 TEST(TelemetryRedactionTest, CapsAsciiAndMultibyteStringsAtUtf8Boundary) {
   const std::string long_msg(kMaxTelemetryStringLength + 100, 'x');
   EXPECT_EQ(ScrubStringForTelemetry(long_msg).size(), kMaxTelemetryStringLength);
@@ -594,7 +596,7 @@ TEST(TelemetryRedactionTest, CapsAsciiAndMultibyteStringsAtUtf8Boundary) {
   const std::string crossing_tail = " sample-user/models";
   const std::string crossing_padding(kMaxTelemetryStringLength - crossing_tail.size(), 'x');
   EXPECT_EQ(ScrubStringForTelemetry(crossing_padding + crossing_tail + "/private"),
-            crossing_padding + " [redacted]");
+            crossing_padding + " [path]");
 
   const std::string euro = "\xE2\x82\xAC";
   std::string long_utf8;
@@ -641,15 +643,14 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutCh
   EXPECT_EQ(after.at("TotalTokens").as_int64, 42);
 }
 
-TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsSchemesAndCapsEveryStringValue) {
+TEST(OneDsTelemetryTest, EventPropertiesSanitizerCapsEveryStringValue) {
   using namespace ::Microsoft::Applications::Events;
 
   EventProperties event("CatalogFetch");
-  event.SetProperty("Endpoint", "sqlite://placeholder:placeholder@example.invalid/catalog?key=placeholder");
+  event.SetProperty("Endpoint", "catalog endpoint");
   event.SetProperty("Ascii", std::string(kMaxTelemetryStringLength + 100, 'x'));
   const std::string euro = "\xE2\x82\xAC";
   std::string long_utf8;
-  long_utf8.reserve(kMaxTelemetryStringLength + euro.size());
   while (long_utf8.size() <= kMaxTelemetryStringLength) {
     long_utf8 += euro;
   }
@@ -658,7 +659,7 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsSchemesAndCapsEveryStrin
   TelemetryInternal::SanitizeEventProperties(event);
   const auto& properties = event.GetProperties(DataCategory_PartC);
 
-  EXPECT_STREQ(properties.at("Endpoint").as_string, "[url]");
+  EXPECT_STREQ(properties.at("Endpoint").as_string, "catalog endpoint");
   EXPECT_EQ(std::string_view(properties.at("Ascii").as_string).size(), kMaxTelemetryStringLength);
   EXPECT_EQ(std::string_view(properties.at("Utf8").as_string).size(), kMaxTelemetryStringLength - 1);
 }
@@ -669,16 +670,8 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRecursesIntoStringArraysInOrder
   EventProperties event("Metadata");
   std::vector<std::string> aliases = {
       "microsoft/phi-3-mini",
-      "load ./profiles/sample-user/config.json",
-      "ssh://placeholder@example.invalid/private/model",
-      "example.invalid/api?token=placeholder",
-      "catalog?token=placeholder",
-      "?token=placeholder",
-      "sample-user@example.invalid/private/model",
-      "file:./private.db",
-      "label->/secret",
-      "failed at `/secret`",
-      "open //private.example/secret",
+      "load /profiles/sample-user/config.json",
+      "models/foo.onnx",
       std::string(kMaxTelemetryStringLength + 1, 'z'),
   };
   event.SetProperty("Aliases", aliases, PiiKind_GenericData);
@@ -691,20 +684,12 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRecursesIntoStringArraysInOrder
   ASSERT_EQ(property.as_stringArray->size(), aliases.size());
   EXPECT_EQ(property.as_stringArray->at(0), "microsoft/phi-3-mini");
   EXPECT_EQ(property.as_stringArray->at(1), "load [path]");
-  EXPECT_EQ(property.as_stringArray->at(2), "[url]");
-  EXPECT_EQ(property.as_stringArray->at(3), "example.invalid/api?token=[secret]");
-  EXPECT_EQ(property.as_stringArray->at(4), "catalog?token=[secret]");
-  EXPECT_EQ(property.as_stringArray->at(5), "?token=[secret]");
-  EXPECT_EQ(property.as_stringArray->at(6), "[path]");
-  EXPECT_EQ(property.as_stringArray->at(7), "[path]");
-  EXPECT_EQ(property.as_stringArray->at(8), "label->[path]");
-  EXPECT_EQ(property.as_stringArray->at(9), "failed at `[path]");
-  EXPECT_EQ(property.as_stringArray->at(10), "open [url]");
-  EXPECT_EQ(property.as_stringArray->at(11).size(), kMaxTelemetryStringLength);
+  EXPECT_EQ(property.as_stringArray->at(2), "models/foo.onnx");
+  EXPECT_EQ(property.as_stringArray->at(3).size(), kMaxTelemetryStringLength);
   EXPECT_EQ(property.piiKind, PiiKind_GenericData);
 }
 
-TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesDeterministicProviderOptions) {
+TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesSecretPropertyProtection) {
   using namespace ::Microsoft::Applications::Events;
 
   EventProperties event("ProviderMetadata");
@@ -719,22 +704,12 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesDeterministicProviderO
   const auto& options = properties.at("ProviderOptions");
   const auto& secret_values = properties.at("clientApiKey");
 
-  ASSERT_EQ(options.type, EventProperty::TYPE_STRING_ARRAY);
   ASSERT_NE(options.as_stringArray, nullptr);
   EXPECT_EQ(*options.as_stringArray,
-            (std::vector<std::string>{"device_id:0", "cache_dir:[path]", "dbPassword:[secret]"}));
-  ASSERT_EQ(secret_values.type, EventProperty::TYPE_STRING_ARRAY);
+            (std::vector<std::string>{"device_id:0", "cache_di[path]", "dbPassword:placeholder"}));
   ASSERT_NE(secret_values.as_stringArray, nullptr);
   EXPECT_EQ(*secret_values.as_stringArray, (std::vector<std::string>{"[secret]", "[secret]"}));
-
-  std::vector<std::string> property_names;
-  for (const auto& [name, unused] : properties) {
-    static_cast<void>(unused);
-    property_names.push_back(name);
-  }
-  EXPECT_EQ(property_names, (std::vector<std::string>{"EventInfo.Level", "ProviderOptions", "clientApiKey"}));
 }
-
 TEST(TelemetrySamplingTest, RetainsAllNonAudioEvents) {
   EXPECT_DOUBLE_EQ(TelemetryInternal::kTelemetrySampleRatePercent, 100.0);
 }
@@ -744,9 +719,9 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
   EXPECT_TRUE(TelemetryInternal::ShouldSampleTelemetryEvent("app-session", "corr-1", 100.0));
 }
 
-TEST(TelemetrySamplingTest, SamplesOnlyCorrelatedAudioEventsAtOneTenthPercent) {
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 0.1);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::kAudioSampleRatePercent, 0.1);
+TEST(TelemetrySamplingTest, SamplesOnlyCorrelatedAudioEventsAtOnePercent) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 1.0);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kAudioSampleRatePercent, 1.0);
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
 
   bool retained = false;

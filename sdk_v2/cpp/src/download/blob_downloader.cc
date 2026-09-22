@@ -406,7 +406,7 @@ void AzureBlobDownloader::DownloadBlob(const std::string& sas_uri,
       FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "download cancelled");
     }
 
-    FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK, "model download timed out after 3 hours");
+    FL_THROW_TIMEOUT(FOUNDRY_LOCAL_ERROR_NETWORK, "model download timed out after 3 hours");
   } catch (const Azure::Core::RequestFailedException& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
              std::string("failed to download blob '") + blob_name + "': " + e.what());

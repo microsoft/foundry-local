@@ -49,8 +49,8 @@ std::unique_ptr<CrossProcessFileLock> CrossProcessFileLock::WaitForDirectoryLock
       if (exit_reason != nullptr) {
         *exit_reason = WaitExitReason::kTimedOut;
       }
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
-               "timed out waiting for cross-process download lock on '" + directory.string() + "'");
+      FL_THROW_TIMEOUT(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                       "timed out waiting for cross-process download lock on '" + directory.string() + "'");
     }
     std::this_thread::sleep_for(poll_interval);
   }
