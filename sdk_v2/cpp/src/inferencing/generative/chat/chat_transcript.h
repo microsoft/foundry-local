@@ -148,8 +148,8 @@ GeneratedToolCall MakeGeneratedToolCall(std::string call_id, std::string name, s
 struct TranscriptIngest {
   std::vector<TranscriptMessage> messages;
 
-  /// Index into `messages` of the first message the last replay segment produced. Everything before it was
-  /// recorded on an earlier turn, so a reply generated now must never merge into it.
+  /// Index into `messages` of the first message the last replay segment produced. Ingestion must not merge
+  /// assistant items across this boundary.
   size_t last_segment_start = 0;
 };
 
@@ -181,9 +181,8 @@ struct TranscriptIngest {
 /// messages in a row (on Chat Completions, or as typed Responses input) gets one assistant message whose text is
 /// their literal concatenation, with no separator inserted. This is deliberate continuation semantics, not an
 /// accident of the merge: the fragments are two halves of one utterance, exactly as a live session records the text
-/// a model emits either side of a tool call, and the caller owns any spacing between them. A generated reply
-/// continuing an assistant prefill is joined by the same rule (see ChatTranscript::CommitTurn), so a conversation
-/// replayed from storage rebuilds the messages the live session committed.
+/// a model emits, and the caller owns any spacing between them. Generated replies are separate messages: the chat
+/// template opens a new assistant turn after the input, even when the input ends with assistant content.
 ///
 /// `segment_starts` (see Request::item_segment_starts) stops the merge at a recorded-turn boundary: two turns that
 /// each ended and began with assistant output stay two messages, exactly as the live session committed them. With
@@ -243,12 +242,6 @@ struct TurnContent {
 /// the caller's mistake and nothing else: it is a client error, never a service failure.
 bool TurnCanGenerate(const std::vector<TranscriptMessage>& inputs, const TurnContent& context);
 
-/// The assistant message a reply generated now would merge into, or nullptr when it would start its own message.
-///
-/// Mirrors CommitTurn's merge rule exactly, so a caller can know before generating whether the reply continues an
-/// assistant prefill — and therefore whether that prefill's tool calls already closed the turn's visible text.
-const TranscriptMessage* AssistantPrefillForReply(const std::vector<TranscriptMessage>& inputs, size_t merge_floor);
-
 /// Enforce the assistant-turn ordering invariant on one message.
 ///
 /// **Invariant: within an assistant message, all visible text precedes the first tool call.**
@@ -283,14 +276,9 @@ enum class TextDisposition {
 /// dropped and ends the turn — the caller keeps the calls and a `tool_calls` finish reason. Whitespace is dropped
 /// without ending the turn, so models can still emit subsequent parallel call blocks without replay reordering it.
 ///
-/// Seeded with the calls of an assistant prefill the reply will merge into (see AssistantPrefillForReply): the
-/// prefill and the reply become one message, so the prefill's calls close this turn's visible text too.
+/// Each generated reply starts a new assistant turn. Calls in supplied history do not close its visible text.
 class AssistantTurnGuard {
  public:
-  explicit AssistantTurnGuard(bool calls_already_issued = false) : calls_issued_(calls_already_issued) {}
-
-  static AssistantTurnGuard ForReplyTo(const std::vector<TranscriptMessage>& inputs, size_t merge_floor);
-
   /// Record that the turn issued a tool call. Every later visible text event is now unrepresentable.
   void RecordToolCall() noexcept { calls_issued_ = true; }
 
@@ -387,17 +375,9 @@ class ChatTranscript {
   /// Commit one turn atomically: the input messages followed by the assistant reply. Both are validated first, so a
   /// rejected turn leaves the transcript untouched.
   ///
-  /// The reply merges into a trailing assistant input message when the two are one assistant turn: a caller that
-  /// supplied assistant content and had the model continue it produced a single assistant turn, and both the
-  /// committed record and the prompt must show one. This is the same merge rule item ingestion applies, so a
-  /// conversation replayed from storage rebuilds the messages the live session committed.
-  ///
-  /// `reply_merge_floor` indexes into `inputs` and marks the first input message the reply may merge with.
-  /// Everything before it is replayed history from an earlier recorded turn and must stay separate; pass
-  /// `inputs.size()` to forbid merging entirely. The default merges with any input, which is what a warm session
-  /// wants: every one of its input messages belongs to the turn being committed.
-  void CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens,
-                  size_t reply_merge_floor = 0);
+  /// The reply is always a separate message, matching the new assistant turn opened by the chat template's
+  /// add_generation_prompt=true. Stored replay must likewise separate each hop's input from its output.
+  void CommitTurn(std::vector<TranscriptMessage> inputs, TranscriptMessage output, TurnTokens tokens);
 
   /// Remove the last `count` turns and restore outstanding-call state to exactly what it was before them.
   ///
