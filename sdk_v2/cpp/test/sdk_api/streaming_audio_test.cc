@@ -113,6 +113,9 @@ TEST_F(StreamingAudioFixture, StreamRecordingInChunksAndValidateTranscription) {
   Request request;
   request.AddItem(audio, /*take_ownership=*/true);   // we don't need to keep this alive
   request.AddItem(queue, /*take_ownership=*/false);  // we need to keep this alive to stream data
+  RequestOptions options;
+  options.additional_options.Set("language", "en");
+  request.SetOptions(options);
 
   AudioSession session(audio_model());
   auto future = std::async(std::launch::async, [&]() {
