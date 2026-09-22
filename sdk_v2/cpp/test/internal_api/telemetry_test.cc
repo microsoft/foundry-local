@@ -744,9 +744,9 @@ TEST(TelemetrySamplingTest, HonorsZeroAndHundredPercentRates) {
   EXPECT_TRUE(TelemetryInternal::ShouldSampleTelemetryEvent("app-session", "corr-1", 100.0));
 }
 
-TEST(TelemetrySamplingTest, SamplesOnlyCorrelatedAudioEventsAtOnePercent) {
-  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 1.0);
-  EXPECT_DOUBLE_EQ(TelemetryInternal::kAudioSampleRatePercent, 1.0);
+TEST(TelemetrySamplingTest, SamplesOnlyCorrelatedAudioEventsAtOneTenthPercent) {
+  EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("OpenAIAudioTranscribe"), 0.1);
+  EXPECT_DOUBLE_EQ(TelemetryInternal::kAudioSampleRatePercent, 0.1);
   EXPECT_DOUBLE_EQ(TelemetryInternal::SampleRateForAction("ModelList"), 100.0);
 
   bool retained = false;

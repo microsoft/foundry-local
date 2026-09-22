@@ -338,7 +338,8 @@ Manager::Manager(const Configuration& config) : config_(config) {
     try {
       telemetry_->RecordHardwareInfo(BuildHardwareInfo(ep_detector_->GetAvailableDevicesToEPs()));
     } catch (const std::exception& ex) {
-      logger_->Log(LogLevel::Warning, fmt::format("telemetry HardwareInfo failed during initialization: {}", ex.what()));
+      logger_->Log(LogLevel::Warning,
+                   fmt::format("telemetry HardwareInfo failed during initialization: {}", ex.what()));
     } catch (...) {
       logger_->Log(LogLevel::Warning, "telemetry HardwareInfo failed during initialization.");
     }

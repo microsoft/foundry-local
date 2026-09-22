@@ -9,7 +9,7 @@ namespace fl::TelemetryInternal {
 
 // 1DS popSample is metadata only; ShouldSampleTelemetryEvent performs the actual client-side sampling.
 inline constexpr double kTelemetrySampleRatePercent = 100.0;
-inline constexpr double kAudioSampleRatePercent = 1.0;
+inline constexpr double kAudioSampleRatePercent = 0.1;
 
 static_assert(kTelemetrySampleRatePercent >= 0.0 && kTelemetrySampleRatePercent <= 100.0);
 static_assert(kAudioSampleRatePercent >= 0.0 && kAudioSampleRatePercent <= 100.0);
