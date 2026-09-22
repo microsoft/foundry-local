@@ -6,7 +6,6 @@ import {
   type NativeSession,
   getAddon,
 } from "./detail/native.js";
-import type { Item } from "./items.js";
 // Public `Session` / `ChatSession` classes.
 //
 // Surface:
@@ -25,6 +24,7 @@ import type { Item } from "./items.js";
 //   * `ChatSession` adds turn tracking and tool definitions.
 //   * `setOptions(...)`, `dispose()`, `Symbol.dispose`.
 import type { IModel } from "./imodel.js";
+import type { Item } from "./items.js";
 import { Model, unwrapNativeModel } from "./model.js";
 import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
@@ -54,9 +54,24 @@ export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
 }
 
+function rejectEmbeddedNul(value: unknown, argumentName: string): void {
+  if (typeof value === "string" && value.includes("\0")) {
+    throw new TypeError(`${argumentName} must not contain an embedded NUL character`);
+  }
+}
+
 function modelToNativeChatSession(model: IModel): NativeChatSession {
   if (!(model instanceof Model)) {
     throw new TypeError("ChatSession: expected a Model as the first argument");
+  }
+  // Validate the task BEFORE constructing the native session so a wrong-task model
+  // surfaces a `TypeError` here rather than a native `FoundryLocalError`, consistently
+  // with the C# and Python bindings.
+  const task = model.info.task;
+  if (task !== "chat-completion" && task !== "vision-language-chat") {
+    throw new TypeError(
+      `ChatSession requires a model with task 'chat-completion' or 'vision-language-chat', but got '${task ?? "(unset)"}'.`,
+    );
   }
   const nativeModel = unwrapNativeModel(model);
   return new (getAddon().ChatSession)(nativeModel);
@@ -66,11 +81,9 @@ function modelToNativeEmbeddingsSession(model: IModel): NativeEmbeddingsSession 
   if (!(model instanceof Model)) {
     throw new TypeError("EmbeddingsSession: expected a Model as the first argument");
   }
-  // Validate task in JS BEFORE constructing the native session. Matches the
-  // C# (`ValidateTask`) and Python (`__init__` precheck) conventions: a
-  // wrong-task model surfaces a `TypeError` rather than a native
-  // `FoundryLocalError`, and the check works whether or not the model has
-  // been loaded yet (the native ctor would fail later either way).
+  // Validate the task BEFORE constructing the native session so a wrong-task model
+  // surfaces a `TypeError` here rather than a native `FoundryLocalError`, consistently
+  // with the C# and Python bindings.
   const task = model.info.task;
   if (task !== "embeddings") {
     throw new TypeError(`EmbeddingsSession requires a model with task 'embeddings', but got '${task ?? "(unset)"}'.`);
@@ -105,11 +118,7 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  * directly). The promise settles only after the consumer has fully drained
  * the iterator, mirroring native finalize-on-drain semantics.
  */
-function streamItems(
-  native: NativeSession,
-  request: Request,
-  signal: AbortSignal | undefined,
-): StreamingResponse {
+function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
   const queue: Item[] = [];
   let waiter: (() => void) | null = null;
   let done = false;
@@ -135,11 +144,7 @@ function streamItems(
   }
 
   const mapError = (err: unknown): unknown => {
-    if (
-      signal?.aborted === true &&
-      isFoundryLocalError(err) &&
-      err.code === FlErrorCode.OperationCancelled
-    ) {
+    if (signal?.aborted === true && isFoundryLocalError(err) && err.code === FlErrorCode.OperationCancelled) {
       (err as { name: string }).name = "AbortError";
     }
     return err;
@@ -307,12 +312,38 @@ export abstract class Session {
   }
 }
 
-/** A tool definition exposed to {@link ChatSession.addToolDefinition}. */
-export interface ToolDefinition {
+/** The kind of a {@link ToolDefinition}. Defaults to `"function"`. */
+export type ToolKind = "function" | "custom";
+
+/**
+ * A tool definition exposed to {@link ChatSession.addToolDefinition}.
+ *
+ * A function tool takes JSON arguments conforming to its required `jsonSchema`. Its `kind` may be
+ * omitted for compatibility with the original function-tool API. A custom tool instead requires
+ * `kind: "custom"` and cannot carry a schema; its generated tool-call arguments contain the raw
+ * text produced by the model.
+ */
+export type ToolDefinition =
+  | {
+      readonly name: string;
+      readonly description: string;
+      readonly jsonSchema: string;
+      readonly kind?: "function";
+    }
+  | {
+      readonly name: string;
+      readonly description: string;
+      readonly kind: "custom";
+      readonly jsonSchema?: never;
+    };
+
+/** The object accepted by {@link ChatSession.addCustomToolDefinition}. */
+type CustomToolDefinition = {
   readonly name: string;
   readonly description: string;
-  readonly jsonSchema: string;
-}
+  readonly jsonSchema?: never;
+  readonly kind?: never;
+};
 
 export class ChatSession extends Session {
   /**
@@ -338,18 +369,46 @@ export class ChatSession extends Session {
   /**
    * Register a tool definition available to the model for the rest of the
    * session. Mirrors `foundry_local::ChatSession::AddToolDefinition`.
+   *
+   * Names are case-sensitive and must be unique within the session across kinds; re-registering a
+   * name throws until the existing definition is removed. Names, descriptions, and function-tool
+   * schemas must not contain embedded NUL characters.
    */
   addToolDefinition(definition: ToolDefinition): this {
+    rejectEmbeddedNul(definition.name, "definition.name");
+    rejectEmbeddedNul(definition.description, "definition.description");
+    if ("jsonSchema" in definition) {
+      rejectEmbeddedNul(definition.jsonSchema, "definition.jsonSchema");
+    }
     this.#nativeChat.addToolDefinition(definition);
     return this;
   }
 
   /**
+   * Register a custom tool: one whose arguments are a single free-form text payload rather than a
+   * JSON object. This is equivalent to
+   * `addToolDefinition({ name: definition.name, description: definition.description, kind: "custom" })`.
+   *
+   * @example
+   * ```ts
+   * session.addCustomToolDefinition({
+   *   name: "apply_patch",
+   *   description: "Applies a patch to a file.",
+   * });
+   * ```
+   */
+  addCustomToolDefinition(definition: CustomToolDefinition): this {
+    return this.addToolDefinition({ ...definition, kind: "custom" });
+  }
+
+  /**
    * Remove a previously registered tool definition by name. Returns `true`
    * if a tool with that name existed and was removed, `false` otherwise.
-   * Mirrors `foundry_local::ChatSession::RemoveToolDefinition`.
+   * The name must not contain embedded NUL characters. Mirrors
+   * `foundry_local::ChatSession::RemoveToolDefinition`.
    */
   removeToolDefinition(name: string): boolean {
+    rejectEmbeddedNul(name, "name");
     return this.#nativeChat.removeToolDefinition(name);
   }
 

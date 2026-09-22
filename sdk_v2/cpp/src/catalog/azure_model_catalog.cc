@@ -6,7 +6,6 @@
 #include "catalog/local_model_scanner.h"
 #include "model.h"
 #include "model_info.h"
-#include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
@@ -19,20 +18,6 @@
 namespace fl {
 
 namespace {
-
-ModelInfo MakeByomModelInfo(const std::string& model_id) {
-  auto [name, version] = Utils::SplitModelNameAndVersion(model_id);
-
-  ModelInfo info;
-  info.model_id = model_id;
-  info.name = name;
-  info.alias = name;
-  info.uri = "local://" + name;
-  info.version = version;
-  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "Local";
-  info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
-  return info;
-}
 
 std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) {
   std::vector<ModelInfo> deduplicated;
@@ -159,24 +144,27 @@ bool ShouldExposeModelInfo(const ModelInfo& info,
 }
 
 /// Drops catalog entries whose ORT model package variants are all known to be unsupported
-/// on the current hardware. Entries without package metadata are always kept. Ids of the
-/// dropped entries are collected in `hidden_model_ids` so they aren't resurrected elsewhere.
+/// on the current hardware. Entries without package metadata are always kept.
 std::vector<ModelInfo> FilterVisibleInfos(std::vector<ModelInfo> model_infos,
                                           const IEpDetector& ep_detector,
-                                          ILogger& logger,
-                                          std::unordered_set<std::string>* hidden_model_ids = nullptr) {
+                                          ILogger& logger) {
   std::vector<ModelInfo> visible_infos;
   visible_infos.reserve(model_infos.size());
 
   for (auto& info : model_infos) {
     if (ShouldExposeModelInfo(info, ep_detector, logger)) {
       visible_infos.push_back(std::move(info));
-    } else if (hidden_model_ids != nullptr) {
-      hidden_model_ids->insert(info.model_id);
     }
   }
 
   return visible_infos;
+}
+
+void RemoveLegacyLocalEntries(std::vector<ModelInfo>& model_infos) {
+  std::erase_if(model_infos, [](const auto& info) {
+    const auto* provider = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+    return provider && *provider == "Local";
+  });
 }
 
 }  // namespace
@@ -246,38 +234,24 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
   CatalogCache cache(cache_dir_, logger_);
   cache.Load();
   auto cached = cache.GetCachedModels();
+  auto snapshot_model_infos = cached ? std::move(*cached) : std::vector<ModelInfo>{};
+  RemoveLegacyLocalEntries(snapshot_model_infos);
 
   return {
-      .model_infos = cached ? DeduplicateByModelId(std::move(*cached)) : std::vector<ModelInfo>{},
+      .model_infos = DeduplicateByModelId(std::move(snapshot_model_infos)),
       .source = CatalogSource::kSnapshot,
   };
 }
 
-std::vector<Model> AzureModelCatalog::AddLocalModels(std::vector<ModelInfo>& model_infos,
-                                                     const LocalModels& local_models,
-                                                     const std::unordered_set<std::string>& hidden_model_ids) const {
+std::vector<Model> AzureModelCatalog::CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
+                                                                const LocalModels& local_models) const {
   std::vector<Model> models;
-  models.reserve(model_infos.size() + local_models.size());
+  models.reserve(model_infos.size());
 
-  // Seeding with the hidden ids keeps catalog models that were filtered out as unsupported from
-  // being re-added as synthesized local BYOM entries.
-  std::unordered_set<std::string> model_ids(hidden_model_ids);
-  model_ids.reserve(model_ids.size() + model_infos.size() + local_models.size());
   for (const auto& info : model_infos) {
-    model_ids.insert(info.model_id);
-
     auto local_model = local_models.find(info.model_id);
     auto local_path = local_model != local_models.end() ? local_model->second : std::string{};
     models.push_back(model_factory_(ModelInfo(info), std::move(local_path)));
-  }
-
-  for (const auto& [model_id, local_path] : local_models) {
-    if (!model_ids.insert(model_id).second) {
-      continue;
-    }
-
-    model_infos.push_back(MakeByomModelInfo(model_id));
-    models.push_back(model_factory_(ModelInfo(model_infos.back()), local_path));
   }
 
   return models;
@@ -296,10 +270,8 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
-  std::unordered_set<std::string> hidden_model_ids;
-  catalog_result.model_infos =
-      FilterVisibleInfos(std::move(catalog_result.model_infos), ep_detector_, logger_, &hidden_model_ids);
-  auto models = AddLocalModels(catalog_result.model_infos, local_models, hidden_model_ids);
+  catalog_result.model_infos = FilterVisibleInfos(std::move(catalog_result.model_infos), ep_detector_, logger_);
+  auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
 
   logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
 

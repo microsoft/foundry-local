@@ -3,6 +3,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Catalog } from "../src/catalog.js";
+import { wrapNativeCatalog } from "../src/catalog.js";
+import type { NativeCatalog, NativeModel, NativeModelInfo } from "../src/detail/native.js";
 import { Model } from "../src/model.js";
 
 import {
@@ -73,9 +75,7 @@ describeIfBuilt("Catalog (cache-only)", () => {
   });
 
   it("getModel rejects with a descriptive error for an unknown alias", async () => {
-    await expect(catalog.getModel("does-not-exist-anywhere")).rejects.toThrow(
-      /does-not-exist-anywhere/,
-    );
+    await expect(catalog.getModel("does-not-exist-anywhere")).rejects.toThrow(/does-not-exist-anywhere/);
   });
 
   it("getModelVariant resolves a full model id", async () => {
@@ -98,4 +98,145 @@ describeIfBuilt("Catalog (cache-only)", () => {
     const loaded = await catalog.getLoadedModels();
     expect(loaded).toEqual([]);
   });
+
+  it("getModelVersions returns versions for a known alias and respects maxVersions", async () => {
+    const nativeModelInfo: NativeModelInfo = {
+      id: "phi-4-mini-instruct-generic-cpu:2",
+      name: "phi-4-mini-instruct-generic-cpu",
+      version: 2,
+      alias: "phi-4-mini-instruct",
+      uri: "azureml://registries/azureml/models/phi-4-mini-instruct-generic-cpu/versions/2",
+      deviceType: "CPU",
+      providerType: "FoundryLocal",
+      modelType: "ONNX",
+      task: "chat-completion",
+      publisher: "Microsoft",
+      displayName: "Phi-4 Mini Instruct",
+      createdAtUnix: 1713800000,
+      isTestModel: false,
+    };
+    const fakeNativeModel: NativeModel = {
+      getInfo: () => nativeModelInfo,
+      isCached: () => true,
+      isLoaded: () => false,
+      getPath: () => "",
+      getVariants: () => [],
+      selectVariant: () => {},
+      load: async () => {},
+      unload: async () => {},
+      download: async () => {},
+      removeFromCache: () => {},
+    };
+    const fakeNativeCatalog: NativeCatalog = {
+      getName: () => "TestCatalog",
+      getModels: () => [],
+      getCachedModels: () => [],
+      getLoadedModels: () => [],
+      getModel: () => undefined,
+      getModelVariant: () => undefined,
+      getLatestVersion: () => undefined,
+      registerModel: async () => fakeNativeModel,
+      registerModelSync: () => fakeNativeModel,
+      unregisterModel: async () => {},
+      unregisterModelSync: () => {},
+      getModelVersions: (modelAlias, modelName, maxVersions) => {
+        expect(modelAlias).toBe("phi-4-mini-instruct");
+        expect(modelName).toBeNull();
+        expect(maxVersions).toBe(1);
+        // The real native path resolves a Promise; mirror that here.
+        return Promise.resolve([fakeNativeModel]);
+      },
+    };
+
+    const localCatalog = wrapNativeCatalog(fakeNativeCatalog);
+    const versions = await localCatalog.getModelVersions("phi-4-mini-instruct", undefined, 1);
+    expect(versions).toHaveLength(1);
+    for (const model of versions) {
+      expect(model).toBeInstanceOf(Model);
+      expect(model.info.alias).toBe("phi-4-mini-instruct");
+    }
+    expect(versions[0]?.info.id).toBe("phi-4-mini-instruct-generic-cpu:2");
+  });
+});
+
+// Pure argument-validation: runs regardless of native build state because the
+// checks happen on the JS thread before the native call is ever queued.
+describe("Catalog.getModelVersions maxVersions validation", () => {
+  // A fake whose getModelVersions must never be reached for invalid inputs.
+  function makeGuardedCatalog(): Catalog {
+    const fakeNativeCatalog: NativeCatalog = {
+      getName: () => "TestCatalog",
+      getModels: () => [],
+      getCachedModels: () => [],
+      getLoadedModels: () => [],
+      getModel: () => undefined,
+      getModelVariant: () => undefined,
+      getLatestVersion: () => undefined,
+      registerModel: async () => {
+        throw new Error("not used");
+      },
+      registerModelSync: () => {
+        throw new Error("not used");
+      },
+      unregisterModel: async () => {},
+      unregisterModelSync: () => {},
+      getModelVersions: () => {
+        throw new Error("native getModelVersions must not be called for invalid maxVersions");
+      },
+    };
+    return wrapNativeCatalog(fakeNativeCatalog);
+  }
+
+  const invalidCases: ReadonlyArray<readonly [string, number]> = [
+    ["a fraction", 1.5],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["above int32 max", 2 ** 31],
+    ["below int32 min", -(2 ** 31) - 1],
+  ];
+
+  for (const [label, value] of invalidCases) {
+    it(`rejects ${label} (${value})`, async () => {
+      const catalog = makeGuardedCatalog();
+      await expect(catalog.getModelVersions("phi-4-mini-instruct", undefined, value)).rejects.toThrow(
+        /maxVersions must be an integer within the 32-bit range/,
+      );
+    });
+  }
+
+  const validCases: ReadonlyArray<readonly [string, number]> = [
+    ["int32 max", 2 ** 31 - 1],
+    ["int32 min", -(2 ** 31)],
+    ["zero (no cap)", 0],
+    ["negative (no cap)", -5],
+  ];
+
+  for (const [label, value] of validCases) {
+    it(`accepts ${label} (${value})`, async () => {
+      const fakeNativeCatalog: NativeCatalog = {
+        getName: () => "TestCatalog",
+        getModels: () => [],
+        getCachedModels: () => [],
+        getLoadedModels: () => [],
+        getModel: () => undefined,
+        getModelVariant: () => undefined,
+        getLatestVersion: () => undefined,
+        registerModel: async () => {
+          throw new Error("not used");
+        },
+        registerModelSync: () => {
+          throw new Error("not used");
+        },
+        unregisterModel: async () => {},
+        unregisterModelSync: () => {},
+        getModelVersions: (_alias, _name, maxVersions) => {
+          expect(maxVersions).toBe(value);
+          return Promise.resolve([]);
+        },
+      };
+      const catalog = wrapNativeCatalog(fakeNativeCatalog);
+      await expect(catalog.getModelVersions("phi-4-mini-instruct", undefined, value)).resolves.toEqual([]);
+    });
+  }
 });

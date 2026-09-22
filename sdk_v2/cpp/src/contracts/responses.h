@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/session/types.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -68,13 +70,41 @@ struct InputMessage {
   static InputMessage AssistantMessage(const std::string& text);
 };
 
+struct FunctionCallInputItem {
+  std::string type = "function_call";
+  std::string call_id;
+  std::string name;
+  std::string arguments;
+};
+
 struct FunctionCallResultInputItem {
   std::string type = "function_call_output";
   std::string call_id;
   std::string output;
 };
 
-using InputItem = std::variant<InputMessage, FunctionCallResultInputItem>;
+/// A custom tool call from a prior assistant turn, echoed back by the client as part of the transcript.
+/// JSON: {"type":"custom_tool_call","call_id":"..","name":"..","input":".."}
+///
+/// `input` is free-form text, so unlike a function call there is nothing to validate as JSON and nothing to
+/// re-serialize: the bytes are carried through exactly as sent.
+struct CustomToolCallInputItem {
+  std::string type = "custom_tool_call";
+  std::string call_id;
+  std::string name;
+  std::string input;
+};
+
+/// Result of a prior custom tool call, fed back on a later turn.
+/// JSON: {"type":"custom_tool_call_output","call_id":"..","output":".."}
+struct CustomToolCallResultInputItem {
+  std::string type = "custom_tool_call_output";
+  std::string call_id;
+  std::string output;
+};
+
+using InputItem = std::variant<InputMessage, FunctionCallInputItem, FunctionCallResultInputItem,
+                               CustomToolCallInputItem, CustomToolCallResultInputItem>;
 
 // ---------------------------------------------------------------------------
 // Tool calling types (AD-010)
@@ -96,13 +126,31 @@ struct FunctionDefinition {
   std::string name;
   std::optional<std::string> description;
   std::optional<std::string> parameters_json;
+  bool parameters_present = false;
   std::optional<bool> strict;
+  bool strict_present = false;
+};
+
+/// A custom (free-form) tool the model may call with a single raw text payload.
+/// Responses declares it flat: {"type":"custom","name":..,"description":..,"format":{"type":"text"}}
+///
+struct CustomToolDefinition {
+  std::string name;
+  std::optional<std::string> description;
+  nlohmann::json format = {{"type", "text"}};
 };
 
 /// A tool the model may use during generation.
+/// `type` selects which member carries the declaration; the other is meaningless.
 struct ToolDefinition {
-  std::string type = "function";
+  std::string type = "function";  // "function" or "custom"
   FunctionDefinition function;
+  std::optional<CustomToolDefinition> custom;
+
+  bool IsCustom() const { return custom.has_value(); }
+
+  /// The declared name, whichever kind of tool this is.
+  const std::string& Name() const { return custom.has_value() ? custom->name : function.name; }
 };
 
 /// Forces the model to call a specific function.
@@ -110,9 +158,26 @@ struct ForcedFunction {
   std::string name;
 };
 
+/// Forces the model to call a specific custom tool. A distinct alternative rather than a flag on
+/// ForcedFunction so that forcing a custom tool can never select a function of the same name.
+struct ForcedCustomTool {
+  std::string name;
+};
+
+/// A typed reference in an official Responses `allowed_tools` choice.
+struct AllowedToolReference {
+  std::string type;
+  std::string name;
+};
+
+struct AllowedToolsChoice {
+  std::string mode;
+  std::vector<AllowedToolReference> tools;
+};
+
 /// How the model should choose tools.
-/// string values: "auto", "none", "required"
-using ToolChoice = std::variant<std::string, ForcedFunction>;
+/// string values: "auto", "none", "required".
+using ToolChoice = std::variant<std::string, ForcedFunction, ForcedCustomTool, AllowedToolsChoice>;
 
 // ---------------------------------------------------------------------------
 // Request parameters
@@ -137,8 +202,8 @@ struct ResponseCreateParams {
   std::optional<float> temperature;
   std::optional<int> max_output_tokens;
   std::optional<float> top_p;
-  std::optional<float> presence_penalty;
-  std::optional<float> frequency_penalty;
+  std::optional<float> presence_penalty;   // OpenAI semantics; only the neutral value 0 is currently supported.
+  std::optional<float> frequency_penalty;  // OpenAI semantics; only the neutral value 0 is currently supported.
   std::optional<int> seed;
   bool stream = false;
   bool store = false;
@@ -197,6 +262,21 @@ struct FunctionCallOutputItem {
   ResponseStatus status = ResponseStatus::kInProgress;
 };
 
+/// A custom (free-form) tool call the model produced.
+/// JSON: {"type":"custom_tool_call","id":"ctc_..","call_id":"call_..","name":"..","input":".."}
+///
+/// `input` is the model's payload verbatim. `call_id` is the same id the runtime assigned the call,
+/// so a `custom_tool_call_output` sent back on the next turn correlates with it.
+struct CustomToolCallOutputItem {
+  std::string id;
+  std::string type = "custom_tool_call";
+  std::string call_id;
+  std::string name;
+  std::string input;
+  /// Internal-only provenance; to_json intentionally does not serialize it.
+  GeneratedCallEncoding generated_encoding = GeneratedCallEncoding::kStructured;
+};
+
 // Reasoning output item (OpenAI Responses API). Surfaces chain-of-thought text emitted between the model's
 // reasoning markers (e.g. `<think>...</think>`) as a typed output entry. The `summary` array models the
 // OpenAI shape one-to-one; for our v1 we always emit a single `summary_text` part containing the full
@@ -211,7 +291,8 @@ struct ReasoningOutputItem {
   ResponseStatus status = ResponseStatus::kInProgress;
 };
 
-using ResponseOutputItem = std::variant<ResponseOutputMessage, FunctionCallOutputItem, ReasoningOutputItem>;
+using ResponseOutputItem = std::variant<ResponseOutputMessage, FunctionCallOutputItem, ReasoningOutputItem,
+                                        CustomToolCallOutputItem>;
 
 struct InputTokensDetails {
   int cached_tokens = 0;
@@ -257,8 +338,8 @@ struct ResponseObject {
   std::optional<ToolChoice> tool_choice;
   std::optional<float> temperature;
   std::optional<float> top_p;
-  std::optional<float> presence_penalty;
-  std::optional<float> frequency_penalty;
+  std::optional<float> presence_penalty;   // OpenAI semantics; only the neutral value 0 is currently supported.
+  std::optional<float> frequency_penalty;  // OpenAI semantics; only the neutral value 0 is currently supported.
   std::optional<int> max_output_tokens;
   bool parallel_tool_calls = true;
   bool store = false;
@@ -293,6 +374,8 @@ enum class StreamEventType {
   kAudioTranscriptDone,
   kFunctionCallArgumentsDelta,
   kFunctionCallArgumentsDone,
+  kCustomToolCallInputDelta,
+  kCustomToolCallInputDone,
   kReasoningDelta,
   kReasoningDone,
   kError,
@@ -311,10 +394,12 @@ struct StreamEvent {
   std::optional<OutputContent> content_part;
   std::optional<std::string> text;
 
-  // Function call streaming fields
-  std::optional<std::string> function_name;
-  std::optional<std::string> function_call_id;
-  std::optional<std::string> function_arguments;
+  // Tool call streaming fields. One set for both kinds: the payload is serialized as "arguments"
+  // for a function call and "input" for a custom tool call, which is the only difference between
+  // the two lifecycles.
+  std::optional<std::string> tool_name;
+  std::optional<std::string> tool_call_id;
+  std::optional<std::string> tool_payload;
 
   // Error fields
   std::optional<std::string> error_code;
@@ -330,18 +415,29 @@ std::string ResponseStatusToString(ResponseStatus status);
 ResponseStatus ResponseStatusFromString(const std::string& s);
 std::string StreamEventTypeToString(StreamEventType type);
 
+/// Read a custom tool result's text from either the compact string form or an ordered array of
+/// `input_text` content parts. Other content types are unsupported by the text-only runtime.
+std::string ParseCustomToolOutputText(const nlohmann::json& output);
+
 // --- Input content from_json (request deserialization) ---
 void from_json(const nlohmann::json& j, InputTextContent& c);
 void from_json(const nlohmann::json& j, InputImageContent& c);
 void from_json(const nlohmann::json& j, InputFileContent& c);
 void from_json(const nlohmann::json& j, InputAudioContent& c);
 void from_json(const nlohmann::json& j, InputMessage& m);
+void from_json(const nlohmann::json& j, FunctionCallInputItem& f);
 void from_json(const nlohmann::json& j, FunctionCallResultInputItem& f);
+void from_json(const nlohmann::json& j, CustomToolCallResultInputItem& c);
+void from_json(const nlohmann::json& j, CustomToolCallInputItem& c);
 
 // --- Tool types from_json ---
 void from_json(const nlohmann::json& j, FunctionDefinition& f);
+void from_json(const nlohmann::json& j, CustomToolDefinition& c);
 void from_json(const nlohmann::json& j, ToolDefinition& t);
 void from_json(const nlohmann::json& j, ForcedFunction& f);
+void from_json(const nlohmann::json& j, ForcedCustomTool& f);
+void from_json(const nlohmann::json& j, AllowedToolReference& r);
+void from_json(const nlohmann::json& j, AllowedToolsChoice& c);
 
 // --- Request from_json ---
 void from_json(const nlohmann::json& j, ResponseTextConfig& c);
@@ -358,6 +454,7 @@ void to_json(nlohmann::json& j, const OutputRefusalContent& c);
 void to_json(nlohmann::json& j, const OutputAudioContent& c);
 void to_json(nlohmann::json& j, const ResponseOutputMessage& m);
 void to_json(nlohmann::json& j, const FunctionCallOutputItem& f);
+void to_json(nlohmann::json& j, const CustomToolCallOutputItem& c);
 void to_json(nlohmann::json& j, const ReasoningSummaryText& s);
 void to_json(nlohmann::json& j, const ReasoningOutputItem& r);
 void to_json(nlohmann::json& j, const InputTokensDetails& d);
@@ -368,8 +465,12 @@ void to_json(nlohmann::json& j, const ResponseObject& r);
 
 // --- Tool types to_json (for echoing in response) ---
 void to_json(nlohmann::json& j, const FunctionDefinition& f);
+void to_json(nlohmann::json& j, const CustomToolDefinition& c);
 void to_json(nlohmann::json& j, const ToolDefinition& t);
 void to_json(nlohmann::json& j, const ForcedFunction& f);
+void to_json(nlohmann::json& j, const ForcedCustomTool& f);
+void to_json(nlohmann::json& j, const AllowedToolReference& r);
+void to_json(nlohmann::json& j, const AllowedToolsChoice& c);
 
 // --- Streaming to_json ---
 void to_json(nlohmann::json& j, const StreamEvent& e);

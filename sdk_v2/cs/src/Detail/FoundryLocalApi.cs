@@ -52,8 +52,8 @@ internal static class Api
             var apiPtr = NativeMethods.FoundryLocalGetApi(NativeMethods.ApiVersion);
             if (apiPtr == IntPtr.Zero)
             {
-                throw new InvalidOperationException(
-                    $"FoundryLocalGetApi returned null for version {NativeMethods.ApiVersion}.");
+                var loadedRuntimeVersion = FoundryLocal.GetVersionString();
+                throw new InvalidOperationException(CreateIncompatibleRuntimeMessage(loadedRuntimeVersion));
             }
 
             Root = Marshal.PtrToStructure<FlApi>(apiPtr);
@@ -92,6 +92,14 @@ internal static class Api
         }
     }
 
+    internal static string CreateIncompatibleRuntimeMessage(string loadedRuntimeVersion)
+    {
+        return $"FoundryLocalGetApi({NativeMethods.ApiVersion}) returned null. The loaded native Foundry Local runtime "
+            + $"reports product version '{loadedRuntimeVersion}', but this SDK requires C API table version "
+            + $"{NativeMethods.ApiVersion}. Update the native runtime ({NativeMethods.LibraryName} and the libraries "
+            + "shipped with it).";
+    }
+
     internal static void CheckStatus(IntPtr status)
     {
         if (status == IntPtr.Zero)
@@ -109,7 +117,9 @@ internal static class Api
             throw new OperationCanceledException(msg);
         }
 
-        throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg);
+        // FoundryLocalErrorCode mirrors the native FlErrorCode ABI 1:1 (same names and values), so a direct
+        // cast is safe; an unknown/future numeric code still round-trips through the cast.
+        throw new Microsoft.AI.Foundry.Local.FoundryLocalException(msg, (FoundryLocalErrorCode)code);
     }
 
     /// <summary>
@@ -251,9 +261,9 @@ public sealed class Manager : IDisposable
         Ptr = ptr;
     }
 
-    public Catalog GetCatalog()
+    public Catalog GetCatalog(FlCatalogType catalogType = FlCatalogType.Public)
     {
-        var status = Api.Root.ManagerGetCatalog(Ptr, out var catalogPtr);
+        var status = Api.Root.ManagerGetCatalogByType(Ptr, catalogType, out var catalogPtr);
         Api.CheckStatus(status);
         return new Catalog(catalogPtr);
     }
@@ -469,6 +479,49 @@ public sealed class Catalog
         Api.CheckStatus(status);
         return new ModelList(ptr);
     }
+
+    public ModelList GetModelVersions(string modelAlias, string? modelName, int maxVersions)
+    {
+        var aliasPtr = Utf8.StringToCoTaskMem(modelAlias);
+        var modelNamePtr = Utf8.StringToCoTaskMem(modelName);
+
+        try
+        {
+            var status = Api.Catalog.GetModelVersions(Ptr, aliasPtr, modelNamePtr, maxVersions, out var ptr);
+            Api.CheckStatus(status);
+            return new ModelList(ptr);
+        }
+        finally
+        {
+            if (aliasPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(aliasPtr);
+            }
+
+            if (modelNamePtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(modelNamePtr);
+            }
+        }
+    }
+
+    public Model RegisterModel(string modelPath, string modelId, MutableModelInfo metadata)
+    {
+        var status = Api.Catalog.RegisterModel(Ptr, modelPath, modelId, metadata.Ptr, out var ptr);
+        Api.CheckStatus(status);
+
+        if (ptr == IntPtr.Zero)
+        {
+            throw new FoundryLocalException("RegisterModel returned no model.");
+        }
+
+        return new Model(ptr);
+    }
+
+    public void UnregisterModel(string aliasOrModelId)
+    {
+        Api.CheckStatus(Api.Catalog.UnregisterModel(Ptr, aliasOrModelId));
+    }
 }
 
 // ===================================================================
@@ -553,6 +606,57 @@ public sealed class ModelInfo
         }
 
         return result;
+    }
+}
+
+// ===================================================================
+// MutableModelInfo — owns caller-created flModelInfo*
+// ===================================================================
+
+public sealed class MutableModelInfo : IDisposable
+{
+    private bool _disposed;
+
+    internal IntPtr Ptr { get; private set; }
+
+    public MutableModelInfo()
+    {
+        Api.EnsureInitialized();
+        var status = Api.Model.CreateModelInfo(out var ptr);
+        Api.CheckStatus(status);
+        Ptr = ptr;
+    }
+
+    public void SetStringProperty(string key, string value)
+    {
+        Detail.Throw.IfDisposed(_disposed, this);
+        Api.CheckStatus(Api.Model.InfoSetStringProperty(Ptr, key, value));
+    }
+
+    public void SetIntProperty(string key, long value)
+    {
+        Detail.Throw.IfDisposed(_disposed, this);
+        Api.CheckStatus(Api.Model.InfoSetIntProperty(Ptr, key, value));
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed && Ptr != IntPtr.Zero)
+        {
+            Api.Model.ReleaseModelInfo(Ptr);
+            Ptr = IntPtr.Zero;
+            _disposed = true;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    ~MutableModelInfo()
+    {
+        if (!_disposed)
+        {
+            Api.FinalizeRelease(Ptr, Api.Model.ReleaseModelInfo.Invoke);
+        }
     }
 }
 
@@ -710,8 +814,16 @@ public sealed class Session : IDisposable
         Ptr = ptr;
     }
 
-    /// <summary>Add a tool definition to the session. The session copies the data.</summary>
+    /// <summary>
+    /// Add a tool definition to the session. The session copies the data, so the marshalled buffers
+    /// are freed as soon as the call returns.
+    /// </summary>
     public Session AddToolDefinition(string name, string description, string jsonSchema)
+    {
+        return AddToolDefinition(name, description, jsonSchema, FlToolKind.Function);
+    }
+
+    public Session AddToolDefinition(string name, string description, string jsonSchema, FlToolKind kind)
     {
         var nameNative = Utf8.StringToCoTaskMem(name);
         var descNative = Utf8.StringToCoTaskMem(description);
@@ -724,6 +836,7 @@ public sealed class Session : IDisposable
                 Name = nameNative,
                 Description = descNative,
                 JsonSchema = schemaNative,
+                Kind = kind,
             };
             Api.CheckStatus(Api.Inference.SessionAddToolDefinition(Ptr, ref toolDef));
         }

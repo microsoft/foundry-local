@@ -16,6 +16,22 @@ const internalCtorKey = Symbol("Model.internal");
 
 const nativeByModel = new WeakMap<Model, NativeModel>();
 
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as AbortSignal).aborted === "boolean" &&
+    typeof (value as AbortSignal).addEventListener === "function" &&
+    typeof (value as AbortSignal).removeEventListener === "function"
+  );
+}
+
+function makeAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
 function toDeviceType(value: NativeModelInfo["deviceType"]): DeviceType {
   switch (value) {
     case "CPU":
@@ -24,7 +40,6 @@ function toDeviceType(value: NativeModelInfo["deviceType"]): DeviceType {
       return DeviceType.GPU;
     case "NPU":
       return DeviceType.NPU;
-    case "Invalid":
     default:
       return DeviceType.Invalid;
   }
@@ -61,7 +76,7 @@ function normalizeModelSettings(raw: NativeModelInfo["modelSettings"]): ModelSet
 function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInfo {
   const deviceType = toDeviceType(raw.deviceType);
   const executionProvider = raw.executionProvider ?? "";
-  return {
+  const snapshot = {
     ...raw,
     deviceType,
     providerType: raw.providerType ?? raw.modelProvider ?? "",
@@ -80,6 +95,38 @@ function normalizeModelInfo(raw: NativeModelInfo, native: NativeModel): ModelInf
             executionProvider,
           },
   };
+  Object.defineProperties(snapshot, {
+    getStringProperty: {
+      enumerable: false,
+      value: (key: string) => {
+        validateNativeString(key, "ModelInfo property key");
+        return native.getStringProperty(key);
+      },
+    },
+    getIntProperty: {
+      enumerable: false,
+      value: (key: string, defaultValue = 0) => {
+        validateNativeString(key, "ModelInfo property key");
+        if (typeof defaultValue !== "number") {
+          throw new TypeError("ModelInfo integer property default must be a number.");
+        }
+        if (!Number.isSafeInteger(defaultValue)) {
+          throw new RangeError("ModelInfo integer property default must be a safe integer.");
+        }
+        return native.getIntProperty(key, defaultValue);
+      },
+    },
+  });
+  return snapshot as ModelInfo;
+}
+
+function validateNativeString(value: string, argumentName: string): void {
+  if (typeof value !== "string") {
+    throw new TypeError(`${argumentName} must be a string.`);
+  }
+  if (value.includes("\0")) {
+    throw new TypeError(`${argumentName} must not contain an embedded NUL character.`);
+  }
 }
 
 export class Model implements IModel {
@@ -106,6 +153,14 @@ export class Model implements IModel {
     // The native model is the source of truth. Read fresh every time so metadata stays correct after
     // selectVariant / download / cache changes. Each read returns a point-in-time snapshot.
     return normalizeModelInfo(this.#native.getInfo(), this.#native);
+  }
+
+  getStringProperty(key: string): string | undefined {
+    return this.info.getStringProperty(key);
+  }
+
+  getIntProperty(key: string, defaultValue = 0): number {
+    return this.info.getIntProperty(key, defaultValue);
   }
 
   get isCached(): boolean {
@@ -157,8 +212,30 @@ export class Model implements IModel {
     await this.#native.unload();
   }
 
-  async download(progressCallback?: (progress: number) => void): Promise<void> {
-    await this.#native.download(progressCallback);
+  async download(signal?: AbortSignal): Promise<void>;
+  async download(progressCallback?: (progress: number) => void, signal?: AbortSignal): Promise<void>;
+  async download(
+    progressCallbackOrSignal?: ((progress: number) => void) | AbortSignal,
+    optionalSignal?: AbortSignal,
+  ): Promise<void> {
+    const signal = isAbortSignal(progressCallbackOrSignal) ? progressCallbackOrSignal : optionalSignal;
+    const progressCallback = typeof progressCallbackOrSignal === "function" ? progressCallbackOrSignal : undefined;
+
+    if (
+      progressCallbackOrSignal !== undefined &&
+      progressCallback === undefined &&
+      !isAbortSignal(progressCallbackOrSignal)
+    ) {
+      throw new TypeError("Model.download: first argument must be a progress callback or AbortSignal");
+    }
+    if (signal !== undefined && !isAbortSignal(signal)) {
+      throw new TypeError("Model.download: second argument must be an AbortSignal");
+    }
+    if (signal?.aborted === true) {
+      throw makeAbortError("Model download aborted before start");
+    }
+
+    await this.#native.download(progressCallback, signal);
   }
 
   removeFromCache(): void {

@@ -15,7 +15,10 @@ use core::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
 /// The library is built against this API version (`FOUNDRY_LOCAL_API_VERSION`).
-pub const FOUNDRY_LOCAL_API_VERSION: u32 = 1;
+///
+/// This is both the version requested from `FoundryLocalGetApi` and the version stamped on every
+/// versioned struct built here, so the two can never disagree.
+pub const FOUNDRY_LOCAL_API_VERSION: u32 = 2;
 
 // ── Opaque handle types ──────────────────────────────────────────────────────
 
@@ -70,6 +73,10 @@ pub const FOUNDRY_LOCAL_DEVICE_NOTSET: flDeviceType = 0;
 pub const FOUNDRY_LOCAL_DEVICE_CPU: flDeviceType = 1;
 pub const FOUNDRY_LOCAL_DEVICE_GPU: flDeviceType = 2;
 pub const FOUNDRY_LOCAL_DEVICE_NPU: flDeviceType = 3;
+
+pub type flCatalogType = c_int;
+pub const FOUNDRY_LOCAL_CATALOG_PUBLIC: flCatalogType = 0;
+pub const FOUNDRY_LOCAL_CATALOG_LOCAL: flCatalogType = 1;
 
 pub type flTensorDataType = c_int;
 pub const FOUNDRY_LOCAL_TENSOR_UNDEFINED: flTensorDataType = 0;
@@ -147,6 +154,17 @@ pub const FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR: &str = "license_desc
 pub const FOUNDRY_LOCAL_MODEL_PROP_TASK_STR: &str = "task";
 pub const FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR: &str = "model_provider";
 pub const FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR: &str = "min_fl_version";
+pub const FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR: &str = "parent_uri";
+pub const FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR: &str = "tool_call_start";
+pub const FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR: &str = "tool_call_end";
+pub const FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR: &str = "reasoning_start";
+pub const FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR: &str = "reasoning_end";
+pub const FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR: &str = "device_type";
+pub const FOUNDRY_LOCAL_MODEL_PROP_EP_STR: &str = "execution_provider";
+pub const FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR: &str = "entity_type";
+pub const FOUNDRY_LOCAL_MODEL_PROP_AUTHOR_STR: &str = "author";
+pub const FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR: &str = "quantization";
+pub const FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR: &str = "creation_time";
 pub const FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR: &str = "input_modalities";
 pub const FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR: &str = "output_modalities";
 pub const FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR: &str = "capabilities";
@@ -156,7 +174,10 @@ pub const FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT: &str = "supports_reas
 pub const FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT: &str = "filesize_mb";
 pub const FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT: &str = "max_output_tokens";
 pub const FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT: &str = "created_at_unix";
+pub const FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT: &str = "is_test_model";
 pub const FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT: &str = "context_length";
+pub const FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT: &str =
+    "supports_hybrid_reasoning";
 
 pub const FOUNDRY_LOCAL_PARAM_TEMPERATURE: &str = "temperature";
 pub const FOUNDRY_LOCAL_PARAM_TOP_P: &str = "top_p";
@@ -326,12 +347,22 @@ pub struct flStreamingCallbackData {
     pub item_queue: *mut flItemQueue,
 }
 
+/// `flToolKind` — a fixed 32-bit discriminant in the C header, so it is bound as `u32`.
+pub type flToolKind = u32;
+/// Arguments are a JSON object conforming to the definition's schema, which is required.
+pub const FOUNDRY_LOCAL_TOOL_KIND_FUNCTION: flToolKind = 0;
+/// Arguments are raw text. The definition must not carry a schema.
+pub const FOUNDRY_LOCAL_TOOL_KIND_CUSTOM: flToolKind = 1;
+
 #[repr(C)]
 pub struct flToolDefinition {
     pub version: u32,
     pub name: *const c_char,
     pub description: *const c_char,
+    /// Null or empty for a custom tool.
     pub json_schema: *const c_char,
+    /// Appended in API version 2. The native side reads it only when `version` is at least 2.
+    pub kind: flToolKind,
 }
 
 // ── Callback types (plain C calling convention) ──────────────────────────────
@@ -445,6 +476,13 @@ pub struct flApiVtable {
 
     pub Manager_Shutdown: unsafe extern "system" fn(manager: *mut flManager) -> flStatusPtr,
     pub Manager_IsShutdownRequested: unsafe extern "system" fn(manager: *const flManager) -> bool,
+
+    // V2
+    pub Manager_GetCatalogByType: unsafe extern "system" fn(
+        manager: *const flManager,
+        catalog_type: flCatalogType,
+        out_catalog: *mut *mut flCatalog,
+    ) -> flStatusPtr,
 }
 
 /// Item API table (`flItemApi`).
@@ -678,6 +716,26 @@ pub struct flCatalogApiVtable {
         catalog: *const flCatalog,
         out_models: *mut *mut flModelList,
     ) -> flStatusPtr,
+    pub GetModelVersions: unsafe extern "system" fn(
+        catalog: *const flCatalog,
+        model_alias: *const c_char,
+        model_name: *const c_char,
+        max_versions: i32,
+        out_models: *mut *mut flModelList,
+    ) -> flStatusPtr,
+
+    // V2
+    pub RegisterModel: unsafe extern "system" fn(
+        catalog: *mut flCatalog,
+        model_path: *const c_char,
+        model_id: *const c_char,
+        metadata: *const flModelInfo,
+        out_model: *mut *mut flModel,
+    ) -> flStatusPtr,
+    pub UnregisterModel: unsafe extern "system" fn(
+        catalog: *mut flCatalog,
+        alias_or_model_id: *const c_char,
+    ) -> flStatusPtr,
 }
 
 /// Model API table (`flModelApi`).
@@ -740,4 +798,56 @@ pub struct flModelApiVtable {
         key: *const c_char,
         default_value: i64,
     ) -> i64,
+
+    // V2
+    pub CreateModelInfo: unsafe extern "system" fn(out_info: *mut *mut flModelInfo) -> flStatusPtr,
+    pub ReleaseModelInfo: unsafe extern "system" fn(info: *mut flModelInfo),
+    pub Info_SetStringProperty: unsafe extern "system" fn(
+        info: *mut flModelInfo,
+        key: *const c_char,
+        value: *const c_char,
+    ) -> flStatusPtr,
+    pub Info_SetIntProperty: unsafe extern "system" fn(
+        info: *mut flModelInfo,
+        key: *const c_char,
+        value: i64,
+    ) -> flStatusPtr,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, size_of};
+
+    /// Frozen copy of `flToolDefinition` as published in API version 1. A consumer built
+    /// against that header allocates only these bytes, so `kind` must be appended after them rather
+    /// than woven into the prefix.
+    #[repr(C)]
+    struct LegacyToolDefinitionV1 {
+        version: u32,
+        name: *const c_char,
+        description: *const c_char,
+        json_schema: *const c_char,
+    }
+
+    #[test]
+    fn tool_definition_appends_kind_after_the_legacy_prefix() {
+        assert_eq!(
+            size_of::<LegacyToolDefinitionV1>(),
+            std::mem::offset_of!(flToolDefinition, kind)
+        );
+        assert_eq!(
+            std::mem::offset_of!(flToolDefinition, json_schema),
+            std::mem::offset_of!(LegacyToolDefinitionV1, json_schema)
+        );
+        assert_eq!(align_of::<flToolDefinition>(), align_of::<*const c_char>());
+
+        assert_eq!(size_of::<flToolKind>(), 4);
+        assert_eq!(FOUNDRY_LOCAL_TOOL_KIND_FUNCTION, 0);
+        assert_eq!(FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, 1);
+    }
+
+    // `kind` is only read by the native side from a version 2 or later definition, so this crate
+    // must request — and stamp — at least that version.
+    const _: () = assert!(FOUNDRY_LOCAL_API_VERSION >= 2);
 }

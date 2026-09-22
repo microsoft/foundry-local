@@ -19,18 +19,22 @@
 // ObjectWrap — modality-specific session classes (`ChatSession` today,
 // `AudioSession` / `EmbeddingsSession` later) each get their own ObjectWrap.
 //
-// Lifetime: the ChatSession pins the parent Manager via an ObjectReference so
-// the underlying foundry_local::Model the C++ Session captured can't be
-// released out from under it.
+// Lifetime: each session retains shared native Manager ownership and the Manager's explicit-disposal flag. New calls
+// reject after disposal, while admitted workers copy the native lease so manager disposal cannot invalidate them.
 #pragma once
 
 #include <napi.h>
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
 #include <memory>
 
 namespace foundry_local_node {
+
+struct SessionOperationState {
+  std::atomic_bool busy = false;
+};
 
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
@@ -51,8 +55,11 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<SessionOperationState> operation_state_ = std::make_shared<SessionOperationState>();
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -82,8 +89,11 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<SessionOperationState> operation_state_ = std::make_shared<SessionOperationState>();
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -111,8 +121,11 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<SessionOperationState> operation_state_ = std::make_shared<SessionOperationState>();
 };
 
 }  // namespace foundry_local_node

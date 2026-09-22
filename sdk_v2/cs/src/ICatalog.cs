@@ -54,6 +54,16 @@ public interface ICatalog
     Task<List<IModel>> GetLoadedModelsAsync(CancellationToken? ct = null);
 
     /// <summary>
+    /// Get the set of available versions for a model alias, optionally filtered by variant name.
+    /// </summary>
+    /// <param name="modelAlias">Model alias.</param>
+    /// <param name="modelName">Optional exact variant name filter; null matches all variants.</param>
+    /// <param name="maxVersions">Maximum number of versions to return per variant name. Use 0 or a negative value to return all versions.</param>
+    /// <param name="ct">Optional CancellationToken.</param>
+    /// <returns>Available model versions matching the alias and variant filter.</returns>
+    Task<List<IModel>> GetModelVersionsAsync(string modelAlias, string? modelName = null, int maxVersions = 50, CancellationToken? ct = null);
+
+    /// <summary>
     /// Get the latest version of a model.
     /// This is used to check if a newer version of a model is available in the catalog for download.
     /// </summary>
@@ -61,4 +71,27 @@ public interface ICatalog
     /// <param name="ct">Optional CancellationToken.</param>
     /// <returns>The latest version of the model. Will match the input if it is the latest version.</returns>
     Task<IModel> GetLatestVersionAsync(IModel model, CancellationToken? ct = null);
+
+    /// <summary>
+    /// Register existing model assets in the local catalog. The SDK synchronously snapshots
+    /// <paramref name="metadata"/> when this method is called; the catalog copies that snapshot and does not take
+    /// ownership of the directory or delete its contents.
+    /// </summary>
+    /// <param name="modelPath">Model directory containing a valid genai_config.json file.</param>
+    /// <param name="modelId">Canonical model identifier in &lt;name&gt;:&lt;version&gt; format.</param>
+    /// <param name="metadata">Model metadata. At minimum, set a supported task such as chat-completion.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <returns>A manager-owned model handle that remains valid for the manager's lifetime, including after unregister.</returns>
+    /// <exception cref="FoundryLocalException">The catalog is not local or registration validation fails.</exception>
+    Task<IModel> RegisterModelAsync(string modelPath, string modelId, ModelInfoBuilder metadata,
+                                    CancellationToken? ct = null);
+
+    /// <summary>
+    /// Unregister a local model without deleting its assets. A model ID removes one variant; an alias removes every
+    /// registered version and variant in that alias group.
+    /// </summary>
+    /// <param name="aliasOrModelId">A registered model alias or canonical model ID.</param>
+    /// <param name="ct">Optional cancellation token.</param>
+    /// <exception cref="FoundryLocalException">The catalog is not local or the registration cannot be removed.</exception>
+    Task UnregisterModelAsync(string aliasOrModelId, CancellationToken? ct = null);
 }

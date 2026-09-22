@@ -2,8 +2,14 @@
 // Licensed under the MIT License.
 #include "contracts/responses.h"
 
+#include "exception.h"
+
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+
+#include <string_view>
+#include <variant>
+#include <vector>
 
 using namespace fl::responses;
 using json = nlohmann::json;
@@ -34,7 +40,9 @@ TEST(ResponseStatusTest, UnknownDefaultsToInProgress) {
 TEST(StreamEventTypeTest, SelectedValues) {
   EXPECT_EQ(StreamEventTypeToString(StreamEventType::kResponseCreated), "response.created");
   EXPECT_EQ(StreamEventTypeToString(StreamEventType::kTextDelta), "response.output_text.delta");
-  EXPECT_EQ(StreamEventTypeToString(StreamEventType::kFunctionCallArgumentsDelta), "response.function_call_arguments.delta");
+  EXPECT_EQ(
+      StreamEventTypeToString(StreamEventType::kFunctionCallArgumentsDelta),
+      "response.function_call_arguments.delta");
   EXPECT_EQ(StreamEventTypeToString(StreamEventType::kError), "error");
 }
 
@@ -158,7 +166,7 @@ TEST(ResponsesToolTest, FunctionDefinitionRoundTrip) {
     "name": "get_weather",
     "description": "Get current weather",
     "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
-    "strict": true
+    "strict": false
   })");
 
   auto f = input.get<FunctionDefinition>();
@@ -167,14 +175,28 @@ TEST(ResponsesToolTest, FunctionDefinitionRoundTrip) {
   EXPECT_EQ(*f.description, "Get current weather");
   ASSERT_TRUE(f.parameters_json.has_value());
   ASSERT_TRUE(f.strict.has_value());
-  EXPECT_TRUE(*f.strict);
+  EXPECT_FALSE(*f.strict);
 
   // Round-trip to_json
   json output = f;
   EXPECT_EQ(output["name"], "get_weather");
   EXPECT_EQ(output["description"], "Get current weather");
   EXPECT_EQ(output["parameters"]["type"], "object");
-  EXPECT_EQ(output["strict"], true);
+  EXPECT_EQ(output["strict"], false);
+}
+
+TEST(ResponsesToolTest, FunctionWithStrictTrueIsRejected) {
+  const auto input = json::parse(R"({"name":"get_weather","strict":true})");
+
+  try {
+    (void)input.get<FunctionDefinition>();
+    FAIL() << "expected strict:true to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string_view(ex.what()).find(
+                  "function tool 'strict' true is not supported until constrained decoding is implemented"),
+              std::string_view::npos);
+  }
 }
 
 TEST(ResponsesToolTest, ToolDefinitionFlatFormat) {
@@ -597,7 +619,7 @@ TEST(StreamEventTest, FunctionCallArgumentsDeltaEvent) {
   e.delta = "{\"ci";
   e.output_index = 1;
   e.item_id = "fc_1";
-  e.function_call_id = "call_abc";
+  e.tool_call_id = "call_abc";
 
   json j;
   to_json(j, e);
@@ -613,9 +635,9 @@ TEST(StreamEventTest, FunctionCallArgumentsDoneEvent) {
   e.sequence_number = 4;
   e.output_index = 1;
   e.item_id = "fc_1";
-  e.function_name = "get_weather";
-  e.function_call_id = "call_abc";
-  e.function_arguments = R"({"city":"Seattle"})";
+  e.tool_name = "get_weather";
+  e.tool_call_id = "call_abc";
+  e.tool_payload = R"({"city":"Seattle"})";
 
   json j;
   to_json(j, e);
@@ -679,4 +701,118 @@ TEST(StreamEventTest, ContentPartAddedEvent) {
   EXPECT_EQ(j["part"]["type"], "output_text");
   EXPECT_EQ(j["content_index"], 0);
   EXPECT_EQ(j["item_id"], "msg_1");
+}
+
+// ========================================================================
+// FunctionCallInputItem — arguments accept a string or an object
+// ========================================================================
+
+TEST(ResponsesJsonTest, FunctionCallInputArgumentsAcceptAStringVerbatim) {
+  auto j = nlohmann::json::parse(
+      R"({"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Seattle\"}"})");
+
+  auto item = j.get<FunctionCallInputItem>();
+
+  EXPECT_EQ(item.type, "function_call");
+  EXPECT_EQ(item.call_id, "call_1");
+  EXPECT_EQ(item.name, "get_weather");
+  EXPECT_EQ(item.arguments, R"({"city":"Seattle"})");
+}
+
+TEST(ResponsesJsonTest, FunctionCallInputArgumentsAcceptAnObjectAsCanonicalBytes) {
+  // Aligns with the Chat Completions path: an object is re-serialized to its canonical JSON string.
+  auto j = nlohmann::json::parse(
+      R"({"type":"function_call","call_id":"call_1","name":"get_weather","arguments":{"city":"Seattle"}})");
+
+  auto item = j.get<FunctionCallInputItem>();
+
+  EXPECT_EQ(item.arguments, R"({"city":"Seattle"})");
+}
+
+TEST(ResponsesJsonTest, FunctionCallInputArgumentsMayBeAbsentOrNull) {
+  auto absent = nlohmann::json::parse(R"({"type":"function_call","call_id":"call_1","name":"now"})");
+  EXPECT_EQ(absent.get<FunctionCallInputItem>().arguments, "");
+
+  auto null_args = nlohmann::json::parse(
+      R"({"type":"function_call","call_id":"call_1","name":"now","arguments":null})");
+  EXPECT_EQ(null_args.get<FunctionCallInputItem>().arguments, "");
+}
+
+TEST(ResponsesJsonTest, FunctionCallInputArgumentsRejectOtherTypes) {
+  auto j = nlohmann::json::parse(
+      R"({"type":"function_call","call_id":"call_1","name":"get_weather","arguments":[1,2]})");
+
+  try {
+    (void)j.get<FunctionCallInputItem>();
+    FAIL() << "expected array arguments to be rejected";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+  }
+}
+
+TEST(ResponsesJsonTest, FunctionCallInputItemParsesInsideAResponseCreateParams) {
+  auto j = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": {"city": "Seattle"}},
+      {"type": "function_call_output", "call_id": "call_1", "output": "sunny"}
+    ]
+  })");
+
+  auto params = j.get<ResponseCreateParams>();
+  auto* items = std::get_if<std::vector<InputItem>>(&params.input);
+
+  ASSERT_NE(items, nullptr);
+  ASSERT_EQ(items->size(), 2u);
+
+  auto* call = std::get_if<FunctionCallInputItem>(&(*items)[0]);
+  ASSERT_NE(call, nullptr);
+  EXPECT_EQ(call->arguments, R"({"city":"Seattle"})");
+}
+
+TEST(ResponsesJsonTest, ReasoningTextIsNeverReplayedButItsTurnBoundaryIs) {
+  auto j = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"type":"reasoning","id":"reasoning_1","summary":[{"type":"summary_text","text":"private"}]},
+      {"role":"assistant","content":[{"type":"output_text","text":"Visible answer"}]}
+    ]
+  })");
+
+  auto params = j.get<ResponseCreateParams>();
+  auto* items = std::get_if<std::vector<InputItem>>(&params.input);
+
+  ASSERT_NE(items, nullptr);
+  ASSERT_EQ(items->size(), 2u);
+
+  // The reasoning item becomes a content-free assistant message: the text stays private, the turn boundary does not.
+  auto* boundary = std::get_if<InputMessage>(&items->front());
+  ASSERT_NE(boundary, nullptr);
+  EXPECT_EQ(boundary->role, "assistant");
+  EXPECT_TRUE(boundary->content.empty());
+
+  auto* message = std::get_if<InputMessage>(&(*items)[1]);
+  ASSERT_NE(message, nullptr);
+  ASSERT_EQ(message->content.size(), 1u);
+  EXPECT_EQ(std::get<InputTextContent>(message->content.front()).text, "Visible answer");
+}
+
+TEST(ResponsesJsonTest, ReasoningSummaryTextNeverBecomesReplayableContent) {
+  // Whatever the reasoning item carries, none of it reaches the parsed input.
+  auto j = nlohmann::json::parse(R"({
+    "model": "test-model",
+    "input": [
+      {"type":"reasoning","id":"reasoning_1","summary":[{"type":"summary_text","text":"private scratchpad"}]}
+    ]
+  })");
+
+  auto params = j.get<ResponseCreateParams>();
+  auto* items = std::get_if<std::vector<InputItem>>(&params.input);
+
+  ASSERT_NE(items, nullptr);
+  ASSERT_EQ(items->size(), 1u);
+  auto* boundary = std::get_if<InputMessage>(&items->front());
+  ASSERT_NE(boundary, nullptr);
+  EXPECT_EQ(boundary->role, "assistant");
+  EXPECT_TRUE(boundary->content.empty());
 }

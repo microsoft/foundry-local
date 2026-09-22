@@ -205,6 +205,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/azure_catalog_models.cc
     src/catalog/catalog_cache.cc
     src/catalog/catalog_client.cc
+    src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
@@ -214,8 +215,11 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
     src/inferencing/session/session_manager.cc
+    src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
+    src/inferencing/generative/chat/chat_transcript.cc
+    src/inferencing/generative/chat/media_input.cc
     src/configuration.cc
     src/download/blob_download_state.cc
     src/download/blob_downloader.cc
@@ -241,14 +245,17 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/openresponses/response_converter.cc
     src/inferencing/generative/openresponses/response_store.cc
     src/contracts/responses_json.cc
+    src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
     src/inferencing/generative/toolcalling/grammar.cc
     src/inferencing/generative/chat/search_options.cc
+    src/inferencing/generative/chat/stop_strings.cc
     src/inferencing/predictive/inference_session.cc
     src/inferencing/predictive/tensor.cc
     src/manager.cc
     src/contracts/chat_completions.cc
     src/contracts/chat_completions_converter.cc
+    src/contracts/tool_definitions.cc
     src/contracts/audio_transcriptions.cc
     src/contracts/embeddings.cc
     src/service/audio_transcriptions_handler.cc
@@ -271,9 +278,15 @@ set(FOUNDRY_LOCAL_SOURCES
     src/util/path_safety.cc
     src/util/region_fallback.cc
     src/util/sha256.cc
+    src/util/time_utils.cc
     src/util/zip_extract.cc
     ${FOUNDRY_LOCAL_PLATFORM_SOURCES}
     ${FOUNDRY_LOCAL_INTERNAL_HEADERS}
+)
+
+list(APPEND FOUNDRY_LOCAL_SOURCES
+    src/inferencing/generative/chat/onnx_chat_engine.cc
+    src/inferencing/generative/chat/onnx_engine_chat_stream.cc
 )
 
 # 1DS bridge — always compiled for Foundry Local Core.
@@ -348,7 +361,8 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     endif()
     target_compile_definitions(
         ${TARGET}
-        PRIVATE FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
+        PRIVATE
+            FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
     )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)
@@ -455,6 +469,8 @@ if(WIN32)
     # Delay-load the WinML EP Catalog DLL — it may not be present on older Windows.
     # The bootstrapper handles the delay-load failure gracefully at runtime.
     if(WinMLEpCatalog_FOUND)
+        # /DELAYLOAD emits calls to __delayLoadHelper2, which MSVC provides in delayimp.lib.
+        target_link_libraries(foundry_local PRIVATE delayimp)
         target_link_options(foundry_local PRIVATE
             /DELAYLOAD:Microsoft.Windows.AI.MachineLearning.dll
         )

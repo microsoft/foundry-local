@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use foundry_local_sdk::{
-    ChatSession, EmbeddingsSession, Item, MessageRole, Model, Request, RequestOptions,
-    SearchOptions,
+    ChatSession, CustomToolDefinition, EmbeddingsSession, FinishReason, FoundryLocalError, Item,
+    MessageRole, Model, NativeErrorCode, Request, RequestOptions, SearchOptions, ToolDefinition,
 };
 use tokio_stream::StreamExt;
 
@@ -48,6 +48,28 @@ fn deterministic_options() -> RequestOptions {
             ..Default::default()
         },
         ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn should_reject_wrong_task_at_construction() {
+    let manager = common::get_test_manager();
+    let model = manager
+        .catalog()
+        .get_model(common::TEST_MODEL_ALIAS)
+        .await
+        .expect("get_model failed");
+
+    // The chat model's task is not "embeddings". The typed constructor must
+    // reject it up front — before any load — with a Validation error, rather
+    // than deferring to a native "model must be loaded" / task failure. This is
+    // the construction-time contract shared by every binding.
+    match EmbeddingsSession::new(&model).await {
+        Ok(_) => panic!("EmbeddingsSession from a chat model should fail"),
+        Err(err) => assert!(
+            matches!(err, FoundryLocalError::Validation { .. }),
+            "expected a Validation error, got: {err:?}"
+        ),
     }
 }
 
@@ -108,6 +130,54 @@ async fn should_stream_items() {
         "Expected streamed text to contain '42', got: {collected}"
     );
 
+    let response = stream
+        .response()
+        .await
+        .expect("terminal streaming response failed");
+    assert!(
+        matches!(
+            response.finish_reason,
+            FinishReason::Stop | FinishReason::Length
+        ),
+        "unexpected finish reason: {:?}",
+        response.finish_reason
+    );
+    assert!(
+        response.usage.total_tokens > 0,
+        "terminal response should report token usage"
+    );
+    assert_eq!(
+        response.usage.total_tokens,
+        response.usage.prompt_tokens + response.usage.completion_tokens
+    );
+
+    drop(session); // release the session so the model can unload
+    model.unload().await.expect("unload should succeed");
+}
+
+#[tokio::test]
+async fn should_expose_native_error_code_on_failure() {
+    let (session, model) = setup_chat_session().await;
+
+    // Undoing more turns than exist is rejected by the native inference layer
+    // with a stable INVALID_USAGE code. Verify the native error identity
+    // (code + message) survives the FFI boundary rather than being flattened
+    // into an opaque string.
+    let err = session
+        .undo_turns(5)
+        .await
+        .expect_err("undo_turns beyond the turn count should fail");
+
+    assert_eq!(
+        err.native_code(),
+        Some(NativeErrorCode::InvalidUsage),
+        "expected a native InvalidUsage error, got: {err:?}"
+    );
+    assert!(
+        err.native_message().is_some_and(|m| !m.is_empty()),
+        "native error should carry a non-empty message: {err:?}"
+    );
+
     drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");
 }
@@ -129,6 +199,50 @@ async fn should_track_turn_count() {
         "turn count should advance after a processed request, got {}",
         session.turn_count()
     );
+
+    drop(session); // release the session so the model can unload
+    model.unload().await.expect("unload should succeed");
+}
+
+#[tokio::test]
+async fn should_register_function_and_custom_tool_definitions() {
+    let (session, model) = setup_chat_session().await;
+
+    session
+        .add_tool_definition(
+            ToolDefinition::new("multiply", r#"{"type":"object"}"#)
+                .with_description("Multiplies two numbers."),
+        )
+        .await
+        .expect("registering a function tool should succeed");
+
+    // A custom tool carries no schema — the native side synthesizes the one the model is prompted
+    // with. This is the path that requires an API version 2 runtime.
+    session
+        .add_custom_tool_definition(
+            CustomToolDefinition::new("apply_patch").with_description("Applies a patch."),
+        )
+        .await
+        .expect("registering a custom tool should succeed");
+
+    // Names are unique across kinds until the existing definition is removed.
+    let duplicate = session
+        .add_custom_tool_definition(CustomToolDefinition::new("multiply"))
+        .await
+        .expect_err("a duplicate name must be rejected");
+    assert_eq!(
+        duplicate.native_code(),
+        Some(NativeErrorCode::InvalidArgument)
+    );
+
+    assert!(session
+        .remove_tool_definition("multiply")
+        .await
+        .expect("remove should succeed"));
+    session
+        .add_custom_tool_definition(CustomToolDefinition::new("multiply"))
+        .await
+        .expect("re-registering a removed name should succeed");
 
     drop(session); // release the session so the model can unload
     model.unload().await.expect("unload should succeed");

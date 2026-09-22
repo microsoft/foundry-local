@@ -37,15 +37,28 @@ void from_json(const nlohmann::json& j, ChatCompletionFunctionCall& f) {
   f.arguments = j.at("arguments").get<std::string>();
 }
 
+void from_json(const nlohmann::json& j, ChatCompletionCustomCall& c) {
+  c.name = j.at("name").get<std::string>();
+  c.input = j.value("input", std::string());
+}
+
 void from_json(const nlohmann::json& j, ChatCompletionToolCall& tc) {
   tc.id = j.at("id").get<std::string>();
   tc.type = j.value("type", std::string("function"));
+
+  // A custom call carries raw text under "custom"; a function call carries JSON under "function".
+  if (tc.type == "custom") {
+    tc.custom = j.at("custom").get<ChatCompletionCustomCall>();
+    return;
+  }
+
   tc.function = j.at("function").get<ChatCompletionFunctionCall>();
 }
 
 void from_json(const nlohmann::json& j, ChatCompletionResponseMessage& m) {
   m.role = j.value("role", std::string("assistant"));
   opt_str(j, "content", m.content);
+  opt_str(j, "reasoning_content", m.reasoning_content);
   opt_str(j, "refusal", m.refusal);
   opt(j, "tool_calls", m.tool_calls);
 }
@@ -69,6 +82,7 @@ void from_json(const nlohmann::json& j, ChatCompletionResponse& r) {
 void from_json(const nlohmann::json& j, ChatCompletionDelta& d) {
   opt_str(j, "role", d.role);
   opt_str(j, "content", d.content);
+  opt_str(j, "reasoning_content", d.reasoning_content);
   opt(j, "tool_calls", d.tool_calls);
 }
 

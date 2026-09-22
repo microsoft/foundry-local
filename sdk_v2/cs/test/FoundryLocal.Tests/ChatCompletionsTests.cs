@@ -120,6 +120,12 @@ internal sealed class OpenAIChatCompletionsTests
             else
             {
                 await Assert.That(message.Content).IsNotNull();
+            }
+
+            // Accumulate independently of role framing so content is never coupled to a particular
+            // chunk boundary.
+            if (!string.IsNullOrEmpty(message.Content))
+            {
                 responseMessage.Append(message.Content);
             }
         };
@@ -136,25 +142,32 @@ internal sealed class OpenAIChatCompletionsTests
         Console.WriteLine(fullResponse);
         await Assert.That(fullResponse).Contains("42");
 
+        // Take a second streamed turn over the replayed transcript. Ask the model to recall its
+        // prior answer so the test measures streaming and multi-turn plumbing rather than another
+        // arithmetic problem. The model-free serialization test pins the exact replayed wire shape.
         messages.Add(new ChatMessage { Role = "assistant", Content = fullResponse });
         messages.Add(new ChatMessage
         {
             Role = "user",
-            Content = "Add 25 to the previous answer. Think hard to be sure of the answer."
+            Content = "What number did you give as the answer? Reply with only that number."
         });
 
         updates = chatClient.CompleteChatStreamingAsync(messages, CancellationToken.None).ConfigureAwait(false);
         responseMessage.Clear();
         isFirstChunk = true;
+        containsFinishReasonStop = false;
 
         await foreach (var response in updates)
         {
             await validateResponse(response);
         }
 
+        // Resetting the flag above makes this assertion specific to the second turn.
+        await Assert.That(containsFinishReasonStop).IsTrue();
+
         fullResponse = responseMessage.ToString();
         Console.WriteLine(fullResponse);
-        await Assert.That(fullResponse).Contains("67");
+        await Assert.That(fullResponse).Contains("42");
     }
 
     [Test]
@@ -223,23 +236,39 @@ internal sealed class OpenAIChatCompletionsTests
 
         await Assert.That(response.Choices[0].Message).IsNotNull();
         await Assert.That(response.Choices[0].Message.ToolCalls).IsNotNull().And.IsNotEmpty();
-        await Assert.That(response.Choices[0].Message.ToolCalls?.Count).IsEqualTo(1);
-        await Assert.That(response.Choices[0].Message.ToolCalls?[0].Type).IsEqualTo("function");
-        await Assert.That(response.Choices[0].Message.ToolCalls?[0].FunctionCall?.Name).IsEqualTo("multiply_numbers");
-
-        var expected = new Dictionary<string, int>
+        var assistantToolCalls = response.Choices[0].Message.ToolCalls!;
+        foreach (var assistantToolCall in assistantToolCalls)
         {
-            ["first"] = 7,
-            ["second"] = 6
-        };
+            await Assert.That(assistantToolCall.Type).IsEqualTo("function");
+            await Assert.That(assistantToolCall.FunctionCall?.Name).IsEqualTo("multiply_numbers");
+            await Assert.That(assistantToolCall.Id).IsNotNull();
+            await Assert.That(assistantToolCall.Id).IsNotEmpty();
 
-        var json = response.Choices[0].Message.ToolCalls?[0].FunctionCall?.Arguments;
-        var actual = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(json!);
-        await Assert.That(actual).IsEquivalentTo(expected);
+            var json = assistantToolCall.FunctionCall?.Arguments;
+            var actual = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(json!);
+            await Assert.That(actual).IsNotNull();
+            await Assert.That(actual!.Keys).Contains("first");
+            await Assert.That(actual.Keys).Contains("second");
+            await Assert.That(actual["first"] * actual["second"]).IsEqualTo(42);
+        }
 
-        // Add the response from invoking the tool call to the conversation and check if the model can continue correctly
-        var toolCallResponse = "7 x 6 = 42.";
-        messages.Add(new ChatMessage { Role = "tool", Content = toolCallResponse });
+        // Replay the assistant turn that issued the calls before answering them. A Chat Completions
+        // payload is self-contained — every request is correlated against an empty transcript — so a
+        // tool result is only matched to its call when every call travels with it. Content stays null
+        // so the replay matches the content-free turn the model generated, rather than feeding its
+        // tool-call marker text back.
+        messages.Add(new ChatMessage { Role = "assistant", ToolCalls = assistantToolCalls });
+
+        // Add one correlated result for every invocation and check if the model can continue correctly.
+        foreach (var assistantToolCall in assistantToolCalls)
+        {
+            messages.Add(new ChatMessage
+            {
+                Role = "tool",
+                ToolCallId = assistantToolCall.Id,
+                Content = "7 x 6 = 42."
+            });
+        }
 
         // Prompt the model to continue the conversation after the tool call
         messages.Add(new ChatMessage { Role = "system", Content = "Respond only with the answer generated by the tool." });
@@ -302,7 +331,7 @@ internal sealed class OpenAIChatCompletionsTests
         var isFirstChunk = true;
         bool gotFinishReason = false;
         StringBuilder responseMessage = new();
-        ChatCompletionCreateResponse? toolCallResponse = null;
+        List<ChatCompletionCreateResponse> toolCallResponses = [];
 
         var validateResponse = async (ChatCompletionCreateResponse? response) =>
         {
@@ -326,9 +355,10 @@ internal sealed class OpenAIChatCompletionsTests
             }
             else
             {
-                // we only expect one callback with all the args so we're not accumulating across multiple delta chunks
-                await Assert.That(toolCallResponse).IsNull();
-                toolCallResponse = response;
+                if (delta.ToolCalls is { Count: > 0 })
+                {
+                    toolCallResponses.Add(response);
+                }
             }
         };
 
@@ -339,26 +369,41 @@ internal sealed class OpenAIChatCompletionsTests
         }
 
         await Assert.That(gotFinishReason).IsTrue();
-        await Assert.That(toolCallResponse).IsNotNull();
-        await Assert.That(toolCallResponse!.Choices.Count).IsEqualTo(1);
-        await Assert.That(toolCallResponse.Choices[0].Delta.ToolCalls).IsNotNull();
-        await Assert.That(toolCallResponse.Choices[0].Delta.ToolCalls?.Count).IsEqualTo(1);
-        await Assert.That(toolCallResponse.Choices[0].Delta.ToolCalls?[0].Type).IsEqualTo("function");
-        await Assert.That(toolCallResponse.Choices[0].Delta.ToolCalls?[0].FunctionCall?.Name).IsEqualTo("multiply_numbers");
+        await Assert.That(toolCallResponses).IsNotEmpty();
+        var streamedToolCalls = toolCallResponses
+            .SelectMany(response => response.Choices[0].Delta.ToolCalls!)
+            .ToList();
+        await Assert.That(streamedToolCalls).IsNotEmpty();
 
-        var expected = new Dictionary<string, int>
+        foreach (var streamedToolCall in streamedToolCalls)
         {
-            ["first"] = 7,
-            ["second"] = 6
-        };
+            await Assert.That(streamedToolCall.Type).IsEqualTo("function");
+            await Assert.That(streamedToolCall.FunctionCall?.Name).IsEqualTo("multiply_numbers");
+            await Assert.That(streamedToolCall.Id).IsNotNull();
+            await Assert.That(streamedToolCall.Id).IsNotEmpty();
 
-        var json = toolCallResponse.Choices[0].Message.ToolCalls?[0].FunctionCall?.Arguments;
-        var actual = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(json!);
-        await Assert.That(actual).IsEquivalentTo(expected);
+            var json = streamedToolCall.FunctionCall?.Arguments;
+            var actual = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(json!);
+            await Assert.That(actual).IsNotNull();
+            await Assert.That(actual!.Keys).Contains("first");
+            await Assert.That(actual.Keys).Contains("second");
+            await Assert.That(actual["first"] * actual["second"]).IsEqualTo(42);
+        }
 
-        // Add the response from invoking the tool call to the conversation and check if the model can continue correctly
-        var toolResponse = "7 x 6 = 42.";
-        messages.Add(new ChatMessage { Role = "tool", Content = toolResponse });
+        // Replay the assistant turn that issued the calls before answering them — see
+        // DirectTool_NoStreaming_Succeeds for why every call has to travel with its result.
+        messages.Add(new ChatMessage { Role = "assistant", ToolCalls = streamedToolCalls });
+
+        // Add one correlated result for every invocation and check if the model can continue correctly.
+        foreach (var streamedToolCall in streamedToolCalls)
+        {
+            messages.Add(new ChatMessage
+            {
+                Role = "tool",
+                ToolCallId = streamedToolCall.Id,
+                Content = "7 x 6 = 42."
+            });
+        }
 
         // Prompt the model to continue the conversation after the tool call
         messages.Add(new ChatMessage { Role = "system", Content = "Respond only with the answer generated by the tool." });

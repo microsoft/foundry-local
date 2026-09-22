@@ -8,6 +8,7 @@
 	import SocialMedia from '../social-media.svelte';
 	import DownloadDropdown from '../download-dropdown.svelte';
 	import LogoTransition from '$lib/components/logo-transition.svelte';
+	import SkipLink from '$lib/components/skip-link.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 
@@ -33,12 +34,7 @@
 	});
 </script>
 
-<a
-	href="#main-content"
-	class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-primary focus:px-4 focus:py-2 focus:text-white focus:shadow-lg"
->
-	Skip to main content
-</a>
+<SkipLink />
 <header
 	class="sticky top-0 z-50 w-full border-b bg-white/80 backdrop-blur-md transition-all duration-300 dark:bg-black/80"
 >

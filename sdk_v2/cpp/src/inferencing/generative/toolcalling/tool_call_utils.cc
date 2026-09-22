@@ -5,7 +5,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
+#include <optional>
 #include <random>
+#include <string_view>
 
 namespace fl {
 
@@ -28,52 +31,605 @@ std::string RandomAlphanumeric(int length) {
   return result;
 }
 
+struct ToolCallSource {
+  std::optional<std::string_view> arguments;
+  std::optional<std::string_view> parameters;
+  std::optional<std::string_view> args;
+  std::optional<std::string_view> singleton_value;
+  std::optional<std::string_view> direct_members;
+};
+
+/// Records value spans after nlohmann has validated the JSON. Structural scanning avoids false
+/// matches from member-like text inside escaped strings and nested values.
+class JsonSourceScanner {
+ public:
+  explicit JsonSourceScanner(std::string_view source) : source_(source) {}
+
+  std::optional<std::vector<ToolCallSource>> ScanToolCalls() {
+    SkipWhitespace();
+    std::vector<ToolCallSource> calls;
+
+    if (Peek() == '[') {
+      ++position_;
+      SkipWhitespace();
+      if (Peek() == ']') {
+        ++position_;
+      } else {
+        while (true) {
+          auto call = ScanToolCallObject();
+          if (!call.has_value()) {
+            return std::nullopt;
+          }
+
+          calls.push_back(*call);
+          SkipWhitespace();
+          if (Peek() == ']') {
+            ++position_;
+            break;
+          }
+
+          if (Peek() != ',') {
+            return std::nullopt;
+          }
+
+          ++position_;
+          SkipWhitespace();
+        }
+      }
+    } else {
+      auto call = ScanToolCallObject();
+      if (!call.has_value()) {
+        return std::nullopt;
+      }
+
+      calls.push_back(*call);
+    }
+
+    SkipWhitespace();
+    return position_ == source_.size() ? std::optional{std::move(calls)} : std::nullopt;
+  }
+
+ private:
+  char Peek() const {
+    return position_ < source_.size() ? source_[position_] : '\0';
+  }
+
+  void SkipWhitespace() {
+    while (position_ < source_.size() &&
+           std::isspace(static_cast<unsigned char>(source_[position_]))) {
+      ++position_;
+    }
+  }
+
+  bool SkipString() {
+    if (Peek() != '"') {
+      return false;
+    }
+
+    ++position_;
+    while (position_ < source_.size()) {
+      const char current = source_[position_++];
+      if (current == '"') {
+        return true;
+      }
+
+      if (current == '\\') {
+        if (position_ >= source_.size()) {
+          return false;
+        }
+
+        ++position_;
+      }
+    }
+
+    return false;
+  }
+
+  bool SkipValue() {
+    SkipWhitespace();
+    if (Peek() == '"') {
+      return SkipString();
+    }
+
+    if (Peek() == '{') {
+      ++position_;
+      SkipWhitespace();
+      if (Peek() == '}') {
+        ++position_;
+        return true;
+      }
+
+      while (true) {
+        if (!SkipString()) {
+          return false;
+        }
+
+        SkipWhitespace();
+        if (Peek() != ':') {
+          return false;
+        }
+
+        ++position_;
+        if (!SkipValue()) {
+          return false;
+        }
+
+        SkipWhitespace();
+        if (Peek() == '}') {
+          ++position_;
+          return true;
+        }
+
+        if (Peek() != ',') {
+          return false;
+        }
+
+        ++position_;
+        SkipWhitespace();
+      }
+    }
+
+    if (Peek() == '[') {
+      ++position_;
+      SkipWhitespace();
+      if (Peek() == ']') {
+        ++position_;
+        return true;
+      }
+
+      while (true) {
+        if (!SkipValue()) {
+          return false;
+        }
+
+        SkipWhitespace();
+        if (Peek() == ']') {
+          ++position_;
+          return true;
+        }
+
+        if (Peek() != ',') {
+          return false;
+        }
+
+        ++position_;
+      }
+    }
+
+    const size_t start = position_;
+    while (position_ < source_.size()) {
+      const char current = source_[position_];
+      if (current == ',' || current == ']' || current == '}' ||
+          std::isspace(static_cast<unsigned char>(current))) {
+        break;
+      }
+
+      ++position_;
+    }
+
+    return position_ > start;
+  }
+
+  std::optional<ToolCallSource> ScanToolCallObject() {
+    SkipWhitespace();
+    if (Peek() != '{') {
+      return std::nullopt;
+    }
+
+    ++position_;
+    SkipWhitespace();
+    ToolCallSource result;
+    size_t member_count = 0;
+    bool first_member_is_name = false;
+    size_t direct_members_start = 0;
+    if (Peek() == '}') {
+      ++position_;
+      return result;
+    }
+
+    while (true) {
+      const size_t key_start = position_;
+      if (!SkipString()) {
+        return std::nullopt;
+      }
+
+      const auto key = nlohmann::json::parse(source_.substr(key_start, position_ - key_start))
+                           .get<std::string>();
+      SkipWhitespace();
+      if (Peek() != ':') {
+        return std::nullopt;
+      }
+
+      ++position_;
+      SkipWhitespace();
+      const size_t value_start = position_;
+      if (!SkipValue()) {
+        return std::nullopt;
+      }
+
+      const auto value = source_.substr(value_start, position_ - value_start);
+      if (key == "arguments") {
+        result.arguments = value;
+      } else if (key == "parameters") {
+        result.parameters = value;
+      } else if (key == "args") {
+        result.args = value;
+      }
+
+      ++member_count;
+      if (member_count == 1) {
+        first_member_is_name = key == "name";
+        result.singleton_value = value;
+      }
+
+      SkipWhitespace();
+      if (Peek() == '}') {
+        if (first_member_is_name && member_count > 1) {
+          result.direct_members =
+              source_.substr(direct_members_start, position_ - direct_members_start);
+        }
+
+        ++position_;
+        return result;
+      }
+
+      if (Peek() != ',') {
+        return std::nullopt;
+      }
+
+      ++position_;
+      const size_t next_member_start = position_;
+      SkipWhitespace();
+      if (first_member_is_name && member_count == 1) {
+        direct_members_start = next_member_start;
+      }
+    }
+  }
+
+  std::string_view source_;
+  size_t position_ = 0;
+};
+
+void SetArguments(ParsedToolCall& tool_call,
+                  const nlohmann::json& arguments,
+                  const std::optional<std::string_view>& source) {
+  tool_call.argument_source = source.has_value() ? std::string(*source) : arguments.dump();
+  tool_call.arguments = arguments.is_string() ? arguments.get<std::string>() : arguments.dump();
+}
+
+void SetDirectMemberArguments(ParsedToolCall& tool_call,
+                              const nlohmann::json& arguments,
+                              const std::string_view members) {
+  tool_call.argument_source = "{" + std::string(members) + "}";
+  tool_call.arguments = arguments.dump();
+}
+
+bool HasAdvertisedTool(const nlohmann::json& tools, const std::string& name) {
+  if (!tools.is_array()) {
+    return false;
+  }
+
+  for (const auto& tool : tools) {
+    if (!tool.is_object()) {
+      continue;
+    }
+
+    const auto type = tool.find("type");
+    const bool has_function_type =
+        type != tool.end() && type->is_string() &&
+        type->get_ref<const std::string&>() == "function";
+    const bool has_invalid_type = type != tool.end() && !has_function_type;
+
+    const auto function = tool.find("function");
+    if (function != tool.end()) {
+      if (!has_function_type || !function->is_object()) {
+        continue;
+      }
+
+      const auto nested_name = function->find("name");
+      if (nested_name != function->end() && nested_name->is_string() &&
+          nested_name->get_ref<const std::string&>() == name) {
+        return true;
+      }
+
+      continue;
+    }
+
+    const auto direct_name = tool.find("name");
+    if (!has_invalid_type && direct_name != tool.end() &&
+        direct_name->is_string() &&
+        direct_name->get_ref<const std::string&>() == name) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+std::string CleanToolName(std::string name) {
+  auto trim = [](std::string value) {
+    const size_t start = value.find_first_not_of(" \t\r\n\"'");
+    if (start == std::string::npos) {
+      return std::string{};
+    }
+    const size_t end = value.find_last_not_of(" \t\r\n\"'");
+    return value.substr(start, end - start + 1);
+  };
+
+  name = trim(std::move(name));
+  if (name.starts_with("function=")) {
+    name = trim(name.substr(sizeof("function=") - 1));
+  }
+  return name;
+}
+
 /// Try to parse a JSON string as a list of tool calls.
 /// Handles both array and single-object formats:
 ///   [{"name": "fn", "arguments": {...}}]
 ///   {"name": "fn", "arguments": {...}}
-std::vector<ParsedToolCall> DeserializeToolCalls(const std::string& json_text) {
+std::vector<ParsedToolCall> DeserializeToolCalls(const std::string& json_text,
+                                                 const nlohmann::json& advertised_tools) {
   std::vector<ParsedToolCall> results;
 
   try {
-    auto json = nlohmann::json::parse(json_text);
+    const size_t content_start = json_text.find_first_not_of(" \t\r\n");
+    if (content_start == std::string::npos) {
+      return results;
+    }
+    const size_t content_end = json_text.find_last_not_of(" \t\r\n");
+    const std::string normalized_text =
+        json_text.substr(content_start, content_end - content_start + 1);
 
-    auto parse_one = [&](const nlohmann::json& call) {
-      if (!call.is_object() || !call.contains("name")) {
-        return;
+    auto json = nlohmann::json::parse(normalized_text, nullptr, false);
+    std::optional<std::vector<ToolCallSource>> sources;
+    if (!json.is_discarded()) {
+      sources = JsonSourceScanner(normalized_text).ScanToolCalls();
+      if (!sources.has_value()) {
+        return results;
+      }
+    }
+
+    bool repaired = false;
+    bool repaired_missing_name_prefix = false;
+    std::optional<std::string> repaired_source;
+
+    // Some models finish a complete object one outer brace early. Repair
+    // exactly one unmatched object brace; leave other truncation untouched.
+    if (json.is_discarded() && normalized_text.starts_with('{')) {
+      int object_depth = 0;
+      int array_depth = 0;
+      bool in_string = false;
+      bool escaped = false;
+      for (char ch : normalized_text) {
+        if (in_string) {
+          if (escaped) {
+            escaped = false;
+          } else if (ch == '\\') {
+            escaped = true;
+          } else if (ch == '"') {
+            in_string = false;
+          }
+        } else if (ch == '"') {
+          in_string = true;
+        } else if (ch == '{') {
+          ++object_depth;
+        } else if (ch == '}') {
+          --object_depth;
+        } else if (ch == '[') {
+          ++array_depth;
+        } else if (ch == ']') {
+          --array_depth;
+        }
+      }
+      if (!in_string && object_depth == 1 && array_depth == 0) {
+        repaired_source = normalized_text + "}";
+        json = nlohmann::json::parse(*repaired_source, nullptr, false);
+        repaired = !json.is_discarded();
+        if (!repaired) {
+          repaired_source.reset();
+        }
+      }
+    }
+
+    // Some models omit {"name":" and start with <tool_name","arguments".
+    // Reconstruct the canonical prefix and still require valid JSON.
+    if (json.is_discarded() && normalized_text.starts_with('<')) {
+      const size_t name_end = normalized_text.find("\",\"");
+      if (name_end != std::string::npos && name_end > 1) {
+        const std::string tool_name = normalized_text.substr(1, name_end - 1);
+        std::string repaired_text =
+            R"({"name":)" + nlohmann::json(tool_name).dump() +
+            normalized_text.substr(name_end + 1);
+        json = nlohmann::json::parse(repaired_text, nullptr, false);
+
+        // A wrapped arguments object closes itself but may omit the closing
+        // brace for the reconstructed outer call object.
+        if (json.is_discarded() &&
+            (repaired_text.find(R"(,"arguments":{)") != std::string::npos ||
+             repaired_text.find(R"(,"parameters":{)") != std::string::npos ||
+             repaired_text.find(R"(,"args":{)") != std::string::npos)) {
+          repaired_text += "}";
+          json = nlohmann::json::parse(repaired_text, nullptr, false);
+        }
+        repaired_missing_name_prefix = !json.is_discarded();
+        repaired = repaired || repaired_missing_name_prefix;
+        if (repaired_missing_name_prefix) {
+          repaired_source = std::move(repaired_text);
+        }
+      }
+    }
+
+    // The missing-name form may place argument members directly after the
+    // tool name. Preserve recognized wrappers; otherwise collect the direct
+    // members into the canonical arguments object.
+    if (repaired_missing_name_prefix && json.is_object() && json.contains("name") &&
+        !json.contains("arguments") && !json.contains("parameters") && !json.contains("args")) {
+      nlohmann::json arguments = json;
+      arguments.erase("name");
+      json = {{"name", json["name"]}, {"arguments", std::move(arguments)}};
+      repaired = true;
+    }
+
+    // Some models emit {"tool_name","arg":value} with argument members
+    // directly after the tool name. Wrap those members as arguments.
+    if (json.is_discarded() && normalized_text.starts_with("{\"")) {
+      const size_t name_end = normalized_text.find('"', 2);
+      const size_t closing_brace = normalized_text.find_last_of('}');
+      if (name_end != std::string::npos && name_end + 1 < normalized_text.size() &&
+          normalized_text[name_end + 1] == ',' && closing_brace > name_end + 1) {
+        const std::string tool_name = normalized_text.substr(2, name_end - 2);
+        std::string repaired_text =
+            R"({"name":)" + nlohmann::json(tool_name).dump() + R"(,"arguments":{)" +
+            normalized_text.substr(name_end + 2, closing_brace - name_end - 2) + "}}";
+        json = nlohmann::json::parse(repaired_text, nullptr, false);
+        if (!json.is_discarded()) {
+          repaired = true;
+          repaired_source = std::move(repaired_text);
+        }
+      }
+    }
+
+    // Some models emit {"tool_name": "arg": value} instead of wrapping the
+    // arguments in an object. Repair only that narrow shape, then require the
+    // result to pass the normal JSON parser.
+    if (json.is_discarded()) {
+      const size_t colon = normalized_text.find(':');
+      const size_t closing_brace = normalized_text.find_last_of('}');
+      if (colon != std::string::npos && closing_brace != std::string::npos &&
+          colon < closing_brace) {
+        std::string repaired_text =
+            normalized_text.substr(0, colon + 1) + "{" +
+            normalized_text.substr(colon + 1, closing_brace - colon - 1) + "}" +
+            normalized_text.substr(closing_brace);
+        json = nlohmann::json::parse(repaired_text, nullptr, false);
+        if (!json.is_discarded()) {
+          repaired = true;
+          repaired_source = std::move(repaired_text);
+        }
+      }
+    }
+
+    if (json.is_discarded()) {
+      return results;
+    }
+
+    if (!sources.has_value() && repaired_source.has_value()) {
+      sources = JsonSourceScanner(*repaired_source).ScanToolCalls();
+    }
+
+    auto parse_one = [&](const nlohmann::json& call,
+                         const ToolCallSource* source) -> std::optional<ParsedToolCall> {
+      if (!call.is_object()) {
+        return std::nullopt;
       }
 
       ParsedToolCall tc;
-      tc.id = GenerateToolCallId();
-      tc.name = call["name"].get<std::string>();
+      bool call_repaired = repaired;
 
-      // Arguments can be under "arguments" or "parameters"
-      if (call.contains("arguments")) {
-        if (call["arguments"].is_string()) {
-          tc.arguments = call["arguments"].get<std::string>();
-        } else {
-          tc.arguments = call["arguments"].dump();
-        }
-      } else if (call.contains("parameters")) {
-        if (call["parameters"].is_string()) {
-          tc.arguments = call["parameters"].get<std::string>();
-        } else {
-          tc.arguments = call["parameters"].dump();
-        }
+      if (call.contains("name") && call["name"].is_string()) {
+        tc.name = call["name"].get<std::string>();
+      } else if (call.contains("function") && call["function"].is_string()) {
+        tc.name = call["function"].get<std::string>();
+        call_repaired = true;
+      } else if (call.size() == 1 && !call.contains("name") &&
+                 !call.contains("function") && !call.contains("arguments") &&
+                 !call.contains("parameters") && !call.contains("args")) {
+        const auto& [name, arguments] = *call.items().begin();
+        tc.name = CleanToolName(name);
+        const auto argument_source =
+            source != nullptr ? source->singleton_value : std::optional<std::string_view>{};
+        SetArguments(tc, arguments, argument_source);
+        call_repaired = true;
+      } else {
+        return std::nullopt;
       }
 
-      results.push_back(std::move(tc));
+      const std::string original_name = tc.name;
+      tc.name = CleanToolName(std::move(tc.name));
+      call_repaired = call_repaired || tc.name != original_name;
+      if (tc.name.empty()) {
+        return std::nullopt;
+      }
+
+      // Arguments can be under "arguments", "parameters", or "args".
+      if (call.contains("arguments")) {
+        if (source != nullptr && !source->arguments.has_value() &&
+            !source->direct_members.has_value()) {
+          return std::nullopt;
+        }
+
+        if (source != nullptr && source->direct_members.has_value() &&
+            !source->arguments.has_value()) {
+          SetDirectMemberArguments(tc, call["arguments"], *source->direct_members);
+        } else {
+          const auto argument_source =
+              source != nullptr ? source->arguments : std::optional<std::string_view>{};
+          SetArguments(tc, call["arguments"], argument_source);
+        }
+      } else if (call.contains("parameters")) {
+        call_repaired = true;
+        if (source != nullptr && !source->parameters.has_value()) {
+          return std::nullopt;
+        }
+
+        const auto argument_source =
+            source != nullptr ? source->parameters : std::optional<std::string_view>{};
+        SetArguments(tc, call["parameters"], argument_source);
+      } else if (call.contains("args")) {
+        call_repaired = true;
+        if (source != nullptr && !source->args.has_value()) {
+          return std::nullopt;
+        }
+
+        const auto argument_source =
+            source != nullptr ? source->args : std::optional<std::string_view>{};
+        SetArguments(tc, call["args"], argument_source);
+      }
+
+      if (call_repaired && !HasAdvertisedTool(advertised_tools, tc.name)) {
+        return std::nullopt;
+      }
+
+      return tc;
     };
 
     if (json.is_array()) {
-      for (const auto& item : json) {
-        parse_one(item);
+      if (sources.has_value() && sources->size() != json.size()) {
+        return {};
+      }
+
+      results.reserve(json.size());
+
+      for (size_t index = 0; index < json.size(); ++index) {
+        const auto* source = sources.has_value() ? &(*sources)[index] : nullptr;
+        auto parsed = parse_one(json[index], source);
+        if (!parsed) {
+          return {};
+        }
+
+        results.push_back(std::move(*parsed));
       }
     } else if (json.is_object()) {
-      parse_one(json);
+      if (sources.has_value() && sources->size() != 1) {
+        return {};
+      }
+
+      const auto* source = sources.has_value() ? &sources->front() : nullptr;
+      auto parsed = parse_one(json, source);
+      if (!parsed) {
+        return {};
+      }
+
+      results.push_back(std::move(*parsed));
+    } else {
+      return {};
     }
-  } catch (const nlohmann::json::parse_error&) {
-    // Invalid JSON — return whatever we have so far (may be empty)
+
+    for (auto& result : results) {
+      result.id = GenerateToolCallId();
+    }
+  } catch (const nlohmann::json::exception&) {
+    return {};
   }
 
   return results;
@@ -81,14 +637,61 @@ std::vector<ParsedToolCall> DeserializeToolCalls(const std::string& json_text) {
 
 }  // namespace
 
+size_t FindMarkerOutsideJsonString(std::string_view text,
+                                   std::string_view marker,
+                                   size_t start_pos) {
+  if (marker.empty() || start_pos >= text.size()) {
+    return std::string_view::npos;
+  }
+
+  bool in_string = false;
+  bool escaped = false;
+  size_t unmatched_closing_quote = std::string_view::npos;
+  const size_t payload_start = text.find_first_not_of(" \t\r\n", start_pos);
+  if (payload_start != std::string_view::npos && text[payload_start] == '<') {
+    const size_t first_quote = text.find('"', payload_start + 1);
+    if (first_quote != std::string_view::npos && first_quote + 1 < text.size() &&
+        text[first_quote + 1] == ',') {
+      unmatched_closing_quote = first_quote;
+    }
+  }
+
+  for (size_t pos = start_pos; pos < text.size(); ++pos) {
+    if (!in_string && text.substr(pos).starts_with(marker)) {
+      return pos;
+    }
+
+    const char ch = text[pos];
+    if (pos == unmatched_closing_quote) {
+      continue;
+    }
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        in_string = false;
+      }
+    } else if (ch == '"') {
+      in_string = true;
+    }
+  }
+
+  return std::string_view::npos;
+}
+
 std::string GenerateToolCallId() {
   return "call_" + RandomAlphanumeric(9);
 }
 
 std::vector<ParsedToolCall> ParseToolCalls(const std::string& text,
                                            const std::string& tool_call_start,
-                                           const std::string& tool_call_end) {
+                                           const std::string& tool_call_end,
+                                           const std::string& tools_json) {
   std::vector<ParsedToolCall> all_calls;
+
+  const auto advertised_tools = nlohmann::json::parse(tools_json, nullptr, false);
 
   if (tool_call_start.empty() || tool_call_end.empty()) {
     return all_calls;
@@ -104,13 +707,13 @@ std::vector<ParsedToolCall> ParseToolCalls(const std::string& text,
     }
 
     size_t content_start = start_pos + tool_call_start.size();
-    size_t end_pos = text.find(tool_call_end, content_start);
+    size_t end_pos = FindMarkerOutsideJsonString(text, tool_call_end, content_start);
     if (end_pos == std::string::npos) {
       break;
     }
 
     std::string content = text.substr(content_start, end_pos - content_start);
-    auto calls = DeserializeToolCalls(content);
+    auto calls = DeserializeToolCalls(content, advertised_tools);
 
     for (auto& call : calls) {
       all_calls.push_back(std::move(call));

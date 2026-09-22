@@ -198,8 +198,10 @@ TEST_F(ModelFixture, ChatMultiTurnSession) {
   EXPECT_NE(r2.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_NE(r2.GetFinishReason(), FOUNDRY_LOCAL_FINISH_ERROR);
   expect_contains_soft(t2, "5", "Turn 2");
-  EXPECT_GT(r2.GetUsage().prompt_tokens, 0);
-  EXPECT_GT(r2.GetUsage().completion_tokens, 0);
+  const auto r2_usage = r2.GetUsage();
+  EXPECT_GT(r2_usage.prompt_tokens, r1.GetUsage().total_tokens);
+  EXPECT_GT(r2_usage.completion_tokens, 0);
+  EXPECT_EQ(r2_usage.total_tokens, r2_usage.prompt_tokens + r2_usage.completion_tokens);
   EXPECT_EQ(session.TurnCount(), 2u);
   std::cout << "Turn 2: " << t2 << "\n";
 
@@ -298,6 +300,97 @@ TEST_F(ToolCallFixture, ToolCallWithRequired) {
   }
 
   EXPECT_TRUE(found_tool_call) << "No TOOL_CALL item in response";
+}
+
+TEST_F(ToolCallFixture, CustomToolRegistrationRules) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+
+  // A custom tool needs no schema, and must not carry one.
+  session.AddToolDefinition(ToolDefinition::Custom("apply_patch", "Applies a patch."));
+
+  ToolDefinition custom_with_schema = ToolDefinition::Custom("other_patch", "d");
+  custom_with_schema.json_schema = "{}";
+  EXPECT_THROW(session.AddToolDefinition(custom_with_schema), Error);
+
+  // Names are unique across kinds, and case-sensitive.
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition{"apply_patch", "d", "{}"}), Error);
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition::Custom("apply_patch", "d")), Error);
+  session.AddToolDefinition(ToolDefinition::Custom("Apply_Patch", "Different name."));
+
+  // Removing frees the name for re-registration, including under a different kind.
+  EXPECT_TRUE(session.RemoveToolDefinition("apply_patch"));
+  EXPECT_FALSE(session.RemoveToolDefinition("apply_patch"));
+  session.AddToolDefinition(ToolDefinition{"apply_patch", "Now a function tool.", "{}"});
+
+  // A function tool still requires a schema that is valid JSON.
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition{"broken", "d", "{not json"}), Error);
+  EXPECT_THROW(session.AddToolDefinition(ToolDefinition{"no_schema", "d", ""}), Error);
+}
+
+TEST_F(ToolCallFixture, CustomToolCallDeliversRawArguments) {
+  using namespace foundry_local;
+
+  ChatSession session(tool_model());
+  session.AddToolDefinition(
+      ToolDefinition::Custom("apply_patch", "Applies a text patch. The payload is the patch text."));
+
+  Request request{
+      SystemMessage("You are a helpful AI assistant. Use the provided tool to answer."),
+      UserMessage("Apply a patch that adds the line 'hello' to a.txt."),
+  };
+  RequestOptions opts;
+  opts.search.temperature = 0.0f;
+  opts.search.max_output_tokens = 256;
+  opts.tool_choice = FOUNDRY_LOCAL_TOOL_CHOICE_REQUIRED;
+  request.SetOptions(opts);
+
+  Response response = session.ProcessRequest(request);
+
+  ASSERT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+
+  bool found_tool_call = false;
+  std::string tool_call_id;
+  std::string payload;
+  for (const auto& item : response.GetItems()) {
+    if (item.GetType() != FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+      continue;
+    }
+
+    auto tc = item.GetToolCall();
+    EXPECT_EQ(tc.name, "apply_patch");
+    EXPECT_FALSE(tc.call_id.empty());
+    tool_call_id = tc.call_id;
+    payload = tc.arguments;
+
+    // The model is prompted with the synthesized single-string schema, so it emits
+    // {"input": "..."}. What reaches the caller is the raw payload with that wrapper removed.
+    auto parsed = nlohmann::json::parse(tc.arguments, nullptr, /*allow_exceptions=*/false);
+    EXPECT_FALSE(parsed.is_object() && parsed.contains("input"))
+        << "custom tool arguments must be the raw payload, not the normalized wrapper: " << tc.arguments;
+    EXPECT_NE(tc.arguments.find("hello"), std::string_view::npos);
+    EXPECT_NE(tc.arguments.find("a.txt"), std::string_view::npos);
+    std::cout << "Custom tool call: " << tc.name << "(" << tc.arguments << ")\n";
+    found_tool_call = true;
+    break;
+  }
+
+  ASSERT_TRUE(found_tool_call) << "No TOOL_CALL item in response";
+  ASSERT_FALSE(payload.empty());
+
+  Request continuation;
+  continuation.AddItem(Item::ToolResult(tool_call_id, "Patch applied successfully."));
+  continuation.AddItem(UserMessage("Confirm the patch result in one short sentence."));
+  RequestOptions continuation_options;
+  continuation_options.search.temperature = 0.0f;
+  continuation_options.search.max_output_tokens = 128;
+  continuation.SetOptions(continuation_options);
+
+  const auto continued = session.ProcessRequest(continuation);
+  EXPECT_EQ(continued.GetFinishReason(), FOUNDRY_LOCAL_FINISH_STOP);
+  ASSERT_FALSE(continued.GetItems().empty());
+  EXPECT_EQ(session.TurnCount(), 2u);
 }
 
 TEST_F(ToolCallFixture, SessionToolChoiceRequiredIsInherited) {
@@ -726,10 +819,8 @@ TEST_F(ModelFixture, OpenAIJsonMultipleRequestsAreStateless) {
 }
 
 // ------------------------------------------------------------------------
-// JSON request with a tools[] array. Model behavior varies by version —
-// it may invoke the tool or just answer in prose. Both shapes are valid;
-// we assert only that the response parses and contains *some* assistant
-// signal (tool_calls OR content).
+// JSON request with a tools[] array and required tool choice. Requiring a call keeps this API contract test
+// deterministic across model and runtime versions while exercising JSON conversion, guidance, and response parsing.
 // ------------------------------------------------------------------------
 TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
   using namespace foundry_local;
@@ -757,6 +848,7 @@ TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
                            {"second", {{"type", "integer"}, {"description", "second number"}}}}},
                          {"required", json::array({"first", "second"})}}}}}},
                 })},
+      {"tool_choice", "required"},
       {"temperature", 0},
       {"max_tokens", 256},
   };
@@ -770,41 +862,25 @@ TEST_F(ToolCallFixture, OpenAIJsonWithToolDefinition) {
   ASSERT_EQ(chat_response.choices.size(), 1u);
   const auto& msg = chat_response.choices[0].message;
 
-  bool has_tool_calls = msg.tool_calls.has_value() && !msg.tool_calls->empty();
-  bool has_content = msg.content.has_value() && !msg.content->empty();
+  ASSERT_TRUE(msg.tool_calls.has_value());
+  ASSERT_FALSE(msg.tool_calls->empty());
 
-  ASSERT_TRUE(has_tool_calls || has_content)
-      << "Expected either tool_calls or content in assistant response";
+  // Validate the call shape — correct function name and the two integer arguments {7, 6}. Argument order is
+  // intentionally flexible because multiplication is commutative and models may legitimately swap the operands.
+  const auto& call = (*msg.tool_calls)[0];
+  EXPECT_EQ(call.function.name, "multiply_numbers") << "Model invoked unexpected tool: " << call.function.name;
 
-  if (has_tool_calls) {
-    // Tool-calling path: the model invoked our tool. Validate the call shape
-    // matches the contract — correct function name and the two integer
-    // arguments {7, 6} (order-insensitive: model may legitimately swap).
-    const auto& call = (*msg.tool_calls)[0];
-    EXPECT_EQ(call.function.name, "multiply_numbers")
-        << "Model invoked unexpected tool: " << call.function.name;
+  auto args = nlohmann::json::parse(call.function.arguments);
+  ASSERT_TRUE(args.contains("first")) << "Tool args missing 'first': " << call.function.arguments;
+  ASSERT_TRUE(args.contains("second")) << "Tool args missing 'second': " << call.function.arguments;
 
-    auto args = nlohmann::json::parse(call.function.arguments);
-    ASSERT_TRUE(args.contains("first")) << "Tool args missing 'first': " << call.function.arguments;
-    ASSERT_TRUE(args.contains("second")) << "Tool args missing 'second': " << call.function.arguments;
+  int first = args["first"].get<int>();
+  int second = args["second"].get<int>();
 
-    int first = args["first"].get<int>();
-    int second = args["second"].get<int>();
+  EXPECT_TRUE((first == 7 && second == 6) || (first == 6 && second == 7))
+      << "Tool args don't match the prompt (7 * 6). Got first=" << first << ", second=" << second;
 
-    EXPECT_TRUE((first == 7 && second == 6) || (first == 6 && second == 7))
-        << "Tool args don't match the prompt (7 * 6). Got first=" << first
-        << ", second=" << second;
-
-    std::cout << "Tool-call JSON path: model invoked multiply_numbers(" << first << ", " << second << ")\n";
-  } else {
-    // Direct-answer path: model declined to call the tool. Reply must still
-    // contain the correct product, otherwise the model didn't actually answer
-    // the question.
-    EXPECT_NE(msg.content->find("42"), std::string::npos)
-        << "Direct-answer reply missing '42'. Got: " << *msg.content;
-
-    std::cout << "Tool-call JSON path: model produced content: " << *msg.content << "\n";
-  }
+  std::cout << "Tool-call JSON path: model invoked multiply_numbers(" << first << ", " << second << ")\n";
 }
 
 // ------------------------------------------------------------------------

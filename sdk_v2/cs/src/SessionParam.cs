@@ -26,16 +26,16 @@ internal static class SessionParam
     /// <summary>Maximum tokens to generate. Int.</summary>
     public const string MaxOutputTokens = "max_output_tokens";
 
-    /// <summary>Frequency penalty. Float [-2.0, 2.0].</summary>
+    /// <summary>Frequency penalty. Currently only the neutral value 0 is supported.</summary>
     public const string FrequencyPenalty = "frequency_penalty";
 
-    /// <summary>Presence penalty. Float [-2.0, 2.0].</summary>
+    /// <summary>Presence penalty. Currently only the neutral value 0 is supported.</summary>
     public const string PresencePenalty = "presence_penalty";
 
     /// <summary>Random seed for reproducible outputs. Int.</summary>
     public const string Seed = "seed";
 
-    /// <summary>Whether to stop on stop sequence or only at max tokens. Bool ("true"/"false").</summary>
+    /// <summary>Legacy beam-search policy; unsupported by Engine backends. Bool ("true"/"false").</summary>
     public const string EarlyStopping = "early_stopping";
 
     /// <summary>Whether to sample (false = greedy). Bool ("true"/"false").</summary>

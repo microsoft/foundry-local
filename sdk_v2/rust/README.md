@@ -11,6 +11,7 @@ The Foundry Local Rust SDK provides an async Rust interface for running AI model
 
 - **Local-first AI** — Run models entirely on your machine with no cloud calls
 - **Model catalog** — Browse and discover available models; check what's cached or loaded
+- **Bring your own model (BYOM)** — Register existing local model assets without copying or taking ownership of them
 - **Automatic model management** — Download, load, unload, and remove models from cache
 - **Chat completions** — OpenAI-compatible chat API with both non-streaming and streaming responses
 - **Embeddings** — Generate text embeddings via OpenAI-compatible API
@@ -209,6 +210,37 @@ let cached = catalog.get_cached_models().await?;
 let loaded = catalog.get_loaded_models().await?;
 ```
 
+### Registering a Local Model (BYOM)
+
+Use the local catalog to register an existing ONNX GenAI model directory. Registration does not copy or take
+ownership of the model assets.
+
+```rust
+use foundry_local_sdk::{
+    FoundryLocalConfig, FoundryLocalManager, ModelInfoBuilder,
+};
+
+let manager = FoundryLocalManager::create(FoundryLocalConfig::new("my_app"))?;
+let local_catalog = manager.local_catalog()?;
+
+let mut metadata = local_catalog.create_model_info()?;
+metadata
+    .set_string_property("task", "chat-completion")?
+    .set_string_property("device_type", "CPU")?
+    .set_string_property("execution_provider", "CPUExecutionProvider")?
+    .set_int_property("context_length", 4096)?;
+
+let model = local_catalog
+    .register_model("C:/models/my-model", "my-model:1", metadata)
+    .await?;
+
+// The external model directory is left untouched.
+local_catalog.unregister_model(model.id()).await?;
+```
+
+The existing `manager.catalog()` accessor remains the default public catalog. Use
+`manager.get_catalog(CatalogType::Public)` when explicit catalog selection is preferred.
+
 ### Model Lifecycle
 
 Each model may have multiple variants (different quantizations, hardware targets). The SDK auto-selects the best available variant, preferring cached versions. All models are represented by the `Model` type.
@@ -264,7 +296,7 @@ let client = model.create_chat_client()
     .temperature(0.7)
     .max_tokens(256)
     .top_p(0.9)
-    .frequency_penalty(0.5);
+    .frequency_penalty(0.0);
 
 // Non-streaming completion
 let response = client.complete_chat(
@@ -473,8 +505,8 @@ All settings are configured via chainable builder methods on `ChatClient`:
 | `max_tokens(v)` | `u32` | Maximum number of tokens to generate |
 | `top_p(v)` | `f64` | Nucleus sampling probability (0.0–1.0) |
 | `top_k(v)` | `u32` | Top-k sampling parameter (Foundry extension) |
-| `frequency_penalty(v)` | `f64` | Frequency penalty |
-| `presence_penalty(v)` | `f64` | Presence penalty |
+| `frequency_penalty(v)` | `f64` | OpenAI frequency penalty; currently only `0` is supported |
+| `presence_penalty(v)` | `f64` | OpenAI presence penalty; currently only `0` is supported |
 | `n(v)` | `u32` | Number of completions to generate |
 | `random_seed(v)` | `u64` | Random seed for reproducible results (Foundry extension) |
 | `response_format(v)` | `ChatResponseFormat` | Output format (Text, JsonObject, JsonSchema, LarkGrammar) |
@@ -554,6 +586,44 @@ runtime. The `build.rs` build script can obtain it in two ways, controlled by en
 |----------|---------|
 | `FOUNDRY_LOCAL_NATIVE_BIN_DIR` | Copy native binaries from a local C++ build output directory (the dev path). Mirrors the C# `FoundryLocalNativeBinDir`. |
 | `FOUNDRY_LOCAL_RUNTIME_VERSION` | Download the Runtime NuGet package (`Microsoft.AI.Foundry.Local.Runtime`) plus ONNX Runtime / GenAI for the target RID. On Windows this package bundles the reg-free WinML 2.x runtime. |
+
+When `FOUNDRY_LOCAL_RUNTIME_VERSION` is set, the NuGet acquisition path supports three modes:
+
+- **`http` (default)** — talks to the NuGet v3 HTTP protocol directly. No external tools are
+  required, but feeds must support anonymous HTTPS access.
+- **`dotnet`** — runs `dotnet restore` against a temporary project. Use this with a
+  `NuGet.Config` or a credential provider supported by the .NET SDK.
+- **`nuget`** — runs `nuget install` once per package. Use this when authentication depends on a
+  NuGet or Visual Studio credential provider that the standalone NuGet CLI can host.
+
+| Variable | Applies to | Purpose |
+|----------|------------|---------|
+| `FOUNDRY_LOCAL_NUGET_MODE` | all | `http` (default), `dotnet`, or `nuget`. |
+| `FOUNDRY_LOCAL_NUGET_FEEDS` | all | Semicolon-separated NuGet v3 service-index URLs. Replaces the public defaults. `http` mode requires HTTPS. |
+| `FOUNDRY_LOCAL_NUGET_CONFIG` | `dotnet`, `nuget` | Path to a `NuGet.Config`. When set, the config owns package sources; no command-line sources are added. |
+| `FOUNDRY_LOCAL_DOTNET_COMMAND` | `dotnet` | Command or path for the .NET CLI. Defaults to `dotnet`. |
+| `FOUNDRY_LOCAL_NUGET_COMMAND` | `nuget` | Command or path for the NuGet CLI. Defaults to `nuget.exe` on Windows and `nuget` elsewhere. |
+
+Authentication is delegated to the standard NuGet tooling in `dotnet` and `nuget` modes. The build
+script does not read or print credentials, and it redacts query strings, fragments, and embedded
+credentials from URLs in tool errors.
+
+To use an anonymous mirror directly:
+
+```bash
+export FOUNDRY_LOCAL_RUNTIME_VERSION="x.y.z" # Replace with the runtime package version.
+export FOUNDRY_LOCAL_NUGET_FEEDS=https://mirror.example/nuget/v3/index.json
+cargo build
+```
+
+To use package sources and credentials from a `NuGet.Config`:
+
+```bash
+export FOUNDRY_LOCAL_RUNTIME_VERSION="x.y.z" # Replace with the runtime package version.
+export FOUNDRY_LOCAL_NUGET_MODE=dotnet
+export FOUNDRY_LOCAL_NUGET_CONFIG="$HOME/.nuget/NuGet/NuGet.Config"
+cargo build
+```
 
 If neither is set at build time, the library is resolved at **runtime** from (in order):
 

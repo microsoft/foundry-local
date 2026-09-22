@@ -7,7 +7,9 @@
 #include <chrono>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace fl {
 namespace http {
@@ -27,10 +29,11 @@ struct HttpRequestOptions {
   bool close_connection = false;
 };
 
-/// Returns the CA bundle path from `SSL_CERT_FILE` (read once, cached for the process lifetime), or
-/// empty when unset. The bundled libcurl does not consult `SSL_CERT_FILE` itself, so libcurl-based
-/// transports must pass this explicitly as `CAInfo`. Gated to Android; empty everywhere else, where
-/// the system default CA store (or WinHTTP on Windows) is used instead.
+/// Resolves SSL_CERT_FILE or a well-known Linux CA bundle path.
+std::string ResolveLinuxCaBundle(const std::function<std::optional<std::string>(const char*)>& get_env,
+                                 const std::function<bool(std::string_view)>& path_exists);
+
+/// Returns SSL_CERT_FILE, a known Linux CA bundle, or empty when the platform default should be used.
 const std::string& CABundleFilePath();
 
 /// Perform an HTTP POST and return status, headers, and body without throwing on non-2xx responses.

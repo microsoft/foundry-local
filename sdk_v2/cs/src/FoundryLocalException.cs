@@ -16,6 +16,11 @@ public class FoundryLocalException : Exception
     {
     }
 
+    public FoundryLocalException(string message, FoundryLocalErrorCode errorCode) : base(message)
+    {
+        ErrorCode = errorCode;
+    }
+
     public FoundryLocalException(string message, Exception innerException) : base(message, innerException)
     {
     }
@@ -32,4 +37,10 @@ public class FoundryLocalException : Exception
         Debug.Assert(logger != null);
         logger!.LogError(innerException, message);
     }
+
+    /// <summary>
+    /// Gets the native error code associated with this failure, or <c>null</c> for SDK-side failures that
+    /// have no corresponding native error code.
+    /// </summary>
+    public FoundryLocalErrorCode? ErrorCode { get; }
 }

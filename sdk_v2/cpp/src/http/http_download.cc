@@ -77,9 +77,6 @@ bool HttpDownloadFile(const std::string& url, const std::filesystem::path& desti
 #if defined(FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT)
   WinHttpTransport transport;
 #else
-  // On Android, libcurl has no valid default CA path, so MakeCurlTransportOptions() supplies the CA
-  // bundle via CAInfo; on other curl platforms it returns empty options and libcurl uses the system
-  // default trust store (see http/curl_transport.h).
   CurlTransport transport(http::MakeCurlTransportOptions());
 #endif
   Request request(HttpMethod::Get, Url(url));

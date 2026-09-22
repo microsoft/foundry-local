@@ -4,6 +4,7 @@
 
 use crate::detail::ffi::*;
 use crate::detail::session::NativeResponse;
+use crate::error::Result;
 use crate::item::Item;
 
 /// Why generation stopped for a [`Response`].
@@ -75,15 +76,15 @@ pub struct Response {
 
 impl Response {
     /// Snapshot a native response into an owned [`Response`].
-    pub(crate) fn from_native(native: &NativeResponse) -> Response {
-        let items = native.items();
+    pub(crate) fn from_native(native: &NativeResponse) -> Result<Response> {
+        let items = native.items()?;
         let finish_reason = FinishReason::from_native(native.finish_reason());
-        let (prompt, completion, total) = native.usage();
-        Response {
+        let (prompt, completion, total) = native.usage()?;
+        Ok(Response {
             items,
             finish_reason,
             usage: Usage::from_native(prompt, completion, total),
-        }
+        })
     }
 
     /// The concatenated text of all textual output items.

@@ -25,7 +25,6 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -63,6 +62,9 @@ namespace detail {
 /// Returns nullptr if the library does not support the requested API version.
 inline const flApi* api() {
   static const flApi* p = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  if (!p) {
+    throw std::runtime_error("Foundry Local runtime does not support the API version requested by this header");
+  }
   return p;
 }
 
@@ -299,13 +301,25 @@ struct Runtime {
 };
 
 // ===========================================================================
-// ModelInfo — non-owning read-only view
+// ModelInfo — owning mutable value or non-owning read-only view
 // ===========================================================================
 
-/// Non-owning view over an opaque flModelInfo. Lifetime is tied to the owning Model/Catalog. Immutable.
+/// Opaque model metadata. Default construction creates an owning mutable value for registration.
+/// Construction from `const flModelInfo&` creates a non-owning read-only view tied to its Model.
 class ModelInfo {
  public:
-  explicit ModelInfo(const flModelInfo& info) noexcept : info_(&info) {}
+  ModelInfo();
+  explicit ModelInfo(const flModelInfo& info) noexcept : handle_(&info) {}
+
+  ModelInfo(const ModelInfo&) = delete;
+  ModelInfo& operator=(const ModelInfo&) = delete;
+  ModelInfo(ModelInfo&&) noexcept = default;
+  ModelInfo& operator=(ModelInfo&&) noexcept = default;
+
+  ModelInfo& SetStringProperty(const char* key, const char* value);
+  ModelInfo& SetIntProperty(const char* key, int64_t value);
+
+  const flModelInfo* native_handle() const noexcept { return handle_.get(); }
 
   // Core identity.
   std::string_view Id() const noexcept;
@@ -376,7 +390,7 @@ class ModelInfo {
 
  private:
   static std::string_view safe(const char* s) noexcept { return s ? s : ""; }
-  const flModelInfo* info_;
+  detail::Base<flModelInfo> handle_;
 };
 
 // ===========================================================================
@@ -452,6 +466,8 @@ struct MessageContent {
 struct ToolCallContent {
   std::string_view call_id;
   std::string_view name;
+  /// FUNCTION arguments are JSON. CUSTOM arguments are NUL-free UTF-8 text; a generated custom
+  /// payload containing an embedded NUL is invalid and is never truncated.
   std::string_view arguments;
 };
 
@@ -572,7 +588,8 @@ class Item {
   static Item AudioFromUri(const std::string& uri, const std::optional<std::string>& format = std::nullopt,
                            int sample_rate = 0, int channels = 0);
 
-  /// Create a tool call item.
+  /// Create a tool call item. Custom `arguments` must be NUL-free UTF-8 text; an embedded NUL is
+  /// invalid and is rejected rather than truncated.
   static Item ToolCall(const std::string& call_id, const std::string& name, const std::string& arguments);
 
   /// Create a tool result item.
@@ -695,6 +712,9 @@ class IModel {
 // Model — concrete IModel implementation using composition
 // ===========================================================================
 
+/// Non-owning wrapper over a catalog-owned model. The Manager that supplied the catalog must outlive this object and
+/// any ModelInfo view obtained from it. Unregistering a local model removes it from future catalog queries without
+/// invalidating existing wrappers; operations that require the retired registration, including Download and Load, fail.
 class Model final : public IModel {
  public:
   /// Mutable construction (from catalog lookups that return flModel*).
@@ -735,6 +755,8 @@ class Model final : public IModel {
 // ModelList
 // ===========================================================================
 
+/// Owning wrapper for a native model-list allocation. Its Model entries are non-owning views into catalog storage, so
+/// the Manager that supplied the catalog must outlive the list and any Model wrapper retained from it.
 class ModelList {
  public:
   ModelList(flModelList& model_list);
@@ -780,12 +802,20 @@ class ICatalog {
   /// returns every variant. `max_versions` selects the latest X versions per
   /// variant name (defaults to 50, matching the web service contract); pass 0
   /// or a negative value for no per-variant cap. Each call performs a fresh
-  /// query and the returned model handles remain valid until the next
-  /// GetModelVersions call for the same alias or until the catalog is destroyed.
-  /// Queries for different aliases do not invalidate each other's results.
+  /// query and the returned model handles remain valid until the owning Manager
+  /// is destroyed. Repeated queries do not invalidate earlier results.
   virtual ModelList GetModelVersions(const std::string& model_alias,
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
+
+  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// The catalog does not take ownership of `model_path` and never deletes its contents.
+  virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
+                                                const ModelInfo& metadata) = 0;
+  /// Unregister without deleting model assets. A model ID removes only that version/variant; an alias removes all of
+  /// its registered versions and variants. Existing model wrappers and immutable metadata views remain valid, but
+  /// operations that require the retired registration, including Download and Load, fail with invalid usage.
+  virtual void UnregisterModel(const std::string& alias_or_model_id) = 0;
 };
 
 // ===========================================================================
@@ -794,7 +824,7 @@ class ICatalog {
 
 class Catalog final : public ICatalog {
  public:
-  /// Adopt an already-created catalog handle (owning).
+  /// Wrap an already-created manager-owned catalog handle (non-owning).
   /// Most users should obtain a catalog via Manager::GetCatalog() rather than constructing one directly.
   explicit Catalog(flCatalog& catalog) : handle_(&catalog) {}
 
@@ -811,6 +841,9 @@ class Catalog final : public ICatalog {
   ModelList GetModelVersions(const std::string& model_alias,
                              const std::string& variant_name = {},
                              int max_versions = 50) override;
+  std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
+                                        const ModelInfo& metadata) override;
+  void UnregisterModel(const std::string& alias_or_model_id) override;
 
  private:
   detail::Base<flCatalog> handle_;
@@ -838,8 +871,8 @@ class Manager {
 
   const Configuration& GetConfiguration() const { return config_; }
 
-  /// Get the catalog for querying models. Creates on first call, caches internally.
-  ICatalog& GetCatalog() const;
+  /// Get a manager-owned catalog for querying models.
+  ICatalog& GetCatalog(flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC) const;
 
   /// Start the embedded web service.
   void StartWebService();
@@ -872,10 +905,16 @@ class Manager {
   bool IsShutdownRequested() const;
 
  private:
+  struct CatalogCollection {
+    explicit CatalogCollection(const flManager* manager);
+
+    mutable Catalog public_;
+    mutable Catalog local_;
+  };
+
   detail::Base<flManager> handle_;
   Configuration config_;
-  mutable std::unique_ptr<Catalog> catalog_;
-  mutable std::unique_ptr<std::once_flag> catalog_once_{std::make_unique<std::once_flag>()};
+  CatalogCollection catalogs_;
 };
 
 // ===========================================================================
@@ -884,16 +923,48 @@ class Manager {
 
 /// C++ wrapper for flToolDefinition. Sets the version field automatically.
 struct ToolDefinition {
-  std::string name;         ///< Tool name.
+  std::string name;         ///< Tool name. Must be non-empty, case-sensitive, and unique across kinds.
   std::string description;  ///< Tool description for model context.
-  std::string json_schema;  ///< JSON schema defining the tool's arguments.
+  /// JSON schema defining the tool's arguments. Required for a function tool; must stay empty for a
+  /// custom tool, whose schema is synthesized.
+  std::string json_schema;
+  /// Tool kind. Determines how a generated call's arguments are shaped: JSON for a function tool,
+  /// raw text for a custom tool.
+  flToolKind kind = FOUNDRY_LOCAL_TOOL_KIND_FUNCTION;
 
+  /// Function tool: `json_schema` is required and must be valid JSON.
   ToolDefinition(std::string name, std::string description, std::string json_schema)
       : name(std::move(name)), description(std::move(description)), json_schema(std::move(json_schema)) {}
 
+  /// Custom tool: the model is prompted with a synthesized single-string schema. Generated
+  /// arguments are delivered as NUL-free UTF-8 text; an embedded NUL is invalid and is never
+  /// truncated.
+  static ToolDefinition Custom(std::string name, std::string description) {
+    ToolDefinition definition(std::move(name), std::move(description), std::string{});
+    definition.kind = FOUNDRY_LOCAL_TOOL_KIND_CUSTOM;
+    return definition;
+  }
+
   /// Convert to the C struct for passing across the ABI boundary.
-  flToolDefinition ToC() const noexcept {
-    return {FOUNDRY_LOCAL_API_VERSION, name.c_str(), description.c_str(), json_schema.c_str()};
+  flToolDefinition ToC() const {
+    static_assert(FOUNDRY_LOCAL_API_VERSION == 2,
+                  "flToolDefinition may have new fields; initialize them here before updating this assertion");
+    if (name.find('\0') != std::string::npos || description.find('\0') != std::string::npos ||
+        json_schema.find('\0') != std::string::npos) {
+      throw Error("Tool definition fields must not contain embedded NUL characters",
+                  FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    }
+
+    // Zero-initialized and assigned by name rather than aggregate-initialized, so a field appended
+    // to flToolDefinition in a future version defaults to zero (the value that preserves the older
+    // behavior) instead of being left uninitialized.
+    flToolDefinition c_def{};
+    c_def.version = FOUNDRY_LOCAL_API_VERSION;
+    c_def.name = name.c_str();
+    c_def.description = description.c_str();
+    c_def.json_schema = json_schema.c_str();
+    c_def.kind = kind;
+    return c_def;
   }
 };
 
@@ -907,10 +978,10 @@ struct SearchOptions {
   std::optional<float> top_p;              ///< Nucleus sampling [0.0, 1.0].
   std::optional<int> top_k;                ///< Top-k sampling.
   std::optional<int> max_output_tokens;    ///< Maximum tokens to generate.
-  std::optional<float> frequency_penalty;  ///< Frequency penalty [-2.0, 2.0].
-  std::optional<float> presence_penalty;   ///< Presence penalty [-2.0, 2.0].
+  std::optional<float> frequency_penalty;  ///< Currently only the neutral value 0 is supported.
+  std::optional<float> presence_penalty;   ///< Currently only the neutral value 0 is supported.
   std::optional<int> seed;                 ///< Random seed for reproducibility.
-  std::optional<bool> early_stopping;      ///< Stop on stop-sequence match.
+  std::optional<bool> early_stopping;      ///< Beam-search policy; true is unsupported by Engine backends.
   std::optional<bool> do_sample;           ///< Whether to sample (false = greedy).
 };
 
@@ -1017,7 +1088,9 @@ class ChatSession : public Session {
  public:
   explicit ChatSession(IModel& model);
 
-  /// Add a tool definition that is available for the entire session.
+  /// Add a tool definition that is available for the entire session. Names are case-sensitive and
+  /// unique across kinds — adding a name that is already registered throws. Use
+  /// `ToolDefinition::Custom` for a tool whose arguments are raw text rather than JSON.
   ChatSession& AddToolDefinition(const ToolDefinition& tool_definition);
 
   /// Remove a previously-added tool definition by name.
@@ -1028,8 +1101,8 @@ class ChatSession : public Session {
   /// Get the number of completed turns.
   size_t TurnCount() const;
 
-  /// Undo the last `count` turns: rewinds the generator and removes the turns'
-  /// input messages and assistant replies from history.
+  /// Undo the last `count` turns and remove their input messages and assistant replies from history.
+  /// Retained inference state is reused when it can be restored safely; otherwise it is rebuilt on the next request.
   void UndoTurns(size_t count);
 };
 

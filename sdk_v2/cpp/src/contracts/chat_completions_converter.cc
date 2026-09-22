@@ -2,16 +2,46 @@
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
 
+#include "contracts/tool_definitions.h"
+#include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
+#include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "items/tool_result_item.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <random>
 #include <sstream>
+#include <utility>
 
 namespace fl {
 namespace chat_completions {
+
+namespace {
+
+/// Core definition for one declared tool, whichever kind it is. A custom tool contributes no
+/// schema: the registry synthesizes it, which is what keeps the raw payload out of function
+/// argument handling.
+ToolDefinition ToCoreDefinition(const ChatCompletionTool& tool) {
+  if (tool.IsCustom()) {
+    return tools::MakeCustomTool(tool.custom->name, tool.custom->description.value_or(""),
+                                 tool.custom->description.has_value(),
+                                 tools::CustomToolLarkGrammar(tool.custom->format));
+  }
+
+  return tools::MakeFunctionTool(tool.function.name, tool.function.description.value_or(""),
+                                 tool.function.parameters.has_value() ? tool.function.parameters->dump()
+                                                                      : std::string{},
+                                 tool.function.description.has_value(), tool.function.parameters.has_value(),
+                                 tool.function.strict);
+}
+
+ToolKind ForcedChoiceKind(const ChatCompletionToolChoice& choice) {
+  return choice.kind == ChatCompletionToolChoice::Kind::kCustom ? ToolKind::kCustom : ToolKind::kFunction;
+}
+
+}  // namespace
 
 std::string GenerateCompletionId() {
   static thread_local std::mt19937 rng(std::random_device{}());
@@ -47,8 +77,6 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
 
   apply_default_float("temperature", req.temperature);
   apply_default_float("top_p", req.top_p);
-  apply_default_float("presence_penalty", req.presence_penalty);
-  apply_default_float("frequency_penalty", req.frequency_penalty);
   apply_default_int("max_tokens", req.max_tokens);
 
   // top_k and random_seed go through metadata (matches C# behavior)
@@ -82,65 +110,97 @@ std::string MapFinishReason(flFinishReason reason) {
 
 void BuildRequestItems(const ChatCompletionRequest& req, Request& session_request) {
   for (const auto& msg : req.messages) {
-    if (!msg.content || msg.content->empty()) {
-      // ignore empty messages
+    auto role = Utils::StringToRole(msg.role);
+
+    if (role == FOUNDRY_LOCAL_ROLE_TOOL) {
+      // A tool result may legitimately be an empty string; the call ID is what correlates it with its call.
+      session_request.AddOwnedItem(
+          std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""), msg.content.value_or("")));
       continue;
     }
 
-    // add a MessageItem or ToolResultItem depending on the role.
-    auto role = Utils::StringToRole(msg.role);
+    const std::string content = msg.content.value_or("");
+    if (!content.empty()) {
+      session_request.AddOwnedItem(std::make_unique<MessageItem>(role, content, msg.name.value_or("")));
+    }
 
-    switch (role) {
-      case FOUNDRY_LOCAL_ROLE_TOOL:
-        session_request.AddOwnedItem(std::make_unique<ToolResultItem>(msg.tool_call_id.value_or(""),
-                                                                      msg.content.value_or("")));
-        break;
+    if (role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
+      continue;
+    }
 
-      default:
-        session_request.AddOwnedItem(std::make_unique<MessageItem>(role, msg.content.value_or("")));
+    // A reasoning-only response has no model-visible text to replay, but its assistant role still separates the
+    // messages on either side. Carry that boundary as an empty visible text part; reasoning itself remains private.
+    if (content.empty() && msg.reasoning_content.has_value() && !msg.reasoning_content->empty()) {
+      auto boundary = std::make_unique<MessageItem>();
+      boundary->role = role;
+      boundary->name = msg.name.value_or("");
+      boundary->content.push_back(MessagePart::Own(std::make_unique<TextItem>("")));
+      session_request.AddOwnedItem(std::move(boundary));
+    }
+
+    // Assistant messages that issue tool calls usually have null content. When such a message also carries a
+    // participant name, emit a content-free MessageItem to carry it: the transcript folds the calls below into that
+    // message, so the name reaches the template without fabricating a text part the caller never sent.
+    if (content.empty() && (!msg.reasoning_content.has_value() || msg.reasoning_content->empty()) &&
+        !msg.tool_calls.empty() && msg.name.has_value() && !msg.name->empty()) {
+      auto named = std::make_unique<MessageItem>();
+      named->role = role;
+      named->name = *msg.name;
+      session_request.AddOwnedItem(std::move(named));
+    }
+
+    // Emit the calls as items directly after any visible text so the transcript keeps them on one assistant message.
+    //
+    // A custom call contributes its raw text payload, not JSON arguments. The item carries those bytes unchanged and
+    // the transcript rewraps them as {"input": ...} for template projection only, using the kind the session's
+    // definition snapshot records for the name — so nothing here has to guess what kind a call was.
+    for (const auto& call : msg.tool_calls) {
+      const auto kind = call.IsCustom() ? ToolKind::kCustom : ToolKind::kFunction;
+      session_request.AddOwnedItem(std::make_unique<ToolCallItem>(
+          call.id, call.Name(), call.Payload(), /*replayed_from_store=*/false, kind, kind));
     }
   }
 }
 
-std::string ExtractToolDefinitions(ChatCompletionRequest& req, Request& session_request) {
-  std::string tools_json;
+std::vector<ToolDefinition> ExtractToolDefinitions(const ChatCompletionRequest& req, Request& session_request) {
+  std::vector<ToolDefinition> definitions;
 
-  // it's cheaper to re-serialize than to re-parse the full request to get the tools JSON.
-  if (req.tools.has_value() && !req.tools->empty()) {
-    tools_json = nlohmann::json(*req.tools).dump();
+  if (req.tools.has_value()) {
+    definitions.reserve(req.tools->size());
+    for (const auto& tool : *req.tools) {
+      definitions.push_back(ToCoreDefinition(tool));
+    }
   }
+  tools::ValidateUniqueNames(definitions);
 
-  // Extract tool_choice → controls text_output / tool_output in ChatSession
+  // tool_choice → controls text_output / tool_output in ChatSession. Unrepresentable choices were
+  // already rejected while the request was read, so only valid ones reach here.
   if (req.tool_choice.has_value()) {
-    const auto& tc = *req.tool_choice;
+    const auto& choice = *req.tool_choice;
+    session_request.options["tool_choice"] = choice.ModeString();
 
-    if (tc.is_string()) {
-      session_request.options["tool_choice"] = tc.get<std::string>();
-    } else if (tc.is_object() && tc.contains("type") && tc["type"] == "function") {
-      // {"type": "function", "function": {"name": "..."}} → filter to named function + "required"
-      session_request.options["tool_choice"] = "required";
-
-      // Filter tools to only the specified function (matches C# SetToolChoice behavior)
-      if (tc.contains("function") && tc["function"].contains("name")) {
-        std::string target_name = tc["function"]["name"].get<std::string>();
-
-        if (req.tools.has_value()) {
-          std::vector<ChatCompletionTool> filtered;
-          for (const auto& tool : *req.tools) {
-            if (tool.function.name == target_name) {
-              filtered.push_back(tool);
-            }
-          }
-
-          if (!filtered.empty()) {
-            tools_json = nlohmann::json(filtered).dump();
-          }
-        }
-      }
+    if (choice.IsForced()) {
+      const auto kind = ForcedChoiceKind(choice);
+      session_request.forced_tool_choice = ForcedToolChoice{choice.name, kind};
+      tools::NarrowToForcedTool(definitions, choice.name, kind);
     }
   }
 
-  return tools_json;
+  if (definitions.empty() && req.tool_choice.has_value() &&
+      req.tool_choice->kind == ChatCompletionToolChoice::Kind::kRequired) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool_choice 'required' requires at least one declared tool");
+  }
+
+  return definitions;
+}
+
+ChatCompletionToolCall MakeToolCall(std::string call_id, std::string name, std::string payload, ToolKind kind) {
+  if (kind == ToolKind::kCustom) {
+    return ChatCompletionToolCall::MakeCustom(std::move(call_id), std::move(name), std::move(payload));
+  }
+
+  return ChatCompletionToolCall::MakeFunction(std::move(call_id), std::move(name), std::move(payload));
 }
 
 void MapRequestParameters(const ChatCompletionRequest& req, Request& session_request) {
@@ -152,8 +212,14 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
 
   set_float_param(req.temperature, "temperature");
   set_float_param(req.top_p, "top_p");
-  set_float_param(req.frequency_penalty, "frequency_penalty");
-  set_float_param(req.presence_penalty, "presence_penalty");
+  if (req.frequency_penalty.value_or(0.0f) != 0.0f) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "nonzero frequency_penalty is not supported; ORT repetition_penalty has different semantics");
+  }
+  if (req.presence_penalty.value_or(0.0f) != 0.0f) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "nonzero presence_penalty is not supported; ORT diversity_penalty has different semantics");
+  }
 
   if (req.seed.has_value()) {
     session_request.options["seed"] = std::to_string(*req.seed);
@@ -202,6 +268,7 @@ void MapGuidance(const ChatCompletionRequest& req, Request& session_request) {
     }
   } else if (rf_type == "json_object") {
     session_request.options["guidance_type"] = "json_schema";
+    session_request.options["guidance_data"] = R"({"type":"object"})";
   } else if (rf_type == "text") {
     session_request.options["tool_choice"] = "none";
   }
@@ -212,11 +279,7 @@ void MapStopSequences(const ChatCompletionRequest& req, Request& session_request
     return;
   }
 
-  const auto& stop = *req.stop;
-  if ((stop.is_string() && !stop.get<std::string>().empty()) ||
-      (stop.is_array() && !stop.empty())) {
-    session_request.options["early_stopping"] = "true";
-  }
+  StoreStopStringsOption(NormalizeOpenAiStopStrings(*req.stop), session_request.options);
 }
 
 ChatCompletionResponse BuildResponse(const Response& response,
@@ -225,36 +288,30 @@ ChatCompletionResponse BuildResponse(const Response& response,
                                      const std::string& model_name) {
   // Extract assistant message and tool calls from response items
   std::string response_text;
+  std::string reasoning_text;
   std::vector<ChatCompletionToolCall> tool_calls;
 
   for (const auto& item : response.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       auto& msg_item = static_cast<MessageItem&>(*item);
       if (msg_item.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
-        if (msg_item.IsSimpleText()) {
-          response_text = msg_item.GetSimpleText();
-        } else {
-          // Reasoning model: assistant message has multiple typed parts. The OpenAI Chat Completions response shape
-          // exposes only visible (DEFAULT) text — REASONING parts are surfaced via the Responses API path.
-          for (const auto& part : msg_item.content) {
-            if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
-              continue;
-            }
-            const auto& ti = static_cast<const TextItem&>(*part.view);
-            if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
-              response_text += ti.text;
-            }
+        // Chat Completions exposes only visible text. Inspect the TextItem type even for a one-part message because a
+        // generation truncated inside a reasoning block produces exactly one REASONING part.
+        for (const auto& part : msg_item.content) {
+          if (!part.view || part.view->type != FOUNDRY_LOCAL_ITEM_TEXT) {
+            continue;
+          }
+          const auto& ti = static_cast<const TextItem&>(*part.view);
+          if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
+            response_text += ti.text;
+          } else if (ti.text_type == FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING) {
+            reasoning_text += ti.text;
           }
         }
       }
     } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
       auto& tc_item = static_cast<ToolCallItem&>(*item);
-      ChatCompletionToolCall tc;
-      tc.id = tc_item.call_id;
-      tc.type = "function";
-      tc.function.name = tc_item.name;
-      tc.function.arguments = tc_item.arguments;
-      tool_calls.push_back(std::move(tc));
+      tool_calls.push_back(MakeToolCall(tc_item.call_id, tc_item.name, tc_item.arguments, tc_item.kind));
     }
   }
 
@@ -264,6 +321,10 @@ ChatCompletionResponse BuildResponse(const Response& response,
   choice.index = 0;
   choice.finish_reason = MapFinishReason(response.finish_reason);
   choice.message.content = response_text;
+
+  if (!reasoning_text.empty()) {
+    choice.message.reasoning_content = std::move(reasoning_text);
+  }
 
   if (has_tool_calls) {
     choice.message.tool_calls = std::move(tool_calls);
@@ -278,6 +339,8 @@ ChatCompletionResponse BuildResponse(const Response& response,
   result.usage.prompt_tokens = static_cast<int>(response.usage.prompt_tokens);
   result.usage.completion_tokens = static_cast<int>(response.usage.completion_tokens);
   result.usage.total_tokens = static_cast<int>(response.usage.total_tokens);
+  result.usage.completion_tokens_details.reasoning_tokens =
+      static_cast<int>(response.usage.reasoning_tokens);
 
   return result;
 }
@@ -293,6 +356,22 @@ std::string FormatStreamingChunk(const std::string& content,
 
   ChatCompletionChunkChoice choice;
   choice.delta.content = content;
+  chunk.choices.push_back(std::move(choice));
+
+  return nlohmann::json(chunk).dump();
+}
+
+std::string FormatReasoningStreamingChunk(const std::string& reasoning_content,
+                                          const std::string& completion_id,
+                                          int64_t created,
+                                          const std::string& model_name) {
+  ChatCompletionChunk chunk;
+  chunk.id = completion_id;
+  chunk.created = created;
+  chunk.model = model_name;
+
+  ChatCompletionChunkChoice choice;
+  choice.delta.reasoning_content = reasoning_content;
   chunk.choices.push_back(std::move(choice));
 
   return nlohmann::json(chunk).dump();

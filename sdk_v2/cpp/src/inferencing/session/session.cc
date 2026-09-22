@@ -16,7 +16,6 @@
 #include "utils.h"
 
 #include <fmt/format.h>
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <memory>
@@ -50,8 +49,7 @@ std::unique_ptr<Session> Session::Create(const fl::Model& model) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model must be loaded before creating a session");
     }
 
-    auto& lm = mgr.GetModelLoadManager();
-    auto* loaded = lm.GetLoadedModel(model.Id());
+    auto* loaded = mgr.GetModelLoadManager().GetLoadedModel(model.Id(), model.GetPath());
     if (!loaded) {
       FL_LOG_AND_THROW(logger, FOUNDRY_LOCAL_ERROR_INTERNAL, "loaded model not found in load manager");
     }
@@ -89,12 +87,7 @@ void Session::UndoTurns(size_t /*count*/) {
 }
 
 void Session::AddToolDefinition(ToolDefinition tool_def) {
-  if (!nlohmann::json::accept(tool_def.json_schema)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "ToolDefinition.json_schema is not valid JSON for tool: " + tool_def.name);
-  }
-
-  tool_definitions_.push_back(std::move(tool_def));
+  tool_registry_.Add(std::move(tool_def));
 }
 
 void Session::ValidateRequestItems(const Request& request) const {

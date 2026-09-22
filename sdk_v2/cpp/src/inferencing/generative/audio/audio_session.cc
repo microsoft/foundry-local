@@ -332,6 +332,12 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   }
 
   auto generator = OgaGenerator::Create(oga_model, *gen_params);
+  if (IsNemotronSpeechModel()) {
+    auto language = effective_kvp.find("language");
+    if (language != effective_kvp.end()) {
+      TryNemotronLanguageId(*generator, language->second);
+    }
+  }
   auto tokenizer_stream = Model().GetPreprocessor().CreateTokenizerStream();
 
   auto streaming_callback = CreateCallbackHandler(request);

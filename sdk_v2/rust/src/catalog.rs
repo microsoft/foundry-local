@@ -12,11 +12,13 @@ use crate::detail::model::Model;
 use crate::detail::native::NativeCatalog;
 use crate::detail::task::spawn_blocking;
 use crate::error::{FoundryLocalError, Result};
+use crate::types::{CatalogType, ModelInfoBuilder};
 
 /// The model catalog provides discovery and lookup for all available models.
 pub struct Catalog {
     native: NativeCatalog,
     name: String,
+    catalog_type: CatalogType,
 }
 
 impl Catalog {
@@ -24,15 +26,30 @@ impl Catalog {
         api: Arc<Api>,
         ptr: *mut crate::detail::ffi::flCatalog,
         manager: Arc<NativeManager>,
+        catalog_type: CatalogType,
     ) -> Result<Self> {
         let native = NativeCatalog::new(api, ptr, manager);
         let name = native.name().unwrap_or_else(|_| "default".into());
-        Ok(Self { native, name })
+        Ok(Self {
+            native,
+            name,
+            catalog_type,
+        })
     }
 
     /// Catalog name as reported by the native core.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The source type represented by this catalog.
+    pub fn catalog_type(&self) -> CatalogType {
+        self.catalog_type
+    }
+
+    /// Create mutable metadata backed by the same native runtime as this catalog.
+    pub fn create_model_info(&self) -> Result<ModelInfoBuilder> {
+        ModelInfoBuilder::new(Arc::clone(&self.native.api))
     }
 
     /// Refresh the catalog from the native core.
@@ -145,6 +162,37 @@ impl Catalog {
         .await
     }
 
+    /// Return catalog versions for an alias, optionally narrowed to one model name.
+    ///
+    /// `max_versions` limits the results per model name; `0` returns all versions.
+    pub async fn get_model_versions(
+        &self,
+        model_alias: &str,
+        model_name: Option<&str>,
+        max_versions: u32,
+    ) -> Result<Vec<Arc<Model>>> {
+        if model_alias.trim().is_empty() {
+            return Err(FoundryLocalError::Validation {
+                reason: "Model alias must be a non-empty string".into(),
+            });
+        }
+        let max_versions =
+            i32::try_from(max_versions).map_err(|_| FoundryLocalError::Validation {
+                reason: "max_versions must not exceed i32::MAX".into(),
+            })?;
+        let native = self.native.clone();
+        let model_alias = model_alias.to_owned();
+        let model_name = model_name.map(str::to_owned);
+        spawn_blocking(move || {
+            native
+                .get_model_versions(&model_alias, model_name.as_deref(), max_versions)?
+                .into_iter()
+                .map(|m| Model::from_variant(&native.api, m).map(Arc::new))
+                .collect()
+        })
+        .await
+    }
+
     /// Resolve the latest catalog version for the provided model or variant.
     pub async fn get_latest_version(&self, model_or_model_variant: &Model) -> Result<Arc<Model>> {
         let native = self.native.clone();
@@ -154,5 +202,56 @@ impl Catalog {
             Model::from_variant(&native.api, latest).map(Arc::new)
         })
         .await
+    }
+
+    /// Register existing model assets in the local catalog without transferring ownership of those assets.
+    pub async fn register_model(
+        &self,
+        model_path: &str,
+        model_id: &str,
+        metadata: ModelInfoBuilder,
+    ) -> Result<Arc<Model>> {
+        if self.catalog_type != CatalogType::Local {
+            return Err(FoundryLocalError::Validation {
+                reason: "Models can only be registered in the local catalog".into(),
+            });
+        }
+        if model_path.trim().is_empty() {
+            return Err(FoundryLocalError::Validation {
+                reason: "Model path must be a non-empty string".into(),
+            });
+        }
+        if model_id.trim().is_empty() {
+            return Err(FoundryLocalError::Validation {
+                reason: "Model id must be a non-empty string".into(),
+            });
+        }
+
+        let native = self.native.clone();
+        let model_path = model_path.to_owned();
+        let model_id = model_id.to_owned();
+        spawn_blocking(move || {
+            let model = native.register_model(&model_path, &model_id, metadata.as_ptr())?;
+            Model::from_variant(&native.api, model).map(Arc::new)
+        })
+        .await
+    }
+
+    /// Remove a local registration by alias or model id without deleting the caller-owned model assets.
+    pub async fn unregister_model(&self, alias_or_model_id: &str) -> Result<()> {
+        if self.catalog_type != CatalogType::Local {
+            return Err(FoundryLocalError::Validation {
+                reason: "Models can only be unregistered from the local catalog".into(),
+            });
+        }
+        if alias_or_model_id.trim().is_empty() {
+            return Err(FoundryLocalError::Validation {
+                reason: "Alias or model id must be a non-empty string".into(),
+            });
+        }
+
+        let native = self.native.clone();
+        let alias_or_model_id = alias_or_model_id.to_owned();
+        spawn_blocking(move || native.unregister_model(&alias_or_model_id)).await
     }
 }

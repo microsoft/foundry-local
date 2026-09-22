@@ -5,9 +5,462 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <sstream>
+#include <unordered_set>
 
 namespace fl {
+
+namespace {
+
+using Json = nlohmann::json;
+
+constexpr size_t kMaxSchemaNesting = 32;
+constexpr size_t kMaxSchemaCollectionSize = 64;
+constexpr size_t kMaxSchemaStringLength = 64 * 1024;
+
+const Json* FindObjectMember(const Json& object, std::string_view name) {
+  const auto member = object.find(name);
+  return member == object.end() ? nullptr : &*member;
+}
+
+bool IsValidRequiredList(const Json& required) {
+  if (!required.is_array() || required.size() > kMaxSchemaCollectionSize) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  for (const auto& name : required) {
+    if (!name.is_string()) {
+      return false;
+    }
+
+    const auto& value = name.get_ref<const std::string&>();
+    if (value.size() > kMaxSchemaStringLength || !seen.insert(value).second) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool HasUndeclaredRequiredProperty(const Json& schema) {
+  const auto* required = FindObjectMember(schema, "required");
+  if (required == nullptr) {
+    return false;
+  }
+
+  const auto* properties = FindObjectMember(schema, "properties");
+  return std::ranges::any_of(*required, [properties](const Json& name) {
+    return properties == nullptr || !properties->contains(name.get_ref<const std::string&>());
+  });
+}
+
+bool IsUniqueStringArray(const Json& values) {
+  if (!values.is_array()) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  return std::ranges::all_of(values, [&seen](const auto& value) {
+    return value.is_string() &&
+           seen.insert(value.template get_ref<const std::string&>()).second;
+  });
+}
+
+bool IsFloatEqualToUnsigned(double floating, uint64_t integer) {
+  constexpr double kUint64Limit = 18446744073709551616.0;
+  return std::isfinite(floating) && floating >= 0 && floating < kUint64Limit &&
+         std::trunc(floating) == floating && static_cast<uint64_t>(floating) == integer;
+}
+
+bool IsFloatEqualToSigned(double floating, int64_t integer) {
+  constexpr double kInt64LowerBound = -9223372036854775808.0;
+  constexpr double kInt64UpperLimit = 9223372036854775808.0;
+  return std::isfinite(floating) && floating >= kInt64LowerBound && floating < kInt64UpperLimit &&
+         std::trunc(floating) == floating && static_cast<int64_t>(floating) == integer;
+}
+
+bool AreJsonNumbersEqual(const Json& left, const Json& right) {
+  if (left.is_number_float()) {
+    const auto floating = left.get<double>();
+    if (right.is_number_float()) {
+      return floating == right.get<double>();
+    }
+    return right.is_number_unsigned()
+               ? IsFloatEqualToUnsigned(floating, right.get<uint64_t>())
+               : IsFloatEqualToSigned(floating, right.get<int64_t>());
+  }
+  if (right.is_number_float()) {
+    return AreJsonNumbersEqual(right, left);
+  }
+  if (left.is_number_unsigned()) {
+    if (right.is_number_unsigned()) {
+      return left.get<uint64_t>() == right.get<uint64_t>();
+    }
+
+    const auto signed_value = right.get<int64_t>();
+    return signed_value >= 0 && left.get<uint64_t>() == static_cast<uint64_t>(signed_value);
+  }
+  if (right.is_number_unsigned()) {
+    return AreJsonNumbersEqual(right, left);
+  }
+
+  return left.get<int64_t>() == right.get<int64_t>();
+}
+
+bool AreJsonValuesEqual(const Json& left, const Json& right, size_t depth = 0) {
+  if (depth > kMaxSchemaNesting) {
+    return false;
+  }
+  if (left.is_number() && right.is_number()) {
+    return AreJsonNumbersEqual(left, right);
+  }
+  if (left.type() != right.type()) {
+    return false;
+  }
+  if (left.is_array()) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin(), [depth](const auto& lhs, const auto& rhs) {
+             return AreJsonValuesEqual(lhs, rhs, depth + 1);
+           });
+  }
+  if (left.is_object()) {
+    if (left.size() != right.size()) {
+      return false;
+    }
+    return std::ranges::all_of(left.items(), [&](const auto& item) {
+      const auto member = right.find(item.key());
+      return member != right.end() && AreJsonValuesEqual(item.value(), *member, depth + 1);
+    });
+  }
+
+  return left == right;
+}
+
+bool IsJsonValueWithinBounds(const Json& value, size_t depth = 0) {
+  if (value.is_string()) {
+    return value.get_ref<const std::string&>().size() <= kMaxSchemaStringLength;
+  }
+  if (depth >= kMaxSchemaNesting) {
+    return !value.is_structured();
+  }
+  if (value.is_array()) {
+    if (value.size() > kMaxSchemaCollectionSize) {
+      return false;
+    }
+
+    return std::ranges::all_of(value, [depth](const auto& element) {
+      return IsJsonValueWithinBounds(element, depth + 1);
+    });
+  }
+  if (value.is_object()) {
+    if (value.size() > kMaxSchemaCollectionSize) {
+      return false;
+    }
+
+    return std::ranges::all_of(value.items(), [depth](const auto& member) {
+      return member.key().size() <= kMaxSchemaStringLength &&
+             IsJsonValueWithinBounds(member.value(), depth + 1);
+    });
+  }
+
+  return true;
+}
+
+bool IsUniqueNonemptyArray(const Json& values) {
+  if (!values.is_array() || values.empty() || values.size() > kMaxSchemaCollectionSize) {
+    return false;
+  }
+
+  for (auto current = values.begin(); current != values.end(); ++current) {
+    if (!IsJsonValueWithinBounds(*current)) {
+      return false;
+    }
+    if (std::find_if(values.begin(), current, [&](const auto& prior) {
+          return AreJsonValuesEqual(prior, *current);
+        }) != current) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsNonnegativeInteger(const Json& value) {
+  return value.is_number_unsigned() || (value.is_number_integer() && value.get<int64_t>() >= 0);
+}
+
+bool IsValidSchemaType(const Json& type) {
+  static const std::unordered_set<std::string_view> kTypes = {
+      "array",
+      "boolean",
+      "integer",
+      "null",
+      "number",
+      "object",
+      "string",
+  };
+  if (type.is_string()) {
+    return kTypes.contains(type.get_ref<const std::string&>());
+  }
+  if (!type.is_array() || type.empty()) {
+    return false;
+  }
+
+  std::unordered_set<std::string_view> seen;
+  for (const auto& entry : type) {
+    if (!entry.is_string()) {
+      return false;
+    }
+
+    const auto& name = entry.get_ref<const std::string&>();
+    if (!kTypes.contains(name) || !seen.insert(name).second) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsStructurallyValidSchema(const Json& schema, size_t depth = 0) {
+  if (depth >= kMaxSchemaNesting) {
+    return false;
+  }
+  if (schema.is_boolean()) {
+    return true;
+  }
+  if (!schema.is_object() || !IsJsonValueWithinBounds(schema) || schema.contains("$ref")) {
+    return false;
+  }
+
+  if (const auto* pattern = FindObjectMember(schema, "pattern");
+      pattern != nullptr && !pattern->is_string()) {
+    return false;
+  }
+
+  if (const auto* format = FindObjectMember(schema, "format");
+      format != nullptr && (!format->is_string() || format->get_ref<const std::string&>().empty())) {
+    return false;
+  }
+
+  if (const auto* type = FindObjectMember(schema, "type");
+      type != nullptr && !IsValidSchemaType(*type)) {
+    return false;
+  }
+
+  if (const auto* values = FindObjectMember(schema, "enum");
+      values != nullptr && !IsUniqueNonemptyArray(*values)) {
+    return false;
+  }
+
+  for (const auto keyword : {"multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && (!value->is_number() || (keyword == std::string_view("multipleOf") && *value <= 0))) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"maxLength", "minLength", "maxItems", "minItems", "maxContains", "minContains",
+                             "maxProperties", "minProperties"}) {
+    const auto* value = FindObjectMember(schema, keyword);
+    if (value != nullptr && !IsNonnegativeInteger(*value)) {
+      return false;
+    }
+  }
+
+  if (const auto* unique_items = FindObjectMember(schema, "uniqueItems");
+      unique_items != nullptr && !unique_items->is_boolean()) {
+    return false;
+  }
+
+  const auto is_schema_map = [depth](const Json& schemas) {
+    return schemas.is_object() &&
+           std::ranges::all_of(schemas.items(), [depth](const auto& entry) {
+             return IsStructurallyValidSchema(entry.value(), depth + 1);
+           });
+  };
+
+  for (const auto keyword : {"properties", "patternProperties", "dependentSchemas", "$defs"}) {
+    const auto* schemas = FindObjectMember(schema, keyword);
+    if (schemas != nullptr && !is_schema_map(*schemas)) {
+      return false;
+    }
+  }
+
+  if (const auto* required = FindObjectMember(schema, "required");
+      required != nullptr && !IsValidRequiredList(*required)) {
+    return false;
+  }
+
+  for (const auto keyword : {"items", "contains", "if", "then", "else", "not", "propertyNames"}) {
+    const auto* subschema = FindObjectMember(schema, keyword);
+    if (subschema != nullptr && !IsStructurallyValidSchema(*subschema, depth + 1)) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"anyOf", "oneOf", "allOf", "prefixItems"}) {
+    const auto* alternatives = FindObjectMember(schema, keyword);
+    if (alternatives == nullptr) {
+      continue;
+    }
+    if (!alternatives->is_array() || alternatives->empty() ||
+        !std::ranges::all_of(*alternatives, [depth](const auto& alternative) {
+          return IsStructurallyValidSchema(alternative, depth + 1);
+        })) {
+      return false;
+    }
+  }
+
+  for (const auto keyword : {"additionalProperties", "unevaluatedProperties", "unevaluatedItems"}) {
+    const auto* subschema = FindObjectMember(schema, keyword);
+    if (subschema != nullptr && !subschema->is_boolean() &&
+        !IsStructurallyValidSchema(*subschema, depth + 1)) {
+      return false;
+    }
+  }
+
+  if (const auto* dependencies = FindObjectMember(schema, "dependentRequired");
+      dependencies != nullptr) {
+    if (!dependencies->is_object()) {
+      return false;
+    }
+
+    for (const auto& dependency : dependencies->items()) {
+      if (!IsUniqueStringArray(dependency.value())) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+bool TryReadFunctionDefinition(const Json& tool,
+                               std::string& name,
+                               std::string& description,
+                               Json& parameters) {
+  if (!tool.is_object()) {
+    return false;
+  }
+
+  const Json* function = &tool;
+  if (const auto* nested = FindObjectMember(tool, "function")) {
+    const auto* type = FindObjectMember(tool, "type");
+    if (type == nullptr || !type->is_string() ||
+        type->get_ref<const std::string&>() != "function") {
+      return false;
+    }
+    if (!nested->is_object()) {
+      return false;
+    }
+
+    function = nested;
+  } else if (const auto* type = FindObjectMember(tool, "type");
+             type != nullptr &&
+             (!type->is_string() ||
+              type->get_ref<const std::string&>() != "function")) {
+    return false;
+  }
+
+  const auto* name_value = FindObjectMember(*function, "name");
+  if (name_value == nullptr || !name_value->is_string()) {
+    return false;
+  }
+
+  name = name_value->get<std::string>();
+  if (name.empty()) {
+    return false;
+  }
+
+  if (const auto* description_value = FindObjectMember(*function, "description")) {
+    if (!description_value->is_string()) {
+      return false;
+    }
+
+    description = description_value->get<std::string>();
+  }
+
+  const auto* parameters_value = FindObjectMember(*function, "parameters");
+  if (parameters_value == nullptr || parameters_value->is_null() ||
+      (parameters_value->is_object() && parameters_value->empty())) {
+    return true;
+  }
+
+  if (!parameters_value->is_object()) {
+    return false;
+  }
+
+  const auto* type = FindObjectMember(*parameters_value, "type");
+  if (type == nullptr || !type->is_string() ||
+      type->get_ref<const std::string&>() != "object") {
+    return false;
+  }
+
+  if (!IsStructurallyValidSchema(*parameters_value)) {
+    return false;
+  }
+
+  parameters = *parameters_value;
+  return true;
+}
+
+}  // namespace
+
+std::string EscapeLarkLiteral(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 2);
+  out.push_back('"');
+
+  for (const char c : text) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
+        break;
+      default:
+        if (const auto byte = static_cast<unsigned char>(c); byte < 0x20) {
+          static constexpr char kHex[] = "0123456789abcdef";
+          out += "\\u00";
+          out.push_back(kHex[byte >> 4]);
+          out.push_back(kHex[byte & 0x0f]);
+        } else {
+          out.push_back(c);
+        }
+        break;
+    }
+  }
+
+  out.push_back('"');
+  return out;
+}
+
+std::string RenderLarkMarker(const std::string& marker_text, std::optional<int32_t> token_id) {
+  if (token_id.has_value() && *token_id >= 0) {
+    return "<[" + std::to_string(*token_id) + "]>";
+  }
+
+  return EscapeLarkLiteral(marker_text);
+}
 
 std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   // Create a JSON schema from tools for use with ORT GenAI's SetGuidance.
@@ -55,19 +508,15 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   }
 
   // Parse the tools JSON to extract function schemas
-  nlohmann::json tools;
-  try {
-    tools = nlohmann::json::parse(ctx.tools_json);
-  } catch (const nlohmann::json::parse_error&) {
-    return "{}";
-  }
+  const auto tools = Json::parse(ctx.tools_json, nullptr, false);
 
-  if (!tools.is_array() || tools.empty()) {
+  if (tools.is_discarded() || !tools.is_array() || tools.empty()) {
     return "{}";
   }
 
   // Build anyOf schemas — one entry per tool
-  nlohmann::json schemas = nlohmann::json::array();
+  Json schemas = Json::array();
+  std::unordered_set<std::string> names;
 
   for (const auto& tool : tools) {
     // Support both OpenAI-function style and direct-name style for tool definitions.
@@ -103,27 +552,12 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
     // }
     std::string name;
     std::string description;
-    nlohmann::json parameters;
-
-    if (tool.contains("function") && tool["function"].is_object()) {
-      const auto& fn = tool["function"];
-      name = fn.value("name", "");
-      description = fn.value("description", "");
-
-      if (fn.contains("parameters") && fn["parameters"].is_object()) {
-        parameters = fn["parameters"];
-      }
-    } else {
-      name = tool.value("name", "");
-      description = tool.value("description", "");
-
-      if (tool.contains("parameters") && tool["parameters"].is_object()) {
-        parameters = tool["parameters"];
-      }
+    Json parameters;
+    if (!TryReadFunctionDefinition(tool, name, description, parameters)) {
+      return "{}";
     }
-
-    if (name.empty()) {
-      continue;
+    if (!names.insert(name).second) {
+      return "{}";
     }
 
     // Build the grammar schema for this tool
@@ -135,29 +569,21 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
 
     // Only add `parameters` to `properties` object if it exists in the original tool
     // and if type has been set (since type is required if providing parameters)
-    bool has_params = parameters.is_object() &&
-                      parameters.contains("type") &&
-                      !parameters["type"].get<std::string>().empty();
+    const bool has_params = parameters.is_object() && !parameters.empty();
 
     if (has_params) {
-      nlohmann::json param_schema;
-      param_schema["type"] = parameters.value("type", "object");
-
-      if (parameters.contains("properties")) {
-        param_schema["properties"] = parameters["properties"];
+      Json param_schema = parameters;
+      if (!param_schema.contains("additionalProperties") &&
+          !HasUndeclaredRequiredProperty(param_schema)) {
+        param_schema["additionalProperties"] = false;
       }
 
-      if (parameters.contains("required")) {
-        param_schema["required"] = parameters["required"];
-      }
-
-      param_schema["additionalProperties"] = false;
       properties["parameters"] = param_schema;
       required_fields.push_back("parameters");
     }
 
     // Create `schema` for tool
-    nlohmann::json schema = {
+    Json schema = {
         {"description", description},
         {"type", "object"},
         {"properties", properties},
@@ -173,7 +599,7 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
   }
 
   // Construct grammar for guidance
-  nlohmann::json grammar = {
+  Json grammar = {
       {"x-guidance", {{"whitespace_flexible", false}, {"key_separator", ": "}, {"item_separator", ", "}}},
       {"type", "array"},
       {"items", {{"anyOf", schemas}}},
@@ -184,14 +610,15 @@ std::string BuildToolJsonSchema(const ToolCallContext& ctx) {
 }
 
 std::string BuildLarkGrammar(const ToolCallContext& ctx,
-                             const std::string& json_schema) {
+                             const std::string& json_schema,
+                             bool prompt_opens_reasoning) {
   // Legend:
   //
   // 1. cot = chain-of-thought output with newline at the end
   // 2. THINK_TEXT = chain-of-thought text output
   // 3. output = output row (text and/or tool call)
   // 4. TEXT = text output
-  // 5. toolcall = tool call output (with known ids)
+  // 5. toolcall = tool call output (with configured boundary markers)
   // 6. functioncall = JSON schemas for each registered tool
   //
   // Cases:
@@ -199,20 +626,20 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // | Case | Description                                                                                        |
   // |------|----------------------------------------------------------------------------------------------------|
   // |  1   | Return text only                                                                                   |
-  // |  2   | Return tool call only (known tool call token ids)                                                  |
-  // |  3   | Return tool call only (unknown tool call token ids)                                                |
-  // |  4   | Return text or tool call (known tool call token ids)                                               |
-  // |  5   | Return text or tool call (unknown tool call token ids)                                             |
-  // |  6   | Return chain-of-thought + text only (known think token ids)                                        |
-  // |  7   | Return chain-of-thought + text only (unknown think token ids)                                      |
-  // |  8   | Return chain-of-thought + tool call only (known think token ids, known tool call token ids)        |
-  // |  9   | Return chain-of-thought + tool call only (unknown think token ids, known tool call token ids)      |
-  // |  10  | Return chain-of-thought + tool call only (known think token ids, unknown tool call token ids)      |
-  // |  11  | Return chain-of-thought + tool call only (unknown think token ids, unknown tool call token ids)    |
-  // |  12  | Return chain-of-thought + text or tool call (known think token ids, known tool call token ids)     |
-  // |  13  | Return chain-of-thought + text or tool call (unknown think token ids, known tool call token ids)   |
-  // |  14  | Return chain-of-thought + text or tool call (known think token ids, unknown tool call token ids)   |
-  // |  15  | Return chain-of-thought + text or tool call (unknown think token ids, unknown tool call token ids) |
+  // |  2   | Return tool call only (configured tool-call markers)                                               |
+  // |  3   | Return tool call only (no configured tool-call markers)                                            |
+  // |  4   | Return text or tool call (configured tool-call markers)                                            |
+  // |  5   | Return text or tool call (no configured tool-call markers)                                         |
+  // |  6   | Return chain-of-thought + text only (configured reasoning markers)                                 |
+  // |  7   | Return chain-of-thought + text only (no configured reasoning markers)                              |
+  // |  8   | Return chain-of-thought + tool call only (both marker pairs configured)                            |
+  // |  9   | Return chain-of-thought + tool call only (only tool-call markers configured)                       |
+  // |  10  | Return chain-of-thought + tool call only (only reasoning markers configured)                       |
+  // |  11  | Return chain-of-thought + tool call only (no marker pairs configured)                              |
+  // |  12  | Return chain-of-thought + text or tool call (both marker pairs configured)                         |
+  // |  13  | Return chain-of-thought + text or tool call (only tool-call markers configured)                    |
+  // |  14  | Return chain-of-thought + text or tool call (only reasoning markers configured)                    |
+  // |  15  | Return chain-of-thought + text or tool call (no marker pairs configured)                           |
   //
   // Grammar patterns for each case:
   //
@@ -221,104 +648,104 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // start: TEXT
   // TEXT: /[^{<](.|\\n)*/
   //
-  // 2. Return tool call only (known tool call token ids)
+  // 2. Return tool call only (configured tool-call markers)
   //
   // start: toolcall
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: <[123]> functioncall <[124]>
   // functioncall: %json { <schemas for each tool> }
   //
-  // 3. Return tool call only (unknown tool call token ids)
+  // 3. Return tool call only (no configured tool-call markers)
   //
   // start: functioncall
   // functioncall: %json { <schemas for each tool> }
   //
-  // 4. Return text or tool call (known tool call token ids)
+  // 4. Return text or tool call (configured tool-call markers)
   //
   // start: TEXT | toolcall
   // TEXT: /[^{<](.|\\n)*/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: "<tool_call>" functioncall "</tool_call>"
   // functioncall: %json { <schemas for each tool> }
   //
-  // 5. Return text or tool call (unknown tool call token ids)
+  // 5. Return text or tool call (no configured tool-call markers)
   //
   // start: TEXT | functioncall
   // TEXT: /[^{<](.|\\n)*/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 6. Return chain-of-thought + text only (known think token ids)
+  // 6. Return chain-of-thought + text only (configured reasoning markers)
   //
   // start: cot TEXT
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // TEXT: /[^{<](.|\\n)*/
   //
-  // 7. Return chain-of-thought + text only (unknown think token ids)
+  // 7. Return chain-of-thought + text only (no configured reasoning markers)
   //
   // start: cot TEXT
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
   // TEXT: /[^{<](.|\\n)*/
   //
-  // 8. Return chain-of-thought + tool call only (known think token ids, known tool call token ids)
+  // 8. Return chain-of-thought + tool call only (both marker pairs configured)
   //
   // start: cot toolcall
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: <[123]> functioncall <[124]>
   // functioncall: %json { <schemas for each tool> }
   //
-  // 9. Return chain-of-thought + tool call only (unknown think token ids, known tool call token ids)
+  // 9. Return chain-of-thought + tool call only (only tool-call markers configured)
   //
   // start: cot toolcall
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: "<tool_call>" functioncall "</tool_call>"
   // functioncall: %json { <schemas for each tool> }
   //
-  // 10. Return chain-of-thought + tool call only (known think token ids, unknown tool call token ids)
+  // 10. Return chain-of-thought + tool call only (only reasoning markers configured)
   //
   // start: cot functioncall
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 11. Return chain-of-thought + tool call only (unknown think token ids, unknown tool call token ids)
+  // 11. Return chain-of-thought + tool call only (no marker pairs configured)
   //
   // start: cot functioncall
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 12. Return chain-of-thought + text or tool call (known think token ids, known tool call token ids)
+  // 12. Return chain-of-thought + text or tool call (both marker pairs configured)
   //
   // start: cot output
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // output: TEXT | toolcall
   // TEXT: /[^{<](.|\\n)*/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: <[123]> functioncall <[124]>
   // functioncall: %json { <schemas for each tool> }
   //
-  // 13. Return chain-of-thought + text or tool call (unknown think token ids, known tool call token ids)
+  // 13. Return chain-of-thought + text or tool call (only tool-call markers configured)
   //
   // start: cot output
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
   // THINK_TEXT: /[^<]+/
   // output: TEXT | toolcall
   // TEXT: /[^{<](.|\\n)*/
-  // toolcall: <starting tool call token id> functioncall <ending tool call token id>
+  // toolcall: "<tool_call>" functioncall "</tool_call>"
   // functioncall: %json { <schemas for each tool> }
   //
-  // 14. Return chain-of-thought + text or tool call (known think token ids, unknown tool call token ids)
+  // 14. Return chain-of-thought + text or tool call (only reasoning markers configured)
   //
   // start: cot output
-  // cot: <starting think token id> THINK_TEXT <ending think token id> "\\n"
+  // cot: <[125]> THINK_TEXT <[126]> "\\n"
   // THINK_TEXT: /[^<]+/
   // output: TEXT | functioncall
   // TEXT: /[^{<](.|\\n)*/
   // functioncall: %json { <schemas for each tool> }
   //
-  // 15. Return chain-of-thought + text or tool call (unknown think token ids, unknown tool call token ids)
+  // 15. Return chain-of-thought + text or tool call (no marker pairs configured)
   //
   // start: cot output
   // cot: "<think>" THINK_TEXT "</think>" "\\n"
@@ -332,6 +759,10 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // (e.g. is less than). While the rule does not permit empty thinking, that is a rare occurrence.
   // There is usually some reasoning done even if it is little. Without such a restrictive grammar, models
   // such as Phi-4 mini reasoning fall out of distribution.
+  //
+  // Marker IDs use llguidance's exact numeric-token syntax (`<[ID]>`). A marker without one authoritative token
+  // ID uses quoted literal bytes, which may tokenize to multiple IDs. Named `<token_name>` syntax is only for
+  // tokenizer special tokens and is not inferred from marker text.
   if (!ctx.text_output && !ctx.tool_output) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
              "neither text output nor tool calling output are enabled — "
@@ -342,9 +773,11 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   bool known_think_tokens = ctx.HasReasoningTokens();
   bool reasoning_enabled = ctx.supports_reasoning;
 
-  // For unknown think tokens, use literal Lark grammar string tokens
-  std::string reasoning_start = known_think_tokens ? ctx.reasoning_start : "\"<think>\"";
-  std::string reasoning_end = known_think_tokens ? ctx.reasoning_end : "\"</think>\"";
+  // Known boundaries use an exact numeric token ID when available; all others use literal bytes.
+  std::string reasoning_start =
+      known_think_tokens ? RenderLarkMarker(ctx.reasoning_start, ctx.reasoning_start_token_id) : "\"<think>\"";
+  std::string reasoning_end =
+      known_think_tokens ? RenderLarkMarker(ctx.reasoning_end, ctx.reasoning_end_token_id) : "\"</think>\"";
 
   // Set rows for grammar
   std::ostringstream grammar;
@@ -371,7 +804,15 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
 
   // Add grammar for chain-of-thought output
   if (reasoning_enabled) {
-    grammar << "cot: " << reasoning_start << " THINK_TEXT " << reasoning_end << " \"\\n\"\n";
+    if (prompt_opens_reasoning) {
+      // The rendered prompt already ends with the reasoning opener (see PromptOpensReasoning in
+      // reasoning_stream_splitter.h), so generation starts inside reasoning. The model neither emits nor can be
+      // asked to emit the opener again — omitting it here is required, not just an optimization: a grammar that
+      // still demanded the opener as the first production would be unsatisfiable against this prompt.
+      grammar << "cot: THINK_TEXT " << reasoning_end << " \"\\n\"\n";
+    } else {
+      grammar << "cot: " << reasoning_start << " THINK_TEXT " << reasoning_end << " \"\\n\"\n";
+    }
     grammar << "THINK_TEXT: /[^<]+/\n";
   }
 
@@ -388,8 +829,8 @@ std::string BuildLarkGrammar(const ToolCallContext& ctx,
   // Add grammar for tool output
   if (ctx.tool_output) {
     if (known_tool_tokens) {
-      grammar << "toolcall: " << ctx.tool_call_start
-              << " functioncall " << ctx.tool_call_end << "\n";
+      grammar << "toolcall: " << RenderLarkMarker(ctx.tool_call_start, ctx.tool_call_start_token_id)
+              << " functioncall " << RenderLarkMarker(ctx.tool_call_end, ctx.tool_call_end_token_id) << "\n";
     }
 
     grammar << "functioncall: %json " << json_schema << "\n";

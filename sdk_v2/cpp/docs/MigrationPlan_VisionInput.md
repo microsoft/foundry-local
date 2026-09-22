@@ -21,8 +21,6 @@ End-to-end image input support for vision-language (VLM) models such as
 Out of scope (track separately):
 - `POST /v1/chat/completions` `image_url` content parts (mirror once the
   Responses path is verified).
-- Multi-image per request (upstream limits to one image; we keep the same
-  limit initially).
 - Image *output* (only input).
 
 ## Summary of Upstream Changes (C# PR 14989371)
@@ -40,16 +38,14 @@ Out of scope (track separately):
 
 ## Supported Model Scope (matches C# upstream)
 
-This migration mirrors the upstream C# vision support exactly. The set of
-vision-language model types we enable on the C++ side is bounded by what the
-C# server's `IsMultiModal()` recognizes after PR 14989371:
+The set of vision-language model types we enable on the C++ side 
+is defined by the models behind the `IsMultiModal()` gate:
 
-- `phi3v`, `phi4mm`, `fara`, `qwen2_5_vl`, `qwen3_vl`, `qwen3_5`
+- `phi3v`, `phi4mm`, `fara`, `qwen2_5_vl`, `qwen3_vl`, `qwen3_5`, `gemma4`, `mistral3`
   (`whisper` is also `IsMultiModal` but it's the audio path, not vision.)
 
-These are the model types our model catalog actually ships, so we do not need
-to cover the broader ORT GenAI VLM/MMM universe (`gemma3`, `gemma4`,
-`mistral3`). When the catalog adds those, we can extend in a follow-up.
+These are the model types our model catalog currently ships. Other ORT GenAI
+VLM/MMM types can be added when they enter the catalog.
 
 ORT GenAI native checks performed only to validate API choice (not to expand
 scope):
@@ -152,10 +148,11 @@ data URLs always carry their media type, so we keep `media_type` *optional*
 in the contract and prefer the value from the data URL itself. Reject the
 request if neither source provides one.
 
-### D4. Single image per request
+### D4. Multiple images per request
 
-Match upstream — throw `FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT` if more than
-one `ImageItem` is attached to the same user message. Easy to relax later.
+Pass every `ImageItem` from the final user message to ORT GenAI in message
+order. The prompt contains one image marker per item and `OgaImages::Load`
+receives the matching image-buffer array.
 
 ## Migration Work
 
@@ -259,8 +256,7 @@ one `ImageItem` is attached to the same user message. Easy to relax later.
      malformed input.
 3. Branch in `Create`:
    - If `model.IsMultiModal()` and `!images.empty()`:
-     - Reject `images.size() > 1` with `FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT`
-       (matches upstream's single-image limit).
+     - Preserve all images in message order and emit one image marker for each.
      - Build vision-rewritten messages JSON and call
        `tokenizer.ApplyChatTemplate(..., add_generation_prompt=true)` to get
        the prompt string.

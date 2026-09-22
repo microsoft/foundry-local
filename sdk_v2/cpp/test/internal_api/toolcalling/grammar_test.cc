@@ -10,8 +10,26 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 using namespace fl;
+
+namespace {
+
+constexpr size_t kMaxSchemaCollectionSize = 64;
+constexpr size_t kMaxSchemaStringLength = 64 * 1024;
+
+ToolCallContext MakeToolCallContext(const nlohmann::json& parameters) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json = nlohmann::json::array(
+      {{{"type", "function"},
+        {"function", {{"name", "fn"}, {"parameters", parameters}}}}})
+                       .dump();
+  return ctx;
+}
+
+}  // namespace
 
 // ========================================================================
 // BuildToolJsonSchema tests
@@ -35,6 +53,72 @@ TEST(BuildToolJsonSchemaTest, InvalidJsonReturnsEmptyObject) {
   ToolCallContext ctx;
   ctx.tool_output = true;
   ctx.tools_json = "not json";
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, MalformedFunctionFieldsReturnEmptyObjectWithoutThrowing) {
+  const std::vector<nlohmann::json> malformed_tools = {
+      1,
+      {{"function", 1}},
+      {{"type", "bogus"},
+       {"function",
+        {{"name", "fn"}, {"parameters", {{"type", "object"}}}}}},
+      {{"function", {{"name", 1}}}},
+      {{"function", {{"name", "fn"}, {"description", 1}}}},
+      {{"function", {{"name", "fn"}, {"parameters", 1}}}},
+      {{"function", {{"name", "fn"}, {"parameters", {{"type", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters", {{"type", "object"}, {"properties", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", 1}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters", {{"type", "object"}, {"required", 1}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}, {"enum", "not-an-array"}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties",
+            {{"value", {{"type", "number"}, {"enum", nlohmann::json::array({1, 1.0})}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}, {"patternProperties", 1}}}}}}}}}},
+      {{"function",
+        {{"name", "fn"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"value", {{"type", "string"}}}}},
+           {"required", nlohmann::json::array({"value", "value"})}}}}}},
+  };
+
+  for (const auto& malformed : malformed_tools) {
+    SCOPED_TRACE(malformed.dump());
+    ToolCallContext ctx;
+    ctx.tool_output = true;
+    ctx.tools_json = nlohmann::json::array({malformed}).dump();
+
+    EXPECT_NO_THROW({ EXPECT_EQ(BuildToolJsonSchema(ctx), "{}"); });
+  }
+}
+
+TEST(BuildToolJsonSchemaTest, DuplicateFunctionNamesReturnEmptyObject) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"duplicate"}},)"
+      R"({"type":"function","function":{"name":"duplicate","parameters":{"type":"object"}}}])";
+
   EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
 }
 
@@ -65,6 +149,234 @@ TEST(BuildToolJsonSchemaTest, SingleToolProducesSchema) {
   auto& any_of = schema["items"]["anyOf"];
   ASSERT_EQ(any_of.size(), 1u);
   EXPECT_EQ(any_of[0]["properties"]["name"]["const"], "get_weather");
+}
+
+TEST(BuildToolJsonSchemaTest, DistinctLargeNumericEnumValuesProduceSchema) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"number","enum":[18446744073709551615,-1,9007199254740993,9007199254740992.0]}}}}}])";
+
+  EXPECT_NE(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, RootParameterConstraintsArePreserved) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      R"([{"type":"function","function":{"name":"fn","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"string"}},"minProperties":1,"additionalProperties":true}}}])";
+
+  const auto schema = nlohmann::json::parse(BuildToolJsonSchema(ctx));
+  const auto& parameters = schema["items"]["anyOf"][0]["properties"]["parameters"];
+  EXPECT_EQ(parameters["minProperties"], 1);
+  EXPECT_EQ(parameters["additionalProperties"], true);
+}
+
+TEST(BuildToolJsonSchemaTest, RequiredMayBeSatisfiedByAdditionalProperties) {
+  const nlohmann::json parameters = {
+      {"type", "object"},
+      {"properties", nlohmann::json::object()},
+      {"required", nlohmann::json::array({"dynamic"})},
+      {"additionalProperties", true},
+  };
+
+  const auto schema = nlohmann::json::parse(BuildToolJsonSchema(MakeToolCallContext(parameters)));
+  EXPECT_EQ(schema["items"]["anyOf"][0]["properties"]["parameters"], parameters);
+}
+
+TEST(BuildToolJsonSchemaTest, UndeclaredRequiredPropertyPreservesImplicitAdditionalProperties) {
+  const nlohmann::json parameters = {
+      {"type", "object"},
+      {"required", nlohmann::json::array({"dynamic"})},
+  };
+
+  const auto schema = nlohmann::json::parse(BuildToolJsonSchema(MakeToolCallContext(parameters)));
+  EXPECT_EQ(schema["items"]["anyOf"][0]["properties"]["parameters"], parameters);
+}
+
+TEST(BuildToolJsonSchemaTest, BroaderValidSchemaKeywordsArePreservedForSharedGuidance) {
+  const std::vector<nlohmann::json> schemas = {
+      {{"type", "object"},
+       {"properties", {{"value", {{"type", "string"}, {"pattern", R"((?<word>[a-z]+))"}}}}}},
+      {{"type", "object"},
+       {"properties", {{"value", {{"type", "string"}, {"format", "date-time"}}}}}},
+      {
+          {"type", "object"},
+          {"properties", {{"value", true}}},
+      },
+      {{"type", "object"},
+       {"properties", {{"value", {{"const", {{"$ref", "literal data"}}}}}}}},
+  };
+
+  for (const auto& parameters : schemas) {
+    SCOPED_TRACE(parameters.dump());
+    ToolCallContext ctx;
+    ctx.tool_output = true;
+    ctx.tools_json = nlohmann::json::array(
+        {{{"type", "function"},
+          {"function", {{"name", "fn"}, {"parameters", parameters}}}}})
+                         .dump();
+
+    auto expected = parameters;
+    expected["additionalProperties"] = false;
+    const auto guidance = nlohmann::json::parse(BuildToolJsonSchema(ctx));
+    EXPECT_EQ(guidance["items"]["anyOf"][0]["properties"]["parameters"], expected);
+  }
+}
+
+TEST(BuildToolJsonSchemaTest, LocalReferencesFailClosedAtAnyNestingLevel) {
+  const std::vector<nlohmann::json> schemas = {
+      {{"type", "object"},
+       {"properties", {{"value", {{"$ref", "#/$defs/value"}}}}},
+       {"$defs", {{"value", {{"type", "string"}}}}}},
+      {{"type", "object"},
+       {"properties",
+        {{"values",
+          {{"type", "array"}, {"items", {{"$ref", "#/$defs/value"}}}}}}},
+       {"$defs", {{"value", {{"type", "string"}}}}}},
+  };
+
+  for (const auto& parameters : schemas) {
+    SCOPED_TRACE(parameters.dump());
+    EXPECT_EQ(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+  }
+}
+
+TEST(BuildToolJsonSchemaTest, BooleanSubschemasAreAcceptedInSchemaBearingKeywords) {
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json = nlohmann::json::array(
+      {{{"type", "function"},
+        {"function",
+         {{"name", "fn"},
+          {"parameters",
+           {{"type", "object"},
+            {"properties",
+             {{"values", {{"type", "array"}, {"contains", true}}},
+              {"mode", {{"if", {{"type", "string"}}}, {"then", false}}}}},
+            {"$defs", {{"allowed", true}, {"denied", false}}}}}}}}})
+                       .dump();
+
+  EXPECT_NE(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, OversizedPatternReturnsEmptyObject) {
+  const nlohmann::json parameters = {
+      {"type", "object"},
+      {"properties",
+       {{"value",
+         {{"type", "string"}, {"pattern", std::string(kMaxSchemaStringLength + 1, 'x')}}}}},
+  };
+
+  EXPECT_EQ(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, RootMemberCountAcceptsExactLimitAndRejectsOneOver) {
+  auto parameters = nlohmann::json::object({{"type", "object"}});
+  for (size_t index = 1; index < kMaxSchemaCollectionSize; ++index) {
+    parameters["x-" + std::to_string(index)] = true;
+  }
+
+  EXPECT_NE(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+
+  parameters["x-over-limit"] = true;
+  EXPECT_EQ(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, RootKeywordLengthAcceptsExactLimitAndRejectsOneOver) {
+  auto parameters = nlohmann::json::object(
+      {{"type", "object"}, {std::string(kMaxSchemaStringLength, 'x'), true}});
+
+  EXPECT_NE(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+
+  parameters[std::string(kMaxSchemaStringLength + 1, 'x')] = true;
+  EXPECT_EQ(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, PatternPropertiesKeyLengthAcceptsExactLimitAndRejectsOneOver) {
+  auto pattern_properties = nlohmann::json::object(
+      {{std::string(kMaxSchemaStringLength, 'x'), nlohmann::json{{"type", "string"}}}});
+  auto parameters = nlohmann::json{
+      {"type", "object"},
+      {"patternProperties", pattern_properties},
+  };
+
+  EXPECT_NE(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+
+  pattern_properties[std::string(kMaxSchemaStringLength + 1, 'x')] =
+      nlohmann::json{{"type", "string"}};
+  parameters["patternProperties"] = std::move(pattern_properties);
+  EXPECT_EQ(BuildToolJsonSchema(MakeToolCallContext(parameters)), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, MalformedSchemaBearingKeywordShapesReturnEmptyObject) {
+  const std::vector<nlohmann::json> malformed_keywords = {
+      {{"patternProperties", nlohmann::json::array()}},
+      {{"dependentSchemas", nlohmann::json::array()}},
+      {{"dependentRequired", "invalid"}},
+      {{"prefixItems", nlohmann::json::object()}},
+      {{"unevaluatedProperties", nlohmann::json::array()}},
+  };
+
+  for (const auto& malformed : malformed_keywords) {
+    SCOPED_TRACE(malformed.dump());
+    ToolCallContext ctx;
+    ctx.tool_output = true;
+    ctx.tools_json = nlohmann::json::array(
+        {{{"type", "function"},
+          {"function",
+           {{"name", "fn"},
+            {"parameters",
+             {{"type", "object"}, {"properties", {{"value", malformed}}}}}}}}})
+                         .dump();
+
+    EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
+  }
+}
+
+TEST(BuildToolJsonSchemaTest, DeepUnknownKeywordValueReturnsEmptyObject) {
+  auto extension_value = nlohmann::json::object();
+  for (size_t depth = 0; depth <= 32; ++depth) {
+    extension_value = nlohmann::json{{"nested", std::move(extension_value)}};
+  }
+
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json = nlohmann::json::array(
+      {{{"type", "function"},
+        {"function",
+         {{"name", "fn"},
+          {"parameters",
+           {{"type", "object"}, {"x-extension", std::move(extension_value)}}}}}}})
+                       .dump();
+
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
+}
+
+TEST(BuildToolJsonSchemaTest, DuplicateEnumValuesAtMaximumDepthReturnEmptyObject) {
+  auto value = nlohmann::json(1);
+  for (size_t depth = 0; depth < 32; ++depth) {
+    value = nlohmann::json::array({std::move(value)});
+  }
+
+  ToolCallContext ctx;
+  ctx.tool_output = true;
+  ctx.tools_json =
+      nlohmann::json::array(
+          {{{"type", "function"},
+            {"function",
+             {{"name", "fn"},
+              {"parameters",
+               {{"type", "object"},
+                {"properties",
+                 {{"value",
+                   {{"type", "array"},
+                    {"enum", nlohmann::json::array({value, value})}}}}}}}}}}})
+          .dump();
+
+  EXPECT_EQ(BuildToolJsonSchema(ctx), "{}");
 }
 
 TEST(BuildToolJsonSchemaTest, MultipleToolsProducesAnyOf) {
@@ -118,12 +430,14 @@ TEST(BuildLarkGrammarTest, ToolOnlyWithMarkersGrammar) {
   ctx.tool_output = true;
   ctx.tool_call_start = "<tool>";
   ctx.tool_call_end = "</tool>";
+  ctx.tool_call_start_token_id = 200;
+  ctx.tool_call_end_token_id = 201;
 
   std::string grammar = BuildLarkGrammar(ctx, R"({"type":"array"})");
   EXPECT_NE(grammar.find("start: toolcall"), std::string::npos);
   EXPECT_NE(grammar.find("functioncall"), std::string::npos);
-  EXPECT_NE(grammar.find("<tool>"), std::string::npos);
-  EXPECT_NE(grammar.find("</tool>"), std::string::npos);
+  EXPECT_NE(grammar.find("<[200]>"), std::string::npos);
+  EXPECT_NE(grammar.find("<[201]>"), std::string::npos);
 }
 
 TEST(BuildLarkGrammarTest, ToolOnlyWithoutMarkersGrammar) {
@@ -179,6 +493,192 @@ TEST(BuildLarkGrammarTest, GrammarContainsJsonDirective) {
 }
 
 // ========================================================================
+// RenderLarkMarker / EscapeLarkLiteral — exact-token-vs-literal rendering
+// ========================================================================
+
+TEST(EscapeLarkLiteralTest, WrapsPlainTextInQuotes) {
+  EXPECT_EQ(EscapeLarkLiteral("<tool_call>"), "\"<tool_call>\"");
+}
+
+TEST(EscapeLarkLiteralTest, EscapesBackslashAndQuote) {
+  EXPECT_EQ(EscapeLarkLiteral("a\\b\"c"), "\"a\\\\b\\\"c\"");
+}
+
+TEST(EscapeLarkLiteralTest, EscapesNewlineCarriageReturnAndTab) {
+  EXPECT_EQ(EscapeLarkLiteral("a\nb\rc\td"), "\"a\\nb\\rc\\td\"");
+}
+
+TEST(EscapeLarkLiteralTest, EscapesRemainingControlCharacters) {
+  EXPECT_EQ(EscapeLarkLiteral(std::string("a\b\f") + static_cast<char>(0x01) + "b"),
+            "\"a\\b\\f\\u0001b\"");
+}
+
+TEST(EscapeLarkLiteralTest, EmptyTextProducesEmptyLiteral) {
+  EXPECT_EQ(EscapeLarkLiteral(""), "\"\"");
+}
+
+TEST(RenderLarkMarkerTest, AuthoritativeIdRendersExactNumericToken) {
+  EXPECT_EQ(RenderLarkMarker("<tool_call>", 248068), "<[248068]>");
+}
+
+TEST(RenderLarkMarkerTest, UnresolvedMarkerRendersEscapedLiteral) {
+  EXPECT_EQ(RenderLarkMarker("<tool_call>", std::nullopt), "\"<tool_call>\"");
+}
+
+TEST(RenderLarkMarkerTest, NegativeTokenIdRendersEscapedLiteral) {
+  EXPECT_EQ(RenderLarkMarker("<tool_call>", -1), "\"<tool_call>\"");
+}
+
+TEST(BuildLarkGrammarTest, UnresolvedToolMarkersRenderAsEscapedLiterals) {
+  ToolCallContext ctx;
+  ctx.text_output = false;
+  ctx.tool_output = true;
+  ctx.tool_call_start = "<tool_call>";
+  ctx.tool_call_end = "</tool_call>";
+
+  std::string grammar = BuildLarkGrammar(ctx, R"({"type":"array"})");
+  EXPECT_NE(grammar.find("toolcall: \"<tool_call>\" functioncall \"</tool_call>\""), std::string::npos);
+  EXPECT_EQ(grammar.find("toolcall: <tool_call>"), std::string::npos);
+}
+
+TEST(BuildLarkGrammarTest, ToolMarkersMixNumericAndLiteralBoundaries) {
+  ToolCallContext ctx;
+  ctx.text_output = false;
+  ctx.tool_output = true;
+  ctx.tool_call_start = "<tool_call>";
+  ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+
+  std::string grammar = BuildLarkGrammar(ctx, R"({"type":"array"})");
+  EXPECT_NE(grammar.find("toolcall: <[248068]> functioncall \"</tool_call>\""), std::string::npos);
+}
+
+TEST(BuildLarkGrammarTest, MultiTokenReasoningMarkersFallBackToLiterals) {
+  ToolCallContext ctx;
+  ctx.text_output = true;
+  ctx.tool_output = false;
+  ctx.supports_reasoning = true;
+  ctx.reasoning_start = "<think>";
+  ctx.reasoning_end = "</think>";
+
+  std::string grammar = BuildLarkGrammar(ctx, "{}");
+  EXPECT_NE(grammar.find(R"(cot: "<think>" THINK_TEXT "</think>" "\n")"), std::string::npos);
+  EXPECT_EQ(grammar.find("cot: <think>"), std::string::npos);
+}
+
+TEST(BuildLarkGrammarTest, Phi4MiniReasoningWithoutPublishedIdsUsesLiteralMarkers) {
+  ToolCallContext ctx;
+  ctx.text_output = true;
+  ctx.tool_output = false;
+  ctx.supports_reasoning = true;
+  ctx.reasoning_start = "<think>";
+  ctx.reasoning_end = "</think>";
+
+  const std::string grammar = BuildLarkGrammar(ctx, "{}");
+
+  EXPECT_NE(grammar.find(R"(cot: "<think>" THINK_TEXT "</think>" "\n")"), std::string::npos);
+  EXPECT_NE(grammar.find("THINK_TEXT: /[^<]+/"), std::string::npos);
+  EXPECT_EQ(grammar.find("<["), std::string::npos);
+}
+
+TEST(BuildLarkGrammarTest, ToolAndReasoningMarkerIdsAreIndependent) {
+  ToolCallContext ctx;
+  ctx.text_output = false;
+  ctx.tool_output = true;
+  ctx.supports_reasoning = true;
+  ctx.reasoning_start = "<think>";
+  ctx.reasoning_end = "</think>";
+  ctx.tool_call_start = "<tool_call>";
+  ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+  ctx.tool_call_end_token_id = 248069;
+
+  std::string grammar = BuildLarkGrammar(ctx, R"({"type":"array"})");
+  EXPECT_NE(grammar.find(R"(cot: "<think>" THINK_TEXT "</think>" "\n")"), std::string::npos);
+  EXPECT_NE(grammar.find("toolcall: <[248068]> functioncall <[248069]>"), std::string::npos);
+}
+
+TEST(BuildLarkGrammarTest, NoMarkersUseModelIndependentLiteralFallbacks) {
+  ToolCallContext ctx;
+  ctx.text_output = true;
+  ctx.tool_output = true;
+  ctx.supports_reasoning = true;
+
+  std::string grammar = BuildLarkGrammar(ctx, R"({"type":"array"})");
+  EXPECT_NE(grammar.find(R"(cot: "<think>" THINK_TEXT "</think>" "\n")"), std::string::npos);
+  EXPECT_NE(grammar.find("output: TEXT | functioncall"), std::string::npos);
+  EXPECT_EQ(grammar.find("toolcall:"), std::string::npos);
+}
+
+TEST(BuildLarkGrammarTest, PromptOpensReasoningOmitsCotOpener) {
+  // The rendered prompt already opened reasoning (see PromptOpensReasoning), so the cot rule must not require the
+  // model to re-emit the opener — only the closer remains.
+  ToolCallContext ctx;
+  ctx.text_output = true;
+  ctx.tool_output = false;
+  ctx.supports_reasoning = true;
+  ctx.reasoning_start = "<think>";
+  ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
+  std::string grammar = BuildLarkGrammar(ctx, "{}", /*prompt_opens_reasoning=*/true);
+
+  std::string expected = R"(start: cot TEXT
+cot: THINK_TEXT <[248059]> "\n"
+THINK_TEXT: /[^<]+/
+TEXT: /[^{<](.|\n)*/
+)";
+
+  EXPECT_EQ(grammar, expected);
+}
+
+TEST(BuildLarkGrammarTest, PromptOpensReasoningOmitsCotOpenerWithToolCall) {
+  // Same shortening applies when the turn's output is tool-call-only — only the cot body changes; the surrounding
+  // start/toolcall productions are unaffected by prompt_opens_reasoning.
+  ToolCallContext ctx;
+  ctx.text_output = false;
+  ctx.tool_output = true;
+  ctx.supports_reasoning = true;
+  ctx.reasoning_start = "<think>";
+  ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
+  ctx.tool_call_start = "<tool_call>";
+  ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+  ctx.tool_call_end_token_id = 248069;
+  ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}])";
+
+  std::string json_schema = BuildToolJsonSchema(ctx);
+  std::string grammar = BuildLarkGrammar(ctx, json_schema, /*prompt_opens_reasoning=*/true);
+
+  std::string expected =
+      R"(start: cot toolcall
+cot: THINK_TEXT <[248059]> "\n"
+THINK_TEXT: /[^<]+/
+toolcall: <[248068]> functioncall <[248069]>
+functioncall: %json )" +
+      json_schema + "\n";
+
+  EXPECT_EQ(grammar, expected);
+}
+
+TEST(BuildLarkGrammarTest, PromptDoesNotOpenReasoningKeepsCotOpener) {
+  // Sanity check for the default (false) case: the opener is present when the prompt did not already open
+  // reasoning.
+  ToolCallContext ctx;
+  ctx.text_output = true;
+  ctx.tool_output = false;
+  ctx.supports_reasoning = true;
+  ctx.reasoning_start = "<think>";
+  ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
+  std::string grammar = BuildLarkGrammar(ctx, "{}");
+  EXPECT_NE(grammar.find("cot: <[248058]> THINK_TEXT <[248059]> \"\\n\""), std::string::npos);
+}
+
+// ========================================================================
 // ToolCallContext tests
 // ========================================================================
 
@@ -189,6 +689,10 @@ TEST(ToolCallContextTest, DefaultsAreCorrect) {
   EXPECT_TRUE(ctx.tool_call_start.empty());
   EXPECT_TRUE(ctx.tool_call_end.empty());
   EXPECT_TRUE(ctx.tools_json.empty());
+  EXPECT_FALSE(ctx.tool_call_start_token_id.has_value());
+  EXPECT_FALSE(ctx.tool_call_end_token_id.has_value());
+  EXPECT_FALSE(ctx.reasoning_start_token_id.has_value());
+  EXPECT_FALSE(ctx.reasoning_end_token_id.has_value());
 }
 
 TEST(ToolCallContextTest, HasToolsWhenJsonPresent) {
@@ -233,11 +737,13 @@ TEST(BuildLarkGrammarTest, CoT_TextOnly_KnownThinkIds) {
   ctx.supports_reasoning = true;
   ctx.reasoning_start = "<think>";
   ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
 
   std::string grammar = BuildLarkGrammar(ctx, "{}");
 
   std::string expected = R"(start: cot TEXT
-cot: <think> THINK_TEXT </think> "\n"
+cot: <[248058]> THINK_TEXT <[248059]> "\n"
 THINK_TEXT: /[^<]+/
 TEXT: /[^{<](.|\n)*/
 )";
@@ -270,8 +776,12 @@ TEST(BuildLarkGrammarTest, CoT_ToolOnly_KnownThinkIds_KnownToolIds) {
   ctx.supports_reasoning = true;
   ctx.reasoning_start = "<think>";
   ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
   ctx.tool_call_start = "<tool_call>";
   ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+  ctx.tool_call_end_token_id = 248069;
   ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
 
   std::string json_schema = BuildToolJsonSchema(ctx);
@@ -279,9 +789,9 @@ TEST(BuildLarkGrammarTest, CoT_ToolOnly_KnownThinkIds_KnownToolIds) {
 
   std::string expected =
       R"(start: cot toolcall
-cot: <think> THINK_TEXT </think> "\n"
+cot: <[248058]> THINK_TEXT <[248059]> "\n"
 THINK_TEXT: /[^<]+/
-toolcall: <tool_call> functioncall </tool_call>
+toolcall: <[248068]> functioncall <[248069]>
 functioncall: %json )" +
       json_schema + "\n";
 
@@ -295,6 +805,8 @@ TEST(BuildLarkGrammarTest, CoT_ToolOnly_UnknownThinkIds_KnownToolIds) {
   ctx.supports_reasoning = true;
   ctx.tool_call_start = "<tool_call>";
   ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+  ctx.tool_call_end_token_id = 248069;
   ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
 
   std::string json_schema = BuildToolJsonSchema(ctx);
@@ -304,7 +816,7 @@ TEST(BuildLarkGrammarTest, CoT_ToolOnly_UnknownThinkIds_KnownToolIds) {
       R"(start: cot toolcall
 cot: "<think>" THINK_TEXT "</think>" "\n"
 THINK_TEXT: /[^<]+/
-toolcall: <tool_call> functioncall </tool_call>
+toolcall: <[248068]> functioncall <[248069]>
 functioncall: %json )" +
       json_schema + "\n";
 
@@ -318,6 +830,8 @@ TEST(BuildLarkGrammarTest, CoT_ToolOnly_KnownThinkIds_UnknownToolIds) {
   ctx.supports_reasoning = true;
   ctx.reasoning_start = "<think>";
   ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
   ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
 
   std::string json_schema = BuildToolJsonSchema(ctx);
@@ -325,7 +839,7 @@ TEST(BuildLarkGrammarTest, CoT_ToolOnly_KnownThinkIds_UnknownToolIds) {
 
   std::string expected =
       R"(start: cot functioncall
-cot: <think> THINK_TEXT </think> "\n"
+cot: <[248058]> THINK_TEXT <[248059]> "\n"
 THINK_TEXT: /[^<]+/
 functioncall: %json )" +
       json_schema + "\n";
@@ -360,8 +874,12 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_KnownThinkIds_KnownToolIds) {
   ctx.supports_reasoning = true;
   ctx.reasoning_start = "<think>";
   ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
   ctx.tool_call_start = "<tool_call>";
   ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+  ctx.tool_call_end_token_id = 248069;
   ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
 
   std::string json_schema = BuildToolJsonSchema(ctx);
@@ -369,11 +887,11 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_KnownThinkIds_KnownToolIds) {
 
   std::string expected =
       R"(start: cot output
-cot: <think> THINK_TEXT </think> "\n"
+cot: <[248058]> THINK_TEXT <[248059]> "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | toolcall
 TEXT: /[^{<](.|\n)*/
-toolcall: <tool_call> functioncall </tool_call>
+toolcall: <[248068]> functioncall <[248069]>
 functioncall: %json )" +
       json_schema + "\n";
 
@@ -387,6 +905,8 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_UnknownThinkIds_KnownToolIds) {
   ctx.supports_reasoning = true;
   ctx.tool_call_start = "<tool_call>";
   ctx.tool_call_end = "</tool_call>";
+  ctx.tool_call_start_token_id = 248068;
+  ctx.tool_call_end_token_id = 248069;
   ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
 
   std::string json_schema = BuildToolJsonSchema(ctx);
@@ -398,7 +918,7 @@ cot: "<think>" THINK_TEXT "</think>" "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | toolcall
 TEXT: /[^{<](.|\n)*/
-toolcall: <tool_call> functioncall </tool_call>
+toolcall: <[248068]> functioncall <[248069]>
 functioncall: %json )" +
       json_schema + "\n";
 
@@ -412,6 +932,8 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_KnownThinkIds_UnknownToolIds) {
   ctx.supports_reasoning = true;
   ctx.reasoning_start = "<think>";
   ctx.reasoning_end = "</think>";
+  ctx.reasoning_start_token_id = 248058;
+  ctx.reasoning_end_token_id = 248059;
   ctx.tools_json = R"([{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}])";
 
   std::string json_schema = BuildToolJsonSchema(ctx);
@@ -419,7 +941,7 @@ TEST(BuildLarkGrammarTest, CoT_TextOrTool_KnownThinkIds_UnknownToolIds) {
 
   std::string expected =
       R"(start: cot output
-cot: <think> THINK_TEXT </think> "\n"
+cot: <[248058]> THINK_TEXT <[248059]> "\n"
 THINK_TEXT: /[^<]+/
 output: TEXT | functioncall
 TEXT: /[^{<](.|\n)*/

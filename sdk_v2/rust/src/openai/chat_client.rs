@@ -144,7 +144,7 @@ impl ChatClient {
         }
     }
 
-    /// Set the frequency penalty.
+    /// Set the frequency penalty. Currently only the neutral value `0` is supported.
     pub fn frequency_penalty(mut self, v: f64) -> Self {
         self.settings.frequency_penalty = Some(v);
         self
@@ -168,7 +168,7 @@ impl ChatClient {
         self
     }
 
-    /// Set the presence penalty.
+    /// Set the presence penalty. Currently only the neutral value `0` is supported.
     pub fn presence_penalty(mut self, v: f64) -> Self {
         self.settings.presence_penalty = Some(v);
         self

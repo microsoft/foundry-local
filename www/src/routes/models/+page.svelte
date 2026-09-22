@@ -21,7 +21,9 @@
 	const MODEL_QUERY_PARAM = 'model';
 	const CLI_RUN_COMMAND = 'foundry run qwen2.5-0.5b';
 	function getCliInstallLinks(): CliDownloadLink[] {
-		return ($page.data.cliDownloadLinks as CliDownloadLink[] | undefined) ?? fallbackCliDownloadLinks;
+		return (
+			($page.data.cliDownloadLinks as CliDownloadLink[] | undefined) ?? fallbackCliDownloadLinks
+		);
 	}
 
 	// Debounce timer for search
@@ -48,6 +50,8 @@
 	let selectedDevices: string[] = [];
 	let selectedFamily = '';
 	let selectedAcceleration = '';
+	let selectedTask = '';
+	let selectedCapability = '';
 	let sortBy = 'lastModified';
 	let sortOrder: 'asc' | 'desc' = 'desc';
 
@@ -60,6 +64,8 @@
 	let availableDevices: string[] = [];
 	let availableFamilies: string[] = [];
 	let availableAccelerations: string[] = [];
+	let availableTasks: string[] = [];
+	let availableCapabilities: string[] = [];
 
 	// Read filter state from URL search params
 	function readFiltersFromUrl() {
@@ -79,6 +85,8 @@
 		debouncedSearchTerm = searchTerm;
 		selectedFamily = params.get('family') ?? '';
 		selectedAcceleration = params.get('acceleration') ?? '';
+		selectedTask = params.get('task') ?? '';
+		selectedCapability = params.get('capability') ?? '';
 		sortBy = params.get('sort') ?? 'lastModified';
 		sortOrder = (params.get('order') as 'asc' | 'desc') ?? 'desc';
 	}
@@ -109,6 +117,8 @@
 		if (searchTerm) params.set('q', searchTerm);
 		if (selectedFamily) params.set('family', selectedFamily);
 		if (selectedAcceleration) params.set('acceleration', selectedAcceleration);
+		if (selectedTask) params.set('task', selectedTask);
+		if (selectedCapability) params.set('capability', selectedCapability);
 		if (sortBy && sortBy !== 'lastModified') params.set('sort', sortBy);
 		if (sortOrder && sortOrder !== 'desc') params.set('order', sortOrder);
 
@@ -186,7 +196,7 @@
 		const nextModelAlias = normalizeModelAlias(model.alias);
 		if (currentModelAlias === nextModelAlias) return;
 
-		const params = new URLSearchParams();
+		const params = buildFilterSearchParams();
 		params.set(MODEL_QUERY_PARAM, model.alias);
 		goto(buildModelsUrl(params), { noScroll: true, keepFocus: true });
 	}
@@ -272,6 +282,23 @@
 				.getAccelerationDisplayName(a)
 				.localeCompare(foundryModelService.getAccelerationDisplayName(b))
 		);
+
+		const variants = allModels.flatMap((model) => model.variants);
+		availableTasks = [
+			...new Set(
+				variants.map((variant) => variant.taskType).filter((task): task is string => Boolean(task))
+			)
+		].sort((a, b) =>
+			foundryModelService
+				.getMetadataDisplayName(a)
+				.localeCompare(foundryModelService.getMetadataDisplayName(b))
+		);
+		availableCapabilities = [...new Set(variants.flatMap((variant) => variant.capabilities))].sort(
+			(a, b) =>
+				foundryModelService
+					.getMetadataDisplayName(a)
+					.localeCompare(foundryModelService.getMetadataDisplayName(b))
+		);
 	}
 
 	// Check if model matches search term
@@ -324,8 +351,19 @@
 				!selectedAcceleration ||
 				model.acceleration === selectedAcceleration ||
 				model.variants?.some((v) => v.acceleration === selectedAcceleration);
+			const matchesTaskAndCapability = model.variants.some(
+				(variant) =>
+					(!selectedTask || variant.taskType === selectedTask) &&
+					(!selectedCapability || variant.capabilities.includes(selectedCapability))
+			);
 
-			return matchesSearch && matchesDevice && matchesFamily && matchesAcceleration;
+			return (
+				matchesSearch &&
+				matchesDevice &&
+				matchesFamily &&
+				matchesAcceleration &&
+				matchesTaskAndCapability
+			);
 		});
 
 		// Apply sorting
@@ -351,6 +389,8 @@
 		selectedDevices = [];
 		selectedFamily = '';
 		selectedAcceleration = '';
+		selectedTask = '';
+		selectedCapability = '';
 		sortBy = 'lastModified';
 		sortOrder = 'desc';
 		// Clear URL params
@@ -423,6 +463,8 @@
 		selectedDevices;
 		selectedFamily;
 		selectedAcceleration;
+		selectedTask;
+		selectedCapability;
 		debouncedSearchTerm;
 		sortBy;
 		sortOrder;
@@ -440,6 +482,8 @@
 		selectedDevices;
 		selectedFamily;
 		selectedAcceleration;
+		selectedTask;
+		selectedCapability;
 		searchTerm;
 		sortBy;
 		sortOrder;
@@ -562,11 +606,15 @@
 				bind:selectedDevices
 				bind:selectedFamily
 				bind:selectedAcceleration
+				bind:selectedTask
+				bind:selectedCapability
 				bind:sortBy
 				bind:sortOrder
 				{availableDevices}
 				{availableFamilies}
 				{availableAccelerations}
+				{availableTasks}
+				{availableCapabilities}
 				filteredCount={filteredModels.length}
 				{loading}
 				isFiltering={searchTerm !== debouncedSearchTerm}

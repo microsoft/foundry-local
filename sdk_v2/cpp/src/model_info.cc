@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "model_info.h"
+#include "util/string_utils.h"
 
 #include "util/string_utils.h"
 
@@ -197,6 +198,24 @@ ModelInfo ModelInfoFromJson(const nlohmann::json& j) {
     }
   }
 
+  // Preserve the complete extensible ModelInfo state in addition to the catalog-compatible named fields below.
+  // Keeping string and integer properties separate retains their types even when both maps contain the same key.
+  if (j.contains("stringProperties") && j["stringProperties"].is_object()) {
+    for (const auto& [key, value] : j["stringProperties"].items()) {
+      if (value.is_string()) {
+        info.SetPropertyStr(key, value.get<std::string>());
+      }
+    }
+  }
+
+  if (j.contains("intProperties") && j["intProperties"].is_object()) {
+    for (const auto& [key, value] : j["intProperties"].items()) {
+      if (value.is_number_integer()) {
+        info.SetPropertyInt(key, value.get<int64_t>());
+      }
+    }
+  }
+
   // String properties — named top-level fields → string_properties map
   ReadStringProp(j, "providerType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
   ReadStringProp(j, "modelType", info.string_properties, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
@@ -301,6 +320,22 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
 
   if (info.variant_metadata.has_value() && HasMeaningfulVariantMetadata(*info.variant_metadata)) {
     j["variantMetadata"] = *info.variant_metadata;
+  }
+
+  if (!info.string_properties.empty()) {
+    nlohmann::json properties = nlohmann::json::object();
+    for (const auto& [key, value] : info.string_properties) {
+      properties[key] = value;
+    }
+    j["stringProperties"] = std::move(properties);
+  }
+
+  if (!info.int_properties.empty()) {
+    nlohmann::json properties = nlohmann::json::object();
+    for (const auto& [key, value] : info.int_properties) {
+      properties[key] = value;
+    }
+    j["intProperties"] = std::move(properties);
   }
 
   // providerType — required in C#, defaults to empty
@@ -435,6 +470,22 @@ nlohmann::json ModelInfoToJson(const ModelInfo& info) {
   }
 
   return j;
+}
+
+void ModelInfo::SetPropertyStr(std::string key, std::string value) {
+  if (key == FOUNDRY_LOCAL_MODEL_PROP_TASK_STR) {
+    task = value;
+  } else if (key == FOUNDRY_LOCAL_MODEL_PROP_EP_STR) {
+    execution_provider = value;
+  } else if (key == FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR) {
+    device_type = DeviceTypeFromString(value);
+  }
+
+  string_properties[std::move(key)] = std::move(value);
+}
+
+void ModelInfo::SetPropertyInt(std::string key, int64_t value) {
+  int_properties[std::move(key)] = value;
 }
 
 }  // namespace fl

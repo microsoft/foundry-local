@@ -2,6 +2,13 @@
 
 find_package(httplib CONFIG REQUIRED)
 
+# cpp-httplib's non-blocking resolver uses getaddrinfo_a, which lives in libanl on glibc < 2.34.
+set(FOUNDRY_LOCAL_HTTPLIB_LIBS httplib::httplib)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(ANL_LIBRARY anl REQUIRED)
+    list(APPEND FOUNDRY_LOCAL_HTTPLIB_LIBS ${ANL_LIBRARY})
+endif()
+
 # ==========================================================================
 # Internal tests — test the implementation directly
 # Links against the static library with access to internal src/ headers.
@@ -17,9 +24,13 @@ add_executable(foundry_local_tests
     internal_api/callback_handler_test.cc
     internal_api/catalog_cache_test.cc
     internal_api/chat/chat_generator_test.cc
+    internal_api/chat/reasoning_stream_splitter_test.cc
     internal_api/chat/chat_session_test.cc
     internal_api/chat/chat_template_test.cc
+    internal_api/chat/chat_transcript_test.cc
+    internal_api/chat/media_input_test.cc
     internal_api/chat/onnx_chat_generator_vision_test.cc
+    internal_api/chat/stop_strings_test.cc
     internal_api/chat_completions_test.cc
     internal_api/chat_completions_converter_test.cc
     internal_api/configuration_test.cc
@@ -34,19 +45,27 @@ add_executable(foundry_local_tests
     internal_api/file_uri_test.cc
     internal_api/file_writer_test.cc
     internal_api/genai_config_test.cc
+    internal_api/genai_model_instance_test.cc
+    internal_api/handler_error_mapping_test.cc
+    internal_api/http_ca_bundle_test.cc
     internal_api/http_download_test.cc
     internal_api/http_retry_test.cc
     internal_api/item_test.cc
+    internal_api/local_model_catalog_test.cc
     internal_api/local_model_scanner_test.cc
     internal_api/model_info_test.cc
     internal_api/model_info_accessors_test.cc
+    internal_api/model_construction_test.cc
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
     internal_api/platform_path_test.cc
+    internal_api/replay_equivalence_test.cc
     internal_api/response_converter_test.cc
+    internal_api/response_lifecycle_test.cc
     internal_api/response_store_test.cc
     internal_api/responses_json_test.cc
+    internal_api/scope_guard_test.cc
     internal_api/session_manager_test.cc
     internal_api/sha256_test.cc
     internal_api/region_fallback_test.cc
@@ -55,9 +74,16 @@ add_executable(foundry_local_tests
     internal_api/azure_model_catalog_test.cc
     internal_api/telemetry_test.cc
     internal_api/tensor_test.cc
+    internal_api/time_utils_test.cc
     internal_api/chat/search_options_test.cc
     internal_api/toolcalling/tool_call_stream_accumulator_test.cc
+    internal_api/toolcalling/raw_envelope_detector_test.cc
     internal_api/toolcalling/tool_call_utils_test.cc
+    internal_api/toolcalling/custom_tools_chat_test.cc
+    internal_api/toolcalling/custom_tools_responses_test.cc
+    internal_api/toolcalling/tool_definition_abi_test.cc
+    internal_api/toolcalling/tool_definitions_test.cc
+    internal_api/toolcalling/tool_registry_test.cc
     internal_api/toolcalling/grammar_test.cc
     internal_api/utils_test.cc
     internal_api/web_service_test.cc
@@ -74,13 +100,17 @@ if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     )
 endif()
 
+target_sources(foundry_local_tests PRIVATE
+    internal_api/chat/dynamic_engine_chat_test.cc
+)
+
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
 
 target_link_libraries(foundry_local_tests
     PRIVATE
         foundry_local_static
         GTest::gtest
-        httplib::httplib
+        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
         ZLIB::ZLIB
 )
 
@@ -179,7 +209,7 @@ target_link_libraries(sdk_integration_tests
         foundry_local_cpp
         GTest::gtest
         nlohmann_json::nlohmann_json
-        httplib::httplib
+        ${FOUNDRY_LOCAL_HTTPLIB_LIBS}
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -233,6 +263,7 @@ set_tests_properties(sdk_integration_tests PROPERTIES TIMEOUT 1200)
 # ==========================================================================
 add_executable(cache_only_tests
     test_main.cc
+    sdk_api/bring_your_own_model_e2e_test.cc
     sdk_api/cache_only_test.cc
     sdk_api/catalog_live_test.cc
     sdk_api/manager_web_service_test.cc

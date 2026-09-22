@@ -8,7 +8,9 @@ import abc
 import enum
 import queue
 import threading
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from foundry_local_sdk.imodel import IModel
@@ -17,7 +19,14 @@ if TYPE_CHECKING:
     from foundry_local_sdk.response import Response
     from foundry_local_sdk.session_types import RequestOptions
 
-_API_VERSION = 1  # FOUNDRY_LOCAL_API_VERSION
+# Stamped on every versioned struct this module builds. Must match the version requested from
+# FoundryLocalGetApi (see _native/api.py): a tool definition carrying `kind` is only read as such
+# by a runtime that supports version 2.
+_API_VERSION = 2  # FOUNDRY_LOCAL_API_VERSION
+
+# flToolKind values.
+_TOOL_KIND_FUNCTION = 0
+_TOOL_KIND_CUSTOM = 1
 
 # Sentinel placed on the stream queue by the background thread when inference finishes.
 _DONE = object()
@@ -77,18 +86,22 @@ class StreamingResponse:
         self._thread: threading.Thread | None = None
 
         session._stream_queue = self._queue
+        worker_started = threading.Event()
 
         def _run() -> None:
             try:
-                out = ffi.new("flResponse**")
-                api.check_status(
-                    api.inference.Session_ProcessRequest(session._ptr, request._ptr, out)
-                )
+                with session._native_lifetime() as ptr:
+                    worker_started.set()
+                    out = ffi.new("flResponse**")
+                    api.check_status(
+                        api.inference.Session_ProcessRequest(ptr, request._ptr, out)
+                    )
                 from foundry_local_sdk.response import Response
 
                 # Response takes ownership of out[0]; wrapper releases it.
                 self._final_response = Response(out[0])
             except Exception as exc:
+                worker_started.set()
                 self._error = exc
                 self._queue.put(_StreamError(exc))
             finally:
@@ -100,6 +113,7 @@ class StreamingResponse:
         session._stream_request = request
         self._thread = t
         t.start()
+        worker_started.wait()
 
     def _release_lock(self) -> None:
         if self._lock_released:
@@ -243,6 +257,9 @@ class Session(abc.ABC):
         # cleanly no-ops instead of AttributeError'ing inside the GC.
         self._closed = True
         self._ptr = None
+        self._manager = None
+        self._operation_lock = threading.RLock()
+        self._native_call_state = threading.local()
         self._stream_thread = None
         self._stream_request = None
 
@@ -253,10 +270,22 @@ class Session(abc.ABC):
         if not isinstance(model, _ModelImpl):
             raise TypeError("model must be a native IModel instance")
 
-        out = ffi.new("flSession**")
-        api.check_status(api.inference.Session_Create(model._ptr, out))
-        self._ptr = out[0]
-        self._closed = False
+        manager = getattr(getattr(model, "_parent", None), "_parent", None)
+        with model._manager_lifetime():
+            out = ffi.new("flSession**")
+            api.check_status(api.inference.Session_Create(model._ptr, out))
+            try:
+                self._ptr = out[0]
+                self._manager = manager
+                self._closed = False
+                if manager is not None:
+                    manager._register_session(self)
+            except BaseException:
+                self._ptr = None
+                self._manager = None
+                self._closed = True
+                api.inference.Session_Release(out[0])
+                raise
 
         # Streaming state — populated by set_streaming(True).
         self._streaming_enabled = False
@@ -276,22 +305,38 @@ class Session(abc.ABC):
                 f"{type(self).__name__} has been closed and can no longer be used."
             )
 
+    @contextmanager
+    def _native_lifetime(self) -> Iterator[object]:
+        with self._operation_lock:
+            self._check_open()
+            state = self._native_call_state
+            state.depth = getattr(state, "depth", 0) + 1
+            try:
+                manager = self._manager
+                if manager is None:
+                    yield self._ptr
+                    return
+                with manager._native_call():
+                    yield self._ptr
+            finally:
+                state.depth -= 1
+
     def set_options(self, options: "RequestOptions") -> "Session":
         """Set session-level inference options. Applies to all subsequent process_request calls."""
-        self._check_open()
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
-        native_options = options.to_native_options()
-        kvp_out = ffi.new("flKeyValuePairs**")
-        api.root.CreateKeyValuePairs(kvp_out)
-        kvp = kvp_out[0]
-        try:
-            for key, value in native_options.items():
-                api.root.AddKeyValuePair(kvp, key.encode("utf-8"), value.encode("utf-8"))
-            api.check_status(api.inference.Session_SetOptions(self._ptr, kvp))
-        finally:
-            api.root.KeyValuePairs_Release(kvp)
+        with self._native_lifetime() as ptr:
+            native_options = options.to_native_options()
+            kvp_out = ffi.new("flKeyValuePairs**")
+            api.root.CreateKeyValuePairs(kvp_out)
+            kvp = kvp_out[0]
+            try:
+                for key, value in native_options.items():
+                    api.root.AddKeyValuePair(kvp, key.encode("utf-8"), value.encode("utf-8"))
+                api.check_status(api.inference.Session_SetOptions(ptr, kvp))
+            finally:
+                api.root.KeyValuePairs_Release(kvp)
         return self
 
     def set_streaming(self, enabled: bool) -> "Session":
@@ -304,50 +349,47 @@ class Session(abc.ABC):
         Returns:
             self (fluent).
         """
-        self._check_open()
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.items import Item
 
-        if enabled and not self._streaming_enabled:
-            # Build the cffi callback as a closure over self so it can reach
-            # _stream_queue without going through user_data.
-            # The object is stored on self to prevent the GC from collecting it
-            # while the native session still holds the C function pointer.
-            def _cb(data, user_data):
-                q = self._stream_queue
-                if q is None:
+        with self._native_lifetime() as ptr:
+            if enabled and not self._streaming_enabled:
+                # The object is stored on self so native never observes a collected callback.
+                def _cb(data, user_data):
+                    q = self._stream_queue
+                    if q is None:
+                        return 0
+
+                    try:
+                        if data.item_queue != ffi.NULL:
+                            item_out = ffi.new("flItem**")
+                            while api.item.ItemQueue_TryPop(data.item_queue, item_out):
+                                # Ownership transferred to the Python Item wrapper.
+                                q.put(Item.from_native(item_out[0], owns=True))
+                    except Exception as exc:
+                        q.put(_StreamError(exc))
+                        return 1
+
                     return 0
 
-                try:
-                    if data.item_queue != ffi.NULL:
-                        item_out = ffi.new("flItem**")
-                        while api.item.ItemQueue_TryPop(data.item_queue, item_out):
-                            # Ownership transferred to the Python Item wrapper.
-                            q.put(Item.from_native(item_out[0], owns=True))
-                except Exception as exc:
-                    q.put(_StreamError(exc))
-                    return 1
-
-                return 0
-
-            self._streaming_callback = ffi.callback("flStreamingCallback", _cb)
-            self._streaming_enabled = True
-            api.check_status(
-                api.inference.Session_SetStreamingCallback(
-                    self._ptr, self._streaming_callback, ffi.NULL
+                self._streaming_callback = ffi.callback("flStreamingCallback", _cb)
+                self._streaming_enabled = True
+                api.check_status(
+                    api.inference.Session_SetStreamingCallback(
+                        ptr, self._streaming_callback, ffi.NULL
+                    )
                 )
-            )
 
-        elif not enabled and self._streaming_enabled:
-            # Passing a NULL function pointer uninstalls the callback.
-            api.check_status(
-                api.inference.Session_SetStreamingCallback(
-                    self._ptr, ffi.cast("flStreamingCallback", 0), ffi.NULL
+            elif not enabled and self._streaming_enabled:
+                # Passing a NULL function pointer uninstalls the callback.
+                api.check_status(
+                    api.inference.Session_SetStreamingCallback(
+                        ptr, ffi.cast("flStreamingCallback", 0), ffi.NULL
+                    )
                 )
-            )
-            self._streaming_callback = None
-            self._streaming_enabled = False
+                self._streaming_callback = None
+                self._streaming_enabled = False
 
         return self
 
@@ -411,14 +453,14 @@ class Session(abc.ABC):
 
     def process_request(self, request: "Request") -> "Response":
         """Run the request synchronously and return the complete response."""
-        self._check_open()
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.response import Response
 
-        out = ffi.new("flResponse**")
-        api.check_status(api.inference.Session_ProcessRequest(self._ptr, request._ptr, out))
-        return Response(out[0])
+        with self._native_lifetime() as ptr:
+            out = ffi.new("flResponse**")
+            api.check_status(api.inference.Session_ProcessRequest(ptr, request._ptr, out))
+            return Response(out[0])
 
     def _close(self) -> None:
         # Defensive: subclasses (ChatSession, AudioSession, EmbeddingsSession) validate
@@ -427,6 +469,8 @@ class Session(abc.ABC):
         # getattr so __del__ -> _close() no-ops cleanly instead of AttributeError'ing.
         if getattr(self, "_closed", True) or getattr(self, "_ptr", None) is None:
             return
+        if getattr(getattr(self, "_native_call_state", None), "depth", 0) > 0:
+            raise RuntimeError("Cannot close Session during an active native call")
 
         # If a streaming request is in flight, wind it down before Session_Release —
         # releasing while the worker is inside Session_ProcessRequest is a native
@@ -439,18 +483,27 @@ class Session(abc.ABC):
                     req.cancel()
                 except Exception:
                     pass
-            # Bounded wait — if the worker is wedged past this, releasing is still
-            # safer than blocking the caller indefinitely on what may be a runaway thread.
-            t.join(timeout=5.0)
+            # Session_Release and the manager lease must wait until native processing exits.
+            t.join()
 
-        try:
-            from foundry_local_sdk._native.api import api
+        with self._operation_lock:
+            if self._closed or self._ptr is None:
+                return
+            ptr = self._ptr
+            manager = self._manager
+            try:
+                if manager is None:
+                    from foundry_local_sdk._native.api import api
 
-            api.inference.Session_Release(self._ptr)
-        except Exception:
-            pass
-        self._ptr = None
-        self._closed = True
+                    api.inference.Session_Release(ptr)
+                else:
+                    manager._release_session(self, ptr)
+            except Exception:
+                pass
+            finally:
+                self._ptr = None
+                self._closed = True
+                self._manager = None
 
     def __enter__(self) -> "Session":
         return self
@@ -459,7 +512,10 @@ class Session(abc.ABC):
         self._close()
 
     def __del__(self) -> None:
-        self._close()
+        try:
+            self._close()
+        except Exception:
+            pass
 
 
 class ChatSession(Session):
@@ -481,9 +537,33 @@ class ChatSession(Session):
         super().__init__(model)
 
     def add_tool_definition(self, name: str, description: str, json_schema: str) -> "ChatSession":
-        """Register a tool so the model can request tool calls. Returns self (fluent)."""
+        """Register a function tool so the model can request tool calls. Returns self (fluent).
+
+        ``json_schema`` is required and must be valid JSON. Names are case-sensitive and must be
+        unique within the session across kinds. All string arguments must not contain embedded NUL
+        characters.
+        """
+        return self._add_tool_definition(name, description, json_schema, _TOOL_KIND_FUNCTION)
+
+    def add_custom_tool_definition(self, name: str, description: str) -> "ChatSession":
+        """Register a custom tool: one whose arguments are a single free-form text payload.
+
+        The schema the model is prompted with is synthesized natively, so none is supplied here, and
+        the ``arguments`` of a generated tool call carry the raw text the model produced rather than
+        a JSON object. The name and description must not contain embedded NUL characters. Returns
+        self (fluent).
+        """
+        return self._add_tool_definition(name, description, "", _TOOL_KIND_CUSTOM)
+
+    def _add_tool_definition(
+        self, name: str, description: str, json_schema: str, kind: int
+    ) -> "ChatSession":
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
+
+        self._validate_native_string(name, "name")
+        self._validate_native_string(description, "description")
+        self._validate_native_string(json_schema, "json_schema")
 
         # Keep cffi temporaries as named locals so they outlive the native call.
         c_name = ffi.new("char[]", name.encode("utf-8") + b"\x00")
@@ -495,36 +575,50 @@ class ChatSession(Session):
         tool_def.name = c_name
         tool_def.description = c_desc
         tool_def.json_schema = c_schema
+        tool_def.kind = kind
 
-        api.check_status(api.inference.Session_AddToolDefinition(self._ptr, tool_def))
+        with self._native_lifetime() as ptr:
+            api.check_status(api.inference.Session_AddToolDefinition(ptr, tool_def))
         return self
 
     def remove_tool_definition(self, name: str) -> bool:
         """Remove a previously-added tool definition by name.
 
         Returns True if a matching tool was found and removed, False if no tool with that
-        name was registered. Useful when the available tool set changes mid-conversation.
+        name was registered. Useful when the available tool set changes mid-conversation. The name
+        must not contain embedded NUL characters.
         """
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
 
+        self._validate_native_string(name, "name")
         c_name = ffi.new("char[]", name.encode("utf-8") + b"\x00")
         out_removed = ffi.new("bool*")
-        api.check_status(api.inference.Session_RemoveToolDefinition(self._ptr, c_name, out_removed))
-        return bool(out_removed[0])
+        with self._native_lifetime() as ptr:
+            api.check_status(api.inference.Session_RemoveToolDefinition(ptr, c_name, out_removed))
+            return bool(out_removed[0])
+
+    @staticmethod
+    def _validate_native_string(value: str, argument_name: str) -> None:
+        if not isinstance(value, str):
+            raise TypeError(f"{argument_name} must be a string")
+        if "\x00" in value:
+            raise ValueError(f"{argument_name} must not contain an embedded NUL character")
 
     @property
     def turn_count(self) -> int:
         """Number of completed turns accumulated in this session."""
         from foundry_local_sdk._native.api import api
 
-        return int(api.inference.Session_GetTurnCount(self._ptr))
+        with self._native_lifetime() as ptr:
+            return int(api.inference.Session_GetTurnCount(ptr))
 
     def undo_turns(self, count: int) -> None:
         """Remove the last `count` turns from session history."""
         from foundry_local_sdk._native.api import api
 
-        api.check_status(api.inference.Session_UndoTurns(self._ptr, count))
+        with self._native_lifetime() as ptr:
+            api.check_status(api.inference.Session_UndoTurns(ptr, count))
 
 
 class AudioSession(Session):

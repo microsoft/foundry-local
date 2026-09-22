@@ -18,7 +18,8 @@ public sealed class ToolResultItem : Item
     /// <summary>Tool output text. Empty string when the tool produced no content.</summary>
     public string Result { get; }
 
-    public ToolResultItem(string callId, string result) : base(ItemType.ToolResult)
+    /// <summary>Create a tool result. Both strings must be NUL-free; an empty result remains valid.</summary>
+    public ToolResultItem(string callId, string result) : base(ValidateArguments(callId, result))
     {
         CallId = callId;
         Result = result;
@@ -40,6 +41,22 @@ public sealed class ToolResultItem : Item
         {
             Marshal.FreeCoTaskMem(callIdNative);
             Marshal.FreeCoTaskMem(resultNative);
+        }
+    }
+
+    private static ItemType ValidateArguments(string callId, string result)
+    {
+        ValidateNativeString(callId, nameof(callId));
+        ValidateNativeString(result, nameof(result));
+        return ItemType.ToolResult;
+    }
+
+    private static void ValidateNativeString(string value, string paramName)
+    {
+        Detail.Throw.IfNull(value, paramName);
+        if (value.Contains('\0'))
+        {
+            throw new ArgumentException("Value must not contain an embedded NUL character.", paramName);
         }
     }
 

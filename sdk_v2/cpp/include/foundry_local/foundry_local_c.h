@@ -60,7 +60,7 @@
  * Incremented with each release.
  * Used to request the API function table via FoundryLocalGetApi.
  * ----------------------------------------------------------------------- */
-#define FOUNDRY_LOCAL_API_VERSION 1
+#define FOUNDRY_LOCAL_API_VERSION 2
 
 /* -----------------------------------------------------------------------
  * Platform export macros (C version)
@@ -170,7 +170,9 @@ typedef flStatus* flStatusPtr;
  * Exported symbols — these are the ONLY symbols the library exports
  * ----------------------------------------------------------------------- */
 
-/** Get the API function table for the requested version. Returns NULL if unsupported. */
+/** Get the API function table for the requested version. Returns NULL if unsupported.
+ *  A binding that needs a feature added in a later version must request that version and fail
+ *  when NULL is returned rather than silently downgrading. */
 FL_EXPORT const flApi* FL_API_CALL FoundryLocalGetApi(uint32_t version) FL_NO_EXCEPTION;
 
 /** Returns the library version string. */
@@ -201,6 +203,11 @@ typedef enum flDeviceType {
   FOUNDRY_LOCAL_DEVICE_GPU = 2,
   FOUNDRY_LOCAL_DEVICE_NPU = 3
 } flDeviceType;
+
+typedef enum flCatalogType {
+  FOUNDRY_LOCAL_CATALOG_PUBLIC = 0,
+  FOUNDRY_LOCAL_CATALOG_LOCAL = 1,
+} flCatalogType;
 
 /// Tensor element data types. Values match ONNX TensorProto.DataType.
 typedef enum flTensorDataType {
@@ -256,15 +263,22 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR "tool_call_end"              ///< optional tool call end marker token
 #define FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR "reasoning_start"          ///< optional reasoning/think start marker token
 #define FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR "reasoning_end"              ///< optional reasoning/think end marker token
+#define FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR "device_type"                  ///< CPU, GPU, or NPU
+#define FOUNDRY_LOCAL_MODEL_PROP_EP_STR "execution_provider"                    ///< optional execution provider
+#define FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR "entity_type"                  ///< fixed to "Model" for BYOM
+#define FOUNDRY_LOCAL_MODEL_PROP_AUTHOR_STR "author"                            ///< optional
+#define FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR "quantization"                ///< optional
+#define FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR "creation_time"              ///< ISO-8601 UTC timestamp
 
 /* flModelInfo Int properties. Comments provide details on the type and expected values. */
-#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"  ///< optional bool (not set or -1=unknown, 0=false, 1=true)
-#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT "supports_reasoning"        ///< optional bool (not set or -1=unknown, 0=false, 1=true)
-#define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT "filesize_mb"                      ///< optional int32_t
-#define FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT "max_output_tokens"          ///< optional int32_t
-#define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"              ///< Unix timestamp. default=0
-#define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                  ///< bool (0=false, 1=true)
-#define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                ///< optional int64_t
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT "supports_tool_calling"          ///< optional bool (not set or -1=unknown, 0=false, 1=true)
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT "supports_reasoning"                ///< optional bool (not set or -1=unknown, 0=false, 1=true)
+#define FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT "filesize_mb"                              ///< optional int32_t
+#define FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT "max_output_tokens"                  ///< optional int32_t
+#define FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT "created_at_unix"                      ///< Unix timestamp. default=0
+#define FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT "is_test_model"                          ///< bool (0=false, 1=true)
+#define FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT "context_length"                        ///< optional int64_t
+#define FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_HYBRID_REASONING_INT "supports_hybrid_reasoning"  ///< optional bool
 
 #define FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR "input_modalities"    ///< optional, comma-separated
 #define FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR "output_modalities"  ///< optional, comma-separated
@@ -282,11 +296,13 @@ typedef enum flTensorDataType {
 #define FOUNDRY_LOCAL_PARAM_TOP_P "top_p"                          ///< float [0.0, 1.0]. nucleus sampling
 #define FOUNDRY_LOCAL_PARAM_TOP_K "top_k"                          ///< int. top-k sampling
 #define FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS "max_output_tokens"  ///< int. max tokens to generate
-#define FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY "frequency_penalty"  ///< float [-2.0, 2.0]
-#define FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY "presence_penalty"    ///< float [-2.0, 2.0]
-#define FOUNDRY_LOCAL_PARAM_SEED "seed"                            ///< int. for reproducible outputs
-#define FOUNDRY_LOCAL_PARAM_EARLY_STOPPING "early_stopping"        ///< bool. whether to stop on stop sequence or only at max tokens
-#define FOUNDRY_LOCAL_PARAM_DO_SAMPLE "do_sample"                  ///< bool. whether to sample (false = greedy decoding)
+/// Float frequency penalty. Currently only the neutral value 0 is supported.
+#define FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY "frequency_penalty"
+/// Float presence penalty. Currently only the neutral value 0 is supported.
+#define FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY "presence_penalty"
+#define FOUNDRY_LOCAL_PARAM_SEED "seed"                      ///< int. for reproducible outputs
+#define FOUNDRY_LOCAL_PARAM_EARLY_STOPPING "early_stopping"  ///< bool. whether to stop on stop sequence or only at max tokens
+#define FOUNDRY_LOCAL_PARAM_DO_SAMPLE "do_sample"            ///< bool. whether to sample (false = greedy decoding)
 
 /* Request options */
 #define FOUNDRY_LOCAL_PARAM_TOOL_CHOICE "tool_choice"  ///< string: See flToolChoice for the typed enum.
@@ -358,7 +374,7 @@ typedef struct flUsage {
   int64_t prompt_tokens;
   int64_t completion_tokens;
   int64_t total_tokens;
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flUsage;
 
 /// Information about a discoverable execution provider.
@@ -370,7 +386,7 @@ typedef struct flEpInfo {
   uint32_t version;    ///< Set by impl to FOUNDRY_LOCAL_API_VERSION.
   const char* name;    ///< UTF-8 EP name. Stable for Manager lifetime.
   bool is_registered;  ///< Whether the EP is currently registered with ORT.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flEpInfo;
 
 /* -----------------------------------------------------------------------
@@ -405,7 +421,7 @@ typedef struct flTextData {
   uint32_t version;     ///< Set to FOUNDRY_LOCAL_API_VERSION.
   const char* text;     ///< UTF-8 text. Borrowed by caller; copied on Set. Pointer into item storage on Get.
   flTextItemType type;  ///< Text type tag. Defaults to FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flTextData;
 
 /// Versioned struct for raw bytes data.
@@ -417,7 +433,7 @@ struct flBytesData {
   size_t data_size;            ///< Byte count.
   flBytesDataDeleter deleter;  ///< Optional. Called on item destruction to free owned data.
   void* deleter_user_data;     ///< Context for deleter. Ignored if deleter is NULL.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 };
 
 /// Versioned struct for tensor data.
@@ -430,7 +446,7 @@ struct flTensorData {
   size_t rank;                  ///< Number of dimensions.
   flTensorDataDeleter deleter;  ///< Optional. Called on item destruction to free owned data.
   void* deleter_user_data;      ///< Context for deleter. Ignored if deleter is NULL.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 };
 
 /// Versioned struct for message data.
@@ -450,7 +466,7 @@ typedef struct flMessageData {
   const flItem* const* content_items;  ///< Array of content part items (TEXT/IMAGE/AUDIO).
   size_t content_items_count;          ///< Number of entries in `content_items`.
   const char* name;                    ///< Optional participant name within a role. NULL to omit.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flMessageData;
 
 /// Versioned struct for image data.
@@ -464,7 +480,7 @@ struct flImageData {
   const char* uri;             ///< File path, URL, etc. NULL for byte-based images.
   flImageDataDeleter deleter;  ///< Optional. Called on item destruction to free owned data.
   void* deleter_user_data;     ///< Context for deleter. Ignored if deleter is NULL.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 };
 
 struct flAudioData {
@@ -482,11 +498,16 @@ struct flAudioData {
 
 /// Versioned struct for tool call data.
 typedef struct flToolCallData {
-  uint32_t version;       ///< Set to FOUNDRY_LOCAL_API_VERSION.
-  const char* call_id;    ///< Tool call identifier.
-  const char* name;       ///< Tool name.
-  const char* arguments;  ///< JSON-encoded arguments.
-  /* V2 fields go here. */
+  uint32_t version;     ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  const char* call_id;  ///< Tool call identifier.
+  const char* name;     ///< Tool name.
+  /// Arguments for the call, shaped by the registered flToolDefinition with the same `name`:
+  /// JSON for FOUNDRY_LOCAL_TOOL_KIND_FUNCTION, raw text for FOUNDRY_LOCAL_TOOL_KIND_CUSTOM.
+  /// This C field is a NUL-terminated UTF-8 string and therefore cannot represent embedded NUL
+  /// bytes. SetToolCall validates the observable prefix through the first NUL; bytes after that
+  /// terminator are outside the value supplied to the API.
+  const char* arguments;
+  /* V3 fields go here. Read only when version >= 3. */
 } flToolCallData;
 
 /// Versioned struct for tool result data.
@@ -494,7 +515,7 @@ typedef struct flToolResultData {
   uint32_t version;     ///< Set to FOUNDRY_LOCAL_API_VERSION.
   const char* call_id;  ///< Tool call identifier this result is for.
   const char* result;   ///< Result content.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flToolResultData;
 
 /* -----------------------------------------------------------------------
@@ -536,7 +557,7 @@ typedef struct flSpeechWord {
   int64_t end_time_ms;     ///< Milliseconds from audio start. FOUNDRY_LOCAL_DURATION_UNSET if absent.
   float confidence;        ///< 0..1 model posterior. FOUNDRY_LOCAL_CONFIDENCE_UNSET if absent.
   const char* speaker_id;  ///< Diarization label. NULL if absent.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flSpeechWord;
 
 /// Versioned struct for SPEECH_SEGMENT item content (output-only).
@@ -550,7 +571,7 @@ typedef struct flSpeechSegmentData {
   const flSpeechWord* words;  ///< Borrowed array. Length = words_count.
   size_t words_count;
   const char* language;  ///< Per-segment language for code-switching. NULL if absent.
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flSpeechSegmentData;
 
 /// Versioned struct for SPEECH_RESULT item content (output-only).
@@ -562,7 +583,7 @@ typedef struct flSpeechResultData {
   int64_t duration_ms;            ///< Total audio duration. FOUNDRY_LOCAL_DURATION_UNSET if absent.
   const flItem* const* segments;  ///< Borrowed array of SPEECH_SEGMENT items. Length = segments_count.
   size_t segments_count;
-  /* V2 fields go here. */
+  /* V3 fields go here. Read only when version >= 3. */
 } flSpeechResultData;
 
 /// Versioned struct that we pass to a callback during Session::ProcessRequest.
@@ -574,12 +595,36 @@ typedef struct flStreamingCallbackData {
   // handled above when converting to chat completions or responses api events.
 } flStreamingCallbackData;
 
+/// The kind of a registered tool. A fixed-width integer rather than a C enum: an enum's underlying
+/// type is implementation-defined, so only this makes the field's width part of the ABI contract.
+typedef uint32_t flToolKind;
+
+/// Arguments are a JSON object conforming to the definition's `json_schema`, which is required.
+#define FOUNDRY_LOCAL_TOOL_KIND_FUNCTION 0u
+/// Arguments are NUL-free UTF-8 text. `json_schema` must be NULL or empty — the implementation
+/// synthesizes the schema the model is prompted with and delivers the model's payload verbatim.
+/// Supplied or generated payloads containing an embedded NUL are invalid and are never truncated.
+#define FOUNDRY_LOCAL_TOOL_KIND_CUSTOM 1u
+
+/// Versioned struct for a tool definition registered on a session.
+///
+/// Version 1 is the short prefix through `json_schema`. It retains its released compatibility:
+/// FUNCTION definitions may have an empty but non-NULL `name` for pre-serialized usage. A caller
+/// compiled against the 2.0 header allocates only that prefix, so the implementation reads nothing
+/// past it unless `version` is 2 or greater.
+///
+/// Version 2 appends `kind`. Public FUNCTION and CUSTOM definitions using version 2 must have a
+/// non-empty `name`.
 typedef struct flToolDefinition {
-  uint32_t version;         ///< Set to FOUNDRY_LOCAL_API_VERSION;
-  const char* name;         ///< Tool name.
+  uint32_t version;         ///< Set to FOUNDRY_LOCAL_API_VERSION. 0 is invalid.
+  const char* name;         ///< Tool name. Case-sensitive; v2 names must be non-empty and unique across kinds.
   const char* description;  ///< Tool description for model context.
-  const char* json_schema;  ///< JSON schema defining the tool's arguments.
-  /* V2 fields go here. */
+  /// JSON schema defining the tool's arguments. FUNCTION: required, must be valid JSON text.
+  /// CUSTOM: must be NULL or empty.
+  const char* json_schema;
+  /* V2 fields go here. Read only when version >= 2. */
+  flToolKind kind;  ///< Tool kind. Treated as FOUNDRY_LOCAL_TOOL_KIND_FUNCTION when version < 2.
+  /* V3 fields go here. */
 } flToolDefinition;
 
 /* -----------------------------------------------------------------------
@@ -709,6 +754,10 @@ typedef struct flApi {
   bool FL_API_T(Manager_IsShutdownRequested, _In_ const flManager* manager);
 
   // End V1
+  FL_API_STATUS(Manager_GetCatalogByType, _In_ const flManager* manager, flCatalogType catalog_type,
+                _Outptr_ flCatalog** out_catalog);
+
+  // End V2
   /* Append new function pointers at the end for future versions and add marker for the end of each version */
 } flApi;
 
@@ -749,7 +798,8 @@ struct flItemApi {
   /// Set AUDIO data from a versioned struct. Set data+data_size for bytes, or uri for URI-based.
   FL_API_STATUS(SetAudio, _In_ flItem* item, _In_ const flAudioData* audio);
 
-  /// Set content for a TOOL_CALL item from a versioned struct.
+  /// Set content for a TOOL_CALL item from a versioned struct. String fields are NUL-terminated;
+  /// `arguments` must contain valid UTF-8 through its first NUL.
   FL_API_STATUS(SetToolCall, _In_ flItem* item, _In_ const flToolCallData* tool_call);
   /// Set content for a TOOL_RESULT item from a versioned struct.
   FL_API_STATUS(SetToolResult, _In_ flItem* item, _In_ const flToolResultData* tool_result);
@@ -876,11 +926,21 @@ struct flInferenceApi {
      by chat sessions. For non-chat session types, tool definitions are ignored,
      turn count returns 0, and UndoTurns returns an error. */
 
-  /// Add a tool definition to the session. The session copies the data.
+  /// Add a tool definition to the session. The session copies the data — the caller may free the
+  /// strings after this call.
+  ///
+  /// Names are case-sensitive and must be unique within the session across kinds; re-registering a
+  /// live name returns FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT. Remove it first to re-register it.
+  ///
+  /// Only the fields guaranteed by `tool_def->version` are read: version 1 definitions end at
+  /// `json_schema` and behave as FOUNDRY_LOCAL_TOOL_KIND_FUNCTION; version 2 and later also read
+  /// `kind`. Version 0, versions newer than the implementation, and unknown `kind` values are
+  /// rejected with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
   FL_API_STATUS(Session_AddToolDefinition, _In_ flSession* session, _In_ const flToolDefinition* tool_def);
 
   /// Remove a previously-added tool definition by name.
   /// `*out_removed` is set to true if a matching tool was found and removed, false otherwise.
+  /// An empty name removes nothing; unnamed pre-serialized entries are not registered by name.
   /// A missing tool is NOT an error — only real failures (e.g. null arguments) return a non-null flStatus*.
   FL_API_STATUS(Session_RemoveToolDefinition, _In_ flSession* session, _In_ const char* tool_name,
                 _Out_ bool* out_removed);
@@ -941,8 +1001,9 @@ struct flCatalogApi {
   /// Returned string is owned by the catalog and valid for the catalog's lifetime.
   FL_API_STATUS(GetName, _In_ const flCatalog* catalog, _Out_ const char** out_name);
 
-  // Catalog owns model list. Cached for efficiency.
-  // Models are mutable for load/unload/remove operations. Model info is immutable though.
+  /// The caller owns each returned model list and must release it with ModelList_Release. The model handles in a list
+  /// are borrowed from the catalog and remain address-valid until the owning manager is destroyed. Releasing a list
+  /// does not invalidate its model handles. Models are mutable for load/unload/remove operations; model info is immutable.
   FL_API_STATUS(GetModels, _In_ const flCatalog* catalog, _Outptr_ flModelList** out_models);
   FL_API_STATUS(GetModel, _In_ const flCatalog* catalog, _In_ const char* alias,
                 _Outptr_ flModel** out_model);
@@ -972,6 +1033,21 @@ struct flCatalogApi {
                 _In_opt_ const char* model_name, int32_t max_versions, _Outptr_ flModelList** out_models);
 
   // End V1
+  /// Register a model in a local catalog without taking ownership of its assets.
+  /// `model_path` must identify a model directory containing genai_config.json.
+  /// `model_id` must use the canonical `<name>:<version>` format and be unique in the local catalog.
+  /// The metadata is copied; model identity and location are taken only from the explicit arguments.
+  FL_API_STATUS(RegisterModel, _In_ flCatalog* catalog, _In_ const char* model_path,
+                _In_ const char* model_id, _In_ const flModelInfo* metadata,
+                _Outptr_ flModel** out_model);
+  /// Unregister by alias or model ID without deleting model assets. A model ID removes only that version/variant;
+  /// an alias removes all registered versions and variants in the alias group.
+  /// Future catalog queries exclude the registration, but outstanding model handles and their immutable metadata remain
+  /// valid until the owning manager is destroyed. Operations that require the retired registration, including Download
+  /// and Load, return FOUNDRY_LOCAL_ERROR_INVALID_USAGE; query and cleanup operations such as Unload remain valid.
+  FL_API_STATUS(UnregisterModel, _In_ flCatalog* catalog, _In_ const char* alias_or_model_id);
+
+  // End V2
 };
 
 /* --- Model API --------------------------------------------------------- */
@@ -988,8 +1064,8 @@ struct flModelApi {
 
   /* Model handle operations. Catalog owns Model instances. */
   FL_API_STATUS(IsCached, _In_ const flModel* model, _Out_ int* out_cached);
-  /// Returned path string is owned by the model and valid until the model is released or its cache state
-  /// changes via RemoveFromCache.
+  /// Returned path string is owned by the model and valid until the owning manager is destroyed or the model's cache
+  /// state changes via Download or RemoveFromCache.
   FL_API_STATUS(GetPath, _In_ const flModel* model, _Out_ const char** out_path);
   FL_API_STATUS(Download, _In_ flModel* model, _In_opt_ flProgressCallback callback,
                 _In_opt_ void* user_data);
@@ -1041,6 +1117,13 @@ struct flModelApi {
   int64_t FL_API_T(Info_GetIntProperty, _In_ const flModelInfo* info, _In_ const char* key, int64_t default_value);
 
   // End V1
+  /// Create a caller-owned mutable ModelInfo. Release it with ReleaseModelInfo.
+  FL_API_STATUS(CreateModelInfo, _Outptr_ flModelInfo** out_info);
+  void FL_API_T(ReleaseModelInfo, _Frees_ptr_opt_ flModelInfo* info);
+  FL_API_STATUS(Info_SetStringProperty, _In_ flModelInfo* info, _In_ const char* key, _In_ const char* value);
+  FL_API_STATUS(Info_SetIntProperty, _In_ flModelInfo* info, _In_ const char* key, int64_t value);
+
+  // End V2
 };
 
 #ifdef __cplusplus

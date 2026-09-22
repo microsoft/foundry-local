@@ -19,7 +19,7 @@ pub mod openai;
 pub use self::catalog::Catalog;
 pub use self::configuration::{FoundryLocalConfig, LogLevel, Logger};
 pub use self::detail::model::{DownloadBuilder, Model};
-pub use self::error::FoundryLocalError;
+pub use self::error::{FoundryLocalError, NativeErrorCode};
 pub use self::foundry_local_manager::{EpDownloadBuilder, FoundryLocalManager};
 pub use self::item::{
     Audio, Image, Item, ItemType, MediaSource, Message, MessageRole, SpeechResult, SpeechSegment,
@@ -29,11 +29,12 @@ pub use self::item_queue::ItemQueue;
 pub use self::request::{Request, RequestOptions, SearchOptions, ToolChoice};
 pub use self::response::{FinishReason, Response, Usage};
 pub use self::session::{
-    AudioSession, ChatSession, EmbeddingsSession, ItemStream, Session, ToolDefinition,
+    AudioSession, ChatSession, CustomToolDefinition, EmbeddingsSession, ItemStream, Session,
+    ToolDefinition,
 };
 pub use self::types::{
-    ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo, ModelInfo,
-    ModelSettings, Parameter, PromptTemplate, Runtime,
+    CatalogType, ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo,
+    ModelInfo, ModelInfoBuilder, ModelSettings, Parameter, PromptTemplate, Runtime,
 };
 
 // Re-export OpenAI request types so callers can construct typed messages.

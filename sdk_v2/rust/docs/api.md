@@ -1,6 +1,7 @@
 # Foundry Local Rust SDK — Public API Reference
 
-> Auto-generated from `sdk_v2/rust/src` source files.
+> Reference for the public API in `sdk_v2/rust/src`. Maintained by hand until the
+> crate is published; see [GENERATE-DOCS.md](../GENERATE-DOCS.md).
 
 ## Table of Contents
 
@@ -38,6 +39,7 @@
   - [Response](#response)
   - [FinishReason](#finishreason)
   - [ToolDefinition](#tooldefinition)
+  - [CustomToolDefinition](#customtooldefinition)
 - [Types](#types)
   - [ModelInfo](#modelinfo)
   - [ChatResponseFormat](#chatresponseformat)
@@ -49,6 +51,7 @@
   - [Parameter](#parameter)
 - [Error Handling](#error-handling)
   - [FoundryLocalError](#foundrylocalerror)
+  - [NativeErrorCode](#nativeerrorcode)
 - [Re-exported OpenAI Types](#re-exported-openai-types)
 
 ---
@@ -91,6 +94,9 @@ pub struct FoundryLocalConfig { /* private fields */ }
 | `log_level` | `fn log_level(self, level: LogLevel) -> Self` | Set the log level. |
 | `web_service_urls` | `fn web_service_urls(self, urls: impl Into<String>) -> Self` | Set the web-service listen URLs. |
 | `service_endpoint` | `fn service_endpoint(self, endpoint: impl Into<String>) -> Self` | Set an external service endpoint URL. |
+| `catalog_url` | `fn catalog_url(self, url: impl Into<String>) -> Self` | Add a catalog source URL (no filter override). May be called multiple times. |
+| `catalog_url_with_filter` | `fn catalog_url_with_filter(self, url: impl Into<String>, filter_override: impl Into<String>) -> Self` | Add a catalog source URL with a filter override. |
+| `catalog_region` | `fn catalog_region(self, region: impl Into<String>) -> Self` | Set the Azure region used by the catalog service. |
 | `library_path` | `fn library_path(self, path: impl Into<String>) -> Self` | Override the path to the native core library. |
 | `additional_setting` | `fn additional_setting(self, key: impl Into<String>, value: impl Into<String>) -> Self` | Add a key-value pair to additional settings. |
 | `logger` | `fn logger(self, logger: impl Logger + 'static) -> Self` | Provide an application logger (stub — not yet wired into native core). |
@@ -150,6 +156,7 @@ pub struct Catalog { /* private fields */ }
 | `get_model_variant` | `async fn get_model_variant(&self, id: &str) -> Result<Arc<Model>, FoundryLocalError>` | Look up a variant by unique id. |
 | `get_cached_models` | `async fn get_cached_models(&self) -> Result<Vec<Arc<Model>>, FoundryLocalError>` | Return only variants cached on disk. |
 | `get_loaded_models` | `async fn get_loaded_models(&self) -> Result<Vec<Arc<Model>>, FoundryLocalError>` | Return model variants currently loaded in memory. |
+| `get_model_versions` | `async fn get_model_versions(&self, model_alias: &str, model_name: Option<&str>, max_versions: u32) -> Result<Vec<Arc<Model>>, FoundryLocalError>` | Return all versions for an alias, optionally filtered to a single model name. `max_versions` caps the results per model name; `0` returns all. |
 
 ---
 
@@ -199,11 +206,11 @@ pub struct ChatClient { /* private fields */ }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `frequency_penalty` | `fn frequency_penalty(mut self, v: f64) -> Self` | Set the frequency penalty. |
+| `frequency_penalty` | `fn frequency_penalty(mut self, v: f64) -> Self` | Set the OpenAI frequency penalty; currently only `0` is supported. |
 | `max_tokens` | `fn max_tokens(mut self, v: u32) -> Self` | Maximum tokens to generate. |
 | `n` | `fn n(mut self, v: u32) -> Self` | Number of completions. |
 | `temperature` | `fn temperature(mut self, v: f64) -> Self` | Sampling temperature. |
-| `presence_penalty` | `fn presence_penalty(mut self, v: f64) -> Self` | Presence penalty. |
+| `presence_penalty` | `fn presence_penalty(mut self, v: f64) -> Self` | Set the OpenAI presence penalty; currently only `0` is supported. |
 | `top_p` | `fn top_p(mut self, v: f64) -> Self` | Nucleus sampling probability. |
 | `top_k` | `fn top_k(mut self, v: u32) -> Self` | Top-k sampling *(Foundry extension)*. |
 | `random_seed` | `fn random_seed(mut self, v: u64) -> Self` | Random seed for reproducibility *(Foundry extension)*. |
@@ -422,8 +429,9 @@ impl Deref for ChatSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. |
+| `new` | `async fn new(model: &Model) -> Result<ChatSession, FoundryLocalError>` | Open a chat session on a loaded model. Returns `Validation` if the model's task is not `chat-completion` or `vision-language-chat`. |
 | `add_tool_definition` | `async fn add_tool_definition(&self, definition: ToolDefinition) -> Result<(), FoundryLocalError>` | Register a tool for the lifetime of the session. |
+| `add_custom_tool_definition` | `async fn add_custom_tool_definition(&self, definition: CustomToolDefinition) -> Result<(), FoundryLocalError>` | Register a custom text tool for the lifetime of the session. |
 | `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |
 | `turn_count` | `fn turn_count(&self) -> usize` | The number of completed conversation turns. |
 | `undo_turns` | `async fn undo_turns(&self, count: usize) -> Result<(), FoundryLocalError>` | Rewind the last `count` turns. |
@@ -441,7 +449,7 @@ impl Deref for EmbeddingsSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<EmbeddingsSession, FoundryLocalError>` | Open an embeddings session on a loaded model. |
+| `new` | `async fn new(model: &Model) -> Result<EmbeddingsSession, FoundryLocalError>` | Open an embeddings session on a loaded model. Returns `Validation` if the model's task is not `embeddings`. |
 | `embed` | `async fn embed(&self, input: impl Into<String>) -> Result<Vec<f32>, FoundryLocalError>` | Embed a single text input. |
 | `embed_batch` | `async fn embed_batch(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, FoundryLocalError>` | Embed a batch of inputs, one vector per input (in order). |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
@@ -458,7 +466,7 @@ impl Deref for AudioSession { type Target = Session; }
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `async fn new(model: &Model) -> Result<AudioSession, FoundryLocalError>` | Open an audio session on a loaded model. |
+| `new` | `async fn new(model: &Model) -> Result<AudioSession, FoundryLocalError>` | Open an audio session on a loaded model. Returns `Validation` if the model's task is not `automatic-speech-recognition`. |
 | `transcribe` | `async fn transcribe(&self, audio: Item) -> Result<String, FoundryLocalError>` | Transcribe a single audio item, returning the recognized text. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
 
@@ -477,7 +485,7 @@ pub struct ItemQueue { /* private fields */ }
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `push` | `fn push(&self, item: &Item) -> Result<(), FoundryLocalError>` | Push an item, transferring a native copy into the queue. |
-| `try_pop` | `fn try_pop(&self) -> Option<Item>` | Pop the next item, or `None` if currently empty. |
+| `try_pop` | `fn try_pop(&self) -> Result<Option<Item>, FoundryLocalError>` | Pop the next item (`Ok(None)` if currently empty), or `Err` if converting the native item fails. |
 | `len` | `fn len(&self) -> usize` | Number of items currently buffered. |
 | `is_empty` | `fn is_empty(&self) -> bool` | Whether the queue currently holds no items. |
 | `mark_finished` | `fn mark_finished(&self)` | Signal that no more items will be pushed. |
@@ -497,6 +505,10 @@ impl Stream for ItemStream {
     type Item = Result<Item, FoundryLocalError>;
 }
 ```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `response` | `async fn response(&mut self) -> Result<Response, FoundryLocalError>` | Await the terminal [`Response`](#response) (finish reason, usage, final items). May be called after draining the item stream or instead of draining it; the terminal response can be taken only once. |
 
 ### Item
 
@@ -532,7 +544,7 @@ pub enum Item {
 | `float_tensor` | `fn float_tensor(shape: impl Into<Vec<i64>>, data: &[f32]) -> Item` | A `Float`-typed tensor from `f32` values. |
 | `image_data` / `image_uri` | `fn(…, format: Option<impl Into<String>>) -> Item` | An inline or URI-referenced image. |
 | `audio_data` / `audio_uri` | `fn(…) -> Item` | An inline or URI-referenced audio clip. |
-| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call. |
+| `tool_call` | `fn tool_call(call_id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Item` | A model-issued tool call whose arguments are JSON object text for a function tool or raw NUL-free UTF-8 text for a custom tool. |
 | `tool_result` | `fn tool_result(call_id: impl Into<String>, result: impl Into<String>) -> Item` | The result of executing a tool call. |
 
 **Accessors:**
@@ -684,6 +696,20 @@ pub struct ToolDefinition {
 | `new` | `fn new(name: impl Into<String>, json_schema: impl Into<String>) -> ToolDefinition` | A tool with a name and JSON-schema parameters. |
 | `with_description` | `fn with_description(mut self, description: impl Into<String>) -> ToolDefinition` | Attach a description (builder-style). |
 
+### CustomToolDefinition
+
+A custom text tool registered on a [`ChatSession`](#chatsession). Its fields are private so future
+additive metadata does not break downstream construction.
+
+```rust
+pub struct CustomToolDefinition { /* private fields */ }
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `fn new(name: impl Into<String>) -> CustomToolDefinition` | Create a custom text tool with no caller-supplied schema. |
+| `with_description` | `fn with_description(mut self, description: impl Into<String>) -> CustomToolDefinition` | Attach a description (builder-style). |
+
 ---
 
 ## Types
@@ -812,6 +838,9 @@ pub struct Parameter {
 
 ```rust
 pub enum FoundryLocalError {
+    /// The native core library returned an error. Carries a stable code.
+    Native { code: NativeErrorCode, message: String },
+
     /// The native core library could not be loaded.
     LibraryLoad { reason: String },
 
@@ -841,7 +870,31 @@ pub enum FoundryLocalError {
 }
 ```
 
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `native_code` | `fn native_code(&self) -> Option<NativeErrorCode>` | The stable native error code for a `Native` error, else `None`. |
+| `native_message` | `fn native_message(&self) -> Option<&str>` | The native error message for a `Native` error, else `None`. |
+
 Implements: `Display`, `Error`, `From<serde_json::Error>`, `From<std::io::Error>`, `From<reqwest::Error>`
+
+#### NativeErrorCode
+
+Stable error codes reported by the native Foundry Local library. Surfaced via
+[`FoundryLocalError::native_code`](#foundrylocalerror) so callers can branch on a
+failure without matching message strings.
+
+```rust
+pub enum NativeErrorCode {
+    Ok,
+    NotImplemented,
+    Internal,
+    InvalidArgument,
+    InvalidUsage,
+    OperationCancelled,
+    Network,
+    Unknown(i32),
+}
+```
 
 > **Note:** The `Result<T>` type alias (`std::result::Result<T, FoundryLocalError>`) is defined
 > in `error.rs` for internal SDK use but is **not** re-exported from the crate root.

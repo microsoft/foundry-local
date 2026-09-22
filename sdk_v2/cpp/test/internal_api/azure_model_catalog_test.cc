@@ -207,7 +207,7 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
   WriteSnapshot({gpu_info, cpu_info});
   const auto gpu_path = AddLocalModel("snapshot-gpu:2", "snapshot-gpu");
   const auto cpu_path = AddLocalModel("snapshot-cpu:2", "snapshot-cpu");
-  const auto byom_path = AddLocalModel("offline-byom:4", "offline-byom");
+  AddLocalModel("offline-byom:4", "offline-byom");
 
   AddBehavior("https://catalog-one.test", true);
   AddBehavior("https://catalog-two.test", true);
@@ -218,7 +218,7 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
 
   const auto cached_models = catalog->GetCachedModels();
 
-  ASSERT_EQ(cached_models.size(), 3u);
+  ASSERT_EQ(cached_models.size(), 2u);
   auto* gpu_model = FindVariant(cached_models, "snapshot-gpu:2");
   ASSERT_NE(gpu_model, nullptr);
   EXPECT_EQ(gpu_model->Info().alias, "snapshot-alias");
@@ -232,9 +232,7 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
   EXPECT_EQ(cpu_model->Info().alias, "snapshot-alias");
   EXPECT_EQ(cpu_model->LocalPath(), cpu_path.string());
 
-  auto* byom_model = FindVariant(cached_models, "offline-byom:4");
-  ASSERT_NE(byom_model, nullptr);
-  EXPECT_EQ(byom_model->LocalPath(), byom_path.string());
+  EXPECT_EQ(FindVariant(cached_models, "offline-byom:4"), nullptr);
 
   CatalogCache persisted_cache(cache_directory_.string(), services_.logger);
   persisted_cache.Load();
@@ -246,8 +244,8 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailUsesSnapshotMetadataAndScannedPathsWith
   EXPECT_EQ(factory_calls_, 2);
 }
 
-TEST_F(AzureModelCatalogTest, AllUrlsFailWithoutSnapshotSurfacesScannedModelAsByom) {
-  const auto local_path = AddLocalModel("custom-model:0", "custom-model");
+TEST_F(AzureModelCatalogTest, AllUrlsFailWithoutSnapshotIgnoresUnknownScannedModel) {
+  AddLocalModel("custom-model:0", "custom-model");
   AddBehavior("https://catalog-one.test", true);
   AddBehavior("https://catalog-two.test", true);
   auto catalog = CreateCatalog({
@@ -257,20 +255,8 @@ TEST_F(AzureModelCatalogTest, AllUrlsFailWithoutSnapshotSurfacesScannedModelAsBy
 
   const auto cached_models = catalog->GetCachedModels();
 
-  ASSERT_EQ(cached_models.size(), 1u);
-  auto* byom_model = FindVariant(cached_models, "custom-model:0");
-  ASSERT_NE(byom_model, nullptr);
-  EXPECT_EQ(byom_model->Info().name, "custom-model");
-  EXPECT_EQ(byom_model->Info().alias, "custom-model");
-  EXPECT_EQ(byom_model->Info().version, 0);
-  EXPECT_EQ(byom_model->Info().uri, "local://custom-model");
-  const auto* provider = byom_model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
-  const auto* model_type = byom_model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
-  ASSERT_NE(provider, nullptr);
-  ASSERT_NE(model_type, nullptr);
-  EXPECT_EQ(*provider, "Local");
-  EXPECT_EQ(*model_type, "ONNX");
-  EXPECT_EQ(byom_model->LocalPath(), local_path.string());
+  EXPECT_TRUE(cached_models.empty());
+  EXPECT_EQ(catalog->GetModelVariant("custom-model:0"), nullptr);
   EXPECT_FALSE(fs::exists(cache_directory_.path() / "foundry.modelinfo.json"));
 }
 
@@ -290,7 +276,7 @@ TEST_F(AzureModelCatalogTest, EmptySuccessfulUrlPreventsSnapshotFallbackWhenAnot
   EXPECT_EQ(factory_calls_, 2);
 }
 
-TEST_F(AzureModelCatalogTest, CacheOnlyUsesSnapshotAndScannedByomWithoutCreatingLiveClient) {
+TEST_F(AzureModelCatalogTest, CacheOnlyUsesSnapshotPathAndIgnoresUnknownScannedModelWithoutCreatingLiveClient) {
   WriteSnapshot({MakeModelInfo("snapshot-model:3", "snapshot-model", 3, "snapshot-alias", "SnapshotProvider")});
   AddLocalModel("snapshot-model:3", "snapshot-model");
   AddLocalModel("cache-only-byom:5", "cache-only-byom");
@@ -298,13 +284,13 @@ TEST_F(AzureModelCatalogTest, CacheOnlyUsesSnapshotAndScannedByomWithoutCreating
 
   const auto cached_models = catalog->GetCachedModels();
 
-  ASSERT_EQ(cached_models.size(), 2u);
+  ASSERT_EQ(cached_models.size(), 1u);
   EXPECT_NE(FindVariant(cached_models, "snapshot-model:3"), nullptr);
-  EXPECT_NE(FindVariant(cached_models, "cache-only-byom:5"), nullptr);
+  EXPECT_EQ(catalog->GetModelVariant("cache-only-byom:5"), nullptr);
   EXPECT_EQ(factory_calls_, 0);
 }
 
-TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesResolvedAndByomMetadata) {
+TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesOnlyResolvedPublicMetadata) {
   AddLocalModel("old-model:1", "old-model");
   AddLocalModel("custom-model:0", "custom-model");
 
@@ -324,7 +310,8 @@ TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesResolvedAndByom
 
   const auto models = catalog->ListModels();
 
-  ASSERT_EQ(models.size(), 3u);
+  ASSERT_EQ(models.size(), 2u);
+  EXPECT_EQ(FindVariant(models, "custom-model:0"), nullptr);
   EXPECT_EQ(first_behavior->fetch_by_id_calls, 1);
   EXPECT_EQ(second_behavior->fetch_by_id_calls, 1);
 
@@ -332,13 +319,31 @@ TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesResolvedAndByom
   persisted_cache.Load();
   const auto persisted_models = persisted_cache.GetCachedModels();
   ASSERT_TRUE(persisted_models.has_value());
-  ASSERT_EQ(persisted_models->size(), 3u);
+  ASSERT_EQ(persisted_models->size(), 2u);
 
   std::unordered_set<std::string> persisted_ids;
   for (const auto& info : *persisted_models) {
     persisted_ids.insert(info.model_id);
   }
 
-  EXPECT_EQ(persisted_ids,
-            (std::unordered_set<std::string>{"latest-model:2", "old-model:1", "custom-model:0"}));
+  EXPECT_EQ(persisted_ids, (std::unordered_set<std::string>{"latest-model:2", "old-model:1"}));
+}
+
+TEST_F(AzureModelCatalogTest, CacheOnlyIgnoresLegacySynthesizedByomSnapshotEntry) {
+  const auto public_info = MakeModelInfo("snapshot-model:3", "snapshot-model", 3, "snapshot-alias",
+                                         "SnapshotProvider");
+  const auto legacy_byom_info = MakeModelInfo("legacy-byom:1", "legacy-byom", 1, "legacy-byom", "Local");
+  WriteSnapshot({public_info, legacy_byom_info});
+  AddLocalModel("snapshot-model:3", "snapshot-model");
+  AddLocalModel("legacy-byom:1", "legacy-byom");
+  auto catalog = CreateCatalog({{"https://must-not-be-called.test", std::nullopt}}, true);
+
+  const auto models = catalog->ListModels();
+  const auto cached_models = catalog->GetCachedModels();
+
+  ASSERT_EQ(models.size(), 1u);
+  ASSERT_EQ(cached_models.size(), 1u);
+  EXPECT_NE(catalog->GetModelVariant("snapshot-model:3"), nullptr);
+  EXPECT_EQ(catalog->GetModelVariant("legacy-byom:1"), nullptr);
+  EXPECT_EQ(factory_calls_, 0);
 }

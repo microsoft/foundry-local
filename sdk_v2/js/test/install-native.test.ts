@@ -243,11 +243,11 @@ describe("downloadWithRetryAndRedirects", () => {
 describe("generateRestoreProjectXml", () => {
   it("includes bracketed exact versions for every artifact", () => {
     const xml = generateRestoreProjectXml([
-      { name: "Microsoft.ML.OnnxRuntime", version: "1.28.0", expected: "onnxruntime.dll" },
-      { name: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.2", expected: "onnxruntime-genai.dll" },
+      { name: "Microsoft.ML.OnnxRuntime", version: "1.30.0", expected: "onnxruntime.dll" },
+      { name: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.16.0", expected: "onnxruntime-genai.dll" },
     ]);
-    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.28.0]" />');
-    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.15.2]" />');
+    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="[1.30.0]" />');
+    expect(xml).toContain('<PackageReference Include="Microsoft.ML.OnnxRuntimeGenAI.Foundry" Version="[0.16.0]" />');
   });
 
   it("targets net8.0", () => {
@@ -323,9 +323,9 @@ describe("findRestoredPackageDir", () => {
   });
 
   it("finds the lowercased id/version directory", () => {
-    const dir = join(packagesDir, "microsoft.ml.onnxruntime", "1.28.0");
+    const dir = join(packagesDir, "microsoft.ml.onnxruntime", "1.30.0");
     mkdirSync(dir, { recursive: true });
-    expect(findRestoredPackageDir(packagesDir, "Microsoft.ML.OnnxRuntime", "1.28.0")).toBe(dir);
+    expect(findRestoredPackageDir(packagesDir, "Microsoft.ML.OnnxRuntime", "1.30.0")).toBe(dir);
   });
 
   it("throws when the expected package directory is missing", () => {
@@ -341,13 +341,13 @@ describe("buildNugetInstallArgs", () => {
   it("passes exact package-only install flags and each configured source", () => {
     const args = buildNugetInstallArgs(
       { ...config, configFile: undefined },
-      { id: "Microsoft.ML.OnnxRuntime", version: "1.28.0", outputDir: "pkgs" },
+      { id: "Microsoft.ML.OnnxRuntime", version: "1.30.0", outputDir: "pkgs" },
     );
     expect(args).toEqual([
       "install",
       "Microsoft.ML.OnnxRuntime",
       "-Version",
-      "1.28.0",
+      "1.30.0",
       "-OutputDirectory",
       "pkgs",
       "-NonInteractive",
@@ -364,13 +364,13 @@ describe("buildNugetInstallArgs", () => {
   it("passes -ConfigFile and no -Source args when a config file is set", () => {
     const args = buildNugetInstallArgs(
       { ...config, configFile: "NuGet.config" },
-      { id: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.15.2", outputDir: "pkgs" },
+      { id: "Microsoft.ML.OnnxRuntimeGenAI.Foundry", version: "0.16.0", outputDir: "pkgs" },
     );
     expect(args).toEqual([
       "install",
       "Microsoft.ML.OnnxRuntimeGenAI.Foundry",
       "-Version",
-      "0.15.2",
+      "0.16.0",
       "-OutputDirectory",
       "pkgs",
       "-NonInteractive",
@@ -419,24 +419,24 @@ describe("findNugetPackageDir", () => {
   });
 
   it("finds the id.version directory using nuget's original casing", () => {
-    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.28.0");
+    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.30.0");
     mkdirSync(dir, { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.28.0")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.30.0")).toBe(dir);
   });
 
   it("matches case-insensitively regardless of the casing nuget.exe produced", () => {
-    const dir = join(outputDir, "microsoft.ml.onnxruntimegenai.foundry.0.15.2");
+    const dir = join(outputDir, "microsoft.ml.onnxruntimegenai.foundry.0.16.0");
     mkdirSync(dir, { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntimeGenAI.Foundry", "0.15.2")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntimeGenAI.Foundry", "0.16.0")).toBe(dir);
   });
 
   it("only looks at immediate children of outputDir, not nested dependency package folders", () => {
     // Simulates nuget.exe restoring a transitive dependency alongside the requested package —
     // only the exact id.version match at the root should be returned.
     mkdirSync(join(outputDir, "Some.Other.Dependency.2.0.0"), { recursive: true });
-    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.28.0");
+    const dir = join(outputDir, "Microsoft.ML.OnnxRuntime.1.30.0");
     mkdirSync(join(dir, "runtimes", "win-x64", "native"), { recursive: true });
-    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.28.0")).toBe(dir);
+    expect(findNugetPackageDir(outputDir, "Microsoft.ML.OnnxRuntime", "1.30.0")).toBe(dir);
   });
 
   it("throws when the expected package directory is missing", () => {
