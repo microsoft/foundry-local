@@ -92,6 +92,21 @@ test('ModelDetailsModal describes Copy ID buttons with visible model IDs', () =>
 	assert.doesNotMatch(modelDetailsModal, /aria-labelledby=\{`model-id-/);
 });
 
+test('model-card copy buttons describe their Foundry run commands', () => {
+	const modelCard = readSource('../src/routes/models/components/ModelCard.svelte');
+
+	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{genericModelName\}`\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{genericModelName\}`\} class="sr-only">\s*\{formatModelCommand\(genericModelName\)\}/
+	);
+	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{variant\.name\}`\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{variant\.name\}`\} class="sr-only">\s*\{formatModelCommand\(variant\.name\)\}/
+	);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 
@@ -128,4 +143,11 @@ test('shared skip link is hidden until keyboard focus and targets both main land
 	assert.match(focusRule, /height:\s*auto/);
 	assert.match(focusRule, /overflow:\s*visible/);
 	assert.match(focusRule, /clip-path:\s*none/);
+});
+
+test('dropdown menus remain scrollable within the viewport below the sticky header', () => {
+	const content = readSource('../src/lib/components/ui/dropdown-menu/dropdown-menu-content.svelte');
+
+	assert.match(content, /max-h-\[var\(--bits-dropdown-menu-content-available-height\)\]/);
+	assert.match(content, /overflow-y-auto/);
 });

@@ -84,10 +84,10 @@ struct ServiceContext {
 ///   2. Start(endpoints) — binds to addresses, launches listener threads
 ///   3. Stop() — graceful shutdown
 ///
-/// Creates and owns ResponseStore, StreamingThreadTracker, and ServiceContext internally.
+/// Creates and owns the response stores, StreamingThreadTracker, and catalog-bound ServiceContexts internally.
 class WebService {
  public:
-  WebService(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+  WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
              ModelLoadManager& model_load_manager, SessionManager& session_manager,
              ITelemetry& telemetry, std::function<void()> shutdown_callback);
   ~WebService();
