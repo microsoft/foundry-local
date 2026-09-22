@@ -120,7 +120,7 @@ export interface NativeModel {
   selectVariant(variant: NativeModel): void;
   load(): Promise<void>;
   unload(onWorkerStarted?: () => void): Promise<void>;
-  download(progress?: (percent: number) => void): Promise<void>;
+  download(progress?: (percent: number) => void, signal?: AbortSignal): Promise<void>;
   removeFromCache(): void;
 }
 

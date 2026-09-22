@@ -16,6 +16,22 @@ const internalCtorKey = Symbol("Model.internal");
 
 const nativeByModel = new WeakMap<Model, NativeModel>();
 
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as AbortSignal).aborted === "boolean" &&
+    typeof (value as AbortSignal).addEventListener === "function" &&
+    typeof (value as AbortSignal).removeEventListener === "function"
+  );
+}
+
+function makeAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
 function toDeviceType(value: NativeModelInfo["deviceType"]): DeviceType {
   switch (value) {
     case "CPU":
@@ -24,7 +40,6 @@ function toDeviceType(value: NativeModelInfo["deviceType"]): DeviceType {
       return DeviceType.GPU;
     case "NPU":
       return DeviceType.NPU;
-    case "Invalid":
     default:
       return DeviceType.Invalid;
   }
@@ -197,8 +212,30 @@ export class Model implements IModel {
     await this.#native.unload();
   }
 
-  async download(progressCallback?: (progress: number) => void): Promise<void> {
-    await this.#native.download(progressCallback);
+  async download(signal?: AbortSignal): Promise<void>;
+  async download(progressCallback?: (progress: number) => void, signal?: AbortSignal): Promise<void>;
+  async download(
+    progressCallbackOrSignal?: ((progress: number) => void) | AbortSignal,
+    optionalSignal?: AbortSignal,
+  ): Promise<void> {
+    const signal = isAbortSignal(progressCallbackOrSignal) ? progressCallbackOrSignal : optionalSignal;
+    const progressCallback = typeof progressCallbackOrSignal === "function" ? progressCallbackOrSignal : undefined;
+
+    if (
+      progressCallbackOrSignal !== undefined &&
+      progressCallback === undefined &&
+      !isAbortSignal(progressCallbackOrSignal)
+    ) {
+      throw new TypeError("Model.download: first argument must be a progress callback or AbortSignal");
+    }
+    if (signal !== undefined && !isAbortSignal(signal)) {
+      throw new TypeError("Model.download: second argument must be an AbortSignal");
+    }
+    if (signal?.aborted === true) {
+      throw makeAbortError("Model download aborted before start");
+    }
+
+    await this.#native.download(progressCallback, signal);
   }
 
   removeFromCache(): void {

@@ -10,9 +10,12 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -393,6 +396,192 @@ Napi::Value Model::Unload(const Napi::CallbackInfo& info) {
                                 std::move(owner));
 }
 
+namespace {
+
+class ProgressDispatch {
+ public:
+  explicit ProgressDispatch(float percent) : percent_(percent) {}
+
+  float Percent() const { return percent_; }
+
+  void Wait() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    completed_cv_.wait(lock, [this] { return completed_; });
+  }
+
+  void Complete() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      completed_ = true;
+    }
+    completed_cv_.notify_one();
+  }
+
+ private:
+  const float percent_;
+  std::mutex mutex_;
+  std::condition_variable completed_cv_;
+  bool completed_ = false;
+};
+
+class ProgressDispatchCompletion {
+ public:
+  explicit ProgressDispatchCompletion(ProgressDispatch& dispatch) : dispatch_(dispatch) {}
+  ~ProgressDispatchCompletion() { dispatch_.Complete(); }
+
+ private:
+  ProgressDispatch& dispatch_;
+};
+
+// AsyncWorker variant that drives IModel::Download with an optional JS
+// progress callback. The callback runs on the libuv worker thread; we bounce
+// each (float percent) to JS via a ThreadSafeFunction acquired before the
+// worker queues and released in OnOK/OnError.
+class DownloadWorker : public Napi::AsyncWorker {
+ public:
+  DownloadWorker(Napi::Env env, foundry_local::IModel* impl, Napi::ObjectReference owner,
+                 Napi::ThreadSafeFunction tsfn, std::shared_ptr<std::atomic<bool>> abort_requested,
+                 Napi::ObjectReference abort_signal, Napi::FunctionReference abort_listener,
+                 std::shared_ptr<foundry_local::Manager> manager, std::shared_ptr<void> keepalive)
+      : Napi::AsyncWorker(env),
+        deferred_(Napi::Promise::Deferred::New(env)),
+        impl_(impl),
+        owner_(std::move(owner)),
+        tsfn_(std::move(tsfn)),
+        abort_requested_(std::move(abort_requested)),
+        abort_signal_(std::move(abort_signal)),
+        abort_listener_(std::move(abort_listener)),
+        manager_(std::move(manager)),
+        keepalive_(std::move(keepalive)) {}
+
+  Napi::Promise Promise() { return deferred_.Promise(); }
+
+  void Execute() override {
+    try {
+      const bool has_cancellation = abort_requested_ != nullptr;
+      auto progress_cb = (tsfn_ || has_cancellation) ? std::function<int(float)>([this](float percent) {
+        if (IsAbortRequested()) {
+          cancelled_by_signal_ = true;
+          return 1;
+        }
+        if (tsfn_) {
+          ProgressDispatch dispatch(percent);
+          const napi_status status = tsfn_.BlockingCall(
+              &dispatch, [this](Napi::Env env, Napi::Function js_cb, ProgressDispatch* pending) {
+                ProgressDispatchCompletion completion(*pending);
+                if (env == nullptr || js_cb.IsEmpty()) {
+                  return;
+                }
+                try {
+                  js_cb.Call({Napi::Number::New(env, static_cast<double>(pending->Percent()))});
+                } catch (const Napi::Error& error) {
+                  callback_error_ = Napi::Reference<Napi::Value>::New(error.Value(), 1);
+                  callback_failed_.store(true, std::memory_order_release);
+                }
+              });
+          if (status != napi_ok) {
+            return 1;
+          }
+          dispatch.Wait();
+          if (callback_failed_.load(std::memory_order_acquire)) {
+            return 1;
+          }
+        }
+        if (IsAbortRequested()) {
+          cancelled_by_signal_ = true;
+          return 1;
+        }
+        return 0;
+      })
+                                                       : std::function<int(float)>(nullptr);
+      impl_->Download(std::move(progress_cb));
+    } catch (const foundry_local::Error& e) {
+      err_code_ = static_cast<int>(e.Code());
+      err_msg_ = e.what();
+      tagged_ = true;
+      SetError(err_msg_);
+    } catch (const std::exception& e) {
+      err_msg_ = e.what();
+      SetError(err_msg_);
+    } catch (...) {
+      err_msg_ = "Unknown native exception";
+      SetError(err_msg_);
+    }
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    CleanupJsReferences();
+    if (!callback_error_.IsEmpty()) {
+      deferred_.Reject(callback_error_.Value());
+      callback_error_.Reset();
+      return;
+    }
+    deferred_.Resolve(Env().Undefined());
+  }
+
+  void OnError(const Napi::Error& /*unused*/) override {
+    Napi::Env env = Env();
+    Napi::HandleScope scope(env);
+    CleanupJsReferences();
+    if (!callback_error_.IsEmpty()) {
+      deferred_.Reject(callback_error_.Value());
+      callback_error_.Reset();
+      return;
+    }
+    if (tagged_) {
+      Napi::Error err = Napi::Error::New(env, err_msg_);
+      Napi::Object value = err.Value();
+      const bool is_signal_cancellation =
+          cancelled_by_signal_ && err_code_ == FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+      value.Set("name", Napi::String::New(env, is_signal_cancellation ? "AbortError" : "FoundryLocalError"));
+      value.Set("code", Napi::Number::New(env, err_code_));
+      deferred_.Reject(value);
+    } else {
+      deferred_.Reject(Napi::Error::New(env, err_msg_).Value());
+    }
+  }
+
+ private:
+  bool IsAbortRequested() const {
+    return abort_requested_ != nullptr && abort_requested_->load(std::memory_order_acquire);
+  }
+
+  void CleanupJsReferences() {
+    if (!abort_signal_.IsEmpty() && !abort_listener_.IsEmpty()) {
+      Napi::Object signal = abort_signal_.Value();
+      Napi::Value remove_value = signal.Get("removeEventListener");
+      if (remove_value.IsFunction()) {
+        remove_value.As<Napi::Function>().Call(
+            signal, {Napi::String::New(Env(), "abort"), abort_listener_.Value()});
+      }
+      abort_listener_.Reset();
+      abort_signal_.Reset();
+    }
+    if (tsfn_) {
+      tsfn_.Release();
+      tsfn_ = Napi::ThreadSafeFunction();
+    }
+  }
+
+  Napi::Promise::Deferred deferred_;
+  foundry_local::IModel* impl_;
+  Napi::ObjectReference owner_;
+  Napi::ThreadSafeFunction tsfn_;
+  std::shared_ptr<std::atomic<bool>> abort_requested_;
+  Napi::ObjectReference abort_signal_;
+  Napi::FunctionReference abort_listener_;
+  Napi::Reference<Napi::Value> callback_error_;
+  std::shared_ptr<foundry_local::Manager> manager_;
+  std::shared_ptr<void> keepalive_;
+  std::atomic<bool> callback_failed_ = false;
+  std::string err_msg_;
+  int err_code_ = 0;
+  bool tagged_ = false;
+  bool cancelled_by_signal_ = false;
+};
+
+}  // namespace
 Napi::Value Model::Download(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   auto manager = LockManager(env);
@@ -402,40 +591,55 @@ Napi::Value Model::Download(const Napi::CallbackInfo& info) {
     return env.Undefined();
   }
 
-  Napi::ThreadSafeFunction tsfn;
-  if (info.Length() >= 1 && info[0].IsFunction()) {
-    tsfn = Napi::ThreadSafeFunction::New(env, info[0].As<Napi::Function>(),
-                                         "Model.download.progress",
-                                         /*max_queue_size=*/0,
-                                         /*initial_thread_count=*/1);
-  } else if (info.Length() >= 1 && !info[0].IsUndefined() && !info[0].IsNull()) {
+  if (info.Length() >= 1 && !info[0].IsFunction() && !info[0].IsUndefined() && !info[0].IsNull()) {
     Napi::TypeError::New(env, "Model.download: progress callback must be a function")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
 
+  std::shared_ptr<std::atomic<bool>> abort_requested;
+  Napi::ObjectReference abort_signal;
+  Napi::FunctionReference abort_listener;
+  if (info.Length() >= 2 && !info[1].IsUndefined() && !info[1].IsNull()) {
+    if (!info[1].IsObject()) {
+      Napi::TypeError::New(env, "Model.download: signal must be an AbortSignal").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    Napi::Object signal = info[1].As<Napi::Object>();
+    Napi::Value aborted = signal.Get("aborted");
+    Napi::Value add_value = signal.Get("addEventListener");
+    Napi::Value remove_value = signal.Get("removeEventListener");
+    if (!aborted.IsBoolean() || !add_value.IsFunction() || !remove_value.IsFunction()) {
+      Napi::TypeError::New(env, "Model.download: signal must be an AbortSignal").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+
+    abort_requested = std::make_shared<std::atomic<bool>>(aborted.As<Napi::Boolean>().Value());
+    Napi::Function listener = Napi::Function::New(
+        env, [abort_requested](const Napi::CallbackInfo&) {
+          abort_requested->store(true, std::memory_order_release);
+        });
+    add_value.As<Napi::Function>().Call(
+        signal, {Napi::String::New(env, "abort"), listener});
+    if (signal.Get("aborted").As<Napi::Boolean>().Value()) {
+      abort_requested->store(true, std::memory_order_release);
+    }
+    abort_signal = Napi::Persistent(signal);
+    abort_listener = Napi::Persistent(listener);
+  }
+
+  Napi::ThreadSafeFunction tsfn;
+  if (info.Length() >= 1 && info[0].IsFunction()) {
+    tsfn = Napi::ThreadSafeFunction::New(env, info[0].As<Napi::Function>(), "Model.download.progress",
+                                         /*max_queue_size=*/0, /*initial_thread_count=*/1);
+  }
+
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
-  auto progress = std::make_shared<Napi::ThreadSafeFunction>(std::move(tsfn));
-  foundry_local::IModel* model = impl_;
-  auto keepalive = keepalive_;
-  return PromiseWorkerVoid::Run(
-      env,
-      [model, manager, keepalive, progress]() {
-        auto progress_callback = *progress ? std::function<int(float)>([progress](float percent) {
-          progress->BlockingCall([percent](Napi::Env env, Napi::Function callback) {
-            callback.Call({Napi::Number::New(env, static_cast<double>(percent))});
-          });
-          return 0;
-        })
-                                           : std::function<int(float)>(nullptr);
-        model->Download(std::move(progress_callback));
-      },
-      std::move(owner), [progress]() {
-        if (*progress) {
-          progress->Release();
-          *progress = Napi::ThreadSafeFunction();
-        }
-      });
+  auto* w = new DownloadWorker(env, impl_, std::move(owner), std::move(tsfn), std::move(abort_requested),
+                               std::move(abort_signal), std::move(abort_listener), std::move(manager), keepalive_);
+  Napi::Promise p = w->Promise();
+  w->Queue();
+  return p;
 }
 
 Napi::Value Model::RemoveFromCache(const Napi::CallbackInfo& info) {

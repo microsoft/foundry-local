@@ -7,6 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from threading import Event, Lock
 from typing import TYPE_CHECKING
 
 from typing_extensions import deprecated
@@ -88,12 +89,17 @@ class IModel(ABC):
         """Whether the model supports tool/function calling, or ``None`` if unknown."""
 
     @abstractmethod
-    def download(self, progress_callback: Callable[[float], None] | None = None) -> None:
+    def download(
+        self,
+        progress_callback: Callable[[float], None] | None = None,
+        cancel_event: Event | None = None,
+    ) -> None:
         """Download the model to the local cache if not already present.
 
         Args:
             progress_callback: Optional callback receiving download progress as
                 a percentage (0.0–100.0).
+            cancel_event: Optional event that cancels the download when set.
         """
 
     @abstractmethod
@@ -275,19 +281,17 @@ class _ModelImpl(IModel):
         # is owned by the catalog; without this reference, GC could release the
         # catalog (and the manager behind it) first and dangle our pointer.
         self._parent = parent
-        # Callback references — stored to prevent premature GC.
-        self._progress_cb = None
-        self._progress_cb_handle = None
 
     def _ensure_manager_open(self) -> None:
-        parent = self._parent
+        parent = getattr(self, "_parent", None)
         manager = getattr(parent, "_parent", None)
         if manager is not None and getattr(manager, "_native_manager", None) is None:
             raise RuntimeError("FoundryLocalManager is closed")
 
     @contextmanager
     def _manager_lifetime(self) -> Iterator[None]:
-        manager = getattr(self._parent, "_parent", None)
+        parent = getattr(self, "_parent", None)
+        manager = getattr(parent, "_parent", None)
         native_call = getattr(manager, "_native_call", None)
         if native_call is not None:
             with native_call():
@@ -373,30 +377,53 @@ class _ModelImpl(IModel):
     # Model lifecycle
     # ------------------------------------------------------------------
 
-    def download(self, progress_callback: Callable[[float], None] | None = None) -> None:
+    def download(
+        self,
+        progress_callback: Callable[[float], None] | None = None,
+        cancel_event: Event | None = None,
+    ) -> None:
         from foundry_local_sdk._native.api import api, ffi
 
         cb = ffi.NULL
         user_data = ffi.NULL
+        callback_error: BaseException | None = None
 
-        if progress_callback is not None:
-            self._progress_cb_handle = ffi.new_handle(progress_callback)
+        if progress_callback is not None or cancel_event is not None:
+            callback_state = (progress_callback, cancel_event)
+            progress_cb_handle = ffi.new_handle(callback_state)
+            callback_lock = Lock()
 
-            @ffi.callback("flProgressCallback")
-            def _cb(value: float, ud: object) -> int:
-                try:
-                    fn = ffi.from_handle(ud)
-                    fn(float(value))
-                    return 0
-                except Exception:
-                    return 1
+            def _progress_callback(value: float, ud: object) -> int:
+                nonlocal callback_error
+                with callback_lock:
+                    if callback_error is not None:
+                        return 1
+                    try:
+                        fn, event = ffi.from_handle(ud)
+                        if event is not None and event.is_set():
+                            return 1
+                        if fn is not None:
+                            fn(float(value))
+                        if event is not None and event.is_set():
+                            return 1
+                        return 0
+                    except BaseException as exc:
+                        callback_error = exc
+                        return 1
 
-            self._progress_cb = _cb  # keep alive
+            _cb = ffi.callback("flProgressCallback")(_progress_callback)
             cb = _cb
-            user_data = self._progress_cb_handle
+            user_data = progress_cb_handle
 
         with self._manager_lifetime():
-            api.check_status(api.model.Download(self._ptr, cb, user_data))
+            try:
+                api.check_status(api.model.Download(self._ptr, cb, user_data))
+            except FoundryLocalException:
+                if callback_error is not None:
+                    raise callback_error
+                raise
+        if callback_error is not None:
+            raise callback_error
 
     def get_path(self) -> str:
         from foundry_local_sdk._native.api import api, ffi
