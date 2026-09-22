@@ -82,6 +82,29 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('home feature cards are keyboard-focusable named groups', () => {
+	const features = readSource('../src/lib/components/home/features.svelte');
+
+	const featureIds = [
+		'sdk-lifecycle',
+		'hardware',
+		'offline-runtime',
+		'native-sdks',
+		'native-rest',
+		'data-privacy'
+	];
+
+	for (const featureId of featureIds) {
+		assert.match(
+			features,
+			new RegExp(
+				`<div\\s+tabindex="0"\\s+role="group"\\s+aria-labelledby="${featureId}-title"\\s+aria-describedby="${featureId}-description"`
+			)
+		);
+	}
+	assert.match(features, /focus-visible:ring-2/);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 
