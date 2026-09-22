@@ -227,6 +227,7 @@
 										{...props}
 										variant="outline"
 										size="sm"
+										aria-describedby={`run-command-${genericModelName}`}
 										onclick={(e) => {
 											e.stopPropagation();
 											onCopyCommand(genericModelName);
@@ -258,6 +259,9 @@
 											</svg>
 											<span class="relative z-10 min-w-0 truncate">Auto-select Best Variant</span>
 										{/if}
+										<span id={`run-command-${genericModelName}`} class="sr-only">
+											{formatModelCommand(genericModelName)}
+										</span>
 									</Button>
 								{/snippet}
 							</Tooltip.Trigger>
@@ -278,6 +282,7 @@
 												{...props}
 												variant="outline"
 												size="sm"
+												aria-describedby={`run-command-${variant.name}`}
 												onclick={(e) => {
 													e.stopPropagation();
 													onCopyCommand(variant.name);
@@ -304,6 +309,9 @@
 													{/if}
 													<span class="min-w-0 truncate">{getVariantLabel(variant)}</span>
 												{/if}
+												<span id={`run-command-${variant.name}`} class="sr-only">
+													{formatModelCommand(variant.name)}
+												</span>
 											</Button>
 										{/snippet}
 									</Tooltip.Trigger>
