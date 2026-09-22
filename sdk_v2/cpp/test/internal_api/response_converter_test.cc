@@ -1498,7 +1498,7 @@ TEST(ResponseConverterTest, StoredNonAssistantMessageWithNoTextIsStillSkipped) {
   EXPECT_EQ(messages[1].VisibleText(), "Hi");
 }
 
-TEST(ResponseConverterTest, TypedReasoningInputItemBecomesAnAssistantBoundary) {
+TEST(ResponseConverterTest, TypedReasoningInputItemPreservesPrivateReasoning) {
   auto body = nlohmann::json::parse(R"({
     "model": "test-model",
     "input": [
@@ -1561,7 +1561,7 @@ TEST(ResponseConverterTest, TypedEmptyUserMessageIsStillSkipped) {
   EXPECT_EQ(static_cast<MessageItem*>(request.items[0])->GetSimpleText(), "Hello");
 }
 
-TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsCollapseToOneBoundary) {
+TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsMergeIntoOneAssistantTurn) {
   // A reasoning-only turn can surface as several reasoning items. They are one assistant turn, not several.
   auto body = nlohmann::json::parse(R"({
     "model": "test-model",
@@ -1583,7 +1583,7 @@ TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsCollapseToOneBoundary)
   EXPECT_TRUE(messages[1].VisibleText().empty());
 }
 
-TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsStillEmitsOneBoundary) {
+TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsMergesTheirReasoning) {
   ResponseChainContext context{ResponseChainHop{
       nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
       nlohmann::json::parse(R"([
