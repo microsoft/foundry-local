@@ -19,17 +19,17 @@
 // ObjectWrap — modality-specific session classes (`ChatSession` today,
 // `AudioSession` / `EmbeddingsSession` later) each get their own ObjectWrap.
 //
-// Lifetime: the ChatSession pins the parent Manager via an ObjectReference so
-// the underlying foundry_local::Model the C++ Session captured can't be
-// released out from under it. Session implementations are shared with queued
-// workers so dispose() can detach the wrapper without blocking the JS thread
-// or invalidating work that was already accepted.
+// Lifetime: each session retains shared native Manager ownership, the
+// Manager's explicit-disposal flag, and a JS Manager reference. New calls
+// reject after disposal, while admitted workers retain their own native and JS
+// pins so disposal cannot invalidate accepted work.
 #pragma once
 
 #include <napi.h>
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -67,8 +67,10 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::shared_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
   std::shared_ptr<SessionScheduler> scheduler_;
 };
 
@@ -99,8 +101,10 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -128,8 +132,10 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::shared_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
   std::shared_ptr<SessionScheduler> scheduler_;
 };
 

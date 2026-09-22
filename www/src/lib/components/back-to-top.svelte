@@ -36,7 +36,7 @@
 		<Button
 			onclick={scrollToTop}
 			size="icon"
-			class="size-12 rounded-full shadow-lg transition-all duration-300 hover:scale-110 hover:shadow-xl"
+			class="size-12 rounded-full shadow-lg transition-all duration-300 hover:scale-110 hover:shadow-xl focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
 			aria-label="Scroll back to top"
 		>
 			<ArrowUp class="size-5" aria-hidden="true" />

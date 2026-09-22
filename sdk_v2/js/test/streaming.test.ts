@@ -3,8 +3,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { FlErrorCode, isFoundryLocalError } from "../src/detail/errors.js";
+import type { NativeChatSession } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
-import { Request } from "../src/request.js";
+import { Request, unwrapNativeRequest } from "../src/request.js";
 import { ChatSession } from "../src/session.js";
 
 import {
@@ -109,6 +110,19 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
+    "concatenated streamed text contains the expected answer content",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      let text = "";
+      for await (const item of session.processStreamingRequest(buildPrompt())) {
+        text += extractText(item);
+      }
+      expect(countUkTokens(text)).toBeGreaterThanOrEqual(2);
+    },
+    2 * 60_000,
+  );
+
+  it(
     "early break requests cancellation while permitting prior native completion",
     async () => {
       if (session === undefined) throw new Error("fixture missing");
@@ -122,7 +136,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
         (response) => ({ response, error: null }),
         (error: unknown) => ({ response: null, error }),
       );
-      if (outcome.error !== null) {
+      if (outcome.response === null) {
         expect(outcome.error).toMatchObject({
           name: "FoundryLocalError",
           code: FlErrorCode.OperationCancelled,
@@ -224,6 +238,58 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(countUkCapitalTokens(second)).toBeGreaterThanOrEqual(2);
     },
     4 * 60_000,
+  );
+
+  it(
+    "starts overlapping requests in per-session FIFO order",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const nativeSession = (session as unknown as { native: NativeChatSession }).native;
+      const request = new Request()
+        .addItem(Item.userMessage("Reply with a short greeting."))
+        .setOptions({ search: { maxOutputTokens: 16, temperature: 0 } });
+      let signalFirstWorkerStarted!: (release: () => void) => void;
+      const firstWorkerStarted = new Promise<() => void>((resolve) => {
+        signalFirstWorkerStarted = resolve;
+      });
+      const active = nativeSession.processRequest(unwrapNativeRequest(request), signalFirstWorkerStarted);
+      const releaseFirst = await firstWorkerStarted;
+
+      let secondStarted = false;
+      let signalSecondWorkerStarted!: (release: () => void) => void;
+      const secondWorkerStarted = new Promise<() => void>((resolve) => {
+        signalSecondWorkerStarted = (release) => {
+          secondStarted = true;
+          resolve(release);
+        };
+      });
+      const queued = nativeSession.processRequest(unwrapNativeRequest(buildPrompt()), signalSecondWorkerStarted);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(secondStarted).toBe(false);
+
+      releaseFirst();
+      await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
+      const releaseSecond = await secondWorkerStarted;
+      releaseSecond();
+      await expect(queued).resolves.toMatchObject({ output: expect.any(Array) });
+    },
+    3 * 60_000,
+  );
+
+  it(
+    "clears streaming state after native inference rejects",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const failed = session.processStreamingRequest(new Request());
+      await expect(failed.response).rejects.toMatchObject({ name: "FoundryLocalError" });
+
+      const items: Item[] = [];
+      for await (const item of session.processStreamingRequest(buildPrompt())) {
+        items.push(item);
+      }
+      expect(items.length).toBeGreaterThanOrEqual(2);
+    },
+    3 * 60_000,
   );
 
   it(
@@ -368,7 +434,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
         (error: unknown) => ({ response: null, error }),
       );
 
-      if (responseOutcome.error !== null) {
+      if (responseOutcome.response === null) {
         expect(iterationOutcome).toMatchObject({
           name: "FoundryLocalError",
           code: FlErrorCode.OperationCancelled,
@@ -443,7 +509,7 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(streamedToolCalls.length).toBeGreaterThanOrEqual(1);
 
       const streamed = streamedToolCalls[0];
-      if (streamed === undefined) throw new Error("expected a streamed tool call");
+      if (streamed === undefined) throw new Error("Expected a streamed tool call");
       expect(streamed.name).toBe("multiply_numbers");
       expect(streamed.arguments.length).toBeGreaterThan(0);
       expect(streamed.callId.length).toBeGreaterThan(0);
@@ -455,7 +521,8 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
       expect(resp.finishReason).toBe("toolCalls");
 
       const finalToolCall = resp.output.find((it): it is Extract<Item, { type: "toolCall" }> => it.type === "toolCall");
-      if (finalToolCall === undefined) throw new Error("expected a final tool call");
+      expect(finalToolCall).toBeDefined();
+      if (finalToolCall === undefined) throw new Error("Expected a final tool call");
       expect(finalToolCall.name).toBe(streamed.name);
       expect(finalToolCall.arguments).toBe(streamed.arguments);
       expect(finalToolCall.callId).toBe(streamed.callId);

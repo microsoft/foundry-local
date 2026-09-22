@@ -5,12 +5,31 @@
 // --------------------------------------------------------------------------------------------------------------------
 
 namespace Microsoft.AI.Foundry.Local.Tests;
+using System.Threading.Channels;
 using Microsoft.AI.Foundry.Local.OpenAI;
 
 using TUnit.Core.Exceptions;
 
 internal sealed class LiveAudioTranscriptionTests
 {
+    [Test]
+    public async Task Producer_PreCancelledToken_CompletesChannelWithoutProcessing()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var channel = Channel.CreateUnbounded<int>();
+        var processCount = 0;
+
+        await LiveAudioTranscriptionSession.RunProducerAsync(
+            () => processCount++,
+            error => channel.Writer.TryComplete(error),
+            cts.Token);
+
+        await channel.Reader.Completion;
+        await Assert.That(processCount).IsEqualTo(0);
+        await Assert.That(channel.Reader.Completion.Status).IsEqualTo(TaskStatus.RanToCompletion);
+    }
+
     // --- LiveAudioTranscriptionResponse.FromJson tests ---
 
     [Test]

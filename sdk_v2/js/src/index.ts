@@ -4,9 +4,19 @@ export { FoundryLocalManager } from "./foundryLocalManager.js";
 export type { FoundryLocalConfig } from "./configuration.js";
 export { Catalog } from "./catalog.js";
 export { Model } from "./model.js";
-export type { IModel } from "./imodel.js";
+export {
+  MutableModelInfo,
+  MutableModelInfo as ModelInfoBuilder,
+  ModelInfoIntProperty,
+  ModelInfoStringProperty,
+} from "./modelInfo.js";
 export type {
-  DeviceType,
+  ModelInfoIntProperty as ModelInfoIntPropertyKey,
+  ModelInfoStringProperty as ModelInfoStringPropertyKey,
+} from "./modelInfo.js";
+export type { IModel } from "./imodel.js";
+export { CatalogType, DeviceType } from "./types.js";
+export type {
   EpDownloadResult,
   EpInfo,
   ModelInfo,

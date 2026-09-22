@@ -9,7 +9,9 @@ using Microsoft.AI.Foundry.Local.Detail.Native;
 
 public sealed class Request : IDisposable
 {
+    private readonly object _lifetimeSync = new();
     internal IntPtr Ptr { get; private set; }
+    private int _activeLeases;
     private bool _disposed;
 
     public Request()
@@ -102,11 +104,67 @@ public sealed class Request : IDisposable
 
     public void Dispose()
     {
-        if (!_disposed && Ptr != IntPtr.Zero)
+        IntPtr ptr;
+        lock (_lifetimeSync)
         {
-            Api.Inference.RequestRelease(Ptr);
-            Ptr = IntPtr.Zero;
+            if (_disposed)
+            {
+                return;
+            }
+
             _disposed = true;
+            while (_activeLeases != 0)
+            {
+                Monitor.Wait(_lifetimeSync);
+            }
+
+            ptr = Ptr;
+            Ptr = IntPtr.Zero;
+        }
+
+        if (ptr != IntPtr.Zero)
+        {
+            Api.Inference.RequestRelease(ptr);
+        }
+    }
+
+    internal Lease AcquireLease()
+    {
+        lock (_lifetimeSync)
+        {
+            Detail.Throw.IfDisposed(_disposed || Ptr == IntPtr.Zero, this);
+            _activeLeases++;
+            return new Lease(this, Ptr);
+        }
+    }
+
+    private void ReleaseLease()
+    {
+        lock (_lifetimeSync)
+        {
+            _activeLeases--;
+            if (_activeLeases == 0)
+            {
+                Monitor.PulseAll(_lifetimeSync);
+            }
+        }
+    }
+
+    internal sealed class Lease : IDisposable
+    {
+        private Request? _owner;
+
+        internal Lease(Request owner, IntPtr ptr)
+        {
+            _owner = owner;
+            Ptr = ptr;
+        }
+
+        internal IntPtr Ptr { get; }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.ReleaseLease();
         }
     }
 }

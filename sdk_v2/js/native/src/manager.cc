@@ -5,12 +5,18 @@
 #include "addon_data.h"
 #include "catalog.h"
 #include "errors.h"
+#include "promise_worker.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,17 +31,6 @@ Napi::Value ConvertEndpoints(Napi::Env env, std::vector<std::string>& endpoints)
     out.Set(static_cast<uint32_t>(i), Napi::String::New(env, endpoints[i]));
   }
   return out;
-}
-
-// Build a tagged FoundryLocalError pending on env. Mirrors errors.cc's
-// internal `MakeFoundryLocalError` — duplicated here to avoid exposing the
-// helper publicly just for the disposed-manager path.
-void ThrowFoundryLocalError(Napi::Env env, int code, const std::string& msg) {
-  Napi::Error err = Napi::Error::New(env, msg);
-  Napi::Object value = err.Value();
-  value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-  value.Set("code", Napi::Number::New(env, code));
-  err.ThrowAsJavaScriptException();
 }
 
 }  // namespace
@@ -221,7 +216,7 @@ Manager::Manager(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Manager>(inf
       kvp.Set("DisableNonessentialTelemetry", "true");
       config.SetAdditionalOptions(kvp);
     }
-    impl_ = std::make_unique<foundry_local::Manager>(std::move(config));
+    impl_ = std::make_shared<foundry_local::Manager>(std::move(config));
   });
 }
 
@@ -249,11 +244,27 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
   if (ThrowIfDisposed(env)) {
     return env.Undefined();
   }
+  flCatalogType type = FOUNDRY_LOCAL_CATALOG_PUBLIC;
+  if (info.Length() >= 1 && !info[0].IsUndefined()) {
+    if (!info[0].IsNumber()) {
+      Napi::TypeError::New(env, "getCatalog: type must be CatalogType.Public or CatalogType.Local")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    const int value = info[0].As<Napi::Number>().Int32Value();
+    if (value != FOUNDRY_LOCAL_CATALOG_PUBLIC && value != FOUNDRY_LOCAL_CATALOG_LOCAL) {
+      Napi::TypeError::New(env, "getCatalog: invalid catalog type").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    type = static_cast<flCatalogType>(value);
+  }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
   return CallChecked<Napi::Value>(env, [&]() -> Napi::Value {
-    foundry_local::ICatalog& cat = impl_->GetCatalog();
+    impl_->GetCatalog(type);
     CatalogCtorToken token;
-    token.impl = &cat;
+    token.catalog_type = type;
+    token.manager_lifetime = impl_;
+    token.disposed = disposed_;
     token.manager = std::move(owner);
     return Catalog::NewInstance(env, std::move(token));
   });
@@ -261,7 +272,9 @@ Napi::Value Manager::GetCatalog(const Napi::CallbackInfo& info) {
 
 Napi::Value Manager::Dispose(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  // Idempotent — releasing an already-null unique_ptr is a no-op.
+  // Idempotent. In-flight catalog workers hold a temporary shared lease; retained catalogs hold only weak ownership
+  // and reject new calls after this reset.
+  disposed_->store(true);
   impl_.reset();
   return env.Undefined();
 }
@@ -312,85 +325,25 @@ Napi::Value Manager::DiscoverEps(const Napi::CallbackInfo& info) {
 
 namespace {
 
-// AsyncWorker for DownloadAndRegisterEps with optional (epName, percent)
-// progress callback. Mirrors the pattern in model.cc's DownloadWorker.
-class EpDownloadWorker : public Napi::AsyncWorker {
- public:
-  EpDownloadWorker(Napi::Env env, foundry_local::Manager* impl, std::vector<std::string> ep_names,
-                   Napi::ObjectReference owner, Napi::ThreadSafeFunction tsfn)
-      : Napi::AsyncWorker(env),
-        deferred_(Napi::Promise::Deferred::New(env)),
-        impl_(impl),
-        ep_names_(std::move(ep_names)),
-        owner_(std::move(owner)),
-        tsfn_(std::move(tsfn)) {}
+struct ProgressAcknowledgement {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool completed = false;
+};
 
-  Napi::Promise Promise() { return deferred_.Promise(); }
+struct AcknowledgeProgressOnExit {
+  explicit AcknowledgeProgressOnExit(std::shared_ptr<ProgressAcknowledgement> value)
+      : acknowledgement(std::move(value)) {}
 
-  void Execute() override {
-    try {
-      std::function<bool(std::string_view, float)> progress_cb;
-      if (tsfn_) {
-        progress_cb = [this](std::string_view ep_name, float percent) -> bool {
-          std::string name(ep_name);
-          tsfn_.BlockingCall([name, percent](Napi::Env env, Napi::Function js_cb) {
-            js_cb.Call({Napi::String::New(env, name), Napi::Number::New(env, static_cast<double>(percent))});
-          });
-          return true;  // continue
-        };
-      }
-      impl_->DownloadAndRegisterEps(ep_names_, std::move(progress_cb));
-    } catch (const foundry_local::Error& e) {
-      err_code_ = static_cast<int>(e.Code());
-      err_msg_ = e.what();
-      tagged_ = true;
-      SetError(err_msg_);
-    } catch (const std::exception& e) {
-      err_msg_ = e.what();
-      SetError(err_msg_);
-    } catch (...) {
-      err_msg_ = "Unknown native exception";
-      SetError(err_msg_);
+  std::shared_ptr<ProgressAcknowledgement> acknowledgement;
+
+  ~AcknowledgeProgressOnExit() {
+    {
+      std::lock_guard<std::mutex> lock(acknowledgement->mutex);
+      acknowledgement->completed = true;
     }
+    acknowledgement->condition.notify_one();
   }
-
-  void OnOK() override {
-    Napi::HandleScope scope(Env());
-    ReleaseTsfn();
-    deferred_.Resolve(Env().Undefined());
-  }
-
-  void OnError(const Napi::Error& /*unused*/) override {
-    Napi::Env env = Env();
-    Napi::HandleScope scope(env);
-    ReleaseTsfn();
-    if (tagged_) {
-      Napi::Error err = Napi::Error::New(env, err_msg_);
-      Napi::Object value = err.Value();
-      value.Set("name", Napi::String::New(env, "FoundryLocalError"));
-      value.Set("code", Napi::Number::New(env, err_code_));
-      deferred_.Reject(value);
-    } else {
-      deferred_.Reject(Napi::Error::New(env, err_msg_).Value());
-    }
-  }
-
- private:
-  void ReleaseTsfn() {
-    if (tsfn_) {
-      tsfn_.Release();
-      tsfn_ = Napi::ThreadSafeFunction();
-    }
-  }
-
-  Napi::Promise::Deferred deferred_;
-  foundry_local::Manager* impl_;
-  std::vector<std::string> ep_names_;
-  Napi::ObjectReference owner_;
-  Napi::ThreadSafeFunction tsfn_;
-  std::string err_msg_;
-  int err_code_ = 0;
-  bool tagged_ = false;
 };
 
 }  // namespace
@@ -440,11 +393,44 @@ Napi::Value Manager::DownloadAndRegisterEps(const Napi::CallbackInfo& info) {
                                          /*initial_thread_count=*/1);
   }
 
+  // Internal-only deterministic lifetime hook; the public TypeScript manager never supplies this argument.
+  bool emit_test_progress = info.Length() >= 3 && info[2].IsBoolean() && info[2].As<Napi::Boolean>().Value();
+
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(info.This().As<Napi::Object>(), 1);
-  auto* w = new EpDownloadWorker(env, impl_.get(), std::move(ep_names), std::move(owner), std::move(tsfn));
-  Napi::Promise p = w->Promise();
-  w->Queue();
-  return p;
+  auto progress = std::make_shared<Napi::ThreadSafeFunction>(std::move(tsfn));
+  auto manager = impl_;
+  return PromiseWorkerVoid::Run(
+      env,
+      [manager, ep_names = std::move(ep_names), progress, emit_test_progress]() {
+        std::function<bool(std::string_view, float)> progress_callback;
+        if (*progress) {
+          progress_callback = [progress, emit_test_progress](std::string_view ep_name, float percent) {
+            std::string name(ep_name);
+            auto acknowledgement = emit_test_progress ? std::make_shared<ProgressAcknowledgement>() : nullptr;
+            progress->BlockingCall([name, percent, acknowledgement](Napi::Env env, Napi::Function callback) {
+              std::optional<AcknowledgeProgressOnExit> acknowledge;
+              if (acknowledgement != nullptr) acknowledge.emplace(acknowledgement);
+              callback.Call({Napi::String::New(env, name), Napi::Number::New(env, static_cast<double>(percent))});
+            });
+            if (acknowledgement != nullptr) {
+              std::unique_lock<std::mutex> lock(acknowledgement->mutex);
+              if (!acknowledgement->condition.wait_for(lock, std::chrono::seconds(10),
+                                                       [&]() { return acknowledgement->completed; })) {
+                throw std::runtime_error("Timed out waiting for EP test progress callback");
+              }
+            }
+            return true;
+          };
+        }
+        if (emit_test_progress) progress_callback("FoundryLocalTestExecutionProvider", 50.0F);
+        manager->DownloadAndRegisterEps(ep_names, std::move(progress_callback));
+      },
+      std::move(owner), [progress]() {
+        if (*progress) {
+          progress->Release();
+          *progress = Napi::ThreadSafeFunction();
+        }
+      });
 }
 
 Napi::Value Manager::IsEpDownloadInProgress(const Napi::CallbackInfo& info) {

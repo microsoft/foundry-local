@@ -8,6 +8,7 @@
 #include "item_queue.h"
 #include "manager.h"
 #include "model.h"
+#include "model_info.h"
 #include "request.h"
 #include "session.h"
 
@@ -125,6 +126,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   Napi::Function manager_ctor = foundry_local_node::Manager::Init(env);
   Napi::Function catalog_ctor = foundry_local_node::Catalog::Init(env);
   Napi::Function model_ctor = foundry_local_node::Model::Init(env);
+  Napi::Function model_info_ctor = foundry_local_node::NativeModelInfo::Init(env);
   Napi::Function request_ctor = foundry_local_node::Request::Init(env);
   Napi::Function item_queue_ctor = foundry_local_node::NativeItemQueue::Init(env);
   Napi::Function chat_session_ctor = foundry_local_node::ChatSession::Init(env);
@@ -133,6 +135,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
   data->catalog_ctor = Napi::Persistent(catalog_ctor);
   data->model_ctor = Napi::Persistent(model_ctor);
+  data->model_info_ctor = Napi::Persistent(model_info_ctor);
   data->request_ctor = Napi::Persistent(request_ctor);
   data->item_queue_ctor = Napi::Persistent(item_queue_ctor);
 
@@ -141,6 +144,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // JS side, but direct construction (`new addon.Catalog()`) throws TypeError.
   exports.Set("Catalog", catalog_ctor);
   exports.Set("Model", model_ctor);
+  exports.Set("ModelInfo", model_info_ctor);
   // Request is directly constructible from JS (it's a stateful builder).
   exports.Set("Request", request_ctor);
   // ItemQueue is directly constructible from JS — it's a stateful native
