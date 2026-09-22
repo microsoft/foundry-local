@@ -141,7 +141,7 @@ struct ChatStreamOptions {
 /// The chat completion request. Maps to ChatCompletionCreateRequestExtended.
 /// JSON keys match the OpenAI API specification.
 /// Fields we intentionally skip (not relevant for local inference):
-///   store, service_tier, reasoning_effort, audio, logit_bias, prediction,
+///   store, service_tier, audio, logit_bias, prediction,
 ///   web_search_options, modalities
 struct ChatCompletionRequest {
   std::string model;                                           // "model"
@@ -164,6 +164,7 @@ struct ChatCompletionRequest {
   std::optional<int> top_logprobs;                             // "top_logprobs"
   std::optional<bool> parallel_tool_calls;                     // "parallel_tool_calls"
   std::optional<std::string> user;                             // "user"
+  std::optional<std::string> reasoning_effort;                 // "reasoning_effort"
   std::optional<std::map<std::string, std::string>> metadata;  // "metadata" — from ChatCompletionCreateRequestExtended
   std::optional<nlohmann::json> chat_template_kwargs;          // "chat_template_kwargs" — typed template context
 };

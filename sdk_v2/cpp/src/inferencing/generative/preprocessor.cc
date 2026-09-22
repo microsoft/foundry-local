@@ -10,6 +10,20 @@
 
 namespace fl {
 
+std::string NormalizeChatTemplateKwargs(std::string_view template_kwargs_json) {
+  if (template_kwargs_json.empty()) {
+    return "{}";
+  }
+
+  auto kwargs = nlohmann::json::parse(template_kwargs_json, nullptr, /*allow_exceptions=*/false);
+  if (!kwargs.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "chat_template_kwargs must be a valid JSON object");
+  }
+
+  return kwargs.dump();
+}
+
 std::unique_ptr<Preprocessor> Preprocessor::Create(OgaModel& model, bool create_multimodal_processor) {
   std::unique_ptr<OgaTokenizer> tokenizer;
   try {
@@ -74,20 +88,16 @@ std::string Preprocessor::ApplyChatTemplateWithOptions(const char* messages_json
                                                        const char* tools_json,
                                                        const char* template_kwargs_json,
                                                        bool add_generation_prompt) {
+  const std::string normalized_kwargs =
+      NormalizeChatTemplateKwargs(template_kwargs_json ? template_kwargs_json : "");
   std::lock_guard<std::mutex> lock(mutex_);
 #if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
   KeyValuePairs options;
-  options.Add("chat_template_kwargs", template_kwargs_json ? template_kwargs_json : "{}");
+  options.Add("chat_template_kwargs", normalized_kwargs);
   tokenizer_->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
 #else
   if (template_kwargs_json && *template_kwargs_json) {
-    auto template_kwargs = nlohmann::json::parse(
-        template_kwargs_json, nullptr, /*allow_exceptions=*/false);
-    if (!template_kwargs.is_object()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "chat_template_kwargs must be a valid JSON object");
-    }
-    if (!template_kwargs.empty()) {
+    if (normalized_kwargs != "{}") {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                "chat_template_kwargs requires a build with tokenizer kwargs support enabled");
     }

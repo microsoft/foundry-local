@@ -659,6 +659,41 @@ TEST(ChatCompletionsConverterTest, MapRequestParameters_ChatTemplateKwargsPreser
   EXPECT_EQ(parsed["level"], 2);
 }
 
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ReasoningEffortControlsThinking) {
+  ChatCompletionRequest req;
+  req.reasoning_effort = "high";
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const auto kwargs = json::parse(session_request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], true);
+  EXPECT_EQ(kwargs["reasoning_effort"], "high");
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_NoneReasoningEffortDisablesThinking) {
+  ChatCompletionRequest req;
+  req.chat_template_kwargs = json::parse(R"({"reasoning_effort":"low","label":"keep"})");
+  req.reasoning_effort = "none";
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const auto kwargs = json::parse(session_request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], false);
+  EXPECT_FALSE(kwargs.contains("reasoning_effort"));
+  EXPECT_EQ(kwargs["label"], "keep");
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_RejectsUnsupportedReasoningEffort) {
+  ChatCompletionRequest req;
+  req.reasoning_effort = "extreme";
+
+  Request session_request;
+  ExpectInvalidArgument([&] { MapRequestParameters(req, session_request); },
+                        "unsupported reasoning effort");
+}
+
 // ========================================================================
 // MapGuidance
 // ========================================================================

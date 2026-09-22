@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct OgaAudios;
@@ -18,6 +19,10 @@ struct OgaTokenizer;
 struct OgaTokenizerStream;
 
 namespace fl {
+
+/// Validate a serialized chat-template kwargs object and return its canonical JSON representation.
+/// Empty input is normalized to an empty object.
+std::string NormalizeChatTemplateKwargs(std::string_view template_kwargs_json);
 
 /// Owns model preprocessing resources and serializes operations that use non-reentrant tokenizer state.
 class Preprocessor {

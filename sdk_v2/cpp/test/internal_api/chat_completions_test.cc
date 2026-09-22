@@ -465,6 +465,18 @@ TEST(ChatCompletionRequestTest, ChatTemplateKwargsRejectNonObject) {
   EXPECT_THROW(j.get<ChatCompletionRequest>(), json::type_error);
 }
 
+TEST(ChatCompletionRequestTest, ReasoningEffortParses) {
+  auto j = json::parse(R"({
+    "model": "m",
+    "messages": [{"role": "user", "content": "x"}],
+    "reasoning_effort": "high"
+  })");
+
+  auto req = j.get<ChatCompletionRequest>();
+  ASSERT_TRUE(req.reasoning_effort.has_value());
+  EXPECT_EQ(*req.reasoning_effort, "high");
+}
+
 // ========================================================================
 // to_json — Response types
 // ========================================================================

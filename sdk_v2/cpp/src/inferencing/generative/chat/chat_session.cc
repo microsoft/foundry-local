@@ -874,7 +874,20 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   tool_ctx.tool_call_start = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
   tool_ctx.tool_call_end = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
   tool_ctx.template_kwargs_json = GetOptionOrEmpty(options, "chat_template_kwargs");
-  tool_ctx.preserves_reasoning_history = model_.PreservesReasoningHistory();
+  if (!tool_ctx.template_kwargs_json.empty()) {
+    tool_ctx.template_kwargs_json = NormalizeChatTemplateKwargs(tool_ctx.template_kwargs_json);
+    const auto kwargs = nlohmann::json::parse(tool_ctx.template_kwargs_json);
+    const bool uses_reasoning_controls = kwargs.contains("enable_thinking") ||
+                                         kwargs.contains("preserve_thinking") ||
+                                         kwargs.contains("reasoning_effort");
+    if (uses_reasoning_controls && model_.ModelType() == "qwen3_5_text" &&
+        !model_.SupportsReasoningControls()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "the loaded runtime cannot render this model's reasoning controls; use a GenAI package "
+               "containing ORT Extensions Jinja identity-predicate support");
+    }
+  }
+  tool_ctx.supports_reasoning_history = model_.SupportsReasoningHistory();
 
   // Fall back to model info properties if not specified in the request
   const auto& info = CatalogModel().Info();

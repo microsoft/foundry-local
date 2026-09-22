@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #include "inferencing/generative/openresponses/response_converter.h"
+#include "contracts/reasoning_options.h"
 
 #include "items/tool_call_item.h"
 
@@ -770,6 +771,11 @@ Request ToSessionRequest(const ResponseCreateParams& params, const ResponseChain
 
   if (params.seed.has_value()) {
     request.options["seed"] = std::to_string(*params.seed);
+  }
+
+  if (params.reasoning.has_value() && params.reasoning->effort.has_value()) {
+    request.options["chat_template_kwargs"] =
+        ResolveReasoningTemplateKwargs(std::nullopt, params.reasoning->effort).dump();
   }
 
   // Text format / grammar guidance → metadata parameters

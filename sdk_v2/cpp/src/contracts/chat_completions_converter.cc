@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
+#include "contracts/reasoning_options.h"
 
 #include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/stop_strings.h"
@@ -233,8 +234,9 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
     session_request.options["max_output_tokens"] = std::to_string(*req.max_tokens);
   }
 
-  if (req.chat_template_kwargs.has_value()) {
-    session_request.options["chat_template_kwargs"] = req.chat_template_kwargs->dump();
+  if (req.chat_template_kwargs.has_value() || req.reasoning_effort.has_value()) {
+    session_request.options["chat_template_kwargs"] =
+        ResolveReasoningTemplateKwargs(req.chat_template_kwargs, req.reasoning_effort).dump();
   }
 
   // Extract metadata extensions (matching C# GetTopK/GetRandomSeed)

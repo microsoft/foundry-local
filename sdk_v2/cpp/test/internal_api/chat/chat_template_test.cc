@@ -187,6 +187,14 @@ TEST(ChatTemplateUnitTest, EmptyAssistantMessageRendersAsEmptyContent) {
   EXPECT_EQ(RenderMessageForPrompt(empty_assistant), "");
 }
 
+TEST(ChatTemplateUnitTest, TemplateKwargsAreValidatedAndCanonicalized) {
+  EXPECT_EQ(NormalizeChatTemplateKwargs(R"({ "z": 2, "a": { "b": true } })"),
+            R"({"a":{"b":true},"z":2})");
+  EXPECT_EQ(NormalizeChatTemplateKwargs(""), "{}");
+  EXPECT_THROW((void)NormalizeChatTemplateKwargs("[]"), fl::Exception);
+  EXPECT_THROW((void)NormalizeChatTemplateKwargs("{invalid"), fl::Exception);
+}
+
 TEST_F(ChatTemplateTest, EmptyMessagesThrows) {
   std::vector<TranscriptMessage> messages;
   EXPECT_THROW(BuildChatPrompt(messages, GetModel()), fl::Exception);

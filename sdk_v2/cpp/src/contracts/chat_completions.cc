@@ -341,6 +341,7 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
   opt_int(j, "top_logprobs", r.top_logprobs);
   opt_bool(j, "parallel_tool_calls", r.parallel_tool_calls);
   opt_str(j, "user", r.user);
+  opt_str(j, "reasoning_effort", r.reasoning_effort);
 
   // stream_options — object
   if (j.contains("stream_options") && j["stream_options"].is_object()) {

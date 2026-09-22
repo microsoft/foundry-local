@@ -360,6 +360,27 @@ TEST(ResponseConverterTest, EchoRequestParams_ReasoningConfigEchoed) {
   EXPECT_TRUE(*r.reasoning->generate_summary);
 }
 
+TEST(ResponseConverterTest, ToSessionRequest_ReasoningEffortControlsThinking) {
+  ResponseCreateParams params;
+  params.model = "m";
+  params.input = std::string("hi");
+  params.reasoning = ReasoningConfig{.effort = "medium"};
+
+  auto request = ToSessionRequest(params);
+  const auto kwargs = json::parse(request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], true);
+  EXPECT_EQ(kwargs["reasoning_effort"], "medium");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_RejectsUnsupportedReasoningEffort) {
+  ResponseCreateParams params;
+  params.model = "m";
+  params.input = std::string("hi");
+  params.reasoning = ReasoningConfig{.effort = "extreme"};
+
+  EXPECT_THROW((void)ToSessionRequest(params), fl::Exception);
+}
+
 // ========================================================================
 // ToInputItems
 // ========================================================================
@@ -1493,7 +1514,8 @@ TEST(ResponseConverterTest, TypedReasoningInputItemBecomesAnAssistantBoundary) {
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "private");
+  EXPECT_TRUE(messages[1].VisibleText().empty());
   EXPECT_EQ(BuildChatMessagesJson(messages),
             R"([{"role":"user","content":"Think about it."},)"
             R"({"role":"assistant","content":""},)"
@@ -1557,7 +1579,8 @@ TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsCollapseToOneBoundary)
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "firstsecond");
+  EXPECT_TRUE(messages[1].VisibleText().empty());
 }
 
 TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsStillEmitsOneBoundary) {
@@ -1577,5 +1600,6 @@ TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsStillEmitsOneBound
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "firstsecond");
+  EXPECT_TRUE(messages[1].VisibleText().empty());
 }

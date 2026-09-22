@@ -243,14 +243,14 @@ std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx) {
   return BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json,
-                         tool_ctx.preserves_reasoning_history);
+                         tool_ctx.supports_reasoning_history);
 }
 
 std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
                             GenAIModelInstance& model,
                             const ToolCallContext& tool_ctx) {
   return BuildChatPrompt(messages, model, tool_ctx.tools_json, tool_ctx.template_kwargs_json,
-                         tool_ctx.preserves_reasoning_history);
+                         tool_ctx.supports_reasoning_history);
 }
 
 std::unique_ptr<OgaSequences> EncodePrompt(const std::string& prompt,
