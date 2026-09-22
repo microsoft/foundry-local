@@ -11,6 +11,7 @@ The Foundry Local Rust SDK provides an async Rust interface for running AI model
 
 - **Local-first AI** — Run models entirely on your machine with no cloud calls
 - **Model catalog** — Browse and discover available models; check what's cached or loaded
+- **Bring your own model (BYOM)** — Register existing local model assets without copying or taking ownership of them
 - **Automatic model management** — Download, load, unload, and remove models from cache
 - **Chat completions** — OpenAI-compatible chat API with both non-streaming and streaming responses
 - **Embeddings** — Generate text embeddings via OpenAI-compatible API
@@ -208,6 +209,37 @@ let cached = catalog.get_cached_models().await?;
 // See what's currently loaded in memory
 let loaded = catalog.get_loaded_models().await?;
 ```
+
+### Registering a Local Model (BYOM)
+
+Use the local catalog to register an existing ONNX GenAI model directory. Registration does not copy or take
+ownership of the model assets.
+
+```rust
+use foundry_local_sdk::{
+    FoundryLocalConfig, FoundryLocalManager, ModelInfoBuilder,
+};
+
+let manager = FoundryLocalManager::create(FoundryLocalConfig::new("my_app"))?;
+let local_catalog = manager.local_catalog()?;
+
+let mut metadata = local_catalog.create_model_info()?;
+metadata
+    .set_string_property("task", "chat-completion")?
+    .set_string_property("device_type", "CPU")?
+    .set_string_property("execution_provider", "CPUExecutionProvider")?
+    .set_int_property("context_length", 4096)?;
+
+let model = local_catalog
+    .register_model("C:/models/my-model", "my-model:1", metadata)
+    .await?;
+
+// The external model directory is left untouched.
+local_catalog.unregister_model(model.id()).await?;
+```
+
+The existing `manager.catalog()` accessor remains the default public catalog. Use
+`manager.get_catalog(CatalogType::Public)` when explicit catalog selection is preferred.
 
 ### Model Lifecycle
 

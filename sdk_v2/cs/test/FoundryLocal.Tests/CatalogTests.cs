@@ -5,6 +5,8 @@
 // --------------------------------------------------------------------------------------------------------------------
 
 namespace Microsoft.AI.Foundry.Local.Tests;
+using System;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +14,110 @@ using System.Threading.Tasks;
 [SkipUnlessIntegration]
 internal sealed class CatalogTests
 {
+    [Test]
+    public async Task GetCatalogAsync_DefaultsToPublicAndCachesByType()
+    {
+        var manager = FoundryLocalManager.Instance;
+
+        var defaultCatalog = await manager.GetCatalogAsync();
+        var publicCatalog = await manager.GetCatalogAsync(CatalogType.Public);
+        var localCatalog = await manager.GetCatalogAsync(CatalogType.Local);
+        var repeatedLocalCatalog = await manager.GetCatalogAsync(CatalogType.Local);
+
+        await Assert.That(ReferenceEquals(defaultCatalog, publicCatalog)).IsTrue();
+        await Assert.That(ReferenceEquals(localCatalog, repeatedLocalCatalog)).IsTrue();
+        await Assert.That(ReferenceEquals(publicCatalog, localCatalog)).IsFalse();
+        await Assert.That(localCatalog.Name).IsNotNullOrWhitespace();
+    }
+
+    [Test]
+    public async Task LocalCatalog_RegisterAndUnregister_PreservesMetadataAssetsAndModelHandle()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"foundry-local-cs-byom-{Guid.NewGuid():N}");
+        var modelPath = Path.Combine(root, "model");
+        Directory.CreateDirectory(modelPath);
+        File.WriteAllText(
+            Path.Combine(modelPath, "genai_config.json"),
+            "{\"model\":{\"type\":\"phi3\",\"context_length\":4096}}");
+
+        var modelName = $"cs-byom-{Guid.NewGuid():N}";
+        var modelId = $"{modelName}:7";
+        var metadata = new ModelInfoBuilder()
+            .SetStringProperty(ModelInfoPropertyKeys.Task, "chat-completion")
+            .SetStringProperty(ModelInfoPropertyKeys.DisplayName, "C# BYOM test model")
+            .SetIntProperty(ModelInfoPropertyKeys.FileSizeMb, 17)
+            .SetIntProperty(ModelInfoPropertyKeys.ContextLength, 4096)
+            .SetStringProperty(ModelInfoPropertyKeys.InputModalities, "text,image")
+                .SetStringProperty("custom_metadata", "preserved")
+                .SetIntProperty("custom_count", 42);
+
+        var catalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+        IModel? registered = null;
+        try
+        {
+            var registrationTask = catalog.RegisterModelAsync(modelPath, modelId, metadata);
+            metadata.SetStringProperty(ModelInfoPropertyKeys.InputModalities, "mutated")
+                    .SetIntProperty(ModelInfoPropertyKeys.ContextLength, 8192);
+            registered = await registrationTask;
+
+            await Assert.That(registered.Id).IsEqualTo(modelId);
+            await Assert.That(registered.Alias).IsEqualTo(modelName);
+            await Assert.That(registered.Info.Task).IsEqualTo("chat-completion");
+            await Assert.That(registered.Info.DisplayName).IsEqualTo("C# BYOM test model");
+            await Assert.That(registered.Info.FileSizeMb).IsEqualTo(17);
+            await Assert.That(registered.Info.ContextLength).IsEqualTo(4096);
+            await Assert.That(registered.Info.InputModalities).IsEqualTo("text,image");
+            await Assert.That(registered.GetStringProperty("custom_metadata")).IsEqualTo("preserved");
+            await Assert.That(registered.GetIntProperty("custom_count")).IsEqualTo(42);
+
+            var lookup = await catalog.GetModelVariantAsync(modelId);
+            await Assert.That(lookup).IsNotNull();
+            await Assert.That(lookup!.Info.Id).IsEqualTo(modelId);
+            await Assert.That(lookup.GetStringProperty("custom_metadata")).IsEqualTo("preserved");
+            await Assert.That(lookup.GetIntProperty("custom_count")).IsEqualTo(42);
+
+            await catalog.UnregisterModelAsync(modelId);
+
+            await Assert.That(await catalog.GetModelVariantAsync(modelId)).IsNull();
+            await Assert.That(File.Exists(Path.Combine(modelPath, "genai_config.json"))).IsTrue();
+
+            // Native model handles are manager-owned and remain safe after unregister.
+            await Assert.That(registered.Info.Id).IsEqualTo(modelId);
+            await Assert.That(lookup.Info.Id).IsEqualTo(modelId);
+        }
+        finally
+        {
+            if (await catalog.GetModelVariantAsync(modelId) != null)
+            {
+                await catalog.UnregisterModelAsync(modelId);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task ByomStrings_RejectEmbeddedNulBeforeNativeDispatch()
+    {
+        var metadata = new ModelInfoBuilder();
+        await Assert.That(() => metadata.SetStringProperty("bad\0key", "value")).Throws<ArgumentException>();
+        await Assert.That(() => metadata.SetStringProperty("key", "bad\0value")).Throws<ArgumentException>();
+        await Assert.That(() => metadata.SetIntProperty("bad\0key", 1)).Throws<ArgumentException>();
+
+        var catalog = await FoundryLocalManager.Instance.GetCatalogAsync(CatalogType.Local);
+        await Assert.That(async () => await catalog.RegisterModelAsync("path\0suffix", "model:1", metadata))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => await catalog.RegisterModelAsync("path", "model:1\0suffix", metadata))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => await catalog.GetModelAsync("alias\0suffix")).Throws<ArgumentException>();
+        await Assert.That(async () => await catalog.GetModelVariantAsync("model:1\0suffix"))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => await catalog.GetModelVersionsAsync("alias", "name\0suffix"))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => await catalog.UnregisterModelAsync("model:1\0suffix"))
+            .Throws<ArgumentException>();
+    }
+
     [Test]
     public async Task GetLatestVersion_Works()
     {

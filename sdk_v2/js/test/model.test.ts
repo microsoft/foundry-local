@@ -4,6 +4,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Catalog } from "../src/catalog.js";
+import { FlErrorCode } from "../src/detail/errors.js";
 import { Model } from "../src/model.js";
 
 import {
@@ -86,6 +87,54 @@ describeIfBuilt("Model (cache-only)", () => {
 
   it("path returns a string", () => {
     expect(typeof model.path).toBe("string");
+  });
+
+  it("download() maps timer-driven cancellation at a native progress checkpoint to AbortError", async () => {
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 0);
+
+    try {
+      await expect(model.download(controller.signal)).rejects.toMatchObject({
+        name: "AbortError",
+        code: FlErrorCode.OperationCancelled,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
+    expect(model.isCached).toBe(false);
+  });
+
+  it("download() rejects with the same error thrown by the progress callback", async () => {
+    const callbackError = new Error("progress callback failed");
+
+    await expect(
+      model.download(() => {
+        throw callbackError;
+      }),
+    ).rejects.toBe(callbackError);
+    expect(model.isCached).toBe(false);
+  });
+
+  it("download() propagates signal registration errors before creating native progress resources", async () => {
+    const registrationError = new Error("signal registration failed");
+    const signal = {
+      aborted: false,
+      addEventListener: () => {
+        throw registrationError;
+      },
+      removeEventListener: () => {},
+    } as unknown as AbortSignal;
+
+    await expect(model.download(() => {}, signal)).rejects.toBe(registrationError);
+    expect(model.isCached).toBe(false);
+  });
+
+  it("download() rejects a pre-aborted AbortSignal before native submission", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(model.download(undefined, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(model.isCached).toBe(false);
   });
 
   it("id and alias match info", () => {
