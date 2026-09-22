@@ -82,6 +82,14 @@ test('model task and capability filters have associated labels', () => {
 	assert.match(modelFilters, /<Button\b[^>]*\bid="capability"[^>]*>/);
 });
 
+test('back-to-top control has a visible keyboard focus indicator', () => {
+	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
+
+	assert.match(backToTop, /focus-visible:ring-2/);
+	assert.match(backToTop, /focus-visible:ring-offset-2/);
+	assert.match(backToTop, /focus-visible:ring-offset-background/);
+});
+
 test('shared skip link is hidden until keyboard focus and targets both main landmarks', () => {
 	const skipLink = readSource('../src/lib/components/skip-link.svelte');
 	const nav = readSource('../src/lib/components/home/nav.svelte');

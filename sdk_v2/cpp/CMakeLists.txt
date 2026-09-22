@@ -245,6 +245,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/openresponses/response_converter.cc
     src/inferencing/generative/openresponses/response_store.cc
     src/contracts/responses_json.cc
+    src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
     src/inferencing/generative/toolcalling/grammar.cc
     src/inferencing/generative/chat/search_options.cc
@@ -467,6 +468,8 @@ if(WIN32)
     # Delay-load the WinML EP Catalog DLL — it may not be present on older Windows.
     # The bootstrapper handles the delay-load failure gracefully at runtime.
     if(WinMLEpCatalog_FOUND)
+        # /DELAYLOAD emits calls to __delayLoadHelper2, which MSVC provides in delayimp.lib.
+        target_link_libraries(foundry_local PRIVATE delayimp)
         target_link_options(foundry_local PRIVATE
             /DELAYLOAD:Microsoft.Windows.AI.MachineLearning.dll
         )
