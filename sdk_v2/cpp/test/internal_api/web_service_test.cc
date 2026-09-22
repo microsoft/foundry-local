@@ -73,26 +73,36 @@ class WebServiceTest : public ::testing::Test {
     model_load_manager_ = std::make_unique<ModelLoadManager>(*ep_detector_, *logger_);
     session_manager_ = std::make_unique<SessionManager>(*logger_);
     null_telemetry_ = std::make_unique<TelemetryLogger>("test", fl::test::NullLog());
-    catalog_ = std::make_unique<test::MockCatalog>();
+    public_catalog_ = std::make_unique<test::MockCatalog>();
+    local_catalog_ = std::make_unique<test::MockCatalog>();
 
     // Populate with test models
-    catalog_->AddModel(Model::FromModelInfo(
+    public_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("alpha-model", "acme-corp"), "",
         svc_.download_manager, svc_.model_load_manager));
-    catalog_->AddModel(Model::FromModelInfo(
+    public_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("beta-model", "contoso"), "",
         svc_.download_manager, svc_.model_load_manager));
 
     const auto loadable_model_path = test::GetTestDataModelPath(test::kLoadableTestModelAlias);
     ASSERT_TRUE(std::filesystem::exists(loadable_model_path))
         << "Expected loadable test model at " << loadable_model_path;
-    catalog_->AddModel(Model::FromModelInfo(
+    public_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo(test::kLoadableTestModelAlias, "microsoft"),
         loadable_model_path,
         svc_.download_manager,
         *model_load_manager_));
 
-    service_ = std::make_unique<WebService>(*catalog_, *logger_, "/tmp/test-cache",
+    local_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo("alpha-model", "local-owner"),
+        loadable_model_path,
+        svc_.download_manager,
+        *model_load_manager_));
+    local_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo("local-model", "local-owner"), "",
+        svc_.download_manager, svc_.model_load_manager));
+
+    service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, "/tmp/test-cache",
                                             *model_load_manager_, *session_manager_, *null_telemetry_, []() {});
     auto urls = service_->Start({"http://127.0.0.1:0"});
     ASSERT_EQ(urls.size(), 1u);
@@ -104,7 +114,8 @@ class WebServiceTest : public ::testing::Test {
       service_->Stop();
     }
     service_.reset();
-    catalog_.reset();
+    local_catalog_.reset();
+    public_catalog_.reset();
     session_manager_.reset();
     null_telemetry_.reset();
     model_load_manager_.reset();
@@ -118,7 +129,8 @@ class WebServiceTest : public ::testing::Test {
     return json::parse(body);
   }
 
-  static std::unique_ptr<test::MockCatalog> catalog_;
+  static std::unique_ptr<test::MockCatalog> public_catalog_;
+  static std::unique_ptr<test::MockCatalog> local_catalog_;
   static std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static std::unique_ptr<StderrLogger> logger_;
   static std::unique_ptr<ModelLoadManager> model_load_manager_;
@@ -130,7 +142,8 @@ class WebServiceTest : public ::testing::Test {
 };
 
 // Static member definitions
-std::unique_ptr<test::MockCatalog> WebServiceTest::catalog_;
+std::unique_ptr<test::MockCatalog> WebServiceTest::public_catalog_;
+std::unique_ptr<test::MockCatalog> WebServiceTest::local_catalog_;
 std::unique_ptr<test::CpuOnlyEpDetector> WebServiceTest::ep_detector_;
 std::unique_ptr<StderrLogger> WebServiceTest::logger_;
 std::unique_ptr<ModelLoadManager> WebServiceTest::model_load_manager_;
@@ -183,7 +196,7 @@ TEST_F(WebServiceTest, LoadedModelsReturnsEmptyWhenNoneLoaded) {
 }
 
 TEST_F(WebServiceTest, LoadedModelsReturnsModelIds) {
-  auto* model = catalog_->GetModel(test::kLoadableTestModelAlias);
+  auto* model = public_catalog_->GetModel(test::kLoadableTestModelAlias);
   ASSERT_NE(model, nullptr);
   ASSERT_TRUE(model->IsCached());
 
@@ -233,7 +246,7 @@ TEST_F(WebServiceTest, UnloadModelReturnsNotLoadedStatus) {
 }
 
 TEST_F(WebServiceTest, UnloadModelReturnsUnloadedStatusForLoadedModel) {
-  auto* model = catalog_->GetModel(test::kLoadableTestModelAlias);
+  auto* model = public_catalog_->GetModel(test::kLoadableTestModelAlias);
   ASSERT_NE(model, nullptr);
   ASSERT_TRUE(model->IsCached());
 
@@ -314,6 +327,37 @@ TEST_F(WebServiceTest, OpenAIRetrieveSecondModel) {
   EXPECT_EQ(j["owned_by"], "contoso") << "Response: " << j.dump(2);
 }
 
+TEST_F(WebServiceTest, CatalogRoutesKeepDuplicateModelIdsSeparate) {
+  const auto public_model = Get("/v1/models/alpha-model:1");
+  const auto local_model = Get("/catalogs/local/v1/models/alpha-model:1");
+
+  EXPECT_EQ(public_model["owned_by"], "acme-corp") << public_model.dump(2);
+  EXPECT_EQ(local_model["owned_by"], "local-owner") << local_model.dump(2);
+  EXPECT_THROW(TestHttpGet(base_url_ + "/v1/models/local-model:1"), std::exception);
+  EXPECT_THROW(TestHttpGet(base_url_ + "/catalogs/local/v1/models/beta-model:1"), std::exception);
+}
+
+TEST_F(WebServiceTest, LocalModelManagementUsesOnlyLocalCatalog) {
+  auto* model = local_catalog_->GetModel("alpha-model");
+  ASSERT_NE(model, nullptr);
+  ASSERT_TRUE(model->IsCached());
+
+  const auto loaded = Get("/catalogs/local/models/load/alpha-model");
+  EXPECT_EQ(loaded["status"], "loaded") << loaded.dump(2);
+  EXPECT_TRUE(model->IsLoaded());
+
+  const auto local_models = Get("/catalogs/local/models/loaded");
+  ASSERT_EQ(local_models.size(), 1u) << local_models.dump(2);
+  EXPECT_EQ(local_models[0], "alpha-model:1") << local_models.dump(2);
+
+  const auto public_models = Get("/models/loaded");
+  EXPECT_TRUE(public_models.empty()) << public_models.dump(2);
+
+  const auto unloaded = Get("/catalogs/local/models/unload/alpha-model");
+  EXPECT_EQ(unloaded["status"], "unloaded") << unloaded.dump(2);
+  EXPECT_FALSE(model->IsLoaded());
+}
+
 // ========================================================================
 // POST /v1/chat/completions — validation & stub
 // ========================================================================
@@ -377,7 +421,8 @@ TEST(WebServiceLifecycleTest, StartAndStopOnEphemeralPort) {
   SessionManager session_manager(logger);
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
-  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
+  WebService service(catalog, catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry,
+                     []() {});
   auto urls = service.Start({"http://127.0.0.1:0"});
 
   ASSERT_EQ(urls.size(), 1u);
@@ -399,7 +444,8 @@ TEST(WebServiceLifecycleTest, DoubleStartThrows) {
   SessionManager session_manager(logger);
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
-  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
+  WebService service(catalog, catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry,
+                     []() {});
   service.Start({"http://127.0.0.1:0"});
 
   EXPECT_THROW(service.Start({"http://127.0.0.1:0"}), std::runtime_error);
@@ -415,7 +461,8 @@ TEST(WebServiceLifecycleTest, StopWithoutStartIsNoop) {
   SessionManager session_manager(logger);
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
-  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
+  WebService service(catalog, catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry,
+                     []() {});
   // Should not crash
   service.Stop();
 }
@@ -428,7 +475,8 @@ TEST(WebServiceLifecycleTest, MultipleEndpoints) {
   SessionManager session_manager(logger);
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
-  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
+  WebService service(catalog, catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry,
+                     []() {});
   auto urls = service.Start({"http://127.0.0.1:0", "http://127.0.0.1:0"});
 
   EXPECT_EQ(urls.size(), 2u) << "Expected 2 bound URLs";
@@ -454,7 +502,8 @@ TEST(WebServiceEmptyCatalogTest, ListModelsReturnsEmptyData) {
   SessionManager session_manager(logger);
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
-  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
+  WebService service(catalog, catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry,
+                     []() {});
   auto urls = service.Start({"http://127.0.0.1:0"});
 
   auto body = TestHttpGet(urls[0] + "/v1/models");
@@ -474,7 +523,8 @@ TEST(WebServiceEmptyCatalogTest, LoadedModelsReturnsEmptyArray) {
   SessionManager session_manager(logger);
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
 
-  WebService service(catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry, []() {});
+  WebService service(catalog, catalog, logger, "/tmp/test", model_load_manager, session_manager, null_telemetry,
+                     []() {});
   auto urls = service.Start({"http://127.0.0.1:0"});
 
   auto body = TestHttpGet(urls[0] + "/models/loaded");
@@ -802,6 +852,58 @@ std::string ErrorMessageOf(const json& body) {
 }
 
 }  // namespace
+
+TEST_F(WebServiceTest, LocalInferenceRoutesResolveOnlyLocalModels) {
+  const auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
+  const std::vector<std::pair<std::string, json>> requests = {
+      {"/catalogs/local/v1/chat/completions",
+       {
+           {"model", "local-model:1"},
+           {"messages", json::array({{{"role", "user"}, {"content", "hello"}}})},
+       }},
+      {"/catalogs/local/v1/responses",
+       {
+           {"model", "local-model:1"},
+           {"input", "hello"},
+       }},
+      {"/catalogs/local/v1/embeddings",
+       {
+           {"model", "local-model:1"},
+           {"input", "hello"},
+       }},
+      {"/catalogs/local/v1/audio/transcriptions",
+       {
+           {"model", "local-model:1"},
+           {"filename", audio_path.string()},
+       }},
+  };
+
+  for (const auto& [endpoint, body] : requests) {
+    SCOPED_TRACE(endpoint);
+    const auto result = PostJson(base_url_ + endpoint, body);
+
+    EXPECT_EQ(result.status, 400) << result.body.dump(2);
+    EXPECT_NE(ErrorMessageOf(result.body).find("not loaded"), std::string::npos)
+        << result.body.dump(2);
+  }
+
+  const auto public_result = PostJson(
+      base_url_ + "/v1/chat/completions",
+      {
+          {"model", "local-model:1"},
+          {"messages", json::array({{{"role", "user"}, {"content", "hello"}}})},
+      });
+  EXPECT_EQ(public_result.status, 404) << public_result.body.dump(2);
+}
+
+TEST_F(WebServiceTest, LocalResponseLifecycleRoutesAreRegistered) {
+  const auto listed = Get("/catalogs/local/v1/responses");
+  EXPECT_TRUE(listed["data"].empty()) << listed.dump(2);
+
+  EXPECT_THROW(TestHttpGet(base_url_ + "/catalogs/local/v1/responses/resp_missing"), std::exception);
+  EXPECT_THROW(TestHttpGet(base_url_ + "/catalogs/local/v1/responses/resp_missing/input_items"), std::exception);
+  EXPECT_THROW(TestHttpDelete(base_url_ + "/catalogs/local/v1/responses/resp_missing"), std::exception);
+}
 
 TEST_F(WebServiceTest, StreamingChatCompletionsRejectsModifiedStockLarkGrammarBeforeModelResolution) {
   json body = {
@@ -1304,7 +1406,7 @@ TEST(WebServiceShutdownTest, StopReturnsQuicklyWithKeepAliveClient) {
   TelemetryLogger null_telemetry{"test", fl::test::NullLog()};
   test::MockCatalog catalog;
 
-  WebService service(catalog, logger, "/tmp/test-cache", model_load_manager, session_manager, null_telemetry,
+  WebService service(catalog, catalog, logger, "/tmp/test-cache", model_load_manager, session_manager, null_telemetry,
                      []() {});
 
   auto urls = service.Start({"http://127.0.0.1:0"});
