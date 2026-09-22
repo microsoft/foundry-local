@@ -154,6 +154,7 @@
 						<Button
 							variant={selectedDevices.includes(device) ? 'default' : 'outline'}
 							size="sm"
+							aria-pressed={selectedDevices.includes(device)}
 							onclick={() => toggleDevice(device)}
 							class="h-full flex-1"
 						>
