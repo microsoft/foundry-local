@@ -271,7 +271,7 @@ TEST_F(EpDetectorTest, DownloadFiltered_TelemetryCountsOnlyRecognizedNames) {
   EXPECT_EQ(result.status, "All recognized EPs registered successfully");
 }
 
-TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsSkippedTelemetry) {
+TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsDownloadCancellation) {
   RecordingTelemetry telemetry;
   std::vector<MockEpBootstrapper*> mocks;
   auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}, {"QNNExecutionProvider", true}},
@@ -291,8 +291,8 @@ TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsSkippedTelemetry) {
   EXPECT_EQ(telemetry.ep_attempt_calls[0].failed, 0);
   ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
   EXPECT_FALSE(telemetry.ep_register_calls[0].user_agent.empty());
-  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSkipped);
-  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kCanceled);
+  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kCanceled);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSkipped);
 }
 
 TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxMissingCudaRecordsDependencyFailure) {

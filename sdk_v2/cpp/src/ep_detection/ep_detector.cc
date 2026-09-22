@@ -283,8 +283,8 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     if (cancelled) {
       result.success = false;
       telemetry_status = ActionStatus::kCanceled;
-      tracker.RecordDownloadComplete(ActionStatus::kSkipped, unresolved_ready_state);
-      tracker.RecordRegisterComplete(ActionStatus::kCanceled, unresolved_ready_state);
+      tracker.RecordDownloadComplete(ActionStatus::kCanceled, unresolved_ready_state);
+      tracker.RecordRegisterComplete(ActionStatus::kSkipped, unresolved_ready_state);
     } else if (ok) {
       ++telemetry_succeeded;
       telemetry_resolved = true;

@@ -21,10 +21,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -512,6 +514,35 @@ TEST(TelemetryDeviceIdPlatformTest, UsesXdgCacheHomeForStorageDirectory) {
   EXPECT_EQ(TelemetryDeviceIdPlatform::GetStorageDirectory(),
             std::filesystem::path("/tmp/telemetry-cache-test/Microsoft/DeveloperTools/.onnxruntime"));
   EXPECT_FALSE(TelemetryDeviceIdPlatform::UsesPlatformProvidedId());
+}
+
+TEST(TelemetryDeviceIdPlatformTest, ConcurrentCorruptionRecoveryUsesOneStableId) {
+  const auto root = std::filesystem::temp_directory_path() / ("foundry-device-id-" + GenerateGuidV4());
+  ScopedEnvVar xdg_cache_home("XDG_CACHE_HOME", root.string().c_str());
+  const auto directory = TelemetryDeviceIdPlatform::EnsureStorageDirectory();
+  ASSERT_FALSE(directory.empty());
+
+  {
+    std::ofstream corrupt_file(directory / "deviceid");
+    corrupt_file << "corrupt";
+  }
+
+  std::array<TelemetryDeviceIdPlatform::LoadResult, 4> results;
+  std::vector<std::thread> threads;
+  for (size_t i = 0; i < results.size(); ++i) {
+    threads.emplace_back([&, i] { results[i] = TelemetryDeviceIdPlatform::LoadOrCreate(); });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  ASSERT_TRUE(TelemetryDeviceId::IsValidGuid(results[0].value));
+  for (const auto& result : results) {
+    EXPECT_EQ(result.value, results[0].value);
+  }
+
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
 }
 #endif
 

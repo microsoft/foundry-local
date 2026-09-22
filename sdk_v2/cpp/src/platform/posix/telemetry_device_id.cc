@@ -4,9 +4,12 @@
 
 #include "telemetry/invocation_context.h"
 #include "telemetry/telemetry_environment.h"
+#include "util/file_lock.h"
 
 #include <cerrno>
 #include <fstream>
+#include <memory>
+#include <optional>
 #include <string_view>
 #include <system_error>
 
@@ -35,6 +38,23 @@ std::string TrimDeviceId(std::string value) {
     value.pop_back();
   }
   return value;
+}
+
+std::optional<std::string> ReadValidDeviceId(const std::filesystem::path& file) {
+  std::error_code error;
+  const auto file_size = std::filesystem::file_size(file, error);
+  if (error || file_size > kMaxDeviceIdSize) {
+    return std::nullopt;
+  }
+
+  std::ifstream input(file);
+  std::string content;
+  if (!std::getline(input, content)) {
+    return std::nullopt;
+  }
+
+  content = TrimDeviceId(std::move(content));
+  return TelemetryDeviceId::IsValidGuid(content) ? std::optional<std::string>{std::move(content)} : std::nullopt;
 }
 
 bool CreateDirectoryTreeOwnerOnly(const std::filesystem::path& directory, bool leaf = true) {
@@ -219,15 +239,8 @@ LoadResult LoadOrCreate() {
   TelemetryDeviceIdStatus status = TelemetryDeviceIdStatus::kNew;
   error.clear();
   if (std::filesystem::exists(file, error) && !error) {
-    const auto file_size = std::filesystem::file_size(file, error);
-    if (!error && file_size <= kMaxDeviceIdSize) {
-      std::ifstream input(file);
-      std::string content;
-      std::getline(input, content);
-      content = TrimDeviceId(std::move(content));
-      if (TelemetryDeviceId::IsValidGuid(content)) {
-        return {std::move(content), TelemetryDeviceIdStatus::kExisting};
-      }
+    if (auto content = ReadValidDeviceId(file)) {
+      return {std::move(*content), TelemetryDeviceIdStatus::kExisting};
     }
     status = TelemetryDeviceIdStatus::kCorrupted;
   }
@@ -242,18 +255,30 @@ LoadResult LoadOrCreate() {
     return {{}, TelemetryDeviceIdStatus::kFailed};
   }
 
+  std::unique_ptr<FileLock> recovery_lock;
+  if (file_existed) {
+    try {
+      recovery_lock = std::make_unique<FileLock>(directory / "deviceid.lock");
+    } catch (...) {
+      return {{}, TelemetryDeviceIdStatus::kFailed};
+    }
+
+    error.clear();
+    if (std::filesystem::is_symlink(file, error)) {
+      return {{}, TelemetryDeviceIdStatus::kFailed};
+    }
+    if (auto winner = ReadValidDeviceId(file)) {
+      return {std::move(*winner), TelemetryDeviceIdStatus::kExisting};
+    }
+  }
+
   auto value = GenerateGuidV4();
   const auto publish_result = PublishDeviceId(file, value, file_existed);
   if (publish_result == PublishResult::kAlreadyExists) {
     error.clear();
     if (!std::filesystem::is_symlink(file, error)) {
-      std::ifstream winner(file);
-      std::string winner_id;
-      if (std::getline(winner, winner_id)) {
-        winner_id = TrimDeviceId(std::move(winner_id));
-        if (TelemetryDeviceId::IsValidGuid(winner_id)) {
-          return {std::move(winner_id), TelemetryDeviceIdStatus::kExisting};
-        }
+      if (auto winner = ReadValidDeviceId(file)) {
+        return {std::move(*winner), TelemetryDeviceIdStatus::kExisting};
       }
     }
     return {{}, TelemetryDeviceIdStatus::kFailed};
