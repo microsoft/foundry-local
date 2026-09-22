@@ -12,7 +12,9 @@
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -23,7 +25,7 @@ use crate::detail::ffi::{FOUNDRY_LOCAL_TOOL_KIND_CUSTOM, FOUNDRY_LOCAL_TOOL_KIND
 use crate::detail::model::Model;
 use crate::detail::session::{run_item_streaming, NativeItemQueue, NativeRequest, NativeSession};
 use crate::detail::task::spawn_blocking;
-use crate::error::{FoundryLocalError, Result};
+use crate::error::{FoundryLocalError, NativeErrorCode, Result};
 use crate::item::Item;
 use crate::item_queue::ItemQueue;
 use crate::request::{Request, RequestOptions};
@@ -82,17 +84,24 @@ impl Session {
         let native_task = Arc::clone(&native);
         let cancel_state = Arc::new(CancelState::new(Arc::clone(&native)));
         let worker_cancel_state = Arc::clone(&cancel_state);
+        let cancellation_retry = cancellation_retry_sender()?;
         let handle = tokio::task::spawn_blocking(move || {
             let _completion = WorkerCompletion::new(Arc::clone(&worker_cancel_state));
             let _guard = inner.lock_ops();
             populate_native_request(&inner.api, &native_task, &request)?;
+            if worker_cancel_state.cancel_requested.load(Ordering::Acquire) {
+                return Err(FoundryLocalError::Native {
+                    code: NativeErrorCode::OperationCancelled,
+                    message: "request canceled before native processing".into(),
+                });
+            }
             let response = inner.process_request(&native_task)?;
             Response::from_native(&response)
         });
 
         // Cancel the in-flight request if this future is dropped before the
         // worker finishes; disarmed on normal completion. See `CancelGuard`.
-        let guard = CancelGuard::new(cancel_state);
+        let guard = CancelGuard::new(cancel_state, cancellation_retry);
         let joined = handle.await;
         guard.disarm();
         joined.map_err(|e| FoundryLocalError::Internal {
@@ -186,12 +195,17 @@ fn populate_native_request(
 /// normally.
 struct CancelGuard {
     state: Arc<CancelState>,
+    cancellation_retry: Sender<Arc<CancelState>>,
     armed: bool,
 }
 
 impl CancelGuard {
-    fn new(state: Arc<CancelState>) -> Self {
-        Self { state, armed: true }
+    fn new(state: Arc<CancelState>, cancellation_retry: Sender<Arc<CancelState>>) -> Self {
+        Self {
+            state,
+            cancellation_retry,
+            armed: true,
+        }
     }
 
     fn disarm(mut self) {
@@ -202,13 +216,16 @@ impl CancelGuard {
 impl Drop for CancelGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.state.cancel_until_worker_finishes();
+            self.state.cancel_requested.store(true, Ordering::Release);
+            self.state.native.cancel();
+            let _ = self.cancellation_retry.send(Arc::clone(&self.state));
         }
     }
 }
 
 struct CancelState {
     native: Arc<NativeRequest>,
+    cancel_requested: AtomicBool,
     worker_finished: AtomicBool,
 }
 
@@ -216,25 +233,9 @@ impl CancelState {
     fn new(native: Arc<NativeRequest>) -> Self {
         Self {
             native,
+            cancel_requested: AtomicBool::new(false),
             worker_finished: AtomicBool::new(false),
         }
-    }
-
-    fn cancel_until_worker_finishes(self: &Arc<Self>) {
-        self.native.cancel();
-        if self.worker_finished.load(Ordering::Acquire) {
-            return;
-        }
-
-        let state = Arc::clone(self);
-        let _ = std::thread::Builder::new()
-            .name("foundry-local-cancel".into())
-            .spawn(move || {
-                while !state.worker_finished.load(Ordering::Acquire) {
-                    state.native.cancel();
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            });
     }
 
     fn mark_worker_finished(&self) {
@@ -255,6 +256,49 @@ impl WorkerCompletion {
 impl Drop for WorkerCompletion {
     fn drop(&mut self) {
         self.state.mark_worker_finished();
+    }
+}
+
+fn cancellation_retry_sender() -> Result<Sender<Arc<CancelState>>> {
+    static DISPATCHER: OnceLock<std::result::Result<Sender<Arc<CancelState>>, String>> =
+        OnceLock::new();
+    match DISPATCHER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("foundry-local-cancel".into())
+            .spawn(move || run_cancellation_retries(rx))
+            .map(|_| tx)
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(sender) => Ok(sender.clone()),
+        Err(reason) => Err(FoundryLocalError::Internal {
+            reason: format!("failed to start cancellation dispatcher: {reason}"),
+        }),
+    }
+}
+
+fn run_cancellation_retries(rx: mpsc::Receiver<Arc<CancelState>>) {
+    let mut pending = Vec::new();
+    loop {
+        let received = if pending.is_empty() {
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(Duration::from_millis(10))
+        };
+        match received {
+            Ok(state) => pending.push(state),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        pending.extend(rx.try_iter());
+        pending.retain(|state| {
+            if state.worker_finished.load(Ordering::Acquire) {
+                false
+            } else {
+                state.native.cancel();
+                true
+            }
+        });
     }
 }
 
