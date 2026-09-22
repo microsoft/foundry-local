@@ -119,8 +119,8 @@ underlying C ABI call is a memory copy, not I/O.
   `Napi::ThreadSafeFunction` forwards native streaming-callback items and is released after the worker completes and
   its queued callbacks drain.
 - Cancellation: streaming APIs accept an `AbortSignal`. A signal already aborted at call time rejects before native
-  work is submitted. Once submitted, the signal calls `Request::Cancel()`, which affects only an invocation currently
-  inside native `Session::ProcessRequest`; work still waiting in the addon's per-session queue is not canceled.
+  work is submitted. Once submitted, abort removes work still waiting in the addon's per-session queue or calls
+  `Request::Cancel()` for an invocation currently inside native `Session::ProcessRequest`.
 - Live PCM input (audio transcription with chunks arriving over time) is
   expressed by adding an `AudioItem` descriptor to the `Request` and
   pushing PCM bytes through a paired `ItemQueue`. The session consumes the

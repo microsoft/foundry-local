@@ -12,6 +12,7 @@
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
@@ -25,9 +26,26 @@
 
 namespace foundry_local_node {
 
-void SessionScheduler::Enqueue(std::function<void()> start) {
-  pending_.push_back(std::move(start));
+uint64_t SessionScheduler::Enqueue(std::function<void()> start, std::function<void()> cancel) {
+  const uint64_t id = next_id_++;
+  pending_.push_back({id, std::move(start), std::move(cancel)});
   StartNext();
+  return id;
+}
+
+bool SessionScheduler::Cancel(uint64_t id) {
+  const auto entry = std::find_if(pending_.begin(), pending_.end(),
+                                  [id](const Entry& candidate) { return candidate.id == id; });
+  if (entry == pending_.end()) {
+    return false;
+  }
+
+  auto cancel = std::move(entry->cancel);
+  pending_.erase(entry);
+  if (cancel) {
+    cancel();
+  }
+  return true;
 }
 
 void SessionScheduler::Complete() {
@@ -45,7 +63,7 @@ void SessionScheduler::StartNext() {
   }
 
   running_ = true;
-  auto start = std::move(pending_.front());
+  auto start = std::move(pending_.front().start);
   pending_.pop_front();
   start();
 }
@@ -365,6 +383,12 @@ struct StreamCtx {
   bool errored = false;
 };
 
+struct QueuedCancellation {
+  std::shared_ptr<SessionScheduler> scheduler;
+  std::atomic_bool requested = false;
+  uint64_t id = 0;
+};
+
 class StreamFinalizeGuard {
  public:
   explicit StreamFinalizeGuard(StreamCtx* ctx) : ctx_(ctx) {}
@@ -418,9 +442,21 @@ class StreamWorker : public Napi::AsyncWorker {
                            Napi::Function jsCallback, StreamCtx* ctx,
                            std::shared_ptr<SessionScheduler> scheduler) {
     Napi::Promise p = ctx->deferred.Promise();
+    auto queued_cancellation = std::make_shared<QueuedCancellation>();
+    queued_cancellation->scheduler = scheduler;
+    p.As<Napi::Object>().Set(
+        "cancelQueued",
+        Napi::Function::New(env, [queued_cancellation](const Napi::CallbackInfo& info) {
+          queued_cancellation->requested.store(true, std::memory_order_release);
+          const bool canceled = queued_cancellation->id != 0 && queued_cancellation->scheduler != nullptr &&
+                                queued_cancellation->scheduler->Cancel(queued_cancellation->id);
+          return Napi::Boolean::New(info.Env(), canceled);
+        }));
+
     StreamWorker* w = nullptr;
     try {
-      w = new StreamWorker(env, std::move(sess), req, jsCallback, ctx, std::move(scheduler));
+      w = new StreamWorker(env, std::move(sess), req, jsCallback, ctx, std::move(scheduler),
+                           queued_cancellation);
     } catch (const Napi::Error& e) {
       ctx->scheduler.reset();
       ctx->deferred.Reject(e.Value());
@@ -440,7 +476,8 @@ class StreamWorker : public Napi::AsyncWorker {
 
     try {
       if (w->scheduler_ != nullptr) {
-        w->scheduler_->Enqueue([w] { w->Start(); });
+        queued_cancellation->id =
+            w->scheduler_->Enqueue([w] { w->Start(); }, [w] { w->CancelBeforeStart(); });
       } else {
         w->Start();
       }
@@ -456,6 +493,14 @@ class StreamWorker : public Napi::AsyncWorker {
   void Execute() override {
     bool callback_installed = false;
     try {
+      if (queued_cancellation_->requested.load(std::memory_order_acquire)) {
+        ctx_->errored = true;
+        ctx_->tagged = true;
+        ctx_->err_code = FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+        ctx_->err_msg = "request canceled before native processing";
+        return;
+      }
+
       auto tsfn = tsfn_;
       sess_->SetStreamingCallback([tsfn](flStreamingCallbackData data) -> int {
         if (data.item_queue == nullptr) return 0;
@@ -526,12 +571,14 @@ class StreamWorker : public Napi::AsyncWorker {
 
  private:
   StreamWorker(Napi::Env env, std::shared_ptr<SessT> sess, foundry_local::Request* req,
-               Napi::Function jsCallback, StreamCtx* ctx, std::shared_ptr<SessionScheduler> scheduler)
+               Napi::Function jsCallback, StreamCtx* ctx, std::shared_ptr<SessionScheduler> scheduler,
+               std::shared_ptr<QueuedCancellation> queued_cancellation)
       : Napi::AsyncWorker(env),
         sess_(std::move(sess)),
         req_(req),
         ctx_(ctx),
         scheduler_(std::move(scheduler)),
+        queued_cancellation_(std::move(queued_cancellation)),
         tsfn_(Napi::ThreadSafeFunction::New(env, jsCallback, "foundry_local_stream",
                                             /*max_queue=*/64, /*threads=*/1, ctx,
                                             FinalizeStream,
@@ -569,10 +616,22 @@ class StreamWorker : public Napi::AsyncWorker {
     delete this;
   }
 
+  void CancelBeforeStart() {
+    scheduler_.reset();
+    ctx_->scheduler.reset();
+    ctx_->errored = true;
+    ctx_->tagged = true;
+    ctx_->err_code = FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED;
+    ctx_->err_msg = "request canceled before native processing";
+    ReleaseTsfn();
+    delete this;
+  }
+
   std::shared_ptr<SessT> sess_;
   foundry_local::Request* req_;
   StreamCtx* ctx_;
   std::shared_ptr<SessionScheduler> scheduler_;
+  std::shared_ptr<QueuedCancellation> queued_cancellation_;
   Napi::ThreadSafeFunction tsfn_;
   bool tsfn_released_ = false;
 };

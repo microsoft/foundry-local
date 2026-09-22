@@ -277,6 +277,36 @@ describe.skipIf(!haveTestModelCache)("ChatSession.processStreamingRequest (real 
   );
 
   it(
+    "aborts a queued stream before native processing starts",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const nativeSession = (session as unknown as { native: NativeChatSession }).native;
+      let signalFirstWorkerStarted!: (release: () => void) => void;
+      const firstWorkerStarted = new Promise<() => void>((resolve) => {
+        signalFirstWorkerStarted = resolve;
+      });
+      const active = nativeSession.processRequest(unwrapNativeRequest(buildPrompt()), signalFirstWorkerStarted);
+      const releaseFirst = await firstWorkerStarted;
+      const turnsBeforeAbort = session.turnCount;
+
+      const ctrl = new AbortController();
+      const queued = session.processStreamingRequest(buildPrompt(), { signal: ctrl.signal });
+      ctrl.abort();
+
+      await expect(queued.response).rejects.toMatchObject({
+        name: "AbortError",
+        code: FlErrorCode.OperationCancelled,
+      });
+      expect(session.turnCount).toBe(turnsBeforeAbort);
+
+      releaseFirst();
+      await expect(active).resolves.toMatchObject({ output: expect.any(Array) });
+      expect(session.turnCount).toBe(turnsBeforeAbort + 1);
+    },
+    3 * 60_000,
+  );
+
+  it(
     "clears streaming state after native inference rejects",
     async () => {
       if (session === undefined) throw new Error("fixture missing");

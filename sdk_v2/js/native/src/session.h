@@ -30,6 +30,7 @@
 #include <foundry_local/foundry_local_cpp.h>
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -38,13 +39,21 @@ namespace foundry_local_node {
 
 class SessionScheduler {
  public:
-  void Enqueue(std::function<void()> start);
+  uint64_t Enqueue(std::function<void()> start, std::function<void()> cancel = {});
+  bool Cancel(uint64_t id);
   void Complete();
 
  private:
+  struct Entry {
+    uint64_t id;
+    std::function<void()> start;
+    std::function<void()> cancel;
+  };
+
   void StartNext();
 
-  std::deque<std::function<void()>> pending_;
+  std::deque<Entry> pending_;
+  uint64_t next_id_ = 1;
   bool running_ = false;
 };
 

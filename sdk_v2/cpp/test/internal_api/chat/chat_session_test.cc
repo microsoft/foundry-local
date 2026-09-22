@@ -3510,20 +3510,24 @@ TEST_F(ChatSessionTest, HostEndedTurnsCancelBeforeWaitingForBackendUsage) {
     }
 
     Response response;
-    ASSERT_NO_THROW(session.ProcessRequest(request, response));
+    if (test.end == End::kCallback) {
+      ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+    } else {
+      ASSERT_NO_THROW(session.ProcessRequest(request, response));
+    }
     EXPECT_TRUE(trace.usage_requested);
     EXPECT_TRUE(trace.canceled);
     EXPECT_TRUE(trace.canceled_before_usage);
     EXPECT_EQ(streamed.find("Discarded."), std::string::npos);
     if (test.end == End::kCallback) {
-      EXPECT_TRUE(request.canceled);
+      EXPECT_TRUE(request.IsCompleted());
       EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
       EXPECT_TRUE(session.Transcript().Empty());
       continue;
     }
 
     EXPECT_EQ(trace.generated_tokens, 1);
-    EXPECT_FALSE(request.canceled);
+    EXPECT_FALSE(request.IsCancellationRequested());
     const auto expected_finish = test.end == End::kPostCallText ? FOUNDRY_LOCAL_FINISH_TOOL_CALLS
                                  : test.end == End::kTokenLimit ? FOUNDRY_LOCAL_FINISH_LENGTH
                                                                 : FOUNDRY_LOCAL_FINISH_STOP;

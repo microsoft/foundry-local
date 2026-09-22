@@ -32,10 +32,9 @@ import type { Response } from "./response.js";
 /** Options accepted by streaming Session APIs. */
 export interface StreamOptions {
   /**
-   * Optional cancellation signal. Once native processing is active, aborting cancels the `Request` and the iterator
-   * rejects with an `Error` whose `name === "AbortError"`. An abort while work is only waiting in the native session
-   * FIFO does not prevent that work from running. A signal already aborted when this method is called rejects before
-   * native work is submitted.
+   * Optional cancellation signal. Aborting removes work that is still waiting in the native session FIFO or cancels
+   * active native processing, and the iterator rejects with an `Error` whose `name === "AbortError"`. A signal already
+   * aborted when this method is called rejects before native work is submitted.
    */
   readonly signal?: AbortSignal;
 }
@@ -48,8 +47,8 @@ export interface StreamOptions {
  *
  * `response` settles after the native call completes and all queued item callbacks have run. Breaking iteration early
  * requests cancellation of an active native invocation, but native completion can win that race. A request still
- * waiting in the addon's per-session queue is unaffected. When cancellation wins, `response` rejects with
- * `AbortError` for an aborted signal or `OperationCancelled` for an early break.
+ * waiting in the addon's per-session queue is removed when its signal aborts. When cancellation wins, `response`
+ * rejects with `AbortError` for an aborted signal or `OperationCancelled` for an early break.
  */
 export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
@@ -124,6 +123,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   let waiter: (() => void) | null = null;
   let done = false;
   let nativeError: unknown = null;
+  let cancelQueued = (): boolean => false;
 
   const wake = (): void => {
     if (waiter !== null) {
@@ -134,6 +134,9 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
   };
 
   const onAbort = (): void => {
+    if (cancelQueued()) {
+      return;
+    }
     try {
       request.cancel();
     } catch {
@@ -177,7 +180,9 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
       queue.push(item as Item);
       wake();
     };
-    native.processStreamingRequest(nativeReq, onItem).then(
+    const nativePromise = native.processStreamingRequest(nativeReq, onItem);
+    cancelQueued = nativePromise.cancelQueued;
+    nativePromise.then(
       (resp: unknown) => {
         done = true;
         responseResolve(resp as Response);
@@ -277,9 +282,9 @@ export abstract class Session {
    * `Response` (stop reason, usage, aggregate text item, etc.) once the
    * native call completes.
    *
-   * Cancellation: pass `{ signal }`; aborting while the invocation is active cancels the native request and causes the
-   * iterator to throw an `Error` with `name === "AbortError"`. Aborting while work is only waiting in the addon's
-   * per-session queue does not prevent execution. A signal already aborted at call time rejects before submission.
+   * Cancellation: pass `{ signal }`; aborting removes queued work or cancels an active native request and causes the
+   * iterator to throw an `Error` with `name === "AbortError"`. A signal already aborted at call time rejects before
+   * submission.
    * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
    * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
    *
