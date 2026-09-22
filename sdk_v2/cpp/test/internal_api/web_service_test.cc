@@ -37,6 +37,8 @@ using json = nlohmann::json;
 
 namespace {
 
+constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
+
 std::string TestHttpGet(const std::string& url, const std::string& user_agent = "") {
   http::HttpRequestOptions options;
   options.user_agent = user_agent;
@@ -93,6 +95,15 @@ class WebServiceTest : public ::testing::Test {
         svc_.download_manager,
         *model_load_manager_));
 
+    const auto response_store_model_path = test::GetTestDataModelPath("tiny-paged-attention");
+    ASSERT_TRUE(std::filesystem::exists(response_store_model_path))
+        << "Expected response store test model at " << response_store_model_path;
+    public_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kResponseStoreTestModelAlias, "microsoft"),
+        response_store_model_path,
+        svc_.download_manager,
+        *model_load_manager_));
+
     local_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("alpha-model", "local-owner"),
         loadable_model_path,
@@ -101,6 +112,11 @@ class WebServiceTest : public ::testing::Test {
     local_catalog_->AddModel(Model::FromModelInfo(
         test::MakeTestModelInfo("local-model", "local-owner"), "",
         svc_.download_manager, svc_.model_load_manager));
+    local_catalog_->AddModel(Model::FromModelInfo(
+        test::MakeTestModelInfo(kResponseStoreTestModelAlias, "local-owner"),
+        response_store_model_path,
+        svc_.download_manager,
+        *model_load_manager_));
 
     service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, "/tmp/test-cache",
                                             *model_load_manager_, *session_manager_, *null_telemetry_, []() {});
@@ -270,7 +286,7 @@ TEST_F(WebServiceTest, OpenAIListModelsReturnsAllModels) {
 
   EXPECT_EQ(j["object"], "list") << "Response: " << j.dump(2);
   ASSERT_TRUE(j["data"].is_array()) << "Response: " << j.dump(2);
-  EXPECT_EQ(j["data"].size(), 3u) << "Expected 3 models. Response: " << j.dump(2);
+  EXPECT_EQ(j["data"].size(), 4u) << "Expected 4 models. Response: " << j.dump(2);
 }
 
 TEST_F(WebServiceTest, OpenAIListModelsContainsExpectedFields) {
@@ -842,6 +858,19 @@ HttpResult PostJson(const std::string& url, const json& body) {
   return result;
 }
 
+HttpResult GetJson(const std::string& url) {
+  http::HttpRequestOptions options;
+  options.close_connection = true;
+
+  auto response = http::HttpGetWithResponse(url, options);
+  EXPECT_NE(response.status, 0) << "transport failure: " << response.body;
+
+  HttpResult result;
+  result.status = response.status;
+  result.body = json::parse(response.body, nullptr, /*allow_exceptions=*/false);
+  return result;
+}
+
 /// The `message` of an OpenAI-style error body, or the failed response's error message.
 std::string ErrorMessageOf(const json& body) {
   if (body.contains("error") && body["error"].is_object()) {
@@ -896,13 +925,66 @@ TEST_F(WebServiceTest, LocalInferenceRoutesResolveOnlyLocalModels) {
   EXPECT_EQ(public_result.status, 404) << public_result.body.dump(2);
 }
 
-TEST_F(WebServiceTest, LocalResponseLifecycleRoutesAreRegistered) {
-  const auto listed = Get("/catalogs/local/v1/responses");
-  EXPECT_TRUE(listed["data"].empty()) << listed.dump(2);
+TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
+  auto* model = local_catalog_->GetModel(kResponseStoreTestModelAlias);
+  ASSERT_NE(model, nullptr);
 
-  EXPECT_THROW(TestHttpGet(base_url_ + "/catalogs/local/v1/responses/resp_missing"), std::exception);
-  EXPECT_THROW(TestHttpGet(base_url_ + "/catalogs/local/v1/responses/resp_missing/input_items"), std::exception);
-  EXPECT_THROW(TestHttpDelete(base_url_ + "/catalogs/local/v1/responses/resp_missing"), std::exception);
+  const auto load_result = Get(std::string("/catalogs/local/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+
+  const std::string model_id = std::string(kResponseStoreTestModelAlias) + ":1";
+  const auto first = PostJson(
+      base_url_ + "/catalogs/local/v1/responses",
+      {
+          {"model", model_id},
+          {"input", "first turn"},
+          {"store", true},
+          {"max_output_tokens", 4},
+          {"temperature", 0},
+      });
+  ASSERT_EQ(first.status, 200) << first.body.dump(2);
+  const auto first_id = first.body.at("id").get<std::string>();
+
+  const auto local_list = Get("/catalogs/local/v1/responses");
+  ASSERT_EQ(local_list["data"].size(), 1u) << local_list.dump(2);
+  EXPECT_EQ(local_list["data"][0]["id"], first_id) << local_list.dump(2);
+  EXPECT_TRUE(Get("/v1/responses")["data"].empty());
+
+  const auto local_retrieved = GetJson(base_url_ + "/catalogs/local/v1/responses/" + first_id);
+  EXPECT_EQ(local_retrieved.status, 200) << local_retrieved.body.dump(2);
+  EXPECT_EQ(local_retrieved.body["id"], first_id) << local_retrieved.body.dump(2);
+
+  const auto public_retrieved = GetJson(base_url_ + "/v1/responses/" + first_id);
+  EXPECT_EQ(public_retrieved.status, 404) << public_retrieved.body.dump(2);
+
+  const json continuation_body = {
+      {"model", model_id},
+      {"previous_response_id", first_id},
+      {"input", "second turn"},
+      {"store", true},
+      {"max_output_tokens", 4},
+      {"temperature", 0},
+  };
+  const auto local_continuation = PostJson(base_url_ + "/catalogs/local/v1/responses", continuation_body);
+  ASSERT_EQ(local_continuation.status, 200) << local_continuation.body.dump(2);
+  const auto continuation_id = local_continuation.body.at("id").get<std::string>();
+  EXPECT_EQ(local_continuation.body["previous_response_id"], first_id)
+      << local_continuation.body.dump(2);
+
+  const auto public_continuation = PostJson(base_url_ + "/v1/responses", continuation_body);
+  EXPECT_EQ(public_continuation.status, 404) << public_continuation.body.dump(2);
+  EXPECT_NE(ErrorMessageOf(public_continuation.body).find("Previous response not found"), std::string::npos)
+      << public_continuation.body.dump(2);
+
+  const auto deleted =
+      json::parse(TestHttpDelete(base_url_ + "/catalogs/local/v1/responses/" + first_id));
+  EXPECT_TRUE(deleted["deleted"].get<bool>()) << deleted.dump(2);
+  EXPECT_EQ(GetJson(base_url_ + "/catalogs/local/v1/responses/" + first_id).status, 404);
+  EXPECT_EQ(GetJson(base_url_ + "/catalogs/local/v1/responses/" + continuation_id).status, 404);
+  EXPECT_TRUE(Get("/catalogs/local/v1/responses")["data"].empty());
+
+  const auto unload_result = Get(std::string("/catalogs/local/models/unload/") + kResponseStoreTestModelAlias);
+  EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
 
 TEST_F(WebServiceTest, StreamingChatCompletionsRejectsModifiedStockLarkGrammarBeforeModelResolution) {
