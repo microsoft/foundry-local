@@ -99,6 +99,15 @@ DeviceType ParseDeviceType(const std::string& device) {
   return DeviceType::kNotSet;
 }
 
+std::optional<std::string> GetParentModelName(const std::string& asset_id) {
+  static const std::regex kParentModelPattern(R"(/models/([^/]+)/versions/[^/]+$)");
+  std::smatch match;
+  if (std::regex_search(asset_id, match, kParentModelPattern)) {
+    return match[1].str();
+  }
+  return std::nullopt;
+}
+
 }  // anonymous namespace
 
 // ========================================================================
@@ -208,6 +217,27 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     if (system_data.contains("modelLimits") && system_data["modelLimits"].is_object()) {
       m.model_limits = system_data["modelLimits"].get<ModelLimits>();
     }
+
+    ModelLimits direct_limits = m.model_limits.value_or(ModelLimits{});
+    TextLimits direct_text_limits = direct_limits.text_limits.value_or(TextLimits{});
+    opt_int64(system_data, "textContextWindow", direct_text_limits.input_context_window);
+    opt_int64(system_data, "maxOutputTokens", direct_text_limits.max_output_tokens);
+    if (direct_text_limits.input_context_window || direct_text_limits.max_output_tokens) {
+      direct_limits.text_limits = std::move(direct_text_limits);
+    }
+    if (system_data.contains("inputModalities") && system_data["inputModalities"].is_array()) {
+      direct_limits.supported_input_modalities =
+          system_data["inputModalities"].get<std::vector<std::string>>();
+    }
+    if (system_data.contains("outputModalities") && system_data["outputModalities"].is_array()) {
+      direct_limits.supported_output_modalities =
+          system_data["outputModalities"].get<std::vector<std::string>>();
+    }
+    if (direct_limits.text_limits || !direct_limits.supported_input_modalities.empty() ||
+        !direct_limits.supported_output_modalities.empty()) {
+      m.model_limits = std::move(direct_limits);
+    }
+
     if (properties.contains("variantInfo") && properties["variantInfo"].is_object()) {
       m.variant_information = properties["variantInfo"].get<VariantInformation>();
     }
@@ -294,10 +324,6 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     return std::nullopt;
   }
 
-  if (!cm.alias || cm.alias->empty()) {
-    return std::nullopt;
-  }
-
   // Entries with no variant information are the abstract parent model, not a
   // runnable variant — skip them.
   if (!cm.variant_information) {
@@ -315,11 +341,20 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     parent_uri = *cm.variant_information->parents[0].asset_id;
   }
 
+  std::string alias;
+  if (cm.alias && !cm.alias->empty()) {
+    alias = *cm.alias;
+  } else if (auto parent_name = GetParentModelName(parent_uri)) {
+    alias = std::move(*parent_name);
+  } else {
+    alias = *cm.name;
+  }
+
   ModelInfo info;
   info.model_id = *cm.name + ":" + std::to_string(*version);
   info.name = *cm.name;
   info.version = *version;
-  info.alias = *cm.alias;
+  info.alias = std::move(alias);
   info.uri = *cm.asset_id;
   info.detected_region = cm.detected_region;
 

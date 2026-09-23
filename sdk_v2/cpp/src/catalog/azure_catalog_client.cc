@@ -188,7 +188,16 @@ std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& m
 bool IsFoundryLocalVersionCompatible(const std::string& current_version,
                                      const std::string& minimum_version) {
   try {
-    return semver::version::parse(current_version) >= semver::version::parse(minimum_version);
+    const auto current = semver::version::parse(current_version);
+    const auto minimum = semver::version::parse(minimum_version);
+    if (current >= minimum) {
+      return true;
+    }
+
+    // Package prereleases identify an unreleased build, but a stable catalog minimum denotes
+    // the compatible model contract. A same-core prerelease therefore supports that contract.
+    return current.is_prerelease() && !minimum.is_prerelease() &&
+           current.without_suffixes() == minimum.without_suffixes();
   } catch (const semver::semver_exception&) {
     return false;
   }
@@ -220,7 +229,13 @@ http::HttpResponse AzureCatalogClient::PostWithRetry(const std::string& body) {
   std::optional<http::HttpResponse> successful_response;
   http::RetryWithBackoff(
       [&]() -> http::RetryAttempt {
-        auto response = http_post_response_(base_url_, body);
+        http::HttpResponse response;
+        try {
+          response = http_post_response_(base_url_, body);
+        } catch (const std::exception& exception) {
+          return {http::RetryDecision::RetryTransient, {},
+                  std::string("transport error: ") + exception.what()};
+        }
         if (response.status >= 200 && response.status < 300) {
           successful_response = std::move(response);
           return {http::RetryDecision::Success, {}, {}};

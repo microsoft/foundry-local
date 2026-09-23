@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -217,11 +218,8 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
           "alias": "phi-4-mini", "license": "MIT", "licenseDescription": "License terms",
           "minFLVersion": "0.1.0", "supportsToolCalling": true,
           "reasoningStart": "<think>", "inferenceTasks": ["chat-completion"],
-          "modelLimits": {
-            "textLimits": {"inputContextWindow": 4096, "maxOutputTokens": 2048},
-            "supportedInputModalities": ["text", "image"],
-            "supportedOutputModalities": ["text"]
-          }
+          "textContextWindow": 4096, "maxOutputTokens": 2048,
+          "inputModalities": ["text", "image"], "outputModalities": ["text"]
         }
       },
       "properties": {
@@ -312,9 +310,55 @@ TEST(AzureCatalogClientTest, RetriesTransientCatalogFailures) {
   EXPECT_EQ(attempts, 2);
 }
 
+TEST(AzureCatalogClientTest, RetriesThrownCatalogTransportFailure) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int attempts = 0;
+  http::RetryConfig retry_config;
+  retry_config.max_retries = 1;
+  retry_config.base_delay = std::chrono::milliseconds::zero();
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              ++attempts;
+                              if (attempts == 1) {
+                                throw std::runtime_error("connection reset");
+                              }
+                              return MakeOkResponse(R"({"summaries":[]})");
+                            },
+                            retry_config);
+
+  EXPECT_TRUE(client.FetchAllModels().empty());
+  EXPECT_EQ(attempts, 2);
+}
+
+TEST(AzureCatalogClientTest, ExhaustsRetryBudgetForThrownCatalogTransportFailures) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int attempts = 0;
+  http::RetryConfig retry_config;
+  retry_config.max_retries = 1;
+  retry_config.base_delay = std::chrono::milliseconds::zero();
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) -> http::HttpResponse {
+                              ++attempts;
+                              throw std::runtime_error("connection reset");
+                            },
+                            retry_config);
+
+  try {
+    client.FetchAllModels();
+    FAIL() << "Expected catalog request to exhaust its retry budget";
+  } catch (const fl::Exception& exception) {
+    EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+  }
+  EXPECT_EQ(attempts, 2);
+}
+
 TEST(AzureCatalogClientTest, ComparesPipelineSemVerPrereleaseAndBuildVersions) {
   EXPECT_TRUE(IsFoundryLocalVersionCompatible("0.1.0-dev.202605111234", "0.1.0-dev.202605111000"));
-  EXPECT_FALSE(IsFoundryLocalVersionCompatible("0.1.0-dev.202605111234", "0.1.0"));
+  EXPECT_TRUE(IsFoundryLocalVersionCompatible("2.0.0-dev.202609230000", "2.0.0"));
+  EXPECT_FALSE(IsFoundryLocalVersionCompatible("2.0.0-dev.202609230000", "2.0.0-rc.1"));
+  EXPECT_FALSE(IsFoundryLocalVersionCompatible("2.0.0-dev.202609230000", "2.0.1"));
   EXPECT_TRUE(IsFoundryLocalVersionCompatible("2.0.1-rc.1", "2.0.1-rc.1+build.42"));
   EXPECT_TRUE(IsFoundryLocalVersionCompatible("2.0.1", "2.0.1-rc.1"));
 }
@@ -331,6 +375,25 @@ TEST(AzureCatalogClientTest, SkipsAbstractParentModels) {
                             });
 
   EXPECT_TRUE(client.FetchAllModelInfos().empty());
+}
+
+TEST(AzureCatalogClientTest, DerivesAliasFromParentWhenExplicitAliasIsMissing) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(R"({"summaries":[{
+                                "assetId":"azureml://registries/azureml/models/child/versions/1",
+                                "name":"child", "version":"1",
+                                "variantInformation":{"parents":[{
+                                  "assetId":"azureml://registries/azureml/models/parent/versions/1"
+                                }]}
+                              }]})");
+                            });
+
+  const auto models = client.FetchAllModelInfos();
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models.front().alias, "parent");
 }
 
 TEST(AzureCatalogClientTest, SkipsEntriesMissingAssetIdOrName) {
