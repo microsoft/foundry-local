@@ -117,9 +117,6 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
                         : Request(method, Url(url), &body_stream);
 
   request.SetHeader("User-Agent", options.user_agent);
-  for (const auto& [name, value] : options.headers) {
-    request.SetHeader(name, value);
-  }
 
   if (options.close_connection) {
     request.SetHeader("Connection", "close");
@@ -132,34 +129,35 @@ HttpRawResult HttpRequestRaw(const Azure::Core::Http::HttpMethod& method,
   Context context = Context{}.WithDeadline(
       Azure::DateTime(std::chrono::system_clock::now() + options.timeout));
 
+  std::unique_ptr<RawResponse> response;
   try {
-    auto response = transport.Send(request, context);
-
-    HttpRawResult result;
-    result.status = static_cast<int>(response->GetStatusCode());
-
-    // Copy response headers with lowercased keys for case-insensitive lookup.
-    for (const auto& [key, value] : response->GetHeaders()) {
-      result.headers[ToLower(key)] = value;
-    }
-
-    // Read the response body — prefer the stream if available, otherwise use the buffered body.
-    auto response_stream = response->ExtractBodyStream();
-
-    if (response_stream) {
-      auto bytes = response_stream->ReadToEnd(context);
-      result.body.assign(bytes.begin(), bytes.end());
-    } else {
-      auto& bytes = response->GetBody();
-      result.body.assign(bytes.begin(), bytes.end());
-    }
-
-    return result;
+    response = transport.Send(request, context);
   } catch (const std::exception& e) {
-    // Transport and response-read failures (DNS, connect, timeout, TLS, etc.) are surfaced
-    // as status==0 so retry layers can classify them as transient errors.
+    // Transport-level failure (DNS, connect, timeout, TLS, etc.). Surface as status==0
+    // with the message so the retry layer can classify this as a transient error.
     return HttpRawResult{0, std::string("transport error: ") + e.what(), {}};
   }
+
+  HttpRawResult result;
+  result.status = static_cast<int>(response->GetStatusCode());
+
+  // Copy response headers with lowercased keys for case-insensitive lookup.
+  for (const auto& [key, value] : response->GetHeaders()) {
+    result.headers[ToLower(key)] = value;
+  }
+
+  // Read the response body — prefer the stream if available, otherwise use the buffered body.
+  auto response_stream = response->ExtractBodyStream();
+
+  if (response_stream) {
+    auto bytes = response_stream->ReadToEnd(context);
+    result.body.assign(bytes.begin(), bytes.end());
+  } else {
+    auto& bytes = response->GetBody();
+    result.body.assign(bytes.begin(), bytes.end());
+  }
+
+  return result;
 }
 
 std::string HttpRequest(const Azure::Core::Http::HttpMethod& method,
