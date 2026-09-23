@@ -1835,8 +1835,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   } catch (const fl::Exception& error) {
     EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
     failure_message = error.what();
-    EXPECT_NE(std::string(error.what()).find(
-                  "Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
+    EXPECT_NE(std::string(error.what()).find("Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
               std::string::npos);
   }
 
@@ -4021,10 +4020,9 @@ TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
           return cancel_enabled && streamed_items >= 1 ? 1 : 0;
         });
 
-    auto [canceled, canceled_finish] =
-        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
-    (void)canceled;
-    EXPECT_EQ(canceled_finish, FOUNDRY_LOCAL_FINISH_NONE);
+    ExpectOperationCancelled([&] {
+      (void)run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+    });
     EXPECT_EQ(session.TurnCount(), 1u);
     EXPECT_EQ(session.MessageCount(), 2u);
 
