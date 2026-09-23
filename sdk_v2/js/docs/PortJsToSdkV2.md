@@ -115,13 +115,12 @@ underlying C ABI call is a memory copy, not I/O.
 
 ## Streaming
 
-- `Session.processRequestStreaming` returns an `AsyncIterable<Item>`. Each
-  native streaming-callback push lands on a `Napi::ThreadSafeFunction`
-  acquired in the session's constructor and released when the iterable is
-  closed.
-- Cancellation: each async API accepts an `AbortSignal`. The signal is
-  bound to `Request::Cancel()`, which the C++ wrapper translates into a
-  cancellation signal observed by the streaming callback.
+- `Session.processStreamingRequest` returns an `AsyncIterable<Item>`. Each request owns a worker whose
+  `Napi::ThreadSafeFunction` forwards native streaming-callback items and is released after the worker completes and
+  its queued callbacks drain.
+- Cancellation: streaming APIs accept an `AbortSignal`. A signal already aborted at call time rejects before native
+  work is submitted. Once submitted, abort removes work still waiting in the addon's per-session queue or calls
+  `Request::Cancel()` for an invocation currently inside native `Session::ProcessRequest`.
 - Live PCM input (audio transcription with chunks arriving over time) is
   expressed by adding an `AudioItem` descriptor to the `Request` and
   pushing PCM bytes through a paired `ItemQueue`. The session consumes the
@@ -307,6 +306,7 @@ Test stack pinned:
 |-------------------------------------------------------------------|-----------------------------------------------|
 | C++ addon scaffolding + error mapping                             | Implemented                                   |
 | `Manager`, `Catalog`, `Model`                                     | Implemented                                   |
+| BYOM catalog selection, mutable metadata, register/unregister     | Implemented                                   |
 | `Request`, `Response`, `ItemQueue`                                | Implemented                                   |
 | `Item` discriminated union + factories                            | Implemented (all 8 subtypes, both directions) |
 | `ChatSession` (non-streaming + streaming)                         | Implemented                                   |

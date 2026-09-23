@@ -468,7 +468,7 @@ void Manager::StartWebService() {
   ActionTracker tracker(Action::kCoreServiceStart, *telemetry_);
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
-  web_service_ = std::make_unique<WebService>(*public_catalog_, *logger_, *config_.model_cache_dir,
+  web_service_ = std::make_unique<WebService>(*public_catalog_, *local_catalog_, *logger_, *config_.model_cache_dir,
                                               *model_load_manager_,
                                               *session_manager_, *telemetry_,
                                               [this]() { Shutdown(); });
@@ -541,7 +541,7 @@ void Manager::Shutdown() {
   // Order matters:
   //   1. Reject new loads so callers gated on IsShutdownRequested can stop early.
   //   2. Cancel in-flight generations BEFORE stopping the web service. StopWebService() hard-joins
-  //      streaming threads; a generation grinding in ORT GenAI only stops when request.canceled is
+  //      streaming threads; a generation grinding in ORT GenAI only stops when request cancellation is
   //      set, so cancelling first is what lets JoinAll() return promptly instead of deadlocking
   //      process shutdown.
   //   3. Stop the web service (JoinAll now unblocks), then drain HTTP-tracked sessions.

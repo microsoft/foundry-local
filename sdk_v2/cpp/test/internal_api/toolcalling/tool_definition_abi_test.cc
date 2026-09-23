@@ -267,7 +267,8 @@ TEST(ToolDefinitionAbiTest, VersionOneAcceptsEmptyFunctionNameForReleasedPreSeri
 
 TEST(ToolDefinitionAbiTest, VersionOnePreSerializedArrayReachesProductionToolContext) {
   constexpr const char* legacy_tools =
-      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":"object"}}}])";
+      R"([{"type":"function","function":{"name":"legacy","parameters":{"type":"object"}}},)"
+      R"({"type":"custom","custom":{"name":"legacy_custom"}}])";
   LegacyDefinition legacy(1, "", "", legacy_tools);
 
   fl::ToolRegistry registry;
@@ -278,10 +279,13 @@ TEST(ToolDefinitionAbiTest, VersionOnePreSerializedArrayReachesProductionToolCon
   fl::chat_session_internal::PopulateToolDefinitions(registry.Definitions(), context);
 
   const auto serialized = nlohmann::json::parse(context.tools_json);
-  ASSERT_EQ(serialized.size(), 2u);
+  ASSERT_EQ(serialized.size(), 3u);
   EXPECT_EQ(serialized[0]["function"]["name"], "legacy");
-  EXPECT_EQ(serialized[1]["function"]["name"], "modern");
+  EXPECT_EQ(serialized[1]["custom"]["name"], "legacy_custom");
+  EXPECT_EQ(serialized[2]["function"]["name"], "modern");
   EXPECT_FALSE(context.tool_kinds.contains(""));
+  EXPECT_EQ(context.tool_kinds.at("legacy"), ToolKind::kFunction);
+  EXPECT_FALSE(context.tool_kinds.contains("legacy_custom"));
   EXPECT_EQ(context.tool_kinds.at("modern"), ToolKind::kFunction);
 }
 

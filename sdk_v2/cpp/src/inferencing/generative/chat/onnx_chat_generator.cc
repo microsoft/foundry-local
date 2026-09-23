@@ -250,13 +250,23 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
                                       GenAIModelInstance& model,
                                       const ToolCallContext& tool_ctx,
                                       const SearchOptions& options) {
-  if (new_messages.empty() || full_messages.empty()) {
+  return AppendMessages(new_messages,
+                        chat_internal::PrepareChatMessages(full_messages, model.HasPositionalToolResults()),
+                        model, tool_ctx, options);
+}
+
+int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                                      const chat_internal::PreparedChatMessages& full_messages,
+                                      GenAIModelInstance& model,
+                                      const ToolCallContext& tool_ctx,
+                                      const SearchOptions& options) {
+  if (new_messages.empty() || full_messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
   // Render and tokenize the authoritative full transcript once. Generated text is not guaranteed to round-trip
   // through decode/encode to the same token IDs, so resident state is reusable only when it is an exact prefix.
-  std::string prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
+  std::string prompt = BuildChatPrompt(full_messages, model, tool_ctx);
   auto full_sequences = EncodePrompt(prompt, model);
   const auto full_count = full_sequences->SequenceCount(0);
   const auto* full_data = full_sequences->SequenceData(0);
@@ -371,11 +381,21 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(const std::vector<T
                                                              GenAIModelInstance& model,
                                                              const ToolCallContext& tool_ctx,
                                                              bool use_full_context) {
-  if (messages.empty()) {
+  return Create(chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()),
+                options, model, tool_ctx, use_full_context);
+}
+
+std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(
+    const chat_internal::PreparedChatMessages& messages,
+    const SearchOptions& options,
+    GenAIModelInstance& model,
+    const ToolCallContext& tool_ctx,
+    bool use_full_context) {
+  if (messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
-  std::string prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  std::string prompt = BuildChatPrompt(messages, model, tool_ctx);
   return CreateImpl(prompt, options, model, tool_ctx, use_full_context, /*images=*/{}, /*audios=*/{});
 }
 
@@ -406,8 +426,9 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
 
   std::string messages_json = TransformMessagesForMedia(messages);
   const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-  std::string prompt =
-      model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools_ptr, /*add_generation_prompt=*/true);
+  const char* template_kwargs_ptr = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+  std::string prompt = model.GetPreprocessor().ApplyChatTemplateWithOptions(
+      messages_json.c_str(), tools_ptr, template_kwargs_ptr, /*add_generation_prompt=*/true);
 
   return CreateImpl(prompt, options, model, tool_ctx, use_full_context, images, audios);
 }

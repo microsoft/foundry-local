@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
+#include "contracts/reasoning_options.h"
 
 #include "contracts/tool_definitions.h"
 #include "inferencing/generative/chat/stop_strings.h"
@@ -120,28 +121,29 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
     }
 
     const std::string content = msg.content.value_or("");
-    if (!content.empty()) {
-      session_request.AddOwnedItem(std::make_unique<MessageItem>(role, content, msg.name.value_or("")));
+    const std::string reasoning = msg.reasoning_content.value_or("");
+    if (!content.empty() || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
+      auto message = std::make_unique<MessageItem>();
+      message->role = role;
+      message->name = msg.name.value_or("");
+      if (!reasoning.empty()) {
+        message->content.push_back(
+            MessagePart::Own(std::make_unique<TextItem>(reasoning, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
+      }
+      if (!content.empty()) {
+        message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(content)));
+      }
+      session_request.AddOwnedItem(std::move(message));
     }
 
     if (role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
       continue;
     }
 
-    // A reasoning-only response has no model-visible text to replay, but its assistant role still separates the
-    // messages on either side. Carry that boundary as an empty visible text part; reasoning itself remains private.
-    if (content.empty() && msg.reasoning_content.has_value() && !msg.reasoning_content->empty()) {
-      auto boundary = std::make_unique<MessageItem>();
-      boundary->role = role;
-      boundary->name = msg.name.value_or("");
-      boundary->content.push_back(MessagePart::Own(std::make_unique<TextItem>("")));
-      session_request.AddOwnedItem(std::move(boundary));
-    }
-
     // Assistant messages that issue tool calls usually have null content. When such a message also carries a
     // participant name, emit a content-free MessageItem to carry it: the transcript folds the calls below into that
     // message, so the name reaches the template without fabricating a text part the caller never sent.
-    if (content.empty() && (!msg.reasoning_content.has_value() || msg.reasoning_content->empty()) &&
+    if (content.empty() && reasoning.empty() &&
         !msg.tool_calls.empty() && msg.name.has_value() && !msg.name->empty()) {
       auto named = std::make_unique<MessageItem>();
       named->role = role;
@@ -232,6 +234,11 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
     session_request.options["max_output_tokens"] = std::to_string(*req.max_tokens);
   }
 
+  if (req.chat_template_kwargs.has_value() || req.reasoning_effort.has_value()) {
+    session_request.options["chat_template_kwargs"] =
+        ResolveReasoningTemplateKwargs(req.chat_template_kwargs, req.reasoning_effort).dump();
+  }
+
   // Extract metadata extensions (matching C# GetTopK/GetRandomSeed)
   if (req.metadata.has_value()) {
     const auto& meta = *req.metadata;
@@ -268,6 +275,7 @@ void MapGuidance(const ChatCompletionRequest& req, Request& session_request) {
     }
   } else if (rf_type == "json_object") {
     session_request.options["guidance_type"] = "json_schema";
+    session_request.options["guidance_data"] = R"({"type":"object"})";
   } else if (rf_type == "text") {
     session_request.options["tool_choice"] = "none";
   }

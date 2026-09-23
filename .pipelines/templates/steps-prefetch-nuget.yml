@@ -24,9 +24,7 @@ parameters:
 
 steps:
 
-# Stable pipeline versions must match sdk_v2/deps_versions.json. Non-release
-# CI intentionally overrides GenAI with a prerelease from the existing
-# AIFoundryLocal_PublicPackages feed, which has ORT-Nightly as an upstream.
+# Stable pipeline versions must match sdk_v2/deps_versions.json.
 - task: PowerShell@2
   displayName: 'Validate pinned versions match deps_versions.json'
   inputs:

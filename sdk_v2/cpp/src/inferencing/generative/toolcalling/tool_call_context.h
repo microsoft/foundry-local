@@ -55,6 +55,13 @@ struct ToolCallContext {
   /// The raw tools JSON string for the chat template (passed to ApplyChatTemplate).
   std::string tools_json;
 
+  /// Additional typed context values for the model's chat template, serialized as a JSON object.
+  std::string template_kwargs_json;
+
+  /// Whether the loaded template has proven that it consumes assistant reasoning_content and honors
+  /// preserve_thinking. Qualified templates receive typed historical reasoning during projection.
+  bool supports_reasoning_history = false;
+
   /// Kind of each named tool, snapshotted from the session's registry at the same moment
   /// `tools_json` was built. Generation resolves a produced call's name through this copy rather
   /// than through the session's registry, which another thread may change mid-turn.
@@ -101,6 +108,18 @@ struct ToolCallContext {
 
   /// User-specified guidance data (the LARK grammar string, JSON schema, etc.).
   std::string guidance_data;
+
+  bool HasExplicitGuidance() const {
+    return !guidance_type.empty() && !guidance_data.empty();
+  }
+
+  bool HasPartialExplicitGuidance() const {
+    return guidance_type.empty() != guidance_data.empty();
+  }
+
+  bool HasAnyExplicitGuidance() const {
+    return !guidance_type.empty() || !guidance_data.empty();
+  }
 
   /// Whether any tools were provided in the request.
   bool HasTools() const { return !tools_json.empty(); }

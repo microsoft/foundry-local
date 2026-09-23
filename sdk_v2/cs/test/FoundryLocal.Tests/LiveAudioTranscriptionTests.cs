@@ -5,12 +5,31 @@
 // --------------------------------------------------------------------------------------------------------------------
 
 namespace Microsoft.AI.Foundry.Local.Tests;
+using System.Threading.Channels;
 using Microsoft.AI.Foundry.Local.OpenAI;
 
 using TUnit.Core.Exceptions;
 
 internal sealed class LiveAudioTranscriptionTests
 {
+    [Test]
+    public async Task Producer_PreCancelledToken_CompletesChannelWithoutProcessing()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var channel = Channel.CreateUnbounded<int>();
+        var processCount = 0;
+
+        await LiveAudioTranscriptionSession.RunProducerAsync(
+            () => processCount++,
+            error => channel.Writer.TryComplete(error),
+            cts.Token);
+
+        await channel.Reader.Completion;
+        await Assert.That(processCount).IsEqualTo(0);
+        await Assert.That(channel.Reader.Completion.Status).IsEqualTo(TaskStatus.RanToCompletion);
+    }
+
     // --- LiveAudioTranscriptionResponse.FromJson tests ---
 
     [Test]
@@ -116,6 +135,53 @@ internal sealed class LiveAudioTranscriptionTests
         await Assert.That(options.PushQueueCapacity).IsEqualTo(100);
     }
 
+    [Test]
+    public async Task RequestConstruction_AppliesSnapshottedLanguageWithLowercaseKey()
+    {
+        var settings = new LiveAudioTranscriptionSession.LiveAudioTranscriptionOptions
+        {
+            Language = "fr"
+        };
+
+        var setOptionsCallCount = 0;
+        var nativeOptions = new Dictionary<string, string>();
+        using var request = new CancellationTokenSource();
+        var constructedRequest = LiveAudioTranscriptionSession.CreateRequest(
+            settings.Language,
+            () =>
+            {
+                settings.Language = "de";
+                return request;
+            },
+            (_, options) =>
+            {
+                setOptionsCallCount++;
+                nativeOptions = options.ToDictionary();
+            });
+
+        await Assert.That(constructedRequest).IsSameReferenceAs(request);
+        await Assert.That(setOptionsCallCount).IsEqualTo(1);
+        await Assert.That(nativeOptions.Count).IsEqualTo(1);
+        await Assert.That(nativeOptions.ContainsKey("language")).IsTrue();
+        await Assert.That(nativeOptions["language"]).IsEqualTo("fr");
+    }
+
+    [Test]
+    public async Task RequestConstruction_UnsetLanguageDoesNotAddLanguageOption()
+    {
+        var settings = new LiveAudioTranscriptionSession.LiveAudioTranscriptionOptions();
+        var setOptionsCallCount = 0;
+        using var request = new CancellationTokenSource();
+
+        var constructedRequest = LiveAudioTranscriptionSession.CreateRequest(
+            settings.Language,
+            () => request,
+            (_, _) => setOptionsCallCount++);
+
+        await Assert.That(constructedRequest).IsSameReferenceAs(request);
+        await Assert.That(setOptionsCallCount).IsEqualTo(0);
+    }
+
     // --- CoreErrorResponse tests ---
 
     [Test]
@@ -207,6 +273,7 @@ internal sealed class LiveAudioTranscriptionTests
         session.Settings.SampleRate = 16000;
         session.Settings.Channels = 1;
         session.Settings.BitsPerSample = 16;
+        session.Settings.Language = "en";
 
         await session.StartAsync();
 
@@ -356,6 +423,7 @@ internal sealed class LiveAudioTranscriptionTests
         session.Settings.SampleRate = 16000;
         session.Settings.Channels = 1;
         session.Settings.BitsPerSample = 16;
+        session.Settings.Language = "en";
 
         await session.StartAsync();
 
@@ -647,5 +715,3 @@ internal sealed class LiveAudioTranscriptionTests
         Console.WriteLine($"Streaming transcription ({segmentCount} segments): {streamedText}");
     }
 }
-
-

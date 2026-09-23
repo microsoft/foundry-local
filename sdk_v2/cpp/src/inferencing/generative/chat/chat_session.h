@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 #pragma once
 
+#include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/chat/reasoning_stream_splitter.h"
 #include "inferencing/generative/chat/search_options.h"
@@ -30,11 +31,13 @@ enum class BackendTerminationCause;
 
 using TextChatGeneratorFactory =
     std::function<std::unique_ptr<ChatGenerator>(
-        const std::vector<TranscriptMessage>&,
+        const chat_internal::PreparedChatMessages&,
         const SearchOptions&,
         GenAIModelInstance&,
         const ToolCallContext&,
         bool)>;
+using ChatMessagePreparer = std::function<chat_internal::PreparedChatMessages(
+    std::vector<TranscriptMessage>, bool)>;
 
 namespace chat_session_internal {
 
@@ -96,8 +99,7 @@ void FlushDecodedStream(StopStringFilter* stop_filter,
   process_segments(splitter.Flush());
 }
 
-flFinishReason ResolveGeneratedFinishReason(bool canceled,
-                                            bool has_tool_calls,
+flFinishReason ResolveGeneratedFinishReason(bool has_tool_calls,
                                             bool stop_sequence_matched,
                                             bool host_output_limit_reached,
                                             std::optional<flFinishReason> backend_finish_reason,
@@ -121,6 +123,10 @@ void PopulateToolDefinitions(const std::vector<ToolDefinition>& definitions, Too
 void ResolveBuiltInRawEnvelope(ToolCallContext& context);
 void ApplyRawEnvelopeGuidance(ToolCallContext& context, ILogger& logger);
 bool ShouldStartInsideReasoning(const ToolCallContext& context, bool prompt_opens_reasoning);
+bool ShouldUseQwenXmlToolCallParser(const ToolCallContext& context,
+                                    bool has_native_qwen_xml_tool_calls);
+ToolCallPayloadParser CreateToolCallPayloadParser(
+    const ToolCallContext& context, const GenAIModelInstance& model);
 void NormalizeToolOutputBatch(ToolCallStreamAccumulator::Output& output,
                               const ToolCallContext& tool_ctx);
 ToolCallStreamAccumulator::Output PushToolOutput(
@@ -156,7 +162,8 @@ class ChatSession : public Session {
  public:
   ChatSession(const fl::Model& catalog_model, GenAIModelInstance& model, ILogger& logger, ITelemetry& telemetry,
               ChatTranscript::CommitFaultInjector transcript_fault_injector = {},
-              TextChatGeneratorFactory text_generator_factory = {});
+              TextChatGeneratorFactory text_generator_factory = {},
+              ChatMessagePreparer message_preparer = {});
   ~ChatSession();
 
   // Movable: transfers session refcount ownership to the moved-to instance.
@@ -196,17 +203,18 @@ class ChatSession : public Session {
   /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
 
-  /// Build tool calling context from request parameters and a snapshot of the session's tool definitions.
+  /// Build tool calling context from merged session/request options and a snapshot of the session's tool definitions.
   ///
   /// The snapshot is supplied by the caller rather than read here so that one turn resolves its replayed calls, its
   /// prompt, and its produced calls against the same tool set.
-  ToolCallContext BuildToolCallContext(const Request& request, const std::vector<ToolDefinition>& definitions) const;
+  ToolCallContext BuildToolCallContext(const Request& request,
+                                       const KeyValuePairs& options,
+                                       const std::vector<ToolDefinition>& definitions) const;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
                               const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
-                              bool canceled,
                               bool stop_sequence_matched,
                               bool host_output_limit_reached,
                               Response& response,
@@ -255,6 +263,7 @@ class ChatSession : public Session {
   // asks for the same one keeps the KV cache.
   std::string system_prompt_;
   TextChatGeneratorFactory text_generator_factory_;
+  ChatMessagePreparer message_preparer_;
 };
 
 }  // namespace fl

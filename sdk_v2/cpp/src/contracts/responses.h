@@ -83,6 +83,12 @@ struct FunctionCallResultInputItem {
   std::string output;
 };
 
+/// Reasoning from a prior assistant turn, echoed back by a stateless client.
+struct ReasoningInputItem {
+  std::string type = "reasoning";
+  std::string text;
+};
+
 /// A custom tool call from a prior assistant turn, echoed back by the client as part of the transcript.
 /// JSON: {"type":"custom_tool_call","call_id":"..","name":"..","input":".."}
 ///
@@ -103,7 +109,7 @@ struct CustomToolCallResultInputItem {
   std::string output;
 };
 
-using InputItem = std::variant<InputMessage, FunctionCallInputItem, FunctionCallResultInputItem,
+using InputItem = std::variant<InputMessage, FunctionCallInputItem, FunctionCallResultInputItem, ReasoningInputItem,
                                CustomToolCallInputItem, CustomToolCallResultInputItem>;
 
 // ---------------------------------------------------------------------------

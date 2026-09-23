@@ -23,10 +23,10 @@ std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
     case OgaFinishReason_MaxGeneratedTokens:
     case OgaFinishReason_MaxSessionTokens:
       return FOUNDRY_LOCAL_FINISH_LENGTH;
-    case OgaFinishReason_Cancelled:
-      return FOUNDRY_LOCAL_FINISH_NONE;
     case OgaFinishReason_Failed:
       return FOUNDRY_LOCAL_FINISH_ERROR;
+    case OgaFinishReason_Cancelled:
+      return std::nullopt;
     default:
       return std::nullopt;
   }
@@ -83,7 +83,7 @@ OnnxEngineChatStream::OnnxEngineChatStream(
 
 OnnxEngineChatStream::~OnnxEngineChatStream() {
   try {
-    engine_.Close(conversation_);
+    Close();
   } catch (...) {
   }
 }
@@ -155,16 +155,35 @@ void OnnxEngineChatStream::Cancel() {
   engine_.Cancel(conversation_);
 }
 
+void OnnxEngineChatStream::Close() {
+  if (closed_) {
+    return;
+  }
+
+  engine_.Close(conversation_);
+  closed_ = true;
+}
+
 int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                                          const std::vector<TranscriptMessage>& full_messages,
                                          GenAIModelInstance& model,
                                          const ToolCallContext& tool_ctx,
                                          const SearchOptions& options) {
-  if (new_messages.empty() || full_messages.empty()) {
+  return AppendMessages(new_messages,
+                        chat_internal::PrepareChatMessages(full_messages, model.HasPositionalToolResults()),
+                        model, tool_ctx, options);
+}
+
+int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
+                                         const chat_internal::PreparedChatMessages& full_messages,
+                                         GenAIModelInstance& model,
+                                         const ToolCallContext& tool_ctx,
+                                         const SearchOptions& options) {
+  if (new_messages.empty() || full_messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
-  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
+  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx);
   auto sequences = EncodePrompt(prompt, model);
   const int count = static_cast<int>(sequences->SequenceCount(0));
   const auto* data = sequences->SequenceData(0);
@@ -230,7 +249,16 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     const SearchOptions& options,
     GenAIModelInstance& model,
     const ToolCallContext& tool_ctx) {
-  if (messages.empty()) {
+  return Create(chat_internal::PrepareChatMessages(messages, model.HasPositionalToolResults()),
+                options, model, tool_ctx);
+}
+
+std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
+    const chat_internal::PreparedChatMessages& messages,
+    const SearchOptions& options,
+    GenAIModelInstance& model,
+    const ToolCallContext& tool_ctx) {
+  if (messages.Empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
   }
 
@@ -239,7 +267,7 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model does not own a chat Engine");
   }
 
-  auto prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  auto prompt = BuildChatPrompt(messages, model, tool_ctx);
   auto sequences = EncodePrompt(prompt, model);
   const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
   const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
