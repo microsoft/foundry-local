@@ -4020,9 +4020,12 @@ TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
           return cancel_enabled && streamed_items >= 1 ? 1 : 0;
         });
 
-    ExpectOperationCancelled([&] {
-      (void)run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
-    });
+    try {
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+      FAIL() << "Expected streaming callback cancellation";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+    }
     EXPECT_EQ(session.TurnCount(), 1u);
     EXPECT_EQ(session.MessageCount(), 2u);
 

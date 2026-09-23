@@ -2,12 +2,15 @@
 // Licensed under the MIT License.
 #include "catalog/azure_catalog_models.h"
 
+#include "exception.h"
 #include "util/json_helpers.h"
 #include "utils.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -17,19 +20,6 @@
 namespace fl {
 
 namespace {
-
-/// Extract short model name from parent asset URI.
-/// Pattern: find "/models/" then capture everything until the next "/".
-std::string ExtractShortName(const std::string& parent_model_uri) {
-  // Use a capture group rather than lookbehind: ECMAScript regex on libstdc++/libc++
-  // does not implement lookbehind and would throw at construction.
-  static const std::regex pattern(R"(/models/([^/]+))");
-  std::smatch match;
-  if (std::regex_search(parent_model_uri, match, pattern)) {
-    return match[1].str();
-  }
-  return {};
-}
 
 /// Parse an ISO 8601 datetime string to Unix timestamp (seconds).
 /// Handles formats like "2024-01-15T10:30:00Z" and "2024-01-15T10:30:00.1234567+00:00".
@@ -57,6 +47,42 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
   return t == static_cast<time_t>(-1) ? 0 : static_cast<int64_t>(t);
 }
 
+/// Parse a numeric string field (e.g. the catalog's string-typed "version"). Returns
+/// nullopt on absence or malformed input.
+std::optional<int> ParseIntString(const std::optional<std::string>& value) {
+  if (!value || value->empty() ||
+      !std::all_of(value->begin(), value->end(), [](char character) {
+        return character >= '0' && character <= '9';
+      })) {
+    return std::nullopt;
+  }
+
+  int parsed = 0;
+  const auto [end, error] = std::from_chars(value->data(), value->data() + value->size(), parsed);
+  if (error != std::errc{} || end != value->data() + value->size()) {
+    return std::nullopt;
+  }
+
+  return parsed;
+}
+
+std::string JoinStrings(const std::vector<std::string>& values) {
+  std::ostringstream joined;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      joined << ',';
+    }
+    joined << values[i];
+  }
+  return joined.str();
+}
+
+bool ContainsStringIgnoreCase(const std::vector<std::string>& values, const std::string& target) {
+  const auto lowered_target = ToLower(target);
+  return std::any_of(values.begin(), values.end(),
+                     [&](const std::string& value) { return ToLower(value) == lowered_target; });
+}
+
 DeviceType ParseDeviceType(const std::string& device) {
   const auto lower = ToLower(device);
   if (lower == "cpu") {
@@ -73,6 +99,15 @@ DeviceType ParseDeviceType(const std::string& device) {
   return DeviceType::kNotSet;
 }
 
+std::optional<std::string> GetParentModelName(const std::string& asset_id) {
+  static const std::regex kParentModelPattern(R"(/models/([^/]+)/versions/[^/]+$)");
+  std::smatch match;
+  if (std::regex_search(asset_id, match, kParentModelPattern)) {
+    return match[1].str();
+  }
+  return std::nullopt;
+}
+
 }  // anonymous namespace
 
 // ========================================================================
@@ -87,41 +122,47 @@ void to_json(nlohmann::json& j, const CatalogFilter& f) {
   };
 }
 
-void to_json(nlohmann::json& j, const CatalogResource& r) {
-  j = nlohmann::json{
-      {"resourceId", r.resource_id},
-      {"entityContainerType", r.entity_container_type},
-  };
-}
-
-void to_json(nlohmann::json& j, const IndexEntitiesRequest& r) {
+void to_json(nlohmann::json& j, const AzureCatalogRequest& r) {
   j = nlohmann::json{
       {"filters", r.filters},
       {"pageSize", r.page_size},
   };
 
-  if (r.skip.has_value()) {
-    j["skip"] = *r.skip;
-  }
-
-  if (r.continuation_token.has_value()) {
+  if (r.continuation_token && !r.continuation_token->empty()) {
     j["continuationToken"] = *r.continuation_token;
   }
-}
-
-void to_json(nlohmann::json& j, const AzureCatalogRequest& r) {
-  j = nlohmann::json{
-      {"resourceIds", r.resource_ids},
-      {"indexEntitiesRequest", r.index_entities_request},
-  };
 }
 
 // ========================================================================
 // Response deserialization (from_json)
 // ========================================================================
 
+void from_json(const nlohmann::json& j, TextLimits& t) {
+  opt_int64(j, "inputContextWindow", t.input_context_window);
+  opt_int64(j, "maxOutputTokens", t.max_output_tokens);
+}
+
+void from_json(const nlohmann::json& j, ModelLimits& m) {
+  if (j.contains("textLimits") && j["textLimits"].is_object()) {
+    m.text_limits = j["textLimits"].get<TextLimits>();
+  }
+
+  if (j.contains("supportedInputModalities") && j["supportedInputModalities"].is_array()) {
+    m.supported_input_modalities = j["supportedInputModalities"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("supportedOutputModalities") && j["supportedOutputModalities"].is_array()) {
+    m.supported_output_modalities = j["supportedOutputModalities"].get<std::vector<std::string>>();
+  }
+}
+
 void from_json(const nlohmann::json& j, VariantMetadata& v) {
   opt_str(j, "modelType", v.model_type);
+
+  if (j.contains("quantization") && j["quantization"].is_array()) {
+    v.quantization = j["quantization"].get<std::vector<std::string>>();
+  }
+
   opt_str(j, "device", v.device);
   opt_str(j, "executionProvider", v.execution_provider);
   opt_int64(j, "fileSizeBytes", v.file_size_bytes);
@@ -131,7 +172,7 @@ void from_json(const nlohmann::json& j, VariantParent& v) {
   opt_str(j, "assetId", v.asset_id);
 }
 
-void from_json(const nlohmann::json& j, VariantInfo& v) {
+void from_json(const nlohmann::json& j, VariantInformation& v) {
   if (j.contains("parents") && j["parents"].is_array()) {
     v.parents = j["parents"].get<std::vector<VariantParent>>();
   }
@@ -141,96 +182,136 @@ void from_json(const nlohmann::json& j, VariantInfo& v) {
   }
 }
 
-void from_json(const nlohmann::json& j, CreationContext& c) {
-  opt_str(j, "createdTime", c.created_time);
-}
-
-void from_json(const nlohmann::json& j, CatalogProperties& p) {
-  opt_str(j, "id", p.id);
-  opt_str(j, "name", p.name);
-  opt_int64(j, "version", p.version);
-  opt_str(j, "minFLVersion", p.min_fl_version);
-
-  if (j.contains("variantInfo") && j["variantInfo"].is_object()) {
-    p.variant_info = j["variantInfo"].get<VariantInfo>();
-  }
-
-  if (j.contains("creationContext") && j["creationContext"].is_object()) {
-    p.creation_context = j["creationContext"].get<CreationContext>();
-  }
-}
-
-void from_json(const nlohmann::json& j, CatalogTags& t) {
-  opt_str(j, "alias", t.alias);
-  opt_str(j, "foundryLocal", t.foundry_local);
-  opt_str(j, "promptTemplate", t.prompt_template);
-  opt_str(j, "task", t.task);
-  opt_str(j, "license", t.license);
-  opt_str(j, "licenseDescription", t.license_description);
-  opt_str(j, "supportsToolCalling", t.supports_tool_calling);
-  opt_str(j, "toolCallStart", t.tool_call_start);
-  opt_str(j, "toolCallEnd", t.tool_call_end);
-  opt_str(j, "supportsReasoning", t.supports_reasoning);
-  opt_str(j, "reasoningStart", t.reasoning_start);
-  opt_str(j, "reasoningEnd", t.reasoning_end);
-  opt_str(j, "maxOutputTokens", t.max_output_tokens);
-}
-
-void from_json(const nlohmann::json& j, SystemCatalogData& s) {
-  opt_str(j, "publisher", s.publisher);
-  opt_str(j, "displayName", s.display_name);
-  opt_int(j, "maxOutputTokens", s.max_output_tokens);
-}
-
-void from_json(const nlohmann::json& j, CatalogAnnotations& a) {
-  if (j.contains("tags") && j["tags"].is_object()) {
-    a.tags = j["tags"].get<CatalogTags>();
-  }
-
-  if (j.contains("systemCatalogData") && j["systemCatalogData"].is_object()) {
-    a.system_catalog_data = j["systemCatalogData"].get<SystemCatalogData>();
-  }
-}
-
 void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
-  opt_str(j, "assetId", m.asset_id);
-  opt_str(j, "entityId", m.entity_id);
-
-  if (j.contains("annotations") && j["annotations"].is_object()) {
-    m.annotations = j["annotations"].get<CatalogAnnotations>();
-  }
-
   if (j.contains("properties") && j["properties"].is_object()) {
-    m.properties = j["properties"].get<CatalogProperties>();
+    const auto& properties = j["properties"];
+    const auto& annotations = j.value("annotations", nlohmann::json::object());
+    const auto& system_data = annotations.value("systemCatalogData", nlohmann::json::object());
+    const auto& tags = annotations.value("tags", nlohmann::json::object());
+
+    opt_str(j, "assetId", m.asset_id);
+    opt_str(properties, "name", m.name);
+    opt_str(system_data, "alias", m.alias);
+    opt_str(system_data, "displayName", m.display_name);
+    opt_str(system_data, "publisher", m.publisher);
+    opt_str(system_data, "license", m.license);
+    opt_str(system_data, "licenseDescription", m.license_description);
+    opt_str(system_data, "minFLVersion", m.min_fl_version);
+    opt_bool(system_data, "supportsToolCalling", m.supports_tool_calling);
+    opt_bool(system_data, "supportsReasoning", m.supports_reasoning);
+    opt_str(properties.value("creationContext", nlohmann::json::object()), "createdTime", m.created_time);
+
+    if (properties.contains("version")) {
+      if (properties["version"].is_string()) {
+        m.version = properties["version"].get<std::string>();
+      } else if (properties["version"].is_number_integer()) {
+        m.version = std::to_string(properties["version"].get<int>());
+      }
+    }
+    if (system_data.contains("inferenceTasks") && system_data["inferenceTasks"].is_array()) {
+      m.inference_tasks = system_data["inferenceTasks"].get<std::vector<std::string>>();
+    }
+    if (system_data.contains("modelCapabilities") && system_data["modelCapabilities"].is_array()) {
+      m.model_capabilities = system_data["modelCapabilities"].get<std::vector<std::string>>();
+    }
+    if (system_data.contains("modelLimits") && system_data["modelLimits"].is_object()) {
+      m.model_limits = system_data["modelLimits"].get<ModelLimits>();
+    }
+
+    ModelLimits direct_limits = m.model_limits.value_or(ModelLimits{});
+    TextLimits direct_text_limits = direct_limits.text_limits.value_or(TextLimits{});
+    opt_int64(system_data, "textContextWindow", direct_text_limits.input_context_window);
+    opt_int64(system_data, "maxOutputTokens", direct_text_limits.max_output_tokens);
+    if (direct_text_limits.input_context_window || direct_text_limits.max_output_tokens) {
+      direct_limits.text_limits = std::move(direct_text_limits);
+    }
+    if (system_data.contains("inputModalities") && system_data["inputModalities"].is_array()) {
+      direct_limits.supported_input_modalities =
+          system_data["inputModalities"].get<std::vector<std::string>>();
+    }
+    if (system_data.contains("outputModalities") && system_data["outputModalities"].is_array()) {
+      direct_limits.supported_output_modalities =
+          system_data["outputModalities"].get<std::vector<std::string>>();
+    }
+    if (direct_limits.text_limits || !direct_limits.supported_input_modalities.empty() ||
+        !direct_limits.supported_output_modalities.empty()) {
+      m.model_limits = std::move(direct_limits);
+    }
+
+    if (properties.contains("variantInfo") && properties["variantInfo"].is_object()) {
+      m.variant_information = properties["variantInfo"].get<VariantInformation>();
+    }
+    if (!m.supports_reasoning && tags.contains("supportsReasoning") &&
+      tags["supportsReasoning"].is_string()) {
+      const auto value = ToLower(tags["supportsReasoning"].get<std::string>());
+      if (value == "true") {
+        m.supports_reasoning = true;
+      } else if (value == "false") {
+        m.supports_reasoning = false;
+      }
+    }
+    if (tags.contains("foundryLocal") && tags["foundryLocal"].is_string() &&
+        tags["foundryLocal"].get<std::string>() == "test") {
+      m.is_test_model = true;
+    }
+    return;
   }
-}
 
-void from_json(const nlohmann::json& j, IndexEntitiesResponse& r) {
-  opt_int(j, "totalCount", r.total_count);
-  opt_int(j, "nextSkip", r.next_skip);
-  opt_str(j, "continuationToken", r.continuation_token);
+  opt_str(j, "assetId", m.asset_id);
+  opt_str(j, "name", m.name);
+  opt_str(j, "alias", m.alias);
+  opt_str(j, "displayName", m.display_name);
+  opt_str(j, "version", m.version);
+  opt_str(j, "publisher", m.publisher);
+  opt_str(j, "license", m.license);
+  opt_str(j, "licenseDescription", m.license_description);
+  opt_str(j, "minFLVersion", m.min_fl_version);
+  opt_bool(j, "supportsToolCalling", m.supports_tool_calling);
+  opt_bool(j, "supportsReasoning", m.supports_reasoning);
+  opt_str(j, "createdTime", m.created_time);
 
-  if (j.contains("value") && j["value"].is_array()) {
-    r.models = j["value"].get<std::vector<CatalogLocalModel>>();
+  if (j.contains("inferenceTasks") && j["inferenceTasks"].is_array()) {
+    m.inference_tasks = j["inferenceTasks"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("modelCapabilities") && j["modelCapabilities"].is_array()) {
+    m.model_capabilities = j["modelCapabilities"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("deploymentOptions") && j["deploymentOptions"].is_array()) {
+    m.deployment_options = j["deploymentOptions"].get<std::vector<std::string>>();
+  }
+
+  if (j.contains("modelLimits") && j["modelLimits"].is_object()) {
+    m.model_limits = j["modelLimits"].get<ModelLimits>();
+  }
+
+  if (j.contains("variantInformation") && j["variantInformation"].is_object()) {
+    m.variant_information = j["variantInformation"].get<VariantInformation>();
   }
 }
 
 void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
-  if (j.contains("indexEntitiesResponse") && j["indexEntitiesResponse"].is_object()) {
-    r.index_entities_response = j["indexEntitiesResponse"].get<IndexEntitiesResponse>();
+  if (!j.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "catalog response must contain an array-valued 'value' or 'summaries' field");
   }
-}
 
-void from_json(const nlohmann::json& j, CatalogPromptTemplate& t) {
-  opt_str(j, "system", t.system);
-  opt_str(j, "user", t.user);
-  opt_str(j, "assistant", t.assistant);
-  opt_str(j, "prompt", t.prompt);
+  opt_int(j, "totalCount", r.total_count);
+  opt_str(j, "continuationToken", r.continuation_token);
+
+  if (j.contains("value") && j["value"].is_array()) {
+    r.models = j["value"].get<std::vector<CatalogLocalModel>>();
+  } else if (j.contains("summaries") && j["summaries"].is_array()) {
+    r.models = j["summaries"].get<std::vector<CatalogLocalModel>>();
+  } else {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             "catalog response must contain an array-valued 'value' or 'summaries' field");
+  }
 }
 
 // ========================================================================
 // CatalogLocalModel → ModelInfo conversion
-// Mirrors C# LocalModelHelper.ToAzureFoundryLocalModel
 // ========================================================================
 
 std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
@@ -239,52 +320,47 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
     return std::nullopt;
   }
 
-  if (!cm.properties || !cm.properties->name || cm.properties->name->empty()) {
+  if (!cm.name || cm.name->empty()) {
     return std::nullopt;
   }
 
-  if (!cm.entity_id || cm.entity_id->empty()) {
+  // Entries with no variant information are the abstract parent model, not a
+  // runnable variant — skip them.
+  if (!cm.variant_information) {
     return std::nullopt;
   }
 
-  if (!cm.properties->variant_info) {
+  const auto version = ParseIntString(cm.version);
+  if (!version) {
     return std::nullopt;
   }
-
-  const auto& props = *cm.properties;
-  int version = static_cast<int>(props.version.value_or(0));
 
   // Extract parent model URI (used for alias and stored as a property).
   std::string parent_uri;
-  if (props.variant_info && !props.variant_info->parents.empty() &&
-      props.variant_info->parents[0].asset_id) {
-    parent_uri = *props.variant_info->parents[0].asset_id;
+  if (!cm.variant_information->parents.empty() && cm.variant_information->parents[0].asset_id) {
+    parent_uri = *cm.variant_information->parents[0].asset_id;
   }
 
-  // Determine alias — prefer tags.alias, then short name from parent, then model name.
   std::string alias;
-  if (cm.annotations && cm.annotations->tags && cm.annotations->tags->alias) {
-    alias = *cm.annotations->tags->alias;
+  if (cm.alias && !cm.alias->empty()) {
+    alias = *cm.alias;
+  } else if (auto parent_name = GetParentModelName(parent_uri)) {
+    alias = std::move(*parent_name);
   } else {
-    if (!parent_uri.empty()) {
-      alias = ExtractShortName(parent_uri);
-    }
-
-    if (alias.empty()) {
-      alias = *props.name;
-    }
+    alias = *cm.name;
   }
 
   ModelInfo info;
-  info.model_id = *props.name + ":" + std::to_string(version);
-  info.name = *props.name;
-  info.version = version;
-  info.alias = alias;
+  info.model_id = *cm.name + ":" + std::to_string(*version);
+  info.name = *cm.name;
+  info.version = *version;
+  info.alias = std::move(alias);
   info.uri = *cm.asset_id;
+  info.detected_region = cm.detected_region;
 
-  // Device type, execution provider, and model type from variant metadata
-  if (props.variant_info && props.variant_info->variant_metadata) {
-    const auto& vm = *props.variant_info->variant_metadata;
+  // Device type, execution provider, and model type from variant metadata.
+  if (cm.variant_information->variant_metadata) {
+    const auto& vm = *cm.variant_information->variant_metadata;
     if (vm.device) {
       info.device_type = ParseDeviceType(*vm.device);
     }
@@ -293,154 +369,106 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
       info.execution_provider = *vm.execution_provider;
     }
 
-    // ModelType — defaults to "ONNX" (matches C# ToAzureFoundryLocalModel)
-    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] =
-        vm.model_type.value_or("ONNX");
+    // ModelType — defaults to "ONNX" (matches C# ToAzureFoundryLocalModel).
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = vm.model_type.value_or("ONNX");
+
+    if (!vm.quantization.empty()) {
+      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR] = JoinStrings(vm.quantization);
+    }
+
+    if (vm.file_size_bytes) {
+      info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = *vm.file_size_bytes / (1024 * 1024);
+    }
   } else {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] = "ONNX";
   }
 
-  // Prompt templates — parse the JSON string from tags
-  if (cm.annotations && cm.annotations->tags &&
-      cm.annotations->tags->prompt_template && !cm.annotations->tags->prompt_template->empty()) {
-    try {
-      auto pt_json = nlohmann::json::parse(*cm.annotations->tags->prompt_template);
-      auto pt = pt_json.get<CatalogPromptTemplate>();
-
-      if (pt.prompt) {
-        info.prompt_templates.Add("prompt", *pt.prompt);
-      }
-
-      if (pt.system) {
-        info.prompt_templates.Add("system", *pt.system);
-      }
-
-      if (pt.user) {
-        info.prompt_templates.Add("user", *pt.user);
-      }
-
-      if (pt.assistant) {
-        info.prompt_templates.Add("assistant", *pt.assistant);
-      }
-    } catch (...) {
-      // Malformed prompt template JSON — skip it
-    }
+  if (!cm.inference_tasks.empty()) {
+    info.task = cm.inference_tasks.front();
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = cm.inference_tasks.front();
   }
 
-  // String properties — use FOUNDRY_LOCAL_MODEL_PROP_* keys for consistency with the public C API.
-  if (cm.annotations && cm.annotations->tags) {
-    const auto& tags = *cm.annotations->tags;
+  if (cm.license && !cm.license->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = *cm.license;
+  }
 
-    // Helper: parse a catalog string tag ("true"/"false"/"1"/"0") into int_properties.
-    // Skips unrecognized values — no property set.
-    auto set_bool_int = [&](const std::optional<std::string>& tag, const char* key) {
-      if (!tag) {
-        return;
+  if (cm.license_description && !cm.license_description->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR] =
+        *cm.license_description;
+  }
+
+  if (cm.min_fl_version && !cm.min_fl_version->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *cm.min_fl_version;
+  }
+
+  if (cm.publisher && !cm.publisher->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = *cm.publisher;
+  }
+
+  if (cm.display_name && !cm.display_name->empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR] = *cm.display_name;
+  }
+
+  if (!cm.model_capabilities.empty()) {
+    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR] = JoinStrings(cm.model_capabilities);
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] =
+        ContainsStringIgnoreCase(cm.model_capabilities, "tool-calling") ? 1 : 0;
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
+        ContainsStringIgnoreCase(cm.model_capabilities, "reasoning") ? 1 : 0;
+  }
+
+        if (cm.supports_tool_calling) {
+          info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] =
+          *cm.supports_tool_calling ? 1 : 0;
+        }
+
+        if (cm.supports_reasoning) {
+          info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
+          *cm.supports_reasoning ? 1 : 0;
+        }
+
+  if (cm.is_test_model && *cm.is_test_model) {
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT] = 1;
+  }
+
+  if (cm.model_limits) {
+    if (!cm.model_limits->supported_input_modalities.empty()) {
+      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR] =
+          JoinStrings(cm.model_limits->supported_input_modalities);
+    }
+
+    if (!cm.model_limits->supported_output_modalities.empty()) {
+      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR] =
+          JoinStrings(cm.model_limits->supported_output_modalities);
+    }
+
+    if (cm.model_limits->text_limits) {
+      if (cm.model_limits->text_limits->input_context_window) {
+        info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT] =
+            *cm.model_limits->text_limits->input_context_window;
       }
 
-      const auto v = ToLower(*tag);
-      if (v == "true") {
-        info.int_properties[key] = 1;
-      } else if (v == "false") {
-        info.int_properties[key] = 0;
+      if (cm.model_limits->text_limits->max_output_tokens) {
+        info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT] =
+            *cm.model_limits->text_limits->max_output_tokens;
       }
-    };
-
-    if (tags.task) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TASK_STR] = *tags.task;
-      info.task = *tags.task;
     }
-
-    if (tags.license) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR] = *tags.license;
-    }
-
-    if (tags.license_description) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR] = *tags.license_description;
-    }
-
-    set_bool_int(tags.supports_tool_calling, FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT);
-
-    if (tags.tool_call_start) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR] = *tags.tool_call_start;
-    }
-
-    if (tags.tool_call_end) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR] = *tags.tool_call_end;
-    }
-
-    set_bool_int(tags.supports_reasoning, FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT);
-
-    if (tags.reasoning_start) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR] = *tags.reasoning_start;
-    }
-
-    if (tags.reasoning_end) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR] = *tags.reasoning_end;
-    }
-  }
-
-  if (cm.annotations && cm.annotations->system_catalog_data) {
-    const auto& scd = *cm.annotations->system_catalog_data;
-    if (scd.publisher) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR] = *scd.publisher;
-    }
-
-    if (scd.display_name) {
-      info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR] = *scd.display_name;
-    }
-
-    if (scd.max_output_tokens) {
-      info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT] = *scd.max_output_tokens;
-    }
-  }
-
-  // Fallback: tags.maxOutputTokens (string form) if systemCatalogData didn't supply one.
-  if (info.int_properties.find(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT) == info.int_properties.end() &&
-      cm.annotations && cm.annotations->tags && cm.annotations->tags->max_output_tokens) {
-    try {
-      info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT] =
-          std::stoi(*cm.annotations->tags->max_output_tokens);
-    } catch (...) {
-      // Malformed value — ignore.
-    }
-  }
-
-  if (props.min_fl_version) {
-    info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = *props.min_fl_version;
-  }
-
-  // File size in MB
-  if (props.variant_info && props.variant_info->variant_metadata &&
-      props.variant_info->variant_metadata->file_size_bytes) {
-    int64_t bytes = *props.variant_info->variant_metadata->file_size_bytes;
-    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT] = bytes / (1024 * 1024);
   }
 
   info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR] = "FoundryLocal";
 
-  // Parent model URI
+  // Parent model URI.
   if (!parent_uri.empty()) {
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_PARENT_URI_STR] = parent_uri;
   }
 
-  // CreatedAtUnix — Properties.CreationContext.CreatedTime → Unix timestamp
-  if (props.creation_context && props.creation_context->created_time) {
-    int64_t unix_ts = ParseIso8601ToUnix(*props.creation_context->created_time);
-    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT] = unix_ts;
-  }
-
-  // TestModel — tags.foundryLocal == "test" (case-insensitive)
-  if (cm.annotations && cm.annotations->tags && cm.annotations->tags->foundry_local) {
-    const auto& fl_tag = *cm.annotations->tags->foundry_local;
-    // Trim and compare case-insensitively
-    bool is_test = (fl_tag == "test" || fl_tag == "Test" || fl_tag == "TEST");
-    if (is_test) {
-      info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT] = 1;
-    }
+  // CreatedAtUnix — createdTime → Unix timestamp.
+  if (cm.created_time && !cm.created_time->empty()) {
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT] = ParseIso8601ToUnix(*cm.created_time);
   }
 
   return info;
 }
 
 }  // namespace fl
+
