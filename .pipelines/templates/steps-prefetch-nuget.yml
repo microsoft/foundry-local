@@ -59,10 +59,10 @@ steps:
       Write-Host "Pinned versions agree with sdk_v2/deps_versions.json."
 
 - task: UseDotNet@2
-  displayName: 'Use .NET 10 SDK for NuGet restore'
+  displayName: 'Use .NET 9 SDK for NuGet restore'
   inputs:
     packageType: sdk
-    version: '10.0.x'
+    version: '9.0.x'
 
 - task: NuGetAuthenticate@1
   displayName: 'Authenticate NuGet feeds'
@@ -98,7 +98,7 @@ steps:
         'AIFoundryLocal_PublicPackages/nuget/v3/index.json'
       @"
       <Project Sdk="Microsoft.NET.Sdk">
-        <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+        <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
         <ItemGroup>
       $($references -join "`n")
         </ItemGroup>
