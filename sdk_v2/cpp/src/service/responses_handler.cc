@@ -445,6 +445,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     std::unique_ptr<ChatSession> session, Request session_request, const ResponseTurn& turn,
     ResponseLease lease, const ResponseCreateParams& params, const nlohmann::json& req_json) {
   auto body = std::make_shared<SseStreamBody>();
+  auto stream = body->Stream();
+  auto req = std::make_shared<Request>(std::move(session_request));
+  stream->BindRequest(req);
 
   auto initial_response =
       ResponseConverter::BuildInitialResponseObject(turn.response_id, turn.created_at, turn.model_name, params);
@@ -472,7 +475,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   // visible text can start a fresh item with its own id and output_index.
 
   // Capture for background thread
-  auto body_ptr = body;
   bool should_store = params.store;
   auto& store = ctx_.response_store;
   nlohmann::json req_copy = req_json;
@@ -486,9 +488,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   //
   // The lease travels into the thread: the request stays in flight until the response is committed there, so a
   // DELETE arriving mid-stream still refuses the result.
-  std::thread streaming_thread([body_ptr, &logger, &session_manager,
+  std::thread streaming_thread([stream, &logger, &session_manager,
                                 session = std::move(session),
-                                req = std::move(session_request),
+                                req,
                                 turn,
                                 lease = std::move(lease),
                                 should_store, &store,
@@ -516,7 +518,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     std::unordered_set<std::string> raw_envelope_call_ids;
 
     auto push_event = [&](const std::string& event_name, const StreamEvent& ev) {
-      body_ptr->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
+      stream->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
     };
 
     auto close_current = [&]() {
@@ -728,7 +730,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
       session->SetStreamingCallback(callback_fn);
 
-      session->ProcessRequest(req, bg_response);
+      if (stream->IsDisconnected()) {
+        lease.Release();
+        stream->Finish();
+        tracker.Remove(std::this_thread::get_id());
+        return;
+      }
+
+      session->ProcessRequest(*req, bg_response);
 
       // Close whatever item is still open at end-of-generation so the SSE stream is well-formed.
       close_current();
@@ -778,12 +787,12 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       failed.type = StreamEventType::kResponseFailed;
       failed.sequence_number = seq++;
       failed.response = error_response;
-      body_ptr->Push("event: response.failed\ndata: " + nlohmann::json(failed).dump() + "\n\n");
+      stream->Push("event: response.failed\ndata: " + nlohmann::json(failed).dump() + "\n\n");
     }
 
     // Terminal event per spec
-    body_ptr->Push("data: [DONE]\n\n");
-    body_ptr->Finish();
+    stream->Push("data: [DONE]\n\n");
+    stream->Finish();
 
     // Remove() detaches this thread and lets WebService teardown proceed without joining it. Release the RAII lease
     // first so destruction of the lambda captures cannot call back into an already-destroyed ResponseStore.

@@ -5,6 +5,7 @@
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "exception.h"
+#include "inferencing/session/request.h"
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +13,7 @@
 #include <oatpp/web/protocol/http/outgoing/Response.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -79,42 +81,72 @@ inline std::string GenerateCompletionId(const std::string& prefix) {
 }
 
 // ========================================================================
-// SSE stream body — feeds token-by-token SSE events to oatpp's chunked
-// transfer encoding. A producer thread pushes formatted SSE strings into
-// a queue; oatpp calls read() to pull chunks out.
+// SSE stream body — the producer owns the state, not the oatpp Body. This lets
+// a failed socket write destroy the Body and cancel inference while the producer is still running.
 // ========================================================================
 
-class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
+class SseStreamState {
  public:
-  SseStreamBody() : done_(false) {}
-
-  /// Push a formatted SSE event (e.g. "data: {...}\n\n") into the queue.
   void Push(std::string chunk) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (disconnected_) {
+      return;
+    }
+
     queue_.push(std::move(chunk));
     cv_.notify_one();
   }
 
-  /// Signal that no more data will be pushed.
   void Finish() {
     std::lock_guard<std::mutex> lock(mutex_);
     done_ = true;
     cv_.notify_one();
   }
 
-  // -- Body interface --
+  void BindRequest(const std::shared_ptr<Request>& request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    request_ = request;
+  }
 
-  oatpp::v_io_size read(void* buffer, v_buff_size count, oatpp::async::Action& /*action*/) override {
-    std::unique_lock<std::mutex> lock(mutex_);
+  bool IsDisconnected() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return disconnected_;
+  }
 
-    // Wait until data is available or the stream is finished
-    cv_.wait(lock, [this] { return !queue_.empty() || done_; });
+  void BodyClosed() {
+    std::shared_ptr<Request> request;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (eof_observed_) {
+        return;
+      }
 
-    if (queue_.empty()) {
-      return 0;  // EOF — oatpp ends the chunked response
+      disconnected_ = true;
+      request = request_.lock();
+      std::queue<std::string> empty;
+      queue_.swap(empty);
     }
 
-    // Drain as much queued data as fits in the buffer
+    if (request) {
+      request->CancelCurrentOrNext();
+    }
+  }
+
+ private:
+  friend class SseStreamBody;
+
+  oatpp::v_io_size Read(void* buffer, v_buff_size count) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!cv_.wait_for(lock, std::chrono::milliseconds(250),
+                      [this] { return !queue_.empty() || done_; })) {
+      queue_.push(": keep-alive\n\n");
+    }
+
+    if (queue_.empty()) {
+      eof_observed_ = true;
+      return 0;
+    }
+
     oatpp::v_io_size total = 0;
     auto* dst = static_cast<char*>(buffer);
 
@@ -139,6 +171,29 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
     return total;
   }
 
+  mutable std::mutex mutex_;
+  std::condition_variable cv_;
+  std::queue<std::string> queue_;
+  std::weak_ptr<Request> request_;
+  bool done_ = false;
+  bool disconnected_ = false;
+  bool eof_observed_ = false;
+};
+
+class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
+ public:
+  SseStreamBody() : state_(std::make_shared<SseStreamState>()) {}
+  ~SseStreamBody() override { state_->BodyClosed(); }
+
+  std::shared_ptr<SseStreamState> Stream() const { return state_; }
+
+  void Push(std::string chunk) { state_->Push(std::move(chunk)); }
+  void Finish() { state_->Finish(); }
+
+  oatpp::v_io_size read(void* buffer, v_buff_size count, oatpp::async::Action& /*action*/) override {
+    return state_->Read(buffer, count);
+  }
+
   void declareHeaders(Headers& headers) override {
     headers.put("Content-Type", "text/event-stream");
     headers.put("Cache-Control", "no-cache");
@@ -149,10 +204,7 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
   v_int64 getKnownSize() override { return -1; }  // unknown → chunked transfer
 
  private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::queue<std::string> queue_;
-  bool done_;
+  std::shared_ptr<SseStreamState> state_;
 };
 
 }  // namespace fl

@@ -294,6 +294,10 @@ for (const std::string& endpoint : manager.GetWebServiceEndpoints()) {
 manager.StopWebService();
 ```
 
+Streaming chat completions, Responses, and audio transcriptions cancel their active inference when the SSE client
+disconnects. The service sends SSE keepalive comments during token silence so a dropped connection can be detected
+without waiting for the next token. A disconnected stream cannot be resumed; non-streaming requests are unchanged.
+
 Configure with `--skip_service` when the web service is not required; this removes its
 oat++ dependency from the build.
 

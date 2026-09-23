@@ -184,12 +184,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler::HandleStreaming(
     AudioSession&& session, Request session_request) {
   auto body = std::make_shared<SseStreamBody>();
-  auto body_ptr = body;
+  auto stream = body->Stream();
+  auto req = std::make_shared<Request>(std::move(session_request));
+  stream->BindRequest(req);
   auto& logger = ctx_.logger;
   auto& tracker = ctx_.thread_tracker;
 
-  std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request), &tracker,
+  std::thread streaming_thread([bg_session = std::move(session), stream, &logger,
+                                req, &tracker,
                                 &session_manager = ctx_.session_manager]() mutable {
     try {
       // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
@@ -208,7 +210,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
 
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
-          body_ptr->Push("data: " + text_item.text + "\n\n");
+          stream->Push("data: " + text_item.text + "\n\n");
         } else {
           logger.Log(LogLevel::Error,
                      fmt::format("Unexpected item type {} in audio streaming callback",
@@ -219,19 +221,25 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      if (stream->IsDisconnected()) {
+        stream->Finish();
+        tracker.Remove(std::this_thread::get_id());
+        return;
+      }
+
+      bg_session.ProcessRequest(*req, bg_response);
 
       // Send terminal event
-      body_ptr->Push("data: [DONE]\n\n");
+      stream->Push("data: [DONE]\n\n");
     } catch (const std::exception& ex) {
       logger.Log(LogLevel::Error, fmt::format("Audio streaming transcription failed: {}", ex.what()));
 
       // Push error to stream so client doesn't hang
       nlohmann::json error = {{"error", {{"message", ex.what()}}}};
-      body_ptr->Push("data: " + error.dump() + "\n\n");
+      stream->Push("data: " + error.dump() + "\n\n");
     }
 
-    body_ptr->Finish();
+    stream->Finish();
     tracker.Remove(std::this_thread::get_id());
   });
 

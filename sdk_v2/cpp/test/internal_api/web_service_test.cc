@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <httplib.h>
@@ -985,6 +986,93 @@ TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
 
   const auto unload_result = Get(std::string("/catalogs/local/models/unload/") + kResponseStoreTestModelAlias);
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
+}
+
+TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConversation) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+
+  const auto root = PostJson(base_url_ + "/v1/responses",
+                             {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                              {"input", "Start a conversation"},
+                              {"store", true},
+                              {"max_output_tokens", 4}});
+  ASSERT_EQ(root.status, 200) << root.body.dump(2);
+  const auto root_id = root.body.at("id").get<std::string>();
+
+  httplib::Client client(base_url_);
+  client.set_read_timeout(10, 0);
+  bool received_event = false;
+  bool was_active = false;
+  const json streaming_request = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"previous_response_id", root_id},
+      {"input", "Continue the conversation"},
+      {"max_output_tokens", 512},
+      {"stream", true},
+  };
+
+  std::string created_response_id;
+  std::string events;
+  const auto result = client.Post(
+      "/v1/responses", httplib::Headers{}, streaming_request.dump(), "application/json",
+      [&](const char* data, size_t length) {
+        events.append(data, length);
+        const auto event_pos = events.find("event: response.created\ndata: ");
+        if (event_pos == std::string::npos) {
+          return true;
+        }
+
+        const auto json_start = event_pos + std::string("event: response.created\ndata: ").size();
+        const auto json_end = events.find('\n', json_start);
+        if (json_end == std::string::npos) {
+          return true;
+        }
+
+        created_response_id = json::parse(events.substr(json_start, json_end - json_start)).at("response").at("id");
+        received_event = true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (session_manager_->ActiveCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        was_active = session_manager_->ActiveCount() > 0;
+        return false;  // close the socket before the generation completes
+      });
+
+  EXPECT_FALSE(result);
+  ASSERT_TRUE(received_event);
+  ASSERT_TRUE(was_active) << "The SSE connection closed before inference started";
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+  ASSERT_FALSE(created_response_id.empty());
+  EXPECT_EQ(GetJson(base_url_ + "/v1/responses/" + created_response_id).status, 404)
+      << "Canceled inference must not publish a completed response";
+
+  const auto recovered = PostJson(base_url_ + "/v1/responses",
+                                  {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                                   {"previous_response_id", root_id},
+                                   {"input", "A fresh continuation"},
+                                   {"max_output_tokens", 4}});
+  EXPECT_EQ(recovered.status, 200) << recovered.body.dump(2);
+  EXPECT_EQ(recovered.body.value("status", ""), "completed");
+
+  const json completed_stream = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"input", "Another conversation"},
+      {"max_output_tokens", 4},
+      {"stream", true},
+  };
+  const auto completed = client.Post("/v1/responses", completed_stream.dump(), "application/json");
+  ASSERT_TRUE(completed) << httplib::to_string(completed.error());
+  EXPECT_EQ(completed->status, 200);
+  EXPECT_NE(completed->body.find("event: response.completed"), std::string::npos);
+  EXPECT_NE(completed->body.find("data: [DONE]"), std::string::npos);
 }
 
 TEST_F(WebServiceTest, StreamingChatCompletionsRejectsModifiedStockLarkGrammarBeforeModelResolution) {

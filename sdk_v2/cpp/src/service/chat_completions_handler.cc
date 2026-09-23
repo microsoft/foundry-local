@@ -239,12 +239,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::HandleStreaming(
     ChatSession&& session, Request session_request, bool include_usage) {
   auto body = std::make_shared<SseStreamBody>();
-  auto body_ptr = body;
+  auto stream = body->Stream();
+  auto req = std::make_shared<Request>(std::move(session_request));
+  stream->BindRequest(req);
   auto& logger = ctx_.logger;
   auto& tracker = ctx_.thread_tracker;
 
-  std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request),
+  std::thread streaming_thread([bg_session = std::move(session), stream, &logger,
+                                req,
                                 include_usage, &tracker,
                                 &session_manager = ctx_.session_manager]() mutable {
     try {
@@ -264,7 +266,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
-          body_ptr->Push("data: " + text_item.text + "\n\n");
+          stream->Push("data: " + text_item.text + "\n\n");
         } else {
           logger.Log(LogLevel::Error,
                      fmt::format("Unexpected item type {} in chat streaming callback", static_cast<int>(item->type)));
@@ -274,7 +276,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      if (stream->IsDisconnected()) {
+        stream->Finish();
+        tracker.Remove(std::this_thread::get_id());
+        return;
+      }
+
+      bg_session.ProcessRequest(*req, bg_response);
 
       // Usage chunk — only if stream_options.include_usage was true
       if (include_usage) {
@@ -296,10 +304,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
             static_cast<int>(bg_response.usage.reasoning_tokens);
         usage_chunk.usage = std::move(usage);
 
-        body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
+        stream->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
       }
 
-      body_ptr->Push("data: [DONE]\n\n");
+      stream->Push("data: [DONE]\n\n");
     } catch (const std::exception& ex) {
       // The status line is already sent, so a rejected request can only be reported in the event payload. Keep the
       // error type honest so the caller can tell a client mistake from a service failure.
@@ -309,10 +317,10 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       nlohmann::json err = {
           {"error", {{"message", ex.what()}, {"type", error_type}, {"param", nullptr}, {"code", nullptr}}},
       };
-      body_ptr->Push("data: " + err.dump() + "\n\n");
+      stream->Push("data: " + err.dump() + "\n\n");
     }
 
-    body_ptr->Finish();
+    stream->Finish();
     tracker.Remove(std::this_thread::get_id());
   });
 

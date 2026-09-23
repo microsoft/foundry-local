@@ -10,7 +10,9 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -138,6 +140,82 @@ TEST(SseStreamBodyTest, GetKnownSize_ReturnsNegativeOne) {
 TEST(SseStreamBodyTest, GetKnownData_ReturnsNullptr) {
   SseStreamBody body;
   EXPECT_EQ(body.getKnownData(), nullptr);
+}
+
+TEST(SseStreamBodyTest, ClosingBeforeEofCancelsRunningRequest) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  auto body = std::make_unique<SseStreamBody>();
+  auto stream = body->Stream();
+  stream->BindRequest(request);
+
+  body.reset();
+
+  EXPECT_TRUE(stream->IsDisconnected());
+  EXPECT_TRUE(request->IsCancellationRequested());
+  stream->Push("data: discarded\n\n");
+  stream->Finish();
+}
+
+TEST(SseStreamBodyTest, ClosingBeforeRequestStartsPreventsProducerFromStarting) {
+  auto request = std::make_shared<Request>();
+  auto body = std::make_unique<SseStreamBody>();
+  auto stream = body->Stream();
+  stream->BindRequest(request);
+
+  body.reset();
+
+  EXPECT_TRUE(stream->IsDisconnected());
+  ASSERT_TRUE(request->TryBegin());
+  EXPECT_TRUE(request->IsCancellationRequested());
+}
+
+TEST(SseStreamBodyTest, NormalEofDoesNotCancelRunningRequest) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  auto body = std::make_unique<SseStreamBody>();
+  body->Stream()->BindRequest(request);
+  body->Push("data: [DONE]\n\n");
+  body->Finish();
+
+  char buffer[64];
+  oatpp::async::Action action;
+  EXPECT_GT(body->read(buffer, sizeof(buffer), action), 0);
+  EXPECT_EQ(body->read(buffer, sizeof(buffer), action), 0);
+  body.reset();
+
+  EXPECT_FALSE(request->IsCancellationRequested());
+  EXPECT_TRUE(request->TryComplete());
+  request->PublishCompletion();
+  EXPECT_TRUE(request->IsCompleted());
+}
+
+TEST(SseStreamBodyTest, ClosingAfterInferenceCompletedLeavesRequestReusable) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  ASSERT_TRUE(request->TryComplete());
+  request->PublishCompletion();
+  auto body = std::make_unique<SseStreamBody>();
+  body->Stream()->BindRequest(request);
+
+  body.reset();
+
+  EXPECT_FALSE(request->IsCancellationRequested());
+  ASSERT_TRUE(request->TryBegin());
+  EXPECT_FALSE(request->IsCancellationRequested());
+}
+
+TEST(SseStreamBodyTest, IdleReadSendsKeepAliveBeforeInferenceProducesData) {
+  SseStreamBody body;
+  char buffer[64];
+  oatpp::async::Action action;
+  auto start = std::chrono::steady_clock::now();
+
+  const auto bytes = body.read(buffer, sizeof(buffer), action);
+
+  EXPECT_EQ(std::string(buffer, bytes), ": keep-alive\n\n");
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  body.Finish();
 }
 
 // ========================================================================
