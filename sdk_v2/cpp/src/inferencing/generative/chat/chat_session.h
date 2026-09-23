@@ -221,6 +221,7 @@ class ChatSession : public Session {
                               int prompt_tokens,
                               int total_tokens,
                               int reasoning_tokens,
+                              int cached_prompt_tokens,
                               std::optional<flFinishReason> backend_finish_reason);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions

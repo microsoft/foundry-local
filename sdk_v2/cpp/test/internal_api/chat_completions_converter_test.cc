@@ -867,7 +867,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   response.items.push_back(
       std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "Hello there!"));
   response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
-  response.usage = {10, 5, 15, 3};
+  response.usage = {10, 5, 15, 3, 8};
 
   auto result = BuildResponse(response, "chatcmpl-abc", 1000, "test-model");
 
@@ -883,6 +883,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   EXPECT_EQ(result.usage.prompt_tokens, 10);
   EXPECT_EQ(result.usage.completion_tokens, 5);
   EXPECT_EQ(result.usage.total_tokens, 15);
+  EXPECT_EQ(result.usage.prompt_tokens_details.cached_tokens, 8);
   EXPECT_EQ(result.usage.completion_tokens_details.reasoning_tokens, 3);
 }
 

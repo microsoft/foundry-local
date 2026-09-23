@@ -1046,6 +1046,7 @@ ResponseObject BuildResponseObject(const std::string& response_id,
   r.usage.input_tokens = static_cast<int>(usage.prompt_tokens);
   r.usage.output_tokens = static_cast<int>(usage.completion_tokens);
   r.usage.total_tokens = static_cast<int>(usage.total_tokens);
+  r.usage.input_tokens_details.cached_tokens = static_cast<int>(usage.cached_prompt_tokens);
   r.usage.output_tokens_details.reasoning_tokens = static_cast<int>(usage.reasoning_tokens);
 
   EchoRequestParams(r, params);
