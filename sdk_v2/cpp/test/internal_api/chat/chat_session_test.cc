@@ -4027,7 +4027,6 @@ TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
     } catch (const fl::Exception& error) {
       EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
     }
-    
     EXPECT_EQ(session.TurnCount(), 1u);
     EXPECT_EQ(session.MessageCount(), 2u);
 
