@@ -15,8 +15,9 @@ Telemetry is enabled by default.
 Foundry Local uses the cross-platform 1DS SDK (cpp_client_telemetry) to send trace events to Microsoft's telemetry backend over HTTPS. This data is handled following GDPR and privacy regulations for anonymity and data access controls.
 
 Prompts, model outputs, audio contents, raw device identifiers, and secrets are not collected.
-HTTP caller User-Agent headers are reduced to a recognized Foundry Local SDK name and numeric version before local
-telemetry logging or upload; unrecognized or free-form headers are recorded as `unknown-http-client`.
+HTTP caller User-Agent headers are reduced to a recognized Foundry Local SDK name and numeric release version before
+local telemetry logging or upload; recognized prerelease suffixes are removed and free-form headers are recorded as
+`unknown-http-client`.
 
 Non-essential telemetry can be disabled as follows.
 
@@ -25,5 +26,6 @@ Non-essential telemetry can be disabled as follows.
   - C#: `Configuration.DisableNonessentialTelemetry = true`
   - JavaScript/TypeScript: `disableNonessentialTelemetry: true`
   - Python: `disable_nonessential_telemetry=True`
+  - Rust: `FoundryLocalConfig::new("my_app").additional_setting("DisableNonessentialTelemetry", "true")`
   - Native additional option: `DisableNonessentialTelemetry=true`
 - **Disable via environment.** Set `ORT_TELEMETRY_DISABLED=1` before creating the manager.

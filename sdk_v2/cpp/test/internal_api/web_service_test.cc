@@ -44,18 +44,23 @@ namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
 
-TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericVersion) {
+TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericReleaseVersion) {
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-python/0.6"), "foundry-local-python/0.6");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-core/1"), "foundry-local-core/1");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-csharp/1.2"), "foundry-local-csharp/1.2");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-js/1.2"), "foundry-local-js/1.2");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-rust/1.2"), "foundry-local-rust/1.2");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-js/2.0.0-dev.0"), "foundry-local-js/2.0.0");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-python/2.0.0.dev0"), "foundry-local-python/2.0.0");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-csharp/2.0.0-rc1"), "foundry-local-csharp/2.0.0");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/0.5.0-dev.local.20260924"), "foundry-local-cpp/0.5.0");
   EXPECT_EQ(SafeHttpUserAgent(""), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("telemetry-test-client"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0 customer@example.com"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0/secret"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-secret"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-dev.1234private"), "unknown-http-client");
   EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1..2"), "unknown-http-client");
 }
 

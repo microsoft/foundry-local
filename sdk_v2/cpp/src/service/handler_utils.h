@@ -95,14 +95,35 @@ inline std::string SafeHttpUserAgent(std::string_view value) {
     }
 
     const auto version = value.substr(product.size());
-    if (!version.empty() && version.size() <= 32 && version.find("..") == std::string_view::npos &&
-        version.front() >= '0' && version.front() <= '9' &&
-        version.back() >= '0' && version.back() <= '9' &&
-        std::all_of(version.begin(), version.end(), [](unsigned char ch) {
+    const auto release = version.substr(0, std::min(version.find('-'), version.find(".dev")));
+    const auto suffix = version.substr(release.size());
+    if (release.empty() || release.size() > 32 || release.find("..") != std::string_view::npos ||
+        release.front() < '0' || release.front() > '9' ||
+        release.back() < '0' || release.back() > '9' ||
+        !std::all_of(release.begin(), release.end(), [](unsigned char ch) {
           return (ch >= '0' && ch <= '9') || ch == '.';
         })) {
-      return std::string(value);
+      return "unknown-http-client";
     }
+
+    constexpr std::string_view prerelease_prefixes[] = {
+        "-dev.local.", "-dev.", ".dev", "-rc.", "-rc", "-beta.", "-alpha.", "-preview."};
+    bool supported_suffix = suffix.empty();
+    for (const auto prefix : prerelease_prefixes) {
+      if (suffix.starts_with(prefix)) {
+        const auto number = suffix.substr(prefix.size());
+        supported_suffix = !number.empty() && number.size() <= 14 &&
+                           std::all_of(number.begin(), number.end(),
+                                       [](unsigned char ch) { return ch >= '0' && ch <= '9'; });
+        break;
+      }
+    }
+
+    if (!supported_suffix) {
+      return "unknown-http-client";
+    }
+
+    return std::string(product) + std::string(release);
   }
 
   return "unknown-http-client";
