@@ -423,8 +423,8 @@ void WebService::Stop() {
     impl_->connection_handler->stop();
   }
 
-  // Join streaming worker threads only after the acceptor and handler workers are fully stopped. A streaming
-  // Handlers register workers before returning their Responses. If we joined while handlers were still live, a
+  // Join streaming worker threads only after the acceptor and handler workers are fully stopped. Streaming
+  // handlers register workers before returning their Responses. If we joined while handlers were still live, a
   // handler could start a worker after JoinAll() took its snapshot, leaving a joinable thread in the tracker whose
   // destruction would call std::terminate. Quiescing handlers first makes the tracker contents final. This can't
   // deadlock: SseStreamBody::Push is non-blocking, and CancelAll() (run before Stop) unwinds in-flight generation.

@@ -117,7 +117,9 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
   };
 
   apply_metadata("top_k", "top_k");
-  apply_metadata("random_seed", "seed");
+  if (!req.seed.has_value()) {
+    apply_metadata("random_seed", "seed");
+  }
 }
 
 std::string MapFinishReason(flFinishReason reason) {
