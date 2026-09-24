@@ -34,6 +34,7 @@ struct ChatTurnUsage {
   int generated_tokens = 0;
   std::optional<flFinishReason> finish_reason;
   std::optional<BackendTerminationCause> termination_cause;
+  int cached_prompt_tokens = 0;
 };
 
 class RetainedPromptMismatchError : public std::runtime_error {
