@@ -360,6 +360,31 @@ TEST(ResponseConverterTest, EchoRequestParams_ReasoningConfigEchoed) {
   EXPECT_TRUE(*r.reasoning->generate_summary);
 }
 
+TEST(ResponseConverterTest, ToSessionRequest_ReasoningEffortControlsThinking) {
+  ResponseCreateParams params;
+  params.model = "m";
+  params.input = std::string("hi");
+  ReasoningConfig reasoning;
+  reasoning.effort = "medium";
+  params.reasoning = std::move(reasoning);
+
+  auto request = ToSessionRequest(params);
+  const auto kwargs = json::parse(request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], true);
+  EXPECT_EQ(kwargs["reasoning_effort"], "medium");
+}
+
+TEST(ResponseConverterTest, ToSessionRequest_RejectsUnsupportedReasoningEffort) {
+  ResponseCreateParams params;
+  params.model = "m";
+  params.input = std::string("hi");
+  ReasoningConfig reasoning;
+  reasoning.effort = "extreme";
+  params.reasoning = std::move(reasoning);
+
+  EXPECT_THROW((void)ToSessionRequest(params), fl::Exception);
+}
+
 // ========================================================================
 // ToInputItems
 // ========================================================================
@@ -1339,7 +1364,7 @@ TEST(ResponseConverterTest, HopOutputTextCallTextEmitsOneOrderedAssistantTurn) {
   EXPECT_EQ(messages[1].entries[2].text, " One moment.");
 }
 
-TEST(ResponseConverterTest, HopOutputWithOnlyReasoningEmitsAnEmptyAssistantBoundary) {
+TEST(ResponseConverterTest, HopOutputWithOnlyReasoningPreservesTypedReasoning) {
   ResponseChainContext context{ResponseChainHop{
       nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
       nlohmann::json::parse(
@@ -1354,12 +1379,11 @@ TEST(ResponseConverterTest, HopOutputWithOnlyReasoningEmitsAnEmptyAssistantBound
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
-  EXPECT_EQ(messages[1].ReasoningText(), "");
+  EXPECT_EQ(messages[1].ReasoningText(), "private");
   EXPECT_EQ(messages[2].role, FOUNDRY_LOCAL_ROLE_USER);
 }
 
-TEST(ResponseConverterTest, HopOutputWithReasoningAndTextReplaysOnlyTheText) {
+TEST(ResponseConverterTest, HopOutputWithReasoningAndTextPreservesBoth) {
   ResponseChainContext context{ResponseChainHop{
       nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
       nlohmann::json::parse(R"([
@@ -1376,7 +1400,7 @@ TEST(ResponseConverterTest, HopOutputWithReasoningAndTextReplaysOnlyTheText) {
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].VisibleText(), "Answer.");
-  EXPECT_EQ(messages[1].ReasoningText(), "");
+  EXPECT_EQ(messages[1].ReasoningText(), "private");
 }
 
 TEST(ResponseConverterTest, EveryHopContributesExactlyOneAssistantTurn) {
@@ -1408,7 +1432,7 @@ TEST(ResponseConverterTest, EveryHopContributesExactlyOneAssistantTurn) {
             R"({"role":"user","content":"four"}])");
 }
 
-TEST(ResponseConverterTest, StoredReasoningInputItemReplaysAsAnAssistantBoundary) {
+TEST(ResponseConverterTest, StoredReasoningInputItemPreservesTypedReasoning) {
   // ToInputItems stores whatever the caller sent, including a `reasoning` item echoed back from an earlier turn.
   ResponseChainContext context{ResponseChainHop{
       nlohmann::json::parse(R"([
@@ -1428,7 +1452,7 @@ TEST(ResponseConverterTest, StoredReasoningInputItemReplaysAsAnAssistantBoundary
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(messages[1].VisibleText(), "Answer.");
-  EXPECT_EQ(messages[1].ReasoningText(), "");
+  EXPECT_EQ(messages[1].ReasoningText(), "private");
 }
 
 TEST(ResponseConverterTest, StoredAssistantInputMessageWithNoTextIsAnAssistantBoundary) {
@@ -1478,7 +1502,7 @@ TEST(ResponseConverterTest, StoredNonAssistantMessageWithNoTextIsStillSkipped) {
   EXPECT_EQ(messages[1].VisibleText(), "Hi");
 }
 
-TEST(ResponseConverterTest, TypedReasoningInputItemBecomesAnAssistantBoundary) {
+TEST(ResponseConverterTest, TypedReasoningInputItemPreservesPrivateReasoning) {
   auto body = nlohmann::json::parse(R"({
     "model": "test-model",
     "input": [
@@ -1494,14 +1518,15 @@ TEST(ResponseConverterTest, TypedReasoningInputItemBecomesAnAssistantBoundary) {
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "private");
+  EXPECT_TRUE(messages[1].VisibleText().empty());
   EXPECT_EQ(BuildChatMessagesJson(messages),
             R"([{"role":"user","content":"Think about it."},)"
             R"({"role":"assistant","content":""},)"
             R"({"role":"user","content":"Well?"}])");
 }
 
-TEST(ResponseConverterTest, TypedReasoningItemNextToVisibleOutputAddsNothing) {
+TEST(ResponseConverterTest, TypedReasoningItemNextToVisibleOutputPreservesReasoning) {
   auto body = nlohmann::json::parse(R"({
     "model": "test-model",
     "input": [
@@ -1518,7 +1543,10 @@ TEST(ResponseConverterTest, TypedReasoningItemNextToVisibleOutputAddsNothing) {
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].VisibleText(), "Answer.");
-  EXPECT_EQ(messages[1].ReasoningText(), "");
+  EXPECT_EQ(messages[1].ReasoningText(), "private");
+  EXPECT_EQ(BuildChatMessagesJson(messages).find("private"), std::string::npos);
+  EXPECT_NE(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true).find("private"),
+            std::string::npos);
 }
 
 TEST(ResponseConverterTest, TypedEmptyUserMessageIsStillSkipped) {
@@ -1537,7 +1565,7 @@ TEST(ResponseConverterTest, TypedEmptyUserMessageIsStillSkipped) {
   EXPECT_EQ(static_cast<MessageItem*>(request.items[0])->GetSimpleText(), "Hello");
 }
 
-TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsCollapseToOneBoundary) {
+TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsMergeIntoOneAssistantTurn) {
   // A reasoning-only turn can surface as several reasoning items. They are one assistant turn, not several.
   auto body = nlohmann::json::parse(R"({
     "model": "test-model",
@@ -1555,10 +1583,11 @@ TEST(ResponseConverterTest, TypedConsecutiveReasoningItemsCollapseToOneBoundary)
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "firstsecond");
+  EXPECT_TRUE(messages[1].VisibleText().empty());
 }
 
-TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsStillEmitsOneBoundary) {
+TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsMergesTheirReasoning) {
   ResponseChainContext context{ResponseChainHop{
       nlohmann::json::parse(R"([{"type":"message","role":"user","content":"Think about it."}])"),
       nlohmann::json::parse(R"([
@@ -1575,5 +1604,6 @@ TEST(ResponseConverterTest, HopOutputWithSeveralReasoningItemsStillEmitsOneBound
 
   ASSERT_EQ(messages.size(), 3u);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(messages[1].entries.empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "firstsecond");
+  EXPECT_TRUE(messages[1].VisibleText().empty());
 }

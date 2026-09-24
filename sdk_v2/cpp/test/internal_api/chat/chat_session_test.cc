@@ -266,6 +266,16 @@ void AppendSegments(std::vector<Segment>& destination, const std::vector<Segment
   }
 }
 
+template <typename Action>
+void ExpectOperationCancelled(Action&& action) {
+  try {
+    action();
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
+}
+
 std::vector<ToolCallStreamAccumulator::Event> RunToolOutput(
     const std::vector<std::string>& chunks, const std::string& tools = {},
     const std::unordered_map<std::string, ToolKind>& kinds = {}) {
@@ -1099,31 +1109,28 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
 
   struct TestCase {
     const char* name;
-    bool canceled;
     bool has_tool_calls;
     bool stop_sequence_matched;
     bool host_output_limit_reached;
     std::optional<flFinishReason> backend_finish_reason;
     flFinishReason expected;
   };
-
   const std::vector<TestCase> cases = {
-      {"cancellation wins", true, true, true, true, FOUNDRY_LOCAL_FINISH_NONE, FOUNDRY_LOCAL_FINISH_NONE},
-      {"tool calls win over stop", false, true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"tool calls win over stop", true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"tool calls win over host limit", false, true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"tool calls win over host limit", true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"stop wins over host limit", false, false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"stop wins over host limit", false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_STOP},
-      {"host limit produces length", false, false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"host limit produces length", false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_LENGTH},
-      {"backend reason survives natural completion", false, false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"backend reason survives natural completion", false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_STOP},
   };
 
   for (const auto& test : cases) {
     SCOPED_TRACE(test.name);
-    EXPECT_EQ(ResolveGeneratedFinishReason(test.canceled, test.has_tool_calls, test.stop_sequence_matched,
+    EXPECT_EQ(ResolveGeneratedFinishReason(test.has_tool_calls, test.stop_sequence_matched,
                                            test.host_output_limit_reached, test.backend_finish_reason,
                                            /*completion_tokens=*/32, /*max_output_tokens=*/32),
               test.expected);
@@ -1880,7 +1887,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
         std::function<void()> hook;
         if (index == 1) {
           hook = [&] {
-            active_request->canceled.store(true, std::memory_order_relaxed);
+            active_request->Cancel();
           };
         }
 
@@ -1910,9 +1917,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   auto request = MakeStatefulRequest("route this");
   active_request = &request;
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 2);
   EXPECT_EQ(counters->closed, 1);
   EXPECT_EQ(counters->canceled, 1);
@@ -1949,17 +1957,15 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
   auto request = MakeStatefulRequest("route this");
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
   EXPECT_EQ(streamed_text, "safe prefix");
-  ASSERT_EQ(response.items.size(), 1u);
-  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
-  EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
-            output);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_EQ(session.TurnCount(), 0u);
   EXPECT_TRUE(session.Transcript().Empty());
@@ -2010,9 +2016,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   request.AddOwnedItem(std::make_unique<TextItem>(
       body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
@@ -2027,10 +2034,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_EQ(streamed_content, "safe prefix");
   EXPECT_EQ(streamed_content.find("<tool_call>"), std::string::npos);
   EXPECT_EQ(streamed_content.find("<function="), std::string::npos);
-  ASSERT_EQ(response.items.size(), 1u);
-  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
-  EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
-            output);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_TRUE(session.Transcript().Empty());
 }
@@ -3506,20 +3510,24 @@ TEST_F(ChatSessionTest, HostEndedTurnsCancelBeforeWaitingForBackendUsage) {
     }
 
     Response response;
-    ASSERT_NO_THROW(session.ProcessRequest(request, response));
+    if (test.end == End::kCallback) {
+      ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+    } else {
+      ASSERT_NO_THROW(session.ProcessRequest(request, response));
+    }
     EXPECT_TRUE(trace.usage_requested);
     EXPECT_TRUE(trace.canceled);
     EXPECT_TRUE(trace.canceled_before_usage);
     EXPECT_EQ(streamed.find("Discarded."), std::string::npos);
     if (test.end == End::kCallback) {
-      EXPECT_TRUE(request.canceled);
+      EXPECT_TRUE(request.IsCompleted());
       EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
       EXPECT_TRUE(session.Transcript().Empty());
       continue;
     }
 
     EXPECT_EQ(trace.generated_tokens, 1);
-    EXPECT_FALSE(request.canceled);
+    EXPECT_FALSE(request.IsCancellationRequested());
     const auto expected_finish = test.end == End::kPostCallText ? FOUNDRY_LOCAL_FINISH_TOOL_CALLS
                                  : test.end == End::kTokenLimit ? FOUNDRY_LOCAL_FINISH_LENGTH
                                                                 : FOUNDRY_LOCAL_FINISH_STOP;
@@ -3820,6 +3828,230 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    return TurnResult{GetAssistantText(response), response.usage.prompt_tokens};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Reply briefly: two.";
+  constexpr const char* kThirdPrompt = "Reply briefly: three.";
+  constexpr const char* kFourthPrompt = "Reply briefly: four.";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto first = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kNoThinking);
+  auto same_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, kNoThinking);
+  ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+  EXPECT_TRUE(session.Transcript().Turns()[1].tokens.pre_turn.has_value())
+      << "Identical template kwargs should retain the continuous-decoding path";
+
+  ChatSession same_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto same_kwargs_full_history = run_turn(
+      same_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+      kNoThinking);
+  EXPECT_EQ(same_kwargs.text, same_kwargs_full_history.text);
+  EXPECT_EQ(same_kwargs.prompt_tokens, same_kwargs_full_history.prompt_tokens);
+
+  auto changed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  ASSERT_EQ(session.Transcript().Turns().size(), 3u);
+  EXPECT_FALSE(session.Transcript().Turns()[2].tokens.pre_turn.has_value())
+      << "A kwargs-triggered rebuild has no valid rewind boundary in the previous generator";
+
+  ChatSession changed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto changed_kwargs_full_history = run_turn(
+      changed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}},
+      kThinking);
+  EXPECT_EQ(changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Changing template kwargs must rebuild the generator from full history";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 2u);
+  auto replayed_changed_kwargs =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  EXPECT_EQ(replayed_changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Undoing a kwargs-triggered rebuild must discard stale rewind state and replay full history";
+
+  auto removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+  ASSERT_EQ(session.Transcript().Turns().size(), 4u);
+  EXPECT_FALSE(session.Transcript().Turns()[3].tokens.pre_turn.has_value());
+
+  ChatSession removed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto removed_kwargs_full_history = run_turn(
+      removed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, replayed_changed_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}},
+      nullptr);
+  EXPECT_EQ(removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens)
+      << "Removing template kwargs must rebuild from full history and clear tokenizer state";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 3u);
+  auto replayed_removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+  EXPECT_EQ(replayed_removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens);
+}
+
+TEST_F(ChatSessionTest, SessionTemplateDefaultsInvalidateOnlyWhenEffectiveKwargsChange) {
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  KeyValuePairs defaults;
+  defaults.Add("chat_template_kwargs", kNoThinking);
+  session.SetSessionOptions(defaults);
+
+  auto run_turn = [&](const char* prompt, const char* kwargs = nullptr) {
+    Request request;
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, prompt));
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+    if (kwargs) {
+      request.options.Add("chat_template_kwargs", kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    return session.Transcript().Turns().back().tokens.pre_turn.has_value();
+  };
+
+  EXPECT_FALSE(run_turn("Reply briefly: one."));
+  EXPECT_TRUE(run_turn("Reply briefly: two.", kNoThinking))
+      << "Explicitly repeating the inherited default must not rebuild the generator";
+
+  defaults.Add("chat_template_kwargs", kThinking);
+  session.SetSessionOptions(defaults);
+  EXPECT_TRUE(run_turn("Reply briefly: three.", kNoThinking))
+      << "A request override keeps the effective kwargs unchanged when the session default changes";
+  EXPECT_FALSE(run_turn("Reply briefly: four."))
+      << "Using a changed session default must rebuild without a stale rewind boundary";
+
+  session.SetSessionOptions({});
+  EXPECT_FALSE(run_turn("Reply briefly: five."))
+      << "Removing the session default must invalidate retained template state";
+}
+
+TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs,
+                      int max_output_tokens = 32) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+
+    request.options.Add("max_output_tokens", std::to_string(max_output_tokens));
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    return std::pair{TurnResult{GetAssistantText(response), response.usage.prompt_tokens},
+                     response.finish_reason};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Using the previous turn, reply briefly: two.";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+
+  const char* next_kwargs_values[] = {kNoThinking, nullptr};
+  for (const char* next_kwargs : next_kwargs_values) {
+    SCOPED_TRACE(next_kwargs ? "changed kwargs" : "removed kwargs");
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    auto [first, first_finish] =
+        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kThinking);
+    ASSERT_EQ(first_finish, FOUNDRY_LOCAL_FINISH_STOP);
+
+    int streamed_items = 0;
+    bool cancel_enabled = true;
+    session.SetStreamingCallback(
+        [&](flStreamingCallbackData event, void*) -> int {
+          auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+          if (queue->TryPop()) {
+            ++streamed_items;
+          }
+          return cancel_enabled && streamed_items >= 1 ? 1 : 0;
+        });
+
+    try {
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+      FAIL() << "Expected streaming callback cancellation";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+    }
+    EXPECT_EQ(session.TurnCount(), 1u);
+    EXPECT_EQ(session.MessageCount(), 2u);
+
+    cancel_enabled = false;
+    auto [replayed, replayed_finish] =
+        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+    EXPECT_NE(replayed_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+    ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+    EXPECT_FALSE(session.Transcript().Turns()[1].tokens.pre_turn.has_value());
+
+    ChatSession baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    auto [full_history, baseline_finish] = run_turn(
+        baseline,
+        {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+         {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+         {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+        next_kwargs);
+    EXPECT_NE(baseline_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+    EXPECT_EQ(replayed.text, full_history.text);
+    EXPECT_EQ(replayed.prompt_tokens, full_history.prompt_tokens)
+        << "Cancellation after a kwargs-triggered rebuild must discard retained state before replay";
+  }
+}
+#endif
+
 TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancellation) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
   ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator);
@@ -3858,12 +4090,12 @@ TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancell
   session.SetStreamingCallback(callback_fn);
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  // Should have stopped early
+  // The canceled response is not published.
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-  // we check cancellation at the start of each loop and we don't use std::atomic to make processing cheaper
-  // so allow for a couple of extra tokens to come through after the cancellation condition is met
+  EXPECT_TRUE(response.items.empty());
+  // Cancellation is observed between token steps, so allow for a couple of extra tokens after the callback.
   EXPECT_LE(tokens_received, 6);
 
   // The appended canceled turn commits nothing; only the seed turn remains.
@@ -3909,9 +4141,10 @@ TEST_F(ChatSessionTest, CancellationFromTheLastQueuedCallbackPreventsCommit) {
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(session.MessageCount(), 0u);
   EXPECT_EQ(session.TurnCount(), 0u);
 }
@@ -3956,9 +4189,10 @@ TEST_F(ChatSessionTest, OpenAIJsonCancellationFromLastContentCallbackPublishesNo
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   ASSERT_EQ(delivered.size(), 2u);
   EXPECT_EQ(delivered[0]["choices"][0]["delta"]["role"], "assistant");
   EXPECT_FALSE(delivered[0]["choices"][0]["finish_reason"].is_string());

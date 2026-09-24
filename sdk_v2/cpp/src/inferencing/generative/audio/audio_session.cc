@@ -262,7 +262,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   int prompt_tokens = generator->PromptTokenCount();
 
   // Token-by-token generation with optional streaming.
-  // Check request.canceled each iteration — a streaming callback returning
+  // Check request cancellation each iteration — a streaming callback returning
   // non-zero sets this flag asynchronously via CallbackHandler.
   std::vector<std::string> token_texts;
   token_texts.reserve(kInitialTokenCapacity);
@@ -270,7 +270,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   std::vector<std::unique_ptr<SpeechSegmentItem>> segments;
   segments.reserve(kInitialTokenCapacity);
 
-  while (!generator->IsDone() && !request.canceled) {
+  while (!generator->IsDone() && !request.IsCancellationRequested()) {
     generator->GenerateNextToken();
     std::string token = generator->Decode();
 
@@ -284,7 +284,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
       token_texts.push_back(std::move(token));
     }
 
-    if (request.canceled) {
+    if (request.IsCancellationRequested()) {
       generator->Cancel();
     }
   }
@@ -297,7 +297,7 @@ void AudioSession::ProcessRequestImpl(const Request& request, Response& response
   response.items.push_back(BuildSpeechResult(std::move(text), std::move(segments)));
 
   // Set finish reason
-  if (request.canceled) {
+  if (request.IsCancellationRequested()) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
   } else {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
@@ -382,7 +382,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   }
 
   // 4. Read from queue until finished or cancelled
-  while (!request.canceled) {
+  while (!request.IsCancellationRequested()) {
     auto item = queue.WaitAndPop(std::chrono::milliseconds(100));
 
     if (!item) {
@@ -408,7 +408,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   }
 
   // 5. Flush remaining buffered audio
-  if (!request.canceled) {
+  if (!request.IsCancellationRequested()) {
     auto flush_tensors = processor->Flush();
 
     if (flush_tensors) {
@@ -423,7 +423,7 @@ void AudioSession::ProcessStreamingAudio(const AudioItem& format_item, ItemQueue
   const size_t full_text_size = full_text.size();
   response.items.push_back(BuildSpeechResult(std::move(full_text), std::move(segments)));
 
-  if (request.canceled) {
+  if (request.IsCancellationRequested()) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
   } else {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
@@ -467,7 +467,7 @@ void AudioSession::DecodeTokens(OgaGenerator& generator, OgaTokenizerStream& tok
                                 const std::unique_ptr<CallbackHandler>& callback,
                                 const Request& request,
                                 int& completion_tokens) {
-  while (!generator.IsDone() && !generator.IsSessionTerminated() && !request.canceled) {
+  while (!generator.IsDone() && !generator.IsSessionTerminated() && !request.IsCancellationRequested()) {
     generator.GenerateNextToken();
     auto next_tokens = generator.GetNextTokens();
 
@@ -545,7 +545,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
 
   // Generate token-by-token
   std::string text;
-  while (!generator->IsDone() && !original_request.canceled) {
+  while (!generator->IsDone() && !original_request.IsCancellationRequested()) {
     generator->GenerateNextToken();
     std::string token = generator->Decode();
 
@@ -562,7 +562,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
       }
     }
 
-    if (original_request.canceled) {
+    if (original_request.IsCancellationRequested()) {
       generator->Cancel();
     }
   }
@@ -571,7 +571,7 @@ void AudioSession::ProcessAudioTranscriptionJson(const std::string& request_json
   int completion_tokens = total_tokens - prompt_tokens;
 
   // Set finish reason
-  if (original_request.canceled) {
+  if (original_request.IsCancellationRequested()) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
   } else {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
@@ -625,7 +625,8 @@ void AudioSession::DecodeNemotronTokens(OgaGenerator& generator, OgaTokenizerStr
                                         int& completion_tokens) const {
   const bool is_streaming = (streaming_callback != nullptr);
 
-  while (!generator.IsDone() && !generator.IsSessionTerminated() && !original_request.canceled) {
+  while (!generator.IsDone() && !generator.IsSessionTerminated() &&
+         !original_request.IsCancellationRequested()) {
     generator.GenerateNextToken();
     auto next_tokens = generator.GetNextTokens();
     if (next_tokens.empty()) {
@@ -660,7 +661,7 @@ void AudioSession::RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensor
                                          const std::unique_ptr<CallbackHandler>& streaming_callback,
                                          const std::string& response_id, const Request& original_request,
                                          int& completion_tokens) const {
-  if (!tensors || original_request.canceled) {
+  if (!tensors || original_request.IsCancellationRequested()) {
     return;
   }
 
@@ -672,7 +673,7 @@ void AudioSession::RunNemotronDecodePass(std::unique_ptr<OgaNamedTensors> tensor
 void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequest& req,
                                                     const Request& original_request,
                                                     Response& response) {
-  if (original_request.canceled) {
+  if (original_request.IsCancellationRequested()) {
     response.finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
     return;
   }
@@ -710,19 +711,21 @@ void AudioSession::ProcessNemotronFileTranscription(const AudioTranscriptionRequ
   int64_t audio_samples = 0;
 
   constexpr size_t kNemotronSamplesPerChunk = 1600;  // 100ms at 16kHz
-  for (size_t offset = 0; offset < samples.size() && !original_request.canceled;
+  for (size_t offset = 0;
+       offset < samples.size() && !original_request.IsCancellationRequested();
        offset += kNemotronSamplesPerChunk) {
     size_t count = std::min(kNemotronSamplesPerChunk, samples.size() - offset);
     RunNemotronDecodePass(processor->Process(samples.data() + offset, count), *generator, *tokenizer_stream, text,
                           streaming_callback, response_id, original_request, completion_tokens);
     audio_samples += static_cast<int64_t>(count);
   }
-  if (!original_request.canceled) {
+  if (!original_request.IsCancellationRequested()) {
     RunNemotronDecodePass(processor->Flush(), *generator, *tokenizer_stream, text, streaming_callback, response_id,
                           original_request, completion_tokens);
   }
 
-  response.finish_reason = original_request.canceled ? FOUNDRY_LOCAL_FINISH_NONE : FOUNDRY_LOCAL_FINISH_STOP;
+  response.finish_reason =
+      original_request.IsCancellationRequested() ? FOUNDRY_LOCAL_FINISH_NONE : FOUNDRY_LOCAL_FINISH_STOP;
   // Nemotron file-transcription path feeds audio tensors directly and does not expose prompt token accounting.
   response.usage.prompt_tokens = 0;
   response.usage.completion_tokens = completion_tokens;

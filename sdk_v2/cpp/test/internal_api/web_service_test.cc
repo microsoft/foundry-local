@@ -31,6 +31,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -1027,6 +1028,93 @@ TEST_F(WebServiceTest, LocalStoredResponsesRemainIsolatedFromPublicRoutes) {
   EXPECT_EQ(unload_result["status"], "unloaded") << unload_result.dump(2);
 }
 
+TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConversation) {
+  const auto load_result = Get(std::string("/models/load/") + kResponseStoreTestModelAlias);
+  ASSERT_EQ(load_result["status"], "loaded") << load_result.dump(2);
+
+  const auto root = PostJson(base_url_ + "/v1/responses",
+                             {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                              {"input", "Start a conversation"},
+                              {"store", true},
+                              {"max_output_tokens", 4}});
+  ASSERT_EQ(root.status, 200) << root.body.dump(2);
+  const auto root_id = root.body.at("id").get<std::string>();
+
+  httplib::Client client(base_url_);
+  client.set_read_timeout(10, 0);
+  bool received_event = false;
+  bool was_active = false;
+  const json streaming_request = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"previous_response_id", root_id},
+      {"input", "Continue the conversation"},
+      {"max_output_tokens", 512},
+      {"stream", true},
+  };
+
+  std::string created_response_id;
+  std::string events;
+  const auto result = client.Post(
+      "/v1/responses", httplib::Headers{}, streaming_request.dump(), "application/json",
+      [&](const char* data, size_t length) {
+        events.append(data, length);
+        const auto event_pos = events.find("event: response.created\ndata: ");
+        if (event_pos == std::string::npos) {
+          return true;
+        }
+
+        const auto json_start = event_pos + std::string("event: response.created\ndata: ").size();
+        const auto json_end = events.find('\n', json_start);
+        if (json_end == std::string::npos) {
+          return true;
+        }
+
+        created_response_id = json::parse(events.substr(json_start, json_end - json_start)).at("response").at("id");
+        received_event = true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (session_manager_->ActiveCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        was_active = session_manager_->ActiveCount() > 0;
+        return false;  // close the socket before the generation completes
+      });
+
+  EXPECT_FALSE(result);
+  ASSERT_TRUE(received_event);
+  ASSERT_TRUE(was_active) << "The SSE connection closed before inference started";
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  EXPECT_EQ(session_manager_->ActiveCount(), 0u) << "Disconnected inference did not stop";
+  ASSERT_FALSE(created_response_id.empty());
+  EXPECT_EQ(GetJson(base_url_ + "/v1/responses/" + created_response_id).status, 404)
+      << "Canceled inference must not publish a completed response";
+
+  const auto recovered = PostJson(base_url_ + "/v1/responses",
+                                  {{"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+                                   {"previous_response_id", root_id},
+                                   {"input", "A fresh continuation"},
+                                   {"max_output_tokens", 4}});
+  EXPECT_EQ(recovered.status, 200) << recovered.body.dump(2);
+  EXPECT_EQ(recovered.body.value("status", ""), "completed");
+
+  const json completed_stream = {
+      {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
+      {"input", "Another conversation"},
+      {"max_output_tokens", 4},
+      {"stream", true},
+  };
+  const auto completed = client.Post("/v1/responses", completed_stream.dump(), "application/json");
+  ASSERT_TRUE(completed) << httplib::to_string(completed.error());
+  EXPECT_EQ(completed->status, 200);
+  EXPECT_NE(completed->body.find("event: response.completed"), std::string::npos);
+  EXPECT_NE(completed->body.find("data: [DONE]"), std::string::npos);
+}
+
 TEST_F(WebServiceTest, StreamingChatCompletionsRejectsModifiedStockLarkGrammarBeforeModelResolution) {
   json body = {
       {"model", "alpha-model"},  // in the catalog, never loadable in this fixture
@@ -1582,7 +1670,8 @@ TEST_P(WebServiceTelemetryTest, ClientErrorRetainsHttpResponseAndRecordsDirectAt
   SessionManager sessions(fl::test::NullLog());
   WebUsageTelemetry telemetry;
   auto cache = test::TempPath::CreateTempDir("fl_route_telemetry_");
-  WebService service(catalog, fl::test::NullLog(), cache.string(), load_manager, sessions, telemetry, []() {});
+  WebService service(catalog, catalog, fl::test::NullLog(), cache.string(), load_manager, sessions, telemetry,
+                     []() {});
   const auto urls = service.Start({"http://127.0.0.1:0"});
   ASSERT_EQ(urls.size(), 1u);
   httplib::Client client(urls[0]);
@@ -1618,8 +1707,8 @@ TEST(WebServiceTelemetryTest, KnownModelManagementOutcomesRecordResolvedModelId)
   SessionManager sessions(bindings.logger);
   WebUsageTelemetry telemetry;
   auto cache = test::TempPath::CreateTempDir("fl_model_telemetry_");
-  WebService service(catalog, fl::test::NullLog(), cache.string(), bindings.model_load_manager,
-                     sessions, telemetry, []() {});
+  WebService service(catalog, catalog, fl::test::NullLog(), cache.string(), bindings.model_load_manager, sessions,
+                     telemetry, []() {});
   const auto urls = service.Start({"http://127.0.0.1:0"});
   ASSERT_EQ(urls.size(), 1u);
   httplib::Client client(urls[0]);
@@ -1656,15 +1745,14 @@ INSTANTIATE_TEST_SUITE_P(
         RouteTelemetryCase{"DELETE", "/v1/responses/missing", "", Action::kOpenAIResponsesDelete, 404},
         RouteTelemetryCase{"GET", "/v1/models/missing", "", Action::kOpenAIModelRetrieve, 404}));
 
-TEST(WebServiceTelemetryStatusTest, HttpStatusAndCancellationMapWithoutMaskingFailures) {
+TEST(WebServiceTelemetryStatusTest, HttpStatusMapsWithoutMaskingFailures) {
   EXPECT_EQ(ResponseToActionStatus(nullptr), ActionStatus::kFailure);
   EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_200, json::object())), ActionStatus::kSuccess);
-  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_200, json::object()), true), ActionStatus::kCanceled);
   EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_400, json::object())), ActionStatus::kClientError);
   EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_404, json::object())), ActionStatus::kClientError);
   EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_408, json::object())), ActionStatus::kTimeout);
   EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_504, json::object())), ActionStatus::kTimeout);
-  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_500, json::object()), true), ActionStatus::kFailure);
+  EXPECT_EQ(ResponseToActionStatus(JsonResponse(Status::CODE_500, json::object())), ActionStatus::kFailure);
 }
 
 class WebServiceTelemetryInferenceTest : public ::testing::TestWithParam<std::tuple<bool, bool>> {};
@@ -1687,7 +1775,8 @@ TEST_P(WebServiceTelemetryInferenceTest, RouteAndNestedInferenceShareOneOperatio
   catalog.AddModel(Model::FromModelInfo(std::move(model_info), model_path.string(),
                                         bindings.download_manager, load_manager));
   auto cache = test::TempPath::CreateTempDir("fl_inference_telemetry_");
-  WebService service(catalog, fl::test::NullLog(), cache.string(), load_manager, sessions, telemetry, []() {});
+  WebService service(catalog, catalog, fl::test::NullLog(), cache.string(), load_manager, sessions, telemetry,
+                     []() {});
   const auto urls = service.Start({"http://127.0.0.1:0"});
   ASSERT_EQ(urls.size(), 1u);
   httplib::Client client(urls[0]);

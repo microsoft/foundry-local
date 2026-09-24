@@ -588,17 +588,12 @@ bool IsNaturalToolOutputEnd(bool canceled,
   return backend_termination == BackendTerminationCause::kNaturalEnd;
 }
 
-flFinishReason ResolveGeneratedFinishReason(bool canceled,
-                                            bool has_tool_calls,
+flFinishReason ResolveGeneratedFinishReason(bool has_tool_calls,
                                             bool stop_sequence_matched,
                                             bool host_output_limit_reached,
                                             std::optional<flFinishReason> backend_finish_reason,
                                             int completion_tokens,
                                             std::optional<int> max_output_tokens) {
-  if (canceled) {
-    return FOUNDRY_LOCAL_FINISH_NONE;
-  }
-
   if (has_tool_calls) {
     return FOUNDRY_LOCAL_FINISH_TOOL_CALLS;
   }
@@ -692,7 +687,7 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
     const SearchOptions& options,
     GenAIModelInstance& model,
     ToolCallContext tool_ctx,
-    const std::atomic<bool>& canceled,
+    const Request& request,
     bool use_full_context,
     const TextChatGeneratorFactory& factory) {
   tool_ctx.text_output = false;
@@ -717,8 +712,7 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
   StopStringFilter stop_filter(options.stop_sequences);
   auto* active_stop_filter = options.stop_sequences.empty() ? nullptr : &stop_filter;
   bool stop_sequence_matched = false;
-  while (!generator->IsDone() &&
-         !canceled.load(std::memory_order_relaxed)) {
+  while (!generator->IsDone() && !request.IsCancellationRequested()) {
     generator->GenerateNextToken();
     const auto token_id = generator->CurrentTokenId();
     auto token = generator->Decode();
@@ -729,14 +723,14 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
     }
   }
 
-  result.canceled = canceled.load(std::memory_order_relaxed);
+  result.canceled = request.IsCancellationRequested();
   if (result.canceled) {
     generator->Cancel();
   }
 
   chat_session_internal::FlushDecodedStream(active_stop_filter, splitter, process_segments);
 
-  if (!result.canceled && canceled.load(std::memory_order_relaxed)) {
+  if (!result.canceled && request.IsCancellationRequested()) {
     result.canceled = true;
     generator->Cancel();
   } else if (stop_sequence_matched && !generator->IsDone()) {
@@ -753,8 +747,7 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
     termination = usage->termination_cause;
   }
 
-  const bool canceled_after_usage =
-      result.canceled || canceled.load(std::memory_order_relaxed);
+  const bool canceled_after_usage = result.canceled || request.IsCancellationRequested();
   if (!result.canceled && canceled_after_usage) {
     generator->Cancel();
   }
@@ -870,11 +863,27 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
 }
 
 ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
+                                                  const KeyValuePairs& options,
                                                   const std::vector<ToolDefinition>& definitions) const {
   ToolCallContext tool_ctx;
 
-  tool_ctx.tool_call_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
-  tool_ctx.tool_call_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.tool_call_start = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
+  tool_ctx.tool_call_end = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.template_kwargs_json = GetOptionOrEmpty(options, "chat_template_kwargs");
+  if (!tool_ctx.template_kwargs_json.empty()) {
+    tool_ctx.template_kwargs_json = NormalizeChatTemplateKwargs(tool_ctx.template_kwargs_json);
+    const auto kwargs = nlohmann::json::parse(tool_ctx.template_kwargs_json);
+    const bool uses_reasoning_controls = kwargs.contains("enable_thinking") ||
+                                         kwargs.contains("preserve_thinking") ||
+                                         kwargs.contains("reasoning_effort");
+    if (uses_reasoning_controls && model_.ModelType() == "qwen3_5_text" &&
+        !model_.SupportsReasoningControls()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+               "the loaded runtime cannot render this model's reasoning controls; use a GenAI package "
+               "containing ORT Extensions Jinja identity-predicate support");
+    }
+  }
+  tool_ctx.supports_reasoning_history = model_.SupportsReasoningHistory();
 
   // Fall back to model info properties if not specified in the request
   const auto& info = CatalogModel().Info();
@@ -926,8 +935,8 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
   }
 
   // Read reasoning marker tokens — same pattern as tool_call tokens
-  tool_ctx.reasoning_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
-  tool_ctx.reasoning_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
+  tool_ctx.reasoning_start = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
+  tool_ctx.reasoning_end = GetOptionOrEmpty(options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
 
   if (tool_ctx.reasoning_start.empty()) {
     const auto* val = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
@@ -972,15 +981,15 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
 
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
-  auto tool_choice = SearchOptions::ParseToolChoice(request.options);
+  auto tool_choice = SearchOptions::ParseToolChoice(options);
   if (!tool_choice.has_value()) {
     tool_choice = session_options_.tool_choice;
   }
 
   // User guidance is independent of generated tool guidance and must remain authoritative even when a malformed
   // legacy tool schema makes automatic tool guidance unavailable.
-  tool_ctx.guidance_type = GetOptionOrEmpty(request.options, "guidance_type");
-  tool_ctx.guidance_data = GetOptionOrEmpty(request.options, "guidance_data");
+  tool_ctx.guidance_type = GetOptionOrEmpty(options, "guidance_type");
+  tool_ctx.guidance_data = GetOptionOrEmpty(options, "guidance_data");
   if (tool_ctx.HasPartialExplicitGuidance()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "guidance_type and guidance_data must be provided together");
@@ -1011,7 +1020,6 @@ ToolCallContext ChatSession::BuildToolCallContext(const Request& request,
 void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
                                          const ToolCallContext& tool_ctx,
                                          const SearchOptions& effective_options,
-                                         bool canceled,
                                          bool stop_sequence_matched,
                                          bool host_output_limit_reached,
                                          Response& response,
@@ -1067,8 +1075,8 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
   flush_segments();
 
   response.finish_reason = chat_session_internal::ResolveGeneratedFinishReason(
-      canceled, has_tool_calls, stop_sequence_matched, host_output_limit_reached, backend_finish_reason,
-      completion_tokens, effective_options.max_output_tokens);
+      has_tool_calls, stop_sequence_matched, host_output_limit_reached, backend_finish_reason, completion_tokens,
+      effective_options.max_output_tokens);
 
   response.usage.prompt_tokens = prompt_tokens;
   response.usage.completion_tokens = completion_tokens;
@@ -1103,7 +1111,8 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   // A turn appended to a cached generator does not rebuild the prompt and so keeps the kinds from the turn that
   // did. That stays consistent because a turn carrying tool activity always invalidates the cached generator
   // below, so any turn that actually replays a call is also the turn that rebuilds the prompt from this snapshot.
-  auto turn_tool_ctx = BuildToolCallContext(request, ToolDefinitions());
+  const auto effective_kvp = MergedOptions(request.options);
+  auto turn_tool_ctx = BuildToolCallContext(request, effective_kvp, ToolDefinitions());
 
   // Collect this turn's input messages locally — nothing reaches the transcript until the turn commits. Replay
   // segment boundaries travel with the items so a reconstructed conversation regroups exactly as it was committed.
@@ -1126,8 +1135,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   ValidateMediaTurn(media, inputs,
                     {.session_has_history = !transcript_.Empty(), .tools_declared = turn_tool_ctx.HasTools()});
 
-  // Merge session-level and per-request options once for this turn.
-  auto effective_kvp = MergedOptions(request.options);
+  // Use the same resolved options for prompt rendering and generation.
   SearchOptions effective_options = SearchOptions::FromParameters(effective_kvp);
   const ChatBackendKind backend_kind = Model().GetGenAIConfig().GetChatBackendKind();
 
@@ -1173,6 +1181,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       cached_tool_ctx_.supports_reasoning != turn_tool_ctx.supports_reasoning ||
       cached_tool_ctx_.reasoning_start != turn_tool_ctx.reasoning_start ||
       cached_tool_ctx_.reasoning_end != turn_tool_ctx.reasoning_end ||
+      cached_tool_ctx_.template_kwargs_json != turn_tool_ctx.template_kwargs_json ||
       !cached_tool_ctx_.HasSameTools(turn_tool_ctx);
 
   if (cached_generator_ &&
@@ -1262,7 +1271,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   }
 
   // Generate token-by-token with optional streaming.
-  // Check request.canceled each iteration — a streaming callback returning
+  // Check request cancellation each iteration — a streaming callback returning
   // non-zero sets this flag asynchronously via CallbackHandler.
   auto streaming_callback = CreateCallbackHandler(request);
   int output_tokens = 0;
@@ -1372,7 +1381,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         active_raw_detector, tool_accumulator, natural_end));
   };
 
-  while (!cached_generator_->IsDone() && !request.canceled && !turn_guard.TurnEnded()) {
+  while (!cached_generator_->IsDone() && !request.IsCancellationRequested() && !turn_guard.TurnEnded()) {
     cached_generator_->GenerateNextToken();
     const auto token_id = cached_generator_->CurrentTokenId();
     std::string token = cached_generator_->Decode();
@@ -1404,7 +1413,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   // Engine generation runs asynchronously, and GetTurnUsage waits for it to finish. Stop an abandoned turn before
   // waiting, including when post-call text ended the reply without canceling the request itself.
-  const bool canceled_after_drain = request.canceled.load(std::memory_order_relaxed);
+  const bool canceled_after_drain = request.IsCancellationRequested();
   if (canceled_after_drain) {
     cached_generator_->Cancel();
   } else if ((stop_sequence_matched || host_output_limit_reached || turn_guard.TurnEnded()) &&
@@ -1424,14 +1433,25 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   const bool natural_tool_output_end =
       !turn_guard.TurnEnded() && chat_session_internal::IsNaturalToolOutputEnd(
-                                     request.canceled, stop_sequence_matched, host_output_limit_reached,
-                                     backend_termination);
+                                     request.IsCancellationRequested(), stop_sequence_matched,
+                                     host_output_limit_reached, backend_termination);
   flush_accumulator(natural_tool_output_end);
   int accepted_reasoning_tokens = splitter.ReasoningTokenCount();
 
+  if (streaming_callback) {
+    streaming_callback->DrainPending();
+  }
+
+  if (request.IsCancellationRequested()) {
+    if (!canceled_after_drain && cached_generator_) {
+      cached_generator_->Cancel();
+    }
+    return;
+  }
+
   bool recovered_tool_output = false;
   ToolCallContext completed_tool_ctx;
-  if (malformed_tool_output_seen && !request.canceled) {
+  if (malformed_tool_output_seen) {
     const bool recovery_eligible = IsGuidedEngineToolRetryEligible(
         backend_kind, natural_tool_output_end, semantic_output_seen,
         effective_options, cached_tool_ctx_);
@@ -1451,7 +1471,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     GuidedEngineRetryResult retry;
     try {
       retry = RunGuidedEngineToolRetry(
-          prepared_messages, effective_options, Model(), std::move(retry_tool_ctx), request.canceled,
+          prepared_messages, effective_options, Model(), std::move(retry_tool_ctx), request,
           /*use_full_context=*/true, text_generator_factory_);
     } catch (...) {
       if (streaming_callback) {
@@ -1491,38 +1511,33 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     recovered_tool_output = true;
   }
 
-  if (request.canceled && !canceled_after_drain) {
-    if (cached_generator_) {
-      cached_generator_->Cancel();
-    }
-  } else if (cached_generator_ && (stop_sequence_matched || host_output_limit_reached) &&
-             !cached_generator_->IsDone()) {
+  if (cached_generator_ && (stop_sequence_matched || host_output_limit_reached) &&
+      !cached_generator_->IsDone()) {
     cached_generator_->Cancel();
   }
 
   if (streaming_callback) {
-    streaming_callback->Drain();
+    streaming_callback->DrainPending();
+  }
+
+  if (request.IsCancellationRequested()) {
+    if (cached_generator_) {
+      cached_generator_->Cancel();
+    }
+    return;
   }
 
   const auto& output_tool_ctx = recovered_tool_output ? completed_tool_ctx : cached_tool_ctx_;
   auto assistant_message = MakeAssistantMessage(generated_events, output_tool_ctx, logger_);
   const bool generated_tool_calls = assistant_message.HasToolCalls();
 
-  if (!request.canceled) {
-    // Reject a generation whose calls cannot be correlated before it reaches the caller — a committed turn must never
-    // leave the outstanding-call set inconsistent.
-    transcript_.ValidateGeneratedOutput(assistant_message);
-  }
+  // Reject a generation whose calls cannot be correlated before it reaches the caller — a committed turn must never
+  // leave the outstanding-call set inconsistent.
+  transcript_.ValidateGeneratedOutput(assistant_message);
 
-  ProcessGeneratedOutput(std::move(generated_events), output_tool_ctx, effective_options, request.canceled,
+  ProcessGeneratedOutput(std::move(generated_events), output_tool_ctx, effective_options,
                          stop_sequence_matched, host_output_limit_reached, response, prompt_tokens, total_tokens,
                          accepted_reasoning_tokens, backend_finish_reason);
-
-  if (request.canceled) {
-    // Cancel is permanent for classic generators, and Engine cannot rewind. The scope guard therefore discards every
-    // canceled generator so the next request rebuilds from the committed transcript.
-    return;
-  }
 
   // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
   // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
@@ -1547,6 +1562,11 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       chat_session_internal::ShouldInvalidateRetainedGenerationStateAfterSuccessfulTurn(
           backend_kind, grammar_was_active, reasoning_was_active, stop_sequence_matched,
           host_output_limit_reached);
+
+  // Claim successful completion before committing the turn so cancellation cannot win after the transcript changes.
+  if (!request.TryComplete()) {
+    return;
+  }
 
   transcript_.CommitTurn(std::move(inputs), std::move(assistant_message),
                          {pre_turn_token_count, total_tokens});
@@ -1628,10 +1648,9 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     tools::ValidateRawEnvelopeTool(*internal_request.raw_envelope_descriptor, request_tool_definitions);
   }
 
-  const auto tool_ctx = BuildToolCallContext(internal_request, request_tool_definitions);
-
   // Merge session-level and per-request options once.
-  auto effective_kvp = MergedOptions(internal_request.options);
+  const auto effective_kvp = MergedOptions(internal_request.options);
+  const auto tool_ctx = BuildToolCallContext(internal_request, effective_kvp, request_tool_definitions);
   SearchOptions options = SearchOptions::FromParameters(effective_kvp);
 
   // Collect transcript messages from the internal request for the generator.
@@ -1777,7 +1796,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   StopStringFilter stop_filter(options.stop_sequences);
   auto* active_stop_filter = options.stop_sequences.empty() ? nullptr : &stop_filter;
   bool stop_sequence_matched = false;
-  while (!generator->IsDone() && !original_request.canceled && !turn_guard.TurnEnded()) {
+  while (!generator->IsDone() && !original_request.IsCancellationRequested() && !turn_guard.TurnEnded()) {
     generator->GenerateNextToken();
     const auto token_id = generator->CurrentTokenId();
     std::string token = generator->Decode();
@@ -1800,8 +1819,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   }
 
   // Cancel host-ended turns before waiting for asynchronous Engine usage.
-  const bool canceled_after_drain =
-      original_request.canceled.load(std::memory_order_relaxed);
+  const bool canceled_after_drain = original_request.IsCancellationRequested();
   if (canceled_after_drain) {
     generator->Cancel();
   } else if ((stop_sequence_matched || turn_guard.TurnEnded()) && !generator->IsDone()) {
@@ -1820,13 +1838,24 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   const bool natural_tool_output_end =
       !turn_guard.TurnEnded() && chat_session_internal::IsNaturalToolOutputEnd(
-                                     original_request.canceled, stop_sequence_matched,
+                                     original_request.IsCancellationRequested(), stop_sequence_matched,
                                      /*host_output_limit_reached=*/false, backend_termination);
   process_tool_output(chat_session_internal::FlushToolOutput(
       active_raw_detector, tool_accumulator, natural_tool_output_end));
   int accepted_reasoning_tokens = splitter.ReasoningTokenCount();
 
-  if (malformed_tool_output_seen && !original_request.canceled) {
+  if (streaming_callback) {
+    streaming_callback->DrainPending();
+  }
+
+  if (original_request.IsCancellationRequested()) {
+    if (!canceled_after_drain) {
+      generator->Cancel();
+    }
+    return;
+  }
+
+  if (malformed_tool_output_seen) {
     const bool recovery_eligible = IsGuidedEngineToolRetryEligible(
         Model().GetGenAIConfig().GetChatBackendKind(), natural_tool_output_end,
         semantic_output_seen, options, tool_ctx);
@@ -1843,7 +1872,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     GuidedEngineRetryResult retry;
     try {
       retry = RunGuidedEngineToolRetry(
-          prepared_messages, options, Model(), tool_ctx, original_request.canceled,
+          prepared_messages, options, Model(), tool_ctx, original_request,
           /*use_full_context=*/false, text_generator_factory_);
     } catch (...) {
       if (streaming_callback) {
@@ -1879,11 +1908,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     stop_sequence_matched = false;
   }
 
-  if (original_request.canceled && !canceled_after_drain) {
-    if (generator) {
-      generator->Cancel();
-    }
-  } else if (generator && stop_sequence_matched && !generator->IsDone()) {
+  if (generator && stop_sequence_matched && !generator->IsDone()) {
     generator->Cancel();
   }
 
@@ -1891,11 +1916,18 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
     streaming_callback->DrainPending();
   }
 
-  ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options, original_request.canceled,
+  if (original_request.IsCancellationRequested()) {
+    if (generator) {
+      generator->Cancel();
+    }
+    return;
+  }
+
+  ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options,
                          stop_sequence_matched, /*host_output_limit_reached=*/false, response, prompt_tokens,
                          total_tokens, accepted_reasoning_tokens, backend_finish_reason);
 
-  if (original_request.canceled) {
+  if (!original_request.TryComplete()) {
     return;
   }
 

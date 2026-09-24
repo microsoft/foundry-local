@@ -368,7 +368,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::handle(
 
       auto response = HandleNonStreaming(std::move(session), session_request, turn, std::move(lease), params,
                                          req_json);
-      tracker->SetStatus(ResponseToActionStatus(response, session_request.canceled.load(std::memory_order_relaxed)));
+      tracker->SetStatus(ResponseToActionStatus(response));
 
       return response;
     }
@@ -458,6 +458,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     ResponseLease lease, const ResponseCreateParams& params, const nlohmann::json& req_json,
     std::unique_ptr<ActionTracker> route_tracker) {
   auto body = std::make_shared<SseStreamBody>();
+  auto stream = body->Stream();
+  auto req = std::make_shared<Request>(std::move(session_request));
+  stream->BindRequest(req);
 
   auto initial_response =
       ResponseConverter::BuildInitialResponseObject(turn.response_id, turn.created_at, turn.model_name, params);
@@ -485,7 +488,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   // visible text can start a fresh item with its own id and output_index.
 
   // Capture for background thread
-  auto body_ptr = body;
   bool should_store = params.store;
   auto& store = ctx_.response_store;
   nlohmann::json req_copy = req_json;
@@ -499,16 +501,15 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   //
   // The lease travels into the thread: the request stays in flight until the response is committed there, so a
   // DELETE arriving mid-stream still refuses the result.
-  std::thread streaming_thread([body_ptr, &logger, &session_manager,
-                                session = std::move(session),
-                                req = std::move(session_request),
-                                turn,
-                                lease = std::move(lease),
-                                should_store, &store,
-                                req_copy = std::move(req_copy),
-                                params_copy = std::move(params_copy),
-                                route_tracker = std::move(route_tracker),
-                                &tracker]() mutable {
+  tracker.Start([stream, &logger, &session_manager,
+                 session = std::move(session),
+                 req,
+                 turn,
+                 lease = std::move(lease),
+                 should_store, &store,
+                 req_copy = std::move(req_copy),
+                 params_copy = std::move(params_copy),
+                 route_tracker = std::move(route_tracker)]() mutable {
     int seq = 2;
     std::string full_text;  // concatenation of all visible runs, used for output_text in completed_response
 
@@ -530,7 +531,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     std::unordered_set<std::string> raw_envelope_call_ids;
 
     auto push_event = [&](const std::string& event_name, const StreamEvent& ev) {
-      body_ptr->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
+      stream->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
     };
 
     auto close_current = [&]() {
@@ -742,7 +743,15 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
       session->SetStreamingCallback(callback_fn);
 
-      session->ProcessRequest(req, bg_response);
+      if (stream->IsDisconnected()) {
+        route_tracker->SetStatus(ActionStatus::kCanceled);
+        lease.Release();
+        stream->Finish();
+        reg.Release();
+        return;
+      }
+
+      session->ProcessRequest(*req, bg_response);
 
       // Close whatever item is still open at end-of-generation so the SSE stream is well-formed.
       close_current();
@@ -774,8 +783,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       completed.response = completed_response;
       push_event("response.completed", completed);
 
-      route_tracker->SetStatus(req.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
-                                                                            : ActionStatus::kSuccess);
+      route_tracker->SetStatus(ActionStatus::kSuccess);
     } catch (const std::exception& ex) {
       route_tracker->RecordException(ex);
       logger.Log(LogLevel::Error,
@@ -798,24 +806,16 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       failed.type = StreamEventType::kResponseFailed;
       failed.sequence_number = seq++;
       failed.response = error_response;
-      body_ptr->Push("event: response.failed\ndata: " + nlohmann::json(failed).dump() + "\n\n");
+      stream->Push("event: response.failed\ndata: " + nlohmann::json(failed).dump() + "\n\n");
     }
 
     // Terminal event per spec
-    body_ptr->Push("data: [DONE]\n\n");
-    body_ptr->Finish();
+    stream->Push("data: [DONE]\n\n");
+    stream->Finish();
 
-    // Emit while the worker is still tracked and the service's telemetry dependency is alive.
-    route_tracker.reset();
-
-    // Remove() detaches this thread and lets WebService teardown proceed without joining it. Release the RAII lease
-    // first so destruction of the lambda captures cannot call back into an already-destroyed ResponseStore.
+    // Release the lease before the tracker destroys the worker captures and untracks the thread.
     lease.Release();
-
-    tracker.Remove(std::this_thread::get_id());
   });
-
-  tracker.Track(std::move(streaming_thread));
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

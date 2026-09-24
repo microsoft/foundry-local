@@ -194,7 +194,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::ha
     } else {
       SessionRegistration reg(ctx_.session_manager, *session);
       auto response = HandleNonStreaming(*session, session_request);
-      tracker->SetStatus(ResponseToActionStatus(response, session_request.canceled.load(std::memory_order_relaxed)));
+      tracker->SetStatus(ResponseToActionStatus(response));
       return response;
     }
   } catch (const fl::Exception& ex) {
@@ -257,15 +257,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
     ChatSession&& session, Request session_request, bool include_usage,
     std::unique_ptr<ActionTracker> route_tracker) {
   auto body = std::make_shared<SseStreamBody>();
-  auto body_ptr = body;
+  auto stream = body->Stream();
+  auto req = std::make_shared<Request>(std::move(session_request));
+  stream->BindRequest(req);
   auto& logger = ctx_.logger;
-  auto& thread_tracker = ctx_.thread_tracker;
-
-  std::thread streaming_thread([bg_session = std::move(session), body_ptr, &logger,
-                                req = std::move(session_request),
-                                include_usage, &thread_tracker,
-                                route_tracker = std::move(route_tracker),
-                                &session_manager = ctx_.session_manager]() mutable {
+  ctx_.thread_tracker.Start([bg_session = std::move(session), stream, &logger, req, include_usage,
+                             route_tracker = std::move(route_tracker),
+                             &session_manager = ctx_.session_manager]() mutable {
     try {
       // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
       // instead of escaping this raw std::thread and calling std::terminate.
@@ -283,7 +281,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
 
         if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
           auto& text_item = static_cast<fl::TextItem&>(*item);
-          body_ptr->Push("data: " + text_item.text + "\n\n");
+          stream->Push("data: " + text_item.text + "\n\n");
         } else {
           logger.Log(LogLevel::Error,
                      fmt::format("Unexpected item type {} in chat streaming callback", static_cast<int>(item->type)));
@@ -293,7 +291,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       };
 
       bg_session.SetStreamingCallback(callback_fn);
-      bg_session.ProcessRequest(req, bg_response);
+      if (stream->IsDisconnected()) {
+        route_tracker->SetStatus(ActionStatus::kCanceled);
+        stream->Finish();
+        reg.Release();
+        return;
+      }
+
+      bg_session.ProcessRequest(*req, bg_response);
 
       // Usage chunk — only if stream_options.include_usage was true
       if (include_usage) {
@@ -315,15 +320,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
             static_cast<int>(bg_response.usage.reasoning_tokens);
         usage_chunk.usage = std::move(usage);
 
-        body_ptr->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
+        stream->Push("data: " + nlohmann::json(usage_chunk).dump() + "\n\n");
       }
 
-      body_ptr->Push("data: [DONE]\n\n");
+      stream->Push("data: [DONE]\n\n");
 
       // Record final route status after streaming completes.
       if (route_tracker) {
-        route_tracker->SetStatus(req.canceled.load(std::memory_order_relaxed) ? ActionStatus::kCanceled
-                                                                              : ActionStatus::kSuccess);
+        route_tracker->SetStatus(ActionStatus::kSuccess);
       }
     } catch (const std::exception& ex) {
       // The status line is already sent, so a rejected request can only be reported in the event payload. Keep the
@@ -334,7 +338,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       nlohmann::json err = {
           {"error", {{"message", ex.what()}, {"type", error_type}, {"param", nullptr}, {"code", nullptr}}},
       };
-      body_ptr->Push("data: " + err.dump() + "\n\n");
+      stream->Push("data: " + err.dump() + "\n\n");
 
       // Preserve exception-based classification for cancellation, client errors and dependency failures.
       if (route_tracker) {
@@ -342,13 +346,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       }
     }
 
-    body_ptr->Finish();
-    // Emit before untracking the worker, while its telemetry dependency is still alive.
-    route_tracker.reset();
-    thread_tracker.Remove(std::this_thread::get_id());
+    stream->Finish();
   });
-
-  thread_tracker.Track(std::move(streaming_thread));
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);

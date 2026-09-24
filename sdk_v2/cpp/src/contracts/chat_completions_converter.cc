@@ -1,8 +1,10 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "contracts/chat_completions_converter.h"
+#include "contracts/reasoning_options.h"
 
 #include "contracts/tool_definitions.h"
+#include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -57,19 +59,39 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     return;
   }
 
+  auto validate_default = [](const char* key, const char* value, const char* option) {
+    try {
+      KeyValuePairs params;
+      params.Add(option, value);
+      auto parsed = SearchOptions::FromParameters(params);
+      ResolveSamplingPlan(parsed);
+      if (parsed.max_output_tokens.has_value()) {
+        ResolveMaxOutputTokens(parsed, 1);
+      }
+    } catch (const fl::Exception& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+    } catch (const std::invalid_argument& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+    } catch (const std::out_of_range& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+    }
+  };
+
   auto apply_default_float = [&](const char* key, std::optional<float>& field) {
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
+        validate_default(key, val, key);
         field = std::stof(val);
       }
     }
   };
 
-  auto apply_default_int = [&](const char* key, std::optional<int>& field) {
+  auto apply_default_int = [&](const char* key, const char* option, std::optional<int>& field) {
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
+        validate_default(key, val, option);
         field = std::stoi(val);
       }
     }
@@ -77,22 +99,25 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
 
   apply_default_float("temperature", req.temperature);
   apply_default_float("top_p", req.top_p);
-  apply_default_int("max_tokens", req.max_tokens);
+  if (!req.max_completion_tokens.has_value()) {
+    apply_default_int("max_tokens", "max_output_tokens", req.max_tokens);
+  }
 
   // top_k and random_seed go through metadata (matches C# behavior)
   if (!req.metadata.has_value()) {
     req.metadata.emplace();
   }
 
-  auto apply_metadata = [&](const char* key) {
+  auto apply_metadata = [&](const char* key, const char* option) {
     const char* val = model_settings.Find(key);
     if (val && req.metadata->find(key) == req.metadata->end()) {
+      validate_default(key, val, option);
       (*req.metadata)[key] = val;
     }
   };
 
-  apply_metadata("top_k");
-  apply_metadata("random_seed");
+  apply_metadata("top_k", "top_k");
+  apply_metadata("random_seed", "seed");
 }
 
 std::string MapFinishReason(flFinishReason reason) {
@@ -120,28 +145,29 @@ void BuildRequestItems(const ChatCompletionRequest& req, Request& session_reques
     }
 
     const std::string content = msg.content.value_or("");
-    if (!content.empty()) {
-      session_request.AddOwnedItem(std::make_unique<MessageItem>(role, content, msg.name.value_or("")));
+    const std::string reasoning = msg.reasoning_content.value_or("");
+    if (!content.empty() || (role == FOUNDRY_LOCAL_ROLE_ASSISTANT && !reasoning.empty())) {
+      auto message = std::make_unique<MessageItem>();
+      message->role = role;
+      message->name = msg.name.value_or("");
+      if (!reasoning.empty()) {
+        message->content.push_back(
+            MessagePart::Own(std::make_unique<TextItem>(reasoning, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
+      }
+      if (!content.empty()) {
+        message->content.push_back(MessagePart::Own(std::make_unique<TextItem>(content)));
+      }
+      session_request.AddOwnedItem(std::move(message));
     }
 
     if (role != FOUNDRY_LOCAL_ROLE_ASSISTANT) {
       continue;
     }
 
-    // A reasoning-only response has no model-visible text to replay, but its assistant role still separates the
-    // messages on either side. Carry that boundary as an empty visible text part; reasoning itself remains private.
-    if (content.empty() && msg.reasoning_content.has_value() && !msg.reasoning_content->empty()) {
-      auto boundary = std::make_unique<MessageItem>();
-      boundary->role = role;
-      boundary->name = msg.name.value_or("");
-      boundary->content.push_back(MessagePart::Own(std::make_unique<TextItem>("")));
-      session_request.AddOwnedItem(std::move(boundary));
-    }
-
     // Assistant messages that issue tool calls usually have null content. When such a message also carries a
     // participant name, emit a content-free MessageItem to carry it: the transcript folds the calls below into that
     // message, so the name reaches the template without fabricating a text part the caller never sent.
-    if (content.empty() && (!msg.reasoning_content.has_value() || msg.reasoning_content->empty()) &&
+    if (content.empty() && reasoning.empty() &&
         !msg.tool_calls.empty() && msg.name.has_value() && !msg.name->empty()) {
       auto named = std::make_unique<MessageItem>();
       named->role = role;
@@ -230,6 +256,11 @@ void MapRequestParameters(const ChatCompletionRequest& req, Request& session_req
     session_request.options["max_output_tokens"] = std::to_string(*req.max_completion_tokens);
   } else if (req.max_tokens.has_value()) {
     session_request.options["max_output_tokens"] = std::to_string(*req.max_tokens);
+  }
+
+  if (req.chat_template_kwargs.has_value() || req.reasoning_effort.has_value()) {
+    session_request.options["chat_template_kwargs"] =
+        ResolveReasoningTemplateKwargs(req.chat_template_kwargs, req.reasoning_effort).dump();
   }
 
   // Extract metadata extensions (matching C# GetTopK/GetRandomSeed)

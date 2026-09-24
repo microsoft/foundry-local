@@ -151,6 +151,37 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_MetadataDoesNotOverrideE
   EXPECT_EQ(req.metadata->at("random_seed"), "42");
 }
 
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidSettingsAreInternalErrors) {
+  for (const auto& [key, value] : {std::pair{"temperature", "3"}, std::pair{"top_p", "-0.1"},
+                                   std::pair{"max_tokens", "0"}, std::pair{"top_k", "-1"},
+                                   std::pair{"random_seed", "not-an-integer"}}) {
+    ChatCompletionRequest req;
+    KeyValuePairs settings;
+    settings.Add(key, value);
+
+    try {
+      ApplyCatalogDefaults(req, settings);
+      FAIL() << "Expected an error for catalog setting " << key;
+    } catch (const fl::Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INTERNAL) << key;
+      EXPECT_NE(std::string(ex.what()).find(key), std::string::npos) << ex.what();
+    }
+  }
+}
+
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidOverriddenSettingIsNotApplied) {
+  ChatCompletionRequest req;
+  req.top_p = 0.8f;
+  req.max_completion_tokens = 128;
+  KeyValuePairs settings;
+  settings.Add("top_p", "-0.1");
+  settings.Add("max_tokens", "0");
+
+  EXPECT_NO_THROW(ApplyCatalogDefaults(req, settings));
+  EXPECT_FLOAT_EQ(*req.top_p, 0.8f);
+  EXPECT_FALSE(req.max_tokens.has_value());
+}
+
 // ========================================================================
 // MapFinishReason
 // ========================================================================
@@ -210,7 +241,7 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_SkipsEmptyContent) {
   EXPECT_EQ(msg->GetSimpleText(), "Real message");
 }
 
-TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPreservesAnEmptyRoleBoundary) {
+TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPreservesTypedReasoning) {
   ChatCompletionRequest req;
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
@@ -225,14 +256,39 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPrese
   ASSERT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
   const auto* boundary = static_cast<const MessageItem*>(session_request.items[0]);
   EXPECT_EQ(boundary->role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_EQ(boundary->GetSimpleText(), "");
+  ASSERT_EQ(boundary->content.size(), 1u);
+  ASSERT_EQ(boundary->content[0].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  const auto* reasoning_part = static_cast<const TextItem*>(boundary->content[0].view);
+  EXPECT_EQ(reasoning_part->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
+  EXPECT_EQ(reasoning_part->text, "private scratchpad");
 
   const auto messages = BuildTranscriptMessages(session_request.items);
   ASSERT_EQ(messages.size(), 1u);
   EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_TRUE(messages[0].VisibleText().empty());
-  EXPECT_TRUE(messages[0].ReasoningText().empty());
+  EXPECT_EQ(messages[0].ReasoningText(), "private scratchpad");
   EXPECT_EQ(BuildChatMessagesJson(messages), R"([{"role":"assistant","content":""}])");
+  EXPECT_EQ(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true),
+            R"([{"role":"assistant","content":"","reasoning_content":"private scratchpad"}])");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_AssistantKeepsReasoningBeforeVisibleContent) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = "final answer";
+  assistant.reasoning_content = "private scratchpad";
+  req.messages.push_back(std::move(assistant));
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  const auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].ReasoningText(), "private scratchpad");
+  EXPECT_EQ(messages[0].VisibleText(), "final answer");
+  EXPECT_EQ(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true),
+            R"([{"role":"assistant","content":"final answer","reasoning_content":"private scratchpad"}])");
 }
 
 TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolRoleCreatesToolResultItem) {
@@ -618,6 +674,57 @@ TEST(ChatCompletionsConverterTest, MapRequestParameters_EmptyMetadataValuesIgnor
   EXPECT_EQ(session_request.options.Find("seed"), nullptr);
 }
 
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ChatTemplateKwargsPreserveTypes) {
+  ChatCompletionRequest req;
+  req.chat_template_kwargs = json::parse(
+      R"({"enable_thinking":false,"reasoning_effort":"low","level":2})");
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const char* serialized = session_request.options.Find("chat_template_kwargs");
+  ASSERT_NE(serialized, nullptr);
+  auto parsed = json::parse(serialized);
+  EXPECT_EQ(parsed["enable_thinking"], false);
+  EXPECT_EQ(parsed["reasoning_effort"], "low");
+  EXPECT_EQ(parsed["level"], 2);
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ReasoningEffortControlsThinking) {
+  ChatCompletionRequest req;
+  req.reasoning_effort = "high";
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const auto kwargs = json::parse(session_request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], true);
+  EXPECT_EQ(kwargs["reasoning_effort"], "high");
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_NoneReasoningEffortDisablesThinking) {
+  ChatCompletionRequest req;
+  req.chat_template_kwargs = json::parse(R"({"reasoning_effort":"low","label":"keep"})");
+  req.reasoning_effort = "none";
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const auto kwargs = json::parse(session_request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], false);
+  EXPECT_FALSE(kwargs.contains("reasoning_effort"));
+  EXPECT_EQ(kwargs["label"], "keep");
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_RejectsUnsupportedReasoningEffort) {
+  ChatCompletionRequest req;
+  req.reasoning_effort = "extreme";
+
+  Request session_request;
+  ExpectInvalidArgument([&] { MapRequestParameters(req, session_request); },
+                        "unsupported reasoning effort");
+}
+
 // ========================================================================
 // MapGuidance
 // ========================================================================
@@ -999,7 +1106,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_ReasoningOnlyPopulatesReasoning
   EXPECT_TRUE(result.choices[0].message.content->empty());
 }
 
-TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsAdjacentMessageRolesAndHidesReasoning) {
+TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsTypedReasoning) {
   Response response;
   std::vector<std::unique_ptr<Item>> parts;
   parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
@@ -1027,10 +1134,14 @@ TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsAdjacentMessa
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(messages[2].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_TRUE(messages[1].VisibleText().empty());
-  EXPECT_TRUE(messages[1].ReasoningText().empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "private scratchpad");
   EXPECT_EQ(BuildChatMessagesJson(messages),
             R"([{"role":"user","content":"before"},)"
             R"({"role":"assistant","content":""},)"
+            R"({"role":"user","content":"after"}])");
+  EXPECT_EQ(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true),
+            R"([{"role":"user","content":"before"},)"
+            R"({"role":"assistant","content":"","reasoning_content":"private scratchpad"},)"
             R"({"role":"user","content":"after"}])");
 }
 
