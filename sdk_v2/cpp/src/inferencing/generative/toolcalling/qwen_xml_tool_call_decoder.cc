@@ -145,6 +145,13 @@ bool IsSupportedEnumValue(const Json& value, std::string_view type) {
   return IsCompatibleScalarType(value, type);
 }
 
+std::string EnumValueKey(const Json& value) {
+  std::string key = std::to_string(static_cast<int>(value.type()));
+  key.push_back(':');
+  key += value.dump();
+  return key;
+}
+
 bool IsSupportedEnum(const Json& schema, std::string_view type) {
   if (!schema.contains("enum")) {
     return true;
@@ -156,10 +163,10 @@ bool IsSupportedEnum(const Json& schema, std::string_view type) {
     return false;
   }
 
-  for (size_t index = 0; index < values.size(); ++index) {
-    if (!IsSupportedEnumValue(values[index], type) ||
-        std::ranges::any_of(values.begin(), values.begin() + static_cast<Json::difference_type>(index),
-                            [&](const auto& prior) { return JsonScalarEquals(prior, values[index]); })) {
+  std::unordered_set<std::string> seen_values;
+  seen_values.reserve(values.size());
+  for (const auto& value : values) {
+    if (!IsSupportedEnumValue(value, type) || !seen_values.insert(EnumValueKey(value)).second) {
       return false;
     }
   }

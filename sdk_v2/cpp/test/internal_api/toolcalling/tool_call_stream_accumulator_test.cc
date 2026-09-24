@@ -645,6 +645,46 @@ TEST(QwenXmlToolCallAccumulatorTest, FloatingNumericEnumDeclarationsDisableExact
   }
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, LargeEnumDeclarationsRejectDuplicates) {
+  nlohmann::json values = nlohmann::json::array();
+  for (size_t index = 0; index < 4096; ++index) {
+    values.push_back("value-" + std::to_string(index));
+  }
+
+  const auto make_parser = [](nlohmann::json enum_values) {
+    const auto tools =
+        nlohmann::json::array(
+            {{{"type", "function"},
+              {"function",
+               {{"name", "select"},
+                {"parameters",
+                 {{"type", "object"},
+                  {"properties", {{"value", {{"type", "string"}, {"enum", std::move(enum_values)}}}}}}}}}}})
+            .dump();
+    return CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}});
+  };
+
+  EXPECT_TRUE(static_cast<bool>(make_parser(values)));
+  values.push_back("value-2048");
+  EXPECT_FALSE(static_cast<bool>(make_parser(std::move(values))));
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NumericEnumDuplicateKeysPreserveJsonRepresentation) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"number","enum":[0,-0]}},"required":["value"]}}}])";
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"select", ToolKind::kFunction}};
+  ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds)));
+
+  for (const auto value : {"0", "-0"}) {
+    const auto call = "<tool_call>\n<function=select>\n<parameter=value>\n" + std::string(value) +
+                      "\n</parameter>\n</function>\n</tool_call>";
+    auto output = RunQwen({call}, tools, kinds);
+    ASSERT_EQ(output.calls.size(), 1u) << value;
+    EXPECT_TRUE(output.visible.empty()) << value;
+  }
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, StringEnumInsideAnyOfIsEnforced) {
   const auto tools =
       R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
