@@ -455,6 +455,7 @@ TEST(TelemetryLoggerTest, RecordProcessInfoIncludesStartupMetadata) {
   EXPECT_NE(logger.entries[0].message.find("ContainerType=kubernetes"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("VirtualizationType=hyperV"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("HostEnvironment=containerOnVirtualMachine"), std::string::npos);
+  EXPECT_NE(logger.entries[0].message.find("EnvironmentDetectionConfidence=high"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("DeviceIdScope=container"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("CpuCount=8"), std::string::npos);
   EXPECT_NE(logger.entries[0].message.find("TotalMemoryMB=32768"), std::string::npos);
