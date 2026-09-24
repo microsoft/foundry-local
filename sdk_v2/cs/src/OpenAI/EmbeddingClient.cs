@@ -12,7 +12,6 @@ using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.AI.Foundry.Local.OpenAI;
 using Microsoft.Extensions.Logging;
 
-using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 
 /// <summary>
 /// Embedding Client that uses the OpenAI API.
@@ -25,13 +24,13 @@ using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
 public class OpenAIEmbeddingClient
 {
     private readonly string _modelId;
-    private readonly NativeModel _nativeModel;
+    private readonly Model _model;
     private readonly ILogger _logger;
 
-    internal OpenAIEmbeddingClient(string modelId, NativeModel nativeModel)
+    internal OpenAIEmbeddingClient(string modelId, Model model)
     {
         _modelId = modelId;
-        _nativeModel = nativeModel;
+        _model = model;
         _logger = FoundryLocalManager.Instance.Logger;
     }
 
@@ -103,7 +102,7 @@ public class OpenAIEmbeddingClient
                                                                        CancellationToken? ct)
     {
         return NativeRequestRunner.RunAsync(
-            _nativeModel,
+            _model,
             requestJson,
             json => json.ToEmbeddingResponse(_logger),
             _logger,

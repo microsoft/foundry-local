@@ -30,12 +30,15 @@ constexpr size_t kMaxSchemaNesting = 16;
 enum class ParseState {
   kComplete,
   kIncomplete,
+  kQualifiedIncomplete,
+  kStructuralFailure,
   kInvalid,
 };
 
 struct FunctionSchema {
   Json properties = Json::object();
   std::unordered_set<std::string> required;
+  bool has_parameters = false;
   bool valid = false;
 };
 
@@ -147,6 +150,23 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
          IsSupportedParameterSchema(schema["items"], depth + 1);
 }
 
+bool HasNestedAnyOf(const Json& schema, size_t depth = 0) {
+  if (!schema.is_object()) {
+    return false;
+  }
+  if (depth != 0 && schema.contains("anyOf")) {
+    return true;
+  }
+  if (schema.contains("anyOf") &&
+      std::ranges::any_of(schema["anyOf"], [depth](const auto& branch) {
+        return HasNestedAnyOf(branch, depth + 1);
+      })) {
+    return true;
+  }
+
+  return schema.contains("items") && HasNestedAnyOf(schema["items"], depth + 1);
+}
+
 bool IsSupportedParametersObject(const Json& schema) {
   if (!schema.is_object() || HasUnsupportedComposition(schema)) {
     return false;
@@ -166,7 +186,8 @@ bool IsSupportedParametersObject(const Json& schema) {
 FunctionSchemas ParseFunctionSchemas(
     const std::string& tools_json,
     const std::unordered_map<std::string, ToolKind>& tool_kinds,
-    size_t& declaration_count) {
+    size_t& declaration_count,
+    bool recovery_aware) {
   FunctionSchemas schemas;
   const auto tools = Json::parse(tools_json, nullptr, false);
   if (!tools.is_array()) {
@@ -229,6 +250,7 @@ FunctionSchemas ParseFunctionSchemas(
       continue;
     }
 
+    schema.has_parameters = !parameters.empty();
     if (!IsSupportedParametersObject(parameters)) {
       insert_schema(name, std::move(schema));
       continue;
@@ -258,8 +280,9 @@ FunctionSchemas ParseFunctionSchemas(
 
     schema.properties = parameters["properties"];
     const bool properties_valid =
-        std::ranges::all_of(schema.properties.items(), [](const auto& property) {
-          return IsSupportedParameterSchema(property.value());
+        std::ranges::all_of(schema.properties.items(), [recovery_aware](const auto& property) {
+          return IsSupportedParameterSchema(property.value()) &&
+                 (!recovery_aware || !HasNestedAnyOf(property.value()));
         });
     bool required_valid = true;
     if (parameters.contains("required")) {
@@ -322,6 +345,46 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
   }
 
   return false;
+}
+
+bool IsCompatibleParameterValue(const Json& value, const Json& schema) {
+  if (!IsSupportedParameterSchema(schema)) {
+    return false;
+  }
+
+  if (!schema.contains("anyOf")) {
+    return IsCompatibleJsonValue(value, schema);
+  }
+
+  return std::ranges::any_of(schema["anyOf"], [&](const auto& branch) {
+    return IsCompatibleJsonValue(value, branch);
+  });
+}
+
+std::optional<Json> ParseJsonWithoutDuplicateObjectKeys(std::string_view source) {
+  std::vector<std::unordered_set<std::string>> object_keys;
+  bool duplicate_key = false;
+  const auto detect_duplicate_keys = [&](int, Json::parse_event_t event, Json& parsed) {
+    if (event == Json::parse_event_t::object_start) {
+      object_keys.emplace_back();
+    } else if (event == Json::parse_event_t::key) {
+      if (object_keys.empty() ||
+          !object_keys.back().insert(parsed.get_ref<const std::string&>()).second) {
+        duplicate_key = true;
+      }
+    } else if (event == Json::parse_event_t::object_end) {
+      object_keys.pop_back();
+    }
+
+    return true;
+  };
+
+  auto parsed = Json::parse(source, detect_duplicate_keys, /*allow_exceptions=*/false);
+  if (parsed.is_discarded() || duplicate_key) {
+    return std::nullopt;
+  }
+
+  return parsed;
 }
 
 std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json& schema) {
@@ -451,14 +514,14 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
     }
 
     if (kFunctionEnd.starts_with(source.substr(position))) {
-      return BlockResult(ParseState::kIncomplete);
+      return BlockResult(ParseState::kQualifiedIncomplete);
     }
 
     const auto parameter_name = ReadTagName(source, position, kParameterPrefix);
     if (!parameter_name.has_value()) {
       return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
-                             ? ParseState::kIncomplete
-                             : ParseState::kInvalid);
+                             ? ParseState::kQualifiedIncomplete
+                             : ParseState::kStructuralFailure);
     }
 
     const auto parameter = std::string(*parameter_name);
@@ -469,8 +532,8 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
     const auto body_end = source.find(kParameterEnd, position);
     if (body_end == std::string_view::npos) {
       return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
-                             ? ParseState::kIncomplete
-                             : ParseState::kInvalid);
+                             ? ParseState::kQualifiedIncomplete
+                             : ParseState::kStructuralFailure);
     }
 
     const auto body = source.substr(position, body_end - position);
@@ -529,32 +592,38 @@ size_t RejectedBatchEnd(std::string_view source, size_t invalid_position, bool e
 }
 
 ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_stream,
-                                      const FunctionSchemas& schemas) {
+                                      const FunctionSchemas& schemas, bool recovery_aware) {
   std::vector<ParsedToolCall> calls;
   size_t position = 0;
   size_t batch_end = 0;
 
   while (true) {
     auto block = ParseBlock(source, position, schemas);
-    if (block.state == ParseState::kIncomplete) {
+    if (block.state == ParseState::kIncomplete || block.state == ParseState::kQualifiedIncomplete) {
       if (!end_of_stream) {
         return {};
       }
 
       return {
-          .disposition = ToolCallPayloadDisposition::kRejected,
+          .disposition = recovery_aware && calls.empty() &&
+                                 block.state == ParseState::kQualifiedIncomplete
+                             ? ToolCallPayloadDisposition::kMalformed
+                             : ToolCallPayloadDisposition::kRejected,
           .consumed_size = source.size(),
           .calls = {},
       };
     }
-    if (block.state == ParseState::kInvalid) {
+    if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure) {
       const auto rejected_end = RejectedBatchEnd(source, position, end_of_stream);
       if (rejected_end == 0) {
         return {};
       }
 
       return {
-          .disposition = ToolCallPayloadDisposition::kRejected,
+          .disposition = recovery_aware && calls.empty() &&
+                                 block.state == ParseState::kStructuralFailure
+                             ? ToolCallPayloadDisposition::kMalformed
+                             : ToolCallPayloadDisposition::kRejected,
           .consumed_size = rejected_end,
           .calls = {},
       };
@@ -597,9 +666,10 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
 }  // namespace
 
 ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
-    std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds) {
+    std::string tools_json, std::unordered_map<std::string, ToolKind> tool_kinds,
+    bool recovery_aware) {
   size_t declaration_count = 0;
-  auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count);
+  auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count, recovery_aware);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
       std::ranges::any_of(schemas, [](const auto& schema) {
@@ -608,9 +678,76 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
     return {};
   }
 
-  return [schemas = std::move(schemas)](std::string_view source, bool end_of_stream) {
-    return ParseBatch(source, end_of_stream, schemas);
+  return [schemas = std::move(schemas), recovery_aware](std::string_view source, bool end_of_stream) {
+    return ParseBatch(source, end_of_stream, schemas, recovery_aware);
   };
+}
+
+std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
+    std::string_view payload,
+    const std::string& tools_json,
+    const std::unordered_map<std::string, ToolKind>& tool_kinds) {
+  const auto calls_json = ParseJsonWithoutDuplicateObjectKeys(payload);
+  if (!calls_json.has_value() || !calls_json->is_array() || calls_json->empty()) {
+    return {};
+  }
+
+  size_t declaration_count = 0;
+  const auto schemas = ParseFunctionSchemas(
+      tools_json, tool_kinds, declaration_count, /*recovery_aware=*/true);
+  if (declaration_count == 0 || schemas.size() != declaration_count ||
+      schemas.size() != tool_kinds.size() ||
+      std::ranges::any_of(schemas, [](const auto& schema) {
+        return !schema.second.valid;
+      })) {
+    return {};
+  }
+
+  std::vector<ParsedToolCall> calls;
+  calls.reserve(calls_json->size());
+
+  for (const auto& call_json : *calls_json) {
+    if (!call_json.is_object() || !call_json.contains("name") ||
+        !call_json["name"].is_string()) {
+      return {};
+    }
+
+    auto name = call_json["name"].get<std::string>();
+    const auto schema = schemas.find(name);
+    if (schema == schemas.end() || !schema->second.valid) {
+      return {};
+    }
+
+    const auto expected_field_count = schema->second.has_parameters ? 2u : 1u;
+    if (call_json.size() != expected_field_count) {
+      return {};
+    }
+
+    Json arguments = Json::object();
+    if (schema->second.has_parameters) {
+      if (!call_json.contains("parameters") || !call_json["parameters"].is_object()) {
+        return {};
+      }
+
+      arguments = call_json["parameters"];
+      if (std::ranges::any_of(arguments.items(), [&](const auto& argument) {
+            const auto property = schema->second.properties.find(argument.key());
+            return property == schema->second.properties.end() ||
+                   !IsCompatibleParameterValue(argument.value(), *property);
+          }) ||
+          !std::ranges::all_of(schema->second.required, [&](const auto& required) {
+            return arguments.contains(required);
+          })) {
+        return {};
+      }
+    }
+
+    auto call = ParsedToolCall{GenerateToolCallId(), std::move(name), arguments.dump()};
+    call.argument_source = call.arguments;
+    calls.push_back(std::move(call));
+  }
+
+  return calls;
 }
 
 }  // namespace fl

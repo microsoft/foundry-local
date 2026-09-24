@@ -6,9 +6,9 @@
 // Surface:
 //   * new ChatSession(model) — sync construction; underlying
 //     flSession_Create is fast.
-//   * session.processRequest(request) -> Promise<Response>  (PromiseWorker<Response>)
+//   * session.processRequest(request) -> Promise<Response> — scheduled on a per-session worker queue.
 //   * session.processStreamingRequest(request, onItem) -> Promise<Response> — streaming bridge via
-//     Napi::ThreadSafeFunction; resolves with the terminal Response after every item callback drains.
+//     Napi::ThreadSafeFunction; resolves with the terminal Response after every queued JS callback runs.
 //     The JS layer wraps this in an AsyncIterable whose `.response` promise carries the resolved value.
 //   * session.setOptions(kvp) — session-level options applied to subsequent sends.
 //   * ChatSession adds: turnCount(), undoTurns(count), addToolDefinition({...}).
@@ -19,18 +19,54 @@
 // ObjectWrap — modality-specific session classes (`ChatSession` today,
 // `AudioSession` / `EmbeddingsSession` later) each get their own ObjectWrap.
 //
-// Lifetime: the ChatSession pins the parent Manager via an ObjectReference so
-// the underlying foundry_local::Model the C++ Session captured can't be
-// released out from under it.
+// Lifetime: each session retains shared native Manager ownership, the
+// Manager's explicit-disposal flag, and a JS Manager reference. New calls
+// reject after disposal, while admitted workers retain their own native and JS
+// pins so disposal cannot invalidate accepted work.
 #pragma once
 
 #include <napi.h>
 
 #include <foundry_local/foundry_local_cpp.h>
 
+#include <atomic>
+#include <cstdint>
+#include <deque>
+#include <functional>
 #include <memory>
 
 namespace foundry_local_node {
+
+class SessionScheduler {
+ public:
+  uint64_t Enqueue(std::function<void()> start, std::function<void()> cancel = {});
+  bool Cancel(uint64_t id);
+  void Complete();
+  bool Busy() const noexcept { return running_ || !pending_.empty(); }
+
+ private:
+  struct Entry {
+    uint64_t id;
+    std::function<void()> start;
+    std::function<void()> cancel;
+  };
+
+  void StartNext();
+
+  std::deque<Entry> pending_;
+  uint64_t next_id_ = 1;
+  bool running_ = false;
+};
+
+class SessionActivity {
+ public:
+  void Start() noexcept { active_.fetch_add(1, std::memory_order_relaxed); }
+  void Complete() noexcept { active_.fetch_sub(1, std::memory_order_relaxed); }
+  bool Busy() const noexcept { return active_.load(std::memory_order_relaxed) != 0; }
+
+ private:
+  std::atomic_size_t active_ = 0;
+};
 
 class ChatSession : public Napi::ObjectWrap<ChatSession> {
  public:
@@ -51,8 +87,11 @@ class ChatSession : public Napi::ObjectWrap<ChatSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::ChatSession> impl_;
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 // Napi::ObjectWrap<EmbeddingsSession> over foundry_local::EmbeddingsSession.
@@ -82,8 +121,11 @@ class EmbeddingsSession : public Napi::ObjectWrap<EmbeddingsSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::EmbeddingsSession> impl_;
+  std::shared_ptr<SessionActivity> activity_ = std::make_shared<SessionActivity>();
 };
 
 // Napi::ObjectWrap<AudioSession> over foundry_local::AudioSession.
@@ -111,8 +153,11 @@ class AudioSession : public Napi::ObjectWrap<AudioSession> {
 
   bool ThrowIfDisposed(Napi::Env env);
 
-  std::unique_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::AudioSession> impl_;
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 }  // namespace foundry_local_node

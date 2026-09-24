@@ -8,6 +8,7 @@
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
+#include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "inferencing/generative/openresponses/response_store.h"
 #include "contracts/tool_definitions.h"
@@ -40,6 +41,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -61,25 +63,48 @@ class RecordingLogger final : public ILogger {
   std::vector<std::pair<LogLevel, std::string>> entries;
 };
 
+struct GenerationTrace {
+  bool requires_cancellation = false;
+  bool canceled = false;
+  bool usage_requested = false;
+  bool canceled_before_usage = false;
+  int generated_tokens = 0;
+};
+
 struct GeneratorCounters {
   int created = 0;
   int destroyed = 0;
   int appended = 0;
+  int canceled = 0;
+  int closed = 0;
+  int usage_after_cancel = 0;
 };
 
 class FixedOutputGenerator final : public ChatGenerator {
  public:
   FixedOutputGenerator(std::string output, BackendTerminationCause cause,
                        bool prompt_opens_reasoning = false,
-                       std::shared_ptr<GeneratorCounters> counters = {})
+                       std::shared_ptr<GeneratorCounters> counters = {},
+                       int prompt_tokens = 4,
+                       int generated_tokens = 1,
+                       std::function<void()> generate_hook = {},
+                       GenerationTrace* trace = nullptr)
       : output_(std::move(output)),
         cause_(cause),
         prompt_opens_reasoning_(prompt_opens_reasoning),
-        counters_(std::move(counters)) {
+        counters_(std::move(counters)),
+        prompt_tokens_(prompt_tokens),
+        generated_tokens_(generated_tokens),
+        generate_hook_(std::move(generate_hook)),
+        trace_(trace) {
     if (counters_) {
       ++counters_->created;
     }
   }
+
+  FixedOutputGenerator(std::string output, BackendTerminationCause cause,
+                       bool prompt_opens_reasoning, GenerationTrace* trace)
+      : FixedOutputGenerator(std::move(output), cause, prompt_opens_reasoning, {}, 4, 1, {}, trace) {}
 
   ~FixedOutputGenerator() override {
     if (counters_) {
@@ -88,12 +113,22 @@ class FixedOutputGenerator final : public ChatGenerator {
   }
 
   bool IsDone() const override {
-    return canceled_ || generated_;
+    return canceled_ || (generated_ && !(trace_ && trace_->requires_cancellation));
   }
 
   void GenerateNextToken() override {
+    if (generated_) {
+      throw std::logic_error("The host must end this turn after the first fragment");
+    }
+
     generated_ = true;
     current_token_ = 1;
+    if (trace_) {
+      ++trace_->generated_tokens;
+    }
+    if (generate_hook_) {
+      generate_hook_();
+    }
   }
 
   std::string Decode() override {
@@ -106,15 +141,28 @@ class FixedOutputGenerator final : public ChatGenerator {
   }
 
   int TokenCount() const override {
-    return kPromptTokens + (generated_ ? 1 : 0);
+    return prompt_tokens_ + (generated_ ? generated_tokens_ : 0);
   }
 
   int PromptTokenCount() const override {
-    return kPromptTokens;
+    return prompt_tokens_;
   }
 
   void Cancel() override {
     canceled_ = true;
+    if (trace_) {
+      trace_->canceled = true;
+    }
+    if (counters_) {
+      ++counters_->canceled;
+    }
+  }
+
+  void Close() override {
+    if (!closed_ && counters_) {
+      ++counters_->closed;
+    }
+    closed_ = true;
   }
 
   int AppendMessages(const std::vector<TranscriptMessage>&,
@@ -133,9 +181,17 @@ class FixedOutputGenerator final : public ChatGenerator {
   }
 
   std::optional<ChatTurnUsage> GetTurnUsage() const override {
+    if (trace_) {
+      trace_->usage_requested = true;
+      trace_->canceled_before_usage = canceled_;
+    }
+    if (counters_ && canceled_) {
+      ++counters_->usage_after_cancel;
+    }
+
     return ChatTurnUsage{
-        kPromptTokens,
-        generated_ ? 1 : 0,
+        prompt_tokens_,
+        generated_ ? generated_tokens_ : 0,
         cause_ == BackendTerminationCause::kNaturalEnd ? FOUNDRY_LOCAL_FINISH_STOP
                                                        : FOUNDRY_LOCAL_FINISH_LENGTH,
         canceled_ ? BackendTerminationCause::kCancellation : cause_,
@@ -147,14 +203,18 @@ class FixedOutputGenerator final : public ChatGenerator {
   }
 
  private:
-  static constexpr int kPromptTokens = 4;
   std::string output_;
   BackendTerminationCause cause_;
   bool prompt_opens_reasoning_;
   bool generated_ = false;
   bool canceled_ = false;
+  bool closed_ = false;
   std::optional<int32_t> current_token_;
   std::shared_ptr<GeneratorCounters> counters_;
+  int prompt_tokens_;
+  int generated_tokens_;
+  std::function<void()> generate_hook_;
+  GenerationTrace* trace_;
 };
 
 constexpr std::string_view kNativeQwenChatTemplate =
@@ -203,6 +263,16 @@ void AppendSegments(std::vector<Segment>& destination, const std::vector<Segment
     } else {
       destination.push_back(segment);
     }
+  }
+}
+
+template <typename Action>
+void ExpectOperationCancelled(Action&& action) {
+  try {
+    action();
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
   }
 }
 
@@ -1039,31 +1109,28 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
 
   struct TestCase {
     const char* name;
-    bool canceled;
     bool has_tool_calls;
     bool stop_sequence_matched;
     bool host_output_limit_reached;
     std::optional<flFinishReason> backend_finish_reason;
     flFinishReason expected;
   };
-
   const std::vector<TestCase> cases = {
-      {"cancellation wins", true, true, true, true, FOUNDRY_LOCAL_FINISH_NONE, FOUNDRY_LOCAL_FINISH_NONE},
-      {"tool calls win over stop", false, true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"tool calls win over stop", true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"tool calls win over host limit", false, true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"tool calls win over host limit", true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"stop wins over host limit", false, false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"stop wins over host limit", false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_STOP},
-      {"host limit produces length", false, false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"host limit produces length", false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_LENGTH},
-      {"backend reason survives natural completion", false, false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"backend reason survives natural completion", false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_STOP},
   };
 
   for (const auto& test : cases) {
     SCOPED_TRACE(test.name);
-    EXPECT_EQ(ResolveGeneratedFinishReason(test.canceled, test.has_tool_calls, test.stop_sequence_matched,
+    EXPECT_EQ(ResolveGeneratedFinishReason(test.has_tool_calls, test.stop_sequence_matched,
                                            test.host_output_limit_reached, test.backend_finish_reason,
                                            /*completion_tokens=*/32, /*max_output_tokens=*/32),
               test.expected);
@@ -1298,13 +1365,45 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
     ASSERT_EQ(model_->ModelType(), "qwen3_5_text");
     ASSERT_TRUE(model_->HasNativeQwenXmlToolCalls());
     ASSERT_TRUE(model_->HasPositionalToolResults());
+
+    engine_model_directory_ = test::MakeUniqueTempPath("qwen_native_engine_");
+    ASSERT_TRUE(std::filesystem::create_directory(engine_model_directory_));
+    const auto engine_source = test::GetTestDataPath("tiny-paged-attention");
+    for (const auto& entry : std::filesystem::directory_iterator(engine_source)) {
+      if (entry.is_regular_file()) {
+        std::filesystem::copy_file(
+            entry.path(), engine_model_directory_ / entry.path().filename());
+      }
+    }
+
+    const auto engine_config_path = engine_model_directory_ / "genai_config.json";
+    auto engine_config = nlohmann::json::parse(ReadText(engine_config_path));
+    engine_config["model"]["type"] = "qwen3_5_text";
+    WriteText(engine_config_path, engine_config.dump(2));
+
+    const auto engine_tokenizer_config_path = engine_model_directory_ / "tokenizer_config.json";
+    auto engine_tokenizer_config = nlohmann::json::parse(ReadText(engine_tokenizer_config_path));
+    engine_tokenizer_config["chat_template"] = kNativeQwenChatTemplate;
+    WriteText(engine_tokenizer_config_path, engine_tokenizer_config.dump(2));
+
+    const auto engine_result = load_manager_->LoadModel(
+        engine_model_directory_.string(), kEngineModelId, ExecutionProvider::kCPU);
+    ASSERT_EQ(engine_result.status, ModelLoadManager::LoadStatus::kSuccess);
+    engine_model_ = engine_result.model;
+    ASSERT_NE(engine_model_, nullptr);
+    ASSERT_EQ(engine_model_->GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kEngine);
+    ASSERT_TRUE(engine_model_->HasNativeQwenXmlToolCalls());
   }
 
   static void TearDownTestSuite() {
+    if (load_manager_ && engine_model_) {
+      EXPECT_TRUE(load_manager_->UnloadModel(kEngineModelId));
+    }
     if (load_manager_ && model_) {
       EXPECT_TRUE(load_manager_->UnloadModel(kModelId));
     }
 
+    engine_model_ = nullptr;
     model_ = nullptr;
     load_manager_.reset();
     ep_detector_.reset();
@@ -1313,6 +1412,10 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
     std::filesystem::remove_all(model_directory_, error);
     EXPECT_FALSE(error) << error.message();
     model_directory_.clear();
+
+    std::filesystem::remove_all(engine_model_directory_, error);
+    EXPECT_FALSE(error) << error.message();
+    engine_model_directory_.clear();
   }
 
   static std::string ReadText(const std::filesystem::path& path) {
@@ -1450,11 +1553,14 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
   }
 
   static constexpr const char* kModelId = "qwen-native-production-fixture";
+  static constexpr const char* kEngineModelId = "qwen-native-engine-fixture";
   static inline std::filesystem::path model_directory_;
+  static inline std::filesystem::path engine_model_directory_;
   static inline std::unique_ptr<StderrLogger> logger_;
   static inline std::unique_ptr<test::CpuOnlyEpDetector> ep_detector_;
   static inline std::unique_ptr<ModelLoadManager> load_manager_;
   static inline GenAIModelInstance* model_ = nullptr;
+  static inline GenAIModelInstance* engine_model_ = nullptr;
   static inline test::FakeServiceBindings services_;
   TelemetryLogger telemetry_{"qwen-native-production-test", test::NullLog()};
 };
@@ -1540,6 +1646,784 @@ TEST_F(QwenNativeProductionIntegrationTest,
               test_case.call_count == 0 ? "stop" : "tool_calls");
     EXPECT_TRUE(stateless.Transcript().Empty());
   }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineAutoMalformedCallRetriesAfterDestroyAndPublishesAcceptedUsageOnce) {
+  const std::vector<std::string> outputs = {
+      "<tool_call>\n<function=lookup>\n<param=city>\nParis\n</param>\n</function>\n</tool_call>",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}}]</tool_call>)",
+  };
+  auto counters = std::make_shared<GeneratorCounters>();
+  std::vector<int> destroyed_at_creation;
+  std::vector<int> closed_at_creation;
+  std::vector<std::string> prepared_messages;
+  std::vector<ToolCallContext> contexts;
+  std::vector<SearchOptions> options;
+  std::vector<bool> use_full_context;
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&](const chat_internal::PreparedChatMessages& messages, const SearchOptions& search_options,
+          auto&, const ToolCallContext& context, bool full_context) {
+        destroyed_at_creation.push_back(counters->destroyed);
+        closed_at_creation.push_back(counters->closed);
+        prepared_messages.push_back(BuildChatMessagesJson(messages.Messages()));
+        contexts.push_back(context);
+        options.push_back(search_options);
+        use_full_context.push_back(full_context);
+        const auto index = creation++;
+        return std::make_unique<FixedOutputGenerator>(
+            outputs.at(index), BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters,
+            index == 0 ? 3 : 11, index == 0 ? 2 : 5);
+      };
+
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {}, std::move(factory));
+  const auto params = nlohmann::json{
+      {"model", kEngineModelId},
+      {"input", "route this"},
+      {"instructions", "stable prefix"},
+      {"tool_choice", "auto"},
+      {"tools",
+       nlohmann::json::array(
+           {{{"type", "function"},
+             {"name", "lookup"},
+             {"description", "Look up a city."},
+             {"parameters",
+              {{"type", "object"},
+               {"properties", {{"city", {{"type", "string"}}}}},
+               {"required", nlohmann::json::array({"city"})}}}}})}}
+                          .get<responses::ResponseCreateParams>();
+  auto request = ResponseConverter::ToSessionRequest(params);
+  for (auto& definition :
+       ResponseConverter::ExtractResponsesToolDefinitions(params, request)) {
+    session.AddToolDefinition(std::move(definition));
+  }
+  std::vector<std::tuple<std::string, std::string, std::string>> streamed_calls;
+  std::string streamed_text;
+  session.SetStreamingCallback(
+      [&streamed_calls, &streamed_text](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+            const auto& call = static_cast<const ToolCallItem&>(*item);
+            streamed_calls.emplace_back(call.call_id, call.name, call.arguments);
+          } else if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed_text += static_cast<const TextItem&>(*item).text;
+          }
+        }
+
+        return 0;
+      });
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  ASSERT_EQ(counters->created, 2);
+  ASSERT_EQ(destroyed_at_creation, (std::vector<int>{0, 1}));
+  ASSERT_EQ(closed_at_creation, (std::vector<int>{0, 1}));
+  EXPECT_EQ(counters->closed, 1);
+  EXPECT_EQ(counters->appended, 0);
+  ASSERT_EQ(prepared_messages.size(), 2u);
+  EXPECT_EQ(prepared_messages[0], prepared_messages[1]);
+  EXPECT_TRUE(options[0].HasSameRetainedGenerationSettings(options[1], ChatBackendKind::kEngine));
+  EXPECT_EQ(use_full_context, (std::vector<bool>{true, true}));
+  EXPECT_TRUE(contexts[0].text_output);
+  EXPECT_TRUE(contexts[0].tool_output);
+  EXPECT_FALSE(contexts[1].text_output);
+  EXPECT_TRUE(contexts[1].tool_output);
+  EXPECT_EQ(contexts[0].tools_json, contexts[1].tools_json);
+
+  const auto calls = Calls(response);
+  ASSERT_EQ(calls.size(), 1u);
+  ASSERT_EQ(streamed_calls.size(), 1u);
+  EXPECT_EQ(std::get<0>(streamed_calls.front()), calls.front()->call_id);
+  EXPECT_EQ(std::get<1>(streamed_calls.front()), "lookup");
+  EXPECT_EQ(std::get<2>(streamed_calls.front()), R"({"city":"Paris"})");
+  EXPECT_TRUE(streamed_text.empty());
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+  EXPECT_EQ(response.usage.prompt_tokens, 11);
+  EXPECT_EQ(response.usage.completion_tokens, 5);
+  EXPECT_EQ(response.usage.total_tokens, 16);
+  EXPECT_EQ(session.TurnCount(), 1u);
+  ASSERT_EQ(session.Transcript().Messages().back().ToolCalls().size(), 1u);
+  EXPECT_TRUE(session.Transcript().Messages().back().VisibleText().empty());
+
+  auto [response_output, output_text] = ResponseConverter::FromSessionResponse(response, "msg_recovered");
+  const nlohmann::json projected = ResponseConverter::BuildResponseObject(
+      "resp_recovered", 123, kEngineModelId, params, std::move(response_output), output_text, response.usage);
+  ASSERT_EQ(projected.at("output").size(), 1u);
+  EXPECT_EQ(projected.at("output").at(0).at("type"), "function_call");
+  EXPECT_EQ(projected.at("output").at(0).at("call_id"), calls.front()->call_id);
+  EXPECT_EQ(projected.at("output").at(0).at("name"), "lookup");
+  EXPECT_EQ(projected.at("output").at(0).at("arguments"), R"({"city":"Paris"})");
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineAutoNaturalTextAndNativeCallRemainSingleAttemptForOmittedAndExplicitChoice) {
+  struct Case {
+    bool explicit_auto;
+    std::string output;
+    size_t call_count;
+  };
+  const std::vector<Case> cases = {
+      {false, "ordinary answer", 0},
+      {true, "ordinary answer", 0},
+      {false, std::string(kLookupCall), 1},
+      {true, std::string(kLookupCall), 1},
+  };
+
+  for (const auto& test_case : cases) {
+    auto counters = std::make_shared<GeneratorCounters>();
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                        OutputFactory(test_case.output, counters));
+    AddFunctionTools(session);
+    auto request = MakeStatefulRequest("route this");
+    if (!test_case.explicit_auto) {
+      request.options.Remove(FOUNDRY_LOCAL_PARAM_TOOL_CHOICE);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+
+    EXPECT_EQ(counters->created, 1);
+    EXPECT_EQ(Calls(response).size(), test_case.call_count);
+    EXPECT_EQ(response.finish_reason, test_case.call_count == 0 ? FOUNDRY_LOCAL_FINISH_STOP
+                                                                : FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedRecoveryExhaustionLeavesStateUntouchedAndNextRequestSucceeds) {
+  const std::vector<std::string> outputs = {
+      "<tool_call>\n<function=lookup>\n<parameter=city>\nParis",
+      "not a tool call",
+      "clean follow-up",
+  };
+  auto counters = std::make_shared<GeneratorCounters>();
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool) {
+        return std::make_unique<FixedOutputGenerator>(
+            outputs.at(creation++), BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters);
+      };
+
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {}, std::move(factory));
+  AddFunctionTools(session);
+  std::vector<std::string> streamed;
+  session.SetStreamingCallback(
+      [&streamed](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed.push_back(static_cast<const TextItem&>(*item).text);
+          }
+        }
+
+        return 0;
+      });
+  auto malformed_request = MakeStatefulRequest("route this");
+  Response failed_response;
+  std::string failure_message;
+  try {
+    session.ProcessRequest(malformed_request, failed_response);
+    FAIL() << "expected malformed recovery exhaustion";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    failure_message = error.what();
+    EXPECT_NE(std::string(error.what()).find("Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
+              std::string::npos);
+  }
+
+  EXPECT_EQ(counters->created, 2);
+  EXPECT_EQ(counters->destroyed, 2);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_TRUE(session.Transcript().Empty());
+  EXPECT_TRUE(failed_response.items.empty());
+  EXPECT_TRUE(streamed.empty());
+  EXPECT_EQ(failed_response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_EQ(failed_response.usage.prompt_tokens, 0);
+  EXPECT_EQ(failed_response.usage.completion_tokens, 0);
+  EXPECT_EQ(failed_response.usage.total_tokens, 0);
+  EXPECT_EQ(failed_response.usage.reasoning_tokens, 0);
+
+  responses::ResponseCreateParams params;
+  params.model = kEngineModelId;
+  params.input = "route this";
+  const nlohmann::json failed = ResponseConverter::BuildFailedResponseObject(
+      "resp_failed", 123, kEngineModelId, params, "server_error", failure_message);
+  EXPECT_EQ(failed.at("status"), "failed");
+  EXPECT_EQ(failed.at("error").at("code"), "server_error");
+  EXPECT_NE(failed.at("error").at("message").get<std::string>().find("guided recovery"),
+            std::string::npos);
+  EXPECT_TRUE(failed.at("output").empty());
+
+  auto clean_request = MakeStatefulRequest("try again");
+  Response clean_response;
+  session.ProcessRequest(clean_request, clean_response);
+
+  EXPECT_EQ(counters->created, 3);
+  EXPECT_EQ(session.TurnCount(), 1u);
+  EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), "clean follow-up");
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedRecoveryCancellationDuringSecondAttemptCancelsBeforeUsageAndPublishesNothing) {
+  const std::vector<std::string> outputs = {
+      "<tool_call>\n<function=lookup>\n<parameter=city>\nParis",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}}]</tool_call>)",
+  };
+  auto counters = std::make_shared<GeneratorCounters>();
+  Request* active_request = nullptr;
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool) {
+        const auto index = creation++;
+        std::function<void()> hook;
+        if (index == 1) {
+          hook = [&] {
+            active_request->Cancel();
+          };
+        }
+
+        return std::make_unique<FixedOutputGenerator>(
+            outputs.at(index), BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters,
+            /*prompt_tokens=*/4, /*generated_tokens=*/1, std::move(hook));
+      };
+
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                      std::move(factory));
+  AddFunctionTools(session);
+  std::vector<std::string> streamed;
+  session.SetStreamingCallback(
+      [&streamed](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed.push_back(static_cast<const TextItem&>(*item).text);
+          }
+        }
+
+        return 0;
+      });
+
+  auto request = MakeStatefulRequest("route this");
+  active_request = &request;
+  Response response;
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
+  EXPECT_EQ(counters->created, 2);
+  EXPECT_EQ(counters->closed, 1);
+  EXPECT_EQ(counters->canceled, 1);
+  EXPECT_EQ(counters->usage_after_cancel, 1);
+  EXPECT_TRUE(streamed.empty());
+  EXPECT_TRUE(response.items.empty());
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_TRUE(session.Transcript().Empty());
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedFirstAttemptCancellationFromCallbackCancelsBeforeUsageWithoutRecovery) {
+  const std::string output =
+      "safe prefix<tool_call>\n<function=lookup>\n<parameter=city>\nParis";
+  auto counters = std::make_shared<GeneratorCounters>();
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(
+      catalog_model, *engine_model_, *logger_, telemetry_, {},
+      OutputFactory(output, counters));
+  AddFunctionTools(session);
+  std::string streamed_text;
+  session.SetStreamingCallback(
+      [&streamed_text](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed_text += static_cast<const TextItem&>(*item).text;
+          }
+        }
+
+        return 1;
+      });
+
+  auto request = MakeStatefulRequest("route this");
+  Response response;
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
+  EXPECT_EQ(counters->created, 1);
+  EXPECT_EQ(counters->canceled, 1);
+  EXPECT_EQ(counters->usage_after_cancel, 1);
+  EXPECT_EQ(streamed_text, "safe prefix");
+  EXPECT_TRUE(response.items.empty());
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_EQ(session.TurnCount(), 0u);
+  EXPECT_TRUE(session.Transcript().Empty());
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineChatCompletionsMalformedFirstAttemptCancellationFromCallbackCancelsBeforeUsageWithoutRecovery) {
+  const std::string output =
+      "safe prefix<tool_call>\n<function=lookup>\n<parameter=city>\nParis";
+  auto counters = std::make_shared<GeneratorCounters>();
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(
+      catalog_model, *engine_model_, *logger_, telemetry_, {},
+      OutputFactory(output, counters));
+  std::vector<nlohmann::json> streamed_chunks;
+  session.SetStreamingCallback(
+      [&streamed_chunks](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        bool semantic_output_seen = false;
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            auto chunk = nlohmann::json::parse(static_cast<const TextItem&>(*item).text);
+            const auto& delta = chunk.at("choices").at(0).at("delta");
+            semantic_output_seen |= !delta.value("content", "").empty();
+            streamed_chunks.push_back(std::move(chunk));
+          }
+        }
+
+        return semantic_output_seen ? 1 : 0;
+      });
+
+  const auto body = nlohmann::json{
+      {"model", kModelId},
+      {"messages", nlohmann::json::array(
+                       {{{"role", "user"}, {"content", "route this"}}})},
+      {"tools",
+       nlohmann::json::array(
+           {{{"type", "function"},
+             {"function",
+              {{"name", "lookup"},
+               {"description", "Look up a city."},
+               {"parameters",
+                {{"type", "object"},
+                 {"properties", {{"city", {{"type", "string"}}}}}}}}}}})},
+      {"tool_choice", "auto"},
+      {"stream", true}};
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  Response response;
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
+  EXPECT_EQ(counters->created, 1);
+  EXPECT_EQ(counters->canceled, 1);
+  EXPECT_EQ(counters->usage_after_cancel, 1);
+  std::string streamed_content;
+  for (const auto& chunk : streamed_chunks) {
+    const auto& choice = chunk.at("choices").at(0);
+    const auto& delta = choice.at("delta");
+    streamed_content += delta.value("content", "");
+    EXPECT_FALSE(delta.contains("tool_calls"));
+    EXPECT_TRUE(choice.at("finish_reason").is_null());
+  }
+  EXPECT_EQ(streamed_content, "safe prefix");
+  EXPECT_EQ(streamed_content.find("<tool_call>"), std::string::npos);
+  EXPECT_EQ(streamed_content.find("<function="), std::string::npos);
+  EXPECT_TRUE(response.items.empty());
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(session.Transcript().Empty());
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedRecoveryIsIneligibleForStopNonAutoChoiceAndExplicitGuidance) {
+  enum class IneligibleCase {
+    kStop,
+    kNone,
+    kRequired,
+    kForced,
+    kGuidance,
+  };
+  const std::string malformed =
+      "<tool_call>\n<function=lookup>\n<parameter=city>\nParis";
+
+  for (const auto test_case :
+       {IneligibleCase::kStop, IneligibleCase::kNone, IneligibleCase::kRequired,
+        IneligibleCase::kForced, IneligibleCase::kGuidance}) {
+    auto counters = std::make_shared<GeneratorCounters>();
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                        OutputFactory(malformed, counters));
+    AddFunctionTools(session);
+    auto request = MakeStatefulRequest("route this");
+    switch (test_case) {
+      case IneligibleCase::kStop:
+        StoreStopStringsOption({"never matches"}, request.options);
+        break;
+      case IneligibleCase::kNone:
+        request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = "none";
+        break;
+      case IneligibleCase::kRequired:
+        request.options[FOUNDRY_LOCAL_PARAM_TOOL_CHOICE] = "required";
+        break;
+      case IneligibleCase::kForced:
+        request.forced_tool_choice =
+            ForcedToolChoice{"lookup", ToolKind::kFunction};
+        break;
+      case IneligibleCase::kGuidance:
+        request.options["guidance_type"] = "json_schema";
+        request.options["guidance_data"] =
+            R"({"type":"object","properties":{}})";
+        break;
+    }
+
+    Response response;
+    if (test_case == IneligibleCase::kNone) {
+      session.ProcessRequest(request, response);
+      ASSERT_EQ(response.items.size(), 1u);
+      ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
+      EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
+                malformed);
+      EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+      EXPECT_EQ(session.Transcript().Messages().back().VisibleText(),
+                malformed);
+    } else {
+      try {
+        session.ProcessRequest(request, response);
+      } catch (const fl::Exception&) {
+      }
+    }
+
+    EXPECT_EQ(counters->created, 1) << static_cast<int>(test_case);
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedRecoveryRejectsSemanticPrefixAndNonNaturalCompletionWithoutRetry) {
+  struct Case {
+    std::string output;
+    BackendTerminationCause cause;
+    std::string expected_streamed_text;
+  };
+  const std::vector<Case> cases = {
+      {"safe prefix<tool_call>\n<function=lookup>\n<param=city>\nParis\n</param>\n"
+       "</function>\n</tool_call>",
+       BackendTerminationCause::kNaturalEnd,
+       "safe prefix"},
+      {"<tool_call>\n<function=lookup>\n<param=city>\nParis\n</param>\n"
+       "</function>\n</tool_call>tail",
+       BackendTerminationCause::kOutputTokenLimit,
+       "tail"},
+  };
+
+  for (const auto& test_case : cases) {
+    auto counters = std::make_shared<GeneratorCounters>();
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(
+        catalog_model, *engine_model_, *logger_, telemetry_, {},
+        OutputFactory(test_case.output, counters, test_case.cause));
+    AddFunctionTools(session);
+    std::string streamed_text;
+    int streamed_tool_calls = 0;
+    session.SetStreamingCallback(
+        [&streamed_text, &streamed_tool_calls](flStreamingCallbackData event,
+                                               void*) {
+          auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+          while (auto item = queue->TryPop()) {
+            if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+              streamed_text += static_cast<const TextItem&>(*item).text;
+            } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+              ++streamed_tool_calls;
+            }
+          }
+
+          return 0;
+        });
+
+    auto request = MakeStatefulRequest("route this");
+    Response response;
+    try {
+      session.ProcessRequest(request, response);
+      FAIL() << "expected malformed output to fail";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+
+    EXPECT_EQ(counters->created, 1);
+    EXPECT_EQ(session.TurnCount(), 0u);
+    EXPECT_TRUE(response.items.empty());
+    EXPECT_EQ(streamed_text, test_case.expected_streamed_text);
+    EXPECT_EQ(streamed_tool_calls, 0);
+    EXPECT_EQ(streamed_text.find("<tool_call>"), std::string::npos);
+    EXPECT_EQ(streamed_text.find("<function="), std::string::npos);
+    EXPECT_TRUE(session.Transcript().Empty());
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedRecoveryRejectsEveryNonCallRetryOutputWithoutThirdAttempt) {
+  const std::string malformed =
+      "<tool_call>\n<function=lookup>\n<parameter=city>\nParis";
+  const std::vector<std::string> rejected_retries = {
+      "<tool_call>not json</tool_call>",
+      "",
+      "<think>reasoning only</think>",
+      "ordinary text",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}}])",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}}</tool_call>)",
+      R"(<tool_call>{"name":"lookup","parameters":{"city":"Paris"}}</tool_call>)",
+      R"(<tool_call>[{"function":"lookup","parameters":{"city":"Paris"}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","arguments":{"city":"Paris"}}]</tool_call>)",
+      R"(<tool_call>[{"lookup":{"city":"Paris"}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup"}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":"Paris"}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":{}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris","country":"FR"}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":7}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":{"name":"Paris"}}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","name":"clock","parameters":{"city":"Paris"}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris","city":"Lyon"}}]</tool_call>)",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}},{"name":"clock","parameters":{}}]</tool_call>)",
+  };
+
+  for (const auto& retry_output : rejected_retries) {
+    std::vector<std::string> outputs = {malformed, retry_output};
+    auto counters = std::make_shared<GeneratorCounters>();
+    size_t creation = 0;
+    TextChatGeneratorFactory factory =
+        [&](const auto&, const auto&, auto&, const auto&, bool) {
+          return std::make_unique<FixedOutputGenerator>(
+              outputs.at(creation++), BackendTerminationCause::kNaturalEnd,
+              /*prompt_opens_reasoning=*/false, counters);
+        };
+
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {}, std::move(factory));
+    AddFunctionTools(session);
+    auto request = MakeStatefulRequest("route this");
+    Response response;
+
+    EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception) << retry_output;
+    EXPECT_EQ(counters->created, 2) << retry_output;
+    EXPECT_EQ(session.TurnCount(), 0u) << retry_output;
+    EXPECT_TRUE(response.items.empty()) << retry_output;
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineMalformedRecoveryAcceptsNormalizedCustomToolCall) {
+  const std::vector<std::string> outputs = {
+      "<tool_call>\n<function=transform>\n<parameter=input>\ntext",
+      R"(<tool_call>[{"name":"transform","parameters":{"input":"transformed text"}}]</tool_call>)",
+  };
+  auto counters = std::make_shared<GeneratorCounters>();
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const auto&, bool) {
+        return std::make_unique<FixedOutputGenerator>(
+            outputs.at(creation++), BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters);
+      };
+
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                      std::move(factory));
+  session.AddToolDefinition(
+      tools::MakeCustomTool("transform", "Transform text."));
+
+  auto request = MakeStatefulRequest("apply this patch");
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(counters->created, 2);
+  const auto calls = Calls(response);
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls.front()->name, "transform");
+  EXPECT_EQ(calls.front()->arguments, "transformed text");
+  EXPECT_EQ(calls.front()->kind, ToolKind::kCustom);
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       ClassicGeneratorPreservesMalformedBytesAndNeverRetries) {
+  const std::string malformed =
+      "<tool_call>\n<function=lookup>\n<parameter=city>\nParis";
+  auto counters = std::make_shared<GeneratorCounters>();
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                      OutputFactory(malformed, counters));
+  AddFunctionTools(session);
+
+  auto request = MakeStatefulRequest("route this");
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(counters->created, 1);
+  EXPECT_TRUE(Calls(response).empty());
+  EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), malformed);
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineAutoRawEnvelopePreservesMalformedBytesAndNeverRetries) {
+  const std::string malformed =
+      "<tool_call>\n<function=lookup>\n<param=city>\nParis\n</param>\n</function>\n</tool_call>";
+  auto counters = std::make_shared<GeneratorCounters>();
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                      OutputFactory(malformed, counters));
+  AddFunctionTools(session);
+  session.AddToolDefinition(tools::MakeCustomTool(
+      "apply_patch", "Apply a patch.", /*description_present=*/true,
+      std::string(tools::kStockGhcpApplyPatchLarkGrammar)));
+
+  std::string streamed_text;
+  session.SetStreamingCallback(
+      [&streamed_text](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed_text += static_cast<const TextItem&>(*item).text;
+          }
+        }
+
+        return 0;
+      });
+
+  auto request = MakeStatefulRequest("route this");
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(counters->created, 1);
+  EXPECT_EQ(streamed_text, malformed);
+  EXPECT_TRUE(Calls(response).empty());
+  EXPECT_EQ(session.Transcript().Messages().back().VisibleText(), malformed);
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineChatCompletionsRecoveryKeepsOneEnvelopeAndAcceptedUsage) {
+  const std::vector<std::string> outputs = {
+      "<tool_call>\n<function=lookup>\n<param=city>\nParis\n</param>\n</function>\n</tool_call>",
+      R"(<tool_call>[{"name":"lookup","parameters":{"city":"Paris"}}]</tool_call>)",
+  };
+  auto counters = std::make_shared<GeneratorCounters>();
+  size_t creation = 0;
+  TextChatGeneratorFactory factory =
+      [&](const auto&, const auto&, auto&, const ToolCallContext& context, bool) {
+        const auto index = creation++;
+        EXPECT_EQ(context.text_output, index == 0);
+        EXPECT_TRUE(context.tool_output);
+        return std::make_unique<FixedOutputGenerator>(
+            outputs.at(index), BackendTerminationCause::kNaturalEnd,
+            /*prompt_opens_reasoning=*/false, counters,
+            index == 0 ? 2 : 13, index == 0 ? 3 : 7);
+      };
+
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {}, std::move(factory));
+  std::vector<nlohmann::json> chunks;
+  const auto completion = RunChatCompletions(session, "auto", &chunks);
+
+  EXPECT_EQ(counters->created, 2);
+  ASSERT_EQ(completion.at("choices").size(), 1u);
+  const auto& choice = completion.at("choices").at(0);
+  const auto& calls = choice.at("message").at("tool_calls");
+  ASSERT_EQ(calls.size(), 1u);
+  EXPECT_EQ(calls.at(0).at("function").at("name"), "lookup");
+  EXPECT_EQ(calls.at(0).at("function").at("arguments"), R"({"city":"Paris"})");
+  EXPECT_EQ(choice.at("finish_reason"), "tool_calls");
+  EXPECT_EQ(completion.at("usage").at("prompt_tokens"), 13);
+  EXPECT_EQ(completion.at("usage").at("completion_tokens"), 7);
+  EXPECT_EQ(completion.at("usage").at("total_tokens"), 20);
+
+  const auto role_chunks = std::ranges::count_if(chunks, [](const auto& chunk) {
+    return chunk.at("choices").at(0).at("delta").value("role", "") == "assistant";
+  });
+  const auto tool_chunks = std::ranges::count_if(chunks, [](const auto& chunk) {
+    return chunk.at("choices").at(0).at("delta").contains("tool_calls");
+  });
+  EXPECT_EQ(role_chunks, 1);
+  EXPECT_EQ(tool_chunks, 1);
+  EXPECT_FALSE(std::ranges::any_of(chunks, [](const auto& chunk) {
+    const auto& delta = chunk.at("choices").at(0).at("delta");
+    return delta.contains("content") && delta.at("content").is_string() &&
+           !delta.at("content").template get<std::string>().empty();
+  }));
+  EXPECT_TRUE(session.Transcript().Empty());
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
+       EngineChatCompletionsAutoRawEnvelopePreservesMalformedBytesAndNeverRetries) {
+  const std::string malformed =
+      "<tool_call>\n<function=lookup>\n<param=city>\nParis\n</param>\n</function>\n</tool_call>";
+  auto counters = std::make_shared<GeneratorCounters>();
+  auto catalog_model = MakeCatalogModel();
+  ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                      OutputFactory(malformed, counters));
+
+  std::string streamed_content;
+  session.SetStreamingCallback(
+      [&streamed_content](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type != FOUNDRY_LOCAL_ITEM_TEXT) {
+            continue;
+          }
+
+          const auto chunk = nlohmann::json::parse(static_cast<const TextItem&>(*item).text);
+          const auto& delta = chunk.at("choices").at(0).at("delta");
+          if (delta.contains("content") && delta.at("content").is_string()) {
+            streamed_content += delta.at("content").get<std::string>();
+          }
+        }
+
+        return 0;
+      });
+
+  const auto descriptor =
+      nlohmann::json{{"type", "raw_envelope"},
+                     {"tool_name", "apply_patch"},
+                     {"start_marker", "*** Begin Patch"},
+                     {"end_marker", "*** End Patch"}}
+          .dump();
+  const auto body = nlohmann::json{
+      {"model", kEngineModelId},
+      {"messages", nlohmann::json::array({{{"role", "user"}, {"content", "route this"}}})},
+      {"tools",
+       nlohmann::json::array(
+           {{{"type", "function"},
+             {"function",
+              {{"name", "lookup"},
+               {"description", "Look up a city."},
+               {"parameters",
+                {{"type", "object"},
+                 {"properties", {{"city", {{"type", "string"}}}}},
+                 {"required", nlohmann::json::array({"city"})}}}}}},
+            {{"type", "custom"},
+             {"custom", {{"name", "apply_patch"}, {"format", {{"type", "text"}}}}}}})},
+      {"tool_choice", "auto"},
+      {"metadata", {{tools::kRawEnvelopeMetadataKey, descriptor}}}};
+
+  Request request;
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(counters->created, 1);
+  ASSERT_EQ(response.items.size(), 1u);
+  const auto completion =
+      nlohmann::json::parse(static_cast<const TextItem&>(*response.items.front()).text);
+  const auto& choice = completion.at("choices").at(0);
+  EXPECT_EQ(streamed_content, malformed);
+  EXPECT_EQ(choice.at("message").at("content"), malformed);
+  EXPECT_FALSE(choice.at("message").contains("tool_calls"));
+  EXPECT_EQ(choice.at("finish_reason"), "stop");
+  EXPECT_TRUE(session.Transcript().Empty());
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
@@ -2370,7 +3254,7 @@ TEST_F(ChatSessionTest, AmbiguousPositionalResultsLeaveWarmGeneratorAndTranscrip
   Response seed_response;
   session.ProcessRequest(seed, seed_response);
 
-  ASSERT_EQ(session.MessageCount(), 1u);
+  ASSERT_EQ(session.MessageCount(), 2u);
   ASSERT_EQ(session.Transcript().Messages().front().ToolCalls().size(), 2u);
   ASSERT_EQ(counters->created, 1);
   ASSERT_EQ(counters->destroyed, 0);
@@ -2392,7 +3276,7 @@ TEST_F(ChatSessionTest, AmbiguousPositionalResultsLeaveWarmGeneratorAndTranscrip
   EXPECT_EQ(counters->destroyed, 0);
   EXPECT_EQ(counters->appended, 0);
   EXPECT_EQ(BuildChatMessagesJson(session.Transcript().Messages()), transcript_before);
-  EXPECT_EQ(session.MessageCount(), 1u);
+  EXPECT_EQ(session.MessageCount(), 2u);
   EXPECT_EQ(session.TurnCount(), 1u);
 }
 
@@ -2452,6 +3336,216 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(messages[1].VisibleText(), text);
+}
+
+TEST_F(ChatSessionTest, AssistantInputAndReplyFollowNativeTemplateBoundaries) {
+  TextChatGeneratorFactory factory =
+      [](const auto& messages, const auto&, auto& model, const auto&, bool) {
+        const auto prompt = BuildChatPrompt(messages, model);
+        EXPECT_TRUE(prompt.ends_with(
+            "<|im_start|>assistant\nThe answer is<|im_end|>\n<|im_start|>assistant\n"));
+        return std::make_unique<FixedOutputGenerator>(" 42.", BackendTerminationCause::kNaturalEnd);
+      };
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {}, std::move(factory));
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What is it?"));
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "The answer is"));
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  ASSERT_EQ(session.MessageCount(), 3u);
+  EXPECT_EQ(session.Transcript().Messages()[1].VisibleText(), "The answer is");
+  EXPECT_EQ(session.Transcript().Messages()[2].VisibleText(), " 42.");
+  EXPECT_TRUE(BuildChatPrompt(session.Transcript().Messages(), GetModel()).ends_with(
+      "<|im_start|>assistant\nThe answer is<|im_end|>\n"
+      "<|im_start|>assistant\n 42.<|im_end|>\n<|im_start|>assistant\n"));
+}
+
+TEST_F(ChatSessionTest, SuppliedCallsDoNotCloseTheGeneratedTurnsVisibleText) {
+  for (bool json_request : {false, true}) {
+    SCOPED_TRACE(json_request ? "Chat Completions" : "typed request");
+    TextChatGeneratorFactory factory = [](const auto&, const auto&, auto&, const auto&, bool) {
+      return std::make_unique<FixedOutputGenerator>("New answer.", BackendTerminationCause::kNaturalEnd);
+    };
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {}, std::move(factory));
+    std::string streamed;
+    session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+      auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+      while (auto item = queue->TryPop()) {
+        if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+          const auto& text = static_cast<const TextItem&>(*item);
+          if (json_request) {
+            const auto chunk = nlohmann::json::parse(text.text);
+            const auto& delta = chunk.at("choices").at(0).at("delta");
+            if (delta.contains("content") && delta["content"].is_string()) {
+              streamed += delta["content"].get<std::string>();
+            }
+          } else {
+            streamed += text.text;
+          }
+        }
+      }
+      return 0;
+    });
+
+    Request request;
+    if (json_request) {
+      request.AddOwnedItem(std::make_unique<TextItem>(R"({
+        "model":"test-model", "stream":true,
+        "messages":[{"role":"user","content":"Again?"},
+          {"role":"assistant","content":"","tool_calls":[
+            {"id":"prior_call","type":"function","function":{"name":"lookup","arguments":"{}"}}]}]
+      })",
+                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    } else {
+      request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Again?"));
+      request.AddOwnedItem(std::make_unique<ToolCallItem>("prior_call", "lookup", "{}"));
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(streamed, "New answer.");
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    if (json_request) {
+      ASSERT_EQ(response.items.size(), 1u);
+      const auto completion = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
+      EXPECT_EQ(completion.at("choices").at(0).at("message").at("content"), "New answer.");
+    } else {
+      EXPECT_EQ(GetAssistantText(response), "New answer.");
+      ASSERT_EQ(session.MessageCount(), 3u);
+      EXPECT_TRUE(session.Transcript().IsOutstanding("prior_call"));
+      EXPECT_EQ(session.Transcript().Messages()[2].VisibleText(), "New answer.");
+    }
+  }
+}
+
+TEST_F(ChatSessionTest, HostEndedTurnsCancelBeforeWaitingForBackendUsage) {
+  enum class End { kPostCallText,
+                   kStopString,
+                   kCallback,
+                   kTokenLimit };
+  struct Case {
+    bool json;
+    bool streaming;
+    End end;
+  };
+  const std::vector<Case> cases{
+      {false, false, End::kPostCallText},
+      {false, true, End::kPostCallText},
+      {true, false, End::kPostCallText},
+      {true, true, End::kPostCallText},
+      {false, false, End::kStopString},
+      {false, true, End::kStopString},
+      {true, false, End::kStopString},
+      {true, true, End::kStopString},
+      {false, true, End::kCallback},
+      {true, true, End::kCallback},
+      {false, false, End::kTokenLimit},
+      {false, true, End::kTokenLimit},
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(::testing::Message() << "json=" << test.json << " streaming=" << test.streaming
+                                      << " end=" << static_cast<int>(test.end));
+    // Model an asynchronous backend that is still running after the host stops consuming. Usage records ordering
+    // instead of blocking, so a missing cancellation fails deterministically rather than hanging the test.
+    GenerationTrace trace;
+    trace.requires_cancellation = test.end != End::kCallback;
+    TextChatGeneratorFactory factory =
+        [&](const auto&, const auto&, auto&, const ToolCallContext& tools, bool) {
+          std::string output = "Visible.";
+          if (test.end == End::kPostCallText) {
+            EXPECT_FALSE(tools.tool_call_start.empty());
+            EXPECT_FALSE(tools.tool_call_end.empty());
+            output += tools.tool_call_start + R"({"name":"lookup","arguments":{}})" +
+                      tools.tool_call_end + "Discarded.";
+          } else if (test.end == End::kStopString) {
+            output += "STOPDiscarded.";
+          }
+
+          return std::make_unique<FixedOutputGenerator>(
+              output, BackendTerminationCause::kNaturalEnd, false, &trace);
+        };
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {}, std::move(factory));
+    if (!test.json) {
+      session.AddToolDefinition({"lookup", "Look up a value", R"({"type":"object","properties":{}})"});
+    }
+
+    std::string streamed;
+    if (test.streaming) {
+      session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed += static_cast<const TextItem&>(*item).text;
+          }
+        }
+        return test.end == End::kCallback ? 1 : 0;
+      });
+    }
+
+    Request request;
+    if (test.json) {
+      auto body = nlohmann::json::parse(R"({
+        "model":"test-model",
+        "messages":[{"role":"user","content":"Look it up."}],
+        "tools":[{"type":"function","function":{
+          "name":"lookup","parameters":{"type":"object","properties":{}}}}]
+      })");
+      body["stream"] = test.streaming;
+      if (test.end == End::kStopString) {
+        body["stop"] = "STOP";
+      }
+
+      request.AddOwnedItem(std::make_unique<TextItem>(
+          body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    } else {
+      request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Look it up."));
+      if (test.end == End::kStopString) {
+        StoreStopStringsOption({"STOP"}, request.options);
+      } else if (test.end == End::kTokenLimit) {
+        request.options.Add("max_output_tokens", "1");
+      }
+    }
+
+    Response response;
+    if (test.end == End::kCallback) {
+      ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+    } else {
+      ASSERT_NO_THROW(session.ProcessRequest(request, response));
+    }
+    EXPECT_TRUE(trace.usage_requested);
+    EXPECT_TRUE(trace.canceled);
+    EXPECT_TRUE(trace.canceled_before_usage);
+    EXPECT_EQ(streamed.find("Discarded."), std::string::npos);
+    if (test.end == End::kCallback) {
+      EXPECT_TRUE(request.IsCompleted());
+      EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+      EXPECT_TRUE(session.Transcript().Empty());
+      continue;
+    }
+
+    EXPECT_EQ(trace.generated_tokens, 1);
+    EXPECT_FALSE(request.IsCancellationRequested());
+    const auto expected_finish = test.end == End::kPostCallText ? FOUNDRY_LOCAL_FINISH_TOOL_CALLS
+                                 : test.end == End::kTokenLimit ? FOUNDRY_LOCAL_FINISH_LENGTH
+                                                                : FOUNDRY_LOCAL_FINISH_STOP;
+    EXPECT_EQ(response.finish_reason, expected_finish);
+    if (test.json) {
+      ASSERT_EQ(response.items.size(), 1u);
+      const auto completion = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
+      const auto& choice = completion.at("choices").at(0);
+      EXPECT_EQ(choice.at("message").at("content"), "Visible.");
+      if (test.end == End::kPostCallText) {
+        EXPECT_EQ(choice.at("finish_reason"), "tool_calls");
+        ASSERT_EQ(choice.at("message").at("tool_calls").size(), 1u);
+      }
+    } else {
+      EXPECT_EQ(GetAssistantText(response), "Visible.");
+      EXPECT_EQ(session.TurnCount(), 1u);
+      EXPECT_EQ(session.Transcript().OutstandingCallCount(), test.end == End::kPostCallText ? 1u : 0u);
+    }
+  }
 }
 
 TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoning) {
@@ -2733,6 +3827,230 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
+#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    return TurnResult{GetAssistantText(response), response.usage.prompt_tokens};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Reply briefly: two.";
+  constexpr const char* kThirdPrompt = "Reply briefly: three.";
+  constexpr const char* kFourthPrompt = "Reply briefly: four.";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto first = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kNoThinking);
+  auto same_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, kNoThinking);
+  ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+  EXPECT_TRUE(session.Transcript().Turns()[1].tokens.pre_turn.has_value())
+      << "Identical template kwargs should retain the continuous-decoding path";
+
+  ChatSession same_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto same_kwargs_full_history = run_turn(
+      same_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+      kNoThinking);
+  EXPECT_EQ(same_kwargs.text, same_kwargs_full_history.text);
+  EXPECT_EQ(same_kwargs.prompt_tokens, same_kwargs_full_history.prompt_tokens);
+
+  auto changed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  ASSERT_EQ(session.Transcript().Turns().size(), 3u);
+  EXPECT_FALSE(session.Transcript().Turns()[2].tokens.pre_turn.has_value())
+      << "A kwargs-triggered rebuild has no valid rewind boundary in the previous generator";
+
+  ChatSession changed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto changed_kwargs_full_history = run_turn(
+      changed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}},
+      kThinking);
+  EXPECT_EQ(changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Changing template kwargs must rebuild the generator from full history";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 2u);
+  auto replayed_changed_kwargs =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  EXPECT_EQ(replayed_changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Undoing a kwargs-triggered rebuild must discard stale rewind state and replay full history";
+
+  auto removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+  ASSERT_EQ(session.Transcript().Turns().size(), 4u);
+  EXPECT_FALSE(session.Transcript().Turns()[3].tokens.pre_turn.has_value());
+
+  ChatSession removed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto removed_kwargs_full_history = run_turn(
+      removed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, replayed_changed_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}},
+      nullptr);
+  EXPECT_EQ(removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens)
+      << "Removing template kwargs must rebuild from full history and clear tokenizer state";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 3u);
+  auto replayed_removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+  EXPECT_EQ(replayed_removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens);
+}
+
+TEST_F(ChatSessionTest, SessionTemplateDefaultsInvalidateOnlyWhenEffectiveKwargsChange) {
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  KeyValuePairs defaults;
+  defaults.Add("chat_template_kwargs", kNoThinking);
+  session.SetSessionOptions(defaults);
+
+  auto run_turn = [&](const char* prompt, const char* kwargs = nullptr) {
+    Request request;
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, prompt));
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+    if (kwargs) {
+      request.options.Add("chat_template_kwargs", kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    return session.Transcript().Turns().back().tokens.pre_turn.has_value();
+  };
+
+  EXPECT_FALSE(run_turn("Reply briefly: one."));
+  EXPECT_TRUE(run_turn("Reply briefly: two.", kNoThinking))
+      << "Explicitly repeating the inherited default must not rebuild the generator";
+
+  defaults.Add("chat_template_kwargs", kThinking);
+  session.SetSessionOptions(defaults);
+  EXPECT_TRUE(run_turn("Reply briefly: three.", kNoThinking))
+      << "A request override keeps the effective kwargs unchanged when the session default changes";
+  EXPECT_FALSE(run_turn("Reply briefly: four."))
+      << "Using a changed session default must rebuild without a stale rewind boundary";
+
+  session.SetSessionOptions({});
+  EXPECT_FALSE(run_turn("Reply briefly: five."))
+      << "Removing the session default must invalidate retained template state";
+}
+
+TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs,
+                      int max_output_tokens = 32) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+
+    request.options.Add("max_output_tokens", std::to_string(max_output_tokens));
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    return std::pair{TurnResult{GetAssistantText(response), response.usage.prompt_tokens},
+                     response.finish_reason};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Using the previous turn, reply briefly: two.";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+
+  const char* next_kwargs_values[] = {kNoThinking, nullptr};
+  for (const char* next_kwargs : next_kwargs_values) {
+    SCOPED_TRACE(next_kwargs ? "changed kwargs" : "removed kwargs");
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    auto [first, first_finish] =
+        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kThinking);
+    ASSERT_EQ(first_finish, FOUNDRY_LOCAL_FINISH_STOP);
+
+    int streamed_items = 0;
+    bool cancel_enabled = true;
+    session.SetStreamingCallback(
+        [&](flStreamingCallbackData event, void*) -> int {
+          auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+          if (queue->TryPop()) {
+            ++streamed_items;
+          }
+          return cancel_enabled && streamed_items >= 1 ? 1 : 0;
+        });
+
+    try {
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+      FAIL() << "Expected streaming callback cancellation";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+    }
+    EXPECT_EQ(session.TurnCount(), 1u);
+    EXPECT_EQ(session.MessageCount(), 2u);
+
+    cancel_enabled = false;
+    auto [replayed, replayed_finish] =
+        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+    EXPECT_NE(replayed_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+    ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+    EXPECT_FALSE(session.Transcript().Turns()[1].tokens.pre_turn.has_value());
+
+    ChatSession baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    auto [full_history, baseline_finish] = run_turn(
+        baseline,
+        {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+         {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+         {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+        next_kwargs);
+    EXPECT_NE(baseline_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+    EXPECT_EQ(replayed.text, full_history.text);
+    EXPECT_EQ(replayed.prompt_tokens, full_history.prompt_tokens)
+        << "Cancellation after a kwargs-triggered rebuild must discard retained state before replay";
+  }
+}
+#endif
+
 TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancellation) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
   ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator);
@@ -2771,12 +4089,12 @@ TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancell
   session.SetStreamingCallback(callback_fn);
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  // Should have stopped early
+  // The canceled response is not published.
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-  // we check cancellation at the start of each loop and we don't use std::atomic to make processing cheaper
-  // so allow for a couple of extra tokens to come through after the cancellation condition is met
+  EXPECT_TRUE(response.items.empty());
+  // Cancellation is observed between token steps, so allow for a couple of extra tokens after the callback.
   EXPECT_LE(tokens_received, 6);
 
   // The appended canceled turn commits nothing; only the seed turn remains.
@@ -2822,9 +4140,10 @@ TEST_F(ChatSessionTest, CancellationFromTheLastQueuedCallbackPreventsCommit) {
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(session.MessageCount(), 0u);
   EXPECT_EQ(session.TurnCount(), 0u);
 }
@@ -2869,9 +4188,10 @@ TEST_F(ChatSessionTest, OpenAIJsonCancellationFromLastContentCallbackPublishesNo
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   ASSERT_EQ(delivered.size(), 2u);
   EXPECT_EQ(delivered[0]["choices"][0]["delta"]["role"], "assistant");
   EXPECT_FALSE(delivered[0]["choices"][0]["finish_reason"].is_string());

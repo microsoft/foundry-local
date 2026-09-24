@@ -20,6 +20,7 @@ class GenAIModelInstance;
 namespace onnx_engine_chat_stream_internal {
 
 std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason);
+ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult& result);
 
 }  // namespace onnx_engine_chat_stream_internal
 
@@ -35,6 +36,7 @@ class OnnxEngineChatStream final : public ChatGenerator {
   int TokenCount() const override;
   int PromptTokenCount() const override;
   void Cancel() override;
+  void Close() override;
   int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                      const chat_internal::PreparedChatMessages& full_messages,
                      GenAIModelInstance& model,
@@ -75,6 +77,7 @@ class OnnxEngineChatStream final : public ChatGenerator {
   GenAIModelInstance& model_;
   int prompt_token_count_ = 0;
   bool prompt_opens_reasoning_ = false;
+  bool closed_ = false;
   std::optional<int32_t> current_token_;
   std::atomic<bool> cancelled_{false};
 };

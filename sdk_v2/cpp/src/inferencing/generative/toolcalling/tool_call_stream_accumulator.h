@@ -44,6 +44,7 @@ class ToolCallStreamAccumulator {
 
   struct Output {
     std::vector<Event> events;
+    bool malformed = false;
   };
 
   ToolCallStreamAccumulator(std::string start_marker, std::string end_marker,
@@ -330,6 +331,8 @@ class ToolCallStreamAccumulator {
         ResetSelectedPayloadBoundaryScan();
         if (result.disposition == ToolCallPayloadDisposition::kParsed) {
           EmitParsedCalls(out, std::move(result.calls));
+        } else if (result.disposition == ToolCallPayloadDisposition::kMalformed) {
+          out.malformed = true;
         } else {
           EmitVisible(out, std::move(consumed));
         }

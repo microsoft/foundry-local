@@ -33,8 +33,8 @@ pub use self::session::{
     ToolDefinition,
 };
 pub use self::types::{
-    ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo, ModelInfo,
-    ModelSettings, Parameter, PromptTemplate, Runtime,
+    CatalogType, ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo,
+    ModelInfo, ModelInfoBuilder, ModelSettings, Parameter, PromptTemplate, Runtime,
 };
 
 // Re-export OpenAI request types so callers can construct typed messages.

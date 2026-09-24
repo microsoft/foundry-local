@@ -34,6 +34,7 @@ struct ChatTurnUsage {
   int generated_tokens = 0;
   std::optional<flFinishReason> finish_reason;
   std::optional<BackendTerminationCause> termination_cause;
+  int cached_prompt_tokens = 0;
 };
 
 class RetainedPromptMismatchError : public std::runtime_error {
@@ -78,6 +79,13 @@ class ChatGenerator {
   /// Request cancellation of generation. Thread-safe — can be called from another thread.
   /// After cancellation, IsDone() should return true on the next check.
   virtual void Cancel() = 0;
+
+  /// Close backend-owned request state and report failures.
+  ///
+  /// The default is intentionally a no-op: classic generators own no separately admitted request.
+  /// Engine replacement paths call this before destroying a generator because destructors cannot
+  /// report a failed close.
+  virtual void Close();
 
   /// Append a new conversational turn to retained model state.
   ///

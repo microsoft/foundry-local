@@ -19,6 +19,7 @@ struct TokenUsage {
   int64_t completion_tokens = 0;
   int64_t total_tokens = 0;
   int64_t reasoning_tokens = 0;
+  int64_t cached_prompt_tokens = 0;
 };
 
 /// Generic inference response — in/out data container.
