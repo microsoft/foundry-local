@@ -14,8 +14,6 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <cstdint>
-#include <limits>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -566,7 +564,7 @@ TEST(QwenXmlToolCallAccumulatorTest, ScalarEnumsAcceptOnlyDeclaredValues) {
   };
   const std::vector<EnumCase> cases = {
       {{{"type", "string"}, {"enum", {"fast", "thorough"}}}, "fast", "unsupported"},
-      {{{"type", "number"}, {"enum", {1, 1.5, 9007199254740993ULL}}}, "1.0", "2"},
+      {{{"type", "number"}, {"enum", {1, 9007199254740993ULL}}}, "9007199254740993", "2"},
       {{{"type", "integer"}, {"enum", {-2, 3}}}, "-2", "1"},
       {{{"type", "boolean"}, {"enum", {true}}}, "true", "false"},
       {{{"type", "null"}, {"enum", {nullptr}}}, "null", "0"},
@@ -605,7 +603,8 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsDisableExactDecoder)
       {{"type", "string"}, {"enum", nlohmann::json::array()}},
       {{"type", "string"}, {"enum", {"same", "same"}}},
       {{"type", "string"}, {"enum", {"text", 1}}},
-      {{"type", "number"}, {"enum", {1, 1.0}}},
+      {{"type", "number"}, {"enum", {1.0}}},
+      {{"type", "number"}, {"enum", {0.1}}},
       {{"type", "integer"}, {"enum", {1.0}}},
       {{"type", "boolean"}, {"enum", {true, 1}}},
       {{"type", "array"}, {"enum", nlohmann::json::array({nlohmann::json::array()})}},
@@ -648,65 +647,23 @@ TEST(QwenXmlToolCallAccumulatorTest, StringEnumInsideAnyOfIsEnforced) {
   EXPECT_EQ(rejected.visible, rejected_call);
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, NumberEnumComparisonIsLosslessAtIntegerBoundaries) {
-  struct NumberCase {
-    nlohmann::json values;
-    std::string accepted;
-    std::string rejected;
-  };
-  const std::vector<NumberCase> cases = {
-      {{9007199254740993ULL}, "9007199254740993", "9007199254740992.0"},
-      {{std::numeric_limits<std::int64_t>::min()}, "-9223372036854775808.0", "-9223372036854775807"},
-      {{std::numeric_limits<std::uint64_t>::max()}, "18446744073709551615", "18446744073709551616.0"},
-  };
+TEST(QwenXmlToolCallAccumulatorTest, RoundedFloatingValueNeverMatchesIntegerNumberEnum) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
+      R"("value":{"type":"number","enum":[9007199254740992]}},"required":["value"]}}}])";
   const auto make_call = [](std::string_view value) {
     return "<tool_call>\n<function=select>\n<parameter=value>\n" + std::string(value) +
            "\n</parameter>\n</function>\n</tool_call>";
   };
+  const auto rounded_call = make_call("9007199254740993.0");
+  auto rounded = RunQwen({rounded_call}, tools, {{"select", ToolKind::kFunction}});
+  EXPECT_TRUE(rounded.calls.empty());
+  EXPECT_EQ(rounded.visible, rounded_call);
 
-  for (const auto& test_case : cases) {
-    const auto tools =
-        nlohmann::json::array(
-            {{{"type", "function"},
-              {"function",
-               {{"name", "select"},
-                {"parameters",
-                 {{"type", "object"},
-                  {"properties", {{"value", {{"type", "number"}, {"enum", test_case.values}}}}},
-                  {"required", {"value"}}}}}}}})
-            .dump();
-    SCOPED_TRACE(tools);
-
-    auto accepted = RunQwen({make_call(test_case.accepted)}, tools, {{"select", ToolKind::kFunction}});
-    ASSERT_EQ(accepted.calls.size(), 1u);
-
-    const auto rejected_call = make_call(test_case.rejected);
-    auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
-    EXPECT_TRUE(rejected.calls.empty());
-    EXPECT_EQ(rejected.visible, rejected_call);
-  }
-}
-
-TEST(QwenXmlToolCallAccumulatorTest, NumberEnumDuplicateDetectionIsLossless) {
-  const auto make_parser = [](nlohmann::json values) {
-    const auto tools =
-        nlohmann::json::array(
-            {{{"type", "function"},
-              {"function",
-               {{"name", "select"},
-                {"parameters",
-                 {{"type", "object"},
-                  {"properties", {{"value", {{"type", "number"}, {"enum", std::move(values)}}}}}}}}}}})
-            .dump();
-    return CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}});
-  };
-
-  EXPECT_FALSE(static_cast<bool>(make_parser({9007199254740992ULL, 9007199254740992.0})));
-  EXPECT_TRUE(static_cast<bool>(make_parser({9007199254740993ULL, 9007199254740992.0})));
-  EXPECT_TRUE(static_cast<bool>(
-      make_parser({std::numeric_limits<std::int64_t>::max(), 9223372036854775808.0})));
-  EXPECT_TRUE(static_cast<bool>(
-      make_parser({std::numeric_limits<std::uint64_t>::max(), 18446744073709551616.0})));
+  const auto kinds = std::unordered_map<std::string, ToolKind>{{"select", ToolKind::kFunction}};
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+                  R"([{"name":"select","parameters":{"value":9007199254740993.0}}])", tools, kinds)
+                  .empty());
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ArrayItemsEnforceScalarEnums) {

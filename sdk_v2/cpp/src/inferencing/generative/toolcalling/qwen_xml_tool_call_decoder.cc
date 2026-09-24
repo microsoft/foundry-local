@@ -7,8 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
-#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -116,54 +114,10 @@ bool IsSupportedAnnotation(std::string_view keyword) {
   return kSupportedAnnotations.contains(keyword);
 }
 
-bool DoubleEqualsSignedInteger(double floating, std::int64_t integer) {
-  constexpr double kLowerBound = -9223372036854775808.0;
-  constexpr double kUpperBound = 9223372036854775808.0;
-  return std::isfinite(floating) && std::trunc(floating) == floating && floating >= kLowerBound &&
-         floating < kUpperBound && static_cast<std::int64_t>(floating) == integer;
-}
-
-bool DoubleEqualsUnsignedInteger(double floating, std::uint64_t integer) {
-  constexpr double kUpperBound = 18446744073709551616.0;
-  return std::isfinite(floating) && std::trunc(floating) == floating && floating >= 0.0 &&
-         floating < kUpperBound && static_cast<std::uint64_t>(floating) == integer;
-}
-
-bool JsonNumbersEqual(const Json& lhs, const Json& rhs) {
-  if (lhs.is_number_float()) {
-    const auto floating = lhs.get<double>();
-    if (rhs.is_number_float()) {
-      return floating == rhs.get<double>();
-    }
-    if (rhs.is_number_unsigned()) {
-      return DoubleEqualsUnsignedInteger(floating, rhs.get<std::uint64_t>());
-    }
-    return DoubleEqualsSignedInteger(floating, rhs.get<std::int64_t>());
-  }
-  if (lhs.is_number_unsigned()) {
-    const auto integer = lhs.get<std::uint64_t>();
-    if (rhs.is_number_float()) {
-      return DoubleEqualsUnsignedInteger(rhs.get<double>(), integer);
-    }
-    if (rhs.is_number_unsigned()) {
-      return integer == rhs.get<std::uint64_t>();
-    }
-    const auto signed_integer = rhs.get<std::int64_t>();
-    return signed_integer >= 0 && integer == static_cast<std::uint64_t>(signed_integer);
-  }
-
-  const auto integer = lhs.get<std::int64_t>();
-  if (rhs.is_number_float()) {
-    return DoubleEqualsSignedInteger(rhs.get<double>(), integer);
-  }
-  if (rhs.is_number_unsigned()) {
-    return integer >= 0 && static_cast<std::uint64_t>(integer) == rhs.get<std::uint64_t>();
-  }
-  return integer == rhs.get<std::int64_t>();
-}
-
 bool JsonScalarEquals(const Json& lhs, const Json& rhs) {
-  return lhs.is_number() && rhs.is_number() ? JsonNumbersEqual(lhs, rhs) : lhs == rhs;
+  // nlohmann stores floating numbers as double and does not retain their source lexemes. Requiring the same JSON
+  // representation prevents distinct decimal literals that round to one double from authorizing a tool call.
+  return (!lhs.is_number() || lhs.type() == rhs.type()) && lhs == rhs;
 }
 
 bool IsCompatibleScalarType(const Json& value, std::string_view type) {
@@ -182,6 +136,13 @@ bool IsCompatibleScalarType(const Json& value, std::string_view type) {
   return type == "null" && value.is_null();
 }
 
+bool IsSupportedEnumValue(const Json& value, std::string_view type) {
+  if (type == "number" || type == "integer") {
+    return value.is_number_integer() || value.is_number_unsigned();
+  }
+  return IsCompatibleScalarType(value, type);
+}
+
 bool IsSupportedEnum(const Json& schema, std::string_view type) {
   if (!schema.contains("enum")) {
     return true;
@@ -194,7 +155,7 @@ bool IsSupportedEnum(const Json& schema, std::string_view type) {
   }
 
   for (size_t index = 0; index < values.size(); ++index) {
-    if (!IsCompatibleScalarType(values[index], type) ||
+    if (!IsSupportedEnumValue(values[index], type) ||
         std::ranges::any_of(values.begin(), values.begin() + static_cast<Json::difference_type>(index),
                             [&](const auto& prior) { return JsonScalarEquals(prior, values[index]); })) {
       return false;
