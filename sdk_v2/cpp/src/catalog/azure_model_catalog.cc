@@ -33,6 +33,133 @@ std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) 
   return deduplicated;
 }
 
+bool IsCompatible(CompiledModelCompatibility compatibility) {
+  return compatibility == CompiledModelCompatibility::kSupportedOptimal ||
+         compatibility == CompiledModelCompatibility::kSupportedPreferRecompilation;
+}
+
+bool IsRelevantPackageVariant(const ModelInfo& info, const ModelPackageVariant& package_variant) {
+  if (!info.execution_provider.empty() && !package_variant.execution_provider.empty() &&
+      info.execution_provider != package_variant.execution_provider) {
+    return false;
+  }
+
+  if (info.device_type != DeviceType::kNotSet &&
+      package_variant.device_type != DeviceType::kNotSet &&
+      info.device_type != package_variant.device_type) {
+    return false;
+  }
+
+  return true;
+}
+
+std::optional<DeviceType> GetDeviceConstraint(const ModelInfo& info,
+                                              const ModelPackageVariant& package_variant) {
+  if (package_variant.device_type != DeviceType::kNotSet) {
+    return package_variant.device_type;
+  }
+
+  if (info.device_type != DeviceType::kNotSet) {
+    return info.device_type;
+  }
+
+  return std::nullopt;
+}
+
+std::string_view GetRequestedExecutionProvider(const ModelInfo& info,
+                                               const ModelPackageVariant& package_variant) {
+  if (!package_variant.execution_provider.empty()) {
+    return package_variant.execution_provider;
+  }
+
+  return info.execution_provider;
+}
+
+bool ShouldExposeModelInfo(const ModelInfo& info,
+                           const IEpDetector& ep_detector,
+                           ILogger& logger) {
+  if (!info.variant_metadata.has_value() ||
+      !info.variant_metadata->model_package.has_value() ||
+      info.variant_metadata->model_package->variants.empty()) {
+    return true;
+  }
+
+  bool saw_relevant_variant = false;
+  bool saw_unknown_compatibility = false;
+
+  for (const auto& package_variant : info.variant_metadata->model_package->variants) {
+    if (!IsRelevantPackageVariant(info, package_variant)) {
+      continue;
+    }
+
+    saw_relevant_variant = true;
+
+    const auto execution_provider = GetRequestedExecutionProvider(info, package_variant);
+    if (execution_provider.empty() || package_variant.compatibility_string.empty()) {
+      logger.Log(LogLevel::Debug,
+                 fmt::format("Keeping catalog model '{}' because package variant '{}' has incomplete "
+                             "compatibility metadata.",
+                             info.model_id,
+                             package_variant.name));
+      saw_unknown_compatibility = true;
+      continue;
+    }
+
+    const auto compatibility = ep_detector.GetModelCompatibilityForEpDevices(
+        execution_provider,
+        GetDeviceConstraint(info, package_variant),
+        package_variant.compatibility_string);
+
+    if (IsCompatible(compatibility)) {
+      return true;
+    }
+
+    if (compatibility == CompiledModelCompatibility::kUnknown) {
+      logger.Log(LogLevel::Debug,
+                 fmt::format("Keeping catalog model '{}' because compatibility is unknown for package "
+                             "variant '{}'.",
+                             info.model_id,
+                             package_variant.name));
+      saw_unknown_compatibility = true;
+    }
+  }
+
+  if (!saw_relevant_variant) {
+    logger.Log(LogLevel::Debug,
+               fmt::format("Keeping catalog model '{}' because no package variant definitively matches "
+                           "its catalog EP/device.",
+                           info.model_id));
+    return true;
+  }
+
+  if (saw_unknown_compatibility) {
+    return true;
+  }
+
+  logger.Log(LogLevel::Debug,
+             fmt::format("Filtering catalog model '{}' because all relevant ORT model package variants "
+                         "are unsupported.",
+                         info.model_id));
+  return false;
+}
+
+/// Drops catalog entries whose ORT model package variants are all known to be unsupported
+/// on the current hardware. Entries without package metadata are always kept.
+std::vector<ModelInfo> FilterVisibleInfos(std::vector<ModelInfo> model_infos,
+                                          const IEpDetector& ep_detector,
+                                          ILogger& logger) {
+  std::vector<ModelInfo> visible_infos;
+  visible_infos.reserve(model_infos.size());
+
+  for (auto& info : model_infos) {
+    if (ShouldExposeModelInfo(info, ep_detector, logger)) {
+      visible_infos.push_back(std::move(info));
+    }
+  }
+
+  return visible_infos;
+}
+
 void RemoveLegacyLocalEntries(std::vector<ModelInfo>& model_infos) {
   std::erase_if(model_infos, [](const auto& info) {
     const auto* provider = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
@@ -143,6 +270,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
+  catalog_result.model_infos = FilterVisibleInfos(std::move(catalog_result.model_infos), ep_detector_, logger_);
   auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
 
   logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
@@ -170,6 +298,7 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
       auto model_infos = client->FetchAllVersionsByAlias(model_alias, model_name);
+      model_infos = FilterVisibleInfos(std::move(model_infos), ep_detector_, logger_);
 
       out.reserve(out.size() + model_infos.size());
       for (auto& info : model_infos) {
@@ -214,6 +343,7 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
       auto model_infos = client->FetchModelsByIds(remaining);
+      model_infos = FilterVisibleInfos(std::move(model_infos), ep_detector_, logger_);
 
       for (auto& info : model_infos) {
         std::string local_path;

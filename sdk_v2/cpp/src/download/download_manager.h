@@ -21,7 +21,7 @@ class ILogger;
 /// 2. Resolve SAS URI from model registry
 /// 3. Download blobs from Azure Storage
 /// 4. Write inference_model.json
-/// 5. Fix variant download (move inference_model.json into subdirs)
+/// 5. Fix legacy flat variant downloads (move inference_model.json into subdirs)
 class DownloadManager {
  public:
   /// Construct with the model cache directory path.

@@ -46,14 +46,16 @@ class ModelLoadManager {
   ModelLoadManager& operator=(const ModelLoadManager&) = delete;
 
   /// Load a model from the given path using ORT GenAI.
-  /// @param model_path  Path to the model directory (must contain genai_config.json).
+  /// @param model_path  Path to a flat model directory or model package root.
   /// @param model_id    Unique identifier for the model.
   /// @param ep_override Execution provider override (kDefault = use genai_config.json default,
   ///                    or auto-select CUDA for generic-gpu models if available).
+  /// @param task        Catalog task used for package runtime metadata.
   /// @returns LoadResult with status and non-owning pointer to the loaded model.
   LoadResult LoadModel(std::string_view model_path,
                        std::string_view model_id,
-                       ExecutionProvider ep_override = ExecutionProvider::kDefault);
+                       ExecutionProvider ep_override = ExecutionProvider::kDefault,
+                       std::string_view task = {});
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
