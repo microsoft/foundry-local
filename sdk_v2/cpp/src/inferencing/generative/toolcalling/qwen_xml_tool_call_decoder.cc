@@ -138,6 +138,8 @@ bool IsCompatibleScalarType(const Json& value, std::string_view type) {
 
 bool IsSupportedEnumValue(const Json& value, std::string_view type) {
   if (type == "number" || type == "integer") {
+    // Floating JSON numbers lose their source lexemes when parsed. Support exact integer representations only so
+    // distinct decimal literals that round to the same double can never authorize a tool call.
     return value.is_number_integer() || value.is_number_unsigned();
   }
   return IsCompatibleScalarType(value, type);

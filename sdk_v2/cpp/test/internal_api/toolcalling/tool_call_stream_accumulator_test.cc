@@ -603,12 +603,31 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsDisableExactDecoder)
       {{"type", "string"}, {"enum", nlohmann::json::array()}},
       {{"type", "string"}, {"enum", {"same", "same"}}},
       {{"type", "string"}, {"enum", {"text", 1}}},
-      {{"type", "number"}, {"enum", {1.0}}},
-      {{"type", "number"}, {"enum", {0.1}}},
-      {{"type", "integer"}, {"enum", {1.0}}},
       {{"type", "boolean"}, {"enum", {true, 1}}},
       {{"type", "array"}, {"enum", nlohmann::json::array({nlohmann::json::array()})}},
       {{"type", "object"}, {"enum", nlohmann::json::array({nlohmann::json::object()})}},
+  };
+
+  for (const auto& schema : schemas) {
+    SCOPED_TRACE(schema.dump());
+    const auto tools =
+        nlohmann::json::array(
+            {{{"type", "function"},
+              {"function",
+               {{"name", "select"},
+                {"parameters", {{"type", "object"}, {"properties", {{"value", schema}}}}}}}}})
+            .dump();
+
+    EXPECT_FALSE(static_cast<bool>(
+        CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}})));
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, FloatingNumericEnumDeclarationsDisableExactDecoder) {
+  const std::vector<nlohmann::json> schemas = {
+      {{"type", "number"}, {"enum", {1.0}}},
+      {{"type", "number"}, {"enum", {0.1}}},
+      {{"type", "integer"}, {"enum", {1.0}}},
   };
 
   for (const auto& schema : schemas) {
