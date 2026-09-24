@@ -1727,7 +1727,7 @@ FL_API_STATUS_IMPL(Request_CancelImpl, flRequest* request) {
   if (!request) {
     return MakeStatus(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "null argument");
   }
-  AsImpl(request)->canceled = true;
+  AsImpl(request)->Cancel();
   return nullptr;
   API_IMPL_END
 }

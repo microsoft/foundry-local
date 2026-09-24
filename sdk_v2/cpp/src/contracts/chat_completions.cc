@@ -341,6 +341,7 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
   opt_int(j, "top_logprobs", r.top_logprobs);
   opt_bool(j, "parallel_tool_calls", r.parallel_tool_calls);
   opt_str(j, "user", r.user);
+  opt_str(j, "reasoning_effort", r.reasoning_effort);
 
   // stream_options — object
   if (j.contains("stream_options") && j["stream_options"].is_object()) {
@@ -367,6 +368,12 @@ void from_json(const nlohmann::json& j, ChatCompletionRequest& r) {
 
   // metadata — map<string, string>
   opt(j, "metadata", r.metadata);
+
+  // chat_template_kwargs — typed JSON object
+  if (j.contains("chat_template_kwargs") && !j["chat_template_kwargs"].is_null()) {
+    auto kwargs = j["chat_template_kwargs"].get<std::map<std::string, nlohmann::json>>();
+    r.chat_template_kwargs = nlohmann::json(std::move(kwargs));
+  }
 }
 
 // ========================================================================

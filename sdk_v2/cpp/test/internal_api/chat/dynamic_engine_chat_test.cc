@@ -48,6 +48,23 @@ TEST(OnnxEngineChatStreamDecisionTest, PreservesEveryOgaFinishCauseForRawFinaliz
   EXPECT_EQ(MapTerminationCause(9999), std::nullopt);
 }
 
+TEST(OnnxEngineChatStreamDecisionTest, MapsCachedPromptTokensIntoTurnUsage) {
+  const OnnxChatEngine::TurnResult result{
+      /*prompt_tokens=*/12,
+      /*generated_tokens=*/4,
+      /*cached_prompt_tokens=*/8,
+      /*finish_reason=*/OgaFinishReason_Eos,
+  };
+
+  const auto usage = onnx_engine_chat_stream_internal::BuildTurnUsage(12, result);
+
+  EXPECT_EQ(usage.prompt_tokens, 12);
+  EXPECT_EQ(usage.generated_tokens, 4);
+  EXPECT_EQ(usage.cached_prompt_tokens, 8);
+  EXPECT_EQ(usage.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(usage.termination_cause, BackendTerminationCause::kNaturalEnd);
+}
+
 std::unique_ptr<Item> UserMessage(std::string text) {
   return std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(text));
 }
@@ -482,6 +499,23 @@ TEST_F(DynamicEngineChatTest, LateCancelAfterCompletedConversationRemovalIsNoOp)
   EXPECT_EQ(result_after_cancel.finish_reason, result.finish_reason);
 }
 
+TEST_F(DynamicEngineChatTest, BackendCancellationIsNotAnApiErrorByItself) {
+  SearchOptions options;
+  options.max_output_tokens = 512;
+  options.temperature = 0.0f;
+  ToolCallContext tool_context;
+  std::vector<TranscriptMessage> messages = {
+      {FOUNDRY_LOCAL_ROLE_USER, "Write a long essay about mathematics."}};
+  auto stream = OnnxEngineChatStream::Create(messages, options, ModelInstance(), tool_context);
+
+  stream->GenerateNextToken();
+  stream->Cancel();
+
+  const auto usage = stream->GetTurnUsage();
+  ASSERT_TRUE(usage.has_value());
+  EXPECT_FALSE(usage->finish_reason.has_value());
+}
+
 TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
 
@@ -499,8 +533,14 @@ TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) 
 
   auto canceled = MakeRequest("Write a long essay about mathematics.", 512);
   Response canceled_response;
-  session.ProcessRequest(canceled, canceled_response);
+  try {
+    session.ProcessRequest(canceled, canceled_response);
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
   EXPECT_EQ(canceled_response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(canceled_response.items.empty());
   EXPECT_EQ(session.TurnCount(), 1u);
   EXPECT_GE(streamed_tokens, 3);
 

@@ -52,7 +52,8 @@ async fn live_streaming_e2e_with_synthetic_pcm_returns_valid_response() {
     model.load().await.expect("model.load() failed");
 
     let audio_client = model.create_audio_client();
-    let session = audio_client.create_live_transcription_session();
+    let mut session = audio_client.create_live_transcription_session();
+    session.settings.language = Some("en".into());
 
     // Verify default settings
     assert_eq!(session.settings.sample_rate, 16000);

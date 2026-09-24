@@ -205,7 +205,10 @@ export interface NativeItemQueue {
 
 export interface NativeSession {
   processRequest(request: NativeRequest, workerStartedForTest?: (release: () => void) => void): Promise<NativeResponse>;
-  processStreamingRequest(request: NativeRequest, onItem: (item: unknown) => void): Promise<NativeResponse>;
+  processStreamingRequest(
+    request: NativeRequest,
+    onItem: (item: unknown) => void,
+  ): Promise<NativeResponse> & { cancelQueued(): boolean };
   setOptions(options: NativeRequestOptions): void;
   dispose(): void;
   isDisposed(): boolean;
