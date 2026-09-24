@@ -68,7 +68,6 @@ class ChatTemplateTest : public ::testing::Test {
   static inline GenAIModelInstance* model_ = nullptr;
 };
 
-#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
 class ChatTemplateKwargsTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -139,7 +138,6 @@ class ChatTemplateKwargsTest : public ::testing::Test {
 
   TelemetryLogger telemetry_{"chat-template-kwargs-test", test::NullLog()};
 };
-#endif
 
 // ---------------------------------------------------------------------------
 // BuildChatPrompt tests
@@ -212,7 +210,6 @@ TEST_F(ChatTemplateTest, PromptEndsWithAssistantPrefix) {
       << "Prompt should end with assistant prefix for generation. Got: " << prompt;
 }
 
-#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
 TEST_F(ChatTemplateKwargsTest, TypedKwargsChangePromptAndOmissionClearsPriorState) {
   std::vector<TranscriptMessage> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
   ToolCallContext default_context;
@@ -320,26 +317,6 @@ TEST_F(ChatTemplateKwargsTest, JsonPayloadOverridesRequestOptionsThenSessionDefa
     EXPECT_EQ(session.TurnCount(), 0u);
   }
 }
-#else
-TEST_F(ChatTemplateTest, TemplateKwargsRequireSupportedGenAI) {
-  std::vector<TranscriptMessage> messages = {{FOUNDRY_LOCAL_ROLE_USER, "Hello!"}};
-  ToolCallContext empty_context;
-  empty_context.template_kwargs_json = "{}";
-
-  EXPECT_EQ(BuildChatPrompt(messages, GetModel(), empty_context),
-            BuildChatPrompt(messages, GetModel()))
-      << "An empty kwargs object should remain a no-op with an older GenAI dependency";
-
-  try {
-    (void)BuildChatPrompt(messages, GetModel(), "", R"({"enable_thinking":false})");
-    FAIL() << "Expected chat_template_kwargs to be rejected by an older GenAI dependency";
-  } catch (const fl::Exception& e) {
-    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
-    EXPECT_NE(std::string(e.what()).find("requires a build with tokenizer kwargs support enabled"),
-              std::string::npos);
-  }
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // EncodePrompt tests

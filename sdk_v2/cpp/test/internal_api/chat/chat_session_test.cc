@@ -3827,7 +3827,6 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
-#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
 TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
   struct TurnResult {
     std::string text;
@@ -4049,7 +4048,6 @@ TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
         << "Cancellation after a kwargs-triggered rebuild must discard retained state before replay";
   }
 }
-#endif
 
 TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancellation) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);

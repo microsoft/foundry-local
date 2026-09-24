@@ -35,23 +35,11 @@ the pinned ONNX Runtime and ONNX Runtime GenAI dependencies during CMake configu
 
 Chat completions accept a typed `chat_template_kwargs` JSON object, such as
 `{"enable_thinking": false}`, for model-specific template controls. The pinned stable
-GenAI package supports this feature; a nightly package is not required. The
-`FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS` compile-time guard disables tokenizer
-updates for packages without support and rejects non-empty kwargs explicitly rather
-than ignoring them. Session-level kwargs are defaults: per-request kwargs override the
-entire object, and `{}` explicitly clears an inherited default for that request.
+GenAI package supports this feature; a nightly package is not required. Session-level
+kwargs are defaults: per-request kwargs override the entire object, and `{}` explicitly
+clears an inherited default for that request.
 For OpenAI JSON requests, the payload takes precedence over request options, followed
 by session defaults. Omitting kwargs inherits the session default, if any.
-
-Builds that must provide the feature can pass
-`--cmake_extra_defines FOUNDRY_LOCAL_REQUIRE_CHAT_TEMPLATE_KWARGS=ON` to `build.py`.
-The `FOUNDRY_LOCAL_CHAT_TEMPLATE_KWARGS` CMake setting accepts `AUTO` (the default),
-`ON`, or `OFF`. `AUTO` detects supported package versions, but cannot determine the
-tokenizer capability of an `--ort_genai_home` build. For a local build that supports
-kwargs, pass `--cmake_extra_defines FOUNDRY_LOCAL_CHAT_TEMPLATE_KWARGS=ON`; this also
-satisfies `FOUNDRY_LOCAL_REQUIRE_CHAT_TEMPLATE_KWARGS=ON`. Use `OFF` to disable the
-feature explicitly. `ON` asserts that the selected tokenizer already supports
-`chat_template_kwargs`; it does not add support to an older runtime.
 
 ## Build From Source
 
