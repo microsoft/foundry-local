@@ -129,13 +129,13 @@ std::string GetCertificateAuthorityBundlePath() {
 #endif
 
 void SetCommonContext(MatILogger* mat_logger, const TelemetryMetadata& m) {
-  mat_logger->SetContext("AppName", ScrubStringForTelemetry(m.app_name));
-  mat_logger->SetContext("AppVersion", ScrubStringForTelemetry(m.app_version));
-  mat_logger->SetContext("FoundryLocalVersion", m.version);
-  mat_logger->SetContext("AppSessionGuid", m.app_session_guid);
-  mat_logger->SetContext("OsName", m.os_name);
-  mat_logger->SetContext("OsVersion", m.os_version);
-  mat_logger->SetContext("CpuArch", m.cpu_arch);
+  mat_logger->SetContext("AppName", TelemetryInternal::SanitizeCommonContextValue(m.app_name));
+  mat_logger->SetContext("AppVersion", TelemetryInternal::SanitizeCommonContextValue(m.app_version));
+  mat_logger->SetContext("FoundryLocalVersion", TelemetryInternal::SanitizeCommonContextValue(m.version));
+  mat_logger->SetContext("AppSessionGuid", TelemetryInternal::SanitizeCommonContextValue(m.app_session_guid));
+  mat_logger->SetContext("OsName", TelemetryInternal::SanitizeCommonContextValue(m.os_name));
+  mat_logger->SetContext("OsVersion", TelemetryInternal::SanitizeCommonContextValue(m.os_version));
+  mat_logger->SetContext("CpuArch", TelemetryInternal::SanitizeCommonContextValue(m.cpu_arch));
 }
 
 EventProperties MakeEvent(
@@ -280,7 +280,7 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
       TelemetryInternal::SuppressUnneededCommonContext(*semantic_context);
       TelemetryInternal::SetApplicationNameFromProcessName(
           *semantic_context,
-          ScrubStringForTelemetry(
+          TelemetryInternal::SanitizeCommonContextValue(
               BuildProcessInfo(metadata_, /*include_device_id_status=*/false).process_name));
       if (!disable_nonessential_telemetry) {
         const auto hashed_device_id = TelemetryDeviceId::HashForTelemetry(TelemetryDeviceId::Instance().GetValue());
@@ -292,8 +292,9 @@ OneDsTelemetry::OneDsTelemetry(const std::string& app_name,
     SetCommonContext(impl_->logger, metadata_);
     logger_.Log(LogLevel::Information,
                 fmt::format("[Telemetry] 1DS initialized; AppName={} AppVersion={} Version={} Os={} {} Arch={}",
-                            metadata_.app_name, metadata_.app_version, metadata_.version, metadata_.os_name,
-                            metadata_.os_version, metadata_.cpu_arch));
+                            TelemetryInternal::SanitizeCommonContextValue(metadata_.app_name),
+                            TelemetryInternal::SanitizeCommonContextValue(metadata_.app_version),
+                            metadata_.version, metadata_.os_name, metadata_.os_version, metadata_.cpu_arch));
     initialized_.store(true, std::memory_order_release);
   } catch (const std::exception& ex) {
     if (log_manager_initialized) {

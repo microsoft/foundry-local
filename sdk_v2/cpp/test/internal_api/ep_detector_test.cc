@@ -56,7 +56,7 @@ class MockEpBootstrapper : public IEpBootstrapper {
       if (!progress_cb(name_, 50.0f)) {
         return false;
       }
-      if (!progress_cb(name_, 100.0f)) {
+      if (!progress_cb(name_, 100.0f) && !ignore_terminal_cancellation_) {
         return false;
       }
     }
@@ -75,6 +75,7 @@ class MockEpBootstrapper : public IEpBootstrapper {
   bool prepare_called_ = false;
   bool prepare_succeeds_ = true;
   bool downloaded_on_register_ = true;
+  bool ignore_terminal_cancellation_ = false;
 
  private:
   std::string name_;
@@ -310,6 +311,29 @@ TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsDownloadCancellation)
   EXPECT_FALSE(telemetry.ep_register_calls[0].user_agent.empty());
   EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kCanceled);
   EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSkipped);
+}
+
+TEST_F(EpDetectorTest, TerminalCancellationRetainsRegisteredProvider) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}, {"QNNExecutionProvider", true}}, telemetry);
+  mocks[0]->ignore_terminal_cancellation_ = true;
+
+  const auto result = detector->DownloadAndRegisterEps(
+      nullptr, [](const std::string&, float percent) { return percent < 100.0f; });
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.cancelled);
+  ASSERT_EQ(result.registered_eps.size(), 1u);
+  EXPECT_EQ(result.registered_eps[0], "CUDAExecutionProvider");
+  EXPECT_TRUE(mocks[0]->IsRegistered());
+  EXPECT_FALSE(mocks[1]->download_called_);
+  EXPECT_TRUE(detector->GetDiscoverableEps()[0].is_registered);
+  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
+  ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].status, ActionStatus::kCanceled);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].succeeded, 1);
 }
 
 TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxMissingCudaRecordsDependencyFailure) {

@@ -163,6 +163,10 @@ inline void SanitizeProperties(::Microsoft::Applications::Events::EventPropertie
 
 }  // namespace detail
 
+inline std::string SanitizeCommonContextValue(std::string_view value) {
+  return detail::SanitizeMetadataValue(value);
+}
+
 // Enforces telemetry string privacy and size limits at the final EventProperties emission boundary.
 inline void SanitizeEventProperties(::Microsoft::Applications::Events::EventProperties& event_properties) {
   detail::SanitizeProperties(event_properties, ::Microsoft::Applications::Events::DataCategory_PartC);

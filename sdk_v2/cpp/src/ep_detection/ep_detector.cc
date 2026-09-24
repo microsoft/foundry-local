@@ -281,12 +281,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       throw;
     }
 
-    if (cancelled) {
-      result.success = false;
-      telemetry_status = ActionStatus::kCanceled;
-      tracker.RecordDownloadComplete(ActionStatus::kCanceled, unresolved_ready_state);
-      tracker.RecordRegisterComplete(ActionStatus::kSkipped, unresolved_ready_state);
-    } else if (ok) {
+    if (ok) {
       ++telemetry_succeeded;
       telemetry_resolved = true;
       result.registered_eps.push_back(bs->Name());
@@ -300,6 +295,11 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       tracker.RecordDownloadComplete(downloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped,
                                      unresolved_ready_state);
       tracker.RecordRegisterComplete(ActionStatus::kSuccess, EpReadyState::kRegistered);
+    } else if (cancelled) {
+      result.success = false;
+      telemetry_status = ActionStatus::kCanceled;
+      tracker.RecordDownloadComplete(ActionStatus::kCanceled, unresolved_ready_state);
+      tracker.RecordRegisterComplete(ActionStatus::kSkipped, unresolved_ready_state);
     } else {
       ++telemetry_failed;
       result.failed_eps.push_back(bs->Name());

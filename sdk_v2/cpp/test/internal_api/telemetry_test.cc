@@ -678,6 +678,16 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutCh
   EXPECT_EQ(after.at("TotalTokens").as_int64, 42);
 }
 
+TEST(OneDsTelemetryTest, CommonContextSanitizerRedactsUrlsAndSingleComponentPaths) {
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue("app https://demo:placeholder@example.invalid?sig=x"),
+            "app [url]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue("app /private"), "app [path]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue("apiKey:private-value"), "apiKey:[secret]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue("foundry-local"), "foundry-local");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(std::string(kMaxTelemetryStringLength + 1, 'x')).size(),
+            kMaxTelemetryStringLength);
+}
+
 TEST(OneDsTelemetryTest, EventPropertiesSanitizerCapsEveryStringValue) {
   using namespace ::Microsoft::Applications::Events;
 

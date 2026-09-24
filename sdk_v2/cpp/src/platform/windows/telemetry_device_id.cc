@@ -124,6 +124,12 @@ bool ReadRegistryDeviceId(std::string& value, bool& found) {
     return false;
   }
 
+  if (size == 0 || size > kMaxDeviceIdSize + 1) {
+    found = true;
+    value.clear();
+    return true;
+  }
+
   std::string buffer(size, '\0');
   status = ::RegGetValueA(HKEY_CURRENT_USER, kRegistryPath, kRegistryValueName,
                           RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, buffer.data(), &size);
