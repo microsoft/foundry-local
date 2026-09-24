@@ -278,6 +278,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
       bg_session.SetStreamingCallback(callback_fn);
       if (stream->IsDisconnected()) {
         stream->Finish();
+        reg.Release();
         tracker.Remove(std::this_thread::get_id());
         return;
       }

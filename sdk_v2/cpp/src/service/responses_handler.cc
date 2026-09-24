@@ -733,6 +733,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       if (stream->IsDisconnected()) {
         lease.Release();
         stream->Finish();
+        reg.Release();
         tracker.Remove(std::this_thread::get_id());
         return;
       }
