@@ -84,15 +84,53 @@ inline size_t FindUrlAnchor(std::string_view value) {
   return std::string_view::npos;
 }
 
+inline size_t FindAbsolutePathAnchor(std::string_view value) {
+  for (size_t i = 0; i + 1 < value.size(); ++i) {
+    if (value[i] != '/' || value[i + 1] == '/' ||
+        std::isspace(static_cast<unsigned char>(value[i + 1]))) {
+      continue;
+    }
+
+    if (i == 0 || std::isspace(static_cast<unsigned char>(value[i - 1])) ||
+        value[i - 1] == ':' || value[i - 1] == '=' || value[i - 1] == '"' ||
+        value[i - 1] == '\'' || value[i - 1] == '(') {
+      return i;
+    }
+  }
+  return std::string_view::npos;
+}
+
 inline std::string SanitizeString(std::string_view value) {
   const size_t url_anchor = FindUrlAnchor(value);
-  if (url_anchor == std::string_view::npos) {
-    return ScrubStringForTelemetry(value);
+  std::string without_url(value.substr(0, url_anchor));
+  if (url_anchor != std::string_view::npos) {
+    without_url += "[url]";
   }
 
-  std::string without_url(value.substr(0, url_anchor));
-  without_url += "[url]";
+  const size_t path_anchor = FindAbsolutePathAnchor(without_url);
+  if (path_anchor != std::string_view::npos) {
+    without_url.replace(path_anchor, std::string::npos, "[path]");
+  }
   return ScrubStringForTelemetry(without_url);
+}
+
+inline std::string SanitizeMetadataValue(std::string_view value) {
+  const size_t separator = value.find_first_of(":=");
+  if (separator != std::string_view::npos) {
+    auto name = value.substr(0, separator);
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) {
+      name.remove_prefix(1);
+    }
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) {
+      name.remove_suffix(1);
+    }
+
+    if (IsSecretProperty(name)) {
+      return SanitizeString(std::string(value.substr(0, separator + 1)) + "[secret]");
+    }
+  }
+
+  return SanitizeString(value);
 }
 
 inline void SanitizeProperties(::Microsoft::Applications::Events::EventProperties& event_properties,
@@ -107,14 +145,14 @@ inline void SanitizeProperties(::Microsoft::Applications::Events::EventPropertie
     const bool secret_property = IsSecretProperty(name);
     if (property.type == EventProperty::TYPE_STRING) {
       const auto value = property.as_string == nullptr ? std::string_view{} : std::string_view(property.as_string);
-      const auto sanitized_value = secret_property ? std::string{"[secret]"} : SanitizeString(value);
+      const auto sanitized_value = secret_property ? std::string{"[secret]"} : SanitizeMetadataValue(value);
       property = EventProperty(sanitized_value, property.piiKind, property.dataCategory);
     } else if (property.type == EventProperty::TYPE_STRING_ARRAY) {
       std::vector<std::string> sanitized_values;
       if (property.as_stringArray != nullptr) {
         sanitized_values.reserve(property.as_stringArray->size());
         for (const auto& value : *property.as_stringArray) {
-          sanitized_values.push_back(secret_property ? std::string{"[secret]"} : SanitizeString(value));
+          sanitized_values.push_back(secret_property ? std::string{"[secret]"} : SanitizeMetadataValue(value));
         }
       }
 

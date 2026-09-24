@@ -653,6 +653,7 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutCh
   event.SetProperty("ExecutionProvider", "CPUExecutionProvider");
   event.SetProperty("auth.token", "placeholder");
   event.SetProperty("RequestError", "failed at https://account@example.invalid?query=value");
+  event.SetProperty("SimplePath", "failed at /private");
   event.SetProperty("TotalTokens", int64_t{42});
 
   const auto before = event.GetProperties(DataCategory_PartC);
@@ -671,6 +672,7 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsNonErrorStringsWithoutCh
   EXPECT_STREQ(after.at("ExecutionProvider").as_string, "CPUExecutionProvider");
   EXPECT_STREQ(after.at("auth.token").as_string, "[secret]");
   EXPECT_STREQ(after.at("RequestError").as_string, "failed at [url]");
+  EXPECT_STREQ(after.at("SimplePath").as_string, "failed at [path]");
   EXPECT_EQ(after.at("ModelId").piiKind, PiiKind_GenericData);
   EXPECT_EQ(after.at("ModelId").dataCategory, DataCategory_PartB);
   EXPECT_EQ(after.at("TotalTokens").as_int64, 42);
@@ -705,6 +707,7 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRecursesIntoStringArraysInOrder
       "microsoft/phi-3-mini",
       "load /profiles/sample-user/config.json",
       "models/foo.onnx",
+      "/private",
       std::string(kMaxTelemetryStringLength + 1, 'z'),
   };
   event.SetProperty("Aliases", aliases, PiiKind_GenericData);
@@ -718,7 +721,8 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerRecursesIntoStringArraysInOrder
   EXPECT_EQ(property.as_stringArray->at(0), "microsoft/phi-3-mini");
   EXPECT_EQ(property.as_stringArray->at(1), "load [path]");
   EXPECT_EQ(property.as_stringArray->at(2), "models/foo.onnx");
-  EXPECT_EQ(property.as_stringArray->at(3).size(), kMaxTelemetryStringLength);
+  EXPECT_EQ(property.as_stringArray->at(3), "[path]");
+  EXPECT_EQ(property.as_stringArray->at(4).size(), kMaxTelemetryStringLength);
   EXPECT_EQ(property.piiKind, PiiKind_GenericData);
 }
 
@@ -727,10 +731,12 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesSecretPropertyProtecti
 
   EventProperties event("ProviderMetadata");
   std::vector<std::string> provider_options = {
-      "device_id:0", "cache_dir:/profiles/sample-user/cache", "dbPassword:placeholder"};
+      "device_id:0", "cache_dir:/profiles/sample-user/cache", "dbPassword:placeholder",
+      "apiKey=another-placeholder", " Authorization : Bearer private-value"};
   std::vector<std::string> secret_placeholders = {"first-placeholder", "second-placeholder"};
   event.SetProperty("ProviderOptions", provider_options, PiiKind_GenericData);
   event.SetProperty("clientApiKey", secret_placeholders);
+  event.SetProperty("ProviderMetadata", "access_token=private-value");
 
   TelemetryInternal::SanitizeEventProperties(event);
   const auto& properties = event.GetProperties(DataCategory_PartC);
@@ -739,9 +745,11 @@ TEST(OneDsTelemetryTest, EventPropertiesSanitizerPreservesSecretPropertyProtecti
 
   ASSERT_NE(options.as_stringArray, nullptr);
   EXPECT_EQ(*options.as_stringArray,
-            (std::vector<std::string>{"device_id:0", "cache_di[path]", "dbPassword:placeholder"}));
+            (std::vector<std::string>{"device_id:0", "cache_dir:[path]", "dbPassword:[secret]",
+                                      "apiKey=[secret]", " Authorization :[secret]"}));
   ASSERT_NE(secret_values.as_stringArray, nullptr);
   EXPECT_EQ(*secret_values.as_stringArray, (std::vector<std::string>{"[secret]", "[secret]"}));
+  EXPECT_STREQ(properties.at("ProviderMetadata").as_string, "access_token=[secret]");
 }
 TEST(TelemetrySamplingTest, RetainsAllNonAudioEvents) {
   EXPECT_DOUBLE_EQ(TelemetryInternal::kTelemetrySampleRatePercent, 100.0);
