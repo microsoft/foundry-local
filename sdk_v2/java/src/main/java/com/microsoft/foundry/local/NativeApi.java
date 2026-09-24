@@ -197,9 +197,15 @@ final class NativeApi {
         }
         NativeLibrary library = open(foundryLibrary);
         libraries.add(library);
+        Pointer api;
+        try {
+            Function negotiate = library.getFunction("FoundryLocalGetApi");
+            api = requireApiVersion(requested ->
+                    negotiate.invokePointer(new Object[] {requested}));
+        } catch (UnsatisfiedLinkError e) {
+            throw new IllegalStateException("Native runtime does not expose C API " + VERSION, e);
+        }
         version = text(library.getFunction("FoundryLocalGetVersionString").invokePointer(new Object[0]));
-        Pointer api = requireApiVersion(version ->
-                library.getFunction("FoundryLocalGetApi").invokePointer(new Object[] {version}));
         root = new Table(api);
         catalog = new Table(root.pointer(Root.GET_CATALOG_API));
         config = new Table(root.pointer(Root.GET_CONFIGURATION_API));

@@ -71,12 +71,38 @@ steps:
 
 - template: steps-bootstrap-maven.yml
 
+- ${{ if eq(parameters.rid, 'win-x64') }}:
+  - task: PowerShell@2
+    displayName: 'Stage released legacy runtime for Java ABI rejection test'
+    inputs:
+      targetType: inline
+      pwsh: true
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $directory = Join-Path '$(Build.BinariesDirectory)' 'legacy-java-abi'
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        $archive = Join-Path $directory 'foundry-0.10.1-win-x64.msix'
+        Invoke-WebRequest `
+          'https://github.com/microsoft/foundry-local/releases/download/cli-preview-0.10.1/foundry-0.10.1-win-x64.msix' `
+          -OutFile $archive -TimeoutSec 180
+        $expected = '830AED4F78DAEB826E1C8AA26587EA9CC3EF0D4020CD4461F949CDD31127DBFE'
+        if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) {
+          throw 'Legacy runtime archive checksum mismatch'
+        }
+        $zip = Join-Path $directory 'legacy.zip'
+        Copy-Item $archive $zip -Force
+        $runtime = Join-Path $directory 'extracted'
+        Expand-Archive -LiteralPath $zip -DestinationPath $runtime -Force
+        Copy-Item (Join-Path $runtime 'Microsoft.AI.Foundry.Local.Core.dll') `
+          (Join-Path $runtime 'foundry_local.dll') -Force
+        Write-Host "##vso[task.setvariable variable=foundryLegacyNativeDir]$runtime"
+
 - task: Maven@4
   displayName: 'Maven verify + native ASR (${{ parameters.rid }})'
   inputs:
     mavenPOMFile: 'sdk_v2/java/pom.xml'
     goals: 'clean verify'
-    options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-asr-preview -Dfoundry.test.native.required=true'
+    options: "--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-asr-preview -Dfoundry.test.native.required=true -Dfoundry.test.legacy.required=${{ eq(parameters.rid, 'win-x64') }}"
     publishJUnitResults: true
     testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
     testRunTitle: 'Java SDK ${{ parameters.rid }}'
@@ -89,3 +115,5 @@ steps:
     FOUNDRY_TEST_DATA_DIR: '${{ parameters.testDataSharedDir }}'
     FOUNDRY_TEST_WAV: '$(Build.SourcesDirectory)/sdk_v2/testdata/Recording.wav'
     ORT_TELEMETRY_DISABLED: '1'
+    ${{ if eq(parameters.rid, 'win-x64') }}:
+      FOUNDRY_TEST_LEGACY_BIN_DIR: $(foundryLegacyNativeDir)

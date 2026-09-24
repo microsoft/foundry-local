@@ -116,16 +116,9 @@ class NativeAsrTest {
             assertFalse(manager.runtimeVersion().isBlank());
         }
         System.err.println("native-test: manager recreated and closed");
-        String javaExecutable = Path.of(System.getProperty("java.home"), "bin",
-                System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
-        String classPath = String.join(System.getProperty("path.separator"),
-                Path.of(NativeAsrTest.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString(),
-                Path.of(FoundryLocalManager.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString(),
-                Path.of(com.sun.jna.Native.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString());
-        Process process = new ProcessBuilder(javaExecutable, "-cp", classPath, NativeAbandonedStream.class.getName(),
+        Process process = NativeTestProcess.start(NativeAbandonedStream.class,
                 runtime, cache, temporary.toString(),
-                System.getProperty("foundry.test.model", "nemotron-speech-streaming-en-0.6b-generic-cpu:3"))
-                .redirectErrorStream(true).start();
+                System.getProperty("foundry.test.model", "nemotron-speech-streaming-en-0.6b-generic-cpu:3"));
         try {
             assertTrue(process.waitFor(90, TimeUnit.SECONDS), "Abandoned stream kept the JVM alive");
             String output = new String(process.getInputStream().readAllBytes(),

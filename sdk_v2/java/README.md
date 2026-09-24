@@ -181,4 +181,7 @@ instead of skipping the integration test.
 The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager
 recreation with the same runtime directory, and verifies that no callback or
-worker survives close.
+worker survives close. It also launches a child JVM to check that an abandoned
+stream cannot block process exit. The Windows x64 CI lane separately probes
+a checksum-pinned released legacy runtime in a fresh JVM to verify rejection
+before accessing incompatible native function tables.
