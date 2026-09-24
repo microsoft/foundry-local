@@ -355,11 +355,13 @@ TEST(ReplayEquivalenceTest, ReasoningOnlyTurnKeepsItsAssistantBoundary) {
   params.input = std::string("Well?");
   auto cold = ColdMessages({turn}, params);
 
-  // The boundary is there, and none of the private text came back with it.
+  // The boundary and typed reasoning are both reconstructed. Unqualified projection still keeps it private.
   ASSERT_EQ(cold.size(), 3u);
   EXPECT_EQ(cold[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_TRUE(cold[1].entries.empty());
-  EXPECT_EQ(cold[1].ReasoningText(), "");
+  EXPECT_EQ(cold[1].ReasoningText(), "private scratchpad");
+  EXPECT_EQ(BuildChatMessagesJson(cold).find("private scratchpad"), std::string::npos);
+  EXPECT_NE(BuildChatMessagesJson(cold, /*preserve_reasoning_history=*/true).find("private scratchpad"),
+            std::string::npos);
 }
 
 TEST(ReplayEquivalenceTest, EmptyAssistantOutputKeepsItsBoundary) {
@@ -826,10 +828,10 @@ TEST(ReplayEquivalenceTest, ParallelCallsProjectToExactlyThisJson) {
 }
 
 // ========================================================================
-// Reasoning parity — never projected, on any message.
+// Reasoning parity — retained internally and projected only for qualified templates.
 // ========================================================================
 
-TEST(ReplayEquivalenceTest, ReasoningAlongsideACallIsNotReplayedWarmOrCold) {
+TEST(ReplayEquivalenceTest, ReasoningAlongsideACallIsPreservedWarmAndCold) {
   ReplayTurn turn;
   turn.input_items = UserInputItem("Weather in Seattle?");
   turn.output_items = json::array({OutputReasoning("private"),
@@ -841,16 +843,23 @@ TEST(ReplayEquivalenceTest, ReasoningAlongsideACallIsNotReplayedWarmOrCold) {
   turn.live_output.AppendText("Let me check.");
   turn.live_output.AppendToolCall(SuppliedCall("call_1", "get_weather", R"({"city":"Seattle"})"));
 
-  // The live record still holds the reasoning; the prompt never shows it.
+  // Both paths retain the reasoning. Conservative projection still omits it for unqualified templates.
   EXPECT_EQ(turn.live_output.ReasoningText(), "private");
   ExpectWarmAndColdAgree({turn}, "Thanks.");
 
   ResponseCreateParams params;
   params.model = "test-model";
   params.input = std::string("Thanks.");
-  const std::string projected = BuildChatMessagesJson(ColdMessages({turn}, params));
+  const auto cold_messages = ColdMessages({turn}, params);
+  ASSERT_GE(cold_messages.size(), 2u);
+  EXPECT_EQ(cold_messages[1].ReasoningText(), "private");
+
+  const std::string projected = BuildChatMessagesJson(cold_messages);
   EXPECT_EQ(projected.find("private"), std::string::npos) << projected;
   EXPECT_EQ(projected.find("reasoning_content"), std::string::npos) << projected;
+
+  const std::string preserved = BuildChatMessagesJson(cold_messages, /*preserve_reasoning_history=*/true);
+  EXPECT_NE(preserved.find(R"("reasoning_content":"private")"), std::string::npos) << preserved;
 }
 
 TEST(ReplayEquivalenceTest, ReasoningOnlyTurnFollowedByAToolExchangeStaysAligned) {

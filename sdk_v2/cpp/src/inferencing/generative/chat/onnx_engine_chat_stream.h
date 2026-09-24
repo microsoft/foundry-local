@@ -20,6 +20,7 @@ class GenAIModelInstance;
 namespace onnx_engine_chat_stream_internal {
 
 std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason);
+ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult& result);
 
 }  // namespace onnx_engine_chat_stream_internal
 
