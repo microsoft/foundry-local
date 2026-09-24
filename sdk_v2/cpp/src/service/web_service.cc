@@ -173,6 +173,31 @@ class ShutdownHandler : public HttpRequestHandler {
   std::function<void()> shutdown_fn_;
 };
 
+namespace {
+
+void RegisterModelManagementRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>& router,
+                                   const std::string& prefix, ServiceContext& ctx) {
+  router->route("GET", prefix + "/models/loaded", CreateListLoadedModelsHandler(ctx));
+  router->route("GET", prefix + "/models/load/{name}", CreateLoadModelHandler(ctx));
+  router->route("GET", prefix + "/models/unload/{name}", CreateUnloadModelHandler(ctx));
+}
+
+void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>& router,
+                          const std::string& prefix, ServiceContext& ctx) {
+  router->route("GET", prefix + "/v1/models", CreateOpenAIListModelsHandler(ctx));
+  router->route("GET", prefix + "/v1/models/{name}", CreateOpenAIRetrieveModelHandler(ctx));
+  router->route("POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
+  router->route("POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
+  router->route("POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx));
+  router->route("POST", prefix + "/v1/responses", CreateResponsesHandler(ctx));
+  router->route("GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx));
+  router->route("GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx));
+  router->route("DELETE", prefix + "/v1/responses/{id}", CreateDeleteResponseHandler(ctx));
+  router->route("GET", prefix + "/v1/responses/{id}/input_items", CreateGetInputItemsHandler(ctx));
+}
+
+}  // namespace
+
 // ========================================================================
 // WebService implementation
 // ========================================================================
@@ -181,7 +206,7 @@ struct WebService::Impl {
   /// Keeps the session cache in step with response deletion. ResponseStore calls Drop() while holding its own lock,
   /// so this must never call back into the store; SessionManager does not.
   ///
-  /// Declared before `response_store` so it outlives it — the store may use it until it is destroyed.
+  /// Declared before the response stores so it outlives them — the stores may use it until they are destroyed.
   class SessionCacheCoordinator final : public IResponseCacheCoordinator {
    public:
     explicit SessionCacheCoordinator(SessionManager& manager) : manager_(manager) {}
@@ -198,10 +223,12 @@ struct WebService::Impl {
   std::shared_ptr<oatpp::web::server::HttpConnectionHandler> connection_handler;
   std::shared_ptr<oatpp::web::server::HttpRouter> router;
   SessionCacheCoordinator session_cache;
-  ResponseStore response_store;
+  ResponseStore public_response_store;
+  ResponseStore local_response_store;
   StreamingThreadTracker thread_tracker;
   std::function<void()> shutdown_callback;
-  std::unique_ptr<ServiceContext> context;
+  std::unique_ptr<ServiceContext> public_context;
+  std::unique_ptr<ServiceContext> local_context;
   std::atomic<bool> running{false};
 
 #ifdef FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT
@@ -221,28 +248,39 @@ struct WebService::Impl {
   } wsa_guard_;
 #endif
 
-  Impl(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+  Impl(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
        ModelLoadManager& model_load_manager, SessionManager& session_manager,
        ITelemetry& telemetry, std::function<void()> shutdown_callback)
       : session_cache(session_manager),
-        response_store(ResponseStore::kDefaultCapacity, &session_cache),
+        public_response_store(ResponseStore::kDefaultCapacity, &session_cache),
+        local_response_store(ResponseStore::kDefaultCapacity, &session_cache),
         shutdown_callback(std::move(shutdown_callback)),
-        context(std::make_unique<ServiceContext>(
-            ServiceContext{catalog,
+        public_context(std::make_unique<ServiceContext>(
+            ServiceContext{public_catalog,
+                           logger,
+                           model_cache_dir,
+                           {},
+                           model_load_manager,
+                           session_manager,
+                           public_response_store,
+                           telemetry,
+                           thread_tracker})),
+        local_context(std::make_unique<ServiceContext>(
+            ServiceContext{local_catalog,
                            logger,
                            std::move(model_cache_dir),
                            {},
                            model_load_manager,
                            session_manager,
-                           response_store,
+                           local_response_store,
                            telemetry,
                            thread_tracker})) {}
 };
 
-WebService::WebService(ICatalog& catalog, ILogger& logger, std::string model_cache_dir,
+WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
                        ModelLoadManager& model_load_manager, SessionManager& session_manager,
                        ITelemetry& telemetry, std::function<void()> shutdown_callback)
-    : impl_(std::make_unique<Impl>(catalog, logger, std::move(model_cache_dir),
+    : impl_(std::make_unique<Impl>(public_catalog, local_catalog, logger, std::move(model_cache_dir),
                                    model_load_manager, session_manager, telemetry,
                                    std::move(shutdown_callback))) {}
 
@@ -253,10 +291,11 @@ WebService::~WebService() {
 }
 
 std::vector<std::string> WebService::Start(const std::vector<std::string>& endpoints) {
-  auto& ctx = *impl_->context;
+  auto& public_ctx = *impl_->public_context;
+  auto& local_ctx = *impl_->local_context;
 
   if (impl_->running.load()) {
-    ctx.logger.Log(LogLevel::Information, "Web service is already running.");
+    public_ctx.logger.Log(LogLevel::Information, "Web service is already running.");
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Web service is already running");
   }
 
@@ -265,28 +304,16 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
 
   // Status
   impl_->router->route("GET", "/status",
-                       std::make_shared<StatusHandler>(ctx));
+                       std::make_shared<StatusHandler>(public_ctx));
 
   // Shutdown
   impl_->router->route("POST", "/shutdown",
                        std::make_shared<ShutdownHandler>(impl_->shutdown_callback));
 
-  // Model management
-  impl_->router->route("GET", "/models/loaded", CreateListLoadedModelsHandler(ctx));
-  impl_->router->route("GET", "/models/load/{name}", CreateLoadModelHandler(ctx));
-  impl_->router->route("GET", "/models/unload/{name}", CreateUnloadModelHandler(ctx));
-
-  // OpenAI-compatible endpoints
-  impl_->router->route("GET", "/v1/models", CreateOpenAIListModelsHandler(ctx));
-  impl_->router->route("GET", "/v1/models/{name}", CreateOpenAIRetrieveModelHandler(ctx));
-  impl_->router->route("POST", "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
-  impl_->router->route("POST", "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
-  impl_->router->route("POST", "/v1/embeddings", CreateEmbeddingsHandler(ctx));
-  impl_->router->route("POST", "/v1/responses", CreateResponsesHandler(ctx));
-  impl_->router->route("GET", "/v1/responses", CreateListResponsesHandler(ctx));
-  impl_->router->route("GET", "/v1/responses/{id}", CreateGetResponseHandler(ctx));
-  impl_->router->route("DELETE", "/v1/responses/{id}", CreateDeleteResponseHandler(ctx));
-  impl_->router->route("GET", "/v1/responses/{id}/input_items", CreateGetInputItemsHandler(ctx));
+  RegisterModelManagementRoutes(impl_->router, "", public_ctx);
+  RegisterOpenAIRoutes(impl_->router, "", public_ctx);
+  RegisterModelManagementRoutes(impl_->router, "/catalogs/local", local_ctx);
+  RegisterOpenAIRoutes(impl_->router, "/catalogs/local", local_ctx);
 
   impl_->connection_handler = oatpp::web::server::HttpConnectionHandler::createShared(impl_->router);
 
@@ -361,10 +388,11 @@ std::vector<std::string> WebService::Start(const std::vector<std::string>& endpo
     std::string bound_url = "http://" + host + ":" + std::to_string(port);
     bound_urls.push_back(bound_url);
 
-    ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
+    public_ctx.logger.Log(LogLevel::Information, fmt::format("Web service listening on {}", bound_url));
   }
 
-  ctx.bound_urls = bound_urls;
+  public_ctx.bound_urls = bound_urls;
+  local_ctx.bound_urls = bound_urls;
   impl_->running.store(true);
 
   return bound_urls;
@@ -416,8 +444,9 @@ void WebService::Stop() {
   impl_->router.reset();
   impl_->running.store(false);
 
-  impl_->context->bound_urls.clear();
-  impl_->context->logger.Log(LogLevel::Information, "Web service stopped");
+  impl_->public_context->bound_urls.clear();
+  impl_->local_context->bound_urls.clear();
+  impl_->public_context->logger.Log(LogLevel::Information, "Web service stopped");
 }
 
 }  // namespace fl

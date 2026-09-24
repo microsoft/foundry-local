@@ -58,6 +58,14 @@ constexpr std::string_view kQwenToolResultProjection =
     "<tool_response>\n"
     "probe-result-second\n"
     "</tool_response><|im_end|>\n";
+  constexpr std::string_view kQwenReasoningProjection =
+    "<|im_start|>assistant\n<think>\nreasoning-probe-private-a\n</think>\n\n"
+    "reasoning-probe-visible-a<|im_end|>\n"
+    "<|im_start|>assistant\n<think>\nreasoning-probe-private-b\n</think>\n\n"
+    "reasoning-probe-visible-b<|im_end|>\n";
+  constexpr std::string_view kQwenNoPreserveReasoningProjection =
+    "<|im_start|>assistant\nreasoning-probe-visible-a<|im_end|>\n"
+    "<|im_start|>assistant\nreasoning-probe-visible-b<|im_end|>\n";
 
 std::filesystem::path FindModelConfigDirectory(
     const std::filesystem::path& package_path) {
@@ -117,11 +125,49 @@ TEST(ModelCapabilitiesTest, ResultProjectionMismatchDisablesOnlyPositionalToolRe
   EXPECT_FALSE(capabilities.positional_tool_results);
 }
 
+TEST(ModelCapabilitiesTest, QualifiedQwenReasoningProbeEnablesHistoryPreservation) {
+  const auto capabilities = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, kQwenToolResultProjection,
+    kQwenReasoningProjection, kQwenNoPreserveReasoningProjection, "<think>", "</think>");
+
+  EXPECT_TRUE(capabilities.supports_reasoning_history);
+  EXPECT_TRUE(capabilities.supports_preserve_thinking);
+  EXPECT_TRUE(capabilities.supports_reasoning_controls);
+}
+
+TEST(ModelCapabilitiesTest, ReasoningPreservationProbeFailsClosed) {
+  const auto missing_default_reasoning = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, kQwenToolResultProjection,
+    kQwenNoPreserveReasoningProjection, kQwenNoPreserveReasoningProjection, "<think>", "</think>");
+  const auto ignores_opt_out = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3_5_text", kQwenToolCallProjection, kQwenToolResultProjection,
+    kQwenReasoningProjection, kQwenReasoningProjection, "<think>", "</think>");
+  const auto non_qwen_reasoning_template = fl::model_capabilities_internal::ResolveRenderedProbes(
+      "qwen3", kQwenToolCallProjection, kQwenToolResultProjection,
+    kQwenReasoningProjection, kQwenNoPreserveReasoningProjection, "<think>", "</think>");
+
+  EXPECT_FALSE(missing_default_reasoning.supports_reasoning_history);
+  EXPECT_FALSE(missing_default_reasoning.supports_preserve_thinking);
+  EXPECT_TRUE(missing_default_reasoning.supports_reasoning_controls);
+  EXPECT_TRUE(ignores_opt_out.supports_reasoning_history);
+  EXPECT_FALSE(ignores_opt_out.supports_preserve_thinking);
+  EXPECT_TRUE(ignores_opt_out.supports_reasoning_controls);
+  EXPECT_TRUE(non_qwen_reasoning_template.supports_reasoning_history);
+  EXPECT_TRUE(non_qwen_reasoning_template.supports_preserve_thinking);
+  EXPECT_FALSE(non_qwen_reasoning_template.native_qwen_xml_tool_calls);
+  EXPECT_FALSE(non_qwen_reasoning_template.positional_tool_results);
+}
+
 TEST(ModelCapabilitiesTest, QualifiedQwenPackageResolvesBothProductionCapabilities) {
   constexpr const char* kQwenModelAlias = "qwen3.5-0.8b-generic-cpu-2";
   constexpr const char* kQualifiedModelPath = "FOUNDRY_QUALIFIED_QWEN_MODEL_PATH";
+  constexpr const char* kRequireQualifiedModel = "FOUNDRY_REQUIRE_QUALIFIED_QWEN_MODEL";
   const auto explicit_path = fl::test::SafeGetEnv(kQualifiedModelPath);
   if (explicit_path.empty()) {
+    const auto required = fl::test::SafeGetEnv(kRequireQualifiedModel);
+    ASSERT_TRUE(required != "1" && required != "true" && required != "True")
+        << kRequireQualifiedModel << " requires " << kQualifiedModelPath
+        << " to name an installed Qwen qualification package";
     GTEST_SKIP() << "Set " << kQualifiedModelPath
                  << " to a qualified Qwen package root or model directory";
   }
@@ -140,6 +186,9 @@ TEST(ModelCapabilitiesTest, QualifiedQwenPackageResolvesBothProductionCapabiliti
   EXPECT_EQ(result.model->ModelType(), "qwen3_5_text");
   EXPECT_TRUE(result.model->HasNativeQwenXmlToolCalls());
   EXPECT_TRUE(result.model->HasPositionalToolResults());
+  EXPECT_TRUE(result.model->SupportsReasoningHistory());
+  EXPECT_TRUE(result.model->SupportsPreserveThinking());
+  EXPECT_TRUE(result.model->SupportsReasoningControls());
   EXPECT_TRUE(load_manager.UnloadModel(kQwenModelAlias));
 }
 
