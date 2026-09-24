@@ -208,7 +208,7 @@ describeIfBuilt("BYOM local catalog", () => {
     registeredIds.add(snapshotModelId);
     using snapshotMetadata = new MutableModelInfo().setStringProperty(ModelInfoStringProperty.Task, "chat-completion");
     unwrapMutableModelInfo(snapshotMetadata).setIntPropertyForTest(
-      ModelInfoIntProperty.ContextLength,
+      ModelInfoIntProperty.FileSizeMb,
       9_007_199_254_740_992n,
     );
     const snapshotModel = await localCatalog.registerModel(modelPath, snapshotModelId, snapshotMetadata);
