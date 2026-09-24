@@ -14,6 +14,7 @@ namespace foundry_local_node {
 struct AddonData {
   Napi::FunctionReference catalog_ctor;
   Napi::FunctionReference model_ctor;
+  Napi::FunctionReference model_info_ctor;
   Napi::FunctionReference request_ctor;
   // Persistent reference to the NativeItemQueue constructor so that
   // Request::AddItem can branch on `InstanceOf` to decide between the

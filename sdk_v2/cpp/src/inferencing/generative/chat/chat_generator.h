@@ -16,11 +16,25 @@ class GenAIModelInstance;
 struct TranscriptMessage;
 struct SearchOptions;
 struct ToolCallContext;
+namespace chat_internal {
+class PreparedChatMessages;
+}
+
+enum class BackendTerminationCause {
+  kNaturalEnd,
+  kStopSequence,
+  kOutputTokenLimit,
+  kSessionTokenLimit,
+  kCancellation,
+  kFailure,
+};
 
 struct ChatTurnUsage {
   int prompt_tokens = 0;
   int generated_tokens = 0;
   std::optional<flFinishReason> finish_reason;
+  std::optional<BackendTerminationCause> termination_cause;
+  int cached_prompt_tokens = 0;
 };
 
 class RetainedPromptMismatchError : public std::runtime_error {
@@ -66,12 +80,19 @@ class ChatGenerator {
   /// After cancellation, IsDone() should return true on the next check.
   virtual void Cancel() = 0;
 
+  /// Close backend-owned request state and report failures.
+  ///
+  /// The default is intentionally a no-op: classic generators own no separately admitted request.
+  /// Engine replacement paths call this before destroying a generator because destructors cannot
+  /// report a failed close.
+  virtual void Close();
+
   /// Append a new conversational turn to retained model state.
   ///
   /// full_messages contains the complete structured transcript through new_messages. Backends that reconcile
   /// retained tokens against a freshly rendered prompt use it to decide whether the retained state is reusable.
   virtual int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
-                             const std::vector<TranscriptMessage>& full_messages,
+                             const chat_internal::PreparedChatMessages& full_messages,
                              GenAIModelInstance& model,
                              const ToolCallContext& tool_ctx,
                              const SearchOptions& options) = 0;

@@ -28,10 +28,14 @@ namespace fl {
 /// user callback. This decouples token generation from callback speed
 /// while guaranteeing delivery order.
 ///
+/// On cancellation, a backlog within the normal 64-item backpressure window is delivered. A larger backlog is
+/// discarded so cancellation cannot be delayed indefinitely by a stalled consumer.
+///
 /// The Request reference is bound at construction — no need to pass it per push.
 /// Destruction drains the queue and joins the worker thread (RAII).
 struct CallbackHandler {
   using CallbackFn = std::function<int(flStreamingCallbackData, void*)>;
+  static constexpr size_t kMaxCancellationDrainItems = 64;
 
   CallbackHandler(const Request& request, CallbackFn callback_fn, ILogger& logger,
                   void* user_data = nullptr)
@@ -56,7 +60,8 @@ struct CallbackHandler {
   /// Push an item into the queue and wake the worker.
   /// Called from the generator thread — returns immediately.
   void PushItem(std::unique_ptr<Item> item) {
-    if (request_.canceled) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (disabled_after_exception_ || request_.IsCancellationRequested()) {
       return;
     }
 
@@ -90,24 +95,27 @@ struct CallbackHandler {
       // Fire the callback for each available item.
       // The callback pops from the queue — that is the established contract.
       while (queue_->Size() > 0) {
+        if (request_.IsCancellationRequested() && queue_->Size() > kMaxCancellationDrainItems) {
+          DropPendingItemsAndNotify(false);
+          break;
+        }
+
         SetCallbackInProgress(true);
 
         try {
           if (fn_(data_, user_data_) != 0) {
-            request_.canceled = true;
+            request_.Cancel(Request::CancellationReason::StreamingCallback);
           }
         } catch (const std::exception& e) {
           logger_.Log(LogLevel::Warning,
                       fmt::format("streaming callback threw an exception; cancelling request: {}",
                                   e.what()));
-          DisableAfterException();
-          SetCallbackInProgress(false);
+          DisableAfterException(e.what());
           return;
         } catch (...) {
           logger_.Log(LogLevel::Warning,
                       "streaming callback threw a non-std exception; cancelling request");
-          DisableAfterException();
-          SetCallbackInProgress(false);
+          DisableAfterException("non-standard exception");
           return;
         }
 
@@ -124,10 +132,21 @@ struct CallbackHandler {
   /// Called from the worker thread after the user callback throws. Marks the request
   /// cancelled (so PushItem becomes a no-op and the generator loop stops feeding work)
   /// and drops any items still queued so the destructor can join cleanly.
-  void DisableAfterException() {
-    request_.canceled = true;
-    while (queue_->TryPop()) {
+  void DisableAfterException(std::string_view detail) {
+    request_.CancelFromStreamingCallbackException(detail);
+    DropPendingItemsAndNotify(true);
+  }
+
+  void DropPendingItemsAndNotify(bool disable_after_exception) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      disabled_after_exception_ = disabled_after_exception_ || disable_after_exception;
+      while (queue_->TryPop()) {
+      }
+      callback_in_progress_ = false;
     }
+
+    callback_cv_.notify_all();
   }
 
   void SetCallbackInProgress(bool value) {
@@ -151,6 +170,7 @@ struct CallbackHandler {
   std::mutex callback_mutex_;
   std::condition_variable callback_cv_;
   bool callback_in_progress_ = false;
+  bool disabled_after_exception_ = false;
   std::thread worker_;
 };
 

@@ -196,8 +196,8 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_UserAndSystemMessages) {
 
 TEST(ChatCompletionsConverterTest, BuildRequestItems_SkipsEmptyContent) {
   ChatCompletionRequest req;
-  req.messages.push_back({"user", std::nullopt, {}, {}, {}});     // null content
-  req.messages.push_back({"user", std::string(""), {}, {}, {}});  // empty string
+  req.messages.push_back({"user", std::nullopt, {}, {}, {}});          // null content
+  req.messages.push_back({"user", std::string(""), {}, {}, {}});       // empty string
   req.messages.push_back({"assistant", std::string(""), {}, {}, {}});  // empty assistant without reasoning
   req.messages.push_back({"user", std::string("Real message"), {}, {}, {}});
 
@@ -210,7 +210,7 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_SkipsEmptyContent) {
   EXPECT_EQ(msg->GetSimpleText(), "Real message");
 }
 
-TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPreservesAnEmptyRoleBoundary) {
+TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPreservesTypedReasoning) {
   ChatCompletionRequest req;
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
@@ -225,14 +225,39 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_ReasoningOnlyAssistantPrese
   ASSERT_EQ(session_request.items[0]->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
   const auto* boundary = static_cast<const MessageItem*>(session_request.items[0]);
   EXPECT_EQ(boundary->role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
-  EXPECT_EQ(boundary->GetSimpleText(), "");
+  ASSERT_EQ(boundary->content.size(), 1u);
+  ASSERT_EQ(boundary->content[0].view->type, FOUNDRY_LOCAL_ITEM_TEXT);
+  const auto* reasoning_part = static_cast<const TextItem*>(boundary->content[0].view);
+  EXPECT_EQ(reasoning_part->text_type, FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING);
+  EXPECT_EQ(reasoning_part->text, "private scratchpad");
 
   const auto messages = BuildTranscriptMessages(session_request.items);
   ASSERT_EQ(messages.size(), 1u);
   EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_TRUE(messages[0].VisibleText().empty());
-  EXPECT_TRUE(messages[0].ReasoningText().empty());
+  EXPECT_EQ(messages[0].ReasoningText(), "private scratchpad");
   EXPECT_EQ(BuildChatMessagesJson(messages), R"([{"role":"assistant","content":""}])");
+  EXPECT_EQ(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true),
+            R"([{"role":"assistant","content":"","reasoning_content":"private scratchpad"}])");
+}
+
+TEST(ChatCompletionsConverterTest, BuildRequestItems_AssistantKeepsReasoningBeforeVisibleContent) {
+  ChatCompletionRequest req;
+  ChatCompletionMessage assistant;
+  assistant.role = "assistant";
+  assistant.content = "final answer";
+  assistant.reasoning_content = "private scratchpad";
+  req.messages.push_back(std::move(assistant));
+
+  Request session_request;
+  BuildRequestItems(req, session_request);
+
+  const auto messages = BuildTranscriptMessages(session_request.items);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].ReasoningText(), "private scratchpad");
+  EXPECT_EQ(messages[0].VisibleText(), "final answer");
+  EXPECT_EQ(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true),
+            R"([{"role":"assistant","content":"final answer","reasoning_content":"private scratchpad"}])");
 }
 
 TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolRoleCreatesToolResultItem) {
@@ -291,8 +316,9 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_AssistantToolCallsWithNullC
   ChatCompletionRequest req;
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
-  assistant.tool_calls.push_back({"call_2", "function", {"get_time", "{}"}, std::nullopt});
+  assistant.tool_calls.push_back(
+      ChatCompletionToolCall::MakeFunction("call_1", "get_weather", R"({"city":"Seattle"})"));
+  assistant.tool_calls.push_back(ChatCompletionToolCall::MakeFunction("call_2", "get_time", "{}"));
   req.messages.push_back(assistant);
 
   Request session_request;
@@ -316,7 +342,7 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_AssistantContentPrecedesIts
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
   assistant.content = "Let me check.";
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  assistant.tool_calls.push_back(ChatCompletionToolCall::MakeFunction("call_1", "get_weather", "{}"));
   req.messages.push_back(assistant);
 
   Request session_request;
@@ -357,7 +383,8 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_PreservesNameOnToolCallOnly
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
   assistant.name = "weather_bot";
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  assistant.tool_calls.push_back(
+      ChatCompletionToolCall::MakeFunction("call_1", "get_weather", R"({"city":"Seattle"})"));
   req.messages.push_back(assistant);
 
   Request session_request;
@@ -386,7 +413,7 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_UnnamedToolCallOnlyAssistan
   ChatCompletionRequest req;
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  assistant.tool_calls.push_back(ChatCompletionToolCall::MakeFunction("call_1", "get_weather", "{}"));
   req.messages.push_back(assistant);
 
   Request session_request;
@@ -401,7 +428,7 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolCallsOnNonAssistantRole
   ChatCompletionMessage user;
   user.role = "user";
   user.content = "Hello";
-  user.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  user.tool_calls.push_back(ChatCompletionToolCall::MakeFunction("call_1", "get_weather", "{}"));
   req.messages.push_back(user);
 
   Request session_request;
@@ -415,36 +442,60 @@ TEST(ChatCompletionsConverterTest, BuildRequestItems_ToolCallsOnNonAssistantRole
 // ExtractToolDefinitions
 // ========================================================================
 
+namespace {
+
+ChatCompletionToolChoice ParseToolChoice(const char* raw) {
+  return json::parse(raw).get<ChatCompletionToolChoice>();
+}
+
+ChatCompletionTool FunctionTool(std::string name, std::string description) {
+  ChatCompletionTool tool;
+  tool.type = "function";
+  tool.function.name = std::move(name);
+  tool.function.description = std::move(description);
+  return tool;
+}
+
+}  // namespace
+
 TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_NoTools_ReturnsEmpty) {
   ChatCompletionRequest req;
   Request session_request;
 
-  std::string tools_json = ExtractToolDefinitions(req, session_request);
-
-  EXPECT_TRUE(tools_json.empty());
+  EXPECT_TRUE(ExtractToolDefinitions(req, session_request).empty());
 }
 
-TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_WithTools_ReturnsSerializedJson) {
+TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_WithTools_ReturnsCoreDefinitions) {
   ChatCompletionRequest req;
-  ChatCompletionTool tool;
-  tool.type = "function";
-  tool.function.name = "get_weather";
-  tool.function.description = "Get weather for a city";
+  req.tools = std::vector<ChatCompletionTool>{FunctionTool("get_weather", "Get weather for a city")};
+
+  Request session_request;
+  auto definitions = ExtractToolDefinitions(req, session_request);
+
+  ASSERT_EQ(definitions.size(), 1u);
+  EXPECT_EQ(definitions[0].name, "get_weather");
+  EXPECT_EQ(definitions[0].description, "Get weather for a city");
+  EXPECT_EQ(definitions[0].kind, ToolKind::kFunction);
+  // A function tool that declares no parameters still needs a schema; `{}` is the neutral one.
+  EXPECT_EQ(definitions[0].json_schema, "{}");
+}
+
+TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_KeepsDeclaredParametersJsonEquivalent) {
+  ChatCompletionRequest req;
+  auto tool = FunctionTool("get_weather", "Get weather");
+  tool.function.parameters = json::parse(R"({"type":"object","properties":{"city":{"type":"string"}}})");
   req.tools = std::vector<ChatCompletionTool>{tool};
 
   Request session_request;
-  std::string tools_json = ExtractToolDefinitions(req, session_request);
+  auto definitions = ExtractToolDefinitions(req, session_request);
 
-  EXPECT_FALSE(tools_json.empty());
-  auto parsed = json::parse(tools_json);
-  ASSERT_TRUE(parsed.is_array());
-  EXPECT_EQ(parsed.size(), 1u);
-  EXPECT_EQ(parsed[0]["function"]["name"], "get_weather");
+  ASSERT_EQ(definitions.size(), 1u);
+  EXPECT_EQ(json::parse(definitions[0].json_schema), *tool.function.parameters);
 }
 
 TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceString_SetsOption) {
   ChatCompletionRequest req;
-  req.tool_choice = json("auto");
+  req.tool_choice = ParseToolChoice(R"("auto")");
 
   Request session_request;
   ExtractToolDefinitions(req, session_request);
@@ -456,7 +507,7 @@ TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceString_SetsO
 
 TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceNone_SetsOption) {
   ChatCompletionRequest req;
-  req.tool_choice = json("none");
+  req.tool_choice = ParseToolChoice(R"("none")");
 
   Request session_request;
   ExtractToolDefinitions(req, session_request);
@@ -467,60 +518,31 @@ TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceNone_SetsOpt
 }
 
 TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceObject_FiltersToNamedFunction) {
-  // Set up two tools, then use tool_choice to target one
   ChatCompletionRequest req;
-
-  ChatCompletionTool tool1;
-  tool1.type = "function";
-  tool1.function.name = "get_weather";
-  tool1.function.description = "Get weather";
-
-  ChatCompletionTool tool2;
-  tool2.type = "function";
-  tool2.function.name = "get_time";
-  tool2.function.description = "Get time";
-
-  req.tools = std::vector<ChatCompletionTool>{tool1, tool2};
-  req.tool_choice = json::parse(R"({"type": "function", "function": {"name": "get_weather"}})");
+  req.tools = std::vector<ChatCompletionTool>{FunctionTool("get_weather", "Get weather"),
+                                              FunctionTool("get_time", "Get time")};
+  req.tool_choice = ParseToolChoice(R"({"type": "function", "function": {"name": "get_weather"}})");
 
   Request session_request;
-  std::string tools_json = ExtractToolDefinitions(req, session_request);
+  auto definitions = ExtractToolDefinitions(req, session_request);
 
-  // tool_choice should be "required"
   auto it = session_request.options.find("tool_choice");
   ASSERT_NE(it, session_request.options.Entries().end());
   EXPECT_EQ(it->second, "required");
 
-  // tools_json should contain only get_weather, not get_time
-  auto parsed = json::parse(tools_json);
-  ASSERT_TRUE(parsed.is_array());
-  ASSERT_EQ(parsed.size(), 1u);
-  EXPECT_EQ(parsed[0]["function"]["name"], "get_weather");
+  ASSERT_EQ(definitions.size(), 1u);
+  EXPECT_EQ(definitions[0].name, "get_weather");
 }
 
-TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceObject_NoMatchingTool) {
+TEST(ChatCompletionsConverterTest, ExtractToolDefinitions_ToolChoiceObject_RejectsUnknownTool) {
   ChatCompletionRequest req;
-
-  ChatCompletionTool tool1;
-  tool1.type = "function";
-  tool1.function.name = "get_weather";
-  req.tools = std::vector<ChatCompletionTool>{tool1};
+  req.tools = std::vector<ChatCompletionTool>{FunctionTool("get_weather", "Get weather")};
 
   // Target a function that doesn't exist in the tools list
-  req.tool_choice = json::parse(R"({"type": "function", "function": {"name": "nonexistent"}})");
+  req.tool_choice = ParseToolChoice(R"({"type": "function", "function": {"name": "nonexistent"}})");
 
   Request session_request;
-  std::string tools_json = ExtractToolDefinitions(req, session_request);
-
-  // tool_choice should still be "required"
-  auto it = session_request.options.find("tool_choice");
-  ASSERT_NE(it, session_request.options.Entries().end());
-  EXPECT_EQ(it->second, "required");
-
-  // tools_json should be the original serialization (filtered was empty, so no override)
-  auto parsed = json::parse(tools_json);
-  ASSERT_TRUE(parsed.is_array());
-  EXPECT_EQ(parsed.size(), 1u);
+  EXPECT_THROW((void)ExtractToolDefinitions(req, session_request), fl::Exception);
 }
 
 // ========================================================================
@@ -621,6 +643,57 @@ TEST(ChatCompletionsConverterTest, MapRequestParameters_EmptyMetadataValuesIgnor
   EXPECT_EQ(session_request.options.Find("seed"), nullptr);
 }
 
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ChatTemplateKwargsPreserveTypes) {
+  ChatCompletionRequest req;
+  req.chat_template_kwargs = json::parse(
+      R"({"enable_thinking":false,"reasoning_effort":"low","level":2})");
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const char* serialized = session_request.options.Find("chat_template_kwargs");
+  ASSERT_NE(serialized, nullptr);
+  auto parsed = json::parse(serialized);
+  EXPECT_EQ(parsed["enable_thinking"], false);
+  EXPECT_EQ(parsed["reasoning_effort"], "low");
+  EXPECT_EQ(parsed["level"], 2);
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_ReasoningEffortControlsThinking) {
+  ChatCompletionRequest req;
+  req.reasoning_effort = "high";
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const auto kwargs = json::parse(session_request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], true);
+  EXPECT_EQ(kwargs["reasoning_effort"], "high");
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_NoneReasoningEffortDisablesThinking) {
+  ChatCompletionRequest req;
+  req.chat_template_kwargs = json::parse(R"({"reasoning_effort":"low","label":"keep"})");
+  req.reasoning_effort = "none";
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+
+  const auto kwargs = json::parse(session_request.options.Find("chat_template_kwargs"));
+  EXPECT_EQ(kwargs["enable_thinking"], false);
+  EXPECT_FALSE(kwargs.contains("reasoning_effort"));
+  EXPECT_EQ(kwargs["label"], "keep");
+}
+
+TEST(ChatCompletionsConverterTest, MapRequestParameters_RejectsUnsupportedReasoningEffort) {
+  ChatCompletionRequest req;
+  req.reasoning_effort = "extreme";
+
+  Request session_request;
+  ExpectInvalidArgument([&] { MapRequestParameters(req, session_request); },
+                        "unsupported reasoning effort");
+}
+
 // ========================================================================
 // MapGuidance
 // ========================================================================
@@ -667,8 +740,8 @@ TEST(ChatCompletionsConverterTest, MapGuidance_JsonObject) {
   MapGuidance(req, session_request);
 
   EXPECT_STREQ(session_request.options.Find("guidance_type"), "json_schema");
-  // json_object maps to json_schema type but with no guidance_data
-  EXPECT_EQ(session_request.options.Find("guidance_data"), nullptr);
+  EXPECT_EQ(json::parse(session_request.options.Find("guidance_data")),
+            json({{"type", "object"}}));
 }
 
 TEST(ChatCompletionsConverterTest, MapGuidance_Text_SetsToolChoiceNone) {
@@ -794,7 +867,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   response.items.push_back(
       std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "Hello there!"));
   response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
-  response.usage = {10, 5, 15, 3};
+  response.usage = {10, 5, 15, 3, 8};
 
   auto result = BuildResponse(response, "chatcmpl-abc", 1000, "test-model");
 
@@ -810,6 +883,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   EXPECT_EQ(result.usage.prompt_tokens, 10);
   EXPECT_EQ(result.usage.completion_tokens, 5);
   EXPECT_EQ(result.usage.total_tokens, 15);
+  EXPECT_EQ(result.usage.prompt_tokens_details.cached_tokens, 8);
   EXPECT_EQ(result.usage.completion_tokens_details.reasoning_tokens, 3);
 }
 
@@ -1002,7 +1076,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_ReasoningOnlyPopulatesReasoning
   EXPECT_TRUE(result.choices[0].message.content->empty());
 }
 
-TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsAdjacentMessageRolesAndHidesReasoning) {
+TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsTypedReasoning) {
   Response response;
   std::vector<std::unique_ptr<Item>> parts;
   parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
@@ -1030,10 +1104,14 @@ TEST(ChatCompletionsConverterTest, ReasoningOnlyResponseReplayKeepsAdjacentMessa
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(messages[2].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_TRUE(messages[1].VisibleText().empty());
-  EXPECT_TRUE(messages[1].ReasoningText().empty());
+  EXPECT_EQ(messages[1].ReasoningText(), "private scratchpad");
   EXPECT_EQ(BuildChatMessagesJson(messages),
             R"([{"role":"user","content":"before"},)"
             R"({"role":"assistant","content":""},)"
+            R"({"role":"user","content":"after"}])");
+  EXPECT_EQ(BuildChatMessagesJson(messages, /*preserve_reasoning_history=*/true),
+            R"([{"role":"user","content":"before"},)"
+            R"({"role":"assistant","content":"","reasoning_content":"private scratchpad"},)"
             R"({"role":"user","content":"after"}])");
 }
 
@@ -1153,7 +1231,8 @@ TEST(ChatCompletionsConverterTest, AssistantContentBeforeItsToolCallsIsAccepted)
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
   assistant.content = std::string("Let me check.");
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  assistant.tool_calls.push_back(
+      ChatCompletionToolCall::MakeFunction("call_1", "get_weather", R"({"city":"Seattle"})"));
   req.messages.push_back(assistant);
 
   req.messages.push_back({"tool", std::string("sunny"), {}, std::string("call_1"), {}});
@@ -1178,7 +1257,8 @@ TEST(ChatCompletionsConverterTest, AnAssistantMessageContinuingAnUnansweredCallI
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
   assistant.content = std::string("Let me check.");
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", R"({"city":"Seattle"})"}, std::nullopt});
+  assistant.tool_calls.push_back(
+      ChatCompletionToolCall::MakeFunction("call_1", "get_weather", R"({"city":"Seattle"})"));
   req.messages.push_back(assistant);
 
   req.messages.push_back({"assistant", std::string("One moment."), {}, {}, {}});
@@ -1209,7 +1289,7 @@ TEST(ChatCompletionsConverterTest, AnAssistantReplyAfterAToolResultStaysItsOwnTu
   ChatCompletionMessage assistant;
   assistant.role = "assistant";
   assistant.content = std::string("Let me check.");
-  assistant.tool_calls.push_back({"call_1", "function", {"get_weather", "{}"}, std::nullopt});
+  assistant.tool_calls.push_back(ChatCompletionToolCall::MakeFunction("call_1", "get_weather", "{}"));
   req.messages.push_back(assistant);
 
   req.messages.push_back({"tool", std::string("sunny"), {}, std::string("call_1"), {}});

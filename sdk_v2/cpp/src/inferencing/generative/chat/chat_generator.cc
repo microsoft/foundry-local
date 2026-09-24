@@ -6,6 +6,8 @@
 
 namespace fl {
 
+void ChatGenerator::Close() {}
+
 void ChatGenerator::RewindTo(int /*token_count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "This generator does not support rewinding retained model state");
 }

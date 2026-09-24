@@ -1031,7 +1031,7 @@ class Request {
   /// Options for this request. Overrides session options for the duration of this request.
   Request& SetOptions(const RequestOptions& options);
 
-  /// Cancel the current request. Inferencing will stop as soon as possible.
+  /// Cancel this request's in-flight invocation. This is a no-op while idle or after completion.
   void Cancel();
 
   const flRequest* native_handle() const noexcept { return handle_.get(); }
@@ -1072,9 +1072,18 @@ class Session {
   /// Options to apply to all requests on this session.
   Session& SetOptions(const RequestOptions& options);
 
-  /// Set the streaming callback using a std::function.
+  /// Set a callback that receives each streamed item as an owning RAII wrapper.
+  /// The callback may move the item elsewhere to extend its lifetime.
   /// Return 0 to continue, non-zero to cancel.
+  Session& SetStreamingCallback(std::function<int(Item)> callback);
+
+  /// Set the legacy callback that receives the C streaming event and must pop its item manually.
+  /// Return 0 to continue, non-zero to cancel.
+  [[deprecated("Use SetStreamingCallback(std::function<int(Item)>) instead")]]
   Session& SetStreamingCallback(std::function<int(flStreamingCallbackData)> callback);
+
+  /// Clear the streaming callback.
+  Session& SetStreamingCallback(std::nullptr_t);
 
   /// Process the request.
   /// Populates the response with output items, finish reason, and usage.
@@ -1136,17 +1145,30 @@ namespace detail {
 
 /// Adapts a std::function streaming callback for use with the C API's function-pointer + void* interface.
 struct StreamingCallbackHelper {
-  using CallbackFn = std::function<int(flStreamingCallbackData)>;
+  using ItemCallbackFn = std::function<int(Item)>;
+  using LegacyCallbackFn = std::function<int(flStreamingCallbackData)>;
 
-  explicit StreamingCallbackHelper(CallbackFn callback) : callback_(std::move(callback)) {}
+  explicit StreamingCallbackHelper(ItemCallbackFn callback) : item_callback_(std::move(callback)) {}
+  explicit StreamingCallbackHelper(LegacyCallbackFn callback) : legacy_callback_(std::move(callback)) {}
 
   static int CCallback(flStreamingCallbackData data, void* user_data) {
     auto* helper = static_cast<StreamingCallbackHelper*>(user_data);
-    return helper->callback_(data);
+    if (helper->legacy_callback_) {
+      return helper->legacy_callback_(data);
+    }
+
+    flItem* raw_item = nullptr;
+    if (!detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw_item) || !raw_item) {
+      // should never happen. adding item to queue to callback should be 1:1.
+      return 1;
+    }
+
+    return helper->item_callback_(Item(*raw_item));
   }
 
  private:
-  CallbackFn callback_;
+  ItemCallbackFn item_callback_;
+  LegacyCallbackFn legacy_callback_;
 };
 
 /// Adapts a std::function deleter for use with C API data struct deleters.

@@ -11,31 +11,16 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { cppBuildConfig, resolveCppRuntimeBinDir } from "./native-build-layout.mjs";
+
 const here = fileURLToPath(new URL(".", import.meta.url));
 const pkgRoot = resolve(here, "..");
-const repoRoot = resolve(pkgRoot, "..", "..");
-
-const config = process.env.FOUNDRY_LOCAL_CPP_CONFIG ?? "RelWithDebInfo";
-
-const platformSegment = (() => {
-  switch (process.platform) {
-    case "win32":
-      return "Windows";
-    case "linux":
-      return "Linux";
-    case "darwin":
-      return "macOS";
-    default:
-      throw new Error(`Unsupported platform: ${process.platform}`);
-  }
-})();
-
-const sourceDir = resolve(repoRoot, "sdk_v2", "cpp", "build", platformSegment, config, "bin", config);
+const sourceDir = resolveCppRuntimeBinDir();
 
 if (!existsSync(sourceDir)) {
   console.error(`[pack-prebuilds] source directory not found: ${sourceDir}`);
   console.error("[pack-prebuilds] Build the C++ SDK first:");
-  console.error(`[pack-prebuilds]   python sdk_v2/cpp/build.py --configure --build --config ${config}`);
+  console.error(`[pack-prebuilds]   python sdk_v2/cpp/build.py --configure --build --config ${cppBuildConfig}`);
   process.exit(1);
 }
 

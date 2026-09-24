@@ -1,0 +1,146 @@
+# Pre-download ORT / GenAI / (optionally) WinML NuGet packages from the
+# aiinfra ADO feed and emit cmake_extra_defines pointing at them.
+#
+# Sets the pipeline variable `cmakeFetchDefines` containing the space-separated
+# `KEY=PATH` pairs to pass to build.py --cmake_extra_defines.
+#
+# Parameters:
+#   ortVersion     – Microsoft.ML.OnnxRuntime version
+#   genaiVersion   – Microsoft.ML.OnnxRuntimeGenAI.Foundry version
+#   winmlVersion   – Microsoft.Windows.AI.MachineLearning version (Windows only)
+#   includeWinml   – Download WinML and emit WINML_EP_CATALOG_FETCH_URL
+
+parameters:
+- name: ortVersion
+  type: string
+- name: genaiVersion
+  type: string
+- name: winmlVersion
+  type: string
+  default: ''
+- name: includeWinml
+  type: boolean
+  default: false
+
+steps:
+
+# Stable pipeline versions must match sdk_v2/deps_versions.json.
+- task: PowerShell@2
+  displayName: 'Validate pinned versions match deps_versions.json'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $depsFile = Join-Path "$(Build.SourcesDirectory)" "sdk_v2/deps_versions.json"
+      if (-not (Test-Path $depsFile)) { throw "deps_versions.json not found at $depsFile" }
+      $deps = Get-Content $depsFile -Raw | ConvertFrom-Json
+      $expected = @{
+        'onnxruntime'                = '${{ parameters.ortVersion }}'
+      }
+      if ('${{ parameters.genaiVersion }}' -notmatch '-dev') {
+        $expected['onnxruntime-genai'] = '${{ parameters.genaiVersion }}'
+      }
+      if ('${{ parameters.winmlVersion }}' -ne '') {
+        $expected['windows-ai-machinelearning'] = '${{ parameters.winmlVersion }}'
+      }
+      $errors = @()
+      foreach ($key in $expected.Keys) {
+        $actual = $deps.$key.version
+        if ($actual -ne $expected[$key]) {
+          $errors += "  $key`: pipeline says '$($expected[$key])', deps_versions.json says '$actual'"
+        }
+      }
+      if ($errors.Count -gt 0) {
+        Write-Host "Version drift detected between pipeline literals and sdk_v2/deps_versions.json:"
+        $errors | ForEach-Object { Write-Host $_ }
+        throw "Bump the matching cpp*Version variable in .pipelines/foundry-local-packaging.yml"
+      }
+      Write-Host "Pinned versions agree with sdk_v2/deps_versions.json."
+
+- task: UseDotNet@2
+  displayName: 'Use .NET 10 SDK for NuGet restore'
+  inputs:
+    packageType: sdk
+    version: '10.0.x'
+
+- task: NuGetAuthenticate@1
+  displayName: 'Authenticate NuGet feeds'
+
+- task: PowerShell@2
+  displayName: 'Restore native packages'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $cacheDir = "$(Build.BinariesDirectory)/nuget_packages"
+      $restoreDir = Join-Path $cacheDir "restore"
+      $packagesDir = Join-Path $restoreDir "packages"
+      New-Item -ItemType Directory -Force -Path $restoreDir | Out-Null
+
+      $packages = @(
+        @{ key = 'genai'; id = 'Microsoft.ML.OnnxRuntimeGenAI.Foundry'; version = '${{ parameters.genaiVersion }}' },
+        @{ key = 'ort'; id = 'Microsoft.ML.OnnxRuntime'; version = '${{ parameters.ortVersion }}' }
+      )
+      if ($${{ parameters.includeWinml }}) {
+        $packages += @{
+          key = 'winml'
+          id = 'Microsoft.Windows.AI.MachineLearning'
+          version = '${{ parameters.winmlVersion }}'
+        }
+      }
+
+      $references = $packages | ForEach-Object {
+        "    <PackageReference Include=`"$($_.id)`" Version=`"$($_.version)`" />"
+      }
+      $feedUrl = 'https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/' +
+        'AIFoundryLocal_PublicPackages/nuget/v3/index.json'
+      @"
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+        <ItemGroup>
+      $($references -join "`n")
+        </ItemGroup>
+      </Project>
+      "@ | Set-Content (Join-Path $restoreDir "restore.csproj")
+
+      @"
+      <?xml version="1.0" encoding="utf-8"?>
+      <configuration>
+        <packageSources>
+          <clear />
+          <add key="AIFoundryLocal_PublicPackages" value="$feedUrl" />
+        </packageSources>
+      </configuration>
+      "@ | Set-Content (Join-Path $restoreDir "NuGet.config")
+
+      dotnet restore (Join-Path $restoreDir "restore.csproj") `
+        --configfile (Join-Path $restoreDir "NuGet.config") `
+        --packages $packagesDir `
+        --no-cache
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      $defines = @()
+      foreach ($pkg in $packages) {
+        $packageDir = Join-Path $packagesDir "$($pkg.id.ToLowerInvariant())/$($pkg.version)"
+        if (-not (Test-Path $packageDir)) {
+          throw "Restored package directory not found: $packageDir"
+        }
+        $archive = Join-Path $cacheDir "$($pkg.key).zip"
+        Compress-Archive -Path "$packageDir/*" -DestinationPath $archive -Force
+        Write-Host "Restored $($pkg.id) $($pkg.version) -> $archive"
+
+        switch ($pkg.key) {
+          'genai' {
+            $defines += "GENAI_FETCH_URL=$archive"
+            $defines += "ORT_GENAI_VERSION=$($pkg.version)"
+          }
+          'ort' { $defines += "ORT_FETCH_URL=$archive" }
+          'winml' { $defines += "WINML_EP_CATALOG_FETCH_URL=$archive" }
+        }
+      }
+
+      $joined = ($defines | ForEach-Object { "`"$_`"" }) -join ' '
+      Write-Host "##vso[task.setvariable variable=cmakeFetchDefines]$joined"
+      Write-Host "cmakeFetchDefines = $joined"

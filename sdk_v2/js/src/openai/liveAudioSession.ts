@@ -74,6 +74,7 @@ export class LiveAudioTranscriptionSession implements AsyncDisposable, Disposabl
     this.#streamDone = false;
     this.#streamError = null;
 
+    const activeLanguage = this.settings.language;
     const descriptor = Item.audioDescriptor("pcm", this.settings.sampleRate, this.settings.channels);
 
     this.#queue = new ItemQueue();
@@ -81,6 +82,9 @@ export class LiveAudioTranscriptionSession implements AsyncDisposable, Disposabl
     this.#request = new Request();
     this.#request.addItem(descriptor);
     this.#request.addItem(this.#queue);
+    if (activeLanguage !== undefined) {
+      this.#request.setOptions({ additionalOptions: { language: activeLanguage } });
+    }
 
     const session = this.#session;
     const request = this.#request;

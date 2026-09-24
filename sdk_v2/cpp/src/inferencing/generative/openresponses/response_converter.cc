@@ -2,11 +2,13 @@
 // Licensed under the MIT License.
 
 #include "inferencing/generative/openresponses/response_converter.h"
+#include "contracts/reasoning_options.h"
 
 #include "items/tool_call_item.h"
 
 #include <azure/core/base64.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -45,13 +47,13 @@ namespace responses {
 // development platform.
 // ---------------------------------------------------------------------------
 #if defined(_MSC_VER) && defined(NDEBUG) && defined(_WIN64)
-static_assert(sizeof(ResponseCreateParams) == 648,
+static_assert(sizeof(ResponseCreateParams) == 672,
               "ResponseCreateParams size changed. A new field was likely added — "
               "review ToSessionRequest, ExtractResponsesToolDefinitions, and EchoRequestParams "
               "to ensure the new field is handled (or explicitly skipped). "
               "Update the expected size once those converters have been audited.");
 
-static_assert(sizeof(ResponseObject) == 832,
+static_assert(sizeof(ResponseObject) == 856,
               "ResponseObject size changed. A new field was likely added — "
               "review EchoRequestParams and BuildResponseObject to ensure the new field is "
               "populated (or explicitly skipped). "
@@ -60,6 +62,7 @@ static_assert(sizeof(ResponseObject) == 832,
 }  // namespace responses
 }  // namespace fl
 
+#include "contracts/tool_definitions.h"
 #include "exception.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "items/audio_item.h"
@@ -88,6 +91,75 @@ std::string GenerateId(const std::string& prefix) {
 }
 
 // ---------------------------------------------------------------------------
+// Produced tool calls → Responses output items
+//
+// A function call and a custom tool call are the same event reported under two wire shapes: JSON
+// arguments under "function_call", raw text under "custom_tool_call". Both shapes are built here so
+// the streaming and non-streaming paths cannot drift apart, and so the ids a call is reported under
+// are minted in exactly one place.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ToolCallIds {
+  std::string item_id;  // identifies the output item (fc_… / ctc_…)
+  std::string call_id;  // identifies the call itself; echoed back with the call's result
+};
+
+/// Mint the ids for one produced call. The call id the session assigned is carried through
+/// unchanged — it is what ties a streamed call, the completed response and the result the client
+/// sends back together. Only a call that arrived without one gets a fresh id.
+ToolCallIds MakeToolCallIds(const ToolCallItem& call, fl::ToolKind kind) {
+  ToolCallIds ids;
+  ids.item_id = GenerateId(kind == fl::ToolKind::kCustom ? "ctc" : "fc");
+  ids.call_id = call.call_id.empty() ? GenerateId("call") : call.call_id;
+  return ids;
+}
+
+/// Build the output item for a produced call.
+///
+/// `payload` is passed in rather than read from `call` because the two events that carry an item
+/// need different payloads: the item announced by `output_item.added` is still in progress and
+/// carries none, since the payload is what the delta events that follow deliver. Handing the
+/// announced item the finished payload would make a client that concatenates the added item and the
+/// deltas see it twice.
+///
+/// Whatever payload is passed is used verbatim: for a custom tool it is the raw text the session
+/// already unwrapped, and re-encoding it would change what the tool receives.
+ResponseOutputItem ToOutputItem(const ToolCallItem& call, fl::ToolKind kind, const ToolCallIds& ids,
+                                std::string payload, ResponseStatus status) {
+  if (kind == fl::ToolKind::kCustom) {
+    CustomToolCallOutputItem custom;
+    custom.id = ids.item_id;
+    custom.call_id = ids.call_id;
+    custom.name = call.name;
+    custom.input = std::move(payload);
+    custom.generated_encoding = call.generated_encoding;
+    return custom;
+  }
+
+  FunctionCallOutputItem function;
+  function.id = ids.item_id;
+  function.call_id = ids.call_id;
+  function.name = call.name;
+  function.arguments = std::move(payload);
+  function.status = status;
+  return function;
+}
+
+/// Set the finished payload on an item previously built without one.
+void SetPayload(ResponseOutputItem& item, std::string payload) {
+  if (auto* custom = std::get_if<CustomToolCallOutputItem>(&item)) {
+    custom->input = std::move(payload);
+    return;
+  }
+
+  std::get<FunctionCallOutputItem>(item).arguments = std::move(payload);
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
 // Helper: replay JSON items into a session request
 // (used for previous context from the store, which is JSON)
 // ---------------------------------------------------------------------------
@@ -101,6 +173,18 @@ struct StoredMessageContent {
   /// itself still happened and must not vanish from the rebuilt conversation.
   bool has_media = false;
 };
+
+std::string RequiredReplayString(const nlohmann::json& item, const char* key, const char* owner,
+                                 bool allow_empty = false) {
+  const auto value = item.find(key);
+  if (value == item.end() || !value->is_string() ||
+      (!allow_empty && value->get_ref<const std::string&>().empty())) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, owner, " must contain ",
+             allow_empty ? "a string '" : "a non-empty string '", key, "'");
+  }
+
+  return value->get<std::string>();
+}
 
 /// Read a stored item's content, whether it is a plain string or an array of content parts.
 /// Only text-bearing parts contribute text; any other part shape contributes nothing.
@@ -142,6 +226,30 @@ std::string StoredItemText(const nlohmann::json& item) {
   return ReadStoredContent(item).text;
 }
 
+/// Recover the reasoning body carried by a Responses reasoning item's summary entries.
+std::string StoredReasoningText(const nlohmann::json& item) {
+  std::string text;
+  const auto summary = item.find("summary");
+  if (summary == item.end() || !summary->is_array()) {
+    return text;
+  }
+
+  for (const auto& part : *summary) {
+    if (part.is_object() && part.value("type", "") == "summary_text") {
+      text += part.value("text", "");
+    }
+  }
+  return text;
+}
+
+std::unique_ptr<MessageItem> MakeReasoningMessage(std::string reasoning) {
+  auto message = std::make_unique<MessageItem>();
+  message->role = FOUNDRY_LOCAL_ROLE_ASSISTANT;
+  message->content.push_back(
+      MessagePart::Own(std::make_unique<TextItem>(std::move(reasoning), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING)));
+  return message;
+}
+
 /// Rebuild a stored `function_call` item.
 ///
 /// A hop's stored items are replayed as the hop recorded them, whether the call came from the model's own output or
@@ -150,6 +258,8 @@ std::string StoredItemText(const nlohmann::json& item) {
 /// presented to the model as having none. Replay reproduces that rather than re-admitting bytes the strict
 /// caller-supplied path would now reject, which would fail a continuation of a conversation that already happened.
 std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
+  const auto call_id = RequiredReplayString(item, "call_id", "stored function_call");
+  const auto name = RequiredReplayString(item, "name", "stored function_call");
   std::string arguments;
   if (auto it = item.find("arguments"); it != item.end() && !it->is_null()) {
     arguments = it->is_string() ? it->get<std::string>() : it->dump();
@@ -159,8 +269,31 @@ std::unique_ptr<ToolCallItem> MakeReplayedToolCall(const nlohmann::json& item) {
     arguments.clear();
   }
 
-  return std::make_unique<ToolCallItem>(item.value("call_id", ""), item.value("name", ""),
-                                        std::move(arguments));
+  auto call = std::make_unique<ToolCallItem>(call_id, name, arguments, /*replayed_from_store=*/true,
+                                             ToolKind::kFunction);
+  call->replayed_arguments = std::move(arguments);
+  call->replayed_kind = ToolKind::kFunction;
+  return call;
+}
+
+/// Rebuild a stored `custom_tool_call` item.
+///
+/// A custom call's payload is raw text, so it is carried as the call's arguments verbatim — the same form the session
+/// produced it in, and the same form the tool would receive. It is never parsed or re-encoded: doing so would change
+/// the bytes for a payload that is itself JSON, or reject one that is not.
+std::unique_ptr<ToolCallItem> MakeReplayedCustomToolCall(
+    const nlohmann::json& item, const std::unordered_set<std::string>& raw_envelope_call_ids) {
+  const auto call_id = RequiredReplayString(item, "call_id", "stored custom_tool_call");
+  const auto name = RequiredReplayString(item, "name", "stored custom_tool_call");
+  auto input = RequiredReplayString(item, "input", "stored custom_tool_call", true);
+  auto call = std::make_unique<ToolCallItem>(call_id, name, input, /*replayed_from_store=*/true,
+                                             ToolKind::kCustom, std::nullopt,
+                                             raw_envelope_call_ids.contains(call_id)
+                                                 ? GeneratedCallEncoding::kRawEnvelope
+                                                 : GeneratedCallEncoding::kStructured);
+  call->replayed_arguments = std::move(input);
+  call->replayed_kind = ToolKind::kCustom;
+  return call;
 }
 
 /// The text a message carrying only media renders as. The chat template requires every message to have at least one
@@ -204,9 +337,21 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
     std::string type = entry.value("type", "");
     std::string role = entry.value("role", "");
 
-    if (type == "function_call_output") {
-      request.AddOwnedItem(std::make_unique<ToolResultItem>(entry.value("call_id", ""),
-                                                            entry.value("output", "")));
+    // A function result and a custom tool result differ only in the name the wire gives them; both carry the call id
+    // they answer and the text the tool returned.
+    if (type == "function_call_output" || type == "custom_tool_call_output") {
+      const auto call_id = RequiredReplayString(entry, "call_id", "stored tool call output");
+      if (type == "custom_tool_call_output") {
+        const auto output = entry.find("output");
+        if (output == entry.end()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                   "stored custom_tool_call_output must contain 'output'");
+        }
+        request.AddOwnedItem(
+            std::make_unique<ToolResultItem>(call_id, responses::ParseCustomToolOutputText(*output)));
+      } else {
+        request.AddOwnedItem(std::make_unique<ToolResultItem>(call_id, entry.value("output", "")));
+      }
       continue;
     }
 
@@ -215,9 +360,13 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
       continue;
     }
 
+    if (type == "custom_tool_call") {
+      request.AddOwnedItem(MakeReplayedCustomToolCall(entry, {}));
+      continue;
+    }
+
     if (type == "reasoning") {
-      // The text is private, but the assistant turn that produced it happened. Keep the boundary only.
-      request.AddOwnedItem(MakeAssistantTurnBoundary());
+      request.AddOwnedItem(MakeReasoningMessage(StoredReasoningText(entry)));
       continue;
     }
 
@@ -260,7 +409,8 @@ static void AddJsonItemsToRequest(Request& request, const nlohmann::json& items)
 /// text after one — and a hop that somehow did is rejected by ValidateRenderableTurn rather than replayed with its
 /// text moved in front of the call. A hop that produced nothing replayable still emits the assistant boundary it
 /// committed live.
-static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items) {
+static void AddHopOutputToRequest(Request& request, const nlohmann::json& output_items,
+                                  const std::unordered_set<std::string>& raw_envelope_call_ids) {
   bool emitted = false;
 
   if (output_items.is_array()) {
@@ -277,8 +427,15 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
         continue;
       }
 
+      if (type == "custom_tool_call") {
+        request.AddOwnedItem(MakeReplayedCustomToolCall(entry, raw_envelope_call_ids));
+        emitted = true;
+        continue;
+      }
+
       if (type == "reasoning") {
-        // Never replayed: the boundary below already records that the turn happened.
+        request.AddOwnedItem(MakeReasoningMessage(StoredReasoningText(entry)));
+        emitted = true;
         continue;
       }
 
@@ -301,13 +458,14 @@ static void AddHopOutputToRequest(Request& request, const nlohmann::json& output
 
 /// Replay a whole reconstructed chain, hop by hop.
 ///
-/// Each hop is one recorded turn and becomes one replay segment, so ingestion regroups a hop's assistant output
-/// exactly as the live session committed it and never merges two hops into a single assistant message.
+/// Each hop's input and output occupy separate segments: generation opens a new assistant turn even after
+/// assistant input. Output items regroup within their segment, without merging into input or another hop.
 static void AddChainContextToRequest(Request& request, const ResponseChainContext& context) {
   for (const auto& hop : context) {
     request.BeginItemSegment();
     AddJsonItemsToRequest(request, hop.input_items);
-    AddHopOutputToRequest(request, hop.output_items);
+    request.BeginItemSegment();
+    AddHopOutputToRequest(request, hop.output_items, hop.raw_envelope_call_ids);
   }
 }
 
@@ -487,9 +645,26 @@ static void AddTypedInputItems(Request& request,
                                const std::vector<InputItem>& input_items) {
   for (const auto& input_item : input_items) {
     if (auto* fc = std::get_if<FunctionCallInputItem>(&input_item)) {
-      request.AddOwnedItem(std::make_unique<ToolCallItem>(fc->call_id, fc->name, fc->arguments));
+      request.AddOwnedItem(std::make_unique<ToolCallItem>(
+          fc->call_id, fc->name, fc->arguments, /*replayed_from_store=*/false,
+          ToolKind::kFunction, ToolKind::kFunction));
     } else if (auto* fc_result = std::get_if<FunctionCallResultInputItem>(&input_item)) {
       auto i = std::make_unique<ToolResultItem>(fc_result->call_id, fc_result->output);
+      request.AddOwnedItem(std::move(i));
+    } else if (auto* reasoning = std::get_if<ReasoningInputItem>(&input_item)) {
+      request.AddOwnedItem(MakeReasoningMessage(reasoning->text));
+    } else if (auto* custom_result = std::get_if<CustomToolCallResultInputItem>(&input_item)) {
+      // A custom tool's result is ordinary text like any other tool result; only the wire item type
+      // it arrived under differs.
+      auto i = std::make_unique<ToolResultItem>(custom_result->call_id, custom_result->output);
+      request.AddOwnedItem(std::move(i));
+    } else if (auto* custom_call = std::get_if<CustomToolCallInputItem>(&input_item)) {
+      // Echoed custom call. The raw text is carried exactly as it arrived; the transcript rewraps it as
+      // {"input": ...} for template projection using the session's kind for this name, so nothing here re-encodes
+      // a payload the tool reads verbatim.
+      auto i = std::make_unique<ToolCallItem>(custom_call->call_id, custom_call->name, custom_call->input,
+                                              /*replayed_from_store=*/false, ToolKind::kCustom,
+                                              ToolKind::kCustom);
       request.AddOwnedItem(std::move(i));
     } else if (auto* msg = std::get_if<InputMessage>(&input_item)) {
       // Build typed parts from the message's content array.
@@ -599,6 +774,11 @@ Request ToSessionRequest(const ResponseCreateParams& params, const ResponseChain
     request.options["seed"] = std::to_string(*params.seed);
   }
 
+  if (params.reasoning.has_value() && params.reasoning->effort.has_value()) {
+    request.options["chat_template_kwargs"] =
+        ResolveReasoningTemplateKwargs(std::nullopt, params.reasoning->effort).dump();
+  }
+
   // Text format / grammar guidance → metadata parameters
   if (params.text.has_value()) {
     const auto& text_cfg = *params.text;
@@ -620,122 +800,134 @@ Request ToSessionRequest(const ResponseCreateParams& params, const ResponseChain
 }
 
 // ---------------------------------------------------------------------------
-// ExtractResponsesToolDefinitions — mirrors chat_completions::ExtractToolDefinitions
+// ExtractResponsesToolDefinitions — the declared tools, as core definitions
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Serialize a Responses ToolDefinition into the chat-template (OpenAI nested) format
-// that ChatSession::BuildToolCallContext expects for pre-serialized tools arrays.
-// Fully qualified to disambiguate from fl::ToolDefinition (session-side struct).
-nlohmann::json ToChatTemplateTool(const responses::ToolDefinition& td) {
-  nlohmann::json tool;
-  tool["type"] = td.type.empty() ? "function" : td.type;
-  tool["function"]["name"] = td.function.name;
-
-  if (td.function.description.has_value()) {
-    tool["function"]["description"] = *td.function.description;
+/// Core definition for one declared tool, whichever kind it is. A custom tool contributes no
+/// schema: the registry synthesizes it, which is what keeps the raw payload out of function
+/// argument handling.
+/// Fully qualified to disambiguate from fl::ToolDefinition (the core struct this returns).
+fl::ToolDefinition ToCoreDefinition(const responses::ToolDefinition& td) {
+  if (td.IsCustom()) {
+    return tools::MakeCustomTool(td.custom->name, td.custom->description.value_or(""),
+                                 td.custom->description.has_value(),
+                                 tools::CustomToolLarkGrammar(td.custom->format));
   }
 
-  if (td.function.parameters_json.has_value() && !td.function.parameters_json->empty()) {
-    tool["function"]["parameters"] = nlohmann::json::parse(*td.function.parameters_json);
-  }
-
-  if (td.function.strict.has_value()) {
-    tool["function"]["strict"] = *td.function.strict;
-  }
-
-  return tool;
+  return tools::MakeFunctionTool(td.function.name, td.function.description.value_or(""),
+                                 td.function.parameters_json.value_or(""),
+                                 td.function.description.has_value(),
+                                 td.function.parameters_json.has_value(), td.function.strict);
 }
 
-nlohmann::json SerializeTools(const std::vector<responses::ToolDefinition>& tools) {
-  nlohmann::json arr = nlohmann::json::array();
-  for (const auto& td : tools) {
-    arr.push_back(ToChatTemplateTool(td));
+fl::ToolKind ToolKindOf(const AllowedToolReference& reference) {
+  return reference.type == "custom" ? fl::ToolKind::kCustom : fl::ToolKind::kFunction;
+}
+
+void RetainAllowedToolReferences(std::vector<fl::ToolDefinition>& definitions,
+                                 const std::vector<AllowedToolReference>& allowed) {
+  const auto excluded = std::remove_if(
+      definitions.begin(), definitions.end(), [&](const fl::ToolDefinition& definition) {
+        return std::none_of(allowed.begin(), allowed.end(), [&](const AllowedToolReference& reference) {
+          return definition.name == reference.name && definition.kind == ToolKindOf(reference);
+        });
+      });
+  definitions.erase(excluded, definitions.end());
+}
+
+void ValidateAllowedToolReferences(const std::vector<fl::ToolDefinition>& definitions,
+                                   const std::vector<AllowedToolReference>& allowed) {
+  for (const auto& reference : allowed) {
+    const auto kind = ToolKindOf(reference);
+    const auto declared = std::find_if(
+        definitions.begin(), definitions.end(), [&](const fl::ToolDefinition& definition) {
+          return definition.name == reference.name && definition.kind == kind;
+        });
+    if (declared == definitions.end()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "allowed_tools references an undeclared tool or the wrong tool kind: " + reference.name);
+    }
   }
-  return arr;
 }
 
 }  // namespace
 
-std::string ExtractResponsesToolDefinitions(const ResponseCreateParams& params, Request& session_request) {
-  // Start with the full tool set the caller declared.
-  std::vector<responses::ToolDefinition> filtered;
+std::vector<fl::ToolDefinition> ExtractResponsesToolDefinitions(const ResponseCreateParams& params,
+                                                                Request& session_request) {
+  std::vector<fl::ToolDefinition> definitions;
+  bool forced_choice = false;
+
   if (params.tools.has_value()) {
-    filtered = *params.tools;
+    definitions.reserve(params.tools->size());
+    for (const auto& tool : *params.tools) {
+      definitions.push_back(ToCoreDefinition(tool));
+    }
   }
+  tools::ValidateUniqueNames(definitions);
 
-  // tool_choice: string variants ("auto"/"none"/"required") flow straight to options.
-  // ForcedFunction additionally narrows the tool set to the named function and forces "required",
-  // matching chat-completions SetToolChoice behaviour.
+  // tool_choice: the mode strings flow straight to options. A forced tool additionally narrows the
+  // set to the named tool of the matching kind and forces "required".
   if (params.tool_choice.has_value()) {
-    std::visit([&](const auto& tc) {
-      using T = std::decay_t<decltype(tc)>;
+    std::visit(
+        [&](const auto& tc) {
+          using T = std::decay_t<decltype(tc)>;
 
-      if constexpr (std::is_same_v<T, std::string>) {
-        session_request.options["tool_choice"] = tc;
-      } else if constexpr (std::is_same_v<T, ForcedFunction>) {
-        session_request.options["tool_choice"] = "required";
-
-        std::vector<responses::ToolDefinition> only;
-        for (const auto& tool : filtered) {
-          if (tool.function.name == tc.name) {
-            only.push_back(tool);
+          if constexpr (std::is_same_v<T, std::string>) {
+            session_request.options["tool_choice"] = tc;
+          } else if constexpr (std::is_same_v<T, AllowedToolsChoice>) {
+            session_request.options["tool_choice"] = tc.mode;
+            ValidateAllowedToolReferences(definitions, tc.tools);
+            RetainAllowedToolReferences(definitions, tc.tools);
+          } else {
+            constexpr auto kind = std::is_same_v<T, ForcedCustomTool> ? fl::ToolKind::kCustom
+                                                                      : fl::ToolKind::kFunction;
+            session_request.options["tool_choice"] = "required";
+            session_request.forced_tool_choice = ForcedToolChoice{tc.name, kind};
+            tools::NarrowToForcedTool(definitions, tc.name, kind);
+            forced_choice = true;
           }
-        }
-        filtered = std::move(only);
-      }
-    },
-               *params.tool_choice);
+        },
+        *params.tool_choice);
   }
 
-  // allowed_tools: case-insensitive intersection on function name (matches the C# reference,
-  // which uses StringComparer.OrdinalIgnoreCase). Applied after tool_choice so a ForcedFunction
-  // that names a tool excluded by allowed_tools collapses to an empty set — same strict semantics.
+  // allowed_tools is applied after tool_choice, so a forced tool that allowed_tools excludes
+  // collapses the set to nothing rather than overriding the exclusion.
   if (params.allowed_tools.has_value()) {
-    std::unordered_set<std::string> allowed;
-    allowed.reserve(params.allowed_tools->size());
-    for (const auto& name : *params.allowed_tools) {
-      allowed.insert(ToLower(name));
-    }
-
-    std::vector<responses::ToolDefinition> intersected;
-    for (const auto& tool : filtered) {
-      if (allowed.count(ToLower(tool.function.name)) > 0) {
-        intersected.push_back(tool);
-      }
-    }
-    filtered = std::move(intersected);
+    tools::RetainAllowedTools(definitions, *params.allowed_tools);
   }
 
-  if (filtered.empty()) {
-    return {};
+  const auto* mode = session_request.options.Find("tool_choice");
+  const bool requires_tool = mode != nullptr && std::string_view(mode) == "required";
+  if (definitions.empty() && (forced_choice || requires_tool)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "tool_choice requires at least one effective tool after allowed tool filtering");
   }
 
-  return SerializeTools(filtered).dump();
+  if (const auto descriptor = params.metadata.find(tools::kRawEnvelopeMetadataKey);
+      descriptor != params.metadata.end()) {
+    session_request.raw_envelope_descriptor = tools::ParseRawEnvelopeDescriptor(descriptor->second);
+    tools::ValidateRawEnvelopeTool(*session_request.raw_envelope_descriptor, definitions);
+  }
+
+  return definitions;
 }
 
 // ---------------------------------------------------------------------------
 // FromSessionResponse — returns typed output items
 // ---------------------------------------------------------------------------
 
-std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(const fl::Response& session_response,
-                                                                            const std::string& msg_id_prefix) {
+std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(
+    const fl::Response& session_response, const std::string& msg_id_prefix) {
   std::vector<ResponseOutputItem> output;
   std::string output_text;
 
   for (const auto& item : session_response.items) {
     if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
       ToolCallItem& call_item = static_cast<ToolCallItem&>(*item);
-      FunctionCallOutputItem fc;
-      fc.id = GenerateId("fc");
-      fc.type = "function_call";
-      fc.call_id = call_item.call_id.empty() ? GenerateId("call")
-                                             : call_item.call_id;
-      fc.name = call_item.name;
-      fc.arguments = call_item.arguments;
-      fc.status = ResponseStatus::kCompleted;
-      output.push_back(std::move(fc));
+      output.push_back(ToOutputItem(call_item, call_item.kind, MakeToolCallIds(call_item, call_item.kind),
+                                    call_item.arguments, ResponseStatus::kCompleted));
     } else if (item->type == FOUNDRY_LOCAL_ITEM_MESSAGE) {
       MessageItem& msg_item = static_cast<MessageItem&>(*item);
       if (msg_item.role == FOUNDRY_LOCAL_ROLE_ASSISTANT) {
@@ -819,6 +1011,7 @@ static void EchoRequestParams(ResponseObject& r,
   r.parallel_tool_calls = params.parallel_tool_calls.value_or(true);
   r.store = params.store;
   r.metadata = params.metadata;
+  r.metadata.erase(tools::kRawEnvelopeMetadataKey);
   r.user = params.user;
   r.text = params.text;
   r.truncation = "disabled";  // always disabled for local inference
@@ -853,6 +1046,7 @@ ResponseObject BuildResponseObject(const std::string& response_id,
   r.usage.input_tokens = static_cast<int>(usage.prompt_tokens);
   r.usage.output_tokens = static_cast<int>(usage.completion_tokens);
   r.usage.total_tokens = static_cast<int>(usage.total_tokens);
+  r.usage.input_tokens_details.cached_tokens = static_cast<int>(usage.cached_prompt_tokens);
   r.usage.output_tokens_details.reasoning_tokens = static_cast<int>(usage.reasoning_tokens);
 
   EchoRequestParams(r, params);
@@ -905,16 +1099,18 @@ ResponseObject BuildInitialResponseObject(const std::string& response_id,
   return r;
 }
 
-FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
-                                                       int output_index,
-                                                       int& next_sequence_number) {
-  FunctionCallStreamOutput output;
+ToolCallStreamOutput BuildToolCallStreamOutput(const ToolCallItem& call, int output_index,
+                                               int& next_sequence_number) {
+  const bool is_custom = call.kind == fl::ToolKind::kCustom;
+
+  ToolCallStreamOutput output;
   output.events.reserve(4);
 
-  FunctionCallOutputItem in_progress_item;
-  in_progress_item.id = GenerateId("fc");
-  in_progress_item.call_id = call.call_id.empty() ? GenerateId("call") : call.call_id;
-  in_progress_item.name = call.name;
+  const auto ids = MakeToolCallIds(call, call.kind);
+
+  // The announced item carries no payload: the delta events below are what deliver it. Only the
+  // completed item repeats it in full.
+  auto in_progress_item = ToOutputItem(call, call.kind, ids, {}, ResponseStatus::kInProgress);
 
   StreamEvent added;
   added.type = StreamEventType::kOutputItemAdded;
@@ -923,28 +1119,32 @@ FunctionCallStreamOutput BuildFunctionCallStreamOutput(const ToolCallItem& call,
   added.item = in_progress_item;
   output.events.push_back(std::move(added));
 
-  StreamEvent arguments_delta;
-  arguments_delta.type = StreamEventType::kFunctionCallArgumentsDelta;
-  arguments_delta.sequence_number = next_sequence_number++;
-  arguments_delta.output_index = output_index;
-  arguments_delta.item_id = in_progress_item.id;
-  arguments_delta.delta = call.arguments;
-  arguments_delta.function_call_id = in_progress_item.call_id;
-  output.events.push_back(std::move(arguments_delta));
+  StreamEvent payload_delta;
+  payload_delta.type = is_custom ? StreamEventType::kCustomToolCallInputDelta
+                                 : StreamEventType::kFunctionCallArgumentsDelta;
+  payload_delta.sequence_number = next_sequence_number++;
+  payload_delta.output_index = output_index;
+  payload_delta.item_id = ids.item_id;
+  payload_delta.delta = call.arguments;
+  payload_delta.tool_call_id = ids.call_id;
+  output.events.push_back(std::move(payload_delta));
 
-  StreamEvent arguments_done;
-  arguments_done.type = StreamEventType::kFunctionCallArgumentsDone;
-  arguments_done.sequence_number = next_sequence_number++;
-  arguments_done.output_index = output_index;
-  arguments_done.item_id = in_progress_item.id;
-  arguments_done.function_name = in_progress_item.name;
-  arguments_done.function_call_id = in_progress_item.call_id;
-  arguments_done.function_arguments = call.arguments;
-  output.events.push_back(std::move(arguments_done));
+  StreamEvent payload_done;
+  payload_done.type = is_custom ? StreamEventType::kCustomToolCallInputDone
+                                : StreamEventType::kFunctionCallArgumentsDone;
+  payload_done.sequence_number = next_sequence_number++;
+  payload_done.output_index = output_index;
+  payload_done.item_id = ids.item_id;
+  payload_done.tool_name = call.name;
+  payload_done.tool_call_id = ids.call_id;
+  payload_done.tool_payload = call.arguments;
+  output.events.push_back(std::move(payload_done));
 
   output.completed_item = std::move(in_progress_item);
-  output.completed_item.arguments = call.arguments;
-  output.completed_item.status = ResponseStatus::kCompleted;
+  SetPayload(output.completed_item, call.arguments);
+  if (auto* function = std::get_if<FunctionCallOutputItem>(&output.completed_item)) {
+    function->status = ResponseStatus::kCompleted;
+  }
 
   StreamEvent item_done;
   item_done.type = StreamEventType::kOutputItemDone;
@@ -1006,6 +1206,10 @@ nlohmann::json ToInputItems(const nlohmann::json& req_json) {
             prefix = "fc";
           } else if (type == "function_call_output") {
             prefix = "fco";
+          } else if (type == "custom_tool_call") {
+            prefix = "ctc";
+          } else if (type == "custom_tool_call_output") {
+            prefix = "ctco";
           }
           stored["id"] = GenerateId(prefix);
         }
