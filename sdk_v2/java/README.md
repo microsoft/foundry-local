@@ -152,6 +152,9 @@ seconds are queued.
   without reloading the model.
 - Closing a manager closes outstanding sessions and transcriptions before
   releasing the native manager.
+- If the JVM exits while a manager is still open, a shutdown hook closes it so
+  the native runtime is released before its static destructors run. Do not
+  call `System.exit` from SDK callbacks, because the hook waits for callbacks.
 - Download progress and speech listeners run on native callback threads. Keep
   callbacks short and do not call SDK lifecycle or input methods from them.
 - `Transcription.close()` cancels unfinished work and waits for native callbacks
@@ -182,6 +185,6 @@ The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager
 recreation with the same runtime directory, and verifies that no callback or
 worker survives close. It also launches a child JVM to check that an abandoned
-stream cannot block process exit. The Windows x64 CI lane separately probes
-a checksum-pinned released legacy runtime in a fresh JVM to verify rejection
-before accessing incompatible native function tables.
+stream neither blocks nor crashes process exit. The Windows x64 CI lane
+separately probes a checksum-pinned released legacy runtime in a fresh JVM to
+verify rejection before accessing incompatible native function tables.

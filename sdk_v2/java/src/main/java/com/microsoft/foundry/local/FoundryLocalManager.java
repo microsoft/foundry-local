@@ -14,7 +14,8 @@ import java.util.Set;
  * the same JVM only with the same resolved runtime directory used by the first manager.
  */
 public final class FoundryLocalManager implements AutoCloseable {
-    private static boolean active;
+    private static volatile FoundryLocalManager open;
+    private static boolean exitHookInstalled;
     final NativeApi api;
     final Set<AudioSession> sessions = new HashSet<>();
     private Pointer handle;
@@ -22,7 +23,8 @@ public final class FoundryLocalManager implements AutoCloseable {
     public FoundryLocalManager(Configuration configuration) {
         NativeApi.outsideCallback();
         synchronized (FoundryLocalManager.class) {
-            if (active) throw new IllegalStateException("Only one FoundryLocalManager may be open per JVM");
+            if (open != null) throw new IllegalStateException("Only one FoundryLocalManager may be open per JVM");
+            installExitHook();
             api = NativeApi.load(configuration.runtimeDirectory());
             Pointer config = api.create(api.config, NativeApi.ConfigurationApi.CREATE, configuration.appName());
             try {
@@ -53,10 +55,28 @@ public final class FoundryLocalManager implements AutoCloseable {
                     api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_RELEASE, pairs.getValue());
                 }
                 handle = api.create(api.root, NativeApi.Root.MANAGER_CREATE, config);
-                active = true;
+                open = this;
             } finally {
                 api.config.call(NativeApi.ConfigurationApi.RELEASE, config);
             }
+        }
+    }
+
+    // The native runtime must release its manager before its C++ static destructors run at
+    // process exit; otherwise the manager's logger teardown can use already-destroyed globals.
+    private static void installExitHook() {
+        if (exitHookInstalled) return;
+        Runtime.getRuntime().addShutdownHook(new Thread(FoundryLocalManager::closeAtExit, "foundry-local-exit"));
+        exitHookInstalled = true;
+    }
+
+    private static void closeAtExit() {
+        FoundryLocalManager manager = open;
+        if (manager == null) return;
+        try {
+            manager.close();
+        } catch (RuntimeException | Error ignored) {
+            // Best effort: a close failure must not block process exit.
         }
     }
 
@@ -100,7 +120,7 @@ public final class FoundryLocalManager implements AutoCloseable {
             } finally {
                 handle = null;
                 synchronized (FoundryLocalManager.class) {
-                    active = false;
+                    open = null;
                 }
             }
             NativeApi.rethrow(failure);
