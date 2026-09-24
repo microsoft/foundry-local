@@ -992,6 +992,18 @@ std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(
     }
   }
 
+  if (session_response.finish_reason == FOUNDRY_LOCAL_FINISH_LENGTH && !output.empty()) {
+    std::visit(
+        [](auto& item) {
+          using Item = std::decay_t<decltype(item)>;
+          if constexpr (std::is_same_v<Item, ResponseOutputMessage> ||
+                        std::is_same_v<Item, ReasoningOutputItem>) {
+            item.status = ResponseStatus::kIncomplete;
+          }
+        },
+        output.back());
+  }
+
   return {std::move(output), output_text};
 }
 
@@ -1034,13 +1046,19 @@ ResponseObject BuildResponseObject(const std::string& response_id,
                                    const ResponseCreateParams& params,
                                    std::vector<ResponseOutputItem> output,
                                    const std::string& output_text,
-                                   const TokenUsage& usage) {
+                                   const TokenUsage& usage,
+                                   flFinishReason finish_reason) {
   ResponseObject r;
   r.id = response_id;
   r.created_at = created_at;
-  r.completed_at = created_at;  // local inference completes immediately
   r.model = model_name;
-  r.status = ResponseStatus::kCompleted;
+  if (finish_reason == FOUNDRY_LOCAL_FINISH_LENGTH) {
+    r.status = ResponseStatus::kIncomplete;
+    r.incomplete_reason = "max_output_tokens";
+  } else {
+    r.status = ResponseStatus::kCompleted;
+    r.completed_at = created_at;  // local inference completes immediately
+  }
   r.output = std::move(output);
   r.output_text = output_text;
   r.usage.input_tokens = static_cast<int>(usage.prompt_tokens);

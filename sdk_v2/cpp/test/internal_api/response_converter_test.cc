@@ -173,6 +173,58 @@ TEST(ResponseConverterTest, BuildToolCallStreamOutput_FunctionCall_EmitsComplete
 }
 
 // ========================================================================
+// BuildResponseObject
+// ========================================================================
+
+TEST(ResponseConverterTest, BuildResponse_LengthFinishIsIncomplete) {
+  auto params = MakeTestParams();
+  Response session_response;
+  session_response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "partial answer"));
+  session_response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+  auto [output, output_text] = FromSessionResponse(session_response);
+
+  const auto response = BuildResponseObject("resp_1", 500, "m", params, std::move(output), output_text,
+                                            TokenUsage{}, FOUNDRY_LOCAL_FINISH_LENGTH);
+  EXPECT_EQ(response.status, ResponseStatus::kIncomplete);
+  EXPECT_FALSE(response.completed_at.has_value());
+  ASSERT_TRUE(response.incomplete_reason.has_value());
+  EXPECT_EQ(*response.incomplete_reason, "max_output_tokens");
+  ASSERT_FALSE(response.output.empty());
+  EXPECT_EQ(std::get<ResponseOutputMessage>(response.output.back()).status, ResponseStatus::kIncomplete);
+
+  const json serialized = response;
+  EXPECT_EQ(serialized.at("status"), "incomplete");
+  EXPECT_TRUE(serialized.at("completed_at").is_null());
+  EXPECT_EQ(serialized.at("incomplete_details").at("reason"), "max_output_tokens");
+}
+
+TEST(ResponseConverterTest, BuildResponse_ReasoningOnlyLengthFinishIsIncomplete) {
+  auto params = MakeTestParams();
+  Response session_response;
+  std::vector<std::unique_ptr<Item>> parts;
+  parts.push_back(std::make_unique<TextItem>("private scratchpad", FOUNDRY_LOCAL_TEXT_ITEM_TYPE_REASONING));
+  session_response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
+  session_response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+  session_response.usage.completion_tokens = 8;
+  session_response.usage.reasoning_tokens = 8;
+  session_response.usage.total_tokens = 8;
+  auto [output, output_text] = FromSessionResponse(session_response);
+
+  const auto response = BuildResponseObject("resp_1", 500, "m", params, std::move(output), output_text,
+                                            session_response.usage,
+                                            FOUNDRY_LOCAL_FINISH_LENGTH);
+  EXPECT_EQ(response.status, ResponseStatus::kIncomplete);
+  EXPECT_FALSE(response.completed_at.has_value());
+  EXPECT_EQ(response.incomplete_reason, "max_output_tokens");
+  EXPECT_TRUE(response.output_text.empty());
+  EXPECT_EQ(response.usage.output_tokens_details.reasoning_tokens, 8);
+  ASSERT_FALSE(response.output.empty());
+  EXPECT_EQ(std::get<ReasoningOutputItem>(response.output.back()).status, ResponseStatus::kIncomplete);
+}
+
+// ========================================================================
 // BuildFailedResponseObject
 // ========================================================================
 
@@ -307,7 +359,7 @@ TEST(ResponseConverterTest, ReservedRawDescriptorMetadataIsNeverPublicOrStored) 
   const TokenUsage usage{};
   const auto initial = BuildInitialResponseObject("resp_initial", 100, "m", params);
   const auto completed = BuildResponseObject(
-      "resp_completed", 100, "m", params, {}, "", usage);
+      "resp_completed", 100, "m", params, {}, "", usage, FOUNDRY_LOCAL_FINISH_STOP);
   const auto failed = BuildFailedResponseObject(
       "resp_failed", 100, "m", params, "error", "message");
 
