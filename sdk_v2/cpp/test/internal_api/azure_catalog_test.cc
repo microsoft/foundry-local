@@ -1,22 +1,22 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+//
+// Tests for the Azure catalog client infrastructure:
+//   - Request JSON generation matches the known-good format
+//   - Response JSON parsing works with realistic data
+//   - Live integration test fetches models from ai.azure.com
+//
 #include "catalog/azure_catalog_client.h"
+#include "catalog/azure_catalog_models.h"
 #include "catalog/catalog_client.h"
-#include "c_api_types.h"
+#include "ep_detection/ep_detector.h"
 #include "exception.h"
 #include "logger.h"
+#include "model_info.h"
 
 #include <foundry_local/foundry_local_c.h>
-#include <foundry_local/foundry_local_cpp.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
-
-#include <chrono>
-#include <map>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
 
 using namespace fl;
 
@@ -29,43 +29,17 @@ http::HttpResponse MakeOkResponse(std::string body) {
   return response;
 }
 
-std::string MakeSummaryResponse(const std::vector<std::pair<std::string, int>>& models,
-                                std::string continuation_token = "") {
-  nlohmann::json summaries = nlohmann::json::array();
-  for (const auto& [name, version] : models) {
-    summaries.push_back({
-        {"assetId", "azureml://registries/azureml/models/" + name + "/versions/" + std::to_string(version)},
-        {"name", name},
-        {"alias", name},
-        {"version", std::to_string(version)},
-        {"variantInformation", {
-            {"parents", {{{"assetId", "azureml://registries/azureml/models/" + name + "/versions/1"}}}},
-            {"variantMetadata", {
-                {"modelType", "ONNX"},
-                {"device", "cpu"},
-                {"executionProvider", "CPUExecutionProvider"},
-            }},
-        }},
-    });
-  }
+}  // namespace
 
-  return nlohmann::json{
-      {"totalCount", static_cast<int>(models.size())},
-      {"continuationToken", std::move(continuation_token)},
-      {"summaries", std::move(summaries)},
-  }.dump();
-}
+// ========================================================================
+// Test EP detector that returns all three devices (matching .http fixture)
+// ========================================================================
 
-class CpuOnlyEpDetector final : public IEpDetector {
+class AllDevicesEpDetector : public IEpDetector {
  public:
   std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
-    return {{"CPU", {"CPUExecutionProvider"}}};
-  }
-};
-
-class AllDevicesEpDetector final : public IEpDetector {
- public:
-  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    // Use PascalCase names matching ORT's GetEpDevices output.
+    // BuildSearchFilters() lowers these for the catalog API.
     return {
         {"CPU", {"CPUExecutionProvider"}},
         {"GPU", {"CUDAExecutionProvider"}},
@@ -74,559 +48,1047 @@ class AllDevicesEpDetector final : public IEpDetector {
   }
 };
 
-}  // namespace
+// Single-device EP for tests where we only want one filter set
+class CpuOnlyEpDetector : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"CPU", {"CPUExecutionProvider"}}};
+  }
+};
 
-TEST(AzureCatalogClientTest, RequestUsesAssetGalleryContract) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  nlohmann::json captured;
-  AzureCatalogClient client("https://api.catalog.azureml.ms/asset-gallery/v1.0/models", "", ep, logger,
-                            [&](const std::string&, const std::string& body) {
-                              captured = nlohmann::json::parse(body);
-                              return MakeOkResponse(R"({"totalCount":0,"continuationToken":"","summaries":[]})");
-                            });
+class CpuGpuEpDetector : public IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {
+        {"CPU", {"CPUExecutionProvider"}},
+        {"GPU", {"CUDAExecutionProvider"}},
+    };
+  }
+};
 
-  client.FetchAllModels();
+// ========================================================================
+// Request format tests
+// ========================================================================
 
-  EXPECT_EQ(captured["pageSize"], 50);
-  const auto& filters = captured["filters"];
-  ASSERT_EQ(filters.size(), 7u);
-  EXPECT_EQ(filters[0]["field"], "type");
-  EXPECT_EQ(filters[0]["values"], nlohmann::json({"models"}));
-  EXPECT_EQ(filters[1]["field"], "kind");
-  EXPECT_EQ(filters[1]["values"], nlohmann::json({"Versioned"}));
-  EXPECT_EQ(filters[2]["field"], "annotations/systemCatalogData/deploymentOptions");
-  EXPECT_EQ(filters[2]["values"], nlohmann::json({"Foundry Local on Devices"}));
-  EXPECT_EQ(filters[3]["field"], "annotations/archived");
-  EXPECT_EQ(filters[3]["operator"], "NotEquals");
-  EXPECT_EQ(filters[3]["values"], nlohmann::json({"true"}));
-  EXPECT_EQ(filters[4]["field"], "labels");
-  EXPECT_EQ(filters[4]["values"], nlohmann::json({"latest"}));
-  EXPECT_EQ(filters[5]["field"], "properties/variantInfo/variantMetadata/device");
-  EXPECT_EQ(filters[5]["values"], nlohmann::json({"cpu"}));
-  EXPECT_EQ(filters[6]["field"], "properties/variantInfo/variantMetadata/executionProvider");
-}
-
-TEST(AzureCatalogClientTest, OverrideReplacesDeploymentOptionFilter) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  nlohmann::json captured;
-  AzureCatalogClient client("https://test.com", "Custom One, 'Custom Two'", ep, logger,
-                            [&](const std::string&, const std::string& body) {
-                              captured = nlohmann::json::parse(body);
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            });
-
-  client.FetchAllModels();
-
-  EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"Custom One", "Custom Two"}));
-}
-
-TEST(AzureCatalogClientTest, UsesOneFilterSetPerDeviceAndProvider) {
+// Verify the generated request JSON has the right structure.
+// We compare against the known-good azure_catalog_model_fetch.http request.
+TEST(AzureCatalogClientTest, RequestFormatMatchesKnownGood) {
   AllDevicesEpDetector ep;
   StderrLogger logger;
-  std::vector<nlohmann::json> requests;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string& body) {
-                              requests.push_back(nlohmann::json::parse(body));
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            });
+  std::vector<std::string> captured_urls;
+  std::vector<nlohmann::json> captured_bodies;
+
+  // filter_override: "", "test" — matches the .http file's foundryLocal filter values
+  AzureCatalogClient client(
+      "https://ai.azure.com/api/eastus/ux/v1.0", "''", ep, logger,
+      [&](const std::string& url, const std::string& body) {
+        captured_urls.push_back(url);
+        captured_bodies.push_back(nlohmann::json::parse(body));
+        return MakeOkResponse(
+            R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+      },
+      "eastus");
 
   client.FetchAllModels();
 
-  ASSERT_EQ(requests.size(), 3u);
-  EXPECT_EQ(requests[0]["filters"][5]["values"], nlohmann::json({"cpu"}));
-  EXPECT_EQ(requests[1]["filters"][5]["values"], nlohmann::json({"gpu"}));
-  EXPECT_EQ(requests[2]["filters"][5]["values"], nlohmann::json({"npu"}));
+  // Our code creates one filter set per device (3 devices → 3 requests).
+  ASSERT_EQ(captured_bodies.size(), 3u);
+
+  for (const auto& url : captured_urls) {
+    EXPECT_EQ(url, "https://ai.azure.com/api/eastus/ux/v1.0/entities/crossRegion");
+  }
+
+  // Verify the first request (cpu) matches the expected structure.
+  // The .http file combines all devices; the client splits requests per device.
+  // We verify the structure, field names, and operators match.
+  const auto& cpu_req = captured_bodies[0];
+
+  // Top-level structure
+  ASSERT_TRUE(cpu_req.contains("resourceIds"));
+  ASSERT_TRUE(cpu_req.contains("indexEntitiesRequest"));
+
+  // resourceIds
+  const auto& resources = cpu_req["resourceIds"];
+  ASSERT_EQ(resources.size(), 1u);
+  EXPECT_EQ(resources[0]["resourceId"], "azureml");
+  EXPECT_EQ(resources[0]["entityContainerType"], "Registry");
+
+  // indexEntitiesRequest
+  const auto& idx_req = cpu_req["indexEntitiesRequest"];
+  ASSERT_TRUE(idx_req.contains("filters"));
+  EXPECT_EQ(idx_req["pageSize"], 50);
+
+  // Verify filters match the known-good pattern
+  const auto& filters = idx_req["filters"];
+  ASSERT_EQ(filters.size(), 6u);
+
+  // Filter 0: type=models
+  EXPECT_EQ(filters[0]["field"], "type");
+  EXPECT_EQ(filters[0]["operator"], "eq");
+  EXPECT_EQ(filters[0]["values"], nlohmann::json({"models"}));
+
+  // Filter 1: kind=Versioned
+  EXPECT_EQ(filters[1]["field"], "kind");
+  EXPECT_EQ(filters[1]["operator"], "eq");
+  EXPECT_EQ(filters[1]["values"], nlohmann::json({"Versioned"}));
+
+  // Filter 2: labels=latest
+  EXPECT_EQ(filters[2]["field"], "labels");
+  EXPECT_EQ(filters[2]["operator"], "eq");
+  EXPECT_EQ(filters[2]["values"], nlohmann::json({"latest"}));
+
+  // Filter 3: foundryLocal filter — matches "", "test" from the .http file
+  EXPECT_EQ(filters[3]["field"], "annotations/tags/foundryLocal");
+  EXPECT_EQ(filters[3]["operator"], "eq");
+  EXPECT_EQ(filters[3]["values"], nlohmann::json({""}));
+
+  // Filter 4: device (per-device split — this is "cpu" for the first request)
+  EXPECT_EQ(filters[4]["field"], "properties/variantInfo/variantMetadata/device");
+  EXPECT_EQ(filters[4]["operator"], "eq");
+  EXPECT_EQ(filters[4]["values"], nlohmann::json({"cpu"}));
+
+  // Filter 5: executionProvider
+  EXPECT_EQ(filters[5]["field"], "properties/variantInfo/variantMetadata/executionProvider");
+  EXPECT_EQ(filters[5]["operator"], "eq");
 }
 
-TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
+// Verify page size default is 50.
+TEST(AzureCatalogClientTest, DefaultPageSizeIs50) {
+  AllDevicesEpDetector ep;
+  StderrLogger logger;
+  nlohmann::json captured;
+
+  AzureCatalogClient client(
+      "https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+      [&](const std::string&, const std::string& body) {
+        captured = nlohmann::json::parse(body);
+        return MakeOkResponse(
+            R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+      },
+      "eastus");
+
+  client.FetchAllModels();
+  EXPECT_EQ(captured["indexEntitiesRequest"]["pageSize"], 50);
+}
+
+// ========================================================================
+// Response parsing tests
+// ========================================================================
+
+TEST(AzureCatalogClientTest, ParsesModelResponseCorrectly) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  const char* response = R"({
-    "totalCount": 1,
-    "continuationToken": "",
-    "summaries": [{
-      "assetId": "azureml://registries/azureml/models/phi-4-mini-generic-cpu/versions/2",
-      "name": "phi-4-mini-generic-cpu",
-      "alias": "phi-4-mini",
-      "displayName": "Phi-4 Mini",
-      "version": "2",
-      "publisher": "Microsoft",
-      "license": "MIT",
-      "minFLVersion": "0.1.0",
-      "createdTime": "2026-06-02T07:03:01.3390586+00:00",
-      "inferenceTasks": ["chat-completion"],
-      "modelCapabilities": ["tool-calling", "reasoning"],
-      "modelLimits": {"textLimits": {"inputContextWindow": 4096, "maxOutputTokens": 2048}},
-      "variantInformation": {
-        "parents": [{"assetId": "azureml://registries/azureml/models/phi-4-mini/versions/1"}],
-        "variantMetadata": {
-          "modelType": "ONNX", "quantization": ["RTN"], "device": "cpu",
-          "executionProvider": "CPUExecutionProvider", "fileSizeBytes": 4294967296
-        }
-      }
-    }]
-  })";
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
 
-  const auto model_infos = client.FetchAllModelInfos();
+  // Realistic single-model response matching the Azure catalog schema
+  const char* mock_response = R"({
+    "indexEntitiesResponse": {
+      "totalCount": 1,
+      "value": [
+        {
+          "assetId": "azureml://registries/azureml/models/Phi-4-mini-instruct-generic-cpu/versions/2",
+          "entityId": "Phi-4-mini-instruct-generic-cpu:2",
+          "annotations": {
+            "tags": {
+              "alias": "Phi-4-mini-instruct",
+              "foundryLocal": "",
+              "task": "chat-completion",
+              "license": "MIT",
+              "licenseDescription": "MIT License",
+              "supportsToolCalling": "true",
+              "promptTemplate": "{\"system\":\"<|system|>\\n{Content}<|end|>\",\"user\":\"<|user|>\\n{Content}<|end|>\",\"assistant\":\"<|assistant|>\\n{Content}<|end|>\",\"prompt\":\"<|user|>\\n{Content}<|end|>\\n<|assistant|>\"}"
+            },
+            "systemCatalogData": {
+              "publisher": "Microsoft",
+              "displayName": "Phi-4 Mini Instruct",
+              "maxOutputTokens": 4096
+            }
+          },
+          "properties": {
+            "name": "Phi-4-mini-instruct-generic-cpu",
+            "version": 2,
+            "variantInfo": {
+              "parents": [{"assetId": "azureml://registries/azureml/models/Phi-4-mini-instruct/versions/3"}],
+              "variantMetadata": {
+                "modelType": "ONNX",
+                "device": "cpu",
+                "executionProvider": "CPUExecutionProvider",
+                "fileSizeBytes": 4294967296
+              }
+            },
+            "minFLVersion": "0.3.0"
+          }
+        }
+      ],
+      "nextSkip": 0,
+      "continuationToken": ""
+    }
+  })";
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
+
+  auto model_infos = client.FetchAllModelInfos();
   ASSERT_EQ(model_infos.size(), 1u);
-  const auto& info = model_infos.front();
-  EXPECT_EQ(info.model_id, "phi-4-mini-generic-cpu:2");
-  EXPECT_EQ(info.alias, "phi-4-mini");
+
+  const auto& info = model_infos[0];
+  EXPECT_EQ(info.model_id, "Phi-4-mini-instruct-generic-cpu:2");
+  EXPECT_EQ(info.name, "Phi-4-mini-instruct-generic-cpu");
+  EXPECT_EQ(info.alias, "Phi-4-mini-instruct");
+  EXPECT_EQ(info.version, 2);
+  EXPECT_EQ(info.uri, "azureml://registries/azureml/models/Phi-4-mini-instruct-generic-cpu/versions/2");
   EXPECT_EQ(info.device_type, DeviceType::kCPU);
   EXPECT_EQ(info.execution_provider, "CPUExecutionProvider");
-  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_QUANTIZATION_STR), "RTN");
-  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT), 4096);
+
+  // Prompt templates should be parsed from the JSON string
+  ASSERT_FALSE(info.prompt_templates.empty());
+  EXPECT_TRUE(info.prompt_templates.count("prompt") > 0);
+  EXPECT_TRUE(info.prompt_templates.count("system") > 0);
+  EXPECT_TRUE(info.prompt_templates.count("user") > 0);
+  EXPECT_TRUE(info.prompt_templates.count("assistant") > 0);
+
+  // Metadata properties
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR), "chat-completion");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_STR), "MIT");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR), "Microsoft");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR), "Phi-4 Mini Instruct");
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
-  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
-  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
-  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 2048);
-  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.1.0");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.3.0");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR), "FoundryLocal");
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 4096);
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT), 4096);  // 4GB → 4096 MB
 }
 
-TEST(AzureCatalogClientTest, SkipsModelsWithInvalidVersions) {
+// Verify that invalid models (missing required fields) are filtered out
+TEST(AzureCatalogClientTest, SkipsInvalidModels) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  const char* response = R"({"summaries":[
-    {"assetId":"azureml://registries/azureml/models/missing/versions/1","name":"missing","alias":"test","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/negative/versions/-1","name":"negative","alias":"test","version":"-1","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/nonnumeric/versions/a","name":"nonnumeric","alias":"test","version":"abc","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/trailing/versions/1x","name":"trailing","alias":"test","version":"1x","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/overflow/versions/999999999999999999999","name":"overflow","alias":"test","version":"999999999999999999999","variantInformation":{}},
-    {"assetId":"azureml://registries/azureml/models/valid/versions/7","name":"valid","alias":"test","version":"7","variantInformation":{}}
-  ]})";
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
 
-  const auto model_infos = client.FetchAllModelInfos();
-  ASSERT_EQ(model_infos.size(), 1u);
-  EXPECT_EQ(model_infos.front().model_id, "valid:7");
-}
-
-TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFields) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  const char* response = R"({
-    "value": [{
-      "assetId": "azureml://registries/azureml/models/phi-4-mini-generic-cpu/versions/2",
-      "annotations": {
-        "tags": {"supportsReasoning": "false", "foundryLocal": "test", "promptTemplate": "{}", "toolCallStart": "<tool>"},
-        "systemCatalogData": {
-          "alias": "phi-4-mini", "license": "MIT", "licenseDescription": "License terms",
-          "minFLVersion": "0.1.0", "supportsToolCalling": true,
-          "reasoningStart": "<think>", "inferenceTasks": ["chat-completion"],
-          "textContextWindow": 4096, "maxOutputTokens": 2048,
-          "inputModalities": ["text", "image"], "outputModalities": ["text"]
+  // Response with one valid model and one missing assetId
+  const char* mock_response = R"({
+    "indexEntitiesResponse": {
+      "totalCount": 2,
+      "value": [
+        {
+          "entityId": "no-asset-id",
+          "properties": { "name": "bad-model", "version": 1, "variantInfo": { "parents": [] } }
+        },
+        {
+          "assetId": "azureml://registries/azureml/models/good-model/versions/1",
+          "entityId": "good-model:1",
+          "annotations": { "tags": { "alias": "good" } },
+          "properties": {
+            "name": "good-model",
+            "version": 1,
+            "variantInfo": {
+              "parents": [],
+              "variantMetadata": { "device": "cpu", "executionProvider": "CPUExecutionProvider" }
+            }
+          }
         }
-      },
-      "properties": {
-        "name": "phi-4-mini-generic-cpu", "version": 2,
-        "creationContext": {"createdTime": "2026-06-02T07:03:01Z"},
-        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
-      }
-    }]
+      ],
+      "nextSkip": 0,
+      "continuationToken": ""
+    }
   })";
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
 
-  const auto model_infos = client.FetchAllModelInfos();
-  ASSERT_EQ(model_infos.size(), 1u);
-  const auto& info = model_infos.front();
-  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR), "License terms");
-  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
-  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
-  EXPECT_FALSE(info.string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR));
-  EXPECT_FALSE(info.string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR));
-
-  const foundry_local::ModelInfo public_info(*AsHandle<flModelInfo>(&info));
-  EXPECT_EQ(public_info.MaxOutputTokens(), 2048);
-  EXPECT_EQ(public_info.InputModalities(), "text,image");
-  EXPECT_EQ(public_info.OutputModalities(), "text");
-  EXPECT_TRUE(public_info.IsTestModel());
-}
-
-TEST(AzureCatalogClientTest, FiltersModelsAboveCurrentMinFlVersion) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) {
-                              return MakeOkResponse(R"({"summaries":[
-                                {
-                                  "assetId":"azureml://registries/azureml/models/future/versions/1",
-                                  "name":"future", "alias":"future", "version":"1",
-                                  "minFLVersion":"999.0.0", "variantInformation":{}
-                                },
-                                {
-                                  "assetId":"azureml://registries/azureml/models/current/versions/1",
-                                  "name":"current", "alias":"current", "version":"1",
-                                  "variantInformation":{}
-                                }
-                              ]})");
+                              return MakeOkResponse(mock_response);
                             });
 
-  const auto models = client.FetchAllModelInfos();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().name, "current");
+  auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 1u);
+  EXPECT_EQ(infos[0].alias, "good");
 }
 
-TEST(AzureCatalogClientTest, StampsModelsWithServingRegion) {
-  CpuOnlyEpDetector ep;
+// Verify pagination follows nextSkip and continuationToken
+TEST(AzureCatalogClientTest, FollowsPagination) {
+  AllDevicesEpDetector ep;
+  // Use a single device so we only test one filter set
+  class SingleDeviceEp : public IEpDetector {
+   public:
+    std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+      return {{"CPU", {"CPUExecutionProvider"}}};
+    }
+  } single_ep;
+
   StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              auto response = MakeOkResponse(MakeSummaryResponse({{"phi-4-mini", 1}}));
-                              response.headers["azureml-served-by-cluster"] = "vienna-WestUS2-01";
-                              return response;
-                            });
-
-  const auto models = client.FetchAllModelInfos();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().detected_region, "westus2");
-}
-
-TEST(AzureCatalogClientTest, RetriesTransientCatalogFailures) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int attempts = 0;
-  http::RetryConfig retry_config;
-  retry_config.max_retries = 1;
-  retry_config.base_delay = std::chrono::milliseconds::zero();
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              ++attempts;
-                              if (attempts == 1) {
-                                http::HttpResponse response;
-                                response.status = 429;
-                                return response;
-                              }
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            },
-                            retry_config);
-
-  EXPECT_TRUE(client.FetchAllModels().empty());
-  EXPECT_EQ(attempts, 2);
-}
-
-TEST(AzureCatalogClientTest, RetriesThrownCatalogTransportFailure) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int attempts = 0;
-  http::RetryConfig retry_config;
-  retry_config.max_retries = 1;
-  retry_config.base_delay = std::chrono::milliseconds::zero();
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              ++attempts;
-                              if (attempts == 1) {
-                                throw std::runtime_error("connection reset");
-                              }
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            },
-                            retry_config);
-
-  EXPECT_TRUE(client.FetchAllModels().empty());
-  EXPECT_EQ(attempts, 2);
-}
-
-TEST(AzureCatalogClientTest, ExhaustsRetryBudgetForThrownCatalogTransportFailures) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int attempts = 0;
-  http::RetryConfig retry_config;
-  retry_config.max_retries = 1;
-  retry_config.base_delay = std::chrono::milliseconds::zero();
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) -> http::HttpResponse {
-                              ++attempts;
-                              throw std::runtime_error("connection reset");
-                            },
-                            retry_config);
-
-  try {
-    client.FetchAllModels();
-    FAIL() << "Expected catalog request to exhaust its retry budget";
-  } catch (const fl::Exception& exception) {
-    EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
-  }
-  EXPECT_EQ(attempts, 2);
-}
-
-TEST(AzureCatalogClientTest, ComparesPipelineSemVerPrereleaseAndBuildVersions) {
-  EXPECT_TRUE(IsFoundryLocalVersionCompatible("0.1.0-dev.202605111234", "0.1.0-dev.202605111000"));
-  EXPECT_TRUE(IsFoundryLocalVersionCompatible("2.0.0-dev.202609230000", "2.0.0"));
-  EXPECT_FALSE(IsFoundryLocalVersionCompatible("2.0.0-dev.202609230000", "2.0.0-rc.1"));
-  EXPECT_FALSE(IsFoundryLocalVersionCompatible("2.0.0-dev.202609230000", "2.0.1"));
-  EXPECT_TRUE(IsFoundryLocalVersionCompatible("2.0.1-rc.1", "2.0.1-rc.1+build.42"));
-  EXPECT_TRUE(IsFoundryLocalVersionCompatible("2.0.1", "2.0.1-rc.1"));
-}
-
-TEST(AzureCatalogClientTest, SkipsAbstractParentModels) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              return MakeOkResponse(R"({"summaries":[{
-                                "assetId":"azureml://registries/azureml/models/parent/versions/1",
-                                "name":"parent", "version":"1"
-                              }]})");
-                            });
-
-  EXPECT_TRUE(client.FetchAllModelInfos().empty());
-}
-
-TEST(AzureCatalogClientTest, DerivesAliasFromParentWhenExplicitAliasIsMissing) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              return MakeOkResponse(R"({"summaries":[{
-                                "assetId":"azureml://registries/azureml/models/child/versions/1",
-                                "name":"child", "version":"1",
-                                "variantInformation":{"parents":[{
-                                  "assetId":"azureml://registries/azureml/models/parent/versions/1"
-                                }]}
-                              }]})");
-                            });
-
-  const auto models = client.FetchAllModelInfos();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().alias, "parent");
-}
-
-TEST(AzureCatalogClientTest, SkipsEntriesMissingAssetIdOrName) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              return MakeOkResponse(R"({"summaries":[
-                                {"name":"missing-asset","version":"1","variantInformation":{}},
-                                {"assetId":"azureml://registries/azureml/models/missing-name/versions/1",
-                                 "version":"1","variantInformation":{}}
-                              ]})");
-                            });
-
-  EXPECT_TRUE(client.FetchAllModelInfos().empty());
-}
-
-TEST(AzureCatalogClientTest, FollowsContinuationToken) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int calls = 0;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
+  int call_count = 0;
+  AzureCatalogClient client("https://test.com", "", single_ep, logger,
                             [&](const std::string&, const std::string& body) {
-                              ++calls;
-                              const auto request = nlohmann::json::parse(body);
-                              if (calls == 1) {
-                                return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}, "next"));
+                              call_count++;
+                              auto req = nlohmann::json::parse(body);
+
+                              if (call_count == 1) {
+                                // First page — return nextSkip to trigger page 2
+                                return MakeOkResponse(R"({
+        "indexEntitiesResponse": {
+          "totalCount": 2,
+          "value": [{
+            "assetId": "azureml://m/model-a/versions/1",
+            "entityId": "model-a:1",
+            "annotations": {"tags": {"alias": "a"}},
+            "properties": {"name": "model-a", "version": 1, "variantInfo": {"parents": [], "variantMetadata": {"device": "cpu"}}}
+          }],
+          "nextSkip": 1,
+          "continuationToken": "token123"
+        }
+      })");
                               }
-                              EXPECT_EQ(request["continuationToken"], "next");
-                              return MakeOkResponse(MakeSummaryResponse({{"model-b", 1}}));
+
+                              // Second page — no more
+                              // Verify skip/token were passed
+                              EXPECT_EQ(req["indexEntitiesRequest"]["skip"], 1);
+                              EXPECT_EQ(req["indexEntitiesRequest"]["continuationToken"], "token123");
+                              return MakeOkResponse(R"({
+        "indexEntitiesResponse": {
+          "totalCount": 2,
+          "value": [{
+            "assetId": "azureml://m/model-b/versions/1",
+            "entityId": "model-b:1",
+            "annotations": {"tags": {"alias": "b"}},
+            "properties": {"name": "model-b", "version": 1, "variantInfo": {"parents": [], "variantMetadata": {"device": "cpu"}}}
+          }],
+          "nextSkip": 0,
+          "continuationToken": ""
+        }
+      })");
                             });
 
-  EXPECT_EQ(client.FetchAllModels().size(), 2u);
-  EXPECT_EQ(calls, 2);
-}
-
-TEST(AzureCatalogClientTest, FollowsContinuationTokenAfterEmptyPage) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int calls = 0;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-              [&](const std::string&, const std::string& body) {
-                ++calls;
-                const auto request = nlohmann::json::parse(body);
-                if (calls == 1) {
-                  return MakeOkResponse(MakeSummaryResponse({}, "next"));
-                }
-                EXPECT_EQ(request["continuationToken"], "next");
-                return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}));
-              });
-
-  const auto models = client.FetchAllModels();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().name, "model-a");
-  EXPECT_EQ(calls, 2);
-}
-
-TEST(AzureCatalogClientTest, RejectsRepeatedContinuationToken) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int calls = 0;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-              [&](const std::string&, const std::string&) {
-                ++calls;
-                return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}, "loop"));
-              });
-
-  EXPECT_THROW(client.FetchAllModels(), fl::Exception);
-  EXPECT_EQ(calls, 2);
-}
-
-TEST(AzureCatalogClientTest, FetchModelsByIdsUsesNamesButReturnsExactVersions) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  nlohmann::json captured;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string& body) {
-                              captured = nlohmann::json::parse(body);
-                              return MakeOkResponse(MakeSummaryResponse({{"phi-4-mini", 1}, {"phi-4-mini", 2}}));
-                            });
-
-  const auto models = client.FetchModelsByIds({"phi-4-mini:1"});
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().model_id, "phi-4-mini:1");
-  ASSERT_EQ(captured["filters"].size(), 5u);
-  EXPECT_EQ(captured["filters"][4]["field"], "name");
-  EXPECT_EQ(captured["filters"][4]["values"], nlohmann::json({"phi-4-mini"}));
-}
-
-TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyDoesNotIssueRequest) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  bool called = false;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              called = true;
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            });
-
-  EXPECT_TRUE(client.FetchModelsByIds({}).empty());
-  EXPECT_FALSE(called);
-}
-
-TEST(AzureCatalogClientTest, CachedOlderVersionIsResolvedOnce) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int calls = 0;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              ++calls;
-                              return MakeOkResponse(calls == 1
-                                  ? MakeSummaryResponse({{"phi-4-mini", 2}})
-                                  : MakeSummaryResponse({{"phi-4-mini", 1}, {"phi-4-mini", 2}}));
-                            });
-
-  const auto models = FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:1"}, logger);
-  ASSERT_EQ(models.size(), 2u);
-  EXPECT_EQ(calls, 2);
-}
-
-TEST(AzureCatalogClientTest, UnknownCachedModelIsOmitted) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  int calls = 0;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              ++calls;
-                              return MakeOkResponse(calls == 1 ? MakeSummaryResponse({{"phi-4-mini", 2}})
-                                                               : R"({"summaries":[]})");
-                            });
-
-  const auto models = FetchAllModelInfosWithCachedModels(client, {"custom-model:1"}, logger);
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().model_id, "phi-4-mini:2");
-  EXPECT_EQ(calls, 2);
-}
-
-TEST(AzureCatalogClientTest, FetchAllVersionsOmitsLatestFilter) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  nlohmann::json captured;
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string& body) {
-                              captured = nlohmann::json::parse(body);
-                              return MakeOkResponse(MakeSummaryResponse({{"phi-4-mini", 1}, {"phi-4-mini", 2}}));
-                            });
-
-  const auto models = client.FetchAllVersionsByAlias("phi-4-mini");
+  auto models = client.FetchAllModels();
+  EXPECT_EQ(call_count, 2);
   EXPECT_EQ(models.size(), 2u);
-  for (const auto& filter : captured["filters"]) {
-    EXPECT_NE(filter["field"], "labels");
-  }
 }
 
-TEST(AzureCatalogClientTest, FetchAllVersionsSortsDeduplicatesAndLimitsPerVariant) {
+// ========================================================================
+// Live integration test — fetches real models from ai.azure.com
+// Disabled by default. Run with: --gtest_also_run_disabled_tests
+// ========================================================================
+
+TEST(AzureCatalogClientTest, DISABLED_LiveFetchModelsFromAzure) {
   AllDevicesEpDetector ep;
   StderrLogger logger;
-  int calls = 0;
-  const auto make_response = [](const std::vector<std::pair<std::string, int>>& entries) {
-    auto response = nlohmann::json::parse(MakeSummaryResponse(entries));
-    for (auto& summary : response["summaries"]) {
-      summary["alias"] = "phi-4-mini";
-    }
-    return MakeOkResponse(response.dump());
-  };
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "''", ep, logger);
+
+  // Use the real HTTP client (WinHTTP on Windows)
+  auto model_infos = client.FetchAllModelInfos();
+
+  // We should get at least some models from the public catalog
+  EXPECT_GT(model_infos.size(), 0u)
+      << "Expected at least one model from Azure Foundry catalog";
+
+  // Every model should have the basic required fields populated
+  for (const auto& info : model_infos) {
+    EXPECT_FALSE(info.model_id.empty()) << "model_id should not be empty";
+    EXPECT_FALSE(info.name.empty()) << "name should not be empty";
+    EXPECT_FALSE(info.alias.empty()) << "alias should not be empty for: " << info.model_id;
+    EXPECT_FALSE(info.uri.empty()) << "uri should not be empty for: " << info.model_id;
+  }
+
+  // Print summary for manual verification
+  std::cout << "\n=== Live Azure Catalog Results ===\n";
+  std::cout << "Total models: " << model_infos.size() << "\n";
+  for (const auto& info : model_infos) {
+    std::cout << "  " << info.alias
+              << " (v" << info.version << ")"
+              << " [" << info.execution_provider << "]"
+              << "\n";
+  }
+  std::cout << "=================================\n";
+}
+
+// ========================================================================
+// FetchModelsByIds filter construction tests
+// ========================================================================
+
+TEST(AzureCatalogClientTest, BuildModelIdFiltersProducesCorrectStructure) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  nlohmann::json captured;
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              captured = nlohmann::json::parse(body);
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchModelsByIds({"phi-4-mini:3", "llama-3:1"});
+
+  // Should have made exactly one HTTP call (single filter set, no pagination).
+  ASSERT_FALSE(captured.is_null());
+
+  const auto& filters = captured["indexEntitiesRequest"]["filters"];
+  ASSERT_EQ(filters.size(), 4u);
+
+  // Filter 0: type=models
+  EXPECT_EQ(filters[0]["field"], "type");
+  EXPECT_EQ(filters[0]["values"], nlohmann::json({"models"}));
+
+  // Filter 1: kind=Versioned
+  EXPECT_EQ(filters[1]["field"], "kind");
+  EXPECT_EQ(filters[1]["values"], nlohmann::json({"Versioned"}));
+
+  // Filter 2: foundryLocal tag (no labels=latest!)
+  EXPECT_EQ(filters[2]["field"], "annotations/tags/foundryLocal");
+
+  // Filter 3: properties/id with the requested model IDs
+  EXPECT_EQ(filters[3]["field"], "properties/id");
+  EXPECT_EQ(filters[3]["values"], nlohmann::json({"phi-4-mini:3", "llama-3:1"}));
+
+  // Verify NO labels filter and NO device/EP filters exist.
+  for (const auto& f : filters) {
+    EXPECT_NE(f["field"], "labels");
+    EXPECT_NE(f["field"], "properties/variantInfo/variantMetadata/device");
+    EXPECT_NE(f["field"], "properties/variantInfo/variantMetadata/executionProvider");
+  }
+}
+
+TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyReturnsEmptyNoHttp) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  bool http_called = false;
+
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) {
-                              ++calls;
-                              if (calls == 1) {
-                                return make_response(
-                                    {{"phi-4-mini", 1}, {"phi-4-mini", 3}, {"phi-4-mini-vision", 2}});
-                              }
-                              if (calls == 2) {
-                                return make_response(
-                                    {{"phi-4-mini", 3}, {"phi-4-mini", 2}, {"phi-4-mini-vision", 1}});
-                              }
-                              return make_response({{"phi-4-mini", 2}, {"phi-4-mini-vision", 2}});
+                              http_called = true;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
                             });
 
-  const auto models = client.FetchAllVersionsByAlias("phi-4-mini", "", 2);
-
-  ASSERT_EQ(calls, 3);
-  ASSERT_EQ(models.size(), 4u);
-  EXPECT_EQ(models[0].model_id, "phi-4-mini:3");
-  EXPECT_EQ(models[1].model_id, "phi-4-mini:2");
-  EXPECT_EQ(models[2].model_id, "phi-4-mini-vision:2");
-  EXPECT_EQ(models[3].model_id, "phi-4-mini-vision:1");
+  auto result = client.FetchModelsByIds({});
+  EXPECT_TRUE(result.empty());
+  EXPECT_FALSE(http_called);
 }
 
-TEST(AzureCatalogClientTest, AcceptsEmptyRecognizedResponseArrays) {
-  CpuOnlyEpDetector ep;
-  StderrLogger logger;
-  for (const auto* response_body : {R"({"value":[]})", R"({"summaries":[]})"}) {
-    AzureCatalogClient client("https://test.com", "", ep, logger,
-                              [response_body](const std::string&, const std::string&) {
-                                return MakeOkResponse(response_body);
-                              });
-    EXPECT_TRUE(client.FetchAllModels().empty());
+// ========================================================================
+// FetchAllModelInfosWithCachedModels tests
+// ========================================================================
+
+// Helper: builds a minimal valid model response for a given model name.
+static std::string MakeMockCatalogResponse(
+    const std::vector<std::pair<std::string, int>>& models) {
+  nlohmann::json value_array = nlohmann::json::array();
+
+  for (const auto& [name, version] : models) {
+    std::string entity_id = name + ":" + std::to_string(version);
+
+    nlohmann::json entry;
+    entry["assetId"] = "azureml://registries/azureml/models/" + name + "/versions/" +
+                       std::to_string(version);
+    entry["entityId"] = entity_id;
+    entry["annotations"]["tags"]["alias"] = name;
+    entry["properties"]["name"] = name;
+    entry["properties"]["version"] = version;
+    entry["properties"]["variantInfo"]["parents"] = nlohmann::json::array();
+    entry["properties"]["variantInfo"]["variantMetadata"]["device"] = "cpu";
+    entry["properties"]["variantInfo"]["variantMetadata"]["executionProvider"] =
+        "CPUExecutionProvider";
+    value_array.push_back(entry);
   }
+
+  nlohmann::json response;
+  response["indexEntitiesResponse"]["totalCount"] = static_cast<int>(models.size());
+  response["indexEntitiesResponse"]["value"] = value_array;
+  response["indexEntitiesResponse"]["nextSkip"] = 0;
+  response["indexEntitiesResponse"]["continuationToken"] = "";
+  return response.dump();
 }
 
-TEST(AzureCatalogClientTest, RejectsMalformedSuccessfulResponseShapes) {
+TEST(AzureCatalogClientTest, WithCachedModels_NoCachedIds_BehavesLikeRegularFetch) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
-  for (const auto* response_body : {R"({})", R"([])", R"({"error":{"code":"bad"}})",
-                                    R"({"summaries":"not an array"})"}) {
-    AzureCatalogClient client("https://test.com", "", ep, logger,
-                              [response_body](const std::string&, const std::string&) {
-                                return MakeOkResponse(response_body);
-                              });
-    try {
-      client.FetchAllModels();
-      FAIL() << "Expected malformed catalog response to throw";
-    } catch (const fl::Exception& exception) {
-      EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+  int http_call_count = 0;
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              http_call_count++;
+                              return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                            });
+
+  auto result = FetchAllModelInfosWithCachedModels(client, {}, logger);
+
+  // Only the primary FetchAllModelInfos call — no extra fetch for cached models.
+  EXPECT_EQ(http_call_count, 1);
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].model_id, "phi-4-mini:3");
+}
+
+TEST(AzureCatalogClientTest, WithCachedModels_AlreadyInCatalog_NoExtraFetch) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int http_call_count = 0;
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              http_call_count++;
+                              return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                            });
+
+  // The cached ID matches what's already in the catalog — no extra fetch needed.
+  auto result = FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:3"}, logger);
+
+  EXPECT_EQ(http_call_count, 1);
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].model_id, "phi-4-mini:3");
+}
+
+TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int http_call_count = 0;
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              http_call_count++;
+
+                              if (http_call_count == 1) {
+                                // Primary catalog fetch — returns phi-4-mini only.
+                                return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                              } else {
+                                // Second fetch — looking up the unresolved model by ID.
+                                auto req = nlohmann::json::parse(body);
+                                const auto& filters = req["indexEntitiesRequest"]["filters"];
+
+                                // Verify the second call uses properties/id filter.
+                                bool has_id_filter = false;
+                                for (const auto& f : filters) {
+                                  if (f["field"] == "properties/id") {
+                                    has_id_filter = true;
+                                    EXPECT_EQ(f["values"], nlohmann::json({"old-model:1"}));
+                                  }
+                                }
+
+                                EXPECT_TRUE(has_id_filter);
+
+                                return MakeOkResponse(MakeMockCatalogResponse({{"old-model", 1}}));
+                              }
+                            });
+
+  auto result = FetchAllModelInfosWithCachedModels(client, {"old-model:1"}, logger);
+
+  EXPECT_EQ(http_call_count, 2);
+  ASSERT_EQ(result.size(), 2u);
+
+  // Verify both models are present.
+  bool found_phi = false;
+  bool found_old = false;
+  for (const auto& info : result) {
+    if (info.model_id == "phi-4-mini:3") {
+      found_phi = true;
+    }
+
+    if (info.model_id == "old-model:1") {
+      found_old = true;
     }
   }
+
+  EXPECT_TRUE(found_phi);
+  EXPECT_TRUE(found_old);
 }
 
-TEST(AzureCatalogClientTest, RaisesNetworkErrorForFailedRequest) {
+TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DoesNotCreatePublicEntry) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
+  int http_call_count = 0;
   AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [](const std::string&, const std::string&) {
-                              http::HttpResponse response;
-                              response.status = 503;
-                              return response;
+                            [&](const std::string&, const std::string&) {
+                              http_call_count++;
+
+                              if (http_call_count == 1) {
+                                // Primary catalog — returns nothing matching.
+                                return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
+                              } else {
+                                // FetchModelsByIds — also returns nothing for the custom model.
+                                return MakeOkResponse(
+                                    R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                              }
                             });
+
+  auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger);
+
+  EXPECT_EQ(http_call_count, 2);
+
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result.front().model_id, "phi-4-mini:3");
+}
+
+// ========================================================================
+// Reasoning field parsing tests
+// ========================================================================
+
+TEST(AzureCatalogClientTest, ParsesReasoningFieldsCorrectly) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+
+  const char* mock_response = R"({
+    "indexEntitiesResponse": {
+      "totalCount": 1,
+      "value": [{
+        "assetId": "azureml://registries/azureml/models/Phi-4-mini-reasoning-generic-cpu/versions/1",
+        "entityId": "Phi-4-mini-reasoning-generic-cpu:1",
+        "annotations": {
+          "tags": {
+            "alias": "Phi-4-mini-reasoning",
+            "foundryLocal": "",
+            "task": "chat-completion",
+            "supportsToolCalling": "true",
+            "supportsReasoning": "true",
+            "reasoningStart": "<think>",
+            "reasoningEnd": "</think>"
+          },
+          "systemCatalogData": {
+            "publisher": "Microsoft",
+            "displayName": "Phi-4 Mini Reasoning"
+          }
+        },
+        "properties": {
+          "name": "Phi-4-mini-reasoning-generic-cpu",
+          "version": 1,
+          "variantInfo": {
+            "parents": [{"assetId": "azureml://registries/azureml/models/Phi-4-mini-reasoning/versions/1"}],
+            "variantMetadata": {
+              "modelType": "ONNX",
+              "device": "cpu",
+              "executionProvider": "CPUExecutionProvider"
+            }
+          }
+        }
+      }],
+      "nextSkip": 0,
+      "continuationToken": ""
+    }
+  })";
+
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(mock_response);
+                            });
+
+  auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 1u);
+
+  const auto& info = model_infos[0];
+
+  // Core identity
+  EXPECT_EQ(info.model_id, "Phi-4-mini-reasoning-generic-cpu:1");
+  EXPECT_EQ(info.alias, "Phi-4-mini-reasoning");
+
+  // Reasoning fields
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR), "<think>");
+  EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR), "</think>");
+
+  // Tool calling
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+}
+
+// Verify that mixed-case device tags and bool tag values parse the same as canonical case.
+TEST(AzureCatalogClientTest, ParsesTagsCaseInsensitively) {
+  AllDevicesEpDetector ep;
+  StderrLogger logger;
+
+  // Three models with mixed-case device strings ("GpU", "NPU", "Cpu") and mixed-case
+  // bool strings ("TRUE", "False", "tRuE") to exercise the case-insensitive paths in
+  // ParseDeviceType and the bool-tag parser.
+  // Each request carries a device filter — return only the matching model so the
+  // 3 per-device requests (AllDevicesEpDetector) produce exactly 3 results total.
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              auto req = nlohmann::json::parse(body);
+
+                              std::string device_filter;
+                              for (const auto& f : req["indexEntitiesRequest"]["filters"]) {
+                                if (f["field"] == "properties/variantInfo/variantMetadata/device") {
+                                  device_filter = f["values"][0].get<std::string>();
+                                  break;
+                                }
+                              }
+
+                              if (device_filter == "gpu") {
+                                return MakeOkResponse(R"({
+        "indexEntitiesResponse": {
+          "totalCount": 1,
+          "value": [{
+            "assetId": "azureml://registries/azureml/models/m-gpu/versions/1",
+            "entityId": "m-gpu:1",
+            "annotations": {"tags": {"alias": "m-gpu", "supportsToolCalling": "TRUE"}},
+            "properties": {
+              "name": "m-gpu", "version": 1,
+              "variantInfo": {
+                "parents": [],
+                "variantMetadata": {"device": "GpU", "executionProvider": "CUDAExecutionProvider"}
+              }
+            }
+          }],
+          "nextSkip": 0,
+          "continuationToken": ""
+        }
+      })");
+                              }
+
+                              if (device_filter == "npu") {
+                                return MakeOkResponse(R"({
+        "indexEntitiesResponse": {
+          "totalCount": 1,
+          "value": [{
+            "assetId": "azureml://registries/azureml/models/m-npu/versions/1",
+            "entityId": "m-npu:1",
+            "annotations": {"tags": {"alias": "m-npu", "supportsToolCalling": "False"}},
+            "properties": {
+              "name": "m-npu", "version": 1,
+              "variantInfo": {
+                "parents": [],
+                "variantMetadata": {"device": "NPU", "executionProvider": "QNNExecutionProvider"}
+              }
+            }
+          }],
+          "nextSkip": 0,
+          "continuationToken": ""
+        }
+      })");
+                              }
+
+                              // cpu
+                              return MakeOkResponse(R"({
+      "indexEntitiesResponse": {
+        "totalCount": 1,
+        "value": [{
+          "assetId": "azureml://registries/azureml/models/m-cpu/versions/1",
+          "entityId": "m-cpu:1",
+          "annotations": {"tags": {"alias": "m-cpu", "supportsReasoning": "tRuE"}},
+          "properties": {
+            "name": "m-cpu", "version": 1,
+            "variantInfo": {
+              "parents": [],
+              "variantMetadata": {"device": "Cpu", "executionProvider": "CPUExecutionProvider"}
+            }
+          }
+        }],
+        "nextSkip": 0,
+        "continuationToken": ""
+      }
+    })");
+                            });
+
+  auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 3u);
+
+  std::map<std::string, const ModelInfo*> by_id;
+  for (const auto& info : model_infos) {
+    by_id[info.model_id] = &info;
+  }
+
+  ASSERT_TRUE(by_id.count("m-gpu:1"));
+  EXPECT_EQ(by_id["m-gpu:1"]->device_type, DeviceType::kGPU);
+  EXPECT_EQ(by_id["m-gpu:1"]->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+
+  ASSERT_TRUE(by_id.count("m-npu:1"));
+  EXPECT_EQ(by_id["m-npu:1"]->device_type, DeviceType::kNPU);
+  EXPECT_EQ(by_id["m-npu:1"]->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+
+  ASSERT_TRUE(by_id.count("m-cpu:1"));
+  EXPECT_EQ(by_id["m-cpu:1"]->device_type, DeviceType::kCPU);
+  EXPECT_EQ(by_id["m-cpu:1"]->int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 1);
+}
+
+// ========================================================================
+// Region detection tests
+// ========================================================================
+
+namespace {
+
+// Build an HTTP response with a single cluster header and the given status.
+http::HttpResponse MakeProbeResponse(int status, const std::string& cluster_header) {
+  http::HttpResponse resp;
+  resp.status = status;
+  if (!cluster_header.empty()) {
+    resp.headers["azureml-served-by-cluster"] = cluster_header;
+  }
+  resp.body = R"({"value":[]})";
+  return resp;
+}
+
+}  // namespace
+
+TEST(AzureCatalogClientTest, DetectRegionParsesClusterHeader) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string probe_url;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                probe_url = url;
+                                return MakeProbeResponse(200, "vienna-westus2-01");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(probe_url, "https://api.catalog.azureml.ms/asset-gallery/v1.0/models");
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/westus2/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectRegionMissingHeaderDefaultsToCentralUs) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                return MakeProbeResponse(200, /*cluster_header=*/"");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/centralus/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectRegionMalformedHeaderDefaultsToCentralUs) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                return MakeProbeResponse(200, "not-a-cluster-name");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/centralus/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectRegionProbeFailureDefaultsToCentralUs) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger,
+                            [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                return MakeProbeResponse(503, "vienna-westus2-01");
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})");
+                            });
+
+  client.FetchAllModels();
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/centralus/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, ExplicitRegionOverridesDetection) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  bool probe_called = false;
+  std::string catalog_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string&) {
+                              if (url == "https://api.catalog.azureml.ms/asset-gallery/v1.0/models") {
+                                probe_called = true;
+                              }
+
+                              catalog_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})"); }, "westeurope");
+
+  client.FetchAllModels();
+  EXPECT_FALSE(probe_called);
+  EXPECT_EQ(catalog_url, "https://ai.azure.com/api/westeurope/ux/v1.0/entities/crossRegion");
+}
+
+// ========================================================================
+// Region-aware catalog URL tests
+// ========================================================================
+
+TEST(AzureCatalogClientTest, ActiveRegionDrivesCatalogUrl) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string captured_url;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string&) {
+                              captured_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})"); }, "westus2");
+
+  client.FetchAllModels();
+  EXPECT_EQ(captured_url, "https://ai.azure.com/api/westus2/ux/v1.0/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, NonRegionalUrlUsedVerbatimEvenWithRegion) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::string captured_url;
+  AzureCatalogClient client("https://custom.example.com/catalog", "", ep, logger, [&](const std::string& url, const std::string&) {
+                              captured_url = url;
+                              return MakeOkResponse(
+                                  R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})"); }, "westus2");
+
+  client.FetchAllModels();
+  EXPECT_EQ(captured_url, "https://custom.example.com/catalog/entities/crossRegion");
+}
+
+TEST(AzureCatalogClientTest, DetectedRegionStampedOnModels) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) { return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}})); }, "westus2");
+
+  auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 1u);
+  EXPECT_EQ(infos[0].detected_region, "westus2");
+}
+
+TEST(AzureCatalogClientTest, RegionStampedPerFilterSetAfterFallback) {
+  CpuGpuEpDetector ep;
+  StderrLogger logger;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string& body) {
+    http::HttpResponse resp;
+    if (body.find("\"cpu\"") != std::string::npos && url.find("/api/eastus/") != std::string::npos) {
+      resp.status = 503;
+      return resp;
+    }
+
+    if (body.find("\"cpu\"") != std::string::npos && url.find("/api/eastus2/") != std::string::npos) {
+      resp.status = 200;
+      resp.body = MakeMockCatalogResponse({{"cpu-model", 1}});
+      return resp;
+    }
+
+    if (body.find("\"gpu\"") != std::string::npos && url.find("/api/eastus2/") != std::string::npos) {
+      resp.status = 503;
+      return resp;
+    }
+
+    if (body.find("\"gpu\"") != std::string::npos && url.find("/api/eastus/") != std::string::npos) {
+      resp.status = 200;
+      resp.body = MakeMockCatalogResponse({{"gpu-model", 1}});
+      return resp;
+    }
+
+    resp.status = 500;
+    return resp; }, "eastus");
+
+  auto infos = client.FetchAllModelInfos();
+  ASSERT_EQ(infos.size(), 2u);
+
+  std::map<std::string, std::string> region_by_id;
+  for (const auto& info : infos) {
+    region_by_id[info.model_id] = info.detected_region;
+  }
+
+  EXPECT_EQ(region_by_id["cpu-model:1"], "eastus2");
+  EXPECT_EQ(region_by_id["gpu-model:1"], "eastus");
+}
+
+// ========================================================================
+// Catalog region fallback
+// ========================================================================
+
+TEST(AzureCatalogClientTest, Fallback_RetriesNextRegionAndPinsPagination) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  std::vector<std::string> attempted_urls;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string& url, const std::string&) {
+    attempted_urls.push_back(url);
+    http::HttpResponse resp;
+    // First attempt (eastus) is region-unhealthy; subsequent regions are healthy.
+    if (attempted_urls.size() == 1) {
+      resp.status = 503;
+      return resp;
+    }
+    resp.status = 200;
+    resp.body = R"({"indexEntitiesResponse":{"totalCount":0,"value":[],"nextSkip":0,"continuationToken":""}})";
+    return resp; }, "eastus");
+
+  auto models = client.FetchAllModels();
+  ASSERT_GE(attempted_urls.size(), 2u);
+  EXPECT_TRUE(attempted_urls[0].find("/api/eastus/") != std::string::npos);
+  EXPECT_TRUE(attempted_urls[1].find("/api/eastus2/") != std::string::npos)
+      << "Expected fallback to the first proximal region. Got: " << attempted_urls[1];
+}
+
+TEST(AzureCatalogClientTest, Fallback_DisabledDoesNotRetry) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int calls = 0;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) {
+    ++calls;
+    http::HttpResponse resp;
+    resp.status = 503;  // unhealthy, but fallback is off → no retry, filter set is skipped
+    return resp; }, "eastus", /*region_fallback_enabled=*/false);
+
+  auto models = client.FetchAllModels();
+  EXPECT_EQ(calls, 1);
+  EXPECT_TRUE(models.empty());
+}
+
+TEST(AzureCatalogClientTest, Fallback_PermanentCatalogErrorThrows) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int calls = 0;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) {
+    ++calls;
+    http::HttpResponse resp;
+    resp.status = 404;
+    return resp; }, "eastus");
 
   try {
     client.FetchAllModels();
-    FAIL() << "Expected catalog request to throw";
-  } catch (const fl::Exception& exception) {
-    EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
+    FAIL() << "Expected fl::Exception for permanent catalog HTTP failure";
+  } catch (const fl::Exception& e) {
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
   }
+  EXPECT_EQ(calls, 1);
+}
+
+TEST(AzureCatalogClientTest, Fallback_MidPaginationFailureDoesNotCommitPartialFilterSet) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  int calls = 0;
+  AzureCatalogClient client("https://ai.azure.com/api/eastus/ux/v1.0", "", ep, logger, [&](const std::string&, const std::string&) {
+    ++calls;
+    http::HttpResponse resp;
+    if (calls == 1) {
+      resp.status = 200;
+      resp.body = R"({
+        "indexEntitiesResponse": {
+          "totalCount": 1,
+          "value": [{
+            "assetId": "azureml://registries/azureml/models/page-one-model/versions/1",
+            "entityId": "page-one-model:1",
+            "annotations": {"tags": {"alias": "page-one-model"}},
+            "properties": {
+              "name": "page-one-model",
+              "version": 1,
+              "variantInfo": {
+                "parents": [],
+                "variantMetadata": {"device": "cpu", "executionProvider": "CPUExecutionProvider"}
+              }
+            }
+          }],
+          "nextSkip": 50,
+          "continuationToken": "next"
+        }
+      })";
+      return resp;
+    }
+
+    resp.status = 503;
+    return resp; }, "eastus");
+
+  auto models = client.FetchAllModels();
+  EXPECT_EQ(calls, 2);
+  EXPECT_TRUE(models.empty());
 }
