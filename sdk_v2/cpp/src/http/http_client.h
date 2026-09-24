@@ -25,7 +25,6 @@ struct HttpResponse {
 
 struct HttpRequestOptions {
   std::string user_agent;
-  std::map<std::string, std::string> headers;
   std::chrono::milliseconds timeout = std::chrono::seconds(30);
   bool close_connection = false;
 };

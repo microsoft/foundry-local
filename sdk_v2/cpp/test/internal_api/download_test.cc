@@ -1335,7 +1335,7 @@ TEST(EndToEndTest, DISABLED_LiveCatalogAndDownload) {
   // 1. Fetch the full model list from the Azure catalog
   AllDevicesEpDetector ep;
   StderrLogger logger;
-  AzureCatalogClient catalog("https://api.catalog.azureml.ms/asset-gallery/v1.0/models", "''", ep, logger);
+  AzureCatalogClient catalog("https://ai.azure.com/api/eastus/ux/v1.0", "''", ep, logger);
   auto models = catalog.FetchAllModelInfos();
 
   ASSERT_GT(models.size(), 50u)

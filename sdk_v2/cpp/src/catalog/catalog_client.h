@@ -56,14 +56,19 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     const std::vector<std::string>& cached_model_ids,
     ILogger& logger);
 
-/// Construct a client for the live Azure Foundry catalog (Asset Gallery API).
+/// Construct a client for the live Azure Foundry catalog.
 /// - `ep_detector` limits results to models supported by this machine.
-/// - `filter_override` overrides the deploymentOptions filter (default `Foundry Local on Devices`).
+/// - `filter_override` sets the foundryLocal tag filter.
+/// - `catalog_region` controls regional routing: empty/"auto" means detect it,
+///   any other value is an explicit region.
+/// - `disable_region_fallback` disables cross-region retries.
 std::unique_ptr<ICatalogClient> MakeCatalogClient(
     const std::string& base_url,
     const std::string& filter_override,
     const IEpDetector& ep_detector,
     ILogger& logger,
-    const std::string& cache_directory);
+    const std::string& cache_directory,
+    const std::string& catalog_region = "",
+    bool disable_region_fallback = false);
 
 }  // namespace fl
