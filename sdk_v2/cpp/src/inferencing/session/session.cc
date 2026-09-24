@@ -13,6 +13,7 @@
 #include "model.h"
 #include "telemetry/telemetry.h"
 #include "telemetry/telemetry_action_tracker.h"
+#include "util/scope_guard.h"
 #include "utils.h"
 
 #include <fmt/format.h>
@@ -21,6 +22,29 @@
 #include <memory>
 
 namespace fl {
+
+namespace {
+
+[[noreturn]] void ThrowCancellation(const Request& request) {
+  switch (request.GetCancellationReason()) {
+    case Request::CancellationReason::StreamingCallback:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled by streaming callback");
+    case Request::CancellationReason::StreamingCallbackException: {
+      const auto detail = request.CancellationDetail();
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               detail.empty() ? "streaming callback threw an exception"
+                              : fmt::format("streaming callback threw an exception: {}", detail));
+    }
+    case Request::CancellationReason::SessionShutdown:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled because the session is shutting down");
+    case Request::CancellationReason::None:
+    case Request::CancellationReason::Caller:
+    default:
+      FL_THROW(FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED, "request cancelled by caller");
+  }
+}
+
+}  // namespace
 
 Session::Session(const fl::Model& catalog_model, ILogger& logger, ITelemetry& telemetry,
                  bool allow_concurrent_requests)
@@ -145,50 +169,103 @@ void Session::ProcessRequest(const Request& request, Response& response) {
     lock.lock();
   }
 
+  bool admitted = false;
+  bool registered = false;
+  auto finish_lifecycle = [&]() noexcept {
+    if (!admitted) {
+      return;
+    }
+
+    if (registered) {
+      std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+      active_requests_.erase(&request);
+      registered = false;
+    }
+
+    request.PublishCompletion();
+    admitted = false;
+  };
+  ScopeGuard lifecycle_guard([&]() noexcept { finish_lifecycle(); });
+
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
-    active_requests_.insert(&request);
+    if (!request.TryBegin()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request is already being processed");
+    }
+    admitted = true;
 
-    // If Cancel() already ran (shutdown began before this request was admitted), stamp it now so the
-    // generation loop exits at its first poll instead of running an uncanceled turn.
+    // A late shutdown admission must first claim the request, then be canceled under the same lock that protects
+    // active registration. This keeps TryBegin as the sole admission gate while preventing backend entry.
     if (session_canceled_) {
-      request.canceled.store(true, std::memory_order_relaxed);
+      request.Cancel(Request::CancellationReason::SessionShutdown);
     }
-  }
 
-  // RAII: deregister the request even if ProcessRequestImpl throws, so Cancel() never
-  // dereferences a dangling Request after this call unwinds.
-  struct ActiveRequestGuard {
-    Session& session;
-    const Request& request;
-    ~ActiveRequestGuard() {
-      std::lock_guard<std::mutex> active_lock(*session.active_requests_mutex_);
-      session.active_requests_.erase(&request);
-    }
-  } active_guard{*this, request};
+    active_requests_.insert(&request);
+    registered = true;
+  }
 
   ActionTracker tracker(Action::kSessionProcessRequest, telemetry_);
   tracker.SetModelId(CatalogModel().Id());
 
+  Response staged_response;
   try {
+    if (request.IsCancellationRequested()) {
+      ThrowCancellation(request);
+    }
+
     ValidateRequestItems(request);
 
-    ProcessRequestImpl(request, response);
+    ProcessRequestImpl(request, staged_response);
 
+    if (!request.TryComplete()) {
+      ThrowCancellation(request);
+    }
+
+    response = std::move(staged_response);
+    finish_lifecycle();
+    lifecycle_guard.Dismiss();
     tracker.SetStatus(ActionStatus::kSuccess);
   } catch (const std::exception& ex) {
-    tracker.RecordException(ex);
-    throw;
+    if (request.TryComplete()) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(ex);
+      throw;
+    }
+
+    try {
+      ThrowCancellation(request);
+    } catch (const std::exception& cancellation) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(cancellation);
+      throw;
+    }
+  } catch (...) {
+    if (request.TryComplete()) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      throw;
+    }
+
+    try {
+      ThrowCancellation(request);
+    } catch (const std::exception& cancellation) {
+      finish_lifecycle();
+      lifecycle_guard.Dismiss();
+      tracker.RecordException(cancellation);
+      throw;
+    }
   }
 }
 
 void Session::Cancel() {
-  // Only flip cancel flags — never block or join — so this is safe to call while the
+  // Only update request lifecycle state — never block or join — so this is safe to call while the
   // SessionManager holds its own lock during shutdown. Generation loops poll the flag.
   std::lock_guard<std::mutex> lock(*active_requests_mutex_);
   session_canceled_ = true;
   for (const Request* r : active_requests_) {
-    r->canceled.store(true, std::memory_order_relaxed);
+    r->Cancel(Request::CancellationReason::SessionShutdown);
   }
 }
 

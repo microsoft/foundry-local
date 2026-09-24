@@ -126,17 +126,20 @@ class StreamingResponse:
         except RuntimeError:
             pass
 
-    def _drain_and_join(self) -> None:
-        # Drain any pending items (so their native handles are released) and
-        # wait for the worker to publish _DONE.
+    def _cancel_drain_and_join(self) -> None:
+        # Cancellation is an idle no-op, so retry while the worker crosses native admission. Timed joins leave the
+        # worker and callback threads free to make progress while ensuring early close cannot miss that boundary.
+        while self._thread is not None and self._thread.is_alive():
+            self._request.cancel()
+            self._thread.join(timeout=0.01)
+
+        # Drain any pending items so their native handles are released.
         while True:
             msg = self._queue.get()
             if msg is _DONE:
                 break
             # _StreamError / Item: drop reference; Item handles release via __del__.
             del msg
-        if self._thread is not None:
-            self._thread.join()
 
     def __iter__(self) -> Iterator["Item"]:
         from foundry_local_sdk.exception import FoundryLocalException
@@ -169,11 +172,7 @@ class StreamingResponse:
             if self._state is _State.ITERATING:
                 # Caller broke / errored out of the loop. Cancel the in-flight
                 # request, drain the queue, join the worker, and release the lock.
-                try:
-                    self._request.cancel()
-                except Exception:
-                    pass
-                self._drain_and_join()
+                self._cancel_drain_and_join()
                 self._state = _State.CANCELLED
                 # Cancelled streams produce an undefined final Response — discard it.
                 if self._final_response is not None:
@@ -221,11 +220,7 @@ class StreamingResponse:
         try:
             if self._state in (_State.NEW, _State.ITERATING):
                 # Iterator was never run, or abandoned without entering its finally.
-                try:
-                    self._request.cancel()
-                except Exception:
-                    pass
-                self._drain_and_join()
+                self._cancel_drain_and_join()
                 self._state = _State.CANCELLED
             if self._final_response is not None and not self._final_consumed:
                 try:

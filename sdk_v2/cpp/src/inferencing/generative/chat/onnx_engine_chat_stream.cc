@@ -23,10 +23,10 @@ std::optional<flFinishReason> MapFinishReason(OgaFinishReason reason) {
     case OgaFinishReason_MaxGeneratedTokens:
     case OgaFinishReason_MaxSessionTokens:
       return FOUNDRY_LOCAL_FINISH_LENGTH;
-    case OgaFinishReason_Cancelled:
-      return FOUNDRY_LOCAL_FINISH_NONE;
     case OgaFinishReason_Failed:
       return FOUNDRY_LOCAL_FINISH_ERROR;
+    case OgaFinishReason_Cancelled:
+      return std::nullopt;
     default:
       return std::nullopt;
   }
@@ -53,6 +53,16 @@ std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason) {
     default:
       return std::nullopt;
   }
+}
+
+ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult& result) {
+  return ChatTurnUsage{
+      prompt_tokens,
+      static_cast<int>(result.generated_tokens),
+      MapFinishReason(static_cast<OgaFinishReason>(result.finish_reason)),
+      MapTerminationCause(result.finish_reason),
+      static_cast<int>(result.cached_prompt_tokens),
+  };
 }
 
 }  // namespace onnx_engine_chat_stream_internal
@@ -183,7 +193,7 @@ int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& n
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
-  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx.tools_json);
+  auto prompt = BuildChatPrompt(full_messages, model, tool_ctx);
   auto sequences = EncodePrompt(prompt, model);
   const int count = static_cast<int>(sequences->SequenceCount(0));
   const auto* data = sequences->SequenceData(0);
@@ -235,13 +245,8 @@ void OnnxEngineChatStream::ResetTurnDecoder() {
 }
 
 std::optional<ChatTurnUsage> OnnxEngineChatStream::GetTurnUsage() const {
-  const auto result = engine_.GetTurnResult(conversation_);
-  return ChatTurnUsage{
-      prompt_token_count_,
-      static_cast<int>(result.generated_tokens),
-      MapFinishReason(result.finish_reason),
-      onnx_engine_chat_stream_internal::MapTerminationCause(result.finish_reason),
-  };
+  return onnx_engine_chat_stream_internal::BuildTurnUsage(
+      prompt_token_count_, engine_.GetTurnResult(conversation_));
 }
 
 std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
@@ -267,7 +272,7 @@ std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model does not own a chat Engine");
   }
 
-  auto prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  auto prompt = BuildChatPrompt(messages, model, tool_ctx);
   auto sequences = EncodePrompt(prompt, model);
   const int prompt_token_count = static_cast<int>(sequences->SequenceCount(0));
   const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, *sequences, tool_ctx, model);
