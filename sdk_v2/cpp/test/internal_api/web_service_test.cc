@@ -1002,12 +1002,12 @@ TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConvers
 
   httplib::Client client(base_url_);
   client.set_read_timeout(10, 0);
-  bool received_event = false;
-  bool was_active = false;
+  bool received_delta = false;
   const json streaming_request = {
       {"model", std::string(kResponseStoreTestModelAlias) + ":1"},
       {"previous_response_id", root_id},
       {"input", "Continue the conversation"},
+      {"store", true},
       {"max_output_tokens", 512},
       {"stream", true},
   };
@@ -1030,19 +1030,16 @@ TEST_F(WebServiceTest, ClosingResponsesStreamCancelsInferenceAndPreservesConvers
         }
 
         created_response_id = json::parse(events.substr(json_start, json_end - json_start)).at("response").at("id");
-        received_event = true;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (session_manager_->ActiveCount() == 0 && std::chrono::steady_clock::now() < deadline) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (events.find("event: response.output_text.delta\ndata: ") == std::string::npos) {
+          return true;
         }
 
-        was_active = session_manager_->ActiveCount() > 0;
+        received_delta = true;
         return false;  // close the socket before the generation completes
       });
 
   EXPECT_FALSE(result);
-  ASSERT_TRUE(received_event);
-  ASSERT_TRUE(was_active) << "The SSE connection closed before inference started";
+  ASSERT_TRUE(received_delta) << "The SSE connection closed before a generated event";
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (session_manager_->ActiveCount() > 0 && std::chrono::steady_clock::now() < deadline) {

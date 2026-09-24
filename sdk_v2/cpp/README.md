@@ -296,7 +296,10 @@ manager.StopWebService();
 
 Streaming chat completions, Responses, and audio transcriptions cancel their active inference when the SSE client
 disconnects. The service sends SSE keepalive comments during token silence so a dropped connection can be detected
-without waiting for the next token. A disconnected stream cannot be resumed; non-streaming requests are unchanged.
+without waiting for the next token. Undrained streams are limited to 1 MiB of buffered events; exceeding the limit
+cancels inference and replaces pending events with a terminal SSE error. A disconnected stream cannot be resumed;
+non-streaming requests are unchanged. Engine cancellation is cooperative between inference steps; an in-progress
+prefill step cannot be interrupted before it returns.
 
 Configure with `--skip_service` when the web service is not required; this removes its
 oat++ dependency from the build.

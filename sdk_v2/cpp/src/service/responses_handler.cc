@@ -745,21 +745,24 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
           turn.response_id, turn.created_at, turn.model_name, params_copy, std::move(closed_items), full_text,
           bg_response.usage);
 
-      // Publish first when storage was requested. If deletion invalidated the lease, PublishResponse throws and the
-      // stream ends with response.failed rather than claiming an unstored descendant completed successfully.
-      if (should_store) {
-        nlohmann::json response_json = completed_response;
-        PublishResponse(PublishRequest{.store = store,
-                                       .session_manager = session_manager,
-                                       .logger = logger,
-                                       .lease = lease,
-                                       .registration = reg,
-                                       .session = std::move(session),
-                                       .response_id = turn.response_id,
-                                       .model_id = turn.model_id,
-                                       .response = std::move(response_json),
-                                       .input_items = ResponseConverter::ToInputItems(req_copy),
-                                       .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
+      // The stream lock makes publication and disconnect mutually exclusive. If deletion invalidated the lease,
+      // PublishResponse throws and the stream ends with response.failed instead of claiming an unstored completion.
+      if (should_store && !stream->RunIfConnected([&] {
+            nlohmann::json response_json = completed_response;
+            PublishResponse(PublishRequest{.store = store,
+                                           .session_manager = session_manager,
+                                           .logger = logger,
+                                           .lease = lease,
+                                           .registration = reg,
+                                           .session = std::move(session),
+                                           .response_id = turn.response_id,
+                                           .model_id = turn.model_id,
+                                           .response = std::move(response_json),
+                                           .input_items = ResponseConverter::ToInputItems(req_copy),
+                                           .raw_envelope_call_ids = std::move(raw_envelope_call_ids)});
+          })) {
+        stream->Finish();
+        return;
       }
 
       StreamEvent completed;
