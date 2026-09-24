@@ -32,9 +32,9 @@ import type { Response } from "./response.js";
 /** Options accepted by streaming Session APIs. */
 export interface StreamOptions {
   /**
-   * Optional cancellation signal. When the signal aborts, the underlying
-   * `Request` is cancelled and the async iterator rejects with an `Error`
-   * whose `name === "AbortError"` (mirroring the Web/Node standard).
+   * Optional cancellation signal. Aborting removes work that is still waiting in the native session FIFO or cancels
+   * active native processing, and the iterator rejects with an `Error` whose `name === "AbortError"`. A signal already
+   * aborted when this method is called rejects before native work is submitted.
    */
   readonly signal?: AbortSignal;
 }
@@ -45,10 +45,10 @@ export interface StreamOptions {
  * once the native call completes — carrying stop reason, usage, and any
  * non-streamed items (e.g. the final aggregated text item).
  *
- * `response` settles after the iterator finishes draining. It rejects with
- * the same error the iterator would throw (including `AbortError` when the
- * stream is cancelled, and `OperationCancelled` when the consumer breaks
- * early without an `AbortSignal`).
+ * `response` settles after the native call completes and all queued item callbacks have run. Breaking iteration early
+ * requests cancellation of an active native invocation, but native completion can win that race. A request still
+ * waiting in the addon's per-session queue is removed when its signal aborts. When cancellation wins, `response`
+ * rejects with `AbortError` for an aborted signal or `OperationCancelled` for an early break.
  */
 export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
@@ -111,18 +111,20 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
  * Drive a native streaming session and yield each item to the consumer.
  * Handles backpressure (the JS-side queue grows; the native TSFN backpressure
  * caps producer-side queueing), abort signal wiring, error mapping, and
- * deterministic cleanup on early break.
+ * cleanup on early break.
  *
  * The native call starts eagerly so the returned `response` promise is
  * meaningful even if the caller never iterates (e.g. awaits `.response`
- * directly). The promise settles only after the consumer has fully drained
- * the iterator, mirroring native finalize-on-drain semantics.
+ * directly). The promise settles after the native call and queued item callbacks complete, independently of whether the
+ * consumer drains the JS iterator.
  */
 function streamItems(native: NativeSession, request: Request, signal: AbortSignal | undefined): StreamingResponse {
   const queue: Item[] = [];
   let waiter: (() => void) | null = null;
   let done = false;
   let nativeError: unknown = null;
+  let cancelQueued = (): boolean => false;
+  let cancellationRetry: ReturnType<typeof setTimeout> | undefined;
 
   const wake = (): void => {
     if (waiter !== null) {
@@ -132,11 +134,33 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
     }
   };
 
-  const onAbort = (): void => {
+  const cancelUntilSettled = (): void => {
+    if (done || cancellationRetry !== undefined) {
+      return;
+    }
     try {
       request.cancel();
     } catch {
       // Cancel is best-effort; the request may already be complete.
+    }
+    if (!done) {
+      cancellationRetry = setTimeout(() => {
+        cancellationRetry = undefined;
+        cancelUntilSettled();
+      }, 10);
+    }
+  };
+
+  const stopCancellationRetry = (): void => {
+    if (cancellationRetry !== undefined) {
+      clearTimeout(cancellationRetry);
+      cancellationRetry = undefined;
+    }
+  };
+
+  const onAbort = (): void => {
+    if (!cancelQueued()) {
+      cancelUntilSettled();
     }
   };
   if (signal !== undefined) {
@@ -176,9 +200,12 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
       queue.push(item as Item);
       wake();
     };
-    native.processStreamingRequest(nativeReq, onItem).then(
+    const nativePromise = native.processStreamingRequest(nativeReq, onItem);
+    cancelQueued = nativePromise.cancelQueued;
+    nativePromise.then(
       (resp: unknown) => {
         done = true;
+        stopCancellationRetry();
         responseResolve(resp as Response);
         wake();
       },
@@ -186,6 +213,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
         const mapped = mapError(err);
         nativeError = mapped;
         done = true;
+        stopCancellationRetry();
         responseReject(mapped);
         wake();
       },
@@ -219,11 +247,7 @@ function streamItems(native: NativeSession, request: Request, signal: AbortSigna
         // call settle so the response promise observers don't hang. The
         // response promise will reject with the cancellation error via the
         // native `.then` error handler.
-        try {
-          request.cancel();
-        } catch {
-          // ignore
-        }
+        cancelUntilSettled();
         while (!done) {
           await new Promise<void>((resolve) => {
             waiter = resolve;
@@ -276,10 +300,11 @@ export abstract class Session {
    * `Response` (stop reason, usage, aggregate text item, etc.) once the
    * native call completes.
    *
-   * Cancellation: pass `{ signal }`; aborting the signal cancels the native
-   * request and causes the iterator to throw an `Error` with
-   * `name === "AbortError"`. Breaking out of the `for await` loop also
-   * cancels the underlying request.
+   * Cancellation: pass `{ signal }`; aborting removes queued work or cancels an active native request and causes the
+   * iterator to throw an `Error` with `name === "AbortError"`. A signal already aborted at call time rejects before
+   * submission.
+   * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
+   * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
    *
    * Non-cancellation failures throw a `FoundryLocalError`.
    */

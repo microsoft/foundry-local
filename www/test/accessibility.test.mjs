@@ -91,6 +91,57 @@ test('model filter results are announced through a live status region', () => {
 	);
 });
 
+test('sort-order control has a purpose-based accessible name', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/aria-label=\{`Sort order: \$\{sortOrder === 'asc' \? 'ascending' : 'descending'\}`\}/
+	);
+});
+
+test('execution device filters have a shared native group label', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+
+	assert.match(
+		modelFilters,
+		/<fieldset>\s*<legend[^>]*>Execution Device<\/legend>[\s\S]*?\{#each availableDevices as device\}/
+	);
+});
+
+test('device and SDK selectors expose their pressed state', () => {
+	const modelFilters = readSource('../src/routes/models/components/ModelFilters.svelte');
+	const installCommand = readSource('../src/lib/components/install-command.svelte');
+
+	assert.match(modelFilters, /aria-pressed=\{selectedDevices\.includes\(device\)\}/);
+	assert.match(installCommand, /aria-pressed=\{activeTab === tab\.key\}/);
+});
+
+test('ModelDetailsModal describes Copy ID buttons with visible model IDs', () => {
+	const modelDetailsModal = readSource('../src/routes/models/components/ModelDetailsModal.svelte');
+
+	assert.match(modelDetailsModal, /id=\{`model-id-\$\{genericModelName\}`\}/);
+	assert.match(modelDetailsModal, /id=\{`model-id-\$\{variant\.name\}`\}/);
+	assert.match(modelDetailsModal, /aria-describedby=\{`model-id-\$\{genericModelName\}`\}/);
+	assert.match(modelDetailsModal, /aria-describedby=\{`model-id-\$\{variant\.name\}`\}/);
+	assert.doesNotMatch(modelDetailsModal, /aria-labelledby=\{`model-id-/);
+});
+
+test('model-card copy buttons describe their Foundry run commands', () => {
+	const modelCard = readSource('../src/routes/models/components/ModelCard.svelte');
+
+	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{genericModelName\}`\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{genericModelName\}`\} class="sr-only">\s*\{formatModelCommand\(genericModelName\)\}/
+	);
+	assert.match(modelCard, /aria-describedby=\{`run-command-\$\{variant\.name\}`\}/);
+	assert.match(
+		modelCard,
+		/<\/Tooltip\.Trigger>\s*<span id=\{`run-command-\$\{variant\.name\}`\} class="sr-only">\s*\{formatModelCommand\(variant\.name\)\}/
+	);
+});
+
 test('back-to-top control has a visible keyboard focus indicator', () => {
 	const backToTop = readSource('../src/lib/components/back-to-top.svelte');
 

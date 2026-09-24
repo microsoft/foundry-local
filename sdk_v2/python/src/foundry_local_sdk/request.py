@@ -103,7 +103,11 @@ class Request:
         return self
 
     def cancel(self) -> None:
-        """Signal cancellation for an in-flight request."""
+        """Cancel this request.
+
+        Only an invocation currently being processed is affected. Calling this
+        while the request is idle or after completion has no effect.
+        """
         self._check_open()
         from foundry_local_sdk._native.api import api
 

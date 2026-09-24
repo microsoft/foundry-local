@@ -139,6 +139,7 @@
 					<Button
 						variant="outline"
 						class="h-10 w-16"
+						aria-label={`Sort order: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
 						onclick={() => (sortOrder = sortOrder === 'asc' ? 'desc' : 'asc')}
 					>
 						{sortOrder === 'asc' ? '↑' : '↓'}
@@ -147,13 +148,14 @@
 			</div>
 
 			<!-- Device Filter -->
-			<div>
-				<Label>Execution Device</Label>
+			<fieldset>
+				<legend class="text-sm font-medium leading-none">Execution Device</legend>
 				<div class="flex h-10 gap-2">
 					{#each availableDevices as device}
 						<Button
 							variant={selectedDevices.includes(device) ? 'default' : 'outline'}
 							size="sm"
+							aria-pressed={selectedDevices.includes(device)}
 							onclick={() => toggleDevice(device)}
 							class="h-full flex-1"
 						>
@@ -162,7 +164,7 @@
 						</Button>
 					{/each}
 				</div>
-			</div>
+			</fieldset>
 
 			<!-- Family Filter -->
 			<div>

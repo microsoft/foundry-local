@@ -770,7 +770,7 @@ TEST(ResponsesJsonTest, FunctionCallInputItemParsesInsideAResponseCreateParams) 
   EXPECT_EQ(call->arguments, R"({"city":"Seattle"})");
 }
 
-TEST(ResponsesJsonTest, ReasoningTextIsNeverReplayedButItsTurnBoundaryIs) {
+TEST(ResponsesJsonTest, ReasoningTextIsPreservedAsTypedInput) {
   auto j = nlohmann::json::parse(R"({
     "model": "test-model",
     "input": [
@@ -785,11 +785,9 @@ TEST(ResponsesJsonTest, ReasoningTextIsNeverReplayedButItsTurnBoundaryIs) {
   ASSERT_NE(items, nullptr);
   ASSERT_EQ(items->size(), 2u);
 
-  // The reasoning item becomes a content-free assistant message: the text stays private, the turn boundary does not.
-  auto* boundary = std::get_if<InputMessage>(&items->front());
-  ASSERT_NE(boundary, nullptr);
-  EXPECT_EQ(boundary->role, "assistant");
-  EXPECT_TRUE(boundary->content.empty());
+  auto* reasoning = std::get_if<ReasoningInputItem>(&items->front());
+  ASSERT_NE(reasoning, nullptr);
+  EXPECT_EQ(reasoning->text, "private");
 
   auto* message = std::get_if<InputMessage>(&(*items)[1]);
   ASSERT_NE(message, nullptr);
@@ -797,12 +795,14 @@ TEST(ResponsesJsonTest, ReasoningTextIsNeverReplayedButItsTurnBoundaryIs) {
   EXPECT_EQ(std::get<InputTextContent>(message->content.front()).text, "Visible answer");
 }
 
-TEST(ResponsesJsonTest, ReasoningSummaryTextNeverBecomesReplayableContent) {
-  // Whatever the reasoning item carries, none of it reaches the parsed input.
+TEST(ResponsesJsonTest, ReasoningSummaryPartsAreConcatenatedInOrder) {
   auto j = nlohmann::json::parse(R"({
     "model": "test-model",
     "input": [
-      {"type":"reasoning","id":"reasoning_1","summary":[{"type":"summary_text","text":"private scratchpad"}]}
+      {"type":"reasoning","id":"reasoning_1","summary":[
+        {"type":"summary_text","text":"private "},
+        {"type":"summary_text","text":"scratchpad"}
+      ]}
     ]
   })");
 
@@ -811,8 +811,7 @@ TEST(ResponsesJsonTest, ReasoningSummaryTextNeverBecomesReplayableContent) {
 
   ASSERT_NE(items, nullptr);
   ASSERT_EQ(items->size(), 1u);
-  auto* boundary = std::get_if<InputMessage>(&items->front());
-  ASSERT_NE(boundary, nullptr);
-  EXPECT_EQ(boundary->role, "assistant");
-  EXPECT_TRUE(boundary->content.empty());
+  auto* reasoning = std::get_if<ReasoningInputItem>(&items->front());
+  ASSERT_NE(reasoning, nullptr);
+  EXPECT_EQ(reasoning->text, "private scratchpad");
 }
