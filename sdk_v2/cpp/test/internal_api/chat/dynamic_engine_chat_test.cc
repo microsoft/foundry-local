@@ -179,6 +179,7 @@ class DynamicEngineChatTest : public ::testing::Test {
     model_ = result.model;
     ASSERT_EQ(model_->GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kEngine);
     ASSERT_NE(model_->GetChatEngine(), nullptr);
+    ASSERT_EQ(model_->GetChatEngine()->MaxRequestLength(), 1024u);
   }
 
   static void TearDownTestSuite() {
@@ -218,8 +219,9 @@ TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce)
 
   auto session = std::make_unique<ChatSession>(CatalogModel(), ModelInstance(), *logger_, telemetry_);
   auto request = std::make_unique<Request>(MakeRequest("Count this exact prompt.", 17));
-  request->canceled.store(true, std::memory_order_relaxed);
-  EXPECT_FALSE(request->CaptureChatSnapshot().canceled.load(std::memory_order_relaxed));
+  ASSERT_TRUE(request->TryBegin());
+  ASSERT_TRUE(request->Cancel());
+  EXPECT_FALSE(request->CaptureChatSnapshot().IsCancellationRequested());
   const auto expected_prompt_tokens =
       static_cast<int64_t>(EncodeUserPrompt("Count this exact prompt.", ModelInstance()).size());
 
@@ -238,6 +240,7 @@ TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce)
   EXPECT_EQ(result.prompt_tokens, expected_prompt_tokens);
   EXPECT_EQ(result.output_reserve_tokens, 17);
   EXPECT_EQ(result.required_tokens, result.prompt_tokens + result.output_reserve_tokens);
+  EXPECT_EQ(result.context_limit_tokens, 1024);
   EXPECT_TRUE(result.fits);
   EXPECT_EQ(result.deficit_tokens, 0);
 

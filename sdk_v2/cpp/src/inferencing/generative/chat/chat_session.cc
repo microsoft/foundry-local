@@ -1244,7 +1244,18 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
     request_.reset();
     auto prepared = PrepareChatRequest(request, transcript_, base_session_options_, chat_session_options_,
                                        tool_definitions_, model_info_, model_, logger_, message_preparer_);
-    const auto context_limit = static_cast<int64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
+    auto context_limit = static_cast<int64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
+    if (prepared->backend_kind == ChatBackendKind::kEngine && prepared->media.Empty()) {
+      const auto* engine = model_.GetChatEngine();
+      if (!engine) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Engine request preflight requires a loaded chat engine");
+      }
+      if (engine->MaxRequestLength() > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)())) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "Engine max_request_length exceeds the preflight result range");
+      }
+      context_limit = static_cast<int64_t>(engine->MaxRequestLength());
+    }
+
     const auto output_reserve =
         ResolveOutputReserve(prepared->options, prepared->backend_kind, !prepared->media.Empty(),
                              prepared->prompt.prompt_token_count, context_limit);
@@ -1824,10 +1835,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   bool semantic_output_seen = false;
   bool malformed_tool_output_seen = false;
 
-  // A trailing assistant message is a prefill. If it already carries a tool call, visible text generated after it
-  // would be merged into that same turn when the client replays the response, so seed the same ordering guard used
-  // by the stateful path.
-  auto turn_guard = AssistantTurnGuard::ForReplyTo(prepared.reply_inputs, 0);
+  AssistantTurnGuard turn_guard;
 
   // Use the same typed segments for streaming and final response construction.
   auto splitter = CreateReasoningSplitter(tool_ctx, Model(), generator->PromptOpensReasoning());

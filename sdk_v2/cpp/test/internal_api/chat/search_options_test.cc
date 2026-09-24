@@ -85,6 +85,12 @@ TEST(SearchOptionsParsingTest, OutputReserveMatchesBackendGenerationPolicy) {
   EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, false, 25, 100), 2048);
   EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, true, 25, 100), 3072);
   EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 25, 100), 75);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 100, 100), 1);
+
+  const auto exhausted = ComputeRequestBudget(
+      100, ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 100, 100), 100);
+  EXPECT_FALSE(exhausted.fits);
+  EXPECT_EQ(exhausted.deficit_tokens, 1);
 }
 
 TEST(SearchOptionsParsingTest, RetainedGenerationSettingsAreBackendAware) {

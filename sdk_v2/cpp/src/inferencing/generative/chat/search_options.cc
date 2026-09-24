@@ -112,7 +112,7 @@ int64_t ResolveOutputReserve(const SearchOptions& options,
   }
 
   if (backend_kind == ChatBackendKind::kEngine && !has_media) {
-    return std::max<int64_t>(0, context_limit_tokens - prompt_tokens);
+    return std::max<int64_t>(1, context_limit_tokens - prompt_tokens);
   }
 
   return GetDefaultMaxOutputTokens(has_media);
