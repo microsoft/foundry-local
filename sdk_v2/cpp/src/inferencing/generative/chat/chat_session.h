@@ -99,8 +99,7 @@ void FlushDecodedStream(StopStringFilter* stop_filter,
   process_segments(splitter.Flush());
 }
 
-flFinishReason ResolveGeneratedFinishReason(bool canceled,
-                                            bool has_tool_calls,
+flFinishReason ResolveGeneratedFinishReason(bool has_tool_calls,
                                             bool stop_sequence_matched,
                                             bool host_output_limit_reached,
                                             std::optional<flFinishReason> backend_finish_reason,
@@ -204,23 +203,25 @@ class ChatSession : public Session {
   /// success commits the turn to the transcript.
   void ProcessRequestImpl(const Request& request, Response& response) override;
 
-  /// Build tool calling context from request parameters and a snapshot of the session's tool definitions.
+  /// Build tool calling context from merged session/request options and a snapshot of the session's tool definitions.
   ///
   /// The snapshot is supplied by the caller rather than read here so that one turn resolves its replayed calls, its
   /// prompt, and its produced calls against the same tool set.
-  ToolCallContext BuildToolCallContext(const Request& request, const std::vector<ToolDefinition>& definitions) const;
+  ToolCallContext BuildToolCallContext(const Request& request,
+                                       const KeyValuePairs& options,
+                                       const std::vector<ToolDefinition>& definitions) const;
 
   /// Build final response items from the typed segments and tool calls produced during generation.
   void ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> events,
                               const ToolCallContext& tool_ctx,
                               const SearchOptions& effective_options,
-                              bool canceled,
                               bool stop_sequence_matched,
                               bool host_output_limit_reached,
                               Response& response,
                               int prompt_tokens,
                               int total_tokens,
                               int reasoning_tokens,
+                              int cached_prompt_tokens,
                               std::optional<flFinishReason> backend_finish_reason);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
