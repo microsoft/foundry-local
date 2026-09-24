@@ -4,6 +4,7 @@
 #include "contracts/reasoning_options.h"
 
 #include "contracts/tool_definitions.h"
+#include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/chat/stop_strings.h"
 #include "items/message_item.h"
 #include "items/text_item.h"
@@ -58,19 +59,39 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
     return;
   }
 
+  auto validate_default = [](const char* key, const char* value, const char* option) {
+    try {
+      KeyValuePairs params;
+      params.Add(option, value);
+      auto parsed = SearchOptions::FromParameters(params);
+      ResolveSamplingPlan(parsed);
+      if (parsed.max_output_tokens.has_value()) {
+        ResolveMaxOutputTokens(parsed, 1);
+      }
+    } catch (const fl::Exception& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+    } catch (const std::invalid_argument& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+    } catch (const std::out_of_range& ex) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "invalid catalog model setting '", key, "': ", ex.what());
+    }
+  };
+
   auto apply_default_float = [&](const char* key, std::optional<float>& field) {
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
+        validate_default(key, val, key);
         field = std::stof(val);
       }
     }
   };
 
-  auto apply_default_int = [&](const char* key, std::optional<int>& field) {
+  auto apply_default_int = [&](const char* key, const char* option, std::optional<int>& field) {
     if (!field.has_value()) {
       const char* val = model_settings.Find(key);
       if (val) {
+        validate_default(key, val, option);
         field = std::stoi(val);
       }
     }
@@ -78,22 +99,25 @@ void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model
 
   apply_default_float("temperature", req.temperature);
   apply_default_float("top_p", req.top_p);
-  apply_default_int("max_tokens", req.max_tokens);
+  if (!req.max_completion_tokens.has_value()) {
+    apply_default_int("max_tokens", "max_output_tokens", req.max_tokens);
+  }
 
   // top_k and random_seed go through metadata (matches C# behavior)
   if (!req.metadata.has_value()) {
     req.metadata.emplace();
   }
 
-  auto apply_metadata = [&](const char* key) {
+  auto apply_metadata = [&](const char* key, const char* option) {
     const char* val = model_settings.Find(key);
     if (val && req.metadata->find(key) == req.metadata->end()) {
+      validate_default(key, val, option);
       (*req.metadata)[key] = val;
     }
   };
 
-  apply_metadata("top_k");
-  apply_metadata("random_seed");
+  apply_metadata("top_k", "top_k");
+  apply_metadata("random_seed", "seed");
 }
 
 std::string MapFinishReason(flFinishReason reason) {

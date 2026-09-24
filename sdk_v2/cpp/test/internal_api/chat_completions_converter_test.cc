@@ -151,6 +151,37 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_MetadataDoesNotOverrideE
   EXPECT_EQ(req.metadata->at("random_seed"), "42");
 }
 
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidSettingsAreInternalErrors) {
+  for (const auto& [key, value] : {std::pair{"temperature", "3"}, std::pair{"top_p", "-0.1"},
+                                   std::pair{"max_tokens", "0"}, std::pair{"top_k", "-1"},
+                                   std::pair{"random_seed", "not-an-integer"}}) {
+    ChatCompletionRequest req;
+    KeyValuePairs settings;
+    settings.Add(key, value);
+
+    try {
+      ApplyCatalogDefaults(req, settings);
+      FAIL() << "Expected an error for catalog setting " << key;
+    } catch (const fl::Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INTERNAL) << key;
+      EXPECT_NE(std::string(ex.what()).find(key), std::string::npos) << ex.what();
+    }
+  }
+}
+
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidOverriddenSettingIsNotApplied) {
+  ChatCompletionRequest req;
+  req.top_p = 0.8f;
+  req.max_completion_tokens = 128;
+  KeyValuePairs settings;
+  settings.Add("top_p", "-0.1");
+  settings.Add("max_tokens", "0");
+
+  EXPECT_NO_THROW(ApplyCatalogDefaults(req, settings));
+  EXPECT_FLOAT_EQ(*req.top_p, 0.8f);
+  EXPECT_FALSE(req.max_tokens.has_value());
+}
+
 // ========================================================================
 // MapFinishReason
 // ========================================================================
