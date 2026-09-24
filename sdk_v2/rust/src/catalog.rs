@@ -204,7 +204,12 @@ impl Catalog {
         .await
     }
 
-    /// Register existing model assets in the local catalog without transferring ownership of those assets.
+    /// Register existing model assets without transferring ownership of those assets.
+    ///
+    /// `task` is required. Display name, publisher, validated runtime metadata, modalities, and custom properties are
+    /// preserved and may receive authoritative defaults. Identity, alias, type, timestamps, context length, and prompt
+    /// templates are SDK-derived; caller location and internal metadata are ignored. A caller-supplied provider becomes
+    /// the default load override; an SDK-derived artifact provider leaves `genai_config.json` options intact.
     pub async fn register_model(
         &self,
         model_path: &str,

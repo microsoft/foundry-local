@@ -76,7 +76,7 @@ std::string_view RequiredEpForModelId(std::string_view model_id) {
   return {};
 }
 
-/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
+/// Returns whether the provider is DirectML, which Foundry Local does not support.
 bool IsDmlProvider(std::string_view provider) {
   return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
          provider == "DMLExecutionProvider";
@@ -84,8 +84,11 @@ bool IsDmlProvider(std::string_view provider) {
 
 /// Returns the required EP registration name for a provider declared in genai_config.json.
 std::string RequiredEpForConfigProvider(std::string_view provider) {
-  if (provider.empty() || IsDmlProvider(provider)) {
+  if (provider.empty()) {
     return {};
+  }
+  if (IsDmlProvider(provider)) {
+    return "DmlExecutionProvider";
   }
 
   auto ep = EPUtils::StringtoEP(provider);
@@ -177,6 +180,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   auto genai_config = GenAIConfig::LoadFromFile(config_path);
+  if (genai_config.HasProvider("dml") || genai_config.HasProvider("DML") ||
+      genai_config.HasProvider("DmlExecutionProvider") || genai_config.HasProvider("DMLExecutionProvider")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "DirectML execution provider is not supported");
+  }
 
   // Determine execution provider
   auto resolved_ep = ep_override;

@@ -185,6 +185,22 @@ Model Model::FromLocalRegistration(ModelInfo info,
   return Model(std::move(info), std::move(local_path), download_manager, model_load_manager, true);
 }
 
+ExecutionProvider ResolveLoadExecutionProvider(const ModelInfo& info, bool external_registration,
+                                               ExecutionProvider requested_provider) {
+  if (!external_registration || requested_provider != ExecutionProvider::kDefault ||
+      !info.execution_provider_override) {
+    return requested_provider;
+  }
+
+  const auto resolved_provider = EPUtils::StringtoEP(info.execution_provider);
+  if (resolved_provider == ExecutionProvider::kUnknown) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "unknown execution provider for local model: " + info.execution_provider);
+  }
+
+  return resolved_provider;
+}
+
 // ---------------------------------------------------------------------------
 // Container operations
 // ---------------------------------------------------------------------------
@@ -497,14 +513,7 @@ void Model::Load(ExecutionProvider ep) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
 
-  const auto& info = Info();
-  if (external_registration_ && ep == ExecutionProvider::kDefault && !info.execution_provider.empty()) {
-    ep = EPUtils::StringtoEP(info.execution_provider);
-    if (ep == ExecutionProvider::kUnknown) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "unknown execution provider for local model: " + info.execution_provider);
-    }
-  }
+  ep = ResolveLoadExecutionProvider(Info(), external_registration_, ep);
 
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.

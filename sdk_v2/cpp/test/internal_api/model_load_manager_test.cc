@@ -52,6 +52,20 @@ class CpuOnlyDetector : public fl::IEpDetector {
   std::string prepared_ep;
 };
 
+class DmlAvailableDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"GPU", {"dml", "DML", "DmlExecutionProvider", "DMLExecutionProvider"}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return true;
+  }
+
+  std::string prepared_ep;
+};
+
 /// Creates a minimal model directory with a dummy genai_config.json.
 /// Cleans up on destruction.
 class TempModelDir {
@@ -196,7 +210,7 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_
   }
 }
 
-TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDownloadableEp) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_ThrowsUnsupportedProvider) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
   TempModelDir dir("alias-dml-config", "DmlExecutionProvider");
@@ -204,11 +218,42 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDo
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
+    FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
-    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("DirectML"), std::string::npos);
   }
 
   EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, LoadRejectsEveryDmlSpellingBeforeProviderPreparation) {
+  const std::vector<std::string> dml_spellings = {
+      "dml",
+      "DML",
+      "DmlExecutionProvider",
+      "DMLExecutionProvider",
+  };
+
+  for (size_t index = 0; index < dml_spellings.size(); ++index) {
+    DmlAvailableDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("alias-dml-available-" + std::to_string(index));
+    std::ofstream(std::filesystem::path(dir.path()) / "genai_config.json")
+        << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cpu":{}},{")"
+        << dml_spellings[index] << R"(":{}}]}}}})";
+    fl::ModelLoadManager mgr(ep, logger);
+
+    try {
+      mgr.LoadModel(dir.path(), "local/test-registration-" + std::to_string(index));
+      FAIL() << "Expected exception for " << dml_spellings[index];
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      EXPECT_NE(std::string(e.what()).find("DirectML"), std::string::npos) << dml_spellings[index];
+    }
+
+    EXPECT_TRUE(ep.prepared_ep.empty()) << dml_spellings[index];
+  }
 }
 
 TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {

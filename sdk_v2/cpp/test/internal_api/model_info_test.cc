@@ -195,6 +195,25 @@ TEST(ModelInfoRoundTrip, AllMetadataFieldsSurviveRoundTrip) {
   EXPECT_EQ(restored.model_settings.size(), 2u);
 }
 
+TEST(ModelInfoRoundTrip, ProviderOnlyRuntimeOmitsDeviceTypeAndSurvivesRoundTrip) {
+  ModelInfo original;
+  original.model_id = "openvino-model:1";
+  original.name = "openvino-model";
+  original.version = 1;
+  original.alias = "openvino-model";
+  original.execution_provider = "OpenVINOExecutionProvider";
+
+  const auto json = ModelInfoToJson(original);
+
+  ASSERT_TRUE(json.contains("runtime"));
+  EXPECT_EQ(json["runtime"]["executionProvider"], "OpenVINOExecutionProvider");
+  EXPECT_FALSE(json["runtime"].contains("deviceType"));
+
+  const auto restored = ModelInfoFromJson(json);
+  EXPECT_EQ(restored.execution_provider, "OpenVINOExecutionProvider");
+  EXPECT_EQ(restored.device_type, DeviceType::kNotSet);
+}
+
 // ========================================================================
 // supportsReasoning=false serializes as JSON bool false
 // ========================================================================

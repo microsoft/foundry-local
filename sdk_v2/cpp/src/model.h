@@ -18,6 +18,9 @@ class DownloadManager;
 struct Item;
 class ModelLoadManager;
 
+ExecutionProvider ResolveLoadExecutionProvider(const ModelInfo& info, bool external_registration,
+                                               ExecutionProvider requested_provider);
+
 // -----------------------------------------------------------------------
 // Model — a single model entry or a multi-variant container.
 //
