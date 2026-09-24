@@ -17,6 +17,7 @@
 #include "service/web_service.h"
 #include "telemetry/telemetry_action_tracker.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 namespace fl {
 
@@ -83,13 +85,36 @@ inline ActionStatus ResponseToActionStatus(const std::shared_ptr<HttpRequestHand
   return ActionStatus::kSuccess;
 }
 
+inline std::string SafeHttpUserAgent(std::string_view value) {
+  constexpr std::string_view products[] = {
+      "foundry-local-core/", "foundry-local-cpp/", "foundry-local-csharp/",
+      "foundry-local-python/", "foundry-local-js/", "foundry-local-rust/"};
+  for (const auto product : products) {
+    if (!value.starts_with(product)) {
+      continue;
+    }
+
+    const auto version = value.substr(product.size());
+    if (!version.empty() && version.size() <= 32 && version.find("..") == std::string_view::npos &&
+        version.front() >= '0' && version.front() <= '9' &&
+        version.back() >= '0' && version.back() <= '9' &&
+        std::all_of(version.begin(), version.end(), [](unsigned char ch) {
+          return (ch >= '0' && ch <= '9') || ch == '.';
+        })) {
+      return std::string(value);
+    }
+  }
+
+  return "unknown-http-client";
+}
+
 inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::IncomingRequest>& request) {
   if (!request) {
-    return {};
+    return "unknown-http-client";
   }
 
   const auto user_agent = request->getHeader("User-Agent");
-  return user_agent ? *user_agent : std::string{};
+  return user_agent ? SafeHttpUserAgent(*user_agent) : "unknown-http-client";
 }
 
 /// Track construction separately from processing, with the route's indirect context for both.

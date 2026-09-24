@@ -261,8 +261,9 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     // for a forced refresh. Downloading every time made the bootstrapper
     // re-fetch and re-register EPs on every invocation.
     bool ok = false;
+    bool downloaded = false;
     try {
-      ok = bs->DownloadAndRegister(/*force=*/false, wrapped_cb, logger_);
+      ok = bs->DownloadAndRegister(/*force=*/false, wrapped_cb, logger_, &downloaded);
     } catch (const std::exception& ex) {
       ++telemetry_failed;
       result.failed_eps.push_back(bs->Name());
@@ -296,7 +297,7 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       cached_eps_[i].is_registered = true;
       cached_eps_c_[i].is_registered = true;
 
-      tracker.RecordDownloadComplete(was_registered_before ? ActionStatus::kSkipped : ActionStatus::kSuccess,
+      tracker.RecordDownloadComplete(downloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped,
                                      unresolved_ready_state);
       tracker.RecordRegisterComplete(ActionStatus::kSuccess, EpReadyState::kRegistered);
     } else {

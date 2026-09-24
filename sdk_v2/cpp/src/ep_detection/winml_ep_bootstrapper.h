@@ -44,7 +44,8 @@ class WinMLEpBootstrapper : public IEpBootstrapper {
   bool IsRegistered() const override;
   bool DownloadAndRegister(bool force,
                            const ProgressCallback& progress_cb,
-                           ILogger& logger) override;
+                           ILogger& logger,
+                           bool* downloaded = nullptr) override;
 
   /// Discovers WinML EPs available on this system.
   /// EPs discoverable are trusted EPs that have valid Foundry Local models available

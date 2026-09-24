@@ -44,6 +44,21 @@ namespace {
 
 constexpr const char* kResponseStoreTestModelAlias = "response-store-test-model";
 
+TEST(HttpUserAgentTest, KeepsOnlyKnownProductAndNumericVersion) {
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.2.3"), "foundry-local-cpp/1.2.3");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-python/0.6"), "foundry-local-python/0.6");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-core/1"), "foundry-local-core/1");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-csharp/1.2"), "foundry-local-csharp/1.2");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-js/1.2"), "foundry-local-js/1.2");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-rust/1.2"), "foundry-local-rust/1.2");
+  EXPECT_EQ(SafeHttpUserAgent(""), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("telemetry-test-client"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0 customer@example.com"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0/secret"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1.0-secret"), "unknown-http-client");
+  EXPECT_EQ(SafeHttpUserAgent("foundry-local-cpp/1..2"), "unknown-http-client");
+}
+
 class WebUsageTelemetry : public TelemetryLogger {
  public:
   WebUsageTelemetry() : TelemetryLogger("test", fl::test::NullLog()) {}
@@ -1693,7 +1708,7 @@ TEST_P(WebServiceTelemetryTest, ClientErrorRetainsHttpResponseAndRecordsDirectAt
   const auto& action = events.actions[0];
   EXPECT_EQ(action.action, scenario.action);
   EXPECT_EQ(action.status, ActionStatus::kClientError);
-  EXPECT_EQ(action.context.user_agent, "telemetry-test-client");
+  EXPECT_EQ(action.context.user_agent, "unknown-http-client");
   EXPECT_EQ(action.context.correlation_id.size(), 36u);
   EXPECT_FALSE(action.context.indirect);
   EXPECT_TRUE(events.models.empty());
@@ -1811,7 +1826,7 @@ TEST_P(WebServiceTelemetryInferenceTest, RouteAndNestedInferenceShareOneOperatio
   const auto& usage = events.models[0];
   EXPECT_EQ(usage.model_id, "telemetry-chat");
   EXPECT_EQ(usage.execution_provider, "CPUExecutionProvider");
-  EXPECT_EQ(usage.user_agent, "telemetry-test-client");
+  EXPECT_EQ(usage.user_agent, "unknown-http-client");
   EXPECT_EQ(usage.num_messages, 1u);
   EXPECT_EQ(usage.stream, streaming);
   EXPECT_TRUE(usage.indirect);
@@ -1822,7 +1837,7 @@ TEST_P(WebServiceTelemetryInferenceTest, RouteAndNestedInferenceShareOneOperatio
     EXPECT_EQ(action.status, ActionStatus::kSuccess);
     EXPECT_EQ(action.model_id, "telemetry-chat");
     EXPECT_EQ(action.context.correlation_id, usage.correlation_id);
-    EXPECT_EQ(action.context.user_agent, "telemetry-test-client");
+    EXPECT_EQ(action.context.user_agent, "unknown-http-client");
     EXPECT_EQ(action.context.indirect, action.action != route_action);
   }
 

@@ -46,8 +46,12 @@ class MockEpBootstrapper : public IEpBootstrapper {
   bool DownloadAndRegister(
       bool /*force*/,
       const ProgressCallback& progress_cb,
-      ILogger& /*logger*/) override {
+      ILogger& /*logger*/,
+      bool* downloaded = nullptr) override {
     download_called_ = true;
+    if (downloaded) {
+      *downloaded = downloaded_on_register_;
+    }
     if (progress_cb) {
       if (!progress_cb(name_, 50.0f)) {
         return false;
@@ -70,6 +74,7 @@ class MockEpBootstrapper : public IEpBootstrapper {
   bool download_called_ = false;
   bool prepare_called_ = false;
   bool prepare_succeeds_ = true;
+  bool downloaded_on_register_ = true;
 
  private:
   std::string name_;
@@ -269,6 +274,18 @@ TEST_F(EpDetectorTest, DownloadFiltered_TelemetryCountsOnlyRecognizedNames) {
   EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSuccess);
   EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
   EXPECT_EQ(result.status, "All recognized EPs registered successfully");
+}
+
+TEST_F(EpDetectorTest, ReusedPackageRecordsSkippedDownloadAfterRestart) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}}, telemetry);
+  mocks[0]->downloaded_on_register_ = false;
+
+  EXPECT_TRUE(detector->DownloadAndRegisterEps(nullptr, nullptr).success);
+  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSkipped);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
 }
 
 TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsDownloadCancellation) {

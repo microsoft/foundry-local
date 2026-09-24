@@ -109,6 +109,7 @@ TEST(EpBundleInstallerTest, InstallsRawArtifactAndVerifiesContent) {
 
   auto txn = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(txn, nullptr);
+  EXPECT_TRUE(txn->downloaded());
   EXPECT_EQ(ReadFile(txn->bin_dir() / "provider.so"), "provider-binary-contents");
   EXPECT_EQ(downloads.CallCount("https://example.test/provider.so"), 1);
 }
@@ -127,6 +128,7 @@ TEST(EpBundleInstallerTest, ReusesValidBundleWithoutRedownloading) {
   {
     auto first = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
     ASSERT_NE(first, nullptr);
+    EXPECT_TRUE(first->downloaded());
     first_bin = first->bin_dir();
     ASSERT_TRUE(first->Activate());
     first->Finalize();
@@ -134,6 +136,7 @@ TEST(EpBundleInstallerTest, ReusesValidBundleWithoutRedownloading) {
 
   auto second = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(second, nullptr);
+  EXPECT_FALSE(second->downloaded());
   EXPECT_EQ(first_bin, second->bin_dir());
   EXPECT_EQ(downloads.CallCount("https://example.test/provider.so"), 1)
       << "reusing an already-verified bundle must not re-download";
@@ -894,6 +897,7 @@ TEST(EpBundleInstallerTest, ReusesValidArtifactsAndDownloadsOnlyMismatches) {
   downloads.SetSequence("https://example.test/second.bin", {second});
   auto replacement = installer.EnsureInstalled(manifest, /*progress_cb=*/nullptr, logger);
   ASSERT_NE(replacement, nullptr);
+  EXPECT_TRUE(replacement->downloaded());
   EXPECT_EQ(ReadFile(replacement->bin_dir() / "first.bin"), "first");
   EXPECT_EQ(ReadFile(replacement->bin_dir() / "second.bin"), "second");
   EXPECT_EQ(downloads.CallCount("https://example.test/first.bin"), 1);
