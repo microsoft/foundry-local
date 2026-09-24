@@ -1,17 +1,20 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 //
-// Tests for SseStreamBody in handler_utils.h — Push, Finish, read, declareHeaders.
+// Tests for SSE stream bodies and worker lifetime.
 //
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "service/handler_utils.h"
+#include "service/web_service.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -256,6 +259,58 @@ TEST(SseStreamBodyTest, ConcurrentPushAndRead) {
     EXPECT_NE(total_read.find(expected), std::string::npos)
         << "Missing chunk " << i;
   }
+}
+
+TEST(StreamingThreadTrackerTest, QuickWorkersDoNotAccumulate) {
+  StreamingThreadTracker tracker;
+  std::atomic<int> completed{0};
+  constexpr int kWorkerCount = 100;
+  for (int i = 0; i < kWorkerCount; ++i) {
+    tracker.Start([&completed] { completed.fetch_add(1, std::memory_order_release); });
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((completed.load(std::memory_order_acquire) != kWorkerCount || tracker.TrackedCount() != 0) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+
+  EXPECT_EQ(completed.load(std::memory_order_acquire), kWorkerCount);
+  EXPECT_EQ(tracker.TrackedCount(), 0u);
+  tracker.JoinAll();
+}
+
+TEST(StreamingThreadTrackerTest, ShutdownWaitsForWorkerCaptureCleanup) {
+  struct BlockingCleanup {
+    std::promise<void>& entered;
+    std::shared_future<void> release;
+
+    ~BlockingCleanup() {
+      entered.set_value();
+      release.wait();
+    }
+  };
+
+  StreamingThreadTracker tracker;
+  std::promise<void> cleanup_entered;
+  std::promise<void> allow_cleanup;
+  auto cleanup_future = cleanup_entered.get_future();
+  auto release = allow_cleanup.get_future().share();
+  tracker.Start([cleanup = std::make_unique<BlockingCleanup>(cleanup_entered, release)] {});
+
+  const auto cleanup_started = cleanup_future.wait_for(std::chrono::seconds(5));
+  std::promise<void> shutdown_finished;
+  auto shutdown_future = shutdown_finished.get_future();
+  std::thread shutdown([&] {
+    tracker.JoinAll();
+    shutdown_finished.set_value();
+  });
+
+  EXPECT_EQ(cleanup_started, std::future_status::ready);
+  EXPECT_EQ(shutdown_future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+  allow_cleanup.set_value();
+  EXPECT_EQ(shutdown_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  shutdown.join();
 }
 
 // ========================================================================

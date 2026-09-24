@@ -190,9 +190,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   auto& logger = ctx_.logger;
   auto& tracker = ctx_.thread_tracker;
 
-  std::thread streaming_thread([bg_session = std::move(session), stream, &logger,
-                                req, &tracker,
-                                &session_manager = ctx_.session_manager]() mutable {
+  tracker.Start([bg_session = std::move(session), stream, &logger,
+                 req,
+                 &session_manager = ctx_.session_manager]() mutable {
     try {
       // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
       // instead of escaping this raw std::thread and calling std::terminate.
@@ -224,7 +224,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
       if (stream->IsDisconnected()) {
         stream->Finish();
         reg.Release();
-        tracker.Remove(std::this_thread::get_id());
         return;
       }
 
@@ -241,10 +240,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
     }
 
     stream->Finish();
-    tracker.Remove(std::this_thread::get_id());
   });
-
-  tracker.Track(std::move(streaming_thread));
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(Status::CODE_200, body);
   response->putHeader("Content-Type", "text/event-stream");

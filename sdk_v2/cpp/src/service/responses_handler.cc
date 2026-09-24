@@ -488,15 +488,14 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
   //
   // The lease travels into the thread: the request stays in flight until the response is committed there, so a
   // DELETE arriving mid-stream still refuses the result.
-  std::thread streaming_thread([stream, &logger, &session_manager,
-                                session = std::move(session),
-                                req,
-                                turn,
-                                lease = std::move(lease),
-                                should_store, &store,
-                                req_copy = std::move(req_copy),
-                                params_copy = std::move(params_copy),
-                                &tracker]() mutable {
+  tracker.Start([stream, &logger, &session_manager,
+                 session = std::move(session),
+                 req,
+                 turn,
+                 lease = std::move(lease),
+                 should_store, &store,
+                 req_copy = std::move(req_copy),
+                 params_copy = std::move(params_copy)]() mutable {
     int seq = 2;
     std::string full_text;  // concatenation of all visible runs, used for output_text in completed_response
 
@@ -734,7 +733,6 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         lease.Release();
         stream->Finish();
         reg.Release();
-        tracker.Remove(std::this_thread::get_id());
         return;
       }
 
@@ -795,14 +793,9 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     stream->Push("data: [DONE]\n\n");
     stream->Finish();
 
-    // Remove() detaches this thread and lets WebService teardown proceed without joining it. Release the RAII lease
-    // first so destruction of the lambda captures cannot call back into an already-destroyed ResponseStore.
+    // Release the lease before the tracker destroys the worker captures and untracks the thread.
     lease.Release();
-
-    tracker.Remove(std::this_thread::get_id());
   });
-
-  tracker.Track(std::move(streaming_thread));
 
   auto response = oatpp::web::protocol::http::outgoing::Response::createShared(
       Status::CODE_200, body);
