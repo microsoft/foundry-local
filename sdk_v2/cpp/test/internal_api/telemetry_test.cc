@@ -544,6 +544,42 @@ TEST(TelemetryDeviceIdPlatformTest, ConcurrentCorruptionRecoveryUsesOneStableId)
   std::error_code error;
   std::filesystem::remove_all(root, error);
 }
+
+TEST(TelemetryDeviceIdPlatformTest, ExistingDeviceIdIsHardenedBeforeReuse) {
+  const auto root = std::filesystem::temp_directory_path() / ("foundry-device-id-" + GenerateGuidV4());
+  ScopedEnvVar xdg_cache_home("XDG_CACHE_HOME", root.string().c_str());
+  const auto directory = TelemetryDeviceIdPlatform::EnsureStorageDirectory();
+  ASSERT_FALSE(directory.empty());
+  const auto file = directory / "deviceid";
+  const std::string existing_id = "01234567-89ab-4def-8123-456789abcdef";
+  {
+    std::ofstream output(file);
+    output << existing_id;
+  }
+
+  const auto loose_directory_permissions = std::filesystem::perms::owner_all |
+                                           std::filesystem::perms::group_read |
+                                           std::filesystem::perms::group_exec;
+  const auto loose_file_permissions = std::filesystem::perms::owner_read |
+                                      std::filesystem::perms::owner_write |
+                                      std::filesystem::perms::group_read |
+                                      std::filesystem::perms::others_read;
+  std::filesystem::permissions(directory, loose_directory_permissions, std::filesystem::perm_options::replace);
+  std::filesystem::permissions(file, loose_file_permissions, std::filesystem::perm_options::replace);
+
+  const auto result = TelemetryDeviceIdPlatform::LoadOrCreate();
+  EXPECT_EQ(result.value, existing_id);
+  EXPECT_EQ(result.status, TelemetryDeviceIdStatus::kExisting);
+  const auto directory_permissions = std::filesystem::status(directory).permissions();
+  const auto file_permissions = std::filesystem::status(file).permissions();
+  EXPECT_EQ(directory_permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all),
+            std::filesystem::perms::none);
+  EXPECT_EQ(file_permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all),
+            std::filesystem::perms::none);
+
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+}
 #endif
 
 #ifdef _WIN32
@@ -686,6 +722,23 @@ TEST(OneDsTelemetryTest, CommonContextSanitizerRedactsUrlsAndSingleComponentPath
   EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue("foundry-local"), "foundry-local");
   EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue(std::string(kMaxTelemetryStringLength + 1, 'x')).size(),
             kMaxTelemetryStringLength);
+}
+
+TEST(OneDsTelemetryTest, EventPropertiesSanitizerRedactsEmbeddedCredentials) {
+  using namespace ::Microsoft::Applications::Events;
+
+  EventProperties event("Error");
+  event.SetProperty("ExceptionMessage", "request failed: token=placeholder; endpoint unavailable");
+  std::vector<std::string> metadata{"trace id: 42; apiKey : placeholder"};
+  event.SetProperty("Metadata", metadata);
+
+  TelemetryInternal::SanitizeEventProperties(event);
+  const auto& properties = event.GetProperties(DataCategory_PartC);
+  EXPECT_STREQ(properties.at("ExceptionMessage").as_string, "request failed: token=[secret]");
+  ASSERT_NE(properties.at("Metadata").as_stringArray, nullptr);
+  EXPECT_EQ(properties.at("Metadata").as_stringArray->at(0), "trace id: 42; apiKey :[secret]");
+  EXPECT_EQ(TelemetryInternal::SanitizeCommonContextValue("application: password=placeholder"),
+            "application: password=[secret]");
 }
 
 TEST(OneDsTelemetryTest, EventPropertiesSanitizerCapsEveryStringValue) {

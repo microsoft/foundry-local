@@ -115,17 +115,22 @@ inline std::string SanitizeString(std::string_view value) {
 }
 
 inline std::string SanitizeMetadataValue(std::string_view value) {
-  const size_t separator = value.find_first_of(":=");
-  if (separator != std::string_view::npos) {
-    auto name = value.substr(0, separator);
-    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) {
-      name.remove_prefix(1);
+  for (size_t separator = value.find_first_of(":="); separator != std::string_view::npos;
+       separator = value.find_first_of(":=", separator + 1)) {
+    size_t end = separator;
+    while (end > 0 && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+      --end;
     }
-    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) {
-      name.remove_suffix(1);
+    size_t start = end;
+    while (start > 0) {
+      const unsigned char character = static_cast<unsigned char>(value[start - 1]);
+      if (!std::isalnum(character) && character != '_' && character != '-' && character != '.') {
+        break;
+      }
+      --start;
     }
 
-    if (IsSecretProperty(name)) {
+    if (start < end && IsSecretProperty(value.substr(start, end - start))) {
       return SanitizeString(std::string(value.substr(0, separator + 1)) + "[secret]");
     }
   }

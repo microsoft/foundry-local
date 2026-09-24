@@ -17,6 +17,8 @@ Foundry Local uses the cross-platform 1DS SDK (cpp_client_telemetry) to send tra
 Prompts, model outputs, audio contents, raw device identifiers, and secrets are not collected.
 Telemetry event properties and common-context strings are redacted for URLs, absolute paths, and embedded secrets
 and limited in length before upload.
+On POSIX systems, the local device-ID file and its directory are restricted to the owning user before an existing
+ID is reused.
 HTTP caller User-Agent headers are reduced to a recognized Foundry Local SDK name and numeric release version before
 local telemetry logging or upload; recognized prerelease suffixes are removed and free-form headers are recorded as
 `unknown-http-client`.

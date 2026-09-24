@@ -7,9 +7,7 @@
 #include "util/file_lock.h"
 
 #include <cerrno>
-#include <fstream>
 #include <memory>
-#include <optional>
 #include <string_view>
 #include <system_error>
 
@@ -40,21 +38,62 @@ std::string TrimDeviceId(std::string value) {
   return value;
 }
 
-std::optional<std::string> ReadValidDeviceId(const std::filesystem::path& file) {
-  std::error_code error;
-  const auto file_size = std::filesystem::file_size(file, error);
-  if (error || file_size > kMaxDeviceIdSize) {
-    return std::nullopt;
+LoadResult ReadExistingDeviceId(const std::filesystem::path& file) {
+  int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+  flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+  flags |= O_CLOEXEC;
+#endif
+  const int descriptor = ::open(file.c_str(), flags);
+  if (descriptor < 0) {
+    return {{}, TelemetryDeviceIdStatus::kFailed};
   }
 
-  std::ifstream input(file);
-  std::string content;
-  if (!std::getline(input, content)) {
-    return std::nullopt;
+  struct stat metadata{};
+  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+      ::fchmod(descriptor, S_IRUSR | S_IWUSR) != 0 ||
+      ::fstat(descriptor, &metadata) != 0 ||
+      (metadata.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != (S_IRUSR | S_IWUSR)) {
+    ::close(descriptor);
+    return {{}, TelemetryDeviceIdStatus::kFailed};
   }
 
+  if (metadata.st_size <= 0 || metadata.st_size > static_cast<off_t>(kMaxDeviceIdSize)) {
+    ::close(descriptor);
+    return {{}, TelemetryDeviceIdStatus::kCorrupted};
+  }
+
+  std::string content(static_cast<size_t>(metadata.st_size), '\0');
+  size_t total = 0;
+  while (total < content.size()) {
+    const ssize_t count = ::read(descriptor, content.data() + total, content.size() - total);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0) {
+      ::close(descriptor);
+      return {{}, TelemetryDeviceIdStatus::kFailed};
+    }
+    if (count == 0) {
+      break;
+    }
+    total += static_cast<size_t>(count);
+  }
+  if (::close(descriptor) != 0) {
+    return {{}, TelemetryDeviceIdStatus::kFailed};
+  }
+
+  content.resize(total);
+  const auto newline = content.find('\n');
+  if (newline != std::string::npos) {
+    content.resize(newline);
+  }
   content = TrimDeviceId(std::move(content));
-  return TelemetryDeviceId::IsValidGuid(content) ? std::optional<std::string>{std::move(content)} : std::nullopt;
+  return TelemetryDeviceId::IsValidGuid(content)
+             ? LoadResult{std::move(content), TelemetryDeviceIdStatus::kExisting}
+             : LoadResult{{}, TelemetryDeviceIdStatus::kCorrupted};
 }
 
 bool CreateDirectoryTreeOwnerOnly(const std::filesystem::path& directory, bool leaf = true) {
@@ -225,7 +264,7 @@ std::filesystem::path EnsureCacheDirectory() {
 }
 
 LoadResult LoadOrCreate() {
-  const auto directory = GetStorageDirectory();
+  const auto directory = EnsureStorageDirectory();
   if (directory.empty()) {
     return {{}, TelemetryDeviceIdStatus::kFailed};
   }
@@ -239,17 +278,14 @@ LoadResult LoadOrCreate() {
   TelemetryDeviceIdStatus status = TelemetryDeviceIdStatus::kNew;
   error.clear();
   if (std::filesystem::exists(file, error) && !error) {
-    if (auto content = ReadValidDeviceId(file)) {
-      return {std::move(*content), TelemetryDeviceIdStatus::kExisting};
+    auto existing = ReadExistingDeviceId(file);
+    if (existing.status != TelemetryDeviceIdStatus::kCorrupted) {
+      return existing;
     }
     status = TelemetryDeviceIdStatus::kCorrupted;
   }
 
   const bool file_existed = status == TelemetryDeviceIdStatus::kCorrupted;
-  if (EnsureStorageDirectory().empty()) {
-    return {{}, TelemetryDeviceIdStatus::kFailed};
-  }
-
   error.clear();
   if (std::filesystem::is_symlink(file, error)) {
     return {{}, TelemetryDeviceIdStatus::kFailed};
@@ -267,8 +303,9 @@ LoadResult LoadOrCreate() {
     if (std::filesystem::is_symlink(file, error)) {
       return {{}, TelemetryDeviceIdStatus::kFailed};
     }
-    if (auto winner = ReadValidDeviceId(file)) {
-      return {std::move(*winner), TelemetryDeviceIdStatus::kExisting};
+    auto winner = ReadExistingDeviceId(file);
+    if (winner.status != TelemetryDeviceIdStatus::kCorrupted) {
+      return winner;
     }
   }
 
@@ -277,8 +314,9 @@ LoadResult LoadOrCreate() {
   if (publish_result == PublishResult::kAlreadyExists) {
     error.clear();
     if (!std::filesystem::is_symlink(file, error)) {
-      if (auto winner = ReadValidDeviceId(file)) {
-        return {std::move(*winner), TelemetryDeviceIdStatus::kExisting};
+      auto winner = ReadExistingDeviceId(file);
+      if (winner.status == TelemetryDeviceIdStatus::kExisting) {
+        return winner;
       }
     }
     return {{}, TelemetryDeviceIdStatus::kFailed};
