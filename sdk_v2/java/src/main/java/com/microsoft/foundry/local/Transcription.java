@@ -30,7 +30,7 @@ public final class Transcription implements AutoCloseable {
     private final Thread worker;
     private final Thread feeder;
     private Pointer request, queue;
-    private boolean finished, closing, closed;
+    private boolean finished, closing, closed, workerFinished;
     private long bufferedBytes;
     private final long originNanos = System.nanoTime();
     private long firstInputNanos, firstNonemptyNanos, inputClosedNanos, submittedBytes;
@@ -42,6 +42,8 @@ public final class Transcription implements AutoCloseable {
         this.listener = listener;
         worker = new Thread(this::run, "foundry-java-asr");
         feeder = wav == null ? null : new Thread(() -> feedWav(wav), "foundry-java-asr-input");
+        worker.setDaemon(true);
+        if (feeder != null) feeder.setDaemon(true);
         request = api.create(api.inference, NativeApi.InferenceApi.REQUEST_CREATE);
         try {
             Pointer audio = api.create(api.item, NativeApi.ItemApi.CREATE, 30);
@@ -138,14 +140,18 @@ public final class Transcription implements AutoCloseable {
                 failure = NativeApi.preserveFailure(failure, e);
             }
             try {
-                api.inference.call(NativeApi.InferenceApi.REQUEST_RELEASE, request);
+                Pointer completedRequest;
+                synchronized (this) { completedRequest = request; }
+                api.inference.call(NativeApi.InferenceApi.REQUEST_RELEASE, completedRequest);
             } catch (RuntimeException | Error e) {
                 failure = NativeApi.preserveFailure(failure, e);
             } finally {
-                request = null;
-                queue = null;
-                closed = true;
-                closing = false;
+                synchronized (this) {
+                    request = null;
+                    queue = null;
+                    closed = true;
+                    closing = false;
+                }
             }
             if (!buffers.isEmpty()) {
                 failure = NativeApi.preserveFailure(
@@ -230,7 +236,7 @@ public final class Transcription implements AutoCloseable {
     }
 
     private void ensureWritable() {
-        if (closed || closing || finished || completion.isCancelled() || isDone()) {
+        if (closed || closing || finished || workerFinished || completion.isCancelled() || isDone()) {
             throw new IllegalStateException("Transcription no longer accepts PCM");
         }
     }
@@ -345,8 +351,10 @@ public final class Transcription implements AutoCloseable {
         long start = System.nanoTime();
         PointerByReference response = new PointerByReference();
         try {
+            Pointer currentRequest;
+            synchronized (this) { currentRequest = request; }
             Pointer status = api.inference.pointer(
-                    NativeApi.InferenceApi.SESSION_PROCESS_REQUEST, session.handle, request, response);
+                    NativeApi.InferenceApi.SESSION_PROCESS_REQUEST, session.handle, currentRequest, response);
             if (callbackFailure.get() != null) {
                 if (status != null) api.root.call(NativeApi.Root.STATUS_RELEASE, status);
                 throw new IllegalStateException("ASR callback or input feeder failed", callbackFailure.get());
@@ -397,7 +405,10 @@ public final class Transcription implements AutoCloseable {
             if (response.getValue() != null) {
                 api.inference.call(NativeApi.InferenceApi.RESPONSE_RELEASE, response.getValue());
             }
-            synchronized (this) { notifyAll(); }
+            synchronized (this) {
+                workerFinished = true;
+                notifyAll();
+            }
             Reference.reachabilityFence(callback);
             Reference.reachabilityFence(deleter);
         }

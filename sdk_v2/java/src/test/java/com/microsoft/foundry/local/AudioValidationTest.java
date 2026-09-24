@@ -53,6 +53,13 @@ class AudioValidationTest {
         assertNotNull(new Configuration("unit-test", path, path, path));
         assertThrows(IllegalArgumentException.class, () -> new Configuration("", path, path, path));
         assertThrows(IllegalArgumentException.class, () -> new Configuration("a\0b", path, path, path));
+        var defaults = new Configuration("unit-test", path, path, path);
+        assertEquals(LogLevel.FATAL, defaults.logLevel());
+        assertTrue(defaults.disableNonessentialTelemetry());
+        var diagnostic = new Configuration("unit-test", path, path, path, LogLevel.DEBUG, false);
+        assertEquals(LogLevel.DEBUG, diagnostic.logLevel());
+        assertFalse(diagnostic.disableNonessentialTelemetry());
+        assertThrows(NullPointerException.class, () -> new Configuration("unit-test", path, path, path, null, true));
     }
 
     private static byte[] wav() {

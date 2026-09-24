@@ -5,9 +5,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.microsoft.foundry</groupId>
-  <artifactId>foundry-local-sdk</artifactId>
+  <artifactId>foundry-local-asr-sdk</artifactId>
   <version>${revision}</version>
-  <name>Foundry Local Java SDK</name>
+  <name>Foundry Local Java ASR SDK Preview</name>
   <description>Java bindings for in-process Foundry Local speech recognition.</description>
   <url>https://github.com/microsoft/foundry-local</url>
   <licenses>
@@ -18,7 +18,7 @@
     </license>
   </licenses>
   <properties>
-    <revision>0.1.0-SNAPSHOT</revision>
+    <revision>0.1.0-preview.2-SNAPSHOT</revision>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
@@ -93,6 +93,24 @@
             <phase>clean</phase>
             <goals>
               <goal>clean</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <version>4.10.4.1</version>
+        <configuration>
+          <failOnError>true</failOnError>
+          <excludeFilterFile>${project.basedir}/spotbugs-exclude.xml</excludeFilterFile>
+        </configuration>
+        <executions>
+          <execution>
+            <id>verify-java-static-analysis</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
             </goals>
           </execution>
         </executions>

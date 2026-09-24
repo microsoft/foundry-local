@@ -2,8 +2,10 @@
 package com.microsoft.foundry.local;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.sun.jna.Pointer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,8 +26,27 @@ class NativeContractTest {
             "", "missing-version", ":1", ".name:1", "model:", "model:1:2", "model:-1",
             "model:+1", "model:01", "model:2147483648", "model/path:1", "model name:1"
         }) {
-            assertThrows(IllegalArgumentException.class, () -> catalog.getModel(invalidId), invalidId);
+            assertThrows(IllegalArgumentException.class, () -> catalog.getModelVariant(invalidId), invalidId);
         }
+    }
+
+    @Test void aliasLookupRejectsInvalidAliasesBeforeQueryingNativeCatalog() {
+        Catalog catalog = new Catalog(null, null);
+        for (String invalidAlias : new String[] {"", " ", "bad\0alias"}) {
+            assertThrows(IllegalArgumentException.class, () -> catalog.getModel(invalidAlias));
+        }
+        assertThrows(IllegalArgumentException.class, () -> catalog.getModel(null));
+    }
+
+    @Test void refusesAV1OnlyRuntimeBeforeReadingFunctionTables() {
+        AtomicInteger requestedVersion = new AtomicInteger();
+        IllegalStateException error = assertThrows(IllegalStateException.class, () ->
+                NativeApi.requireApiVersion(version -> {
+                    requestedVersion.set(version);
+                    return version == 1 ? new Pointer(1) : null;
+                }));
+        assertEquals(2, requestedVersion.get());
+        assertTrue(error.getMessage().contains("C API 2"));
     }
 
     @Test void matchesPackaged64BitStructSizes() {

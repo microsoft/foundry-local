@@ -15,12 +15,26 @@ public final class Catalog {
 
     Catalog(FoundryLocalManager owner, Pointer handle) { this.owner = owner; this.handle = handle; }
 
+    /** Looks up a model by its catalog alias. */
+    public Model getModel(String alias) {
+        NativeApi.outsideCallback();
+        if (alias == null || alias.isBlank() || alias.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("A nonempty model alias without NUL is required");
+        }
+        synchronized (owner) {
+            owner.checkOpen();
+            Pointer modelHandle = owner.api.output(
+                    owner.api.catalog, NativeApi.CatalogApi.GET_MODEL, handle, alias);
+            return new Model(owner, requireModelHandle(alias, modelHandle));
+        }
+    }
+
     /**
-     * No alias fallback: the returned native identity must equal the requested name:version.
+     * Looks up an exact name:version without alias fallback.
      *
      * @throws ModelNotFoundException if the exact ID is valid but unavailable
      */
-    public Model getModel(String exactId) {
+    public Model getModelVariant(String exactId) {
         NativeApi.outsideCallback();
         validateExactId(exactId);
         synchronized (owner) {
@@ -51,7 +65,17 @@ public final class Catalog {
         return handle;
     }
 
+    /** One entry per catalog alias. */
     public List<ModelInfo> models() {
+        return listModels(false);
+    }
+
+    /** All variants of all catalog aliases. */
+    public List<ModelInfo> modelVariants() {
+        return listModels(true);
+    }
+
+    private List<ModelInfo> listModels(boolean variants) {
         NativeApi.outsideCallback();
         synchronized (owner) {
             owner.checkOpen();
@@ -62,14 +86,18 @@ public final class Catalog {
                 long size = api.root.size(NativeApi.Root.MODEL_LIST_SIZE, list);
                 for (long i = 0; i < size; i++) {
                     Model alias = new Model(owner, api.root.pointer(NativeApi.Root.MODEL_LIST_GET_AT, list, i));
-                    Pointer variants = api.create(api.model, NativeApi.ModelApi.GET_VARIANTS, alias.handle);
-                    try {
-                        for (long j = 0; j < api.root.size(NativeApi.Root.MODEL_LIST_SIZE, variants); j++) {
-                            models.add(new Model(
-                                    owner,
-                                    api.root.pointer(NativeApi.Root.MODEL_LIST_GET_AT, variants, j)).info());
-                        }
-                    } finally { api.root.call(NativeApi.Root.MODEL_LIST_RELEASE, variants); }
+                    if (!variants) {
+                        models.add(alias.info());
+                    } else {
+                        Pointer listOfVariants = api.create(api.model, NativeApi.ModelApi.GET_VARIANTS, alias.handle);
+                        try {
+                            for (long j = 0; j < api.root.size(NativeApi.Root.MODEL_LIST_SIZE, listOfVariants); j++) {
+                                models.add(new Model(
+                                        owner,
+                                        api.root.pointer(NativeApi.Root.MODEL_LIST_GET_AT, listOfVariants, j)).info());
+                            }
+                        } finally { api.root.call(NativeApi.Root.MODEL_LIST_RELEASE, listOfVariants); }
+                    }
                 }
                 return List.copyOf(models);
             } finally { api.root.call(NativeApi.Root.MODEL_LIST_RELEASE, list); }

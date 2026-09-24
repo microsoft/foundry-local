@@ -1,4 +1,4 @@
-# Foundry Local Java SDK
+# Foundry Local Java ASR SDK Preview
 
 Java 17+ bindings for in-process, streaming speech recognition through the
 Foundry Local C API. The SDK uses JNA, keeps the native runtime and model
@@ -8,6 +8,8 @@ This package is a preview and is not published to Maven Central yet.
 Its first phase intentionally covers streaming ASR rather than the full
 cross-language SDK surface. Generic Session/Request/Response/Item APIs, Chat,
 and native file/URI transcription are future extension points.
+The staged Maven coordinates are
+`com.microsoft.foundry:foundry-local-asr-sdk:<preview-version>`.
 
 ## Build
 
@@ -22,13 +24,16 @@ mvn -f sdk_v2/java/pom.xml package
 
 The build produces:
 
-- `target/foundry-local-sdk-0.1.0-SNAPSHOT.jar`
-- `target/foundry-local-sdk-0.1.0-SNAPSHOT-sources.jar`
+- `target/foundry-local-asr-sdk-0.1.0-preview.2-SNAPSHOT.jar`
+- `target/foundry-local-asr-sdk-0.1.0-preview.2-SNAPSHOT-sources.jar`
+
+`verify` also runs SpotBugs and fails on actionable findings. The packaging
+pipeline compiles a clean Maven consumer against the staged POM and JAR.
 
 Override `revision` when producing an immutable release:
 
 ```powershell
-mvn -f sdk_v2/java/pom.xml -Drevision=0.1.0 package
+mvn -f sdk_v2/java/pom.xml -Drevision=0.1.0-preview.2 package
 ```
 
 JNA remains a normal Maven dependency. The SDK JAR does not contain JNA native
@@ -38,8 +43,8 @@ code, Foundry Local native libraries, execution providers, or model weights.
 
 Prepare a directory containing the matching Foundry Local native runtime for
 the current OS and architecture. Pass that directory through `Configuration`.
-The Java binding requests the stable API v1 prefix, which the current v2 C API
-keeps ABI-compatible.
+The Java binding requires C API v2. Runtimes exposing only v1 are rejected
+before their native function tables are accessed.
 
 The runtime directory must contain:
 
@@ -67,9 +72,12 @@ an older C runtime first and cannot initialize ONNX Runtime. Use a compatible
 JBR/native-runtime combination instead of replacing IDE or system DLLs.
 
 The manager defaults native logging to Fatal and disables nonessential
-telemetry. These safety defaults are not configurable through the initial Java
-API. Runtime diagnostics such as `ORTGENAI_ORT_VERBOSE_LOGGING` can still
-control the underlying ONNX Runtime GenAI logging where supported.
+telemetry. Applications can override either setting with the six-argument
+`Configuration` constructor, for example `LogLevel.DEBUG` and `false` to
+enable native diagnostics and nonessential telemetry. The four-argument
+constructor keeps the original defaults. Runtime diagnostics such as
+`ORTGENAI_ORT_VERBOSE_LOGGING` can also control the underlying ONNX Runtime
+GenAI logging where supported.
 
 ## Streaming ASR
 
@@ -86,7 +94,7 @@ var configuration = new Configuration(
 
 try (var manager = new FoundryLocalManager(configuration)) {
     var model = manager.catalog()
-            .getModel("nemotron-speech-streaming-en-0.6b-generic-cpu:3");
+            .getModelVariant("nemotron-speech-streaming-en-0.6b-generic-cpu:3");
 
     if (!model.isCached()) {
         throw new IllegalStateException("Download and review the model separately");
@@ -112,8 +120,10 @@ try (var manager = new FoundryLocalManager(configuration)) {
 }
 ```
 
-`Catalog.getModel` requires an exact `name:version` ID and throws
-`ModelNotFoundException` when that valid ID is unavailable.
+`Catalog.getModel(alias)` queries an alias; `getModelVariant(name:version)`
+queries an exact variant and throws `ModelNotFoundException` when unavailable.
+`models()` returns alias-level entries, while `modelVariants()` returns all
+individual variants.
 
 This preview uses Foundry Local's native streaming-audio processor. The ASR
 task in catalog metadata is necessary but does not promise that every
@@ -163,8 +173,10 @@ mvn -f sdk_v2/java/pom.xml test `
   -Dfoundry.test.wav=<absolute-wav-file>
 ```
 
-CI may provide the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
-`FOUNDRY_TEST_DATA_DIR`, and `FOUNDRY_TEST_WAV` environment variables.
+CI provides the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
+`FOUNDRY_TEST_DATA_DIR`, and `FOUNDRY_TEST_WAV` environment variables and
+passes `-Dfoundry.test.native.required=true`, so missing native inputs fail
+instead of skipping the integration test.
 
 The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager

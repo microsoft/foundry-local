@@ -220,7 +220,7 @@ stages:
       inputs:
         mavenPOMFile: 'sdk_v2/java/pom.xml'
         goals: 'clean verify'
-        options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)'
+        options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-asr-preview'
         publishJUnitResults: true
         testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
         testRunTitle: 'Java SDK package'
@@ -244,14 +244,14 @@ stages:
 
           $artifacts = @(
             @{
-              Source = Join-Path $target "foundry-local-sdk-$version.jar"
-              Name = "foundry-local-sdk-$version.jar"
+              Source = Join-Path $target "foundry-local-asr-sdk-$version-asr-preview.jar"
+              Name = "foundry-local-asr-sdk-$version-asr-preview.jar"
             },
             @{
-              Source = Join-Path $target "foundry-local-sdk-$version-sources.jar"
-              Name = "foundry-local-sdk-$version-sources.jar"
+              Source = Join-Path $target "foundry-local-asr-sdk-$version-asr-preview-sources.jar"
+              Name = "foundry-local-asr-sdk-$version-asr-preview-sources.jar"
             },
-            @{ Source = Join-Path $javaRoot '.flattened-pom.xml'; Name = "foundry-local-sdk-$version.pom" }
+            @{ Source = Join-Path $javaRoot '.flattened-pom.xml'; Name = "foundry-local-asr-sdk-$version-asr-preview.pom" }
           )
           foreach ($artifact in $artifacts) {
             if (-not (Test-Path $artifact.Source)) {
@@ -262,7 +262,7 @@ stages:
           Copy-Item '$(Build.SourcesDirectory)/LICENSE' (Join-Path $output 'LICENSE') -Force
           Copy-Item (Join-Path $javaRoot 'THIRD_PARTY_NOTICES.md') $output -Force
 
-          $mainJar = Join-Path $output "foundry-local-sdk-$version.jar"
+          $mainJar = Join-Path $output "foundry-local-asr-sdk-$version-asr-preview.jar"
           $entries = @(jar tf $mainJar)
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not inspect the Java SDK JAR.'
@@ -285,3 +285,14 @@ stages:
             }
 
           Get-ChildItem $output -File | ForEach-Object { Write-Host "  $($_.Name)" }
+    - task: PowerShell@2
+      displayName: 'Compile clean Maven consumer against staged Java ASR SDK'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          & '$(Build.SourcesDirectory)/sdk_v2/java/verify-packaged-consumer.ps1' `
+            -ArtifactDirectory '$(Build.ArtifactStagingDirectory)/java-sdk-v2' `
+            -Version '$(javaSdkVersion)-asr-preview' `
+            -MavenDirectory '$(foundryMavenHome)' `
+            -JavaDirectory '$(foundryJavaHome)'

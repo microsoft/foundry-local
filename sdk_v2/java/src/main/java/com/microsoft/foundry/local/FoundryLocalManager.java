@@ -26,8 +26,9 @@ public final class FoundryLocalManager implements AutoCloseable {
             api = NativeApi.load(configuration.runtimeDirectory());
             Pointer config = api.create(api.config, NativeApi.ConfigurationApi.CREATE, configuration.appName());
             try {
-                // Native status errors still propagate; keep the SDK quiet unless callers opt into logging.
-                api.check(api.config.pointer(NativeApi.ConfigurationApi.SET_DEFAULT_LOG_LEVEL, config, 5));
+                api.check(api.config.pointer(
+                        NativeApi.ConfigurationApi.SET_DEFAULT_LOG_LEVEL, config,
+                        configuration.logLevel().nativeValue()));
                 api.check(api.config.pointer(
                         NativeApi.ConfigurationApi.SET_APP_DATA_DIRECTORY,
                         config,
@@ -43,7 +44,7 @@ public final class FoundryLocalManager implements AutoCloseable {
                             NativeApi.Root.KEY_VALUE_PAIRS_ADD,
                             pairs.getValue(),
                             "DisableNonessentialTelemetry",
-                            "true");
+                            Boolean.toString(configuration.disableNonessentialTelemetry()));
                     api.check(api.config.pointer(
                             NativeApi.ConfigurationApi.SET_ADDITIONAL_OPTIONS,
                             config,

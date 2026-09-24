@@ -16,13 +16,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.IntFunction;
 
 /**
- * Narrow binding to the stable API v1 prefix of the current Foundry Local C ABI.
+ * Narrow binding to the Foundry Local C API v2.
  * All supported targets use 64-bit pointers/size_t. C bool is one byte, not JNA boolean.
  */
 final class NativeApi {
-    static final int VERSION = 1;
+    static final int VERSION = 2;
     static final ThreadLocal<Boolean> IN_CALLBACK = ThreadLocal.withInitial(() -> false);
     private static NativeApi resident;
     private final List<NativeLibrary> libraries = new ArrayList<>();
@@ -60,6 +61,7 @@ final class NativeApi {
 
     static final class CatalogApi {
         static final int GET_MODELS = 1;
+        static final int GET_MODEL = 2;
         static final int GET_MODEL_VARIANT = 3;
     }
 
@@ -196,14 +198,20 @@ final class NativeApi {
         NativeLibrary library = open(foundryLibrary);
         libraries.add(library);
         version = text(library.getFunction("FoundryLocalGetVersionString").invokePointer(new Object[0]));
-        Pointer api = library.getFunction("FoundryLocalGetApi").invokePointer(new Object[] {VERSION});
-        if (api == null) throw new IllegalStateException("Native runtime does not expose C API " + VERSION);
+        Pointer api = requireApiVersion(version ->
+                library.getFunction("FoundryLocalGetApi").invokePointer(new Object[] {version}));
         root = new Table(api);
         catalog = new Table(root.pointer(Root.GET_CATALOG_API));
         config = new Table(root.pointer(Root.GET_CONFIGURATION_API));
         item = new Table(root.pointer(Root.GET_ITEM_API));
         inference = new Table(root.pointer(Root.GET_INFERENCE_API));
         model = new Table(root.pointer(Root.GET_MODEL_API));
+    }
+
+    static Pointer requireApiVersion(IntFunction<Pointer> lookup) {
+        Pointer api = lookup.apply(VERSION);
+        if (api == null) throw new IllegalStateException("Native runtime does not expose C API " + VERSION);
+        return api;
     }
 
     private static List<String> dependencyLibraryNames() {

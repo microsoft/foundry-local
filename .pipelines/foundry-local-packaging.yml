@@ -72,8 +72,9 @@ extends:
       spotBugs:
         enabled: false
         justificationForDisabling: >-
-          Guardian cannot currently process the generated SpotBugs report and
-          returns gdn.unknownFormatResult instead of actionable findings.
+          Guardian cannot process the Java SpotBugs report (gdn.unknownFormatResult).
+          Java Maven verify still fails on SpotBugs findings. Track Guardian restoration:
+          https://github.com/microsoft/foundry-local/issues/1143
     stages:
     # ── Compute Version ──
     # A single version string is computed once and shared across all stages.

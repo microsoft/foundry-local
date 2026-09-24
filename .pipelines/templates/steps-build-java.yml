@@ -76,7 +76,7 @@ steps:
   inputs:
     mavenPOMFile: 'sdk_v2/java/pom.xml'
     goals: 'clean verify'
-    options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)'
+    options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-asr-preview -Dfoundry.test.native.required=true'
     publishJUnitResults: true
     testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
     testRunTitle: 'Java SDK ${{ parameters.rid }}'

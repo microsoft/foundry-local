@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -18,9 +19,14 @@ class NativeAsrTest {
         String runtime = setting("foundry.test.runtime", "FOUNDRY_LOCAL_NATIVE_BIN_DIR");
         String cache = setting("foundry.test.cache", "FOUNDRY_TEST_DATA_DIR");
         String wav = setting("foundry.test.wav", "FOUNDRY_TEST_WAV");
-        assumeTrue(
-                runtime != null && cache != null && wav != null,
-                "Configure the native test runtime, cache, and WAV");
+        if (Boolean.getBoolean("foundry.test.native.required")) {
+            assertNotNull(runtime, "Missing native test runtime");
+            assertNotNull(cache, "Missing native test cache");
+            assertNotNull(wav, "Missing native test WAV");
+        } else {
+            assumeTrue(runtime != null && cache != null && wav != null,
+                    "Configure the native test runtime, cache, and WAV");
+        }
         Configuration config = new Configuration("java-asr-test", Path.of(runtime), Path.of(cache), temporary);
         Model borrowed;
         AtomicInteger callbacks = new AtomicInteger();
@@ -28,10 +34,12 @@ class NativeAsrTest {
             System.err.println("native-test: manager created");
             assertThrows(IllegalStateException.class, () -> new FoundryLocalManager(config));
             Catalog catalog = manager.catalog();
-            assertThrows(IllegalArgumentException.class, () -> catalog.getModel("nemotron"));
-            assertThrows(ModelNotFoundException.class, () -> catalog.getModel("missing-java-test-model:999"));
-            borrowed = catalog.getModel(System.getProperty("foundry.test.model",
+            assertThrows(IllegalArgumentException.class, () -> catalog.getModelVariant("nemotron"));
+            assertThrows(ModelNotFoundException.class, () ->
+                    catalog.getModelVariant("missing-java-test-model:999"));
+            borrowed = catalog.getModelVariant(System.getProperty("foundry.test.model",
                     "nemotron-speech-streaming-en-0.6b-generic-cpu:3"));
+            assertEquals(borrowed.info().alias(), catalog.getModel(borrowed.info().alias()).info().alias());
             CancellationToken cancelled = new CancellationToken();
             cancelled.cancel();
             FoundryLocalException download = assertThrows(FoundryLocalException.class,
@@ -108,6 +116,28 @@ class NativeAsrTest {
             assertFalse(manager.runtimeVersion().isBlank());
         }
         System.err.println("native-test: manager recreated and closed");
+        String javaExecutable = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
+        String classPath = String.join(System.getProperty("path.separator"),
+                Path.of(NativeAsrTest.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString(),
+                Path.of(FoundryLocalManager.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString(),
+                Path.of(com.sun.jna.Native.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString());
+        Process process = new ProcessBuilder(javaExecutable, "-cp", classPath, NativeAbandonedStream.class.getName(),
+                runtime, cache, temporary.toString(),
+                System.getProperty("foundry.test.model", "nemotron-speech-streaming-en-0.6b-generic-cpu:3"))
+                .redirectErrorStream(true).start();
+        try {
+            assertTrue(process.waitFor(90, TimeUnit.SECONDS), "Abandoned stream kept the JVM alive");
+            String output = new String(process.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(0, process.exitValue(), output);
+            assertTrue(output.contains("stream-started"), output);
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                process.waitFor();
+            }
+        }
     }
 
     private static String setting(String property, String environmentVariable) {
