@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -114,6 +116,93 @@ bool IsSupportedAnnotation(std::string_view keyword) {
   return kSupportedAnnotations.contains(keyword);
 }
 
+bool DoubleEqualsSignedInteger(double floating, std::int64_t integer) {
+  constexpr double kLowerBound = -9223372036854775808.0;
+  constexpr double kUpperBound = 9223372036854775808.0;
+  return std::isfinite(floating) && std::trunc(floating) == floating && floating >= kLowerBound &&
+         floating < kUpperBound && static_cast<std::int64_t>(floating) == integer;
+}
+
+bool DoubleEqualsUnsignedInteger(double floating, std::uint64_t integer) {
+  constexpr double kUpperBound = 18446744073709551616.0;
+  return std::isfinite(floating) && std::trunc(floating) == floating && floating >= 0.0 &&
+         floating < kUpperBound && static_cast<std::uint64_t>(floating) == integer;
+}
+
+bool JsonNumbersEqual(const Json& lhs, const Json& rhs) {
+  if (lhs.is_number_float()) {
+    const auto floating = lhs.get<double>();
+    if (rhs.is_number_float()) {
+      return floating == rhs.get<double>();
+    }
+    if (rhs.is_number_unsigned()) {
+      return DoubleEqualsUnsignedInteger(floating, rhs.get<std::uint64_t>());
+    }
+    return DoubleEqualsSignedInteger(floating, rhs.get<std::int64_t>());
+  }
+  if (lhs.is_number_unsigned()) {
+    const auto integer = lhs.get<std::uint64_t>();
+    if (rhs.is_number_float()) {
+      return DoubleEqualsUnsignedInteger(rhs.get<double>(), integer);
+    }
+    if (rhs.is_number_unsigned()) {
+      return integer == rhs.get<std::uint64_t>();
+    }
+    const auto signed_integer = rhs.get<std::int64_t>();
+    return signed_integer >= 0 && integer == static_cast<std::uint64_t>(signed_integer);
+  }
+
+  const auto integer = lhs.get<std::int64_t>();
+  if (rhs.is_number_float()) {
+    return DoubleEqualsSignedInteger(rhs.get<double>(), integer);
+  }
+  if (rhs.is_number_unsigned()) {
+    return integer >= 0 && static_cast<std::uint64_t>(integer) == rhs.get<std::uint64_t>();
+  }
+  return integer == rhs.get<std::int64_t>();
+}
+
+bool JsonScalarEquals(const Json& lhs, const Json& rhs) {
+  return lhs.is_number() && rhs.is_number() ? JsonNumbersEqual(lhs, rhs) : lhs == rhs;
+}
+
+bool IsCompatibleScalarType(const Json& value, std::string_view type) {
+  if (type == "string") {
+    return value.is_string();
+  }
+  if (type == "number") {
+    return value.is_number();
+  }
+  if (type == "integer") {
+    return value.is_number_integer() || value.is_number_unsigned();
+  }
+  if (type == "boolean") {
+    return value.is_boolean();
+  }
+  return type == "null" && value.is_null();
+}
+
+bool IsSupportedEnum(const Json& schema, std::string_view type) {
+  if (!schema.contains("enum")) {
+    return true;
+  }
+
+  const auto& values = schema["enum"];
+  if (!values.is_array() || values.empty() ||
+      (type != "string" && type != "number" && type != "integer" && type != "boolean" && type != "null")) {
+    return false;
+  }
+
+  for (size_t index = 0; index < values.size(); ++index) {
+    if (!IsCompatibleScalarType(values[index], type) ||
+        std::ranges::any_of(values.begin(), values.begin() + static_cast<Json::difference_type>(index),
+                            [&](const auto& prior) { return JsonScalarEquals(prior, values[index]); })) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
   if (!schema.is_object() || depth >= kMaxSchemaNesting) {
     return false;
@@ -141,13 +230,14 @@ bool IsSupportedParameterSchema(const Json& schema, size_t depth = 0) {
 
   if (std::ranges::any_of(schema.items(), [&](const auto& item) {
         return item.key() != "type" && !IsSupportedAnnotation(item.key()) &&
-               !(*type == "array" && item.key() == "items");
+               item.key() != "enum" && !(*type == "array" && item.key() == "items");
       })) {
     return false;
   }
 
-  return *type != "array" || !schema.contains("items") ||
-         IsSupportedParameterSchema(schema["items"], depth + 1);
+  return IsSupportedEnum(schema, *type) &&
+         (*type != "array" || !schema.contains("items") ||
+          IsSupportedParameterSchema(schema["items"], depth + 1));
 }
 
 bool HasNestedAnyOf(const Json& schema, size_t depth = 0) {
@@ -318,33 +408,26 @@ bool IsCompatibleJsonValue(const Json& value, const Json& schema, size_t depth =
     return false;
   }
 
-  if (*type == "string") {
-    return value.is_string();
-  }
-  if (*type == "number") {
-    return value.is_number();
-  }
-  if (*type == "integer") {
-    return value.is_number_integer() || value.is_number_unsigned();
-  }
-  if (*type == "boolean") {
-    return value.is_boolean();
+  bool compatible = false;
+  if (*type == "string" || *type == "number" || *type == "integer" || *type == "boolean" ||
+      *type == "null") {
+    compatible = IsCompatibleScalarType(value, *type);
   }
   if (*type == "array") {
-    return value.is_array() &&
-           (!schema.contains("items") ||
-            std::ranges::all_of(value, [&](const auto& item) {
-              return IsCompatibleJsonValue(item, schema["items"], depth + 1);
-            }));
+    compatible = value.is_array() &&
+                 (!schema.contains("items") ||
+                  std::ranges::all_of(value, [&](const auto& item) {
+                    return IsCompatibleJsonValue(item, schema["items"], depth + 1);
+                  }));
   }
   if (*type == "object") {
-    return value.is_object();
+    compatible = value.is_object();
   }
-  if (*type == "null") {
-    return value.is_null();
-  }
-
-  return false;
+  return compatible &&
+         (!schema.contains("enum") ||
+          std::ranges::any_of(schema["enum"], [&](const auto& expected) {
+            return JsonScalarEquals(value, expected);
+          }));
 }
 
 bool IsCompatibleParameterValue(const Json& value, const Json& schema) {
@@ -394,7 +477,8 @@ std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json
   }
 
   if (*type == "string") {
-    return Json(std::string(body));
+    Json value = std::string(body);
+    return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
   }
 
   const auto value = Json::parse(body, nullptr, false);
@@ -419,12 +503,15 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
     return std::nullopt;
   }
 
-  bool has_string_branch = false;
+  std::optional<Json> decoded_string;
   std::optional<Json> decoded;
   for (const auto& branch : schema["anyOf"]) {
     const auto type = GetSupportedType(branch);
     if (type.has_value() && *type == "string") {
-      has_string_branch = true;
+      auto candidate = DecodeSimpleParameterValue(body, branch);
+      if (candidate.has_value()) {
+        decoded_string = std::move(candidate);
+      }
       continue;
     }
 
@@ -444,8 +531,8 @@ std::optional<Json> DecodeParameterValue(std::string_view body, const Json& sche
   }
   // A leading array/object delimiter claims the structured branch. Reinterpreting malformed structured output as
   // a string would turn a model type error into an executable call; ambiguous union values therefore fail closed.
-  if (has_string_branch && !HasStructuredJsonPrefix(body)) {
-    return Json(std::string(body));
+  if (decoded_string.has_value() && !HasStructuredJsonPrefix(body)) {
+    return decoded_string;
   }
 
   return std::nullopt;

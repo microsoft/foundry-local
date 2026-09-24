@@ -14,6 +14,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -539,11 +541,7 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
       R"("value":{"type":"date"}}}}}])",
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
-      R"("value":{"type":"string","enum":["allowed"]}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
       R"("value":{"type":"array","items":{"type":"string"},"maxItems":1}}}}}])",
-      R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
-      R"("value":{"type":"array","items":{"type":"string","enum":["allowed"]}}}}}}])",
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
       R"("value":{"type":"object","properties":1}}}}}])",
       R"([{"type":"function","function":{"name":"bad","parameters":{"type":"object","properties":{)"
@@ -557,6 +555,265 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedAndAmbiguousSchemasRemainVisible
     auto output = RunQwen({generated}, schema, {{"bad", ToolKind::kFunction}});
     EXPECT_EQ(output.visible, generated);
     EXPECT_TRUE(output.calls.empty());
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ScalarEnumsAcceptOnlyDeclaredValues) {
+  struct EnumCase {
+    nlohmann::json schema;
+    std::string accepted;
+    std::string rejected;
+  };
+  const std::vector<EnumCase> cases = {
+      {{{"type", "string"}, {"enum", {"fast", "thorough"}}}, "fast", "unsupported"},
+      {{{"type", "number"}, {"enum", {1, 1.5, 9007199254740993ULL}}}, "1.0", "2"},
+      {{{"type", "integer"}, {"enum", {-2, 3}}}, "-2", "1"},
+      {{{"type", "boolean"}, {"enum", {true}}}, "true", "false"},
+      {{{"type", "null"}, {"enum", {nullptr}}}, "null", "0"},
+  };
+  const auto make_call = [](std::string_view value) {
+    return "<tool_call>\n<function=select>\n<parameter=value>\n" + std::string(value) +
+           "\n</parameter>\n</function>\n</tool_call>";
+  };
+
+  for (const auto& test_case : cases) {
+    SCOPED_TRACE(test_case.schema.dump());
+    const auto tools =
+        nlohmann::json::array(
+            {{{"type", "function"},
+              {"function",
+               {{"name", "select"},
+                {"parameters",
+                 {{"type", "object"},
+                  {"properties", {{"value", test_case.schema}}},
+                  {"required", {"value"}}}}}}}})
+            .dump();
+
+    auto accepted = RunQwen({make_call(test_case.accepted)}, tools, {{"select", ToolKind::kFunction}});
+    ASSERT_EQ(accepted.calls.size(), 1u);
+    EXPECT_TRUE(accepted.visible.empty());
+
+    const auto rejected_call = make_call(test_case.rejected);
+    auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
+    EXPECT_TRUE(rejected.calls.empty());
+    EXPECT_EQ(rejected.visible, rejected_call);
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumDeclarationsDisableExactDecoder) {
+  const std::vector<nlohmann::json> schemas = {
+      {{"type", "string"}, {"enum", nlohmann::json::array()}},
+      {{"type", "string"}, {"enum", {"same", "same"}}},
+      {{"type", "string"}, {"enum", {"text", 1}}},
+      {{"type", "number"}, {"enum", {1, 1.0}}},
+      {{"type", "integer"}, {"enum", {1.0}}},
+      {{"type", "boolean"}, {"enum", {true, 1}}},
+      {{"type", "array"}, {"enum", nlohmann::json::array({nlohmann::json::array()})}},
+      {{"type", "object"}, {"enum", nlohmann::json::array({nlohmann::json::object()})}},
+  };
+
+  for (const auto& schema : schemas) {
+    SCOPED_TRACE(schema.dump());
+    const auto tools =
+        nlohmann::json::array(
+            {{{"type", "function"},
+              {"function",
+               {{"name", "select"},
+                {"parameters", {{"type", "object"}, {"properties", {{"value", schema}}}}}}}}})
+            .dump();
+
+    EXPECT_FALSE(static_cast<bool>(
+        CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}})));
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, StringEnumInsideAnyOfIsEnforced) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
+      R"("value":{"anyOf":[{"type":"string","enum":["fast"]},{"type":"null","enum":[null]}]}}}}}])";
+  const auto make_call = [](std::string_view value) {
+    return "<tool_call>\n<function=select>\n<parameter=value>\n" + std::string(value) +
+           "\n</parameter>\n</function>\n</tool_call>";
+  };
+
+  for (const auto value : {"fast", "null"}) {
+    auto output = RunQwen({make_call(value)}, tools, {{"select", ToolKind::kFunction}});
+    ASSERT_EQ(output.calls.size(), 1u) << value;
+    EXPECT_TRUE(output.visible.empty()) << value;
+  }
+
+  const auto rejected_call = make_call("slow");
+  auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
+  EXPECT_TRUE(rejected.calls.empty());
+  EXPECT_EQ(rejected.visible, rejected_call);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NumberEnumComparisonIsLosslessAtIntegerBoundaries) {
+  struct NumberCase {
+    nlohmann::json values;
+    std::string accepted;
+    std::string rejected;
+  };
+  const std::vector<NumberCase> cases = {
+      {{9007199254740993ULL}, "9007199254740993", "9007199254740992.0"},
+      {{std::numeric_limits<std::int64_t>::min()}, "-9223372036854775808.0", "-9223372036854775807"},
+      {{std::numeric_limits<std::uint64_t>::max()}, "18446744073709551615", "18446744073709551616.0"},
+  };
+  const auto make_call = [](std::string_view value) {
+    return "<tool_call>\n<function=select>\n<parameter=value>\n" + std::string(value) +
+           "\n</parameter>\n</function>\n</tool_call>";
+  };
+
+  for (const auto& test_case : cases) {
+    const auto tools =
+        nlohmann::json::array(
+            {{{"type", "function"},
+              {"function",
+               {{"name", "select"},
+                {"parameters",
+                 {{"type", "object"},
+                  {"properties", {{"value", {{"type", "number"}, {"enum", test_case.values}}}}},
+                  {"required", {"value"}}}}}}}})
+            .dump();
+    SCOPED_TRACE(tools);
+
+    auto accepted = RunQwen({make_call(test_case.accepted)}, tools, {{"select", ToolKind::kFunction}});
+    ASSERT_EQ(accepted.calls.size(), 1u);
+
+    const auto rejected_call = make_call(test_case.rejected);
+    auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
+    EXPECT_TRUE(rejected.calls.empty());
+    EXPECT_EQ(rejected.visible, rejected_call);
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, NumberEnumDuplicateDetectionIsLossless) {
+  const auto make_parser = [](nlohmann::json values) {
+    const auto tools =
+        nlohmann::json::array(
+            {{{"type", "function"},
+              {"function",
+               {{"name", "select"},
+                {"parameters",
+                 {{"type", "object"},
+                  {"properties", {{"value", {{"type", "number"}, {"enum", std::move(values)}}}}}}}}}}})
+            .dump();
+    return CreateQwenXmlToolCallPayloadParser(tools, {{"select", ToolKind::kFunction}});
+  };
+
+  EXPECT_FALSE(static_cast<bool>(make_parser({9007199254740992ULL, 9007199254740992.0})));
+  EXPECT_TRUE(static_cast<bool>(make_parser({9007199254740993ULL, 9007199254740992.0})));
+  EXPECT_TRUE(static_cast<bool>(
+      make_parser({std::numeric_limits<std::int64_t>::max(), 9223372036854775808.0})));
+  EXPECT_TRUE(static_cast<bool>(
+      make_parser({std::numeric_limits<std::uint64_t>::max(), 18446744073709551616.0})));
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, ArrayItemsEnforceScalarEnums) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
+      R"("values":{"type":"array","items":{"type":"string","enum":["src","test"]}}},"required":["values"]}}}])";
+  const auto make_call = [](std::string_view value) {
+    return "<tool_call>\n<function=select>\n<parameter=values>\n" + std::string(value) +
+           "\n</parameter>\n</function>\n</tool_call>";
+  };
+
+  auto accepted = RunQwen({make_call(R"(["src","test"])")}, tools, {{"select", ToolKind::kFunction}});
+  ASSERT_EQ(accepted.calls.size(), 1u);
+  EXPECT_TRUE(accepted.visible.empty());
+
+  const auto rejected_call = make_call(R"(["other"])");
+  auto rejected = RunQwen({rejected_call}, tools, {{"select", ToolKind::kFunction}});
+  EXPECT_TRUE(rejected.calls.empty());
+  EXPECT_EQ(rejected.visible, rejected_call);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InvalidEnumValueRejectsEntireAdjacentBatch) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
+      R"("mode":{"type":"string","enum":["fast"]}},"required":["mode"]}}}])";
+  const auto make_call = [](std::string_view value) {
+    return "<tool_call>\n<function=select>\n<parameter=mode>\n" + std::string(value) +
+           "\n</parameter>\n</function>\n</tool_call>";
+  };
+  const auto generated = make_call("fast") + "\n" + make_call("unsupported");
+
+  auto output = RunQwen({generated}, tools, {{"select", ToolKind::kFunction}});
+  EXPECT_TRUE(output.calls.empty());
+  EXPECT_EQ(output.visible, generated);
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, GuidedCallsEnforceEnumMembership) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"select","parameters":{"type":"object","properties":{)"
+      R"("mode":{"type":"string","enum":["fast","thorough"]}},"required":["mode"]}}}])";
+  const std::unordered_map<std::string, ToolKind> kinds = {{"select", ToolKind::kFunction}};
+
+  const auto accepted =
+      ParseQwenGuidedToolCalls(R"([{"name":"select","parameters":{"mode":"fast"}}])", tools, kinds);
+  ASSERT_EQ(accepted.size(), 1u);
+  EXPECT_EQ(accepted.front().arguments, R"({"mode":"fast"})");
+
+  EXPECT_TRUE(ParseQwenGuidedToolCalls(
+                  R"([{"name":"select","parameters":{"mode":"unsupported"}}])", tools, kinds)
+                  .empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RepresentativeStockGhcpEnumDeclarationsEnableExactDecoder) {
+  const nlohmann::json string_schema = {{"type", "string"}};
+  nlohmann::json tools = nlohmann::json::array();
+  std::unordered_map<std::string, ToolKind> kinds;
+  const auto add_tool = [&](std::string name, nlohmann::json properties) {
+    tools.push_back(
+        {{"type", "function"},
+         {"function",
+          {{"name", name},
+           {"parameters", {{"type", "object"}, {"properties", std::move(properties)}}}}}});
+    kinds.emplace(std::move(name), ToolKind::kFunction);
+  };
+
+  add_tool("bash", {{"command", string_schema}, {"mode", {{"type", "string"}, {"enum", {"sync", "async"}}}}});
+  add_tool("session_store_sql",
+           {{"description", string_schema},
+            {"query", string_schema},
+            {"source", {{"type", "string"}, {"enum", {"cloud", "local"}}}}});
+  add_tool("list_agents", {{"scope", {{"type", "string"}, {"enum", {"siblings", "children", "all"}}}}});
+  add_tool("write_agent", {{"scope", {{"type", "string"}, {"enum", {"siblings", "children"}}}}});
+  add_tool("rg",
+           {{"pattern", string_schema},
+            {"output_mode", {{"type", "string"}, {"enum", {"content", "files_with_matches", "count"}}}}});
+  add_tool("task",
+           {{"agent_type",
+             {{"type", "string"},
+              {"enum",
+               {"explore", "task", "general-purpose", "code-review", "research", "security-review",
+                "paged-attention-runtime-strategist", "ApiExpert", "CSharpCoder", "CppCoder", "DearLeader", "JsCoder",
+                "PortCSharpToCpp", "PythonCoder", "Reviewer", "Tester"}}}},
+            {"context_tier", {{"type", "string"}, {"enum", {"default", "long_context"}}}},
+            {"mode", {{"type", "string"}, {"enum", {"sync", "background"}}}}});
+
+  EXPECT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools.dump(), kinds)));
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RunTestsEnumCallWithVisiblePrefixesIsChunkInvariant) {
+  const auto tools =
+      R"([{"type":"function","function":{"name":"run_tests","parameters":{"type":"object","properties":{)"
+      R"("target":{"type":"string","enum":["test_runtime_options.py"]}},"required":["target"],)"
+      R"("additionalProperties":false}}}])";
+  const std::string call =
+      "<tool_call>\n<function=run_tests>\n<parameter=target>\ntest_runtime_options.py\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  for (const auto prefix : {"\n", "Patch applied. Now running the focused tests:\n\n"}) {
+    const auto generated = std::string(prefix) + call + "\n2 passed in 0.03s";
+    for (size_t split = 0; split <= generated.size(); ++split) {
+      auto output = RunQwen(SplitAt(generated, split), tools, {{"run_tests", ToolKind::kFunction}});
+      ASSERT_EQ(output.calls.size(), 1u) << "prefix=" << prefix << ", split=" << split;
+      EXPECT_EQ(output.calls.front().arguments, R"({"target":"test_runtime_options.py"})")
+          << "prefix=" << prefix << ", split=" << split;
+      EXPECT_EQ(output.visible, std::string(prefix) + "\n2 passed in 0.03s")
+          << "prefix=" << prefix << ", split=" << split;
+    }
   }
 }
 
