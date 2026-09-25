@@ -151,10 +151,43 @@ TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_MetadataDoesNotOverrideE
   EXPECT_EQ(req.metadata->at("random_seed"), "42");
 }
 
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_ExplicitSeedIgnoresCatalogRandomSeed) {
+  ChatCompletionRequest req;
+  req.seed = 17;
+  KeyValuePairs settings;
+  settings.Add("random_seed", "not-an-integer");
+
+  EXPECT_NO_THROW(ApplyCatalogDefaults(req, settings));
+  ASSERT_TRUE(req.metadata.has_value());
+  EXPECT_EQ(req.metadata->count("random_seed"), 0u);
+
+  Request session_request;
+  MapRequestParameters(req, session_request);
+  EXPECT_STREQ(session_request.options.Find("seed"), "17");
+}
+
 TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_InvalidSettingsAreInternalErrors) {
   for (const auto& [key, value] : {std::pair{"temperature", "3"}, std::pair{"top_p", "-0.1"},
                                    std::pair{"max_tokens", "0"}, std::pair{"top_k", "-1"},
                                    std::pair{"random_seed", "not-an-integer"}}) {
+    ChatCompletionRequest req;
+    KeyValuePairs settings;
+    settings.Add(key, value);
+
+    try {
+      ApplyCatalogDefaults(req, settings);
+      FAIL() << "Expected an error for catalog setting " << key;
+    } catch (const fl::Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INTERNAL) << key;
+      EXPECT_NE(std::string(ex.what()).find(key), std::string::npos) << ex.what();
+    }
+  }
+}
+
+TEST(ChatCompletionsConverterTest, ApplyCatalogDefaults_RejectsNumericTrailingJunk) {
+  for (const auto& [key, value] : {std::pair{"max_tokens", "1.5"}, std::pair{"top_p", "0.9oops"},
+                                   std::pair{"temperature", "0.9oops"}, std::pair{"top_k", "40oops"},
+                                   std::pair{"random_seed", "42oops"}}) {
     ChatCompletionRequest req;
     KeyValuePairs settings;
     settings.Add(key, value);
@@ -898,7 +931,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   response.items.push_back(
       std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "Hello there!"));
   response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
-  response.usage = {10, 5, 15, 3};
+  response.usage = {10, 5, 15, 3, 8};
 
   auto result = BuildResponse(response, "chatcmpl-abc", 1000, "test-model");
 
@@ -914,6 +947,7 @@ TEST(ChatCompletionsConverterTest, BuildResponse_AssistantTextMessage) {
   EXPECT_EQ(result.usage.prompt_tokens, 10);
   EXPECT_EQ(result.usage.completion_tokens, 5);
   EXPECT_EQ(result.usage.total_tokens, 15);
+  EXPECT_EQ(result.usage.prompt_tokens_details.cached_tokens, 8);
   EXPECT_EQ(result.usage.completion_tokens_details.reasoning_tokens, 3);
 }
 

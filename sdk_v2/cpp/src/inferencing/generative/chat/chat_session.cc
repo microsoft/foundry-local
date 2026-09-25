@@ -656,6 +656,7 @@ struct GuidedEngineRetryResult {
   int prompt_tokens = 0;
   int total_tokens = 0;
   int reasoning_tokens = 0;
+  int cached_prompt_tokens = 0;
   std::optional<flFinishReason> finish_reason;
   bool canceled = false;
 };
@@ -743,6 +744,7 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
   if (const auto usage = generator->GetTurnUsage()) {
     result.prompt_tokens = usage->prompt_tokens;
     result.total_tokens = usage->prompt_tokens + usage->generated_tokens;
+    result.cached_prompt_tokens = usage->cached_prompt_tokens;
     result.finish_reason = usage->finish_reason;
     termination = usage->termination_cause;
   }
@@ -1026,6 +1028,7 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
                                          int prompt_tokens,
                                          int total_tokens,
                                          int reasoning_tokens,
+                                         int cached_prompt_tokens,
                                          std::optional<flFinishReason> backend_finish_reason) {
   int completion_tokens = total_tokens - prompt_tokens;
   bool has_tool_calls = false;
@@ -1082,6 +1085,7 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
   response.usage.completion_tokens = completion_tokens;
   response.usage.total_tokens = total_tokens;
   response.usage.reasoning_tokens = reasoning_tokens;
+  response.usage.cached_prompt_tokens = cached_prompt_tokens;
 
   logger_.Log(LogLevel::Verbose,
               fmt::format(
@@ -1422,11 +1426,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   }
 
   int total_tokens = cached_generator_->TokenCount();
+  int cached_prompt_tokens = 0;
   std::optional<flFinishReason> backend_finish_reason;
   std::optional<BackendTerminationCause> backend_termination;
   if (const auto turn_usage = cached_generator_->GetTurnUsage()) {
     prompt_tokens = turn_usage->prompt_tokens;
     total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    cached_prompt_tokens = turn_usage->cached_prompt_tokens;
     backend_finish_reason = turn_usage->finish_reason;
     backend_termination = turn_usage->termination_cause;
   }
@@ -1504,6 +1510,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     prompt_tokens = retry.prompt_tokens;
     total_tokens = retry.total_tokens;
+    cached_prompt_tokens = retry.cached_prompt_tokens;
     backend_finish_reason = retry.finish_reason;
     accepted_reasoning_tokens = retry.reasoning_tokens;
     stop_sequence_matched = false;
@@ -1537,7 +1544,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   ProcessGeneratedOutput(std::move(generated_events), output_tool_ctx, effective_options,
                          stop_sequence_matched, host_output_limit_reached, response, prompt_tokens, total_tokens,
-                         accepted_reasoning_tokens, backend_finish_reason);
+                         accepted_reasoning_tokens, cached_prompt_tokens, backend_finish_reason);
 
   // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
   // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
@@ -1827,11 +1834,13 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
   }
 
   int total_tokens = generator->TokenCount();
+  int cached_prompt_tokens = 0;
   std::optional<flFinishReason> backend_finish_reason;
   std::optional<BackendTerminationCause> backend_termination;
   if (const auto turn_usage = generator->GetTurnUsage()) {
     prompt_tokens = turn_usage->prompt_tokens;
     total_tokens = turn_usage->prompt_tokens + turn_usage->generated_tokens;
+    cached_prompt_tokens = turn_usage->cached_prompt_tokens;
     backend_finish_reason = turn_usage->finish_reason;
     backend_termination = turn_usage->termination_cause;
   }
@@ -1903,6 +1912,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
     prompt_tokens = retry.prompt_tokens;
     total_tokens = retry.total_tokens;
+    cached_prompt_tokens = retry.cached_prompt_tokens;
     backend_finish_reason = retry.finish_reason;
     accepted_reasoning_tokens = retry.reasoning_tokens;
     stop_sequence_matched = false;
@@ -1925,7 +1935,7 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options,
                          stop_sequence_matched, /*host_output_limit_reached=*/false, response, prompt_tokens,
-                         total_tokens, accepted_reasoning_tokens, backend_finish_reason);
+                         total_tokens, accepted_reasoning_tokens, cached_prompt_tokens, backend_finish_reason);
 
   if (!original_request.TryComplete()) {
     return;

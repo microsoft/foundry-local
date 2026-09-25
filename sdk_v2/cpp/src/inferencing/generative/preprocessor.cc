@@ -91,18 +91,9 @@ std::string Preprocessor::ApplyChatTemplateWithOptions(const char* messages_json
   const std::string normalized_kwargs =
       NormalizeChatTemplateKwargs(template_kwargs_json ? template_kwargs_json : "");
   std::lock_guard<std::mutex> lock(mutex_);
-#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
   KeyValuePairs options;
   options.Add("chat_template_kwargs", normalized_kwargs);
   tokenizer_->UpdateOptions(options.Keys().data(), options.Values().data(), options.size());
-#else
-  if (template_kwargs_json && *template_kwargs_json) {
-    if (normalized_kwargs != "{}") {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
-               "chat_template_kwargs requires a build with tokenizer kwargs support enabled");
-    }
-  }
-#endif
   OgaString result = tokenizer_->ApplyChatTemplate(
       /*template_str=*/nullptr, messages_json, tools_json, add_generation_prompt);
   return std::string(static_cast<const char*>(result));

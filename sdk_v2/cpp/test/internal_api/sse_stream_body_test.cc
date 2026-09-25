@@ -221,6 +221,70 @@ TEST(SseStreamBodyTest, IdleReadSendsKeepAliveBeforeInferenceProducesData) {
   body.Finish();
 }
 
+TEST(SseStreamBodyTest, UndrainedQueueCancelsRequestAndEmitsOneError) {
+  auto request = std::make_shared<Request>();
+  ASSERT_TRUE(request->TryBegin());
+  SseStreamBody body;
+  body.Stream()->BindRequest(request);
+
+  const std::string chunk(4096, 'x');
+  for (size_t i = 0; i <= SseStreamState::kMaxBufferedBytes / chunk.size(); ++i) {
+    body.Push(chunk);
+  }
+
+  EXPECT_TRUE(body.Stream()->IsDisconnected());
+  EXPECT_TRUE(request->IsCancellationRequested());
+  body.Push("data: should not appear\n\n");
+  body.Finish();
+
+  char buffer[256] = {};
+  oatpp::async::Action action;
+  const auto bytes = body.read(buffer, sizeof(buffer), action);
+  ASSERT_GT(bytes, 0);
+  const std::string terminal(buffer, bytes);
+  EXPECT_NE(terminal.find("event: error"), std::string::npos);
+  EXPECT_NE(terminal.find("SSE stream buffer limit exceeded"), std::string::npos);
+  EXPECT_EQ(body.read(buffer, sizeof(buffer), action), 0);
+}
+
+TEST(SseStreamBodyTest, PartialReadsFreeQueueCapacity) {
+  SseStreamBody body;
+  body.Push(std::string(SseStreamState::kMaxBufferedBytes, 'x'));
+  EXPECT_FALSE(body.Stream()->IsDisconnected());
+
+  char buffer[64];
+  oatpp::async::Action action;
+  EXPECT_EQ(body.read(buffer, sizeof(buffer), action), sizeof(buffer));
+  body.Push(std::string(sizeof(buffer), 'y'));
+  EXPECT_FALSE(body.Stream()->IsDisconnected());
+  body.Finish();
+}
+
+TEST(SseStreamBodyTest, PublicationDecisionIsAtomicWithDisconnect) {
+  SseStreamBody body;
+  auto stream = body.Stream();
+  std::promise<void> publishing;
+  std::promise<void> release;
+  auto released = release.get_future().share();
+  auto decision = std::async(std::launch::async, [&] {
+    return stream->RunIfConnected([&] {
+      publishing.set_value();
+      released.wait();
+    });
+  });
+  EXPECT_EQ(publishing.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
+
+  auto closing = std::async(std::launch::async, [&] { stream->BodyClosed(); });
+  EXPECT_EQ(closing.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+  release.set_value();
+  EXPECT_TRUE(decision.get());
+  closing.get();
+
+  bool published = false;
+  EXPECT_FALSE(stream->RunIfConnected([&] { published = true; }));
+  EXPECT_FALSE(published);
+}
+
 // ========================================================================
 // SseStreamBody — threaded Push + read
 // ========================================================================

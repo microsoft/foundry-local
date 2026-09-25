@@ -318,7 +318,12 @@ SearchOptions SearchOptions::FromParameters(const KeyValuePairs& params) {
   auto try_float = [&](const std::string& key) -> std::optional<float> {
     auto it = params.find(key);
     if (it != params.end()) {
-      return std::stof(it->second);
+      size_t consumed = 0;
+      const float value = std::stof(it->second, &consumed);
+      if (consumed != it->second.size()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Invalid numeric value for ", key, ": ", it->second);
+      }
+      return value;
     }
 
     return std::nullopt;
@@ -327,7 +332,12 @@ SearchOptions SearchOptions::FromParameters(const KeyValuePairs& params) {
   auto try_int = [&](const std::string& key) -> std::optional<int> {
     auto it = params.find(key);
     if (it != params.end()) {
-      return std::stoi(it->second);
+      size_t consumed = 0;
+      const int value = std::stoi(it->second, &consumed);
+      if (consumed != it->second.size()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Invalid numeric value for ", key, ": ", it->second);
+      }
+      return value;
     }
 
     return std::nullopt;

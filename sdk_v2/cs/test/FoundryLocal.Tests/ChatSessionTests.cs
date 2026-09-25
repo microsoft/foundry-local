@@ -324,6 +324,7 @@ internal sealed class ChatSessionTests
         }
 
         await Assert.That(iteratorEx).IsNotNull();
+        await Assert.That(itemCount).IsGreaterThanOrEqualTo(1);
 
         try
         {
@@ -332,7 +333,9 @@ internal sealed class ChatSessionTests
         }
         catch (OperationCanceledException)
         {
-            // Cancellation may lose the race when native processing completes before buffered items are consumed.
+            // The producer may still be running when the first buffered item is consumed.
+            // In that case cancellation wins and FinalResponse is canceled. If the producer
+            // already completed, its terminal response remains successful.
         }
     }
 

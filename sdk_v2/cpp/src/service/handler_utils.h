@@ -28,6 +28,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace fl {
 
@@ -186,14 +187,39 @@ inline std::string GenerateCompletionId(const std::string& prefix) {
 
 class SseStreamState {
  public:
+  static constexpr size_t kMaxBufferedBytes = 1024 * 1024;
+
   void Push(std::string chunk) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (disconnected_) {
-      return;
+    std::shared_ptr<Request> request;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (disconnected_ || done_) {
+        return;
+      }
+
+      if (chunk.size() > kMaxBufferedBytes - buffered_bytes_) {
+        disconnected_ = true;
+        done_ = true;
+        request = request_.lock();
+        std::queue<std::string> empty;
+        queue_.swap(empty);
+        buffered_bytes_ = 0;
+        std::string error =
+            "event: error\ndata: {\"error\":{\"message\":\"SSE stream buffer limit exceeded\","
+            "\"type\":\"server_error\"}}\n\n";
+        buffered_bytes_ = error.size();
+        queue_.push(std::move(error));
+        cv_.notify_one();
+      } else {
+        buffered_bytes_ += chunk.size();
+        queue_.push(std::move(chunk));
+        cv_.notify_one();
+      }
     }
 
-    queue_.push(std::move(chunk));
-    cv_.notify_one();
+    if (request) {
+      request->CancelCurrentOrNext();
+    }
   }
 
   void Finish() {
@@ -212,6 +238,17 @@ class SseStreamState {
     return disconnected_;
   }
 
+  template <typename Fn>
+  bool RunIfConnected(Fn&& fn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (disconnected_) {
+      return false;
+    }
+
+    std::forward<Fn>(fn)();
+    return true;
+  }
+
   void BodyClosed() {
     std::shared_ptr<Request> request;
     {
@@ -224,6 +261,7 @@ class SseStreamState {
       request = request_.lock();
       std::queue<std::string> empty;
       queue_.swap(empty);
+      buffered_bytes_ = 0;
     }
 
     if (request) {
@@ -239,6 +277,7 @@ class SseStreamState {
     if (!cv_.wait_for(lock, std::chrono::milliseconds(250),
                       [this] { return !queue_.empty() || done_; })) {
       queue_.push(": keep-alive\n\n");
+      buffered_bytes_ += sizeof(": keep-alive\n\n") - 1;
     }
 
     if (queue_.empty()) {
@@ -257,6 +296,7 @@ class SseStreamState {
 
       std::memcpy(dst + total, front.data(), to_copy);
       total += to_copy;
+      buffered_bytes_ -= to_copy;
 
       if (to_copy < static_cast<v_buff_size>(front.size())) {
         // Partial read — keep the rest for next call
@@ -273,6 +313,7 @@ class SseStreamState {
   mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::queue<std::string> queue_;
+  size_t buffered_bytes_ = 0;
   std::weak_ptr<Request> request_;
   bool done_ = false;
   bool disconnected_ = false;

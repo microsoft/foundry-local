@@ -316,6 +316,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ChatCompletionsHandler::Ha
         usage.prompt_tokens = static_cast<int>(bg_response.usage.prompt_tokens);
         usage.completion_tokens = static_cast<int>(bg_response.usage.completion_tokens);
         usage.total_tokens = static_cast<int>(bg_response.usage.total_tokens);
+        usage.prompt_tokens_details.cached_tokens =
+            static_cast<int>(bg_response.usage.cached_prompt_tokens);
         usage.completion_tokens_details.reasoning_tokens =
             static_cast<int>(bg_response.usage.reasoning_tokens);
         usage_chunk.usage = std::move(usage);

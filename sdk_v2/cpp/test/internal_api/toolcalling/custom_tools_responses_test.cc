@@ -1009,7 +1009,7 @@ TEST(ResponsesToolCallEmissionTest, CompletedResponseCarriesTheCustomCallForTheN
       ResponseConverter::FromSessionResponse(ResponseWithCalls(std::move(items)));
 
   auto response = ResponseConverter::BuildResponseObject("resp_1", 10, "m", params, std::move(output), output_text,
-                                                         TokenUsage{});
+                                                         TokenUsage{}, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
   const json stored = response;
 
   ASSERT_EQ(stored.at("output").size(), 1u);

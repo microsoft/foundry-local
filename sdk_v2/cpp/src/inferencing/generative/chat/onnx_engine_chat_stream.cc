@@ -55,6 +55,16 @@ std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason) {
   }
 }
 
+ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult& result) {
+  return ChatTurnUsage{
+      prompt_tokens,
+      static_cast<int>(result.generated_tokens),
+      MapFinishReason(static_cast<OgaFinishReason>(result.finish_reason)),
+      MapTerminationCause(result.finish_reason),
+      static_cast<int>(result.cached_prompt_tokens),
+  };
+}
+
 }  // namespace onnx_engine_chat_stream_internal
 
 namespace {
@@ -235,13 +245,8 @@ void OnnxEngineChatStream::ResetTurnDecoder() {
 }
 
 std::optional<ChatTurnUsage> OnnxEngineChatStream::GetTurnUsage() const {
-  const auto result = engine_.GetTurnResult(conversation_);
-  return ChatTurnUsage{
-      prompt_token_count_,
-      static_cast<int>(result.generated_tokens),
-      MapFinishReason(result.finish_reason),
-      onnx_engine_chat_stream_internal::MapTerminationCause(result.finish_reason),
-  };
+  return onnx_engine_chat_stream_internal::BuildTurnUsage(
+      prompt_token_count_, engine_.GetTurnResult(conversation_));
 }
 
 std::unique_ptr<OnnxEngineChatStream> OnnxEngineChatStream::Create(
