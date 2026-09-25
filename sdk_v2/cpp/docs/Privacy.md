@@ -15,13 +15,6 @@ Telemetry is enabled by default.
 Foundry Local uses the cross-platform 1DS SDK (cpp_client_telemetry) to send trace events to Microsoft's telemetry backend over HTTPS. This data is handled following GDPR and privacy regulations for anonymity and data access controls.
 
 Prompts, model outputs, audio contents, raw device identifiers, and secrets are not collected.
-Telemetry event properties and common-context strings are redacted for URLs, absolute paths, and embedded secrets
-and limited in length before upload.
-On POSIX systems, the local device-ID file and its directory are restricted to the owning user before an existing
-ID is reused.
-HTTP caller User-Agent headers are reduced to a recognized Foundry Local SDK name and numeric release version before
-local telemetry logging or upload; recognized prerelease suffixes are removed and free-form headers are recorded as
-`unknown-http-client`.
 
 Non-essential telemetry can be disabled as follows.
 
