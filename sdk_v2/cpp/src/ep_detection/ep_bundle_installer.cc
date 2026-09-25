@@ -654,7 +654,7 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
       }
 
       return std::make_unique<EpInstallTransaction>(logger, std::move(lock), root_dir_, ep_display_name_, manifest,
-                                                    *active_generation, active_bin, active_generation);
+                                                    *active_generation, active_bin, active_generation, false);
     }
 
     auto staging_dir = staging_root / GenerateUniqueId();
@@ -665,6 +665,7 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
     logger.Log(LogLevel::Information, fmt::format("{}: installing bundle '{}'", ep_display_name_, manifest.bundle_id));
 
     const size_t artifact_count = manifest.artifacts.size();
+    bool downloaded = false;
     for (size_t i = 0; i < artifact_count; ++i) {
       const auto& artifact = manifest.artifacts[i];
       const float base_pct = (static_cast<float>(i) / static_cast<float>(artifact_count)) * 80.0f;
@@ -680,6 +681,7 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
                                                           span_pct, ep_display_name_, progress_cb, logger)
                                  : InstallRawArtifact(download_fn_, artifact, staging_bin, base_pct, span_pct,
                                                       ep_display_name_, progress_cb, logger);
+        downloaded = downloaded || ok;
       }
 
       if (!ok) {
@@ -710,7 +712,7 @@ std::unique_ptr<EpInstallTransaction> EpBundleInstaller::EnsureInstalled(
 
     auto transaction = std::make_unique<EpInstallTransaction>(logger, std::move(lock), root_dir_, ep_display_name_,
                                                               manifest, generation_id, final_bundle_dir / "bin",
-                                                              active_generation);
+                                                              active_generation, downloaded);
     final_cleanup.Release();
     return transaction;
   } catch (const std::exception& e) {
@@ -723,7 +725,7 @@ EpInstallTransaction::EpInstallTransaction(ILogger& logger, std::unique_ptr<File
                                            std::filesystem::path root_dir, std::string ep_display_name,
                                            EpBundleManifest manifest, std::string generation_id,
                                            std::filesystem::path bin_dir,
-                                           std::optional<std::string> previous_active_generation)
+                                           std::optional<std::string> previous_active_generation, bool downloaded)
     : logger_(logger),
       lock_(std::move(lock)),
       root_dir_(std::move(root_dir)),
@@ -731,7 +733,8 @@ EpInstallTransaction::EpInstallTransaction(ILogger& logger, std::unique_ptr<File
       manifest_(std::move(manifest)),
       generation_id_(std::move(generation_id)),
       bin_dir_(std::move(bin_dir)),
-      previous_active_generation_(std::move(previous_active_generation)) {}
+      previous_active_generation_(std::move(previous_active_generation)),
+      downloaded_(downloaded) {}
 
 EpInstallTransaction::~EpInstallTransaction() noexcept {
   if (!activated_ || finalized_) {

@@ -30,10 +30,12 @@ class IEpBootstrapper {
   /// @param force  Re-download even if already registered.
   /// @param progress_cb  Called with (ep_name, percent 0.0-100.0). Returns false to cancel.
   /// @param logger  Logger for diagnostic output during download/registration.
+  /// @param downloaded  Set to true only when this call fetched package bytes; false for reuse or unknown origin.
   /// @return true on success, false on failure or cancellation.
   virtual bool DownloadAndRegister(bool force,
                                    const ProgressCallback& progress_cb,
-                                   ILogger& logger) = 0;
+                                   ILogger& logger,
+                                   bool* downloaded = nullptr) = 0;
 
   /// Prepare process state needed to load a model with this EP.
   virtual bool PrepareForModelLoad(ILogger& /*logger*/) { return true; }

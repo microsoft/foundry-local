@@ -5,6 +5,7 @@
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "exception.h"
+#include "inferencing/session/request.h"
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +13,12 @@
 #include <oatpp/web/protocol/http/outgoing/Response.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 
+#include "model.h"
+#include "service/web_service.h"
+#include "telemetry/telemetry_action_tracker.h"
+
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
@@ -20,8 +27,12 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace fl {
+
+class GenAIModelInstance;
 
 using oatpp::web::protocol::http::Status;
 using oatpp::web::server::HttpRequestHandler;
@@ -54,6 +65,97 @@ inline std::shared_ptr<HttpRequestHandler::OutgoingResponse> ErrorResponse(const
   return JsonResponse(status, body);
 }
 
+inline ActionStatus ResponseToActionStatus(const std::shared_ptr<HttpRequestHandler::OutgoingResponse>& response) {
+  if (!response) {
+    return ActionStatus::kFailure;
+  }
+
+  const auto code = response->getStatus().code;
+  if (code == 408 || code == 504) {
+    return ActionStatus::kTimeout;
+  }
+
+  if (code >= 500) {
+    return ActionStatus::kFailure;
+  }
+
+  if (code >= 400) {
+    return ActionStatus::kClientError;
+  }
+
+  return ActionStatus::kSuccess;
+}
+
+inline std::string SafeHttpUserAgent(std::string_view value) {
+  constexpr std::string_view products[] = {
+      "foundry-local-core/", "foundry-local-cpp/", "foundry-local-csharp/",
+      "foundry-local-python/", "foundry-local-js/", "foundry-local-rust/"};
+  for (const auto product : products) {
+    if (!value.starts_with(product)) {
+      continue;
+    }
+
+    const auto version = value.substr(product.size());
+    const auto release = version.substr(0, std::min(version.find('-'), version.find(".dev")));
+    const auto suffix = version.substr(release.size());
+    if (release.empty() || release.size() > 32 || release.find("..") != std::string_view::npos ||
+        release.front() < '0' || release.front() > '9' ||
+        release.back() < '0' || release.back() > '9' ||
+        !std::all_of(release.begin(), release.end(), [](unsigned char ch) {
+          return (ch >= '0' && ch <= '9') || ch == '.';
+        })) {
+      return "unknown-http-client";
+    }
+
+    constexpr std::string_view prerelease_prefixes[] = {
+        "-dev.local.", "-dev.", ".dev", "-rc.", "-rc", "-beta.", "-alpha.", "-preview."};
+    bool supported_suffix = suffix.empty();
+    for (const auto prefix : prerelease_prefixes) {
+      if (suffix.starts_with(prefix)) {
+        const auto number = suffix.substr(prefix.size());
+        supported_suffix = !number.empty() && number.size() <= 14 &&
+                           std::all_of(number.begin(), number.end(),
+                                       [](unsigned char ch) { return ch >= '0' && ch <= '9'; });
+        break;
+      }
+    }
+
+    if (!supported_suffix) {
+      return "unknown-http-client";
+    }
+
+    return std::string(product) + std::string(release);
+  }
+
+  return "unknown-http-client";
+}
+
+inline std::string GetUserAgent(const std::shared_ptr<HttpRequestHandler::IncomingRequest>& request) {
+  if (!request) {
+    return "unknown-http-client";
+  }
+
+  const auto user_agent = request->getHeader("User-Agent");
+  return user_agent ? SafeHttpUserAgent(*user_agent) : "unknown-http-client";
+}
+
+/// Track construction separately from processing, with the route's indirect context for both.
+template <typename SessionType>
+std::unique_ptr<SessionType> CreateSessionWithTelemetry(const Model& model, GenAIModelInstance& loaded,
+                                                        ServiceContext& ctx, const InvocationContext& context) {
+  ActionTracker tracker(Action::kSessionCreate, ctx.telemetry, context);
+  tracker.SetModelId(model.Id());
+  try {
+    auto session = std::make_unique<SessionType>(model, loaded, ctx.logger, ctx.telemetry);
+    session->SetInvocationContext(context);
+    tracker.SetStatus(ActionStatus::kSuccess);
+    return session;
+  } catch (const std::exception& ex) {
+    tracker.RecordException(ex);
+    throw;
+  }
+}
+
 /// Map a failure raised during request handling to an HTTP status.
 ///
 /// The inference path validates what the caller sent: tool results must reference an outstanding call, call IDs must
@@ -79,42 +181,110 @@ inline std::string GenerateCompletionId(const std::string& prefix) {
 }
 
 // ========================================================================
-// SSE stream body — feeds token-by-token SSE events to oatpp's chunked
-// transfer encoding. A producer thread pushes formatted SSE strings into
-// a queue; oatpp calls read() to pull chunks out.
+// SSE stream body — the producer owns the state, not the oatpp Body. This lets
+// a failed socket write destroy the Body and cancel inference while the producer is still running.
 // ========================================================================
 
-class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
+class SseStreamState {
  public:
-  SseStreamBody() : done_(false) {}
+  static constexpr size_t kMaxBufferedBytes = 1024 * 1024;
 
-  /// Push a formatted SSE event (e.g. "data: {...}\n\n") into the queue.
   void Push(std::string chunk) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    queue_.push(std::move(chunk));
-    cv_.notify_one();
+    std::shared_ptr<Request> request;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (disconnected_ || done_) {
+        return;
+      }
+
+      if (chunk.size() > kMaxBufferedBytes - buffered_bytes_) {
+        disconnected_ = true;
+        done_ = true;
+        request = request_.lock();
+        std::queue<std::string> empty;
+        queue_.swap(empty);
+        buffered_bytes_ = 0;
+        std::string error =
+            "event: error\ndata: {\"error\":{\"message\":\"SSE stream buffer limit exceeded\","
+            "\"type\":\"server_error\"}}\n\n";
+        buffered_bytes_ = error.size();
+        queue_.push(std::move(error));
+        cv_.notify_one();
+      } else {
+        buffered_bytes_ += chunk.size();
+        queue_.push(std::move(chunk));
+        cv_.notify_one();
+      }
+    }
+
+    if (request) {
+      request->CancelCurrentOrNext();
+    }
   }
 
-  /// Signal that no more data will be pushed.
   void Finish() {
     std::lock_guard<std::mutex> lock(mutex_);
     done_ = true;
     cv_.notify_one();
   }
 
-  // -- Body interface --
+  void BindRequest(const std::shared_ptr<Request>& request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    request_ = request;
+  }
 
-  oatpp::v_io_size read(void* buffer, v_buff_size count, oatpp::async::Action& /*action*/) override {
-    std::unique_lock<std::mutex> lock(mutex_);
+  bool IsDisconnected() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return disconnected_;
+  }
 
-    // Wait until data is available or the stream is finished
-    cv_.wait(lock, [this] { return !queue_.empty() || done_; });
-
-    if (queue_.empty()) {
-      return 0;  // EOF — oatpp ends the chunked response
+  template <typename Fn>
+  bool RunIfConnected(Fn&& fn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (disconnected_) {
+      return false;
     }
 
-    // Drain as much queued data as fits in the buffer
+    std::forward<Fn>(fn)();
+    return true;
+  }
+
+  void BodyClosed() {
+    std::shared_ptr<Request> request;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (eof_observed_) {
+        return;
+      }
+
+      disconnected_ = true;
+      request = request_.lock();
+      std::queue<std::string> empty;
+      queue_.swap(empty);
+      buffered_bytes_ = 0;
+    }
+
+    if (request) {
+      request->CancelCurrentOrNext();
+    }
+  }
+
+ private:
+  friend class SseStreamBody;
+
+  oatpp::v_io_size Read(void* buffer, v_buff_size count) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!cv_.wait_for(lock, std::chrono::milliseconds(250),
+                      [this] { return !queue_.empty() || done_; })) {
+      queue_.push(": keep-alive\n\n");
+      buffered_bytes_ += sizeof(": keep-alive\n\n") - 1;
+    }
+
+    if (queue_.empty()) {
+      eof_observed_ = true;
+      return 0;
+    }
+
     oatpp::v_io_size total = 0;
     auto* dst = static_cast<char*>(buffer);
 
@@ -126,6 +296,7 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
 
       std::memcpy(dst + total, front.data(), to_copy);
       total += to_copy;
+      buffered_bytes_ -= to_copy;
 
       if (to_copy < static_cast<v_buff_size>(front.size())) {
         // Partial read — keep the rest for next call
@@ -139,6 +310,30 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
     return total;
   }
 
+  mutable std::mutex mutex_;
+  std::condition_variable cv_;
+  std::queue<std::string> queue_;
+  size_t buffered_bytes_ = 0;
+  std::weak_ptr<Request> request_;
+  bool done_ = false;
+  bool disconnected_ = false;
+  bool eof_observed_ = false;
+};
+
+class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
+ public:
+  SseStreamBody() : state_(std::make_shared<SseStreamState>()) {}
+  ~SseStreamBody() override { state_->BodyClosed(); }
+
+  std::shared_ptr<SseStreamState> Stream() const { return state_; }
+
+  void Push(std::string chunk) { state_->Push(std::move(chunk)); }
+  void Finish() { state_->Finish(); }
+
+  oatpp::v_io_size read(void* buffer, v_buff_size count, oatpp::async::Action& /*action*/) override {
+    return state_->Read(buffer, count);
+  }
+
   void declareHeaders(Headers& headers) override {
     headers.put("Content-Type", "text/event-stream");
     headers.put("Cache-Control", "no-cache");
@@ -149,10 +344,7 @@ class SseStreamBody : public oatpp::web::protocol::http::outgoing::Body {
   v_int64 getKnownSize() override { return -1; }  // unknown → chunked transfer
 
  private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::queue<std::string> queue_;
-  bool done_;
+  std::shared_ptr<SseStreamState> state_;
 };
 
 }  // namespace fl

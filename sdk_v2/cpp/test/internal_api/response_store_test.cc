@@ -207,7 +207,7 @@ TEST(ResponseConverterTest, BuildResponseObjectHasRequiredFields) {
 
   auto typed = ResponseConverter::BuildResponseObject(
       "resp_123", 1700000000, "test-model", params,
-      std::move(output), "hello", usage);
+      std::move(output), "hello", usage, FOUNDRY_LOCAL_FINISH_STOP);
   json response = typed;
 
   EXPECT_EQ(response["id"], "resp_123");
@@ -247,7 +247,7 @@ TEST(ResponseConverterTest, BuildResponseObjectEchoesParameters) {
 
   auto typed = ResponseConverter::BuildResponseObject(
       "resp_123", 1700000000, "test-model", params,
-      std::move(output), "", usage);
+      std::move(output), "", usage, FOUNDRY_LOCAL_FINISH_STOP);
   json response = typed;
 
   EXPECT_NEAR(response["temperature"].get<double>(), 0.8, 1e-6);

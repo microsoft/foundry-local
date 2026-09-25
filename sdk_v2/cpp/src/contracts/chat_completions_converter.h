@@ -21,7 +21,7 @@ namespace chat_completions {
 std::string GenerateCompletionId();
 
 /// Apply catalog model defaults to request fields the user didn't set.
-/// Reads directly from the model's model_settings map.
+/// Reads directly from the model's model_settings map. Invalid applied defaults raise INTERNAL, not a client error.
 void ApplyCatalogDefaults(ChatCompletionRequest& req, const KeyValuePairs& model_settings);
 
 /// Map flFinishReason to OpenAI finish_reason string ("stop", "length", "tool_calls").

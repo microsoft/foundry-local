@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from foundry_local_sdk.exception import FoundryLocalException
 from foundry_local_sdk.logging_helper import LogLevel
+from foundry_local_sdk.version import __version__
 
 # Maps Python LogLevel → native flLogLevel integer values (from foundry_local_c.h)
 _LOG_LEVEL_MAP: dict[LogLevel, int] = {
@@ -144,6 +145,7 @@ class Configuration:
         config_values: dict[str, str] = {
             "AppName": self.app_name,
             "LogLevel": str(self.log_level),
+            "UserAgent": f"foundry-local-python/{__version__}",
         }
 
         if self.app_data_dir:
@@ -242,7 +244,7 @@ class Configuration:
                 )
 
         # Additional key/value settings
-        additional_settings: dict[str, str] = {}
+        additional_settings: dict[str, str] = {"UserAgent": f"foundry-local-python/{__version__}"}
         if self.additional_settings:
             additional_settings.update(self.additional_settings)
         if self.disable_nonessential_telemetry:

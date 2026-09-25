@@ -99,11 +99,15 @@ void TelemetryLogger::RecordCatalogFetch(const CatalogFetchInfo& info) {
 void TelemetryLogger::RecordProcessInfo(const ProcessInfo& info) {
   logger_.Log(LogLevel::Debug,
               fmt::format("[Telemetry] ProcessInfo AppName={} AppVersion={} OsName={} "
-                          "OsVersion={} CpuArch={} "
-                          "ProcessName={} DeviceIdStatus={} CpuCount={} TotalMemoryMB={}",
+                          "OsVersion={} CpuArch={} ProcessName={} DeviceIdStatus={} IsContainer={} "
+                          "ContainerType={} IsVirtualMachine={} VirtualizationType={} IsEmulator={} "
+                          "HostEnvironment={} EnvironmentDetectionConfidence={} "
+                          "DeviceIdScope={} CpuCount={} TotalMemoryMB={}",
                           app_name_, info.app_version, info.os_name, info.os_version,
-                          info.cpu_arch, info.process_name, info.device_id_status, info.cpu_count,
-                          info.total_memory_mb));
+                          info.cpu_arch, info.process_name, info.device_id_status, info.is_container,
+                          info.container_type, info.is_virtual_machine, info.virtualization_type,
+                          info.is_emulator, info.host_environment, info.environment_detection_confidence,
+                          info.device_id_scope, info.cpu_count, info.total_memory_mb));
 }
 
 void TelemetryLogger::RecordHardwareInfo(const HardwareInfo& info) {

@@ -113,7 +113,12 @@ const std::string& WebGpuEpBootstrapper::Name() const { return name_; }
 
 bool WebGpuEpBootstrapper::IsRegistered() const { return registered_; }
 
-bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) {
+bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger,
+                                               bool* downloaded) {
+  if (downloaded) {
+    *downloaded = false;
+  }
+
   if (registered_ && !force) {
     if (progress_cb) {
       progress_cb(name_, 100.0f);
@@ -187,6 +192,9 @@ bool WebGpuEpBootstrapper::DownloadAndRegister(bool force, const ProgressCallbac
 
     registered_ = true;
     bundle_dir_ = txn->bin_dir();
+    if (downloaded) {
+      *downloaded = txn->downloaded();
+    }
     txn->Finalize();
 
     if (progress_cb) {

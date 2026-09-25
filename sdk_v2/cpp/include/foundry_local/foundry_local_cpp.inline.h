@@ -131,7 +131,12 @@ inline KeyValuePairs& KeyValuePairs::Remove(const char* key) {
 // ===========================================================================
 
 inline Configuration::Configuration(const std::string& app_name)
-    : handle_(detail::CreateConfiguration(app_name), detail::config_api()->Configuration_Release) {}
+    : handle_(detail::CreateConfiguration(app_name), detail::config_api()->Configuration_Release) {
+  KeyValuePairs options;
+  const auto user_agent = std::string("foundry-local-cpp/") + Version();
+  options.Set("UserAgent", user_agent.c_str());
+  SetAdditionalOptions(options);
+}
 
 inline Configuration& Configuration::SetAppDataDir(const std::string& value) {
   Check(detail::config_api()->SetAppDataDir(handle_.get_mutable(), value.c_str()));

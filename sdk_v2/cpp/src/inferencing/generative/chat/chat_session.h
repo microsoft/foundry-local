@@ -231,6 +231,8 @@ class ChatSession : public Session {
   void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                   Response& response);
 
+  std::string ExecutionProvider() const override;
+
   /// Drop the cached generator and its tool context. Called whenever the generator's KV cache can no longer be
   /// trusted to match the committed transcript — the next turn then rebuilds from full committed history.
   /// noexcept because it also runs from a scope guard during exception unwinding.

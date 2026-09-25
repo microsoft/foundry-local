@@ -81,6 +81,7 @@ struct Request {
         raw_envelope_descriptor(std::move(other.raw_envelope_descriptor)),
         item_segment_starts(std::move(other.item_segment_starts)),
         state_(other.state_.load(std::memory_order_relaxed)),
+        cancel_on_start_(other.cancel_on_start_.load(std::memory_order_relaxed)),
         cancellation_detail_(std::move(other.cancellation_detail_)),
         owned_items(std::move(other.owned_items)) {}
 
@@ -92,6 +93,7 @@ struct Request {
     raw_envelope_descriptor = std::move(other.raw_envelope_descriptor);
     item_segment_starts = std::move(other.item_segment_starts);
     state_.store(other.state_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    cancel_on_start_.store(other.cancel_on_start_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     cancellation_detail_ = std::move(other.cancellation_detail_);
     owned_items = std::move(other.owned_items);
     return *this;
@@ -128,6 +130,16 @@ struct Request {
     }
 
     return IsCanceledState(expected);
+  }
+
+  /// For a one-shot transport-owned request, also cancel if the connection closes just before admission.
+  /// Ordinary Cancel() deliberately remains a no-op for idle/completed reusable SDK requests.
+  void CancelCurrentOrNext() const noexcept {
+    if (state_.load(std::memory_order_acquire) == State::Ready) {
+      cancel_on_start_.store(true, std::memory_order_release);
+    }
+
+    Cancel();
   }
 
   bool CancelFromStreamingCallbackException(std::string_view detail) const noexcept {
@@ -175,6 +187,10 @@ struct Request {
       if (state_.compare_exchange_weak(state, State::Running,
                                        std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {
+        if (cancel_on_start_.exchange(false, std::memory_order_acq_rel)) {
+          Cancel();
+        }
+
         return true;
       }
     }
@@ -243,6 +259,7 @@ struct Request {
   }
 
   mutable std::atomic<State> state_{State::Ready};
+  mutable std::atomic<bool> cancel_on_start_{false};
   mutable std::mutex cancellation_detail_mutex_;
   mutable std::string cancellation_detail_;
   std::vector<std::unique_ptr<Item>> owned_items;  // owned items (lifetime)
