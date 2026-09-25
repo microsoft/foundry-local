@@ -6,14 +6,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-/** Borrowed from a manager. Queries may fetch public catalog metadata, never model weights. */
+/** Borrowed from a manager. Queries catalog metadata but never download model weights. */
 public final class Catalog {
     private static final Pattern EXACT_MODEL_ID =
             Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]*:(0|[1-9][0-9]*)");
     private final FoundryLocalManager owner;
     private final Pointer handle;
+    private final CatalogType type;
 
-    Catalog(FoundryLocalManager owner, Pointer handle) { this.owner = owner; this.handle = handle; }
+    Catalog(FoundryLocalManager owner, Pointer handle, CatalogType type) {
+        this.owner = owner;
+        this.handle = handle;
+        this.type = type;
+    }
+
+    public CatalogType type() { return type; }
 
     /** Looks up a model by its catalog alias. */
     public Model getModel(String alias) {

@@ -5,7 +5,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.microsoft.foundry</groupId>
-  <artifactId>foundry-local-asr-consumer-smoke</artifactId>
+  <artifactId>foundry-local-consumer-smoke</artifactId>
   <version>0.1.0</version>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
@@ -14,8 +14,8 @@
   <dependencies>
     <dependency>
       <groupId>com.microsoft.foundry</groupId>
-      <artifactId>foundry-local-asr-sdk</artifactId>
-      <version>${foundry.asr.version}</version>
+      <artifactId>foundry-local-sdk</artifactId>
+      <version>${foundry.sdk.version}</version>
     </dependency>
   </dependencies>
   <build>

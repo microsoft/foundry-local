@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -19,15 +20,21 @@ class NativeAsrTest {
         String runtime = setting("foundry.test.runtime", "FOUNDRY_LOCAL_NATIVE_BIN_DIR");
         String cache = setting("foundry.test.cache", "FOUNDRY_TEST_DATA_DIR");
         String wav = setting("foundry.test.wav", "FOUNDRY_TEST_WAV");
+        String modelId = setting("foundry.test.model", "FOUNDRY_TEST_MODEL");
         if (Boolean.getBoolean("foundry.test.native.required")) {
             assertNotNull(runtime, "Missing native test runtime");
             assertNotNull(cache, "Missing native test cache");
             assertNotNull(wav, "Missing native test WAV");
+            assertNotNull(modelId, "Missing native test model");
         } else {
-            assumeTrue(runtime != null && cache != null && wav != null,
-                    "Configure the native test runtime, cache, and WAV");
+            assumeTrue(runtime != null && cache != null && wav != null && modelId != null,
+                    "Configure the native test runtime, cache, WAV, and model");
         }
-        Configuration config = new Configuration("java-asr-test", Path.of(runtime), Path.of(cache), temporary);
+        Configuration config = Configuration.builder("java-asr-test")
+                .runtimeDirectory(Path.of(runtime))
+                .modelCacheDirectory(Path.of(cache))
+                .appDataDirectory(temporary)
+                .build();
         Model borrowed;
         AtomicInteger callbacks = new AtomicInteger();
         try (FoundryLocalManager manager = new FoundryLocalManager(config)) {
@@ -37,8 +44,7 @@ class NativeAsrTest {
             assertThrows(IllegalArgumentException.class, () -> catalog.getModelVariant("nemotron"));
             assertThrows(ModelNotFoundException.class, () ->
                     catalog.getModelVariant("missing-java-test-model:999"));
-            borrowed = catalog.getModelVariant(System.getProperty("foundry.test.model",
-                    "nemotron-speech-streaming-en-0.6b-generic-cpu:3"));
+            borrowed = catalog.getModelVariant(modelId);
             assertEquals(borrowed.info().alias(), catalog.getModel(borrowed.info().alias()).info().alias());
             CancellationToken cancelled = new CancellationToken();
             cancelled.cancel();
@@ -56,7 +62,7 @@ class NativeAsrTest {
             byte[] pcm = WavAudio.read(Path.of(wav)).pcm();
             try (AudioSession session = borrowed.createAudioSession();
                  Transcription run = session.transcribeWav(Path.of(wav), event -> callbacks.incrementAndGet())) {
-                assertFalse(run.await(Duration.ofSeconds(60)).text().isBlank());
+                assertTranscript(run.await(Duration.ofSeconds(60)).text());
                 assertEquals(pcm.length, run.timing().submittedBytes());
                 assertNotNull(run.timing().inputClosedMillis());
             }
@@ -73,7 +79,7 @@ class NativeAsrTest {
                         TranscriptionResult result = run.await(Duration.ofMinutes(3));
                         assertFalse(result.cancelled());
                         assertEquals(2, result.nativeFinishReason());
-                        assertFalse(result.text().isBlank());
+                        assertTranscript(result.text());
                         assertThrows(IllegalStateException.class, () -> run.writePcm(new byte[2]));
                     }
                     System.err.println("native-test: PCM finished and closed " + iteration);
@@ -117,8 +123,7 @@ class NativeAsrTest {
         }
         System.err.println("native-test: manager recreated and closed");
         Process process = NativeTestProcess.start(NativeAbandonedStream.class,
-                runtime, cache, temporary.toString(),
-                System.getProperty("foundry.test.model", "nemotron-speech-streaming-en-0.6b-generic-cpu:3"));
+                runtime, cache, temporary.toString(), modelId);
         try {
             assertTrue(process.waitFor(90, TimeUnit.SECONDS), "Abandoned stream kept the JVM alive");
             String output = new String(process.getInputStream().readAllBytes(),
@@ -139,5 +144,15 @@ class NativeAsrTest {
             value = System.getenv(environmentVariable);
         }
         return value == null || value.isBlank() ? null : value;
+    }
+
+    private static void assertTranscript(String text) {
+        String normalized = text.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", " ")
+                .trim()
+                .replaceAll(" +", " ");
+        for (String phrase : new String[] {"more than one link", "live concert", "album to purchase"}) {
+            assertTrue(normalized.contains(phrase), () -> "Missing '" + phrase + "' in transcript: " + text);
+        }
     }
 }

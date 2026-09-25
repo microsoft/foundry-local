@@ -4,6 +4,11 @@
 # the matching cpp-native artifact and the pinned CI model cache. The final
 # stage creates one platform-independent Maven bundle.
 
+parameters:
+- name: streamingAsrModel
+  type: string
+  default: 'nemotron-speech-streaming-en-0.6b-generic-cpu:3'
+
 stages:
 - stage: java_build_win_x64
   displayName: 'Java SDK: Build + Test Windows x64'
@@ -29,13 +34,14 @@ stages:
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
       parameters:
-        modelSet: 'nemotron-speech'
+        modelSet: 'streaming-asr'
     - template: steps-build-java.yml
       parameters:
         rid: 'win-x64'
         jdkArchitecture: 'x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-x64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        testModel: '${{ parameters.streamingAsrModel }}'
 
 - stage: java_build_win_arm64
   displayName: 'Java SDK: Build + Test Windows ARM64'
@@ -62,13 +68,14 @@ stages:
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
       parameters:
-        modelSet: 'nemotron-speech'
+        modelSet: 'streaming-asr'
     - template: steps-build-java.yml
       parameters:
         rid: 'win-arm64'
         jdkArchitecture: 'arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-win-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        testModel: '${{ parameters.streamingAsrModel }}'
 
 - stage: java_build_linux_x64
   displayName: 'Java SDK: Build + Test Linux x64'
@@ -94,13 +101,14 @@ stages:
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
       parameters:
-        modelSet: 'nemotron-speech'
+        modelSet: 'streaming-asr'
     - template: steps-build-java.yml
       parameters:
         rid: 'linux-x64'
         jdkArchitecture: 'x64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-x64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        testModel: '${{ parameters.streamingAsrModel }}'
 
 - stage: java_build_linux_arm64
   displayName: 'Java SDK: Build + Test Linux ARM64'
@@ -127,13 +135,14 @@ stages:
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
       parameters:
-        modelSet: 'nemotron-speech'
+        modelSet: 'streaming-asr'
     - template: steps-build-java.yml
       parameters:
         rid: 'linux-arm64'
         jdkArchitecture: 'arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-linux-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        testModel: '${{ parameters.streamingAsrModel }}'
 
 - stage: java_build_osx_arm64
   displayName: 'Java SDK: Build + Test macOS ARM64'
@@ -161,13 +170,14 @@ stages:
       clean: true
     - template: fetch-models-from-artifacts-feed.yml
       parameters:
-        modelSet: 'nemotron-speech'
+        modelSet: 'streaming-asr'
     - template: steps-build-java.yml
       parameters:
         rid: 'osx-arm64'
         jdkArchitecture: 'arm64'
         nativeArtifactDir: '$(Pipeline.Workspace)/cpp-native-osx-arm64'
         testDataSharedDir: '$(Build.SourcesDirectory)/test-data-shared'
+        testModel: '${{ parameters.streamingAsrModel }}'
 
 - stage: java_pack_maven
   displayName: 'Java SDK: Pack Maven bundle (java-sdk-v2)'
@@ -220,7 +230,7 @@ stages:
       inputs:
         mavenPOMFile: 'sdk_v2/java/pom.xml'
         goals: 'clean verify'
-        options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-asr-preview'
+        options: '--batch-mode --no-transfer-progress -Drevision=$(javaSdkVersion)-preview'
         publishJUnitResults: true
         testResultsFiles: 'sdk_v2/java/target/surefire-reports/TEST-*.xml'
         testRunTitle: 'Java SDK package'
@@ -244,14 +254,14 @@ stages:
 
           $artifacts = @(
             @{
-              Source = Join-Path $target "foundry-local-asr-sdk-$version-asr-preview.jar"
-              Name = "foundry-local-asr-sdk-$version-asr-preview.jar"
+              Source = Join-Path $target "foundry-local-sdk-$version-preview.jar"
+              Name = "foundry-local-sdk-$version-preview.jar"
             },
             @{
-              Source = Join-Path $target "foundry-local-asr-sdk-$version-asr-preview-sources.jar"
-              Name = "foundry-local-asr-sdk-$version-asr-preview-sources.jar"
+              Source = Join-Path $target "foundry-local-sdk-$version-preview-sources.jar"
+              Name = "foundry-local-sdk-$version-preview-sources.jar"
             },
-            @{ Source = Join-Path $javaRoot '.flattened-pom.xml'; Name = "foundry-local-asr-sdk-$version-asr-preview.pom" }
+            @{ Source = Join-Path $javaRoot '.flattened-pom.xml'; Name = "foundry-local-sdk-$version-preview.pom" }
           )
           foreach ($artifact in $artifacts) {
             if (-not (Test-Path $artifact.Source)) {
@@ -262,7 +272,7 @@ stages:
           Copy-Item '$(Build.SourcesDirectory)/LICENSE' (Join-Path $output 'LICENSE') -Force
           Copy-Item (Join-Path $javaRoot 'THIRD_PARTY_NOTICES.md') $output -Force
 
-          $mainJar = Join-Path $output "foundry-local-asr-sdk-$version-asr-preview.jar"
+          $mainJar = Join-Path $output "foundry-local-sdk-$version-preview.jar"
           $entries = @(jar tf $mainJar)
           if ($LASTEXITCODE -ne 0) {
             throw 'Could not inspect the Java SDK JAR.'
@@ -286,13 +296,13 @@ stages:
 
           Get-ChildItem $output -File | ForEach-Object { Write-Host "  $($_.Name)" }
     - task: PowerShell@2
-      displayName: 'Compile clean Maven consumer against staged Java ASR SDK'
+      displayName: 'Compile clean Maven consumer against staged Java SDK'
       inputs:
         targetType: inline
         pwsh: true
         script: |
           & '$(Build.SourcesDirectory)/sdk_v2/java/verify-packaged-consumer.ps1' `
             -ArtifactDirectory '$(Build.ArtifactStagingDirectory)/java-sdk-v2' `
-            -Version '$(javaSdkVersion)-asr-preview' `
+            -Version '$(javaSdkVersion)-preview' `
             -MavenDirectory '$(foundryMavenHome)' `
             -JavaDirectory '$(foundryJavaHome)'

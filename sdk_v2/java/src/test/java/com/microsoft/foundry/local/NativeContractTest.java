@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.sun.jna.Pointer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -21,7 +23,7 @@ class NativeContractTest {
     }
 
     @Test void modelLookupRejectsNonCanonicalIdsBeforeQueryingNativeCatalog() {
-        Catalog catalog = new Catalog(null, null);
+        Catalog catalog = new Catalog(null, null, CatalogType.PUBLIC);
         for (String invalidId : new String[] {
             "", "missing-version", ":1", ".name:1", "model:", "model:1:2", "model:-1",
             "model:+1", "model:01", "model:2147483648", "model/path:1", "model name:1"
@@ -31,7 +33,7 @@ class NativeContractTest {
     }
 
     @Test void aliasLookupRejectsInvalidAliasesBeforeQueryingNativeCatalog() {
-        Catalog catalog = new Catalog(null, null);
+        Catalog catalog = new Catalog(null, null, CatalogType.PUBLIC);
         for (String invalidAlias : new String[] {"", " ", "bad\0alias"}) {
             assertThrows(IllegalArgumentException.class, () -> catalog.getModel(invalidAlias));
         }
@@ -82,6 +84,26 @@ class NativeContractTest {
         assertArrayEquals(new Throwable[] {second}, first.getSuppressed());
         assertSame(second, NativeApi.preserveFailure(null, second));
         assertSame(first, assertThrows(IllegalStateException.class, () -> NativeApi.rethrow(first)));
+    }
+
+    @Test void modelInfoIsAnImmutableDetachedValue() {
+        Map<String, String> settings = new LinkedHashMap<>();
+        settings.put("temperature", null);
+        ModelInfo info = new ModelInfo(
+                "model:1", "model", "model", 1, "uri", DeviceType.CPU, "CPUExecutionProvider",
+                "chat-completion", true, Map.of("task", "chat-completion"), Map.of("context_length", 4096L),
+                settings);
+
+        assertEquals("chat-completion", info.getStringProperty("task"));
+        assertEquals(4096L, info.getIntProperty("context_length", -1));
+        assertEquals(4096L, info.contextLength());
+        assertNull(info.supportsToolCalling());
+        assertEquals(-1L, info.getIntProperty("missing", -1));
+        assertTrue(info.modelSettings().containsKey("temperature"));
+        assertNull(info.modelSettings().get("temperature"));
+        assertThrows(UnsupportedOperationException.class, () -> info.intProperties().put("new", 1L));
+        assertThrows(IllegalArgumentException.class, () -> info.getStringProperty(""));
+        assertThrows(IllegalArgumentException.class, () -> info.getIntProperty("bad\0key", 0));
     }
 
 }

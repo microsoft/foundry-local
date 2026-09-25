@@ -4,7 +4,10 @@ package com.microsoft.foundry.local;
 import com.sun.jna.Pointer;
 import com.sun.jna.ptr.PointerByReference;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashSet;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -17,7 +20,8 @@ public final class FoundryLocalManager implements AutoCloseable {
     private static volatile FoundryLocalManager open;
     private static boolean exitHookInstalled;
     final NativeApi api;
-    final Set<AudioSession> sessions = new HashSet<>();
+    final Set<OwnedSession> sessions = new HashSet<>();
+    private final Map<CatalogType, Catalog> catalogs = new EnumMap<>(CatalogType.class);
     private Pointer handle;
 
     public FoundryLocalManager(Configuration configuration) {
@@ -84,10 +88,22 @@ public final class FoundryLocalManager implements AutoCloseable {
     public String nativeTarget() { return NativeApi.target(); }
 
     public Catalog catalog() {
+        return catalog(CatalogType.PUBLIC);
+    }
+
+    public Catalog catalog(CatalogType type) {
         NativeApi.outsideCallback();
+        Objects.requireNonNull(type, "type");
         synchronized (this) {
             checkOpen();
-            return new Catalog(this, api.create(api.root, NativeApi.Root.MANAGER_GET_CATALOG, handle));
+            return catalogs.computeIfAbsent(type, value -> new Catalog(
+                    this,
+                    api.create(
+                            api.root,
+                            NativeApi.Root.MANAGER_GET_CATALOG_BY_TYPE,
+                            handle,
+                            value.nativeValue()),
+                    value));
         }
     }
 
@@ -101,7 +117,7 @@ public final class FoundryLocalManager implements AutoCloseable {
         synchronized (this) {
             if (handle == null) return;
             Throwable failure = null;
-            for (AudioSession session : new ArrayList<>(sessions)) {
+            for (OwnedSession session : new ArrayList<>(sessions)) {
                 try {
                     session.close();
                 } catch (RuntimeException | Error e) {
@@ -118,6 +134,7 @@ public final class FoundryLocalManager implements AutoCloseable {
             } catch (RuntimeException | Error e) {
                 failure = NativeApi.preserveFailure(failure, e);
             } finally {
+                catalogs.clear();
                 handle = null;
                 synchronized (FoundryLocalManager.class) {
                     open = null;

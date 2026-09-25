@@ -13,7 +13,13 @@ public final class PackagedConsumer {
     private PackagedConsumer() {}
 
     public static Configuration configuration(Path path) {
-        return new Configuration("smoke", path, path, path, LogLevel.DEBUG, true);
+        return Configuration.builder("smoke")
+                .runtimeDirectory(path)
+                .modelCacheDirectory(path)
+                .appDataDirectory(path)
+                .logLevel(LogLevel.DEBUG)
+                .disableNonessentialTelemetry(true)
+                .build();
     }
 
     public static String modelId(FoundryLocalManager manager, String alias, String exactId) {

@@ -237,9 +237,14 @@ print(sys.executable)
                 mvn --batch-mode --no-transfer-progress clean verify
                 if ($LASTEXITCODE -ne 0) { throw "mvn clean verify exit $LASTEXITCODE" }
 
-                $mainJar = @(Get-ChildItem target -Filter 'foundry-local-sdk-*.jar' -File |
-                    Where-Object { $_.Name -notlike '*-sources.jar' })
-                $sourceJar = @(Get-ChildItem target -Filter 'foundry-local-sdk-*-sources.jar' -File)
+                $finalName = (& mvn --quiet --no-transfer-progress `
+                    org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate `
+                    '-Dexpression=project.build.finalName' '-DforceStdout').Trim()
+                if ($LASTEXITCODE -ne 0 -or -not $finalName) {
+                    throw "Could not resolve the Java project.build.finalName."
+                }
+                $mainJar = @(Get-Item (Join-Path target "$finalName.jar") -ErrorAction SilentlyContinue)
+                $sourceJar = @(Get-Item (Join-Path target "$finalName-sources.jar") -ErrorAction SilentlyContinue)
                 if ($mainJar.Count -ne 1 -or $sourceJar.Count -ne 1) {
                     throw "Expected one SDK JAR and one sources JAR."
                 }

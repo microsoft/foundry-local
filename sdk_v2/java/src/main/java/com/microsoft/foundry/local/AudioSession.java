@@ -8,7 +8,7 @@ import java.util.Objects;
 import java.util.function.Consumer;
 
 /** One request at a time; close each Transcription before starting the next. */
-public final class AudioSession implements AutoCloseable {
+public final class AudioSession extends OwnedSession {
     final Model model;
     final NativeApi api;
     Pointer handle;
@@ -20,6 +20,8 @@ public final class AudioSession implements AutoCloseable {
         handle = api.create(api.inference, NativeApi.InferenceApi.SESSION_CREATE, model.handle);
         model.owner.sessions.add(this);
     }
+
+    @Override Model model() { return model; }
 
     /**
      * Decodes a PCM WAV file and submits its samples through the native streaming-audio path.

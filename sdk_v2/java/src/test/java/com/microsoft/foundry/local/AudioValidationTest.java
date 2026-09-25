@@ -50,16 +50,28 @@ class AudioValidationTest {
 
     @Test void configurationHasNoNativeSideEffects() {
         var path = java.nio.file.Path.of("missing");
-        assertNotNull(new Configuration("unit-test", path, path, path));
-        assertThrows(IllegalArgumentException.class, () -> new Configuration("", path, path, path));
-        assertThrows(IllegalArgumentException.class, () -> new Configuration("a\0b", path, path, path));
-        var defaults = new Configuration("unit-test", path, path, path);
+        assertNotNull(configuration("unit-test", path).build());
+        assertThrows(IllegalArgumentException.class, () -> configuration("", path).build());
+        assertThrows(IllegalArgumentException.class, () -> configuration("a\0b", path).build());
+        assertThrows(NullPointerException.class, () -> Configuration.builder("unit-test").build());
+        var defaults = configuration("unit-test", path).build();
         assertEquals(LogLevel.FATAL, defaults.logLevel());
         assertTrue(defaults.disableNonessentialTelemetry());
-        var diagnostic = new Configuration("unit-test", path, path, path, LogLevel.DEBUG, false);
+        var diagnostic = configuration("unit-test", path)
+                .logLevel(LogLevel.DEBUG)
+                .disableNonessentialTelemetry(false)
+                .build();
         assertEquals(LogLevel.DEBUG, diagnostic.logLevel());
         assertFalse(diagnostic.disableNonessentialTelemetry());
-        assertThrows(NullPointerException.class, () -> new Configuration("unit-test", path, path, path, null, true));
+        assertThrows(NullPointerException.class, () ->
+                configuration("unit-test", path).logLevel(null));
+    }
+
+    private static Configuration.Builder configuration(String appName, java.nio.file.Path path) {
+        return Configuration.builder(appName)
+                .runtimeDirectory(path)
+                .modelCacheDirectory(path)
+                .appDataDirectory(path);
     }
 
     private static byte[] wav() {

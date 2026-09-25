@@ -1,15 +1,16 @@
-# Foundry Local Java ASR SDK Preview
+# Foundry Local Java SDK Preview
 
-Java 17+ bindings for in-process, streaming speech recognition through the
-Foundry Local C API. The SDK uses JNA, keeps the native runtime and model
-weights outside the JAR, and exposes deterministic `AutoCloseable` lifetimes.
+Java 17+ bindings for in-process model inference through the Foundry Local C
+API. Streaming ASR is the first supported inference scenario. The SDK uses JNA,
+keeps the native runtime and model weights outside the JAR, and exposes
+deterministic `AutoCloseable` lifetimes.
 
 This package is a preview and is not published to Maven Central yet.
 Its first phase intentionally covers streaming ASR rather than the full
 cross-language SDK surface. Generic Session/Request/Response/Item APIs, Chat,
 and native file/URI transcription are future extension points.
 The staged Maven coordinates are
-`com.microsoft.foundry:foundry-local-asr-sdk:<preview-version>`.
+`com.microsoft.foundry:foundry-local-sdk:<preview-version>`.
 
 ## Build
 
@@ -24,8 +25,8 @@ mvn -f sdk_v2/java/pom.xml package
 
 The build produces:
 
-- `target/foundry-local-asr-sdk-0.1.0-preview.2-SNAPSHOT.jar`
-- `target/foundry-local-asr-sdk-0.1.0-preview.2-SNAPSHOT-sources.jar`
+- `target/foundry-local-sdk-0.1.0-preview.2-SNAPSHOT.jar`
+- `target/foundry-local-sdk-0.1.0-preview.2-SNAPSHOT-sources.jar`
 
 `verify` also runs SpotBugs and fails on actionable findings. The packaging
 pipeline compiles a clean Maven consumer against the staged POM and JAR.
@@ -72,10 +73,9 @@ an older C runtime first and cannot initialize ONNX Runtime. Use a compatible
 JBR/native-runtime combination instead of replacing IDE or system DLLs.
 
 The manager defaults native logging to Fatal and disables nonessential
-telemetry. Applications can override either setting with the six-argument
-`Configuration` constructor, for example `LogLevel.DEBUG` and `false` to
-enable native diagnostics and nonessential telemetry. The four-argument
-constructor keeps the original defaults. Runtime diagnostics such as
+telemetry. Applications can override either setting through the
+`Configuration` builder, for example with `logLevel(LogLevel.DEBUG)` and
+`disableNonessentialTelemetry(false)`. Runtime diagnostics such as
 `ORTGENAI_ORT_VERBOSE_LOGGING` can also control the underlying ONNX Runtime
 GenAI logging where supported.
 
@@ -86,11 +86,12 @@ Each `AudioSession` accepts one active `Transcription`; close it before starting
 the next request.
 
 ```java
-var configuration = new Configuration(
-        "my-app",
-        Path.of("native-runtime"),
-        Path.of("model-cache"),
-        Path.of("app-data"));
+var configuration = Configuration.builder(
+        "my-app")
+        .runtimeDirectory(Path.of("native-runtime"))
+        .modelCacheDirectory(Path.of("model-cache"))
+        .appDataDirectory(Path.of("app-data"))
+        .build();
 
 try (var manager = new FoundryLocalManager(configuration)) {
     var model = manager.catalog()
@@ -123,7 +124,17 @@ try (var manager = new FoundryLocalManager(configuration)) {
 `Catalog.getModel(alias)` queries an alias; `getModelVariant(name:version)`
 queries an exact variant and throws `ModelNotFoundException` when unavailable.
 `models()` returns alias-level entries, while `modelVariants()` returns all
-individual variants.
+individual variants. `manager.catalog()` is the public catalog shortcut.
+Use `manager.catalog(CatalogType.LOCAL)` for cached or caller-registered local
+models and future bring-your-own-model scenarios.
+
+`Model.info()` returns a detached immutable snapshot that remains usable after
+the manager closes. Named accessors cover common metadata, while
+`stringProperties()`, `intProperties()`, and `modelSettings()` preserve
+forward-compatible key/value shapes without growing a positional constructor.
+The current native API can query arbitrary model property keys but cannot
+enumerate them, so the property maps contain the well-known keys supported by
+this SDK version.
 
 This preview uses Foundry Local's native streaming-audio processor. The ASR
 task in catalog metadata is necessary but does not promise that every
@@ -173,13 +184,14 @@ mvn -f sdk_v2/java/pom.xml test `
   -Dtest=NativeAsrTest `
   -Dfoundry.test.runtime=<absolute-native-runtime-dir> `
   -Dfoundry.test.cache=<absolute-model-cache> `
-  -Dfoundry.test.wav=<absolute-wav-file>
+  -Dfoundry.test.wav=<absolute-wav-file> `
+  -Dfoundry.test.model=nemotron-speech-streaming-en-0.6b-generic-cpu:3
 ```
 
 CI provides the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
 `FOUNDRY_TEST_DATA_DIR`, and `FOUNDRY_TEST_WAV` environment variables and
-passes `-Dfoundry.test.native.required=true`, so missing native inputs fail
-instead of skipping the integration test.
+`FOUNDRY_TEST_MODEL`, and passes `-Dfoundry.test.native.required=true`, so
+missing native inputs fail instead of skipping the integration test.
 
 The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager

@@ -11,7 +11,7 @@ parameters:
 - name: modelSet
   type: string
   default: all
-  values: ['all', 'nemotron-speech']
+  values: ['all', 'streaming-asr']
 
 steps:
 - ${{ if eq(parameters.modelSet, 'all') }}:

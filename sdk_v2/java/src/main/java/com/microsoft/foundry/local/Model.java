@@ -5,6 +5,8 @@ import com.sun.jna.Pointer;
 import com.sun.jna.ptr.IntByReference;
 import java.lang.ref.Reference;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleConsumer;
@@ -21,19 +23,33 @@ public final class Model {
             owner.checkOpen();
             NativeApi api = owner.api;
             Pointer info = api.create(api.model, NativeApi.ModelApi.GET_INFO, handle);
+            Map<String, String> strings = new LinkedHashMap<>();
+            for (String key : ModelProperties.STRING_KEYS) {
+                String value = NativeApi.optionalText(
+                        api.model.pointer(NativeApi.ModelApi.INFO_GET_STRING_PROPERTY, info, key));
+                if (value != null) strings.put(key, value);
+            }
+            Map<String, Long> integers = new LinkedHashMap<>();
+            for (String key : ModelProperties.INT_KEYS) {
+                long value = api.model.longValue(
+                        NativeApi.ModelApi.INFO_GET_INT_PROPERTY, info, key, Long.MIN_VALUE);
+                if (value != Long.MIN_VALUE) integers.put(key, value);
+            }
+            String task = NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_TASK, info));
+            strings.putIfAbsent(ModelProperties.TASK, task);
             return new ModelInfo(
                     NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_ID, info)),
                     NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_ALIAS, info)),
                     NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_NAME, info)),
                     api.model.integer(NativeApi.ModelApi.INFO_GET_VERSION, info),
                     NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_URI, info)),
+                    DeviceType.fromNative(api.model.integer(NativeApi.ModelApi.INFO_GET_DEVICE_TYPE, info)),
                     NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_EXECUTION_PROVIDER, info)),
-                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_TASK, info)),
-                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_STRING_PROPERTY, info, "license")),
-                    NativeApi.text(api.model.pointer(
-                            NativeApi.ModelApi.INFO_GET_STRING_PROPERTY,
-                            info,
-                            "license_description")));
+                    task,
+                    isCached(),
+                    strings,
+                    integers,
+                    api.keyValuePairs(api.model.pointer(NativeApi.ModelApi.INFO_GET_MODEL_SETTINGS, info)));
         }
     }
 
@@ -107,7 +123,7 @@ public final class Model {
         NativeApi.outsideCallback();
         synchronized (owner) {
             owner.checkOpen();
-            if (owner.sessions.stream().anyMatch(s -> s.model.handle.equals(handle))) {
+            if (owner.sessions.stream().anyMatch(s -> s.model().handle.equals(handle))) {
                 throw new IllegalStateException("Close all sessions for this model before unloading it");
             }
             owner.api.check(owner.api.model.pointer(NativeApi.ModelApi.UNLOAD, handle));

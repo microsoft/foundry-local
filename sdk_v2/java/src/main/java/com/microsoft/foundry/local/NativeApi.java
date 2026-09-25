@@ -8,11 +8,13 @@ import com.sun.jna.Native;
 import com.sun.jna.NativeLibrary;
 import com.sun.jna.Pointer;
 import com.sun.jna.Structure;
+import com.sun.jna.ptr.LongByReference;
 import com.sun.jna.ptr.PointerByReference;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -43,11 +45,13 @@ final class NativeApi {
         static final int GET_MODEL_API = 14;
         static final int KEY_VALUE_PAIRS_CREATE = 15;
         static final int KEY_VALUE_PAIRS_ADD = 16;
+        static final int KEY_VALUE_PAIRS_GET_ALL = 18;
         static final int KEY_VALUE_PAIRS_RELEASE = 20;
         static final int MODEL_LIST_RELEASE = 21;
         static final int MODEL_LIST_SIZE = 22;
         static final int MODEL_LIST_GET_AT = 23;
         static final int MANAGER_SHUTDOWN = 27;
+        static final int MANAGER_GET_CATALOG_BY_TYPE = 29;
     }
 
     static final class ConfigurationApi {
@@ -79,9 +83,12 @@ final class NativeApi {
         static final int INFO_GET_VERSION = 13;
         static final int INFO_GET_ALIAS = 14;
         static final int INFO_GET_URI = 15;
+        static final int INFO_GET_DEVICE_TYPE = 16;
         static final int INFO_GET_EXECUTION_PROVIDER = 17;
         static final int INFO_GET_TASK = 18;
+        static final int INFO_GET_MODEL_SETTINGS = 20;
         static final int INFO_GET_STRING_PROPERTY = 21;
+        static final int INFO_GET_INT_PROPERTY = 22;
     }
 
     static final class ItemApi {
@@ -242,6 +249,7 @@ final class NativeApi {
     }
 
     static String text(Pointer pointer) { return pointer == null ? "" : pointer.getString(0, "UTF-8"); }
+    static String optionalText(Pointer pointer) { return pointer == null ? null : pointer.getString(0, "UTF-8"); }
     static Memory utf8(String value) {
         if (value.indexOf('\0') >= 0) throw new IllegalArgumentException("Strings must not contain NUL");
         byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -274,6 +282,23 @@ final class NativeApi {
         return output;
     }
 
+    Map<String, String> keyValuePairs(Pointer pairs) {
+        if (pairs == null) return Map.of();
+        PointerByReference keys = new PointerByReference();
+        PointerByReference values = new PointerByReference();
+        LongByReference count = new LongByReference();
+        root.call(Root.KEY_VALUE_PAIRS_GET_ALL, pairs, keys, values, count);
+        int size = Math.toIntExact(count.getValue());
+        if (size == 0) return Map.of();
+        Pointer[] keyPointers = keys.getValue().getPointerArray(0, size);
+        Pointer[] valuePointers = values.getValue().getPointerArray(0, size);
+        Map<String, String> result = new LinkedHashMap<>();
+        for (int index = 0; index < size; index++) {
+            result.put(text(keyPointers[index]), optionalText(valuePointers[index]));
+        }
+        return java.util.Collections.unmodifiableMap(result);
+    }
+
     static final class Table {
         private final Pointer table;
         Table(Pointer table) {
@@ -288,6 +313,7 @@ final class NativeApi {
         Pointer pointer(int index, Object... args) { return function(index).invokePointer(args); }
         int integer(int index, Object... args) { return function(index).invokeInt(args); }
         long size(int index, Object... args) { return function(index).invokeLong(args); }
+        long longValue(int index, Object... args) { return function(index).invokeLong(args); }
         boolean bool(int index, Object... args) {
             return ((Byte) function(index).invoke(Byte.class, args)) != 0;
         }

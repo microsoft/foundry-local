@@ -5,10 +5,10 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.microsoft.foundry</groupId>
-  <artifactId>foundry-local-asr-sdk</artifactId>
+  <artifactId>foundry-local-sdk</artifactId>
   <version>${revision}</version>
-  <name>Foundry Local Java ASR SDK Preview</name>
-  <description>Java bindings for in-process Foundry Local speech recognition.</description>
+  <name>Foundry Local Java SDK Preview</name>
+  <description>Java bindings for in-process Foundry Local model inference.</description>
   <url>https://github.com/microsoft/foundry-local</url>
   <licenses>
     <license>

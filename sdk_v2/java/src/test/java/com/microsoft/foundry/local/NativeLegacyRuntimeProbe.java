@@ -10,7 +10,11 @@ public final class NativeLegacyRuntimeProbe {
     public static void main(String[] args) {
         Path directory = Path.of(args[0]);
         try {
-            new FoundryLocalManager(new Configuration("legacy-check", directory, directory, directory));
+            new FoundryLocalManager(Configuration.builder("legacy-check")
+                    .runtimeDirectory(directory)
+                    .modelCacheDirectory(directory)
+                    .appDataDirectory(directory)
+                    .build());
             throw new AssertionError("An older runtime was accepted");
         } catch (IllegalStateException e) {
             if (!e.getMessage().contains("C API 2")) throw e;
