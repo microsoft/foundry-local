@@ -37,11 +37,6 @@ class TelemetryDeviceId {
 
   void InitializeLocked();
   static std::string StatusToString(TelemetryDeviceIdStatus status);
-  static bool WriteDeviceIdFile(const std::filesystem::path& path, std::string_view value);
-#ifdef _WIN32
-  static bool ReadWindowsRegistryDeviceId(std::string& value, bool& found);
-  static bool WriteWindowsRegistryDeviceId(std::string_view value);
-#endif
 
   std::mutex mutex_;
   std::string device_id_;

@@ -139,8 +139,8 @@ class Manager {
   OrtEnv* ort_env_ = nullptr;
   std::vector<std::string> registered_ep_libraries_;
   std::unique_ptr<ILogger> logger_;
-  std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ITelemetry> telemetry_;
+  std::unique_ptr<IEpDetector> ep_detector_;
   std::unique_ptr<ICatalog> public_catalog_;
   std::unique_ptr<ICatalog> local_catalog_;
   std::unique_ptr<DownloadManager> download_manager_;

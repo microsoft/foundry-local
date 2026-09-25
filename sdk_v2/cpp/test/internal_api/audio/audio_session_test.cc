@@ -8,6 +8,7 @@
 
 #include "ep_detection/ep_detector.h"
 #include "exception.h"
+#include "inferencing/generative/audio/pcm_utils.h"
 #include "inferencing/model_load_manager.h"
 #include "items/audio_item.h"
 #include "items/bytes_item.h"
@@ -28,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,16 +38,40 @@
 
 using namespace fl;
 
-namespace fl {
-class AudioSessionTestAccessor {
- public:
-  static std::vector<float> LoadPcmWavAsFloatSamples(const std::string& audio_file_path) {
-    return AudioSession::LoadPcmWavAsFloatSamples(audio_file_path);
-  }
-};
-}  // namespace fl
-
 namespace {
+
+class AudioUsageTelemetry : public TelemetryLogger {
+ public:
+  AudioUsageTelemetry() : TelemetryLogger("test", fl::test::NullLog()) {}
+
+  void RecordModelUsage(const ModelUsageInfo& info) override { models.push_back(info); }
+  void RecordAudioUsage(const AudioUsageInfo& info) override { audio.push_back(info); }
+
+  void ExpectUsage(const Response& response, const std::string& source, int64_t duration_ms = -1) const {
+    ASSERT_EQ(models.size(), 1u);
+    ASSERT_EQ(audio.size(), 1u);
+    const auto& usage = audio[0];
+    EXPECT_EQ(usage.audio_source, source);
+    EXPECT_EQ(usage.audio_duration_ms, duration_ms);
+    EXPECT_EQ(usage.model_id, models[0].model_id);
+    EXPECT_EQ(usage.execution_provider, "CPUExecutionProvider");
+    EXPECT_EQ(usage.execution_provider, models[0].execution_provider);
+    EXPECT_EQ(usage.correlation_id, models[0].correlation_id);
+    EXPECT_EQ(usage.user_agent, models[0].user_agent);
+    EXPECT_EQ(usage.indirect, models[0].indirect);
+    EXPECT_EQ(usage.stream, models[0].stream);
+    EXPECT_EQ(usage.total_time_ms, models[0].total_time_ms);
+    EXPECT_EQ(usage.total_tokens, response.usage.total_tokens);
+    EXPECT_EQ(usage.input_token_count, response.usage.prompt_tokens);
+    EXPECT_EQ(usage.completion_token_count, response.usage.completion_tokens);
+    EXPECT_EQ(usage.total_tokens, usage.input_token_count + usage.completion_token_count);
+    EXPECT_EQ(usage.sample_rate, duration_ms >= 0 ? 16000 : 0);
+    EXPECT_EQ(usage.channels, duration_ms >= 0 ? 1 : 0);
+  }
+
+  std::vector<ModelUsageInfo> models;
+  std::vector<AudioUsageInfo> audio;
+};
 
 /// Verify that the transcription contains key phrases from the expected output.
 /// The exact wording may vary by model, so we check distinctive fragments.
@@ -794,7 +820,7 @@ TEST_F(AudioSessionTest, LoadPcmWavAsFloatSamples_DecodesFloat32Path) {
   const std::vector<float> input = {-0.75f, -0.25f, 0.0f, 0.25f, 0.75f};
   WriteWavFloat32(temp.path(), /*sample_rate_hz=*/16000, /*channels=*/1, input);
 
-  auto samples = fl::AudioSessionTestAccessor::LoadPcmWavAsFloatSamples(temp.path().string());
+  auto samples = AudioInternal::LoadPcmWavAsFloatSamples(temp.path().string());
   ASSERT_EQ(samples.size(), input.size());
   for (size_t i = 0; i < input.size(); ++i) {
     EXPECT_NEAR(samples[i], input[i], 1e-6f);
@@ -830,6 +856,24 @@ TEST_F(AudioSessionTest, NemotronOpenAIJsonRejectsOversizedWavDataChunkBeforeAll
 // These run AudioSession::ProcessRequest directly (no web service).
 // ===========================================================================
 
+TEST(AudioTelemetryTest, PcmDurationCountsSamplesIncludingEmptyAndSubMillisecondInput) {
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(0), 0);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(15), 0);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(16), 1);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(16000), 1000);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(24016), 1501);
+  EXPECT_EQ(AudioInternal::AudioDurationMsFromSamples(std::numeric_limits<int64_t>::max()),
+            std::numeric_limits<int64_t>::max() / 16);
+}
+
+TEST(AudioTelemetryTest, LanguageIncludesOnlySupportedCodes) {
+  EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("en"), "en");
+  EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("EN-US"), "en-us");
+  EXPECT_EQ(AudioInternal::SanitizeLanguageForTelemetry("fr-ca"), "fr-ca");
+  EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry("transcribe my private meeting").empty());
+  EXPECT_TRUE(AudioInternal::SanitizeLanguageForTelemetry("en?customer=private").empty());
+}
+
 TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {
   if (!model_) {
     GTEST_SKIP() << "Audio model not loaded";
@@ -838,7 +882,8 @@ TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {
   auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
   ASSERT_TRUE(fs::exists(audio_path)) << "Test audio file not found: " << audio_path;
 
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioUsageTelemetry telemetry;
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry);
 
   Request request;
   auto audio_item = std::make_unique<AudioItem>(audio_path.string());
@@ -847,6 +892,9 @@ TEST_F(AudioSessionInferenceTest, TranscribeFromFilePath) {
 
   Response response;
   ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  telemetry.ExpectUsage(response, "file");
+  ASSERT_EQ(telemetry.audio.size(), 1u);
+  EXPECT_EQ(telemetry.audio[0].language, "en");
 
   // Should produce at least one item
   ASSERT_FALSE(response.items.empty()) << "No items in response";
@@ -873,7 +921,8 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
   auto audio_path = fl::test::GetTestDataPath("Recording.mp3");
   ASSERT_TRUE(fs::exists(audio_path)) << "Test audio file not found: " << audio_path;
 
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioUsageTelemetry telemetry;
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry);
 
   nlohmann::json req_json = {
       {"model", "openai-whisper-tiny-generic-cpu-2"},
@@ -885,6 +934,9 @@ TEST_F(AudioSessionInferenceTest, TranscribeViaOpenAIJson) {
 
   Response response;
   ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  telemetry.ExpectUsage(response, "openai_json_file");
+  ASSERT_EQ(telemetry.audio.size(), 1u);
+  EXPECT_EQ(telemetry.audio[0].language, "en");
 
   // Should produce at least one item — and it should be an OPENAI_JSON-tagged TextItem.
   ASSERT_FALSE(response.items.empty()) << "No items in response";
@@ -931,12 +983,14 @@ TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionMul
   auto wav_temp = fl::test::TempPath::CreateTempFile("nemotron_multichunk_");
   WriteWavPcm16(wav_temp.path(), /*sample_rate_hz=*/16000, /*channels=*/1, pcm_samples);
 
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioUsageTelemetry telemetry;
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry);
   auto request = BuildOpenAiJsonAudioRequest(wav_temp.path());
   request.options["language"] = "en";
 
   Response response;
   ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  telemetry.ExpectUsage(response, "openai_json_file", static_cast<int64_t>(pcm_samples.size()) / 16);
   ASSERT_FALSE(response.items.empty()) << "No response items from Nemotron transcription";
 
   const Item* first_item = response.items.front().get();
@@ -975,12 +1029,14 @@ TEST_F(AudioSessionNemotronInferenceTest, OpenAIJsonNemotronFileTranscriptionAcc
   auto wav_temp = fl::test::TempPath::CreateTempFile("nemotron_float32_");
   WriteWavFloat32(wav_temp.path(), /*sample_rate_hz=*/16000, /*channels=*/1, float_samples);
 
-  AudioSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  AudioUsageTelemetry telemetry;
+  AudioSession session(GetCatalogModel(), GetModel(), *logger_, telemetry);
   auto request = BuildOpenAiJsonAudioRequest(wav_temp.path());
   request.options["language"] = "en";
 
   Response response;
   ASSERT_NO_THROW(session.ProcessRequest(request, response));
+  telemetry.ExpectUsage(response, "openai_json_file", static_cast<int64_t>(float_samples.size()) / 16);
   ASSERT_FALSE(response.items.empty()) << "No response items from Nemotron transcription";
 
   const Item* first_item = response.items.front().get();

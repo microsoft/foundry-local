@@ -4,21 +4,26 @@
 
 #include "ep_detection/ep_bootstrapper.h"
 #include "logger.h"
+#include "telemetry/ep_download_tracker.h"
+#include "telemetry/telemetry.h"
 
 #include <onnxruntime_c_api.h>
 
 #include <algorithm>
+#include <chrono>
 #include <mutex>
 
 namespace fl {
 
 EpDetector::EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
                        std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
-                       ILogger& logger)
+                       ILogger& logger,
+                       ITelemetry& telemetry)
     : ort_api_(ort_api),
       ort_env_(ort_env),
       bootstrappers_(std::move(bootstrappers)),
-      logger_(logger) {
+      logger_(logger),
+      telemetry_(telemetry) {
   // Populate both cache vectors exact-sized from bootstrappers_. After this point
   // size and element addresses (including the EpInfo::name string storage backing
   // flEpInfo::name) are immutable for the detector's lifetime — only is_registered
@@ -167,6 +172,47 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     }
   }
 
+  const auto attempt_start = std::chrono::steady_clock::now();
+  const std::string telemetry_correlation_id = GenerateGuidV4();
+  const int telemetry_num_providers =
+      names != nullptr
+          ? static_cast<int>(std::count_if(bootstrappers_.begin(), bootstrappers_.end(), [&](const auto& bs) {
+                               return std::find(names->begin(), names->end(), bs->Name()) != names->end();
+                             }) +
+                             result.failed_eps.size())
+          : static_cast<int>(bootstrappers_.size());
+  int telemetry_attempts = 0;
+  int telemetry_succeeded = 0;
+  int telemetry_failed = static_cast<int>(result.failed_eps.size());
+  ActionStatus telemetry_status = result.success ? ActionStatus::kSuccess : ActionStatus::kDependencyFailure;
+  bool telemetry_resolved = false;
+  bool telemetry_attempt_recorded = false;
+  auto record_attempt = [&]() {
+    if (telemetry_attempt_recorded) {
+      return;
+    }
+
+    telemetry_attempt_recorded = true;
+    EpDownloadAttemptInfo info;
+    info.user_agent = DefaultUserAgent();
+    info.correlation_id = telemetry_correlation_id;
+    info.attempts = telemetry_attempts;
+    info.num_providers = telemetry_num_providers;
+    info.succeeded = telemetry_succeeded;
+    info.failed = telemetry_failed;
+    info.resolved = telemetry_resolved;
+    info.status = telemetry_status;
+    info.duration_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - attempt_start).count();
+    try {
+      telemetry_.RecordEpDownloadAttempt(info);
+    } catch (const std::exception& ex) {
+      logger_.Log(LogLevel::Warning, std::string("telemetry EPDownloadAttempt failed: ") + ex.what());
+    } catch (...) {
+      logger_.Log(LogLevel::Warning, "telemetry EPDownloadAttempt failed.");
+    }
+  };
+
   // Track cancellation from the progress callback
   bool cancelled = false;
   IEpBootstrapper::ProgressCallback wrapped_cb;
@@ -203,10 +249,41 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
 
     logger_.Log(LogLevel::Information, "Downloading and registering EP: " + bs->Name());
 
+    // Per-provider EPDownloadAndRegister event via EpDownloadTracker.
+    const bool was_registered_before = bs->IsRegistered();
+    EpDownloadTracker tracker(bs->Name(), /*user_agent=*/std::string{}, telemetry_correlation_id, telemetry_);
+    const auto initial_ready_state = was_registered_before ? EpReadyState::kRegistered : EpReadyState::kNotPresent;
+    const auto unresolved_ready_state = was_registered_before ? EpReadyState::kRegistered : EpReadyState::kUnknown;
+    tracker.RecordInitialState(initial_ready_state);
+
+    ++telemetry_attempts;
     // Reuse previously downloaded EP packages unless the caller explicitly asks
     // for a forced refresh. Downloading every time made the bootstrapper
     // re-fetch and re-register EPs on every invocation.
-    if (bs->DownloadAndRegister(/*force=*/false, wrapped_cb, logger_)) {
+    bool ok = false;
+    bool downloaded = false;
+    try {
+      ok = bs->DownloadAndRegister(/*force=*/false, wrapped_cb, logger_, &downloaded);
+    } catch (const std::exception& ex) {
+      ++telemetry_failed;
+      result.failed_eps.push_back(bs->Name());
+      result.success = false;
+      telemetry_status = ActionStatusFromException(ex);
+      if (telemetry_status == ActionStatus::kCanceled) {
+        cancelled = true;
+        result.cancelled = true;
+      }
+      result.status = "Some EPs failed to register";
+      tracker.RecordException(ex);
+      record_attempt();
+      // Re-throw to preserve existing semantics — the wrapper RAII guard above
+      // resets download_in_progress_; the tracker dtor records the EP event.
+      throw;
+    }
+
+    if (ok) {
+      ++telemetry_succeeded;
+      telemetry_resolved = true;
       result.registered_eps.push_back(bs->Name());
 
       // Update cached registration state in place under the cache lock so
@@ -214,9 +291,24 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
       std::lock_guard<std::mutex> cache_lock(cache_mutex_);
       cached_eps_[i].is_registered = true;
       cached_eps_c_[i].is_registered = true;
+
+      tracker.RecordDownloadComplete(downloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped,
+                                     unresolved_ready_state);
+      tracker.RecordRegisterComplete(ActionStatus::kSuccess, EpReadyState::kRegistered);
+    } else if (cancelled) {
+      result.success = false;
+      telemetry_status = ActionStatus::kCanceled;
+      tracker.RecordDownloadComplete(ActionStatus::kCanceled, unresolved_ready_state);
+      tracker.RecordRegisterComplete(ActionStatus::kSkipped, unresolved_ready_state);
     } else {
+      ++telemetry_failed;
       result.failed_eps.push_back(bs->Name());
       result.success = false;
+      telemetry_status = ActionStatus::kFailure;
+      // The bootstrapper conflated download + register and returned false.
+      // Record the combined operation as the register phase rather than fabricating a download/register split.
+      tracker.RecordDownloadComplete(ActionStatus::kSkipped, unresolved_ready_state);
+      tracker.RecordRegisterComplete(ActionStatus::kFailure, unresolved_ready_state);
     }
   }
 
@@ -224,11 +316,20 @@ EpDownloadResult EpDetector::DownloadAndRegisterEps(const std::vector<std::strin
     result.cancelled = true;
     result.success = false;
     result.status = "EP download cancelled by user";
+    telemetry_status = ActionStatus::kCanceled;
   } else if (result.failed_eps.empty()) {
-    result.status = "All requested EPs registered successfully";
+    result.status = names != nullptr && telemetry_num_providers == 0
+                        ? "No recognized EPs requested"
+                        : "All recognized EPs registered successfully";
+    telemetry_status = ActionStatus::kSuccess;
   } else {
     result.status = "Some EPs failed to register";
+    if (telemetry_status == ActionStatus::kSuccess) {
+      telemetry_status = ActionStatus::kFailure;
+    }
   }
+
+  record_attempt();
 
   return result;
 }

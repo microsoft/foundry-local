@@ -35,6 +35,20 @@ TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
   }
 }
 
+TEST(SearchOptionsParsingTest, NumericParametersRejectTrailingCharacters) {
+  for (const auto& [key, value] : {std::pair{FOUNDRY_LOCAL_PARAM_TEMPERATURE, "0.9oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_TOP_P, "0.9oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_TOP_K, "40oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS, "1.5"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY, "0.1oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY, "0.1oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_SEED, "42oops"}}) {
+    KeyValuePairs params;
+    params.Add(key, value);
+    EXPECT_THROW(SearchOptions::FromParameters(params), fl::Exception) << key;
+  }
+}
+
 TEST(SearchOptionsParsingTest, OmittedOutputLimitUsesTextAndMediaDefaults) {
   SearchOptions defaults;
   EXPECT_EQ(GetDefaultMaxOutputTokens(/*has_media=*/false), 2048);

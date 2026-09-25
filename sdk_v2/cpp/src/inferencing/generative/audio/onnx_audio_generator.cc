@@ -8,6 +8,17 @@
 
 namespace fl {
 
+bool AudioInternal::IsWhisperLanguageSupported(const std::string& language) {
+  static const std::unordered_set<std::string> kValidLanguages = {
+      "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id",
+      "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg",
+      "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br",
+      "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so",
+      "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt",
+      "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"};
+  return kValidLanguages.contains(language);
+}
+
 // ---------------------------------------------------------------------------
 // Whisper prompt construction
 // ---------------------------------------------------------------------------
@@ -15,18 +26,8 @@ namespace fl {
 /// Build the special-token prompt that tells Whisper what task to perform.
 /// Defaults to English when no language is provided or language is unrecognized.
 static std::string BuildWhisperPrompt(const std::string& language) {
-  // Supported Whisper language codes (ISO-639-1 and a few extended)
-  static const std::unordered_set<std::string> kValidLanguages = {
-      "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar",
-      "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu",
-      "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa",
-      "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn",
-      "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
-      "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn",
-      "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"};
-
   // Default to English when language is empty or unrecognized
-  const auto& lang = (!language.empty() && kValidLanguages.contains(language)) ? language : "en";
+  const auto& lang = (!language.empty() && AudioInternal::IsWhisperLanguageSupported(language)) ? language : "en";
 
   return "<|startoftranscript|><|" + lang + "|><|transcribe|><|notimestamps|>";
 }

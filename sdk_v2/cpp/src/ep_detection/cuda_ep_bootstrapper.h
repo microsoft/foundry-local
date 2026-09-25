@@ -44,7 +44,8 @@ class CudaEpBootstrapper : public IEpBootstrapper {
 
   const std::string& Name() const override;
   bool IsRegistered() const override;
-  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
+  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger,
+                           bool* downloaded = nullptr) override;
   bool PrepareForModelLoad(ILogger& logger) override;
 
   /// Check for an NVIDIA GPU with compute capability >= 5.0 using NVML.

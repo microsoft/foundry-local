@@ -50,8 +50,6 @@ option(FOUNDRY_LOCAL_BUILD_TESTS "Build unit tests" ON)
 option(FOUNDRY_LOCAL_BUILD_EXAMPLES "Build example programs" ON)
 option(FOUNDRY_LOCAL_BUILD_SERVICE "Build web service support (requires oat++)" ON)
 option(FOUNDRY_LOCAL_ENABLE_ASAN "Enable AddressSanitizer + UndefinedBehaviorSanitizer (Linux only)" OFF)
-option(FOUNDRY_LOCAL_REQUIRE_CHAT_TEMPLATE_KWARGS
-       "Fail configuration unless ORT GenAI supports chat template kwargs" OFF)
 
 # Optional 1DS ingestion token override. Override only via environment so it does
 # not appear in CMake cache files.
@@ -113,7 +111,6 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
 
-include(cmake/chat-template-kwargs.cmake)
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -149,12 +146,22 @@ if(WIN32)
         src/platform/windows/cross_process_file_lock.cc
         src/platform/windows/dynlib_loader.cc
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/windows_store/telemetry_device_id.cc
+        )
+    else()
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/windows/telemetry_device_id.cc
+        )
+    endif()
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_posix.cc
         src/platform/posix/path.cc
         src/platform/posix/file_io.cc
         src/platform/posix/cross_process_file_lock.cc
+        src/platform/posix/telemetry_device_id.cc
     )
     # Android does not support the dlopen-based loader; dynlib_loader.cc is
     # only compiled for Linux and macOS.
@@ -273,6 +280,8 @@ set(FOUNDRY_LOCAL_SOURCES
     src/telemetry/telemetry.cc
     src/telemetry/telemetry_action_tracker.cc
     src/telemetry/device_id.cc
+    src/telemetry/download_tracker.cc
+    src/telemetry/ep_download_tracker.cc
     src/telemetry/invocation_context.cc
     src/telemetry/telemetry_environment.cc
     src/telemetry/telemetry_logger.cc
@@ -346,9 +355,10 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     endif()
 
     if(WIN32)
-        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt version)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
         # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_link_libraries(${TARGET} ${LINK_SCOPE} version advapi32)
             target_compile_definitions(${TARGET} PRIVATE
                 FOUNDRY_LOCAL_DESKTOP_WINDOWS=1
                 FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1
@@ -369,7 +379,6 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
         ${TARGET}
         PRIVATE
             FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS=$<BOOL:${FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS}>
-            FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS=$<BOOL:${FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS}>
     )
 
     if(FOUNDRY_LOCAL_BUILD_SERVICE)

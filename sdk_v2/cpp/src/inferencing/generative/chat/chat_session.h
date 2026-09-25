@@ -221,6 +221,7 @@ class ChatSession : public Session {
                               int prompt_tokens,
                               int total_tokens,
                               int reasoning_tokens,
+                              int cached_prompt_tokens,
                               std::optional<flFinishReason> backend_finish_reason);
 
   /// Process a request whose first item is a TextItem tagged OPENAI_JSON containing an OpenAI chat completions
@@ -229,6 +230,8 @@ class ChatSession : public Session {
   /// Does not use or update the transcript or the cached generator.
   void ProcessChatCompletionsJson(const std::string& request_json, const Request& original_request,
                                   Response& response);
+
+  std::string ExecutionProvider() const override;
 
   /// Drop the cached generator and its tool context. Called whenever the generator's KV cache can no longer be
   /// trusted to match the committed transcript — the next turn then rebuilds from full committed history.

@@ -4,6 +4,7 @@
 
 #include "contracts/embeddings.h"
 #include "exception.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/embeddings/fp16.h"
 #include "inferencing/generative/genai_model_instance.h"
 #include "items/tensor_item.h"
@@ -37,6 +38,10 @@ EmbeddingsSession::~EmbeddingsSession() {
 
 SessionType EmbeddingsSession::Type() const {
   return SessionType::kEmbeddings;
+}
+
+std::string EmbeddingsSession::ExecutionProvider() const {
+  return std::string(EPUtils::EPtoTelemetryName(model_.EP(), model_.GetGenAIConfig().DefaultProvider()));
 }
 
 void EmbeddingsSession::ProcessRequestImpl(const Request& request, Response& response) {

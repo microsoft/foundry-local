@@ -45,7 +45,7 @@ variables:
 - name: cppGenaiVersion
   value: '0.16.0'
 - name: cppWinmlVersion
-  value: '2.1.70'
+  value: '2.4.89'
 - name: cppBuildConfig
   value: 'RelWithDebInfo'
 
