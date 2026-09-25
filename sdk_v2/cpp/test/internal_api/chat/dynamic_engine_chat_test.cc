@@ -48,6 +48,23 @@ TEST(OnnxEngineChatStreamDecisionTest, PreservesEveryOgaFinishCauseForRawFinaliz
   EXPECT_EQ(MapTerminationCause(9999), std::nullopt);
 }
 
+TEST(OnnxEngineChatStreamDecisionTest, MapsCachedPromptTokensIntoTurnUsage) {
+  const OnnxChatEngine::TurnResult result{
+      /*prompt_tokens=*/12,
+      /*generated_tokens=*/4,
+      /*cached_prompt_tokens=*/8,
+      /*finish_reason=*/OgaFinishReason_Eos,
+  };
+
+  const auto usage = onnx_engine_chat_stream_internal::BuildTurnUsage(12, result);
+
+  EXPECT_EQ(usage.prompt_tokens, 12);
+  EXPECT_EQ(usage.generated_tokens, 4);
+  EXPECT_EQ(usage.cached_prompt_tokens, 8);
+  EXPECT_EQ(usage.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(usage.termination_cause, BackendTerminationCause::kNaturalEnd);
+}
+
 std::unique_ptr<Item> UserMessage(std::string text) {
   return std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, std::move(text));
 }

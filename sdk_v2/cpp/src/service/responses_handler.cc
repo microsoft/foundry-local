@@ -420,7 +420,8 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
   }
 
   auto response = ResponseConverter::BuildResponseObject(turn.response_id, turn.created_at, turn.model_name, params,
-                                                         std::move(output), output_text, session_response.usage);
+                                                         std::move(output), output_text, session_response.usage,
+                                                         session_response.finish_reason);
 
   nlohmann::json response_json = response;
 
@@ -520,7 +521,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       stream->Push("event: " + event_name + "\ndata: " + nlohmann::json(ev).dump() + "\n\n");
     };
 
-    auto close_current = [&]() {
+    auto close_current = [&](ResponseStatus status) {
       if (!current_kind.has_value()) {
         return;
       }
@@ -538,7 +539,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         // Emit: response.output_item.done
         ReasoningOutputItem rs;
         rs.id = current_id;
-        rs.status = ResponseStatus::kCompleted;
+        rs.status = status;
         rs.summary.push_back(ReasoningSummaryText{current_text});
 
         StreamEvent item_done;
@@ -574,7 +575,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         ResponseOutputMessage done_msg;
         done_msg.id = current_id;
         done_msg.role = "assistant";
-        done_msg.status = ResponseStatus::kCompleted;
+        done_msg.status = status;
         done_msg.content.push_back(OutputTextContent{current_text});
 
         StreamEvent item_done;
@@ -642,7 +643,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
     };
 
     auto emit_tool_call = [&](const fl::ToolCallItem& call) {
-      close_current();
+      close_current(ResponseStatus::kCompleted);
 
       const int output_index = next_output_index++;
       auto output = ResponseConverter::BuildToolCallStreamOutput(call, output_index, seq);
@@ -692,7 +693,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
         // Type transition (or first segment): close the open item and open a fresh one of the new kind.
         if (!current_kind.has_value() || *current_kind != incoming) {
-          close_current();
+          close_current(ResponseStatus::kCompleted);
 
           if (incoming == ItemKind::Reasoning) {
             open_reasoning();
@@ -739,11 +740,13 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
       session->ProcessRequest(*req, bg_response);
 
       // Close whatever item is still open at end-of-generation so the SSE stream is well-formed.
-      close_current();
+      close_current(bg_response.finish_reason == FOUNDRY_LOCAL_FINISH_LENGTH
+                        ? ResponseStatus::kIncomplete
+                        : ResponseStatus::kCompleted);
 
       auto completed_response = ResponseConverter::BuildResponseObject(
           turn.response_id, turn.created_at, turn.model_name, params_copy, std::move(closed_items), full_text,
-          bg_response.usage);
+          bg_response.usage, bg_response.finish_reason);
 
       // The stream lock makes publication and disconnect mutually exclusive. If deletion invalidated the lease,
       // PublishResponse throws and the stream ends with response.failed instead of claiming an unstored completion.
@@ -765,11 +768,12 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
         return;
       }
 
-      StreamEvent completed;
-      completed.type = StreamEventType::kResponseCompleted;
-      completed.sequence_number = seq++;
-      completed.response = completed_response;
-      push_event("response.completed", completed);
+      const bool incomplete = completed_response.status == ResponseStatus::kIncomplete;
+      StreamEvent terminal;
+      terminal.type = incomplete ? StreamEventType::kResponseIncomplete : StreamEventType::kResponseCompleted;
+      terminal.sequence_number = seq++;
+      terminal.response = completed_response;
+      push_event(incomplete ? "response.incomplete" : "response.completed", terminal);
 
     } catch (const std::exception& ex) {
       logger.Log(LogLevel::Error,

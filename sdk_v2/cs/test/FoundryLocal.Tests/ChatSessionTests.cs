@@ -290,7 +290,7 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
-    public async Task Chat_Streaming_TokenCancellation_FinalResponse_Cancels()
+    public async Task Chat_Streaming_TokenCancellation_FinalResponse_CancelsOrCompletes()
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
@@ -324,18 +324,19 @@ internal sealed class ChatSessionTests
         }
 
         await Assert.That(iteratorEx).IsNotNull();
+        await Assert.That(itemCount).IsGreaterThanOrEqualTo(1);
 
-        OperationCanceledException? finalEx = null;
         try
         {
-            using var _ = await stream.FinalResponse;
+            using var final = await stream.FinalResponse;
+            await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            finalEx = oce;
+            // The producer may still be running when the first buffered item is consumed.
+            // In that case cancellation wins and FinalResponse is canceled. If the producer
+            // already completed, its terminal response remains successful.
         }
-
-        await Assert.That(finalEx).IsNotNull();
     }
 
     [Test]

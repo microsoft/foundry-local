@@ -372,6 +372,8 @@ ChatCompletionResponse BuildResponse(const Response& response,
   result.usage.prompt_tokens = static_cast<int>(response.usage.prompt_tokens);
   result.usage.completion_tokens = static_cast<int>(response.usage.completion_tokens);
   result.usage.total_tokens = static_cast<int>(response.usage.total_tokens);
+  result.usage.prompt_tokens_details.cached_tokens =
+      static_cast<int>(response.usage.cached_prompt_tokens);
   result.usage.completion_tokens_details.reasoning_tokens =
       static_cast<int>(response.usage.reasoning_tokens);
 

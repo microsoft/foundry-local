@@ -87,7 +87,6 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
     }
   }
 
-#if FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
   try {
     const auto reasoning_projection = preprocessor.ApplyChatTemplateWithOptions(
       kReasoningProbeMessages, /*tools_json=*/nullptr, /*template_kwargs_json=*/nullptr,
@@ -106,7 +105,6 @@ ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preproce
     capabilities.supports_preserve_thinking = false;
     capabilities.supports_reasoning_controls = false;
   }
-#endif
 
   return capabilities;
 }
