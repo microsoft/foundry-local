@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -28,6 +29,8 @@ namespace fl {
 /// active inference does not occur.
 class ModelLoadManager {
  public:
+  using BeforeModelCreate = std::function<void(const GenAIConfig&, ExecutionProvider)>;
+
   enum class LoadStatus {
     kSuccess,
     kModelNotFound,
@@ -39,7 +42,7 @@ class ModelLoadManager {
     GenAIModelInstance* model = nullptr;  // non-owning pointer; lifetime managed by this class
   };
 
-  ModelLoadManager(IEpDetector& ep_detector, ILogger& logger);
+  ModelLoadManager(IEpDetector& ep_detector, ILogger& logger, BeforeModelCreate before_model_create = {});
   ~ModelLoadManager();
 
   ModelLoadManager(const ModelLoadManager&) = delete;
@@ -50,10 +53,13 @@ class ModelLoadManager {
   /// @param model_id    Unique identifier for the model.
   /// @param ep_override Execution provider override (kDefault = use genai_config.json default,
   ///                    or auto-select CUDA for generic-gpu models if available).
+  /// @param registration_ep_override Provider explicitly supplied during local registration. Used only when
+  ///                                 ep_override is kDefault; empty leaves selection to the model artifact.
   /// @returns LoadResult with status and non-owning pointer to the loaded model.
   LoadResult LoadModel(std::string_view model_path,
                        std::string_view model_id,
-                       ExecutionProvider ep_override = ExecutionProvider::kDefault);
+                       ExecutionProvider ep_override = ExecutionProvider::kDefault,
+                       std::string_view registration_ep_override = {});
 
   /// Unload a previously loaded model.
   /// @returns true if the model was found and unloaded; false if the model was not loaded
@@ -96,6 +102,7 @@ class ModelLoadManager {
 
   IEpDetector& ep_detector_;
   ILogger& logger_;
+  BeforeModelCreate before_model_create_;
   std::atomic<bool> shutdown_{false};
   mutable std::mutex mutex_;
   std::map<std::string, std::unique_ptr<GenAIModelInstance>> loaded_models_;

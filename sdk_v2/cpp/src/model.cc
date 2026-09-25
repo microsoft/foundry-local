@@ -185,22 +185,6 @@ Model Model::FromLocalRegistration(ModelInfo info,
   return Model(std::move(info), std::move(local_path), download_manager, model_load_manager, true);
 }
 
-ExecutionProvider ResolveLoadExecutionProvider(const ModelInfo& info, bool external_registration,
-                                               ExecutionProvider requested_provider) {
-  if (!external_registration || requested_provider != ExecutionProvider::kDefault ||
-      !info.execution_provider_override) {
-    return requested_provider;
-  }
-
-  const auto resolved_provider = EPUtils::StringtoEP(info.execution_provider);
-  if (resolved_provider == ExecutionProvider::kUnknown) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "unknown execution provider for local model: " + info.execution_provider);
-  }
-
-  return resolved_provider;
-}
-
 // ---------------------------------------------------------------------------
 // Container operations
 // ---------------------------------------------------------------------------
@@ -513,11 +497,13 @@ void Model::Load(ExecutionProvider ep) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "model is no longer registered");
   }
 
-  ep = ResolveLoadExecutionProvider(Info(), external_registration_, ep);
+  const auto& info = Info();
+  const std::string_view registration_ep_override =
+      external_registration_ && info.execution_provider_override ? info.execution_provider : std::string_view{};
 
   // LoadModel is idempotent — it returns kModelAlreadyLoaded if the id is already
   // in the load manager's map, so no need for a local short-circuit.
-  auto result = model_load_manager_->LoadModel(local_path_, Info().model_id, ep);
+  auto result = model_load_manager_->LoadModel(local_path_, info.model_id, ep, registration_ep_override);
 
   if (result.status == ModelLoadManager::LoadStatus::kModelNotFound) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model not found at path: " + local_path_);

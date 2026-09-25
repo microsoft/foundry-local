@@ -115,8 +115,8 @@ std::string RequiredEpForConfigProvider(std::string_view provider) {
 // Construction / Destruction
 // ---------------------------------------------------------------------------
 
-ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger)
-    : ep_detector_(ep_detector), logger_(logger) {}
+ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger, BeforeModelCreate before_model_create)
+  : ep_detector_(ep_detector), logger_(logger), before_model_create_(std::move(before_model_create)) {}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
@@ -141,7 +141,8 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 
 ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_path,
                                                          std::string_view model_id,
-                                                         ExecutionProvider ep_override) {
+                                                         ExecutionProvider ep_override,
+                                                         std::string_view registration_ep_override) {
   if (shutdown_.load()) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "cannot load model during shutdown");
@@ -192,6 +193,14 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown execution provider override");
   }
 
+  if (resolved_ep == ExecutionProvider::kDefault && !registration_ep_override.empty()) {
+    resolved_ep = EPUtils::StringtoEP(registration_ep_override);
+    if (resolved_ep == ExecutionProvider::kUnknown) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "unknown execution provider for local model: " + std::string(registration_ep_override));
+    }
+  }
+
   if (resolved_ep == ExecutionProvider::kDefault) {
     // Auto-select EP for generic-gpu models: DML models are compatible with
     // CUDA and WebGPU, so try those in order when available.
@@ -227,6 +236,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   if (!required_ep.empty() && !ep_detector_.PrepareForModelLoad(required_ep)) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to prepare ", required_ep, " for model loading");
+  }
+
+  if (before_model_create_) {
+    before_model_create_(genai_config, resolved_ep);
   }
 
   // std::make_unique cannot access the private constructor; using new directly is intentional.

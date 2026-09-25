@@ -746,8 +746,6 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources)
   EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 8192);
   EXPECT_TRUE(model->Info().execution_provider_override);
-  EXPECT_EQ(ResolveLoadExecutionProvider(model->Info(), true, ExecutionProvider::kDefault),
-            ExecutionProvider::kCUDA);
   EXPECT_STREQ(model->Info().prompt_templates.Find("user"), "artifact-template");
   EXPECT_TRUE(model->Info().model_settings.empty());
   EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
@@ -786,8 +784,6 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2WithoutProviderToArtifactDefault) 
   ASSERT_NE(model, nullptr);
   EXPECT_EQ(model->Info().execution_provider, "CUDAExecutionProvider");
   EXPECT_FALSE(model->Info().execution_provider_override);
-  EXPECT_EQ(ResolveLoadExecutionProvider(model->Info(), true, ExecutionProvider::kDefault),
-            ExecutionProvider::kDefault);
 
   nlohmann::json migrated_index;
   std::ifstream(index_path) >> migrated_index;
@@ -819,8 +815,6 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2CallerProviderOverrideAndPersistsP
   ASSERT_NE(model, nullptr);
   EXPECT_EQ(model->Info().execution_provider, "CPUExecutionProvider");
   EXPECT_TRUE(model->Info().execution_provider_override);
-  EXPECT_EQ(ResolveLoadExecutionProvider(model->Info(), true, ExecutionProvider::kDefault),
-            ExecutionProvider::kCPU);
 
   nlohmann::json migrated_index;
   std::ifstream(index_path) >> migrated_index;
@@ -831,8 +825,6 @@ TEST_F(LocalModelCatalogTest, MigratesSchemaV2CallerProviderOverrideAndPersistsP
   auto* model_again = restored_again.GetModelVariant("migration-override:1");
   ASSERT_NE(model_again, nullptr);
   EXPECT_TRUE(model_again->Info().execution_provider_override);
-  EXPECT_EQ(ResolveLoadExecutionProvider(model_again->Info(), true, ExecutionProvider::kDefault),
-            ExecutionProvider::kCPU);
 }
 
 TEST_F(LocalModelCatalogTest, SchemaV2MigrationFailurePreservesOriginalIndex) {

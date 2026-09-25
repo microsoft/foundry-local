@@ -58,43 +58,6 @@ TEST(ModelConstructionTest, LocalRegistrationHasMetadataImmediately) {
   EXPECT_EQ(model.Id(), "local-model:1");
 }
 
-TEST(ModelConstructionTest, ArtifactProviderMetadataKeepsDefaultLoadSelection) {
-  ModelInfo info;
-  info.execution_provider = "CUDAExecutionProvider";
-
-  EXPECT_EQ(ResolveLoadExecutionProvider(info, true, ExecutionProvider::kDefault), ExecutionProvider::kDefault);
-}
-
-TEST(ModelConstructionTest, CallerProviderMetadataOverridesDefaultLoadSelection) {
-  ModelInfo info;
-  info.execution_provider = "CUDAExecutionProvider";
-  info.execution_provider_override = true;
-
-  EXPECT_EQ(ResolveLoadExecutionProvider(info, true, ExecutionProvider::kDefault), ExecutionProvider::kCUDA);
-}
-
-TEST(ModelConstructionTest, ExplicitLoadProviderOverridesRegistrationMetadata) {
-  ModelInfo info;
-  info.execution_provider = "CUDAExecutionProvider";
-  info.execution_provider_override = true;
-
-  EXPECT_EQ(ResolveLoadExecutionProvider(info, true, ExecutionProvider::kCPU), ExecutionProvider::kCPU);
-}
-
-TEST(ModelConstructionTest, InvalidCallerProviderMetadataIsRejectedAtLoadSelection) {
-  ModelInfo info;
-  info.execution_provider = "UnknownExecutionProvider";
-  info.execution_provider_override = true;
-
-  try {
-    (void)ResolveLoadExecutionProvider(info, true, ExecutionProvider::kDefault);
-    FAIL() << "Expected exception";
-  } catch (const Exception& ex) {
-    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
-    EXPECT_NE(std::string(ex.what()).find("UnknownExecutionProvider"), std::string::npos);
-  }
-}
-
 TEST(ModelConstructionTest, ContainerHasSelectedMetadataImmediately) {
   auto container = Model::MakeContainer(MakeLeaf());
 
