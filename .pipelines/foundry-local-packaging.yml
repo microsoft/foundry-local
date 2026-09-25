@@ -43,7 +43,7 @@ variables:
 - name: cppOrtVersion
   value: '1.30.0'
 - name: cppGenaiVersion
-  value: '0.16.0'
+  value: '0.17.0'
 - name: cppWinmlVersion
   value: '2.4.89'
 - name: cppBuildConfig
