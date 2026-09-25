@@ -372,7 +372,7 @@ Manager::Manager(const Configuration& config) : config_(config) {
   public_catalog_ = std::make_unique<AzureModelCatalog>(
       config_.catalog_urls, download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) { return CreateModel(std::move(info), std::move(local_path)); },
-      *ep_detector_, *logger_, config_.external_service_url.has_value());
+      *ep_detector_, *logger_, config_.external_service_url.has_value(), *telemetry_);
   local_catalog_ = std::make_unique<LocalModelCatalog>(
       download_manager_->GetCacheDirectory(),
       [this](ModelInfo info, std::string local_path) {

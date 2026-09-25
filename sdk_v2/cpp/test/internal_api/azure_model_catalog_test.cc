@@ -86,7 +86,7 @@ class TestAzureModelCatalog final : public AzureModelCatalog {
                         ITelemetry& telemetry,
                         ClientFactory client_factory)
       : AzureModelCatalog(std::move(catalog_urls), std::move(cache_dir), std::move(model_factory), ep_detector, logger,
-                          cache_only, "", false, telemetry),
+                          cache_only, telemetry),
         client_factory_(std::move(client_factory)) {}
 
  protected:

@@ -93,14 +93,16 @@ AzureModelCatalog::AzureModelCatalog(std::vector<std::pair<std::string, std::opt
                                      ModelFactory model_factory,
                                      const IEpDetector& ep_detector,
                                      ILogger& logger,
-                                     bool cache_only)
+                                     bool cache_only,
+                                     ITelemetry& telemetry)
     : BaseModelCatalog(catalog_urls.empty() ? kDefaultCatalogUrl : catalog_urls.front().first, logger),
       catalog_urls_(std::move(catalog_urls)),
       cache_dir_(std::move(cache_dir)),
       model_factory_(std::move(model_factory)),
       ep_detector_(ep_detector),
       logger_(logger),
-      cache_only_(cache_only) {
+      cache_only_(cache_only),
+      telemetry_(telemetry) {
   if (catalog_urls_.empty()) {
     catalog_urls_.emplace_back(kDefaultCatalogUrl, std::optional<std::string>(kDefaultCatalogFilter));
   }
