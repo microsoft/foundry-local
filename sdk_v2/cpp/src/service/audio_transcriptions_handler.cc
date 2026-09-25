@@ -195,9 +195,11 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> AudioTranscriptionsHandler
   auto req = std::make_shared<Request>(std::move(session_request));
   stream->BindRequest(req);
   auto& logger = ctx_.logger;
-  ctx_.thread_tracker.Start([bg_session = std::move(session), stream, &logger, req,
-                             route_tracker = std::move(route_tracker),
-                             &session_manager = ctx_.session_manager]() mutable {
+  auto& tracker = ctx_.thread_tracker;
+
+  tracker.Start([bg_session = std::move(session), stream, &logger, req,
+                 route_tracker = std::move(route_tracker),
+                 &session_manager = ctx_.session_manager]() mutable {
     try {
       // Register inside the try so a shutdown rejection (Register throws) is reported as a stream error
       // instead of escaping this raw std::thread and calling std::terminate.
