@@ -3,6 +3,7 @@
 #include "inferencing/generative/genai_config.h"
 #include "exception.h"
 
+#include <algorithm>
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -49,6 +50,39 @@ size_t ParsePositiveSize(const nlohmann::json& object,
   return static_cast<size_t>(parsed);
 }
 
+int ParsePositiveInt(const nlohmann::json& object, const char* object_path, const char* name, int default_value) {
+  if (!object.contains(name)) {
+    return default_value;
+  }
+
+  const auto& value = object[name];
+  if (!value.is_number_integer()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             std::string("genai_config.json ") + object_path + "." + name + " must be a positive integer");
+  }
+
+  try {
+    if (value.is_number_unsigned()) {
+      const auto parsed = value.get<uint64_t>();
+      if (parsed == 0 || parsed > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+                 std::string("genai_config.json ") + object_path + "." + name + " must be a positive integer");
+      }
+      return static_cast<int>(parsed);
+    }
+
+    const auto parsed = value.get<int64_t>();
+    if (parsed <= 0 || parsed > std::numeric_limits<int>::max()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+               std::string("genai_config.json ") + object_path + "." + name + " must be a positive integer");
+    }
+    return static_cast<int>(parsed);
+  } catch (const nlohmann::json::exception&) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+             std::string("genai_config.json ") + object_path + "." + name + " must be a positive integer");
+  }
+}
+
 }  // namespace
 
 bool GenAIConfig::OnnxModel::IsMultiModal() const {
@@ -74,6 +108,17 @@ std::string GenAIConfig::DefaultProvider() const {
   }
 
   return first.begin()->first;
+}
+
+bool GenAIConfig::HasProvider(std::string_view provider) const {
+  if (!model || !model->decoder || !model->decoder->session_options) {
+    return false;
+  }
+
+  const auto& provider_options = model->decoder->session_options->provider_options;
+  return std::any_of(provider_options.begin(), provider_options.end(), [&](const auto& entry) {
+    return entry.contains(std::string(provider));
+  });
 }
 
 ChatBackendKind GenAIConfig::GetChatBackendKind() const {
@@ -118,9 +163,7 @@ GenAIConfig GenAIConfig::LoadFromFile(const std::string& path) {
     const auto& jm = j["model"];
     OnnxModel model;
 
-    if (jm.contains("context_length") && jm["context_length"].is_number()) {
-      model.context_length = jm["context_length"].get<int>();
-    }
+    model.context_length = ParsePositiveInt(jm, "model", "context_length", model.context_length);
 
     if (jm.contains("type") && jm["type"].is_string()) {
       model.type = jm["type"].get<std::string>();

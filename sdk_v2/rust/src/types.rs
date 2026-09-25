@@ -28,8 +28,8 @@ impl CatalogType {
 
 /// Mutable, caller-owned metadata used when registering a local model.
 ///
-/// The metadata is consumed and copied by [`Catalog::register_model`](crate::Catalog::register_model), which keeps
-/// the native value alive until asynchronous registration finishes.
+/// The builder is consumed by [`Catalog::register_model`](crate::Catalog::register_model), which preserves supported
+/// application metadata while deriving SDK-owned fields from the registration arguments and model artifacts.
 pub struct ModelInfoBuilder {
     api: Arc<Api>,
     ptr: *mut flModelInfo,

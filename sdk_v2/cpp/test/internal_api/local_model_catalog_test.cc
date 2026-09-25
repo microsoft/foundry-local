@@ -58,15 +58,17 @@ class LocalModelCatalogTest : public ::testing::Test {
   LocalModelCatalog catalog_;
 };
 
-TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModelInfoCache) {
+TEST_F(LocalModelCatalogTest, RegisterResolvesMetadataAndWritesLocalModelInfoCache) {
   auto info = MakeMetadata();
   info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
   info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
   info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, 321);
+  info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
   info.SetPropertyStr("custom_metadata", "preserved");
   info.SetPropertyInt("custom_count", 42);
   info.prompt_templates.Add("user", "<|user|>{Content}<|end|>");
   info.model_settings.Add("temperature", "0.5");
+  info.detected_region = "caller-region";
   info.SetPropertyStr("model_path", "ignored");
   info.SetPropertyStr("alias", "ignored");
   info.SetPropertyStr("version", "ignored");
@@ -83,11 +85,14 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   EXPECT_EQ(model->Info().alias, "my-model");
   EXPECT_EQ(model->Info().version, 7);
   EXPECT_EQ(model->Info().task, "chat-completion");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
+            "my-model-generic-cpu");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
             "text,image");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
             "text");
   EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_FILESIZE_MB_INT, int64_t{-1}), 321);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 4096);
   EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyStr("alias"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyStr("version"), nullptr);
@@ -95,6 +100,9 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   EXPECT_EQ(model->Info().GetPropertyInt("alias"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyInt("_local_registration_id"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyInt("version"), nullptr);
+  EXPECT_TRUE(model->Info().prompt_templates.empty());
+  EXPECT_TRUE(model->Info().model_settings.empty());
+  EXPECT_TRUE(model->Info().detected_region.empty());
   EXPECT_TRUE(model->IsCached());
   EXPECT_FALSE(std::filesystem::exists(model_dir_ / "model_metadata.yml"));
 
@@ -102,7 +110,7 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   ASSERT_TRUE(std::filesystem::exists(index_path));
   nlohmann::json index;
   std::ifstream(index_path) >> index;
-  EXPECT_EQ(index["version"], 2);
+  EXPECT_EQ(index["version"], 3);
   ASSERT_EQ(index["models"].size(), 1u);
   EXPECT_EQ(index["models"][0].size(), 2u);
   ASSERT_TRUE(index["models"][0].contains("model_info"));
@@ -124,8 +132,255 @@ TEST_F(LocalModelCatalogTest, RegisterPreservesCallerMetadataAndWritesLocalModel
   ASSERT_NE(restored_model, nullptr);
   EXPECT_EQ(restored_model->Info().GetPropertyWithDefault("custom_metadata", std::string{}), "preserved");
   EXPECT_EQ(restored_model->Info().GetPropertyWithDefault("custom_count", int64_t{-1}), 42);
-  EXPECT_STREQ(restored_model->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
-  EXPECT_STREQ(restored_model->Info().model_settings.Find("temperature"), "0.5");
+  EXPECT_EQ(restored_model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}),
+            4096);
+  EXPECT_TRUE(restored_model->Info().prompt_templates.empty());
+  EXPECT_TRUE(restored_model->Info().model_settings.empty());
+  EXPECT_TRUE(restored_model->Info().detected_region.empty());
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesDefaultsAndPreservesApplicationOverrides) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"type":"phi3","context_length":8192,)"
+         R"("prompt_templates":{"user":"<|user|>{Content}<|end|>"},)"
+         R"("decoder":{"session_options":{"provider_options":[{"cuda":{}}]}}}})";
+
+  auto* derived = catalog_.RegisterModel(model_dir_.string(), "derived-model:1", MakeMetadata());
+
+  ASSERT_NE(derived, nullptr);
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
+            "derived-model");
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, std::string{}), "local");
+  EXPECT_EQ(derived->Info().execution_provider, "CUDAExecutionProvider");
+  EXPECT_FALSE(derived->Info().execution_provider_override);
+  EXPECT_EQ(derived->Info().device_type, DeviceType::kGPU);
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 8192);
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_EQ(derived->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_STREQ(derived->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
+
+  auto restored = MakeCatalog();
+  auto* restored_derived = restored.GetModelVariant("derived-model:1");
+  ASSERT_NE(restored_derived, nullptr);
+  EXPECT_STREQ(restored_derived->Info().prompt_templates.Find("user"), "<|user|>{Content}<|end|>");
+
+  auto overrides = MakeMetadata();
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, "Custom display name");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "Contoso");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "cpu");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "CPU");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "custom-input");
+  overrides.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "custom-output");
+  auto* overridden = catalog_.RegisterModel(model_dir_.string(), "overridden-model:1", overrides);
+
+  ASSERT_NE(overridden, nullptr);
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, std::string{}),
+            "Custom display name");
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, std::string{}),
+            "Contoso");
+  EXPECT_EQ(overridden->Info().execution_provider, "CPUExecutionProvider");
+  EXPECT_TRUE(overridden->Info().execution_provider_override);
+  EXPECT_EQ(overridden->Info().device_type, DeviceType::kCPU);
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "custom-input");
+  EXPECT_EQ(overridden->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "custom-output");
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationRejectsInvalidRuntimeMetadata) {
+  const auto expect_invalid_argument = [&](const std::string& model_id, const ModelInfo& metadata,
+                                           std::string_view message_fragment) {
+    try {
+      catalog_.RegisterModel(model_dir_.string(), model_id, metadata);
+      FAIL() << "Expected exception";
+    } catch (const Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      EXPECT_NE(std::string(ex.what()).find(message_fragment), std::string::npos) << ex.what();
+    }
+  };
+
+  auto unknown_provider = MakeMetadata();
+  unknown_provider.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "UnknownExecutionProvider");
+  expect_invalid_argument("unknown-provider:1", unknown_provider, "unsupported execution provider");
+
+  auto dml_provider = MakeMetadata();
+  dml_provider.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "DmlExecutionProvider");
+  expect_invalid_argument("dml-provider:1", dml_provider, "DirectML execution provider is not supported");
+
+  auto mismatched_device = MakeMetadata();
+  mismatched_device.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "CUDA");
+  mismatched_device.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "NPU");
+  expect_invalid_argument("mismatched-device:1", mismatched_device,
+                          "device_type does not match execution_provider CUDAExecutionProvider");
+
+  auto invalid_device = MakeMetadata();
+  invalid_device.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "accelerator");
+  expect_invalid_argument("invalid-device:1", invalid_device, "device_type must be CPU, GPU, or NPU");
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationCanonicalizesProviderAndDerivesDevice) {
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "CUDA");
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "canonical-provider:1", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "CUDAExecutionProvider");
+  EXPECT_EQ(model->Info().device_type, DeviceType::kGPU);
+  EXPECT_TRUE(model->Info().execution_provider_override);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationRejectsEveryDmlArtifactProviderSpelling) {
+  const std::vector<std::string> dml_spellings = {
+      "dml",
+      "DML",
+      "DmlExecutionProvider",
+      "DMLExecutionProvider",
+  };
+
+  for (size_t index = 0; index < dml_spellings.size(); ++index) {
+    std::ofstream(model_dir_ / "genai_config.json")
+        << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cpu":{}},{")"
+        << dml_spellings[index] << R"(":{}}]}}}})";
+
+    try {
+      catalog_.RegisterModel(model_dir_.string(), "dml-config-" + std::to_string(index) + ":1", MakeMetadata());
+      FAIL() << "Expected exception for " << dml_spellings[index];
+    } catch (const Exception& ex) {
+      EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+      EXPECT_NE(std::string(ex.what()).find("DirectML"), std::string::npos) << dml_spellings[index];
+    }
+  }
+}
+
+TEST_F(LocalModelCatalogTest, ArtifactRuntimeMetadataDoesNotOverrideArtifactProviderOptionsOnLoad) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "provider-options:1", MakeMetadata());
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_FALSE(model->Info().execution_provider_override);
+  try {
+    model->Load();
+    FAIL() << "Expected CUDA availability validation";
+  } catch (const Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(ex.what()).find("CUDAExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST_F(LocalModelCatalogTest, CallerRuntimeProviderOverridesArtifactProviderOnLoad) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "cpu");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "CPU");
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "caller-provider:1", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_TRUE(model->Info().execution_provider_override);
+  try {
+    model->Load();
+  } catch (const Exception& ex) {
+    EXPECT_NE(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE) << ex.what();
+  }
+
+  auto restored = MakeCatalog();
+  auto* restored_model = restored.GetModelVariant("caller-provider:1");
+  ASSERT_NE(restored_model, nullptr);
+  EXPECT_TRUE(restored_model->Info().execution_provider_override);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesQnnDeviceType) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{"qnn":{}}]}}}})";
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "qnn-model:1", MakeMetadata());
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "QNNExecutionProvider");
+  EXPECT_EQ(model->Info().device_type, DeviceType::kNPU);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationPersistsOpenVinoWithoutUnknownDevice) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"OpenVINO":{}}]}}}})";
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "openvino-model:1", MakeMetadata());
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "OpenVINOExecutionProvider");
+  EXPECT_EQ(model->Info().device_type, DeviceType::kNotSet);
+
+  const auto index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json";
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  const auto& runtime = index["models"][0]["model_info"]["runtime"];
+  EXPECT_EQ(runtime["executionProvider"], "OpenVINOExecutionProvider");
+  EXPECT_FALSE(runtime.contains("deviceType"));
+
+  auto restored = MakeCatalog();
+  auto* restored_model = restored.GetModelVariant("openvino-model:1");
+  ASSERT_NE(restored_model, nullptr);
+  EXPECT_EQ(restored_model->Info().execution_provider, "OpenVINOExecutionProvider");
+  EXPECT_EQ(restored_model->Info().device_type, DeviceType::kNotSet);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDerivesEmbeddingModalities) {
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "embedding-model:1", MakeMetadata("embeddings"));
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, std::string{}),
+            "text");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, std::string{}),
+            "embeddings");
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationOverwritesSdkOwnedMetadata) {
+  auto metadata = MakeMetadata();
+  metadata.model_id = "caller-id:99";
+  metadata.name = "caller-name";
+  metadata.version = 99;
+  metadata.alias = "caller-alias";
+  metadata.uri = "caller://uri";
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "CallerProvider");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "CallerEntity");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "CallerType");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, "2000-01-01T00:00:00Z");
+  metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, "caller-context");
+  metadata.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, 1);
+  metadata.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "sdk-owned-generic-cpu:4", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().model_id, "sdk-owned-generic-cpu:4");
+  EXPECT_EQ(model->Info().name, "sdk-owned-generic-cpu");
+  EXPECT_EQ(model->Info().version, 4);
+  EXPECT_EQ(model->Info().alias, "sdk-owned");
+  EXPECT_TRUE(model->Info().uri.empty());
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, std::string{}),
+            "LocalRegistration");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, std::string{}), "Model");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, std::string{}), "ONNX");
+  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
+  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 4096);
+  EXPECT_EQ(model->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, RegistrationDoesNotUseCallerContextLengthWhenConfigOmitsIt) {
+  std::ofstream(model_dir_ / "genai_config.json") << R"({"model":{"type":"phi3"}})";
+  auto metadata = MakeMetadata();
+  metadata.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
+
+  auto* model = catalog_.RegisterModel(model_dir_.string(), "no-context:1", metadata);
+
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().GetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), nullptr);
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationRequiresExistingDirectoryAndParseableConfig) {
@@ -423,14 +678,180 @@ TEST_F(LocalModelCatalogTest, LoadsLegacyRegistrationPropertiesUsingPersistedMod
   EXPECT_EQ(model->Info().GetPropertyStr("alias"), nullptr);
   EXPECT_EQ(model->Info().GetPropertyInt("version"), nullptr);
 
-  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "new-model:1", MakeMetadata()), nullptr);
   nlohmann::json migrated_index;
   std::ifstream(cache_dir / "foundry.local.modelinfo.json") >> migrated_index;
-  EXPECT_EQ(migrated_index["version"], 2);
+  EXPECT_EQ(migrated_index["version"], 3);
+  ASSERT_EQ(migrated_index["models"].size(), 1u);
+  EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));
+  EXPECT_FALSE(migrated_index["models"][0].contains("properties"));
+
+  ASSERT_NE(restored.RegisterModel(model_dir_.string(), "new-model:1", MakeMetadata()), nullptr);
+  std::ifstream(cache_dir / "foundry.local.modelinfo.json") >> migrated_index;
   ASSERT_EQ(migrated_index["models"].size(), 2u);
   EXPECT_TRUE(migrated_index["models"][0].contains("model_info"));
   EXPECT_FALSE(migrated_index["models"][0].contains("properties"));
   EXPECT_NE(restored.GetModelVariant("legacy-model:4"), nullptr);
+}
+
+TEST_F(LocalModelCatalogTest, MigratesSchemaV2MetadataUsingAuthoritativeSources) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"type":"phi3","context_length":8192,)"
+       R"("prompt_templates":{"user":"artifact-template"},)"
+       R"("decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
+
+  auto legacy_info = MakeMetadata();
+  legacy_info.model_id = "migration-model:2";
+  legacy_info.name = "wrong-name";
+  legacy_info.version = 99;
+  legacy_info.alias = "wrong-alias";
+  legacy_info.uri = "caller://uri";
+  legacy_info.detected_region = "caller-region";
+  legacy_info.prompt_templates.Add("user", "caller-template");
+  legacy_info.model_settings.Add("temperature", "0.5");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "CallerProvider");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "CallerEntity");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "CallerType");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, "2000-01-01T00:00:00Z");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "CUDAExecutionProvider");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "GPU");
+  legacy_info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, 123);
+  legacy_info.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, 1);
+  legacy_info.SetPropertyStr("model_path", "caller-path");
+  legacy_info.SetPropertyStr("custom_metadata", "preserved");
+
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 2},
+      {"catalog_name", "local"},
+      {"models", {{{"model_info", ModelInfoToJson(legacy_info)}, {"model_path", model_dir_.string()}}}},
+  };
+  const auto index_path = cache_dir / "foundry.local.modelinfo.json";
+  std::ofstream(index_path) << legacy_index.dump(2);
+
+  auto restored = MakeCatalog();
+  auto* model = restored.GetModelVariant("migration-model:2");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().name, "migration-model");
+  EXPECT_EQ(model->Info().alias, "migration-model");
+  EXPECT_EQ(model->Info().version, 2);
+  EXPECT_TRUE(model->Info().uri.empty());
+  EXPECT_TRUE(model->Info().detected_region.empty());
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, std::string{}),
+            "LocalRegistration");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, std::string{}), "Model");
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, std::string{}), "ONNX");
+  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR, std::string{}),
+            "2000-01-01T00:00:00Z");
+  EXPECT_NE(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0}), 1);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, int64_t{-1}), 8192);
+  EXPECT_TRUE(model->Info().execution_provider_override);
+  EXPECT_STREQ(model->Info().prompt_templates.Find("user"), "artifact-template");
+  EXPECT_TRUE(model->Info().model_settings.empty());
+  EXPECT_EQ(model->Info().GetPropertyStr("model_path"), nullptr);
+  EXPECT_EQ(model->Info().GetPropertyWithDefault("custom_metadata", std::string{}), "preserved");
+
+  nlohmann::json migrated_index;
+  std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 3);
+  EXPECT_EQ(migrated_index["models"][0]["model_info"]["intProperties"]
+                          [FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT],
+            8192);
+  EXPECT_EQ(migrated_index["models"][0]["model_info"]["promptTemplate"]["user"], "artifact-template");
+  EXPECT_FALSE(migrated_index["models"][0]["model_info"].contains("modelSettings"));
+  EXPECT_EQ(migrated_index["models"][0]["execution_provider_override"], true);
+}
+
+TEST_F(LocalModelCatalogTest, MigratesSchemaV2WithoutProviderToArtifactDefault) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
+
+  auto legacy_info = MakeMetadata();
+  legacy_info.model_id = "migration-artifact-default:1";
+
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 2},
+      {"catalog_name", "local"},
+      {"models", {{{"model_info", ModelInfoToJson(legacy_info)}, {"model_path", model_dir_.string()}}}},
+  };
+  const auto index_path = cache_dir / "foundry.local.modelinfo.json";
+  std::ofstream(index_path) << legacy_index.dump(2);
+
+  auto restored = MakeCatalog();
+  auto* model = restored.GetModelVariant("migration-artifact-default:1");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "CUDAExecutionProvider");
+  EXPECT_FALSE(model->Info().execution_provider_override);
+
+  nlohmann::json migrated_index;
+  std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 3);
+  EXPECT_FALSE(migrated_index["models"][0].contains("execution_provider_override"));
+}
+
+TEST_F(LocalModelCatalogTest, MigratesSchemaV2CallerProviderOverrideAndPersistsProvenance) {
+  std::ofstream(model_dir_ / "genai_config.json")
+      << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cuda":{"device_id":"1"}}]}}}})";
+
+  auto legacy_info = MakeMetadata();
+  legacy_info.model_id = "migration-override:1";
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, "cpu");
+  legacy_info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, "CPU");
+
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 2},
+      {"catalog_name", "local"},
+      {"models", {{{"model_info", ModelInfoToJson(legacy_info)}, {"model_path", model_dir_.string()}}}},
+  };
+  const auto index_path = cache_dir / "foundry.local.modelinfo.json";
+  std::ofstream(index_path) << legacy_index.dump(2);
+
+  auto restored = MakeCatalog();
+  auto* model = restored.GetModelVariant("migration-override:1");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->Info().execution_provider, "CPUExecutionProvider");
+  EXPECT_TRUE(model->Info().execution_provider_override);
+
+  nlohmann::json migrated_index;
+  std::ifstream(index_path) >> migrated_index;
+  EXPECT_EQ(migrated_index["version"], 3);
+  EXPECT_EQ(migrated_index["models"][0]["execution_provider_override"], true);
+
+  auto restored_again = MakeCatalog();
+  auto* model_again = restored_again.GetModelVariant("migration-override:1");
+  ASSERT_NE(model_again, nullptr);
+  EXPECT_TRUE(model_again->Info().execution_provider_override);
+}
+
+TEST_F(LocalModelCatalogTest, SchemaV2MigrationFailurePreservesOriginalIndex) {
+  auto legacy_info = MakeMetadata();
+  legacy_info.model_id = "missing-artifact:1";
+  const auto missing_model_path = root_.path() / "missing-model";
+
+  const auto cache_dir = root_.path() / "cache" / "models";
+  std::filesystem::create_directories(cache_dir);
+  const nlohmann::json legacy_index = {
+      {"version", 2},
+      {"catalog_name", "local"},
+      {"models", {{{"model_info", ModelInfoToJson(legacy_info)}, {"model_path", missing_model_path.string()}}}},
+  };
+  const auto index_path = cache_dir / "foundry.local.modelinfo.json";
+  std::ofstream(index_path) << legacy_index.dump(2);
+  std::ifstream original_stream(index_path, std::ios::binary);
+  const std::string original_index{std::istreambuf_iterator<char>(original_stream),
+                                   std::istreambuf_iterator<char>()};
+
+  auto restored = MakeCatalog();
+  EXPECT_THROW(restored.ListModels(), Exception);
+
+  std::ifstream stream(index_path, std::ios::binary);
+  const std::string preserved_index{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+  EXPECT_EQ(preserved_index, original_index);
+  EXPECT_FALSE(std::filesystem::exists(index_path.string() + ".tmp"));
 }
 
 TEST_F(LocalModelCatalogTest, RegistrationDoesNotOverwriteUnreadableOrUnsupportedIndex) {
@@ -468,6 +889,45 @@ TEST_F(LocalModelCatalogTest, RestoredRegistrationUsesFreshMetadataValidation) {
   std::ifstream stream(index_path, std::ios::binary);
   const std::string preserved_index{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
   EXPECT_EQ(preserved_index, invalid_index);
+}
+
+TEST_F(LocalModelCatalogTest, RestoredSchemaV3RegistrationValidatesRuntimeMetadata) {
+  Register();
+  const auto index_path = root_.path() / "cache" / "models" / "foundry.local.modelinfo.json";
+  nlohmann::json index;
+  std::ifstream(index_path) >> index;
+  const std::vector<nlohmann::json> invalid_runtimes = {
+      {{"deviceType", "NPU"}, {"executionProvider", "CPUExecutionProvider"}},
+      {{"deviceType", "accelerator"}},
+      {{"deviceType", 1}},
+      {{"executionProvider", 1}},
+      {{"executionProvider", "UnknownExecutionProvider"}},
+      {{"executionProvider", "DMLExecutionProvider"}},
+      "not-an-object",
+  };
+
+  const auto expect_preserved_failure = [&](const nlohmann::json& invalid_index) {
+    const auto serialized_index = invalid_index.dump(2);
+    std::ofstream(index_path, std::ios::binary | std::ios::trunc) << serialized_index;
+
+    auto restored = MakeCatalog();
+    EXPECT_THROW(restored.ListModels(), Exception);
+
+    std::ifstream stream(index_path, std::ios::binary);
+    const std::string preserved_index{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(preserved_index, serialized_index);
+    EXPECT_FALSE(std::filesystem::exists(index_path.string() + ".tmp"));
+  };
+
+  for (const auto& invalid_runtime : invalid_runtimes) {
+    index["models"][0]["model_info"]["runtime"] = invalid_runtime;
+    index["models"][0].erase("execution_provider_override");
+    expect_preserved_failure(index);
+  }
+
+  index["models"][0]["model_info"].erase("runtime");
+  index["models"][0]["execution_provider_override"] = "true";
+  expect_preserved_failure(index);
 }
 
 TEST_F(LocalModelCatalogTest, PublicCatalogContractRejectsMutation) {

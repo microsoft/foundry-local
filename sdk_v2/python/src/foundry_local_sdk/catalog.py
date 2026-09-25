@@ -96,9 +96,14 @@ class Catalog:
     ) -> IModel:
         """Register existing model assets in the local catalog.
 
-        The native catalog copies ``metadata`` and does not take ownership of
-        the model directory. ``model_id`` must use ``<name>:<version>`` format,
-        and ``model_path`` must contain ``genai_config.json``.
+        ``task`` is required. Display name, publisher, validated runtime metadata,
+        modalities, and custom properties are preserved and may receive authoritative
+        defaults. Identity, alias, type, timestamps, context length, and prompt templates
+        are SDK-derived; caller location and internal metadata are ignored. A caller-
+        supplied provider becomes the default load override; an SDK-derived artifact
+        provider leaves ``genai_config.json`` options intact. The catalog never owns or
+        deletes the model directory. ``model_id`` must use ``<name>:<version>`` and
+        ``model_path`` must contain ``genai_config.json``.
 
         Args:
             model_path: Existing model directory.

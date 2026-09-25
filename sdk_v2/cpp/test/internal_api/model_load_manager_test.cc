@@ -52,11 +52,26 @@ class CpuOnlyDetector : public fl::IEpDetector {
   std::string prepared_ep;
 };
 
+class DmlAvailableDetector : public fl::IEpDetector {
+ public:
+  std::map<std::string, std::vector<std::string>> GetAvailableDevicesToEPs() const override {
+    return {{"GPU", {"dml", "DML", "DmlExecutionProvider", "DMLExecutionProvider"}}};
+  }
+
+  bool PrepareForModelLoad(std::string_view ep_name) override {
+    prepared_ep = ep_name;
+    return true;
+  }
+
+  std::string prepared_ep;
+};
+
 /// Creates a minimal model directory with a dummy genai_config.json.
 /// Cleans up on destruction.
 class TempModelDir {
  public:
-  explicit TempModelDir(const std::string& model_name, const std::string& provider = "")
+  explicit TempModelDir(const std::string& model_name, const std::string& provider = "",
+                        const std::string& provider_options = "{}")
       : root_(fl::test::TempPath::CreateTempDir("fl_model_load_" + model_name + "_")), path_(root_.string()) {
     // Write a minimal genai_config.json
     std::ofstream config(std::filesystem::path(path_) / "genai_config.json");
@@ -64,7 +79,7 @@ class TempModelDir {
       config << R"({"model": {"type": "phi3"}})";
     } else {
       config << R"({"model":{"type":"phi3","decoder":{"session_options":{"provider_options":[{")"
-             << provider << R"(":{}}]}}}})";
+             << provider << R"(":)" << provider_options << R"(}]}}}})";
     }
   }
 
@@ -196,7 +211,7 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithCanonicalWinMlProvider_NotAvailable_
   }
 }
 
-TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDownloadableEp) {
+TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_ThrowsUnsupportedProvider) {
   CpuOnlyDetector ep;
   fl::StderrLogger logger;
   TempModelDir dir("alias-dml-config", "DmlExecutionProvider");
@@ -204,11 +219,42 @@ TEST(ModelLoadManagerTest, LoadRuntimeIdWithFullDmlProviderName_DoesNotRequireDo
 
   try {
     mgr.LoadModel(dir.path(), "local/test-registration");
+    FAIL() << "Expected exception";
   } catch (const fl::Exception& e) {
-    EXPECT_NE(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(e.what()).find("DirectML"), std::string::npos);
   }
 
   EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, LoadRejectsEveryDmlSpellingBeforeProviderPreparation) {
+  const std::vector<std::string> dml_spellings = {
+      "dml",
+      "DML",
+      "DmlExecutionProvider",
+      "DMLExecutionProvider",
+  };
+
+  for (size_t index = 0; index < dml_spellings.size(); ++index) {
+    DmlAvailableDetector ep;
+    fl::StderrLogger logger;
+    TempModelDir dir("alias-dml-available-" + std::to_string(index));
+    std::ofstream(std::filesystem::path(dir.path()) / "genai_config.json")
+        << R"({"model":{"decoder":{"session_options":{"provider_options":[{"cpu":{}},{")"
+        << dml_spellings[index] << R"(":{}}]}}}})";
+    fl::ModelLoadManager mgr(ep, logger);
+
+    try {
+      mgr.LoadModel(dir.path(), "local/test-registration-" + std::to_string(index));
+      FAIL() << "Expected exception for " << dml_spellings[index];
+    } catch (const fl::Exception& e) {
+      EXPECT_EQ(e.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+      EXPECT_NE(std::string(e.what()).find("DirectML"), std::string::npos) << dml_spellings[index];
+    }
+
+    EXPECT_TRUE(ep.prepared_ep.empty()) << dml_spellings[index];
+  }
 }
 
 TEST(ModelLoadManagerTest, LoadWithUnknownOverride_ThrowsInvalidArgument) {
@@ -238,6 +284,81 @@ TEST(ModelLoadManagerTest, LoadWithCpuOverride_IgnoresCudaConfigAndModelId) {
   }
 
   EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, ArtifactCudaProviderWithOptionsKeepsDefaultSelection) {
+  GpuEpDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("artifact-cuda-options", "cuda", R"({"device_id":"1"})");
+  bool observed = false;
+  fl::ModelLoadManager mgr(ep, logger, [&](const fl::GenAIConfig& config, fl::ExecutionProvider resolved_ep) {
+    observed = true;
+    EXPECT_EQ(resolved_ep, fl::ExecutionProvider::kDefault);
+    ASSERT_TRUE(config.model.has_value());
+    ASSERT_TRUE(config.model->decoder.has_value());
+    ASSERT_TRUE(config.model->decoder->session_options.has_value());
+    const auto& provider_options = config.model->decoder->session_options->provider_options;
+    ASSERT_EQ(provider_options.size(), 1u);
+    ASSERT_TRUE(provider_options.front().contains("cuda"));
+    EXPECT_EQ(provider_options.front().at("cuda"), R"({"device_id":"1"})");
+  });
+
+  try {
+    mgr.LoadModel(dir.path(), "local/artifact-provider:1");
+  } catch (const fl::Exception& ex) {
+    EXPECT_NE(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE) << ex.what();
+  }
+
+  EXPECT_TRUE(observed);
+  EXPECT_EQ(ep.prepared_ep, "CUDAExecutionProvider");
+}
+
+TEST(ModelLoadManagerTest, RegistrationProviderOverridesArtifactOnlyWhenExplicitLoadProviderIsDefault) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("registration-cpu-override", "cuda", R"({"device_id":"1"})");
+  fl::ModelLoadManager mgr(ep, logger);
+
+  try {
+    mgr.LoadModel(dir.path(), "local/registration-provider:1", fl::ExecutionProvider::kDefault,
+                  "CPUExecutionProvider");
+  } catch (const fl::Exception& ex) {
+    EXPECT_NE(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE) << ex.what();
+  }
+
+  EXPECT_TRUE(ep.prepared_ep.empty());
+}
+
+TEST(ModelLoadManagerTest, ExplicitLoadProviderWinsOverRegistrationProvider) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("explicit-provider-precedence");
+  fl::ModelLoadManager mgr(ep, logger);
+
+  try {
+    mgr.LoadModel(dir.path(), "local/explicit-provider:1", fl::ExecutionProvider::kCUDA,
+                  "CPUExecutionProvider");
+    FAIL() << "Expected exception";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+    EXPECT_NE(std::string(ex.what()).find("CUDAExecutionProvider"), std::string::npos);
+  }
+}
+
+TEST(ModelLoadManagerTest, UnknownRegistrationProviderIsRejectedByLoadManager) {
+  CpuOnlyDetector ep;
+  fl::StderrLogger logger;
+  TempModelDir dir("unknown-registration-provider");
+  fl::ModelLoadManager mgr(ep, logger);
+
+  try {
+    mgr.LoadModel(dir.path(), "local/unknown-registration-provider:1", fl::ExecutionProvider::kDefault,
+                  "UnknownExecutionProvider");
+    FAIL() << "Expected exception";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("UnknownExecutionProvider"), std::string::npos);
+  }
 }
 
 TEST(ModelLoadManagerTest, LoadOpenVinoNpuModel_NotAvailable_Throws) {

@@ -51,7 +51,7 @@ def test_local_catalog_registers_and_unregisters_without_deleting_assets(manager
     model_path = tmp_path / "model"
     model_path.mkdir()
     config_path = model_path / "genai_config.json"
-    config_path.write_text(json.dumps({"model": {"type": "phi3"}}), encoding="utf-8")
+    config_path.write_text(json.dumps({"model": {"type": "phi3", "context_length": 2048}}), encoding="utf-8")
 
     model_id = f"python-byom-{uuid.uuid4().hex}:1"
     local_catalog = manager.get_catalog(CatalogType.LOCAL)
@@ -61,7 +61,7 @@ def test_local_catalog_registers_and_unregisters_without_deleting_assets(manager
             metadata.set_string_property("task", "chat-completion")
             metadata.set_string_property("display_name", "Python BYOM")
             metadata.set_string_property("custom_marker", "python-binding")
-            metadata.set_int_property("context_length", 2048)
+            metadata.set_int_property("context_length", 1024)
             metadata.set_int_property("custom_count", 42)
             registered = local_catalog.register_model(model_path, model_id, metadata)
 
