@@ -1231,8 +1231,13 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   if (cached_generator_) {
     pre_turn_token_count = cached_generator_->TokenCount();
     try {
-      cached_generator_->AppendMessages(inputs, prepared_messages, Model(), turn_tool_ctx, effective_options);
+      const int submitted_tokens =
+          cached_generator_->AppendMessages(inputs, prepared_messages, Model(), turn_tool_ctx, effective_options);
       prompt_tokens = cached_generator_->TokenCount();
+      if (backend_kind == ChatBackendKind::kEngine && submitted_tokens == prompt_tokens) {
+        // The Engine replaced a mismatched resident prompt; the prior conversation's boundary no longer applies.
+        pre_turn_token_count.reset();
+      }
       cached_tool_ctx_ = turn_tool_ctx;
     } catch (const RetainedPromptMismatchError&) {
       InvalidateCachedGenerator();
@@ -2004,7 +2009,11 @@ void ChatSession::UndoTurns(size_t count) {
   // The transcript is already truncated. A failed rewind would leave the KV cache describing a conversation the
   // transcript no longer has, so drop the generator before the failure propagates.
   ScopeGuard invalidate_on_failed_rewind([this]() noexcept { InvalidateCachedGenerator(); });
-  cached_generator_->RewindTo(*tokens.pre_turn);
+  try {
+    cached_generator_->RewindTo(*tokens.pre_turn);
+  } catch (const OnnxChatEngine::ConversationEvictedError&) {
+    return;
+  }
   invalidate_on_failed_rewind.Dismiss();
 }
 

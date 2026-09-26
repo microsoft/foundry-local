@@ -60,6 +60,11 @@ class OnnxChatEngine {
     std::condition_variable cv;
     std::deque<int32_t> tokens;
     std::vector<int32_t> resident_tokens;
+    struct TurnBoundary {
+      uint64_t id;
+      size_t length;
+    };
+    std::vector<TurnBoundary> turn_boundaries;
     std::exception_ptr error;
     TurnResult result;
     uint64_t turn_id = 0;
@@ -92,6 +97,7 @@ class OnnxChatEngine {
   TurnResult GetTurnResult(const std::shared_ptr<Conversation>& conversation) const;
   size_t SequenceLength(const std::shared_ptr<Conversation>& conversation) const;
   std::vector<int32_t> ResidentTokens(const std::shared_ptr<Conversation>& conversation) const;
+  void RewindTo(const std::shared_ptr<Conversation>& conversation, size_t token_count);
   void Cancel(const std::shared_ptr<Conversation>& conversation);
   void Close(const std::shared_ptr<Conversation>& conversation);
 

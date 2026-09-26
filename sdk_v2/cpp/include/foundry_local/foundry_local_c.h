@@ -948,8 +948,8 @@ struct flInferenceApi {
   /// Get the number of completed turns in the session.
   size_t FL_API_T(Session_GetTurnCount, _In_ const flSession* session);
 
-  /// Undo the last `count` turns. Rewinds the generator and removes the turns' messages from history.
-  /// If all turns are undone, the cached generator is destroyed.
+  /// Undo the last `count` turns and remove their messages from history. Rewinds retained model state when the
+  /// backend supports it; otherwise the next turn rebuilds from the surviving history. Undoing all turns drops it.
   FL_API_STATUS(Session_UndoTurns, _In_ flSession* session, size_t count);
 
   // End V1

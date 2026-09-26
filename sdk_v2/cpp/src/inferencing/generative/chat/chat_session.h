@@ -181,9 +181,8 @@ class ChatSession : public Session {
   /// Get the number of completed turns. Not safe to inspect while a request is in flight.
   size_t TurnCount() const override;
 
-  /// Undo the last `count` completed turns: rewinds the cached generator and removes
-  /// each turn's input messages and assistant reply from the transcript.
-  /// If all turns are undone, the cached generator is destroyed.
+  /// Undo the last `count` completed turns, removing their inputs and assistant replies from the transcript.
+  /// Rewinds retained state where supported, or discards it for replay on the next turn. Undoing all turns drops it.
   ///
   /// Vision turns: image input is only allowed while the conversation has no
   /// history. UndoTurns rolls back messages, so undoing every turn does make

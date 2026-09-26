@@ -174,6 +174,22 @@ void OnnxEngineChatStream::Close() {
   closed_ = true;
 }
 
+void OnnxEngineChatStream::RewindTo(int token_count) {
+  if (token_count < 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Engine rewind token count must not be negative");
+  }
+
+  try {
+    engine_.RewindTo(conversation_, static_cast<size_t>(token_count));
+    ResetTurnDecoder();
+    cancelled_ = false;
+  } catch (const OnnxChatEngine::ConversationEvictedError&) {
+    throw;
+  } catch (const std::runtime_error& e) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to rewind Engine request: ") + e.what());
+  }
+}
+
 int OnnxEngineChatStream::AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                                          const std::vector<TranscriptMessage>& full_messages,
                                          GenAIModelInstance& model,
