@@ -90,10 +90,11 @@ class NativeContractTest {
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put("temperature", null);
         ModelInfo info = new ModelInfo(
-                "model:1", "model", "model", 1, "uri", DeviceType.CPU, "CPUExecutionProvider",
+                "model:1", "model", "model", 1, "uri", DeviceType.CPU, null,
                 "chat-completion", true, Map.of("task", "chat-completion"), Map.of("context_length", 4096L),
                 settings);
 
+        assertNull(info.executionProvider());
         assertEquals("chat-completion", info.getStringProperty("task"));
         assertEquals(4096L, info.getIntProperty("context_length", -1));
         assertEquals(4096L, info.contextLength());

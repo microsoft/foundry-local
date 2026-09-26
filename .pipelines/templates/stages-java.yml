@@ -282,8 +282,26 @@ stages:
               throw "Missing $required from the Java SDK JAR."
             }
           }
-          if ($entries | Where-Object { $_ -match '(?:\.(?:dll|dylib|onnx)$|\.so(?:\.|$))' }) {
-            throw 'The platform-independent Java SDK JAR contains a native binary or model.'
+          $allowedEntries = @(
+            'META-INF/',
+            'META-INF/MANIFEST.MF',
+            'META-INF/LICENSE',
+            'META-INF/THIRD_PARTY_NOTICES.md',
+            'META-INF/maven/',
+            'META-INF/maven/com.microsoft.foundry/',
+            'META-INF/maven/com.microsoft.foundry/foundry-local-sdk/',
+            'META-INF/maven/com.microsoft.foundry/foundry-local-sdk/pom.xml',
+            'META-INF/maven/com.microsoft.foundry/foundry-local-sdk/pom.properties',
+            'com/',
+            'com/microsoft/',
+            'com/microsoft/foundry/',
+            'com/microsoft/foundry/local/'
+          )
+          $unexpectedEntries = @($entries | Where-Object {
+            $_ -notin $allowedEntries -and $_ -notmatch '^com/microsoft/foundry/local/[A-Za-z0-9_$]+\.class$'
+          })
+          if ($unexpectedEntries) {
+            throw "The platform-independent Java SDK JAR contains unexpected entries: $($unexpectedEntries -join ', ')"
           }
 
           $utf8NoBom = [Text.UTF8Encoding]::new($false)

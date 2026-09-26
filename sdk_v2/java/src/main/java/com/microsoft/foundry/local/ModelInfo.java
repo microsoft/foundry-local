@@ -53,6 +53,7 @@ public final class ModelInfo {
     public int version() { return version; }
     public String uri() { return uri; }
     public DeviceType deviceType() { return deviceType; }
+    /** Returns the execution provider, or {@code null} when native metadata does not provide one. */
     public String executionProvider() { return executionProvider; }
     public String task() { return task; }
     public boolean cached() { return cached; }

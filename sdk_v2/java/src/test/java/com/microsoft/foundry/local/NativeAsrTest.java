@@ -62,7 +62,9 @@ class NativeAsrTest {
             byte[] pcm = WavAudio.read(Path.of(wav)).pcm();
             try (AudioSession session = borrowed.createAudioSession();
                  Transcription run = session.transcribeWav(Path.of(wav), event -> callbacks.incrementAndGet())) {
-                assertTranscript(run.await(Duration.ofSeconds(60)).text());
+                TranscriptionResult result = run.await(Duration.ofSeconds(60));
+                assertTranscript(result.text());
+                assertNull(result.language());
                 assertEquals(pcm.length, run.timing().submittedBytes());
                 assertNotNull(run.timing().inputClosedMillis());
             }
@@ -134,6 +136,21 @@ class NativeAsrTest {
             if (process.isAlive()) {
                 process.destroyForcibly();
                 process.waitFor();
+            }
+        }
+        Process closeProcess = NativeTestProcess.start(NativeManagerCloseDuringTranscription.class,
+                runtime, cache, temporary.toString(), modelId);
+        try {
+            assertTrue(closeProcess.waitFor(90, TimeUnit.SECONDS),
+                    "Manager close during active transcription did not finish");
+            String output = new String(closeProcess.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(0, closeProcess.exitValue(), output);
+            assertTrue(output.contains("manager-closed"), output);
+        } finally {
+            if (closeProcess.isAlive()) {
+                closeProcess.destroyForcibly();
+                closeProcess.waitFor();
             }
         }
     }

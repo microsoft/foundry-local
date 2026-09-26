@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation. Licensed under the MIT License.
 [CmdletBinding()]
-param([switch]$BootstrapMaven, [string[]]$MavenArguments = @('package'))
+param([switch]$BootstrapMaven, [string[]]$MavenArguments = @('clean', 'verify'))
 $ErrorActionPreference = 'Stop'
 $mavenHome = Join-Path $PSScriptRoot 'build\maven'
 $mavenTools = Join-Path $mavenHome 'tools'

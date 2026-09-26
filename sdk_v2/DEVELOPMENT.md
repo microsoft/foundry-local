@@ -74,7 +74,7 @@ install per-SDK package dependencies on first run:
 | C#     | `dotnet test Microsoft.AI.Foundry.Local.SDK.sln -c Release` — restores NuGet packages on demand. |
 | Python | `python -m pip install -e .[dev]` (compiles the cffi extension; needs MSVC/Clang) → `python -m pytest test/`. |
 | JS     | `npm install` (runs `node-gyp` against the C++ build output) → `npm run build` → `npm test` (vitest). |
-| Java   | `mvn test` — restores JNA/JUnit, compiles the Java 17 SDK, and runs unit tests. Native ASR tests are opt-in. |
+| Java   | `mvn clean verify` — restores JNA/JUnit, runs unit tests and pinned SpotBugs, and packages the SDK. Native ASR tests are opt-in. |
 
 ## Common knobs
 

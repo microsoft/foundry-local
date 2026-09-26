@@ -84,7 +84,7 @@ class TranscriptionStateTest {
             assertTrue(completion.isCancelled());
             assertTrue(result.cancelled(), "Publication must not use the pre-decoding cancellation snapshot");
             assertEquals("", result.text());
-            assertEquals("", result.language());
+            assertNull(result.language());
             assertNull(result.durationMs());
             assertEquals(2, result.nativeFinishReason());
             assertFalse(completion.cancel(), "Further cancellation is too late after publication");

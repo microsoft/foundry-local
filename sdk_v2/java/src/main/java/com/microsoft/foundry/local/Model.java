@@ -44,7 +44,7 @@ public final class Model {
                     api.model.integer(NativeApi.ModelApi.INFO_GET_VERSION, info),
                     NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_URI, info)),
                     DeviceType.fromNative(api.model.integer(NativeApi.ModelApi.INFO_GET_DEVICE_TYPE, info)),
-                    NativeApi.text(api.model.pointer(NativeApi.ModelApi.INFO_GET_EXECUTION_PROVIDER, info)),
+                    NativeApi.optionalText(api.model.pointer(NativeApi.ModelApi.INFO_GET_EXECUTION_PROVIDER, info)),
                     task,
                     isCached(),
                     strings,

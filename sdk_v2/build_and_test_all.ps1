@@ -10,7 +10,7 @@
       2. C#     — dotnet test (builds via project references)
       3. Python — pip install -e . then pytest
       4. JS     — npm install + npm run build + npm test
-      5. Java   — mvn test
+      5. Java   — mvn clean verify
 
     Each SDK runs in its own step. The script stops on the first failure
     unless -ContinueOnError is supplied, and prints a per-SDK pass/fail

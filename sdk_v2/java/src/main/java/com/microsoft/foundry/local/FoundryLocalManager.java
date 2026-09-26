@@ -117,17 +117,17 @@ public final class FoundryLocalManager implements AutoCloseable {
         synchronized (this) {
             if (handle == null) return;
             Throwable failure = null;
+            try {
+                api.check(api.root.pointer(NativeApi.Root.MANAGER_SHUTDOWN, handle));
+            } catch (RuntimeException | Error e) {
+                failure = NativeApi.preserveFailure(failure, e);
+            }
             for (OwnedSession session : new ArrayList<>(sessions)) {
                 try {
                     session.close();
                 } catch (RuntimeException | Error e) {
                     failure = NativeApi.preserveFailure(failure, e);
                 }
-            }
-            try {
-                api.check(api.root.pointer(NativeApi.Root.MANAGER_SHUTDOWN, handle));
-            } catch (RuntimeException | Error e) {
-                failure = NativeApi.preserveFailure(failure, e);
             }
             try {
                 api.root.call(NativeApi.Root.MANAGER_RELEASE, handle);

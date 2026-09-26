@@ -369,7 +369,7 @@ public final class Transcription implements AutoCloseable {
                         ? 0
                         : api.inference.integer(
                                 NativeApi.InferenceApi.RESPONSE_GET_FINISH_REASON, response.getValue());
-                String text = "", language = "";
+                String text = "", language = null;
                 Long duration = null;
                 wasCancelled = cancelledResult(wasCancelled, response.getValue() != null, reason);
                 if (!wasCancelled) {
@@ -389,7 +389,7 @@ public final class Transcription implements AutoCloseable {
                             api.check(api.item.pointer(NativeApi.ItemApi.GET_SPEECH_RESULT, item, data));
                             data.read();
                             text = NativeApi.text(data.text);
-                            language = NativeApi.text(data.language);
+                            language = NativeApi.optionalText(data.language);
                             duration = optionalTime(data.duration);
                             found = true;
                         }
@@ -434,7 +434,7 @@ public final class Transcription implements AutoCloseable {
             // Native decoding is outside the lock; only cancellation and terminal publication compete here.
             synchronized (this) {
                 if (cancelled) {
-                    value = new TranscriptionResult("", "", null, true,
+                    value = new TranscriptionResult("", null, null, true,
                             value.nativeFinishReason(), value.elapsedMillis());
                 }
                 finalizedNanos = System.nanoTime();
