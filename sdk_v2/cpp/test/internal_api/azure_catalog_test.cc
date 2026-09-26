@@ -5,6 +5,7 @@
 #include "c_api_types.h"
 #include "exception.h"
 #include "logger.h"
+#include "telemetry/telemetry_logger.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <foundry_local/foundry_local_cpp.h>
@@ -500,6 +501,7 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyDoesNotIssueRequest) {
 TEST(AzureCatalogClientTest, CachedOlderVersionIsResolvedOnce) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
+  TelemetryLogger telemetry("catalog-test", logger);
   int calls = 0;
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) {
@@ -509,7 +511,8 @@ TEST(AzureCatalogClientTest, CachedOlderVersionIsResolvedOnce) {
                                   : MakeSummaryResponse({{"phi-4-mini", 1}, {"phi-4-mini", 2}}));
                             });
 
-  const auto models = FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:1"}, logger);
+  const auto models =
+      FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:1"}, logger, telemetry, CatalogFetchInfo{});
   ASSERT_EQ(models.size(), 2u);
   EXPECT_EQ(calls, 2);
 }
@@ -517,6 +520,7 @@ TEST(AzureCatalogClientTest, CachedOlderVersionIsResolvedOnce) {
 TEST(AzureCatalogClientTest, UnknownCachedModelIsOmitted) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
+  TelemetryLogger telemetry("catalog-test", logger);
   int calls = 0;
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) {
@@ -525,7 +529,8 @@ TEST(AzureCatalogClientTest, UnknownCachedModelIsOmitted) {
                                                                : R"({"summaries":[]})");
                             });
 
-  const auto models = FetchAllModelInfosWithCachedModels(client, {"custom-model:1"}, logger);
+  const auto models =
+      FetchAllModelInfosWithCachedModels(client, {"custom-model:1"}, logger, telemetry, CatalogFetchInfo{});
   ASSERT_EQ(models.size(), 1u);
   EXPECT_EQ(models.front().model_id, "phi-4-mini:2");
   EXPECT_EQ(calls, 2);
