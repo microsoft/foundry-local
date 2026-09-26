@@ -70,8 +70,7 @@ std::pair<std::vector<ResponseOutputItem>, std::string> FromSessionResponse(
 /// @param params         The original typed request parameters (to echo back).
 /// @param output         The typed output items from FromSessionResponse.
 /// @param output_text    The output text from FromSessionResponse.
-/// @param usage          Token usage from the session response.
-/// @param finish_reason  The session response finish reason.
+/// @param session_response  The session response, including usage and the backend termination cause.
 /// @return  Complete typed ResponseObject.
 ResponseObject BuildResponseObject(const std::string& response_id,
                                    int64_t created_at,
@@ -79,8 +78,7 @@ ResponseObject BuildResponseObject(const std::string& response_id,
                                    const ResponseCreateParams& params,
                                    std::vector<ResponseOutputItem> output,
                                    const std::string& output_text,
-                                   const TokenUsage& usage,
-                                   flFinishReason finish_reason);
+                                   const fl::Response& session_response);
 
 /// Build a failed typed Responses API response object.
 ResponseObject BuildFailedResponseObject(const std::string& response_id,

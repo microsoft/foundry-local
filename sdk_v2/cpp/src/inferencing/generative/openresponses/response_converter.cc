@@ -3,6 +3,7 @@
 
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "contracts/reasoning_options.h"
+#include "inferencing/generative/chat/chat_generator.h"
 
 #include "items/tool_call_item.h"
 
@@ -1046,21 +1047,23 @@ ResponseObject BuildResponseObject(const std::string& response_id,
                                    const ResponseCreateParams& params,
                                    std::vector<ResponseOutputItem> output,
                                    const std::string& output_text,
-                                   const TokenUsage& usage,
-                                   flFinishReason finish_reason) {
+                                   const fl::Response& session_response) {
   ResponseObject r;
   r.id = response_id;
   r.created_at = created_at;
   r.model = model_name;
-  if (finish_reason == FOUNDRY_LOCAL_FINISH_LENGTH) {
+  if (session_response.finish_reason == FOUNDRY_LOCAL_FINISH_LENGTH) {
     r.status = ResponseStatus::kIncomplete;
-    r.incomplete_reason = "max_output_tokens";
+    if (session_response.termination_cause == BackendTerminationCause::kOutputTokenLimit) {
+      r.incomplete_reason = "max_output_tokens";
+    }
   } else {
     r.status = ResponseStatus::kCompleted;
     r.completed_at = created_at;  // local inference completes immediately
   }
   r.output = std::move(output);
   r.output_text = output_text;
+  const auto& usage = session_response.usage;
   r.usage.input_tokens = static_cast<int>(usage.prompt_tokens);
   r.usage.output_tokens = static_cast<int>(usage.completion_tokens);
   r.usage.total_tokens = static_cast<int>(usage.total_tokens);

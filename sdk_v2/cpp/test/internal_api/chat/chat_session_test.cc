@@ -1752,8 +1752,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
   auto [response_output, output_text] = ResponseConverter::FromSessionResponse(response, "msg_recovered");
   const nlohmann::json projected = ResponseConverter::BuildResponseObject(
-      "resp_recovered", 123, kEngineModelId, params, std::move(response_output), output_text, response.usage,
-      response.finish_reason);
+      "resp_recovered", 123, kEngineModelId, params, std::move(response_output), output_text, response);
   ASSERT_EQ(projected.at("output").size(), 1u);
   EXPECT_EQ(projected.at("output").at(0).at("type"), "function_call");
   EXPECT_EQ(projected.at("output").at(0).at("call_id"), calls.front()->call_id);
@@ -2800,8 +2799,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   params.model = kModelId;
   params.input = "call zero";
   const nlohmann::json completed = ResponseConverter::BuildResponseObject(
-      "resp_zero", 123, kModelId, params, std::move(output), output_text,
-      response.usage, response.finish_reason);
+      "resp_zero", 123, kModelId, params, std::move(output), output_text, response);
   ASSERT_EQ(completed.at("output").size(), 1u);
   EXPECT_EQ(completed.at("output").at(0).at("type"), "function_call");
   EXPECT_EQ(completed.at("output").at(0).at("name"), "zero");
@@ -2911,8 +2909,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   params.model = kModelId;
   params.input = "look up Paris";
   const auto completed = ResponseConverter::BuildResponseObject(
-      "resp_native", 123, kModelId, params, std::move(output), output_text,
-      response.usage, response.finish_reason);
+      "resp_native", 123, kModelId, params, std::move(output), output_text, response);
   const nlohmann::json completed_json = completed;
   ASSERT_EQ(completed_json.at("output").size(), 1u);
   EXPECT_EQ(completed_json.at("output")[0].at("call_id"),
@@ -3026,8 +3023,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   params.model = kModelId;
   params.input = "get both values";
   const auto completed = ResponseConverter::BuildResponseObject(
-      "resp_replay", 456, kModelId, params, std::move(output), output_text,
-      response.usage, response.finish_reason);
+      "resp_replay", 456, kModelId, params, std::move(output), output_text, response);
   const nlohmann::json completed_json = completed;
 
   ResponseStore store;
@@ -3059,6 +3055,30 @@ TEST_F(QwenNativeProductionIntegrationTest,
       replay_session.ProcessRequest(replay_request, replay_response));
   EXPECT_EQ(replay_session.Transcript().Messages().back().VisibleText(),
             "replay complete");
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, ResponsePreservesBackendLengthCause) {
+  for (const auto cause : {BackendTerminationCause::kOutputTokenLimit,
+                           BackendTerminationCause::kSessionTokenLimit}) {
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                        OutputFactory("partial answer", {}, cause));
+    auto request = MakeStatefulRequest("Write an answer.");
+    request.options.Add("max_output_tokens", "1");
+    Response response;
+    session.ProcessRequest(request, response);
+
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
+    EXPECT_EQ(response.termination_cause, cause);
+
+    responses::ResponseCreateParams params;
+    params.max_output_tokens = 1;
+    auto [output, output_text] = ResponseConverter::FromSessionResponse(response);
+    const auto projected = ResponseConverter::BuildResponseObject(
+        "resp_limit", 123, kModelId, params, std::move(output), output_text, response);
+    EXPECT_EQ(projected.status, responses::ResponseStatus::kIncomplete);
+    EXPECT_EQ(projected.incomplete_reason.has_value(), cause == BackendTerminationCause::kOutputTokenLimit);
+  }
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,

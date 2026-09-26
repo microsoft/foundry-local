@@ -658,6 +658,7 @@ struct GuidedEngineRetryResult {
   int reasoning_tokens = 0;
   int cached_prompt_tokens = 0;
   std::optional<flFinishReason> finish_reason;
+  std::optional<BackendTerminationCause> termination_cause;
   bool canceled = false;
 };
 
@@ -747,6 +748,7 @@ GuidedEngineRetryResult RunGuidedEngineToolRetry(
     result.cached_prompt_tokens = usage->cached_prompt_tokens;
     result.finish_reason = usage->finish_reason;
     termination = usage->termination_cause;
+    result.termination_cause = termination;
   }
 
   const bool canceled_after_usage = result.canceled || request.IsCancellationRequested();
@@ -1029,7 +1031,8 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
                                          int total_tokens,
                                          int reasoning_tokens,
                                          int cached_prompt_tokens,
-                                         std::optional<flFinishReason> backend_finish_reason) {
+                                         std::optional<flFinishReason> backend_finish_reason,
+                                         std::optional<BackendTerminationCause> backend_termination) {
   int completion_tokens = total_tokens - prompt_tokens;
   bool has_tool_calls = false;
   std::vector<TextSegment> segments;
@@ -1080,6 +1083,16 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
   response.finish_reason = chat_session_internal::ResolveGeneratedFinishReason(
       has_tool_calls, stop_sequence_matched, host_output_limit_reached, backend_finish_reason, completion_tokens,
       effective_options.max_output_tokens);
+  if (response.finish_reason == FOUNDRY_LOCAL_FINISH_LENGTH) {
+    if (host_output_limit_reached) {
+      response.termination_cause = BackendTerminationCause::kOutputTokenLimit;
+    } else if (backend_termination.has_value()) {
+      response.termination_cause = backend_termination;
+    } else if (const int max_output = effective_options.max_output_tokens.value_or(0);
+               !backend_finish_reason.has_value() && max_output > 0 && completion_tokens >= max_output) {
+      response.termination_cause = BackendTerminationCause::kOutputTokenLimit;
+    }
+  }
 
   response.usage.prompt_tokens = prompt_tokens;
   response.usage.completion_tokens = completion_tokens;
@@ -1512,6 +1525,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
     total_tokens = retry.total_tokens;
     cached_prompt_tokens = retry.cached_prompt_tokens;
     backend_finish_reason = retry.finish_reason;
+    backend_termination = retry.termination_cause;
     accepted_reasoning_tokens = retry.reasoning_tokens;
     stop_sequence_matched = false;
     host_output_limit_reached = false;
@@ -1544,7 +1558,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   ProcessGeneratedOutput(std::move(generated_events), output_tool_ctx, effective_options,
                          stop_sequence_matched, host_output_limit_reached, response, prompt_tokens, total_tokens,
-                         accepted_reasoning_tokens, cached_prompt_tokens, backend_finish_reason);
+                         accepted_reasoning_tokens, cached_prompt_tokens, backend_finish_reason, backend_termination);
 
   // LARK grammar (tool-call-only mode) is a single-shot finite parse. If generation was truncated while grammar was
   // active, the parser is in an unrecoverable state. Additionally, a completed grammar signals EOS — IsDone() would
@@ -1935,7 +1949,8 @@ void ChatSession::ProcessChatCompletionsJson(const std::string& request_json, co
 
   ProcessGeneratedOutput(std::move(generated_events), tool_ctx, options,
                          stop_sequence_matched, /*host_output_limit_reached=*/false, response, prompt_tokens,
-                         total_tokens, accepted_reasoning_tokens, cached_prompt_tokens, backend_finish_reason);
+                         total_tokens, accepted_reasoning_tokens, cached_prompt_tokens, backend_finish_reason,
+                         backend_termination);
 
   if (!original_request.TryComplete()) {
     return;

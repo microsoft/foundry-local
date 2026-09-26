@@ -203,11 +203,13 @@ TEST(ResponseConverterTest, BuildResponseObjectHasRequiredFields) {
   msg.content.push_back(OutputTextContent{"hello"});
   output.push_back(msg);
 
-  TokenUsage usage{10, 5, 15, 2, 8};
+  Response session_response;
+  session_response.usage = TokenUsage{10, 5, 15, 2, 8};
+  session_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
 
   auto typed = ResponseConverter::BuildResponseObject(
       "resp_123", 1700000000, "test-model", params,
-      std::move(output), "hello", usage, FOUNDRY_LOCAL_FINISH_STOP);
+      std::move(output), "hello", session_response);
   json response = typed;
 
   EXPECT_EQ(response["id"], "resp_123");
@@ -243,11 +245,12 @@ TEST(ResponseConverterTest, BuildResponseObjectEchoesParameters) {
   auto params = req.get<ResponseCreateParams>();
 
   std::vector<ResponseOutputItem> output;
-  TokenUsage usage{0, 0, 0};
+  Response session_response;
+  session_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
 
   auto typed = ResponseConverter::BuildResponseObject(
       "resp_123", 1700000000, "test-model", params,
-      std::move(output), "", usage, FOUNDRY_LOCAL_FINISH_STOP);
+      std::move(output), "", session_response);
   json response = typed;
 
   EXPECT_NEAR(response["temperature"].get<double>(), 0.8, 1e-6);
