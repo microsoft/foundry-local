@@ -37,7 +37,7 @@ class OnnxEngineChatStream final : public ChatGenerator {
   int PromptTokenCount() const override;
   void Cancel() override;
   void Close() override;
-  bool CanRewind() const override { return FOUNDRY_LOCAL_HAS_ENGINE_REWIND; }
+  bool CanRewind() const override { return true; }
   void RewindTo(int token_count) override;
   int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                      const chat_internal::PreparedChatMessages& full_messages,

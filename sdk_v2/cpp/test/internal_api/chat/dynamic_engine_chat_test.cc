@@ -290,7 +290,6 @@ TEST_F(DynamicEngineChatTest, RetainedSuffixReadsPriorPagedAttentionState) {
   }
 }
 
-#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
 TEST_F(DynamicEngineChatTest, RewindsCompletedTurnsAndReplaysRetainedPrefix) {
   OnnxChatEngine engine(ModelInstance());
   SearchOptions options;
@@ -334,7 +333,6 @@ TEST_F(DynamicEngineChatTest, RewindsCompletedTurnsAndReplaysRetainedPrefix) {
   engine.Close(second);
   engine.Close(third);
 }
-#endif
 
 TEST_F(DynamicEngineChatTest, UndoRetainedTurnMatchesFreshEngineReplay) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
@@ -371,9 +369,7 @@ TEST_F(DynamicEngineChatTest, MismatchedResidentPromptIsReplacedAndMatchesFreshR
   const auto first = FinishStream(*warm);
   ASSERT_EQ(first.usage.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
   ASSERT_FALSE(first.text.empty());
-#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
   const int old_sequence_length = warm->TokenCount();
-#endif
 
   // Deliberately replay different history into the retained stream. This exercises the defensive replacement branch
   // without assuming generated token bytes survive decode/re-encode as an identical token sequence.
@@ -403,10 +399,8 @@ TEST_F(DynamicEngineChatTest, MismatchedResidentPromptIsReplacedAndMatchesFreshR
   EXPECT_EQ(warm_second.usage.prompt_tokens, fresh_second.usage.prompt_tokens);
   EXPECT_EQ(warm_second.usage.generated_tokens, fresh_second.usage.generated_tokens);
 
-#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
   EXPECT_THROW(warm->RewindTo(old_sequence_length), fl::Exception)
       << "a replaced conversation must not retain boundaries from the old request";
-#endif
 }
 
 TEST_F(DynamicEngineChatTest, RunsTwoConcurrentSessions) {
@@ -519,7 +513,6 @@ TEST_F(DynamicEngineChatTest, EvictedSessionReplaysCommittedHistory) {
   EXPECT_EQ(oldest.TurnCount(), 2u);
 }
 
-#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
 TEST_F(DynamicEngineChatTest, UndoAfterEngineEvictionReplaysRetainedHistory) {
   ChatSession oldest(CatalogModel(), ModelInstance(), *logger_, telemetry_);
   for (const auto* prompt : {"Keep this turn.", "Discard this turn."}) {
@@ -545,7 +538,6 @@ TEST_F(DynamicEngineChatTest, UndoAfterEngineEvictionReplaysRetainedHistory) {
   oldest.ProcessRequest(request, response);
   EXPECT_EQ(AssistantText(response), ReferenceText(EncodeMessages(history, ModelInstance())));
 }
-#endif
 
 TEST_F(DynamicEngineChatTest, EvictsIdleConversationWhileAnotherTurnIsGenerating) {
   OnnxChatEngine engine(ModelInstance());

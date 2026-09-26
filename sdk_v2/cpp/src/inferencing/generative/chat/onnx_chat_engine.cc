@@ -260,7 +260,6 @@ std::vector<int32_t> OnnxChatEngine::ResidentTokens(
 }
 
 void OnnxChatEngine::RewindTo(const std::shared_ptr<Conversation>& conversation, size_t token_count) {
-#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
   auto completion = std::make_shared<std::promise<void>>();
   auto ready = completion->get_future();
   Enqueue(
@@ -286,11 +285,6 @@ void OnnxChatEngine::RewindTo(const std::shared_ptr<Conversation>& conversation,
       },
       [completion](std::exception_ptr error) { completion->set_exception(error); });
   ready.get();
-#else
-  (void)conversation;
-  (void)token_count;
-  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "This GenAI version does not support Engine rewind");
-#endif
 }
 
 void OnnxChatEngine::Cancel(const std::shared_ptr<Conversation>& conversation) {
