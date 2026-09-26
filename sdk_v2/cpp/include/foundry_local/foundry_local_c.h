@@ -970,7 +970,8 @@ struct flInferenceApi {
   /// Capture the request and current chat-session state for an exact token-budget preflight.
   /// The returned one-shot handle remains valid after the source request and session are released. The Manager and
   /// its model runtime must remain alive until the handle is executed and released. Execute may run on another
-  /// thread; callers must not execute and release the same handle concurrently.
+  /// thread; callers must not execute and release the same handle concurrently. Capture fails if the session is
+  /// processing a request, including when called from that request's streaming callback.
   FL_API_STATUS(Session_CreateRequestPreflight, _In_ const flSession* session, _In_ const flRequest* request,
                 _Outptr_ flRequestPreflight** out_preflight);
 

@@ -13,10 +13,10 @@ struct OgaNamedTensors;
 
 namespace fl {
 
-class AudioItem;
+struct AudioItem;
 class GenAIModelInstance;
-class ImageItem;
-class MessageItem;
+struct ImageItem;
+struct MessageItem;
 struct ToolCallContext;
 
 /// Fully rendered and tokenized model input. Constructing this value performs no generation or conversation mutation.

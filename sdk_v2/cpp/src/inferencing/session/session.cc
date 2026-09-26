@@ -157,9 +157,20 @@ void Session::UndoTurns(size_t /*count*/) {
 }
 
 std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflight(const Request& request) const {
-  auto lock = LockRequestMutex();
   if (Type() != SessionType::kChat) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+
+  {
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    if (processing_thread_ == std::this_thread::get_id()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is unavailable while session work is active");
+    }
+  }
+
+  std::unique_lock<std::mutex> lock(*request_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is unavailable while session work is active");
   }
 
   auto snapshot = request.CaptureChatSnapshot();
@@ -228,7 +239,15 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
     lock.lock();
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    processing_thread_ = std::this_thread::get_id();
   }
+  ScopeGuard processing_guard([&]() noexcept {
+    if (lock.owns_lock()) {
+      std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+      processing_thread_ = {};
+    }
+  });
 
   bool admitted = false;
   bool registered = false;

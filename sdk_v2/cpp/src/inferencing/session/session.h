@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -210,6 +211,7 @@ class Session {
   // unique_ptr<mutex> keeps Session movable (std::mutex is not movable), matching request_mutex_.
   std::unordered_set<const Request*> active_requests_;
   mutable std::unique_ptr<std::mutex> active_requests_mutex_ = std::make_unique<std::mutex>();
+  std::thread::id processing_thread_;
 
   // Latched by Cancel() under active_requests_mutex_. A request admitted after Cancel() ran (its streaming
   // thread hadn't reached ProcessRequest when the shutdown sweep happened) is stamped canceled on insert,

@@ -27,7 +27,7 @@ PreparedChatPrompt PrepareTextChatPrompt(const chat_internal::PreparedChatMessag
   }
 
   PreparedChatPrompt prepared;
-  prepared.prompt = BuildChatPrompt(messages, model, tool_ctx.tools_json);
+  prepared.prompt = BuildChatPrompt(messages, model, tool_ctx);
   auto sequences = EncodePrompt(prepared.prompt, model);
   const auto count = sequences->SequenceCount(0);
   const auto* data = sequences->SequenceData(0);
@@ -57,7 +57,9 @@ PreparedChatPrompt PrepareMediaChatPrompt(const std::vector<MessageItem>& messag
   PreparedChatPrompt prepared;
   const auto messages_json = OnnxChatGenerator::TransformMessagesForMedia(messages);
   const char* tools = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-  prepared.prompt = model.GetPreprocessor().ApplyChatTemplate(messages_json.c_str(), tools, true);
+  const char* kwargs = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
+  prepared.prompt =
+      model.GetPreprocessor().ApplyChatTemplateWithOptions(messages_json.c_str(), tools, kwargs, true);
 
   std::unique_ptr<OgaImages> oga_images;
   std::vector<std::vector<uint8_t>> image_bytes;

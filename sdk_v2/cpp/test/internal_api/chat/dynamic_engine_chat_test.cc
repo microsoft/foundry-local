@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include <ort_genai.h>
 
+#include <atomic>
 #include <barrier>
 #include <chrono>
 #include <filesystem>
@@ -250,6 +251,25 @@ TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce)
   api->Status_Release(repeated);
 
   inference_api->RequestPreflight_Release(preflight);
+}
+
+TEST_F(DynamicEngineChatTest, PreflightUsesMergedSessionTemplateOptions) {
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  KeyValuePairs defaults;
+  defaults.Add("chat_template_kwargs", "[]");
+  session.SetSessionOptions(defaults);
+
+  auto ordinary = MakeRequest("Hello.");
+  Request json_request;
+  json_request.AddOwnedItem(std::make_unique<TextItem>(
+      R"({"model":"tiny-paged-attention","messages":[{"role":"user","content":"Hello."}]})",
+      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  for (auto* request : {&ordinary, &json_request}) {
+    EXPECT_THROW((void)session.CreateRequestPreflight(*request)->Execute(), fl::Exception);
+    request->options.Add("chat_template_kwargs", "{}");
+    EXPECT_TRUE(session.CreateRequestPreflight(*request)->Execute().fits);
+  }
 }
 
 TEST_F(DynamicEngineChatTest, RetainedContinuationReportsFreshPromptUsageParity) {
@@ -605,6 +625,66 @@ TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) 
   EXPECT_EQ(recovery_response.usage.completion_tokens, 32);
   EXPECT_LT(recovery_elapsed, 30s);
   EXPECT_EQ(session.TurnCount(), 2u);
+}
+
+TEST_F(DynamicEngineChatTest, PreflightFromStreamingCallbackFailsWithoutBlocking) {
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto request = MakeRequest("Count from one to ten.");
+  auto preflight_request = MakeRequest("What comes next?");
+  std::atomic<int> callback_count{0};
+  std::atomic<int> error_code{0};
+
+  session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+    (void)queue->TryPop();
+    ++callback_count;
+    try {
+      (void)session.CreateRequestPreflight(preflight_request);
+    } catch (const fl::Exception& error) {
+      error_code = error.code();
+    }
+    return 0;
+  });
+
+  Response response;
+  session.ProcessRequest(request, response);
+  EXPECT_GT(callback_count.load(), 0);
+  EXPECT_EQ(error_code.load(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_FALSE(AssistantText(response).empty());
+
+  EXPECT_NO_THROW((void)session.CreateRequestPreflight(preflight_request));
+}
+
+TEST_F(DynamicEngineChatTest, PreflightFromProcessingThreadFailsWithoutReenteringMutex) {
+  class ReentrantLogger final : public ILogger {
+   public:
+    ChatSession* session = nullptr;
+    const Request* request = nullptr;
+    int error_code = 0;
+
+    void Log(LogLevel, std::string_view message) override {
+      if (!session || !message.starts_with("Completion stats:")) {
+        return;
+      }
+      try {
+        (void)session->CreateRequestPreflight(*request);
+      } catch (const fl::Exception& error) {
+        error_code = error.code();
+      }
+    }
+  };
+
+  ReentrantLogger logger;
+  ChatSession session(CatalogModel(), ModelInstance(), logger, telemetry_);
+  auto request = MakeRequest("Count from one to ten.");
+  logger.session = &session;
+  logger.request = &request;
+
+  Response response;
+  session.ProcessRequest(request, response);
+  EXPECT_EQ(logger.error_code, FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_FALSE(AssistantText(response).empty());
+  EXPECT_NO_THROW((void)session.CreateRequestPreflight(request));
 }
 
 TEST_F(DynamicEngineChatTest, UnloadsAfterSessionsClose) {

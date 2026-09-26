@@ -887,16 +887,16 @@ void ChatSession::SetSessionOptionsImpl(const KeyValuePairs& options) {
 namespace {
 
 ToolCallContext BuildToolCallContextForRequest(const Request& request,
+                                               const KeyValuePairs& effective_options,
                                                const std::vector<ToolDefinition>& definitions,
-                                               const SearchOptions& session_options,
                                                const ModelInfo& model_info,
                                                GenAIModelInstance& model,
                                                ILogger& logger) {
   ToolCallContext tool_ctx;
 
-  tool_ctx.tool_call_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
-  tool_ctx.tool_call_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
-  tool_ctx.template_kwargs_json = GetOptionOrEmpty(request.options, "chat_template_kwargs");
+  tool_ctx.tool_call_start = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR);
+  tool_ctx.tool_call_end = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR);
+  tool_ctx.template_kwargs_json = GetOptionOrEmpty(effective_options, "chat_template_kwargs");
   if (!tool_ctx.template_kwargs_json.empty()) {
     tool_ctx.template_kwargs_json = NormalizeChatTemplateKwargs(tool_ctx.template_kwargs_json);
     const auto kwargs = nlohmann::json::parse(tool_ctx.template_kwargs_json);
@@ -962,8 +962,8 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
   }
 
   // Read reasoning marker tokens — same pattern as tool_call tokens
-  tool_ctx.reasoning_start = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
-  tool_ctx.reasoning_end = GetOptionOrEmpty(request.options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
+  tool_ctx.reasoning_start = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
+  tool_ctx.reasoning_end = GetOptionOrEmpty(effective_options, FOUNDRY_LOCAL_MODEL_PROP_REASONING_END_STR);
 
   if (tool_ctx.reasoning_start.empty()) {
     const auto* val = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_REASONING_START_STR);
@@ -1008,15 +1008,12 @@ ToolCallContext BuildToolCallContextForRequest(const Request& request,
 
   // Determine text_output / tool_output from tool_choice parameter.
   // ParseToolChoice rejects unknown values with FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT.
-  auto tool_choice = SearchOptions::ParseToolChoice(request.options);
-  if (!tool_choice.has_value()) {
-    tool_choice = session_options.tool_choice;
-  }
+  const auto tool_choice = SearchOptions::ParseToolChoice(effective_options);
 
   // User guidance is independent of generated tool guidance and must remain authoritative even when a malformed
   // legacy tool schema makes automatic tool guidance unavailable.
-  tool_ctx.guidance_type = GetOptionOrEmpty(request.options, "guidance_type");
-  tool_ctx.guidance_data = GetOptionOrEmpty(request.options, "guidance_data");
+  tool_ctx.guidance_type = GetOptionOrEmpty(effective_options, "guidance_type");
+  tool_ctx.guidance_data = GetOptionOrEmpty(effective_options, "guidance_data");
   if (tool_ctx.HasPartialExplicitGuidance()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
              "guidance_type and guidance_data must be provided together");
@@ -1073,7 +1070,6 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     const Request& request,
     const ChatTranscript& transcript,
     const KeyValuePairs& base_session_options,
-    const SearchOptions& chat_session_options,
     const std::vector<ToolDefinition>& tool_definitions,
     const ModelInfo& model_info,
     GenAIModelInstance& model,
@@ -1138,10 +1134,10 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
       tools::ValidateRawEnvelopeTool(*internal_request.raw_envelope_descriptor, request_definitions);
     }
 
-    prepared->tool_context = BuildToolCallContextForRequest(internal_request, request_definitions,
-                                                            chat_session_options, model_info, model, logger);
-    prepared->options =
-        SearchOptions::FromParameters(MergeKeyValuePairs(base_session_options, internal_request.options));
+    const auto effective_kvp = MergeKeyValuePairs(base_session_options, internal_request.options);
+    prepared->tool_context = BuildToolCallContextForRequest(internal_request, effective_kvp, request_definitions,
+                                                            model_info, model, logger);
+    prepared->options = SearchOptions::FromParameters(effective_kvp);
     prepared->backend_kind = model.GetGenAIConfig().GetChatBackendKind();
 
     auto messages = BuildTranscriptMessages(internal_request.items, prepared->tool_context.tool_kinds);
@@ -1154,8 +1150,9 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     return prepared;
   }
 
-  prepared->tool_context = BuildToolCallContextForRequest(request, tool_definitions,
-                                                          chat_session_options, model_info, model, logger);
+  const auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
+  prepared->tool_context = BuildToolCallContextForRequest(request, effective_kvp, tool_definitions,
+                                                          model_info, model, logger);
   prepared->ingest = IngestRequestItems(request.items, request.item_segment_starts,
                                         prepared->tool_context.tool_kinds);
   transcript.ValidateInputs(prepared->ingest.messages);
@@ -1165,7 +1162,6 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
                     {.session_has_history = !transcript.Empty(),
                      .tools_declared = prepared->tool_context.HasTools()});
 
-  const auto effective_kvp = MergeKeyValuePairs(base_session_options, request.options);
   prepared->options = SearchOptions::FromParameters(effective_kvp);
   prepared->backend_kind = model.GetGenAIConfig().GetChatBackendKind();
   prepared->system_prompt = GetOptionOrEmpty(effective_kvp, kSystemPromptOption);
@@ -1211,7 +1207,6 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
   ChatRequestPreflightOperation(Request request,
                                 ChatTranscript transcript,
                                 KeyValuePairs base_session_options,
-                                SearchOptions chat_session_options,
                                 std::vector<ToolDefinition> tool_definitions,
                                 ModelInfo model_info,
                                 GenAIModelInstance& model,
@@ -1220,7 +1215,6 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
       : request_(std::move(request)),
         transcript_(std::move(transcript)),
         base_session_options_(std::move(base_session_options)),
-        chat_session_options_(std::move(chat_session_options)),
         tool_definitions_(std::move(tool_definitions)),
         model_info_(std::move(model_info)),
         model_(model),
@@ -1240,7 +1234,7 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
 
     auto request = std::move(*request_);
     request_.reset();
-    auto prepared = PrepareChatRequest(request, transcript_, base_session_options_, chat_session_options_,
+    auto prepared = PrepareChatRequest(request, transcript_, base_session_options_,
                                        tool_definitions_, model_info_, model_, logger_, message_preparer_);
     auto context_limit = static_cast<int64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
     if (prepared->backend_kind == ChatBackendKind::kEngine && prepared->media.Empty()) {
@@ -1264,7 +1258,6 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
   std::optional<Request> request_;
   ChatTranscript transcript_;
   KeyValuePairs base_session_options_;
-  SearchOptions chat_session_options_;
   std::vector<ToolDefinition> tool_definitions_;
   ModelInfo model_info_;
   GenAIModelInstance& model_;
@@ -1276,7 +1269,7 @@ class ChatRequestPreflightOperation final : public Session::RequestPreflightOper
 
 std::unique_ptr<Session::RequestPreflightOperation> ChatSession::CreateRequestPreflightImpl(Request request) const {
   return std::make_unique<ChatRequestPreflightOperation>(
-      std::move(request), transcript_, SessionOptions(), session_options_, ToolDefinitions(), CatalogModel().Info(),
+      std::move(request), transcript_, SessionOptions(), ToolDefinitions(), CatalogModel().Info(),
       model_, logger_, message_preparer_);
 }
 
@@ -1355,7 +1348,7 @@ void ChatSession::ProcessGeneratedOutput(std::vector<GeneratedOutputEvent> event
 }
 
 void ChatSession::ProcessRequestImpl(const Request& request, Response& response) {
-  auto prepared = PrepareChatRequest(request, transcript_, SessionOptions(), session_options_, ToolDefinitions(),
+  auto prepared = PrepareChatRequest(request, transcript_, SessionOptions(), ToolDefinitions(),
                                      CatalogModel().Info(), Model(), logger_, message_preparer_);
 
   if (prepared->json_passthrough) {
