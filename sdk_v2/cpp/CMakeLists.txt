@@ -20,7 +20,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" OR VCPKG_TARGET_TRIPLET MATCHES "uw
 endif()
 list(APPEND VCPKG_MANIFEST_FEATURES "telemetry")
 
-project(foundry_local VERSION 0.1.0 LANGUAGES CXX C)
+project(foundry_local VERSION 2.0.1 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -93,6 +93,7 @@ include(cmake/Sanitizers.cmake)
 # --------------------------------------------------------------------------
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(azure-storage-blobs-cpp CONFIG REQUIRED)
+find_package(semver CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
 
@@ -334,6 +335,7 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
             nlohmann_json::nlohmann_json
             Azure::azure-core
             Azure::azure-storage-blobs
+            semver::semver
             spdlog::spdlog
             LibArchive::LibArchive
             ${CMAKE_DL_LIBS}
@@ -398,10 +400,8 @@ endfunction()
 # --------------------------------------------------------------------------
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
-# CI overrides via -DFOUNDRY_LOCAL_VERSION_STRING=<full-version-string> so the
-# binary's FoundryLocalGetVersionString() matches the .nupkg version (which
-# typically includes a dev/timestamp suffix). Defaults to PROJECT_VERSION for
-# local developer builds.
+# Keep the runtime catalog-compatibility version aligned with the current SDK
+# version, regardless of a stale CMake cache or CI package-version override.
 set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
     CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
 

@@ -17,6 +17,7 @@
 namespace fl {
 
 class ICatalogClient;
+class ITelemetry;
 
 /// Azure-specific catalog. Fetches from Azure Foundry catalog API,
 /// scans local cache, merges results.
@@ -31,8 +32,6 @@ class AzureModelCatalog : public BaseModelCatalog {
                     const IEpDetector& ep_detector,
                     ILogger& logger,
                     bool cache_only,
-                    std::string catalog_region,
-                    bool disable_region_fallback,
                     ITelemetry& telemetry);
   ~AzureModelCatalog() override;
 
@@ -57,8 +56,8 @@ class AzureModelCatalog : public BaseModelCatalog {
     CatalogSource source;
   };
 
-  static constexpr const char* kDefaultCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
-  static constexpr const char* kDefaultCatalogFilter = "''";
+  static constexpr const char* kDefaultCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+  static constexpr const char* kDefaultCatalogFilter = "";
 
   CatalogResult GetLiveCatalogOrLocalSnapshot(const std::vector<std::string>& cached_model_ids) const;
   std::vector<Model> CreateModelsWithLocalPaths(const std::vector<ModelInfo>& model_infos,
@@ -70,9 +69,6 @@ class AzureModelCatalog : public BaseModelCatalog {
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   bool cache_only_;
-  // Configured Azure region: empty/"auto" → auto-detect, explicit → hard override.
-  std::string catalog_region_;
-  bool disable_region_fallback_;
   ITelemetry& telemetry_;
 };
 
