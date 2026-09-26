@@ -64,6 +64,19 @@ TEST(SearchOptionsParsingTest, ExplicitOutputLimitOverridesTurnDefault) {
   EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/true)), 64);
 }
 
+TEST(SearchOptionsParsingTest, ModelContextLengthIsAuthoritativeWithLegacyFallback) {
+  GenAIConfig config;
+  config.model.emplace().context_length = 8192;
+  config.search.emplace().max_length = 2048;
+  EXPECT_EQ(GetModelMaxContextLength(config), 8192);
+
+  config.model->context_length = 0;
+  EXPECT_EQ(GetModelMaxContextLength(config), 2048);
+
+  config.search->max_length = 0;
+  EXPECT_THROW(GetModelMaxContextLength(config), fl::Exception);
+}
+
 TEST(SearchOptionsParsingTest, RequestBudgetReportsExactFitAndDeficit) {
   const auto exact = ComputeRequestBudget(90, 10, 100);
   EXPECT_TRUE(exact.fits);

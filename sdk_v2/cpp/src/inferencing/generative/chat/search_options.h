@@ -112,7 +112,7 @@ constexpr int GetDefaultMaxOutputTokens(bool has_media) noexcept {
 int ResolveMaxOutputTokens(const SearchOptions& options,
                            int default_max_output_tokens = kDefaultChatTextMaxOutputTokens);
 
-/// Return the model's total context window from search.max_length.
+/// Return the model's total context window, falling back to legacy search.max_length.
 int GetModelMaxContextLength(const GenAIConfig& config);
 
 /// Compute the checked prompt plus output token budget.
@@ -155,7 +155,7 @@ EngineTurnOptionsPlan BuildEngineTurnOptionsPlan(const SearchOptions& options,
 ///
 /// @param options            Search options extracted from the request
 /// @param input_token_count  Number of tokens in the encoded prompt
-/// @param config             Model's GenAI config (for search.max_length)
+/// @param config             Model's GenAI config (for model.context_length or legacy search.max_length)
 /// @param gen_params         ORT GenAI generator params to configure
 /// @param ep                 Resolved execution provider. Used to enable chunked prefill by default
 ///                           on providers that benefit from it (CUDA, NvTensorRtRtx, WebGPU, CPU).

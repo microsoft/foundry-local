@@ -981,6 +981,8 @@ struct flInferenceApi {
 
   /// Release a preflight handle. Passing nullptr is allowed.
   FL_TYPE_RELEASE(RequestPreflight);
+
+  // End V2
 };
 
 /* --- Configuration API ------------------------------------------------- */

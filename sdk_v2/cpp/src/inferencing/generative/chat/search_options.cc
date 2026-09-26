@@ -59,16 +59,16 @@ int ResolveMaxOutputTokens(const SearchOptions& options, int default_max_output_
 }
 
 int GetModelMaxContextLength(const GenAIConfig& config) {
-  int model_max_length = 0;
-  if (config.search.has_value()) {
-    model_max_length = config.search->max_length;
+  if (config.model.has_value() && config.model->context_length > 0) {
+    return config.model->context_length;
   }
 
-  if (model_max_length <= 0) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
+  if (config.search.has_value() && config.search->max_length > 0) {
+    return config.search->max_length;
   }
 
-  return model_max_length;
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+           "model genai_config.json is missing model.context_length and search.max_length");
 }
 
 RequestBudget ComputeRequestBudget(int64_t prompt_tokens,
@@ -275,7 +275,8 @@ int ApplySearchOptions(const SearchOptions& options,
 
   const int model_max_length = GetModelMaxContextLength(config);
 
-  // genai_config.json's search.max_length (read above) is the source of truth for the total input+output budget.
+  // model.context_length is the source of truth for the total input+output budget. Legacy models fall back to
+  // search.max_length.
   // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
   // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
   // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
