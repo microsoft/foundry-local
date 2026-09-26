@@ -1,8 +1,8 @@
 # Foundry Local Packaging Pipeline
 #
-# Builds the sdk_v2 native runtime and packages the C#, JS, Python, and Rust SDKs.
+# Builds the sdk_v2 native runtime and packages the C#, Java, JS, Python, and Rust SDKs.
 #
-# Produces the sdk_v2 native runtime, C#, JS, Python, and Rust artifacts.
+# Produces the sdk_v2 native runtime, C#, Java (java-sdk-v2), JS, Python, and Rust artifacts.
 
 # CI: only auto-run on pushes to main / release branches. Without an explicit
 # trigger block, ADO defaults to "every commit on every branch", which fires
@@ -69,6 +69,12 @@ extends:
       binskim:
         break: false
         scanOutputDirectoryOnly: true
+      spotBugs:
+        enabled: false
+        justificationForDisabling: >-
+          Guardian cannot process the Java SpotBugs report (gdn.unknownFormatResult).
+          Java Maven verify still fails on SpotBugs findings. Track Guardian restoration:
+          https://github.com/microsoft/foundry-local/issues/1143
     stages:
     # ── Compute Version ──
     # A single version string is computed once and shared across all stages.

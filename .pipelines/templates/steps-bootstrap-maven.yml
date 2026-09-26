@@ -1,0 +1,41 @@
+# Install a pinned Maven version for self-hosted agents that do not provide it.
+
+steps:
+- task: PowerShell@2
+  displayName: 'Bootstrap Maven 3.9.9'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+
+      $version = '3.9.9'
+      $tools = Join-Path '$(Agent.TempDirectory)' 'foundry-java-tools'
+      $archive = Join-Path $tools "apache-maven-$version.zip"
+      $mavenHome = Join-Path $tools "apache-maven-$version"
+      $mavenCommand = if ($IsWindows) { 'bin/mvn.cmd' } else { 'bin/mvn' }
+      $maven = Join-Path $mavenHome $mavenCommand
+
+      if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
+        New-Item -ItemType Directory -Force -Path $tools | Out-Null
+        $uri = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/$version/" +
+          "apache-maven-$version-bin.zip"
+        Invoke-WebRequest $uri -OutFile $archive
+
+        $expected = '8beac8d11ef208f1e2a8df0682b9448a9a363d2ad13ca74af43705549e72e74' +
+          'c9378823bf689287801cbbfc2f6ea9596201d19ccacfdfb682ee8a2ff4c4418ba'
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ne $expected) {
+          throw 'Maven archive checksum mismatch.'
+        }
+        Expand-Archive -LiteralPath $archive -DestinationPath $tools -Force
+      }
+
+      if (-not $IsWindows) {
+        & chmod u+x $maven
+        if ($LASTEXITCODE -ne 0) {
+          throw "Could not make Maven executable: $maven"
+        }
+      }
+
+      Write-Host "##vso[task.setvariable variable=foundryMavenHome]$mavenHome"
+      Write-Host "##vso[task.prependpath]$(Join-Path $mavenHome 'bin')"
