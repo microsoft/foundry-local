@@ -105,6 +105,8 @@ target_sources(foundry_local_tests PRIVATE
 )
 
 target_compile_options(foundry_local_tests PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+target_compile_definitions(foundry_local_tests PRIVATE
+    FOUNDRY_LOCAL_HAS_ENGINE_REWIND=$<BOOL:${FOUNDRY_LOCAL_HAS_ENGINE_REWIND}>)
 
 target_link_libraries(foundry_local_tests
     PRIVATE

@@ -290,6 +290,75 @@ TEST_F(DynamicEngineChatTest, RetainedSuffixReadsPriorPagedAttentionState) {
   }
 }
 
+#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
+TEST_F(DynamicEngineChatTest, RewindsCompletedTurnsAndReplaysRetainedPrefix) {
+  OnnxChatEngine engine(ModelInstance());
+  SearchOptions options;
+  options.max_output_tokens = 5;
+  options.do_sample = false;
+  ToolCallContext tool_context;
+  const auto prompt = EncodeUserPrompt("Keep the first turn.", ModelInstance());
+  const auto next = EncodeUserPrompt("Discard the second turn.", ModelInstance());
+  const auto replacement = EncodeUserPrompt("Use this turn instead.", ModelInstance());
+  auto conversation = engine.CreateConversation(options, tool_context, static_cast<int>(prompt.size()));
+
+  engine.BeginTurn(conversation, prompt, options, tool_context, false);
+  EXPECT_EQ(FinishConversation(engine, conversation), ReferenceTokens(prompt, 5));
+  const auto first_turn = engine.ResidentTokens(conversation);
+  engine.BeginTurn(conversation, next, options, tool_context, false);
+  auto second_prompt = first_turn;
+  second_prompt.insert(second_prompt.end(), next.begin(), next.end());
+  EXPECT_EQ(FinishConversation(engine, conversation), ReferenceTokens(second_prompt, 5));
+
+  EXPECT_THROW(engine.RewindTo(conversation, first_turn.size() + 1), fl::Exception);
+  engine.RewindTo(conversation, first_turn.size());
+  EXPECT_EQ(engine.ResidentTokens(conversation), first_turn);
+  EXPECT_EQ(engine.SequenceLength(conversation), first_turn.size());
+
+  auto occupy = [&]() {
+    auto other = engine.CreateConversation(options, tool_context, static_cast<int>(prompt.size()));
+    engine.BeginTurn(other, prompt, options, tool_context, false);
+    EXPECT_EQ(FinishConversation(engine, other), ReferenceTokens(prompt, 5));
+    return other;
+  };
+  auto second = occupy();
+  auto third = occupy();
+
+  engine.BeginTurn(conversation, replacement, options, tool_context, false);
+  auto replay_prompt = first_turn;
+  replay_prompt.insert(replay_prompt.end(), replacement.begin(), replacement.end());
+  EXPECT_EQ(FinishConversation(engine, conversation), ReferenceTokens(replay_prompt, 5));
+  engine.RewindTo(conversation, 0);
+  EXPECT_EQ(engine.SequenceLength(conversation), 0u);
+  engine.Close(conversation);
+  engine.Close(second);
+  engine.Close(third);
+}
+#endif
+
+TEST_F(DynamicEngineChatTest, UndoRetainedTurnMatchesFreshEngineReplay) {
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto first = MakeRequest("Remember sapphire. Reply OK.");
+  Response first_response;
+  session.ProcessRequest(first, first_response);
+
+  auto second = MakeRequest("Tell me about the weather.");
+  Response second_response;
+  session.ProcessRequest(second, second_response);
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 1u);
+
+  auto history = session.Transcript().Messages();
+  history.emplace_back(FOUNDRY_LOCAL_ROLE_USER, "What word should you remember?");
+  auto replacement = MakeRequest("What word should you remember?");
+  Response replacement_response;
+  session.ProcessRequest(replacement, replacement_response);
+
+  EXPECT_EQ(AssistantText(replacement_response), ReferenceText(EncodeMessages(history, ModelInstance())));
+  EXPECT_EQ(replacement_response.usage.prompt_tokens, EncodeMessages(history, ModelInstance()).size());
+  EXPECT_EQ(session.TurnCount(), 2u);
+}
+
 TEST_F(DynamicEngineChatTest, MismatchedResidentPromptIsReplacedAndMatchesFreshReplay) {
   SearchOptions first_options;
   first_options.max_output_tokens = 4;
@@ -302,6 +371,9 @@ TEST_F(DynamicEngineChatTest, MismatchedResidentPromptIsReplacedAndMatchesFreshR
   const auto first = FinishStream(*warm);
   ASSERT_EQ(first.usage.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
   ASSERT_FALSE(first.text.empty());
+#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
+  const int old_sequence_length = warm->TokenCount();
+#endif
 
   // Deliberately replay different history into the retained stream. This exercises the defensive replacement branch
   // without assuming generated token bytes survive decode/re-encode as an identical token sequence.
@@ -330,6 +402,11 @@ TEST_F(DynamicEngineChatTest, MismatchedResidentPromptIsReplacedAndMatchesFreshR
   EXPECT_EQ(warm_second.usage.finish_reason, fresh_second.usage.finish_reason);
   EXPECT_EQ(warm_second.usage.prompt_tokens, fresh_second.usage.prompt_tokens);
   EXPECT_EQ(warm_second.usage.generated_tokens, fresh_second.usage.generated_tokens);
+
+#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
+  EXPECT_THROW(warm->RewindTo(old_sequence_length), fl::Exception)
+      << "a replaced conversation must not retain boundaries from the old request";
+#endif
 }
 
 TEST_F(DynamicEngineChatTest, RunsTwoConcurrentSessions) {
@@ -441,6 +518,34 @@ TEST_F(DynamicEngineChatTest, EvictedSessionReplaysCommittedHistory) {
   EXPECT_EQ(response.usage.prompt_tokens, EncodeMessages(history, ModelInstance()).size());
   EXPECT_EQ(oldest.TurnCount(), 2u);
 }
+
+#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
+TEST_F(DynamicEngineChatTest, UndoAfterEngineEvictionReplaysRetainedHistory) {
+  ChatSession oldest(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  for (const auto* prompt : {"Keep this turn.", "Discard this turn."}) {
+    auto request = MakeRequest(prompt);
+    Response response;
+    oldest.ProcessRequest(request, response);
+  }
+
+  ChatSession second(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  ChatSession newest(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  for (auto* session : {&second, &newest}) {
+    auto request = MakeRequest("Occupy a resident slot.");
+    Response response;
+    session->ProcessRequest(request, response);
+  }
+
+  ASSERT_NO_THROW(oldest.UndoTurns(1));
+  EXPECT_EQ(oldest.TurnCount(), 1u);
+  auto history = oldest.Transcript().Messages();
+  history.emplace_back(FOUNDRY_LOCAL_ROLE_USER, "Continue after undo.");
+  auto request = MakeRequest("Continue after undo.");
+  Response response;
+  oldest.ProcessRequest(request, response);
+  EXPECT_EQ(AssistantText(response), ReferenceText(EncodeMessages(history, ModelInstance())));
+}
+#endif
 
 TEST_F(DynamicEngineChatTest, EvictsIdleConversationWhileAnotherTurnIsGenerating) {
   OnnxChatEngine engine(ModelInstance());

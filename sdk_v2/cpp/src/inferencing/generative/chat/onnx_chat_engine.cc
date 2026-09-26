@@ -189,10 +189,12 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
 
         ApplyEngineTurnOptions(plan, *turn_options);
 
+        conversation->turn_boundaries.reserve(conversation->turn_boundaries.size() + 1);
         const uint64_t turn_id = native.request->BeginTurn(tokens.data(), tokens.size(), turn_options.get());
         {
           std::lock_guard<std::mutex> lock(conversation->mutex);
           conversation->turn_id = turn_id;
+          conversation->turn_boundaries.push_back({turn_id, existing_tokens});
           conversation->resident_tokens = std::move(resident_tokens);
           conversation->turn_started_at = std::chrono::steady_clock::now();
           conversation->last_activity = conversation->turn_started_at;
@@ -255,6 +257,40 @@ std::vector<int32_t> OnnxChatEngine::ResidentTokens(
     const std::shared_ptr<Conversation>& conversation) const {
   std::lock_guard<std::mutex> lock(conversation->mutex);
   return conversation->resident_tokens;
+}
+
+void OnnxChatEngine::RewindTo(const std::shared_ptr<Conversation>& conversation, size_t token_count) {
+#if FOUNDRY_LOCAL_HAS_ENGINE_REWIND
+  auto completion = std::make_shared<std::promise<void>>();
+  auto ready = completion->get_future();
+  Enqueue(
+      [this, conversation, token_count, completion]() {
+        auto& native = FindNative(conversation);
+        std::lock_guard<std::mutex> lock(conversation->mutex);
+        if (!conversation->turn_finished || !conversation->tokens.empty()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "Cannot rewind an unfinished Engine turn");
+        }
+
+        auto boundary = std::find_if(conversation->turn_boundaries.begin(), conversation->turn_boundaries.end(),
+                                     [token_count](const auto& turn) { return turn.length == token_count; });
+        if (boundary == conversation->turn_boundaries.end()) {
+          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Engine rewind target is not a retained turn boundary");
+        }
+
+        native.request->RewindToStartOfTurn(boundary->id);
+        native.admitted = false;
+        conversation->resident_tokens.resize(token_count);
+        conversation->turn_boundaries.erase(boundary, conversation->turn_boundaries.end());
+        conversation->turn_id = conversation->turn_boundaries.empty() ? 0 : conversation->turn_boundaries.back().id;
+        completion->set_value();
+      },
+      [completion](std::exception_ptr error) { completion->set_exception(error); });
+  ready.get();
+#else
+  (void)conversation;
+  (void)token_count;
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "This GenAI version does not support Engine rewind");
+#endif
 }
 
 void OnnxChatEngine::Cancel(const std::shared_ptr<Conversation>& conversation) {
@@ -473,6 +509,10 @@ bool OnnxChatEngine::EvictDormantConversation() {
   auto victim = conversations_.end();
   auto oldest_activity = std::chrono::steady_clock::time_point::max();
   for (auto it = conversations_.begin(); it != conversations_.end(); ++it) {
+    if (!it->second->admitted) {
+      continue;
+    }
+
     const auto& conversation = it->second->state;
     std::lock_guard<std::mutex> lock(conversation->mutex);
     if (conversation->turn_finished && conversation->turn_id != 0 &&

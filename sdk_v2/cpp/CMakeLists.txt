@@ -110,6 +110,15 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
 
+# Some local GenAI builds predate Request rewind; detect the API in the selected package.
+include(CheckCXXSymbolExists)
+set(CMAKE_REQUIRED_INCLUDES "${ORT_GENAI_HEADER_DIR}")
+set(CMAKE_REQUIRED_LIBRARIES OnnxRuntimeGenAI::OnnxRuntimeGenAI)
+unset(FOUNDRY_LOCAL_HAS_ENGINE_REWIND CACHE)
+check_cxx_symbol_exists(OgaRequestRewindToStartOfTurn "ort_genai_c.h" FOUNDRY_LOCAL_HAS_ENGINE_REWIND)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -348,6 +357,8 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
             OnnxRuntimeGenAI::OnnxRuntimeGenAI
             OnnxRuntime::OnnxRuntime
         )
+        target_compile_definitions(${TARGET} PRIVATE
+            FOUNDRY_LOCAL_HAS_ENGINE_REWIND=$<BOOL:${FOUNDRY_LOCAL_HAS_ENGINE_REWIND}>)
     else()
         target_compile_definitions(${TARGET} ${LINK_SCOPE} FOUNDRY_LOCAL_NO_ORT=1)
     endif()
