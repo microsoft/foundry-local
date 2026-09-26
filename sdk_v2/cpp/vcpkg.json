@@ -2,7 +2,7 @@
   "name": "foundry-local",
   "version-semver": "0.1.0",
   "description": "Foundry Local C++ SDK",
-  "builtin-baseline": "256acc64012b23a13041d8705805e1f23b43a024",
+  "builtin-baseline": "e143402b5545bab137cc465225a82da63cb2148f",
   "dependencies": [
     "azure-storage-blobs-cpp",
     {
@@ -42,8 +42,13 @@
         {
           "name": "cpp-client-telemetry",
           "default-features": false,
-          "features": ["minimal-sqlite", "curl-openssl"],
           "platform": "!uwp"
+        },
+        {
+          "name": "curl",
+          "default-features": false,
+          "features": ["openssl"],
+          "platform": "android"
         }
       ]
     },
