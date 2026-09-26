@@ -120,6 +120,9 @@ RequestBudget ComputeRequestBudget(int64_t prompt_tokens,
                                    int64_t output_reserve_tokens,
                                    int64_t context_limit_tokens);
 
+/// Validate a classic Generator's prompt and output limit before creating or appending its token sequence.
+int ValidateGeneratorRequestBudget(int64_t prompt_tokens, int max_output_tokens, int context_limit_tokens);
+
 /// Resolve the output reserve using the same explicit limits and backend defaults as generation.
 int64_t ResolveOutputReserve(const SearchOptions& options,
                              ChatBackendKind backend_kind,

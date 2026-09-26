@@ -248,7 +248,7 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
 
 int OnnxChatGenerator::AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
                                             const PreparedChatPrompt& prepared,
-                                            GenAIModelInstance&,
+                                            GenAIModelInstance& model,
                                             const ToolCallContext&,
                                             const SearchOptions& options) {
   if (new_messages.empty() || prepared.token_ids.empty()) {
@@ -270,6 +270,10 @@ int OnnxChatGenerator::AppendPreparedPrompt(const std::vector<TranscriptMessage>
              "chat template produced no new tokens for a non-empty Generator continuation");
   }
 
+  const int max_output_tokens = ResolveMaxOutputTokens(options);
+  ValidateGeneratorRequestBudget(prepared.prompt_token_count, max_output_tokens,
+                                 GetModelMaxContextLength(model.GetGenAIConfig()));
+
   auto suffix_sequences = OgaSequences::Create();
   suffix_sequences->Append(suffix.data(), suffix.size());
 
@@ -284,7 +288,7 @@ int OnnxChatGenerator::AppendPreparedPrompt(const std::vector<TranscriptMessage>
   prompt_opens_reasoning_ = fl::PromptOpensReasoning(full_prompt, reasoning_markers_, prepared.prompt);
   prompt_token_count_ = static_cast<int>(prepared.prompt_token_count);
   turn_start_token_count_ = TokenCount();
-  max_output_tokens_ = ResolveMaxOutputTokens(options);
+  max_output_tokens_ = max_output_tokens;
   ResetTurnState();
 
   return static_cast<int>(suffix.size());

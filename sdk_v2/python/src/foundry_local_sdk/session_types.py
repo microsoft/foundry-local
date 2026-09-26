@@ -25,7 +25,10 @@ class TokenUsage:
 
 @dataclass(frozen=True)
 class RequestPreflightResult:
-    """Exact native token-budget result from a one-shot captured request/session state."""
+    """Exact structural token budget. ``fits`` does not reserve cache or guarantee live Engine admission.
+
+    ``context_limit_tokens`` is the Engine request capacity or Generator model context.
+    """
 
     prompt_tokens: int
     output_reserve_tokens: int

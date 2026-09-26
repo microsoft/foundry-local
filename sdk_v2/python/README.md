@@ -309,6 +309,8 @@ model.unload()
 
 The SDK reports the native result without estimating tokens, changing options, truncating context,
 or rewriting the request.
+`context_limit_tokens` is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
 
 ### Multi-turn conversations
 

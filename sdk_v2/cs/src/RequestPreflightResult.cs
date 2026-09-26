@@ -33,8 +33,10 @@ public sealed class RequestPreflightResult
 
     public long RequiredTokens { get; }
 
+    /// <summary>Structural request limit: Engine capacity or Generator model context.</summary>
     public long ContextLimitTokens { get; }
 
+    /// <summary>Structural fit only; does not reserve cache or guarantee live admission.</summary>
     public bool Fits { get; }
 
     public long DeficitTokens { get; }

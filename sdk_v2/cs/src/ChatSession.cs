@@ -141,12 +141,17 @@ public sealed class ChatSession : Session
         ThrowIfDisposed();
         Detail.Throw.IfNull(request);
 
-        var nativeSession = GetNativeSession();
-        var status = Api.Inference.SessionCreateRequestPreflight(
-            nativeSession.Ptr, request.Ptr, out var preflightPtr);
-        Api.CheckStatus(status);
+        RequestPreflightOperation operation;
+        using (var requestLease = request.AcquireLease())
+        {
+            operation = ExecuteNative(session =>
+            {
+                Api.CheckStatus(Api.Inference.SessionCreateRequestPreflight(
+                    session.Ptr, requestLease.Ptr, out var preflightPtr));
+                return new RequestPreflightOperation(preflightPtr);
+            });
+        }
 
-        var operation = new RequestPreflightOperation(preflightPtr);
         return ExecutePreflightAsync(operation, ct);
     }
 

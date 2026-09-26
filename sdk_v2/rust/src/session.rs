@@ -58,9 +58,9 @@ pub struct RequestPreflightResult {
     pub output_reserve_tokens: i64,
     /// Total tokens required by the request.
     pub required_tokens: i64,
-    /// Model context-window limit.
+    /// Structural request limit: Engine capacity or Generator model context.
     pub context_limit_tokens: i64,
-    /// Whether the required tokens fit within the context limit.
+    /// Structural fit only; does not reserve cache or guarantee live admission.
     pub fits: bool,
     /// Tokens over budget, or zero when the request fits.
     pub deficit_tokens: i64,

@@ -4,6 +4,9 @@
 # --------------------------------------------------------------------------
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from foundry_local_sdk.exception import FoundryLocalException
@@ -25,6 +28,7 @@ class Request:
     """
 
     def __init__(self) -> None:
+        self._lifetime_lock = threading.RLock()
         # Initialise lifecycle flags FIRST so that if Request_Create raises,
         # __del__ sees a fully-constructed (but already-closed) object and
         # cleanly no-ops instead of AttributeError'ing inside the GC.
@@ -43,6 +47,12 @@ class Request:
             raise FoundryLocalException(
                 f"{type(self).__name__} has been closed and can no longer be used."
             )
+
+    @contextmanager
+    def _native_lifetime(self) -> Iterator[object]:
+        with self._lifetime_lock:
+            self._check_open()
+            yield self._ptr
 
     def add_item(self, item: "Item", transfer_ownership: bool = True) -> "Request":
         """Add item to request.
@@ -114,17 +124,18 @@ class Request:
         api.check_status(api.inference.Request_Cancel(self._ptr))
 
     def _close(self) -> None:
-        if self._closed:
-            return
-        if self._ptr is not None:
-            try:
-                from foundry_local_sdk._native.api import api
+        with self._lifetime_lock:
+            if self._closed:
+                return
+            if self._ptr is not None:
+                try:
+                    from foundry_local_sdk._native.api import api
 
-                api.inference.Request_Release(self._ptr)
-            except Exception:
-                pass
-        self._ptr = None
-        self._closed = True
+                    api.inference.Request_Release(self._ptr)
+                except Exception:
+                    pass
+            self._ptr = None
+            self._closed = True
 
     def __enter__(self) -> "Request":
         return self

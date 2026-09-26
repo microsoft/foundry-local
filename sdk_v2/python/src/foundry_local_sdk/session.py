@@ -533,33 +533,34 @@ class ChatSession(Session):
 
     def preflight_request(self, request: "Request") -> "RequestPreflightResult":
         """Synchronously return the native token budget for a request."""
-        self._check_open()
 
         from foundry_local_sdk._native import ffi
         from foundry_local_sdk._native.api import api
         from foundry_local_sdk.session_types import RequestPreflightResult
 
         out_preflight = ffi.new("flRequestPreflight**")
-        api.check_status(
-            api.inference.Session_CreateRequestPreflight(
-                self._ptr, request._ptr, out_preflight
-            )
-        )
-        preflight = out_preflight[0]
-        try:
-            result = ffi.new("flRequestPreflightResult*")
-            result.version = _API_VERSION
-            api.check_status(api.inference.RequestPreflight_Execute(preflight, result))
-            return RequestPreflightResult(
-                prompt_tokens=int(result.prompt_tokens),
-                output_reserve_tokens=int(result.output_reserve_tokens),
-                required_tokens=int(result.required_tokens),
-                context_limit_tokens=int(result.context_limit_tokens),
-                fits=bool(result.fits),
-                deficit_tokens=int(result.deficit_tokens),
-            )
-        finally:
-            api.inference.RequestPreflight_Release(preflight)
+        with self._native_lifetime() as session_ptr:
+            with request._native_lifetime() as request_ptr:
+                api.check_status(
+                    api.inference.Session_CreateRequestPreflight(
+                        session_ptr, request_ptr, out_preflight
+                    )
+                )
+            preflight = out_preflight[0]
+            try:
+                result = ffi.new("flRequestPreflightResult*")
+                result.version = _API_VERSION
+                api.check_status(api.inference.RequestPreflight_Execute(preflight, result))
+                return RequestPreflightResult(
+                    prompt_tokens=int(result.prompt_tokens),
+                    output_reserve_tokens=int(result.output_reserve_tokens),
+                    required_tokens=int(result.required_tokens),
+                    context_limit_tokens=int(result.context_limit_tokens),
+                    fits=bool(result.fits),
+                    deficit_tokens=int(result.deficit_tokens),
+                )
+            finally:
+                api.inference.RequestPreflight_Release(preflight)
 
     def add_tool_definition(self, name: str, description: str, json_schema: str) -> "ChatSession":
         """Register a function tool so the model can request tool calls. Returns self (fluent).

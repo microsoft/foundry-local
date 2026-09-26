@@ -286,6 +286,8 @@ Console.WriteLine(
 
 The values are returned directly by the native preflight ABI. The C# SDK does not apply defaults,
 recalculate the budget, rewrite the request, or impose a local fit policy.
+`ContextLimitTokens` is the Engine's structural request capacity or the Generator's model context;
+`Fits` does not reserve cache or guarantee immediate admission while other requests are active.
 
 ### Audio Transcription
 

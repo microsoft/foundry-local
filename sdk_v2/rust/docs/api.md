@@ -445,6 +445,8 @@ Exact native token-budget result returned by
 [`ChatSession::preflight_request`](#chatsession). Its public value fields are
 `prompt_tokens`, `output_reserve_tokens`, `required_tokens`,
 `context_limit_tokens`, `fits`, and `deficit_tokens`.
+The limit is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
 
 Request and session state is captured synchronously before the future is returned.
 URI-backed media is resolved during execution. The captured operation executes

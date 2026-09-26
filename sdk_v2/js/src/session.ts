@@ -59,7 +59,9 @@ export interface RequestPreflightResult {
   readonly promptTokens: number;
   readonly outputReserveTokens: number;
   readonly requiredTokens: number;
+  /** Structural request limit: Engine capacity or Generator model context. */
   readonly contextLimitTokens: number;
+  /** Structural fit only; does not reserve cache or guarantee live admission. */
   readonly fits: boolean;
   readonly deficitTokens: number;
 }

@@ -89,6 +89,22 @@ TEST(SearchOptionsParsingTest, RequestBudgetReportsExactFitAndDeficit) {
   EXPECT_EQ(over.deficit_tokens, 1);
 }
 
+TEST(SearchOptionsParsingTest, GeneratorBudgetValidatorMatchesPreflightBoundaries) {
+  for (const int prompt_tokens : {90, 91}) {
+    const auto budget = ComputeRequestBudget(prompt_tokens, 10, 100);
+    EXPECT_EQ(budget.fits, prompt_tokens == 90);
+    if (budget.fits) {
+      EXPECT_EQ(ValidateGeneratorRequestBudget(prompt_tokens, 10, 100), 100);
+    } else {
+      EXPECT_THROW(ValidateGeneratorRequestBudget(prompt_tokens, 10, 100), fl::Exception);
+    }
+  }
+
+  const auto overflow = ComputeRequestBudget(10, (std::numeric_limits<int>::max)(), 100);
+  EXPECT_FALSE(overflow.fits);
+  EXPECT_THROW(ValidateGeneratorRequestBudget(10, (std::numeric_limits<int>::max)(), 100), fl::Exception);
+}
+
 TEST(SearchOptionsParsingTest, OutputReserveMatchesBackendGenerationPolicy) {
   SearchOptions explicit_limit;
   explicit_limit.max_output_tokens = 64;

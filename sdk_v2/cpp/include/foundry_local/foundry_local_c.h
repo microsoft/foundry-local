@@ -384,8 +384,8 @@ typedef struct flRequestPreflightResult {
   int64_t prompt_tokens;          ///< Exact number of prompt tokens after request preparation.
   int64_t output_reserve_tokens;  ///< Tokens reserved for generated output.
   int64_t required_tokens;        ///< Total tokens required: prompt plus output reserve.
-  int64_t context_limit_tokens;   ///< Model context-window limit.
-  bool fits;                      ///< Whether required_tokens fits within the context limit.
+  int64_t context_limit_tokens;   ///< Effective structural request limit (Engine capacity or Generator context).
+  bool fits;                      ///< Structural fit only; does not reserve cache or guarantee live admission.
   int64_t deficit_tokens;         ///< Tokens over budget, or 0 when fits is true.
   /* V3 fields go here. Read only when version >= 3. */
 } flRequestPreflightResult;
@@ -977,7 +977,7 @@ struct flInferenceApi {
   /// Synchronously execute a preflight. This operation may be expensive.
   /// The caller must initialize out_result->version to FOUNDRY_LOCAL_API_VERSION.
   FL_API_STATUS(RequestPreflight_Execute, _In_ flRequestPreflight* preflight,
-                _Out_ flRequestPreflightResult* out_result);
+                _Inout_ flRequestPreflightResult* out_result);
 
   /// Release a preflight handle. Passing nullptr is allowed.
   FL_TYPE_RELEASE(RequestPreflight);

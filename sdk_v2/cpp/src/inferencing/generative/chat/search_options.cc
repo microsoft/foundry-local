@@ -102,6 +102,19 @@ RequestBudget ComputeRequestBudget(int64_t prompt_tokens,
   };
 }
 
+int ValidateGeneratorRequestBudget(int64_t prompt_tokens, int max_output_tokens, int context_limit_tokens) {
+  const auto budget = ComputeRequestBudget(prompt_tokens, max_output_tokens, context_limit_tokens);
+  if (!budget.fits) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "request requires " + std::to_string(budget.required_tokens) + " total tokens (" +
+                 std::to_string(prompt_tokens) + " input + " + std::to_string(max_output_tokens) +
+                 " output), which exceeds the model's maximum context length of " +
+                 std::to_string(context_limit_tokens) + " tokens");
+  }
+
+  return static_cast<int>(budget.required_tokens);
+}
+
 int64_t ResolveOutputReserve(const SearchOptions& options,
                              ChatBackendKind backend_kind,
                              bool has_media,
@@ -282,22 +295,12 @@ int ApplySearchOptions(const SearchOptions& options,
   // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
   const int max_output = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
-  // Validate token budget: input + output must not exceed model's max_length
-  int total_required = input_token_count + max_output;
-  if (total_required > model_max_length) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "request requires " + std::to_string(total_required) + " total tokens (" +
-                 std::to_string(input_token_count) + " input + " + std::to_string(max_output) +
-                 " output), which exceeds the model's maximum context length of " +
-                 std::to_string(model_max_length) + " tokens");
-  }
+  const int total_required = ValidateGeneratorRequestBudget(input_token_count, max_output, model_max_length);
 
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window
   // so the sequence can grow across turns.
-  int effective_max_length = use_full_context
-                                 ? model_max_length
-                                 : std::min(model_max_length, total_required);
+  const int effective_max_length = use_full_context ? model_max_length : total_required;
   gen_params.SetSearchOption("max_length", static_cast<double>(effective_max_length));
 
   // One shared normalization for every backend: the same combination is forwarded to a classic generator, to an
