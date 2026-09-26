@@ -156,23 +156,28 @@ void Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
 
-std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflight(const Request& request) const {
-  if (Type() != SessionType::kChat) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
-  }
-
+std::unique_lock<std::mutex> Session::TryLockRequestMutex() const {
   {
     std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
     if (processing_thread_ == std::this_thread::get_id()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is unavailable while session work is active");
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session state is unavailable while session work is active");
     }
   }
 
   std::unique_lock<std::mutex> lock(*request_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is unavailable while session work is active");
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session state is unavailable while session work is active");
   }
 
+  return lock;
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflight(const Request& request) const {
+  if (Type() != SessionType::kChat) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+
+  auto lock = TryLockRequestMutex();
   auto snapshot = request.CaptureChatSnapshot();
   ValidateRequestItems(snapshot);
   return CreateRequestPreflightImpl(std::move(snapshot));

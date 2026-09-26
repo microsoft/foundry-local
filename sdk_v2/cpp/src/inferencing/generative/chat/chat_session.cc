@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fmt/format.h>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <utility>

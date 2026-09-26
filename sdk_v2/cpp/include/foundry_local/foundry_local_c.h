@@ -925,6 +925,7 @@ struct flInferenceApi {
   /// Set session-level inference options from key/value pairs. Use FOUNDRY_LOCAL_PARAM_* constants for well-known keys.
   /// Session options apply to all subsequent ProcessRequest calls unless overridden per-request.
   /// The session copies the data — the caller may release the pairs after this call.
+  /// For serialized sessions, returns INVALID_USAGE while the session is busy; options remain unchanged.
   FL_API_STATUS(Session_SetOptions, _In_ flSession* session, _In_ const flKeyValuePairs* options);
 
   /// Process a request for the session.

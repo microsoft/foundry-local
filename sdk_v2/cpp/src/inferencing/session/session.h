@@ -119,7 +119,7 @@ class Session {
 
   /// Session-level parameters overlaid onto each request.
   void SetSessionOptions(const KeyValuePairs& options) {
-    auto lock = LockRequestMutex();
+    auto lock = TryLockRequestMutex();
     session_options_ = options;
     SetSessionOptionsImpl(session_options_);
   }
@@ -184,6 +184,8 @@ class Session {
 
   /// Serialize a state mutation with ProcessRequest for session types that maintain mutable turn state.
   std::unique_lock<std::mutex> LockRequestMutex() const { return std::unique_lock<std::mutex>(*request_mutex_); }
+
+  std::unique_lock<std::mutex> TryLockRequestMutex() const;
 
  private:
   /// Reject items (and message content parts) whose type the model's task does not advertise as an

@@ -776,6 +776,30 @@ mod tests {
         fn wake(self: Arc<Self>) {}
     }
 
+    #[test]
+    fn preflight_result_maps_every_native_field() {
+        let mapped = RequestPreflightResult::from(flRequestPreflightResult {
+            version: crate::detail::ffi::FOUNDRY_LOCAL_API_VERSION,
+            prompt_tokens: 93,
+            output_reserve_tokens: 17,
+            required_tokens: 110,
+            context_limit_tokens: 100,
+            fits: false,
+            deficit_tokens: 10,
+        });
+        assert_eq!(
+            mapped,
+            RequestPreflightResult {
+                prompt_tokens: 93,
+                output_reserve_tokens: 17,
+                required_tokens: 110,
+                context_limit_tokens: 100,
+                fits: false,
+                deficit_tokens: 10,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn item_stream_returns_terminal_response_once() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

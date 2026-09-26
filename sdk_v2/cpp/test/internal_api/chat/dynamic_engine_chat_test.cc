@@ -655,12 +655,52 @@ TEST_F(DynamicEngineChatTest, PreflightFromStreamingCallbackFailsWithoutBlocking
   EXPECT_NO_THROW((void)session.CreateRequestPreflight(preflight_request));
 }
 
+TEST_F(DynamicEngineChatTest, SessionOptionsFromStreamingCallbackFailWithoutBlocking) {
+  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  ASSERT_NE(api, nullptr);
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  KeyValuePairs initial_options;
+  initial_options.Add("max_output_tokens", "11");
+  session.SetSessionOptions(initial_options);
+  KeyValuePairs changed_options;
+  changed_options.Add("max_output_tokens", "7");
+  auto request = MakeRequest("Count from one to ten.");
+  std::atomic<int> callback_count{0};
+  std::atomic<int> error_code{0};
+
+  session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+    (void)queue->TryPop();
+    ++callback_count;
+    auto* status = api->GetInferenceApi()->Session_SetOptions(
+        AsHandle<flSession>(&session), AsHandle<flKeyValuePairs>(&changed_options));
+    if (status) {
+      error_code = api->Status_GetErrorCode(status);
+      api->Status_Release(status);
+    }
+    return 0;
+  });
+
+  Response response;
+  session.ProcessRequest(request, response);
+  EXPECT_GT(callback_count.load(), 0);
+  EXPECT_EQ(error_code.load(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_FALSE(AssistantText(response).empty());
+
+  Request next_request;
+  next_request.AddOwnedItem(UserMessage("What comes next?"));
+  EXPECT_EQ(session.CreateRequestPreflight(next_request)->Execute().output_reserve_tokens, 11);
+  session.SetSessionOptions(changed_options);
+  EXPECT_EQ(session.CreateRequestPreflight(next_request)->Execute().output_reserve_tokens, 7);
+}
+
 TEST_F(DynamicEngineChatTest, PreflightFromProcessingThreadFailsWithoutReenteringMutex) {
   class ReentrantLogger final : public ILogger {
    public:
     ChatSession* session = nullptr;
     const Request* request = nullptr;
-    int error_code = 0;
+    int preflight_error_code = 0;
+    int options_error_code = 0;
 
     void Log(LogLevel, std::string_view message) override {
       if (!session || !message.starts_with("Completion stats:")) {
@@ -669,7 +709,14 @@ TEST_F(DynamicEngineChatTest, PreflightFromProcessingThreadFailsWithoutReenterin
       try {
         (void)session->CreateRequestPreflight(*request);
       } catch (const fl::Exception& error) {
-        error_code = error.code();
+        preflight_error_code = error.code();
+      }
+      KeyValuePairs options;
+      options.Add("max_output_tokens", "7");
+      try {
+        session->SetSessionOptions(options);
+      } catch (const fl::Exception& error) {
+        options_error_code = error.code();
       }
     }
   };
@@ -682,7 +729,8 @@ TEST_F(DynamicEngineChatTest, PreflightFromProcessingThreadFailsWithoutReenterin
 
   Response response;
   session.ProcessRequest(request, response);
-  EXPECT_EQ(logger.error_code, FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_EQ(logger.preflight_error_code, FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_EQ(logger.options_error_code, FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
   EXPECT_FALSE(AssistantText(response).empty());
   EXPECT_NO_THROW((void)session.CreateRequestPreflight(request));
 }
