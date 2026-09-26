@@ -1053,7 +1053,6 @@ struct PreparedChatRequest {
   SearchOptions options;
   ChatBackendKind backend_kind = ChatBackendKind::kGenerator;
   std::string system_prompt;
-  std::vector<TranscriptMessage> reply_inputs;
   std::optional<chat_internal::PreparedChatMessages> messages;
   PreparedChatPrompt prompt;
   std::optional<int> host_max_output_tokens;
@@ -1148,7 +1147,6 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
     auto messages = BuildTranscriptMessages(internal_request.items, prepared->tool_context.tool_kinds);
     const ChatTranscript payload_transcript;
     payload_transcript.ValidateInputs(messages);
-    prepared->reply_inputs = messages;
     prepared->messages.emplace(message_preparer(std::move(messages), model.HasPositionalToolResults()));
     prepared->prompt = PrepareTextChatPrompt(*prepared->messages, model, prepared->tool_context);
     prepared->json_passthrough = true;
@@ -1191,7 +1189,7 @@ std::unique_ptr<PreparedChatRequest> PrepareChatRequest(
   prepared->messages.emplace(message_preparer(std::move(all_messages), model.HasPositionalToolResults()));
 
   if (media_turn) {
-    auto media_messages = prepared->media.messages;
+    auto media_messages = std::move(prepared->media.messages);
     if (!prepared->system_prompt.empty()) {
       media_messages.insert(media_messages.begin(),
                             MessageItem(FOUNDRY_LOCAL_ROLE_SYSTEM, prepared->system_prompt));
