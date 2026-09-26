@@ -432,8 +432,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleNo
   }
 
   auto response = ResponseConverter::BuildResponseObject(turn.response_id, turn.created_at, turn.model_name, params,
-                                                         std::move(output), output_text, session_response.usage,
-                                                         session_response.finish_reason);
+                                                         std::move(output), output_text, session_response);
 
   nlohmann::json response_json = response;
 
@@ -761,7 +760,7 @@ std::shared_ptr<HttpRequestHandler::OutgoingResponse> ResponsesHandler::HandleSt
 
       auto completed_response = ResponseConverter::BuildResponseObject(
           turn.response_id, turn.created_at, turn.model_name, params_copy, std::move(closed_items), full_text,
-          bg_response.usage, bg_response.finish_reason);
+          bg_response);
 
       // The stream lock makes publication and disconnect mutually exclusive. If deletion invalidated the lease,
       // PublishResponse throws and the stream ends with response.failed instead of claiming an unstored completion.

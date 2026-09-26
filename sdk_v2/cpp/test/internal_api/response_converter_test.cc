@@ -20,6 +20,7 @@
 #include "items/text_item.h"
 #include "items/tool_call_item.h"
 #include "inferencing/generative/chat/chat_template.h"
+#include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_transcript.h"
 #include "inferencing/generative/openresponses/response_store.h"
 #include "items/tool_result_item.h"
@@ -182,10 +183,11 @@ TEST(ResponseConverterTest, BuildResponse_LengthFinishIsIncomplete) {
   session_response.items.push_back(
       std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "partial answer"));
   session_response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+  session_response.termination_cause = BackendTerminationCause::kOutputTokenLimit;
   auto [output, output_text] = FromSessionResponse(session_response);
 
   const auto response = BuildResponseObject("resp_1", 500, "m", params, std::move(output), output_text,
-                                            TokenUsage{}, FOUNDRY_LOCAL_FINISH_LENGTH);
+                                            session_response);
   EXPECT_EQ(response.status, ResponseStatus::kIncomplete);
   EXPECT_FALSE(response.completed_at.has_value());
   ASSERT_TRUE(response.incomplete_reason.has_value());
@@ -199,6 +201,29 @@ TEST(ResponseConverterTest, BuildResponse_LengthFinishIsIncomplete) {
   EXPECT_EQ(serialized.at("incomplete_details").at("reason"), "max_output_tokens");
 }
 
+TEST(ResponseConverterTest, BuildResponse_SessionLimitDoesNotClaimOutputTokenLimit) {
+  auto params = MakeTestParams();
+  params.max_output_tokens = 1;
+  Response session_response;
+  session_response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+  session_response.termination_cause = BackendTerminationCause::kSessionTokenLimit;
+  session_response.usage.completion_tokens = 1;
+  session_response.items.push_back(
+      std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, "partial answer"));
+  auto [output, output_text] = FromSessionResponse(session_response);
+
+  const auto response = BuildResponseObject("resp_1", 500, "m", params, std::move(output), output_text,
+                                            session_response);
+  EXPECT_EQ(response.status, ResponseStatus::kIncomplete);
+  EXPECT_FALSE(response.completed_at.has_value());
+  EXPECT_FALSE(response.incomplete_reason.has_value());
+  EXPECT_EQ(std::get<ResponseOutputMessage>(response.output.back()).status, ResponseStatus::kIncomplete);
+
+  const json serialized = response;
+  EXPECT_EQ(serialized.at("status"), "incomplete");
+  EXPECT_TRUE(serialized.at("incomplete_details").is_null());
+}
+
 TEST(ResponseConverterTest, BuildResponse_ReasoningOnlyLengthFinishIsIncomplete) {
   auto params = MakeTestParams();
   Response session_response;
@@ -207,14 +232,14 @@ TEST(ResponseConverterTest, BuildResponse_ReasoningOnlyLengthFinishIsIncomplete)
   session_response.items.push_back(
       std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_ASSISTANT, std::move(parts)));
   session_response.finish_reason = FOUNDRY_LOCAL_FINISH_LENGTH;
+  session_response.termination_cause = BackendTerminationCause::kOutputTokenLimit;
   session_response.usage.completion_tokens = 8;
   session_response.usage.reasoning_tokens = 8;
   session_response.usage.total_tokens = 8;
   auto [output, output_text] = FromSessionResponse(session_response);
 
   const auto response = BuildResponseObject("resp_1", 500, "m", params, std::move(output), output_text,
-                                            session_response.usage,
-                                            FOUNDRY_LOCAL_FINISH_LENGTH);
+                                            session_response);
   EXPECT_EQ(response.status, ResponseStatus::kIncomplete);
   EXPECT_FALSE(response.completed_at.has_value());
   EXPECT_EQ(response.incomplete_reason, "max_output_tokens");
@@ -356,10 +381,11 @@ TEST(ResponseConverterTest, ReservedRawDescriptorMetadataIsNeverPublicOrStored) 
   params.metadata[tools::kRawEnvelopeMetadataKey] =
       R"({"tool_name":"apply_patch","start_marker":"BEGIN","end_marker":"END"})";
 
-  const TokenUsage usage{};
+  Response session_response;
+  session_response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
   const auto initial = BuildInitialResponseObject("resp_initial", 100, "m", params);
   const auto completed = BuildResponseObject(
-      "resp_completed", 100, "m", params, {}, "", usage, FOUNDRY_LOCAL_FINISH_STOP);
+      "resp_completed", 100, "m", params, {}, "", session_response);
   const auto failed = BuildFailedResponseObject(
       "resp_failed", 100, "m", params, "error", "message");
 

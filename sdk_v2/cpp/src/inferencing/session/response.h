@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <foundry_local/foundry_local_c.h>
@@ -12,6 +13,8 @@
 #include "util/key_value_pairs.h"
 
 namespace fl {
+
+enum class BackendTerminationCause;
 
 /// Token usage statistics for a generation request.
 struct TokenUsage {
@@ -26,6 +29,7 @@ struct TokenUsage {
 struct Response {
   std::vector<std::unique_ptr<Item>> items;
   flFinishReason finish_reason = FOUNDRY_LOCAL_FINISH_NONE;
+  std::optional<BackendTerminationCause> termination_cause;
   TokenUsage usage;
   // arbitrary response metadata (e.g. completion_id, created, model).
   // internal usage only currently but can be surfaced if needed.
