@@ -152,4 +152,18 @@ class KeyValuePairs {
   mutable bool dirty_ = false;
 };
 
+/// Return base options with request options overlaid; request values win on collision.
+inline KeyValuePairs MergeKeyValuePairs(const KeyValuePairs& base, const KeyValuePairs& request) {
+  if (request.empty()) {
+    return base;
+  }
+
+  auto merged = base;
+  for (const auto& [key, value] : request) {
+    merged.Add(key, value);
+  }
+
+  return merged;
+}
+
 }  // namespace fl

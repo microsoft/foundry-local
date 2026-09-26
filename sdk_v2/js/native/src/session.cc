@@ -107,9 +107,20 @@ Napi::Value ResponseToJs(Napi::Env env, foundry_local::Response& resp) {
   return out;
 }
 
+Napi::Value RequestPreflightResultToJs(Napi::Env env, const flRequestPreflightResult& result) {
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("promptTokens", Napi::Number::New(env, static_cast<double>(result.prompt_tokens)));
+  out.Set("outputReserveTokens", Napi::Number::New(env, static_cast<double>(result.output_reserve_tokens)));
+  out.Set("requiredTokens", Napi::Number::New(env, static_cast<double>(result.required_tokens)));
+  out.Set("contextLimitTokens", Napi::Number::New(env, static_cast<double>(result.context_limit_tokens)));
+  out.Set("fits", Napi::Boolean::New(env, result.fits));
+  out.Set("deficitTokens", Napi::Number::New(env, static_cast<double>(result.deficit_tokens)));
+  return out;
+}
+
 foundry_local::Request* UnwrapRequest(Napi::Env env, const Napi::Value& v) {
   if (!v.IsObject()) {
-    Napi::TypeError::New(env, "processRequest(request): expected a Request instance")
+    Napi::TypeError::New(env, "request argument must be a Request instance")
         .ThrowAsJavaScriptException();
     return nullptr;
   }
@@ -120,13 +131,13 @@ foundry_local::Request* UnwrapRequest(Napi::Env env, const Napi::Value& v) {
     return nullptr;
   }
   if (!obj.InstanceOf(data->request_ctor.Value())) {
-    Napi::TypeError::New(env, "processRequest(request): argument is not a Request instance")
+    Napi::TypeError::New(env, "request argument must be a Request instance")
         .ThrowAsJavaScriptException();
     return nullptr;
   }
   Request* req = Napi::ObjectWrap<Request>::Unwrap(obj);
   if (req == nullptr || req->native() == nullptr) {
-    Napi::TypeError::New(env, "processRequest(request): Request is not initialized")
+    Napi::TypeError::New(env, "request argument is not initialized")
         .ThrowAsJavaScriptException();
     return nullptr;
   }
@@ -348,6 +359,95 @@ class SessionPromiseWorker : public Napi::AsyncWorker {
   bool tagged_ = false;
   bool scheduler_completed_ = false;
   bool activity_completed_ = false;
+};
+
+class RequestPreflightWorker : public Napi::AsyncWorker {
+ public:
+  static Napi::Promise Run(Napi::Env env, std::shared_ptr<foundry_local::RequestPreflight> preflight,
+                           std::shared_ptr<foundry_local::Manager> manager_lifetime,
+                           Napi::ObjectReference manager) {
+    auto* worker = new RequestPreflightWorker(env, std::move(preflight), std::move(manager_lifetime),
+                                              std::move(manager));
+    Napi::Promise promise = worker->deferred_.Promise();
+    try {
+      worker->Queue();
+    } catch (const std::exception& e) {
+      worker->FailBeforeQueue(e.what());
+    } catch (...) {
+      worker->FailBeforeQueue("Failed to schedule request preflight");
+    }
+    return promise;
+  }
+
+  void Execute() override {
+    try {
+      result_ = preflight_->Execute();
+      preflight_.reset();
+    } catch (const foundry_local::Error& e) {
+      err_code_ = static_cast<int>(e.Code());
+      err_msg_ = e.what();
+      tagged_ = true;
+      SetError(err_msg_);
+    } catch (const std::exception& e) {
+      err_msg_ = e.what();
+      SetError(err_msg_);
+    } catch (...) {
+      err_msg_ = "Unknown native exception";
+      SetError(err_msg_);
+    }
+  }
+
+  void OnOK() override {
+    Napi::Env env = Env();
+    Napi::HandleScope scope(env);
+    try {
+      deferred_.Resolve(RequestPreflightResultToJs(env, result_));
+    } catch (const Napi::Error& e) {
+      deferred_.Reject(e.Value());
+    } catch (const std::exception& e) {
+      deferred_.Reject(Napi::Error::New(env, e.what()).Value());
+    } catch (...) {
+      deferred_.Reject(Napi::Error::New(env, "Failed to convert request preflight result").Value());
+    }
+  }
+
+  void OnError(const Napi::Error& /*unused*/) override {
+    Napi::Env env = Env();
+    Napi::HandleScope scope(env);
+    if (tagged_) {
+      Napi::Error err = Napi::Error::New(env, err_msg_);
+      Napi::Object value = err.Value();
+      value.Set("name", Napi::String::New(env, "FoundryLocalError"));
+      value.Set("code", Napi::Number::New(env, err_code_));
+      deferred_.Reject(value);
+    } else {
+      deferred_.Reject(Napi::Error::New(env, err_msg_).Value());
+    }
+  }
+
+ private:
+  RequestPreflightWorker(Napi::Env env, std::shared_ptr<foundry_local::RequestPreflight> preflight,
+                         std::shared_ptr<foundry_local::Manager> manager_lifetime,
+                         Napi::ObjectReference manager)
+      : Napi::AsyncWorker(env),
+        deferred_(Napi::Promise::Deferred::New(env)),
+        preflight_(std::move(preflight)),
+        manager_lifetime_(std::move(manager_lifetime)),
+        manager_(std::move(manager)) {}
+
+  void FailBeforeQueue(const std::string& message) {
+    deferred_.Reject(Napi::Error::New(Env(), message).Value());
+    delete this;
+  }
+
+  Napi::Promise::Deferred deferred_;
+  std::shared_ptr<foundry_local::RequestPreflight> preflight_;
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  Napi::ObjectReference manager_;
+  flRequestPreflightResult result_{};
+  std::string err_msg_;
+  int err_code_ = 0;
+  bool tagged_ = false;
 };
 
 template <typename SessT>
@@ -695,6 +795,7 @@ Napi::Function ChatSession::Init(Napi::Env env) {
   return DefineClass(env, "ChatSession",
                      {
                          InstanceMethod("processRequest", &ChatSession::ProcessRequest),
+                         InstanceMethod("preflightRequest", &ChatSession::PreflightRequest),
                          InstanceMethod("processStreamingRequest", &ChatSession::ProcessStreamingRequest),
                          InstanceMethod("setOptions", &ChatSession::SetOptions),
                          InstanceMethod("addToolDefinition", &ChatSession::AddToolDefinition),
@@ -775,6 +876,33 @@ Napi::Value ChatSession::ProcessRequest(const Napi::CallbackInfo& info) {
   auto scheduler = scheduler_;
   return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_, std::move(owner),
                           std::move(scheduler), nullptr, worker_started);
+}
+
+Napi::Value ChatSession::PreflightRequest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (ThrowIfDisposed(env)) return env.Undefined();
+  if (info.Length() < 1) {
+    Napi::TypeError::New(env, "preflightRequest(request: Request)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (scheduler_->Busy()) {
+    ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+                           "preflightRequest is unavailable while session work is active");
+    return env.Undefined();
+  }
+  foundry_local::Request* request = UnwrapRequest(env, info[0]);
+  if (request == nullptr) return env.Undefined();
+
+  std::shared_ptr<foundry_local::RequestPreflight> preflight;
+  CallCheckedVoid(env, [&]() {
+    preflight = std::make_shared<foundry_local::RequestPreflight>(
+        impl_->CaptureRequestPreflight(*request));
+  });
+  if (env.IsExceptionPending() || preflight == nullptr) return env.Undefined();
+
+  // Capture owns the request/session snapshot; only the Manager runtime must remain alive.
+  Napi::ObjectReference manager_ref = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
+  return RequestPreflightWorker::Run(env, std::move(preflight), manager_lifetime_, std::move(manager_ref));
 }
 
 Napi::Value ChatSession::ProcessStreamingRequest(const Napi::CallbackInfo& info) {

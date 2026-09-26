@@ -7,6 +7,7 @@
 namespace Microsoft.AI.Foundry.Local;
 
 using Microsoft.AI.Foundry.Local.Detail.Interop;
+using Microsoft.AI.Foundry.Local.Detail.Native;
 
 /// <summary>
 /// A chat session for chat-completion models.
@@ -125,5 +126,44 @@ public sealed class ChatSession : Session
     {
         ThrowIfDisposed();
         ExecuteNative(session => session.UndoTurns(count));
+    }
+
+    /// <summary>
+    /// Capture this session's current state and <paramref name="request"/> synchronously, then
+    /// execute an exact token-budget preflight asynchronously. The captured operation remains valid
+    /// after the source session and request are disposed. The <see cref="FoundryLocalManager"/>
+    /// must not be disposed until the returned task completes.
+    /// </summary>
+    public Task<RequestPreflightResult> PreflightRequestAsync(
+        Request request,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        Detail.Throw.IfNull(request);
+
+        RequestPreflightOperation operation;
+        using (var requestLease = request.AcquireLease())
+        {
+            operation = ExecuteNative(session =>
+            {
+                Api.CheckStatus(Api.Inference.SessionCreateRequestPreflight(
+                    session.Ptr, requestLease.Ptr, out var preflightPtr));
+                return new RequestPreflightOperation(preflightPtr);
+            });
+        }
+
+        return ExecutePreflightAsync(operation, ct);
+    }
+
+    private static async Task<RequestPreflightResult> ExecutePreflightAsync(
+        RequestPreflightOperation operation,
+        CancellationToken ct)
+    {
+#pragma warning disable IDISP007 // Ownership is transferred by PreflightRequestAsync to this async helper.
+        using (operation)
+#pragma warning restore IDISP007
+        {
+            return await Task.Run(operation.Execute, ct).ConfigureAwait(false);
+        }
     }
 }

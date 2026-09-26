@@ -126,6 +126,7 @@ FL_TYPE(ModelList);
 // Request accumulates parameters and input items
 // Response accumulates output items
 FL_TYPE(Request);
+FL_TYPE(RequestPreflight);
 FL_TYPE(Response);
 
 // Opaque type for a session. Create with loaded Model so Model:Session is 1:M
@@ -376,6 +377,18 @@ typedef struct flUsage {
   int64_t total_tokens;
   /* V3 fields go here. Read only when version >= 3. */
 } flUsage;
+
+/// Exact token-budget preflight result for a request in the captured session state.
+typedef struct flRequestPreflightResult {
+  uint32_t version;               ///< Set to FOUNDRY_LOCAL_API_VERSION.
+  int64_t prompt_tokens;          ///< Exact number of prompt tokens after request preparation.
+  int64_t output_reserve_tokens;  ///< Tokens reserved for generated output.
+  int64_t required_tokens;        ///< Total tokens required: prompt plus output reserve.
+  int64_t context_limit_tokens;   ///< Effective structural request limit (Engine capacity or Generator context).
+  bool fits;                      ///< Structural fit only; does not reserve cache or guarantee live admission.
+  int64_t deficit_tokens;         ///< Tokens over budget, or 0 when fits is true.
+  /* V3 fields go here. Read only when version >= 3. */
+} flRequestPreflightResult;
 
 /// Information about a discoverable execution provider.
 /// Returned by Manager_GetDiscoverableEps. Storage is owned by the Manager; the
@@ -912,6 +925,7 @@ struct flInferenceApi {
   /// Set session-level inference options from key/value pairs. Use FOUNDRY_LOCAL_PARAM_* constants for well-known keys.
   /// Session options apply to all subsequent ProcessRequest calls unless overridden per-request.
   /// The session copies the data — the caller may release the pairs after this call.
+  /// For serialized sessions, returns INVALID_USAGE while the session is busy; options remain unchanged.
   FL_API_STATUS(Session_SetOptions, _In_ flSession* session, _In_ const flKeyValuePairs* options);
 
   /// Process a request for the session.
@@ -953,6 +967,24 @@ struct flInferenceApi {
   FL_API_STATUS(Session_UndoTurns, _In_ flSession* session, size_t count);
 
   // End V1
+
+  /// Capture the request and current chat-session state for an exact token-budget preflight.
+  /// The returned one-shot handle remains valid after the source request and session are released. The Manager and
+  /// its model runtime must remain alive until the handle is executed and released. Execute may run on another
+  /// thread; callers must not execute and release the same handle concurrently. Capture fails if the session is
+  /// processing a request, including when called from that request's streaming callback.
+  FL_API_STATUS(Session_CreateRequestPreflight, _In_ const flSession* session, _In_ const flRequest* request,
+                _Outptr_ flRequestPreflight** out_preflight);
+
+  /// Synchronously execute a preflight. This operation may be expensive.
+  /// The caller must initialize out_result->version to FOUNDRY_LOCAL_API_VERSION.
+  FL_API_STATUS(RequestPreflight_Execute, _In_ flRequestPreflight* preflight,
+                _Inout_ flRequestPreflightResult* out_result);
+
+  /// Release a preflight handle. Passing nullptr is allowed.
+  FL_TYPE_RELEASE(RequestPreflight);
+
+  // End V2
 };
 
 /* --- Configuration API ------------------------------------------------- */

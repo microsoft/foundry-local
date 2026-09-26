@@ -225,12 +225,14 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/embeddings/embeddings_session.cc
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
+    src/inferencing/session/request.cc
     src/inferencing/session/session_manager.cc
     src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc
     src/inferencing/generative/chat/media_input.cc
+    src/inferencing/generative/chat/prepared_chat_prompt.cc
     src/configuration.cc
     src/download/blob_download_state.cc
     src/download/blob_downloader.cc

@@ -54,6 +54,18 @@ export interface StreamingResponse extends AsyncIterable<Item> {
   readonly response: Promise<Response>;
 }
 
+/** Exact token budget for a request captured against the current chat-session state. */
+export interface RequestPreflightResult {
+  readonly promptTokens: number;
+  readonly outputReserveTokens: number;
+  readonly requiredTokens: number;
+  /** Structural request limit: Engine capacity or Generator model context. */
+  readonly contextLimitTokens: number;
+  /** Structural fit only; does not reserve cache or guarantee live admission. */
+  readonly fits: boolean;
+  readonly deficitTokens: number;
+}
+
 function rejectEmbeddedNul(value: unknown, argumentName: string): void {
   if (typeof value === "string" && value.includes("\0")) {
     throw new TypeError(`${argumentName} must not contain an embedded NUL character`);
@@ -389,6 +401,14 @@ export class ChatSession extends Session {
   // `ChatSession` always constructs a `NativeChatSession`.
   get #nativeChat(): NativeChatSession {
     return this.native as NativeChatSession;
+  }
+
+  /**
+   * Compute the exact token budget without generation or state changes.
+   * Request and session state are captured before worker execution is queued.
+   */
+  preflightRequest(request: Request): Promise<RequestPreflightResult> {
+    return this.#nativeChat.preflightRequest(unwrapNativeRequest(request));
   }
 
   /**

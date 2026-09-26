@@ -156,6 +156,37 @@ void Session::UndoTurns(size_t /*count*/) {
   FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "UndoTurns is not supported for this session type");
 }
 
+std::unique_lock<std::mutex> Session::TryLockRequestMutex() const {
+  {
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    if (processing_thread_ == std::this_thread::get_id()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session state is unavailable while session work is active");
+    }
+  }
+
+  std::unique_lock<std::mutex> lock(*request_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "session state is unavailable while session work is active");
+  }
+
+  return lock;
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflight(const Request& request) const {
+  if (Type() != SessionType::kChat) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+  }
+
+  auto lock = TryLockRequestMutex();
+  auto snapshot = request.CaptureChatSnapshot();
+  ValidateRequestItems(snapshot);
+  return CreateRequestPreflightImpl(std::move(snapshot));
+}
+
+std::unique_ptr<Session::RequestPreflightOperation> Session::CreateRequestPreflightImpl(Request) const {
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "request preflight is only supported for chat sessions");
+}
+
 void Session::AddToolDefinition(ToolDefinition tool_def) {
   tool_registry_.Add(std::move(tool_def));
 }
@@ -213,7 +244,15 @@ void Session::ProcessRequest(const Request& request, Response& response) {
   std::unique_lock<std::mutex> lock(*request_mutex_, std::defer_lock);
   if (!allow_concurrent_requests_) {
     lock.lock();
+    std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+    processing_thread_ = std::this_thread::get_id();
   }
+  ScopeGuard processing_guard([&]() noexcept {
+    if (lock.owns_lock()) {
+      std::lock_guard<std::mutex> active_lock(*active_requests_mutex_);
+      processing_thread_ = {};
+    }
+  });
 
   bool admitted = false;
   bool registered = false;

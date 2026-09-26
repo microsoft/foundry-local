@@ -96,6 +96,52 @@ describe.skipIf(!haveTestModelCache)("ChatSession (real model, non-streaming)", 
   );
 
   it(
+    "preflightRequest returns an exact budget matching inference without changing history",
+    async () => {
+      if (session === undefined) throw new Error("fixture missing");
+      const request = new Request()
+        .addItem(Item.systemMessage("You are concise."))
+        .addItem(Item.userMessage("Explain why the sky is blue."))
+        .setOptions({ search: { maxOutputTokens: 64, temperature: 0 } });
+      const before = session.turnCount;
+
+      const result = await session.preflightRequest(request);
+
+      expect(result.promptTokens).toBeGreaterThan(0);
+      expect(result.outputReserveTokens).toBe(64);
+      expect(result.requiredTokens).toBe(result.promptTokens + result.outputReserveTokens);
+      expect(result.contextLimitTokens).toBeGreaterThan(0);
+      expect(result.fits).toBe(result.requiredTokens <= result.contextLimitTokens);
+      expect(result.deficitTokens).toBe(Math.max(0, result.requiredTokens - result.contextLimitTokens));
+      expect(session.turnCount).toBe(before);
+
+      const response = await session.processRequest(request);
+      expect(result.promptTokens).toBe(response.usage.promptTokens);
+    },
+    2 * 60_000,
+  );
+
+  it(
+    "preflightRequest owns captured state after source session disposal",
+    async () => {
+      if (fixture === undefined) throw new Error("fixture missing");
+      const source = new ChatSession(fixture.model);
+      const request = new Request()
+        .addItem(Item.userMessage("Count the prompt tokens."))
+        .setOptions({ search: { maxOutputTokens: 32 } });
+
+      const pending = source.preflightRequest(request);
+      request.setOptions({ search: { maxOutputTokens: 96 } });
+      source.dispose();
+
+      await expect(pending).resolves.toMatchObject({
+        outputReserveTokens: 32,
+      });
+    },
+    2 * 60_000,
+  );
+
+  it(
     "undoTurns rewinds the conversation",
     async () => {
       if (session === undefined) throw new Error("fixture missing");

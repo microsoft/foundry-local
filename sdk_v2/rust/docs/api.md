@@ -27,6 +27,7 @@
 - [Inference API](#inference-api)
   - [Session](#session)
   - [ChatSession](#chatsession)
+  - [RequestPreflightResult](#requestpreflightresult)
   - [EmbeddingsSession](#embeddingssession)
   - [AudioSession](#audiosession)
   - [ItemQueue](#itemqueue)
@@ -435,7 +436,21 @@ impl Deref for ChatSession { type Target = Session; }
 | `remove_tool_definition` | `async fn remove_tool_definition(&self, name: impl Into<String>) -> Result<bool, FoundryLocalError>` | Remove a tool by name; returns whether one was removed. |
 | `turn_count` | `fn turn_count(&self) -> usize` | The number of completed conversation turns. |
 | `undo_turns` | `async fn undo_turns(&self, count: usize) -> Result<(), FoundryLocalError>` | Rewind the last `count` turns. |
+| `preflight_request` | `fn preflight_request(&self, request: Request) -> impl Future<Output = Result<RequestPreflightResult, FoundryLocalError>> + Send + 'static` | Synchronously capture the request and current conversation state before returning an awaitable future; only exact native token-budget execution is deferred to a blocking worker. |
 | `into_session` | `fn into_session(self) -> Session` | Consume this handle, yielding the base session. |
+
+### RequestPreflightResult
+
+Exact native token-budget result returned by
+[`ChatSession::preflight_request`](#chatsession). Its public value fields are
+`prompt_tokens`, `output_reserve_tokens`, `required_tokens`,
+`context_limit_tokens`, `fits`, and `deficit_tokens`.
+The limit is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
+Request and session state is captured synchronously before the future is returned.
+URI-backed media is resolved during execution. The captured operation executes
+once on the SDK's blocking worker.
 
 ### EmbeddingsSession
 

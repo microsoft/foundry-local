@@ -29,8 +29,8 @@ pub use self::item_queue::ItemQueue;
 pub use self::request::{Request, RequestOptions, SearchOptions, ToolChoice};
 pub use self::response::{FinishReason, Response, Usage};
 pub use self::session::{
-    AudioSession, ChatSession, CustomToolDefinition, EmbeddingsSession, ItemStream, Session,
-    ToolDefinition,
+    AudioSession, ChatSession, CustomToolDefinition, EmbeddingsSession, ItemStream,
+    RequestPreflightResult, Session, ToolDefinition,
 };
 pub use self::types::{
     CatalogType, ChatResponseFormat, ChatToolChoice, DeviceType, EpDownloadResult, EpInfo,

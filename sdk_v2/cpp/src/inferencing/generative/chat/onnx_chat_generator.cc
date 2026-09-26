@@ -16,24 +16,6 @@
 
 namespace fl {
 
-namespace {
-
-/// Probe whether the rendered prompt leaves a reasoning block open. Uses the encoded prompt token IDs when they are
-/// available (the text path) and falls back to the rendered text for the media path, which has no encoded sequence
-/// of its own.
-bool DetectPromptOpensReasoning(const std::string& prompt,
-                                const OgaSequences* sequences,
-                                const ReasoningMarkers& markers) {
-  std::span<const int32_t> prompt_token_ids;
-  if (sequences != nullptr && sequences->Count() > 0) {
-    prompt_token_ids = {sequences->SequenceData(0), sequences->SequenceCount(0)};
-  }
-
-  return PromptOpensReasoning(prompt_token_ids, markers, prompt);
-}
-
-}  // namespace
-
 namespace onnx_chat_generator_internal {
 
 TurnTermination ClassifyTurnTermination(bool cancelled,
@@ -260,17 +242,22 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
                                       GenAIModelInstance& model,
                                       const ToolCallContext& tool_ctx,
                                       const SearchOptions& options) {
-  if (new_messages.empty() || full_messages.Empty()) {
+  auto prepared = PrepareTextChatPrompt(full_messages, model, tool_ctx);
+  return AppendPreparedPrompt(new_messages, prepared, model, tool_ctx, options);
+}
+
+int OnnxChatGenerator::AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                                            const PreparedChatPrompt& prepared,
+                                            GenAIModelInstance& model,
+                                            const ToolCallContext&,
+                                            const SearchOptions& options) {
+  if (new_messages.empty() || prepared.token_ids.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "new_messages and full_messages must not be empty");
   }
 
   // Render and tokenize the authoritative full transcript once. Generated text is not guaranteed to round-trip
   // through decode/encode to the same token IDs, so resident state is reusable only when it is an exact prefix.
-  std::string prompt = BuildChatPrompt(full_messages, model, tool_ctx);
-  auto full_sequences = EncodePrompt(prompt, model);
-  const auto full_count = full_sequences->SequenceCount(0);
-  const auto* full_data = full_sequences->SequenceData(0);
-  const std::span<const int32_t> full_prompt(full_data, full_count);
+  const std::span<const int32_t> full_prompt(prepared.token_ids);
   const std::span<const int32_t> resident(generator_->GetSequenceData(0), generator_->GetSequenceCount(0));
   const auto suffix_start = chat_internal::FindUnmatchedPromptSuffix(resident, full_prompt);
   if (!suffix_start.has_value()) {
@@ -283,6 +270,10 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
              "chat template produced no new tokens for a non-empty Generator continuation");
   }
 
+  const int max_output_tokens = ResolveMaxOutputTokens(options);
+  ValidateGeneratorRequestBudget(prepared.prompt_token_count, max_output_tokens,
+                                 GetModelMaxContextLength(model.GetGenAIConfig()));
+
   auto suffix_sequences = OgaSequences::Create();
   suffix_sequences->Append(suffix.data(), suffix.size());
 
@@ -294,10 +285,10 @@ int OnnxChatGenerator::AppendMessages(const std::vector<TranscriptMessage>& new_
 
   // Re-probe: the appended segment ends with this turn's assistant generation prefix, so it — not the original
   // prompt — determines whether generation resumes inside a template-opened reasoning block.
-  prompt_opens_reasoning_ = DetectPromptOpensReasoning(prompt, full_sequences.get(), reasoning_markers_);
-  prompt_token_count_ = static_cast<int>(full_count);
+  prompt_opens_reasoning_ = fl::PromptOpensReasoning(full_prompt, reasoning_markers_, prepared.prompt);
+  prompt_token_count_ = static_cast<int>(prepared.prompt_token_count);
   turn_start_token_count_ = TokenCount();
-  max_output_tokens_ = ResolveMaxOutputTokens(options);
+  max_output_tokens_ = max_output_tokens;
   ResetTurnState();
 
   return static_cast<int>(suffix.size());
@@ -391,12 +382,8 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::Create(
     GenAIModelInstance& model,
     const ToolCallContext& tool_ctx,
     bool use_full_context) {
-  if (messages.Empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
-  }
-
-  std::string prompt = BuildChatPrompt(messages, model, tool_ctx);
-  return CreateImpl(prompt, options, model, tool_ctx, use_full_context, /*images=*/{}, /*audios=*/{});
+  return CreatePrepared(PrepareTextChatPrompt(messages, model, tool_ctx), options, model, tool_ctx,
+                        use_full_context);
 }
 
 std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
@@ -407,153 +394,48 @@ std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateWithMedia(
     const std::vector<const AudioItem*>& audios,
     const ToolCallContext& tool_ctx,
     bool use_full_context) {
-  if (messages.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "messages must not be empty");
-  }
-
-  if (images.empty() && audios.empty()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "CreateWithMedia requires at least one image or audio input");
-  }
-
-  if (!model.IsMultiModal()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image or audio input requires a multimodal model");
-  }
-
-  if (!model.GetPreprocessor().HasMultiModalProcessor()) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model has no multimodal processor available for media input");
-  }
-
-  std::string messages_json = TransformMessagesForMedia(messages);
-  const char* tools_ptr = tool_ctx.tools_json.empty() ? nullptr : tool_ctx.tools_json.c_str();
-  const char* template_kwargs_ptr = tool_ctx.template_kwargs_json.empty() ? nullptr : tool_ctx.template_kwargs_json.c_str();
-  std::string prompt = model.GetPreprocessor().ApplyChatTemplateWithOptions(
-      messages_json.c_str(), tools_ptr, template_kwargs_ptr, /*add_generation_prompt=*/true);
-
-  return CreateImpl(prompt, options, model, tool_ctx, use_full_context, images, audios);
+  return CreatePrepared(PrepareMediaChatPrompt(messages, model, images, audios, tool_ctx), options, model, tool_ctx,
+                        use_full_context);
 }
 
-std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreateImpl(const std::string& prompt,
-                                                                 const SearchOptions& options,
-                                                                 GenAIModelInstance& model,
-                                                                 const ToolCallContext& tool_ctx,
-                                                                 bool use_full_context,
-                                                                 const std::vector<const ImageItem*>& images,
-                                                                 const std::vector<const AudioItem*>& audios) {
-  const bool media_branch = !images.empty() || !audios.empty();
-
-  // 1. Token budgeting.
-  //    Text path: encode the prompt up front so we know its token count.
-  //    Media path: process inputs first and read the expanded input_ids shape.
-  std::unique_ptr<OgaSequences> sequences;
-  int input_token_count = 0;
-
-  if (!media_branch) {
-    sequences = EncodePrompt(prompt, model);
-    input_token_count = static_cast<int>(sequences->SequenceCount(0));
-  }
-
-  // Process media before sizing the generator so max_length includes the
-  // exact token expansion produced by the multimodal processor.
-  std::unique_ptr<OgaNamedTensors> named_tensors;
-  if (media_branch) {
-    std::unique_ptr<OgaImages> oga_images;
-    if (!images.empty()) {
-      std::vector<std::vector<std::uint8_t>> image_bytes;
-      image_bytes.reserve(images.size());
-      std::vector<const void*> buffers;
-      buffers.reserve(images.size());
-      std::vector<size_t> sizes;
-      sizes.reserve(images.size());
-
-      for (const auto* img : images) {
-        if (img == nullptr) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "image entry must not be null");
-        }
-
-        image_bytes.push_back(img->ReadBytes());
-        buffers.push_back(image_bytes.back().data());
-        sizes.push_back(image_bytes.back().size());
-      }
-
-      oga_images = OgaImages::Load(buffers.data(), sizes.data(), buffers.size());
-    }
-
-    std::unique_ptr<OgaAudios> oga_audios;
-    if (!audios.empty()) {
-      std::vector<const void*> audio_buffers;
-      audio_buffers.reserve(audios.size());
-      std::vector<size_t> audio_sizes;
-      audio_sizes.reserve(audios.size());
-      for (const auto* audio : audios) {
-        if (audio == nullptr || audio->data == nullptr || audio->data_size == 0) {
-          FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "audio entry must contain bytes");
-        }
-        audio_buffers.push_back(audio->data);
-        audio_sizes.push_back(audio->data_size);
-      }
-
-      oga_audios = OgaAudios::Load(audio_buffers.data(), audio_sizes.data(), audio_buffers.size());
-    }
-
-    named_tensors = model.GetPreprocessor().ProcessMedia(prompt.c_str(), oga_images.get(), oga_audios.get());
-    auto input_ids = named_tensors->Get("input_ids");
-    auto input_shape = input_ids->Shape();
-    if (input_shape.empty() || input_shape.back() <= 0) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "multimodal processor returned invalid input_ids");
-    }
-    input_token_count = static_cast<int>(input_shape.back());
-  }
-
-  // 2. Create GeneratorParams from the model
+std::unique_ptr<OnnxChatGenerator> OnnxChatGenerator::CreatePrepared(
+    PreparedChatPrompt prepared,
+    const SearchOptions& options,
+    GenAIModelInstance& model,
+    const ToolCallContext& tool_ctx,
+    bool use_full_context) {
+  const int input_token_count = static_cast<int>(prepared.prompt_token_count);
   auto gen_params = OgaGeneratorParams::Create(model.GetOgaModel());
-
-  // 3. Apply search options (temperature, top_p, max_length, etc.) and validate token budget.
-  //    Media inputs use a larger default because preprocessing expands them into tokens.
-  const int default_max_output_tokens = GetDefaultMaxOutputTokens(media_branch);
+  const int default_max_output_tokens = GetDefaultMaxOutputTokens(prepared.HasMedia());
   const int max_length =
       ApplySearchOptions(options, input_token_count, model.GetGenAIConfig(), *gen_params, model.EP(),
                          use_full_context, default_max_output_tokens);
   const int max_output_tokens = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
-  // 4. Build guidance from the actual rendered prompt state, then reuse that state to seed stream reasoning.
   auto reasoning_markers = ResolveReasoningMarkers(tool_ctx, model);
-  const bool prompt_opens_reasoning = DetectPromptOpensReasoning(prompt, sequences.get(), reasoning_markers);
+  const bool prompt_opens_reasoning =
+      fl::PromptOpensReasoning(prepared.token_ids, reasoning_markers, prepared.prompt);
   ApplyGuidanceOptions(tool_ctx, prompt_opens_reasoning, *gen_params);
 
-  // 5. Create the Generator and feed it the prompt.
-  //    Text path: append the encoded token sequences.
-  //    Media path: process inputs via OgaMultiModalProcessor and feed the
-  //    resulting named tensors via SetInputs (which extracts input_ids and
-  //    appends them internally — do NOT also call AppendTokenSequences).
   std::unique_ptr<OgaGenerator> generator;
   try {
     generator = OgaGenerator::Create(model.GetOgaModel(), *gen_params);
-
-    if (media_branch) {
-      generator->SetInputs(*named_tensors);
+    if (prepared.HasMedia()) {
+      generator->SetInputs(*prepared.media_tensors);
     } else {
+      auto sequences = OgaSequences::Create();
+      sequences->Append(prepared.token_ids.data(), prepared.token_ids.size());
       generator->AppendTokenSequences(*sequences);
     }
   } catch (const std::runtime_error& e) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, std::string("failed to create generator: ") + e.what());
   }
 
-  // 6. Create tokenizer stream (single-decode path).
   auto stream = model.GetPreprocessor().CreateTokenizerStream();
-
-  // `std::make_unique` constructs inside the library helper, which does not have
-  // access to this class's private constructor.
-  return std::unique_ptr<OnnxChatGenerator>(new OnnxChatGenerator(std::move(gen_params),
-                                                                  std::move(generator),
-                                                                  std::move(stream),
-                                                                  model,
-                                                                  input_token_count,
-                                                                  max_length,
-                                                                  max_output_tokens,
-                                                                  std::move(reasoning_markers),
-                                                                  prompt_opens_reasoning,
-                                                                  std::move(named_tensors)));
+  return std::unique_ptr<OnnxChatGenerator>(
+      new OnnxChatGenerator(std::move(gen_params), std::move(generator), std::move(stream), model,
+                            input_token_count, max_length, max_output_tokens, std::move(reasoning_markers),
+                            prompt_opens_reasoning, std::move(prepared.media_tensors)));
 }
 
 }  // namespace fl

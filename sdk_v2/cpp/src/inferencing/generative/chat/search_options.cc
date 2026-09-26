@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace fl {
 
@@ -58,16 +59,76 @@ int ResolveMaxOutputTokens(const SearchOptions& options, int default_max_output_
 }
 
 int GetModelMaxContextLength(const GenAIConfig& config) {
-  int model_max_length = 0;
-  if (config.search.has_value()) {
-    model_max_length = config.search->max_length;
+  if (config.model.has_value() && config.model->context_length > 0) {
+    return config.model->context_length;
   }
 
-  if (model_max_length <= 0) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model genai_config.json is missing search.max_length");
+  if (config.search.has_value() && config.search->max_length > 0) {
+    return config.search->max_length;
   }
 
-  return model_max_length;
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+           "model genai_config.json is missing model.context_length and search.max_length");
+}
+
+RequestBudget ComputeRequestBudget(int64_t prompt_tokens,
+                                   int64_t output_reserve_tokens,
+                                   int64_t context_limit_tokens) {
+  if (prompt_tokens < 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "prompt token count must not be negative");
+  }
+
+  if (output_reserve_tokens < 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "output token reserve must not be negative");
+  }
+
+  if (context_limit_tokens < 1) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "model context length must be a positive integer");
+  }
+
+  if (prompt_tokens > (std::numeric_limits<int64_t>::max)() - output_reserve_tokens) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "request token budget overflow");
+  }
+
+  const auto required_tokens = prompt_tokens + output_reserve_tokens;
+  const bool fits = required_tokens <= context_limit_tokens;
+  return {
+      .prompt_tokens = prompt_tokens,
+      .output_reserve_tokens = output_reserve_tokens,
+      .required_tokens = required_tokens,
+      .context_limit_tokens = context_limit_tokens,
+      .fits = fits,
+      .deficit_tokens = fits ? 0 : required_tokens - context_limit_tokens,
+  };
+}
+
+int ValidateGeneratorRequestBudget(int64_t prompt_tokens, int max_output_tokens, int context_limit_tokens) {
+  const auto budget = ComputeRequestBudget(prompt_tokens, max_output_tokens, context_limit_tokens);
+  if (!budget.fits) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "request requires " + std::to_string(budget.required_tokens) + " total tokens (" +
+                 std::to_string(prompt_tokens) + " input + " + std::to_string(max_output_tokens) +
+                 " output), which exceeds the model's maximum context length of " +
+                 std::to_string(context_limit_tokens) + " tokens");
+  }
+
+  return static_cast<int>(budget.required_tokens);
+}
+
+int64_t ResolveOutputReserve(const SearchOptions& options,
+                             ChatBackendKind backend_kind,
+                             bool has_media,
+                             int64_t prompt_tokens,
+                             int64_t context_limit_tokens) {
+  if (options.max_output_tokens.has_value()) {
+    return ResolveMaxOutputTokens(options, GetDefaultMaxOutputTokens(has_media));
+  }
+
+  if (backend_kind == ChatBackendKind::kEngine && !has_media) {
+    return std::max<int64_t>(1, context_limit_tokens - prompt_tokens);
+  }
+
+  return GetDefaultMaxOutputTokens(has_media);
 }
 
 std::optional<TurnGuidanceOptions> ResolveTurnGuidanceOptions(const ToolCallContext& tool_ctx,
@@ -227,28 +288,19 @@ int ApplySearchOptions(const SearchOptions& options,
 
   const int model_max_length = GetModelMaxContextLength(config);
 
-  // genai_config.json's search.max_length (read above) is the source of truth for the total input+output budget.
+  // model.context_length is the source of truth for the total input+output budget. Legacy models fall back to
+  // search.max_length.
   // The catalog's maxOutputTokens is informational metadata only and is intentionally NOT used to clamp generation:
   // it is commonly a conservative 2048 that would wrongly cap larger contexts (e.g. the 3072 vision default). A
   // user-supplied max_output_tokens is honored as-is and only rejected if input+output exceeds max_length below.
   const int max_output = ResolveMaxOutputTokens(options, default_max_output_tokens);
 
-  // Validate token budget: input + output must not exceed model's max_length
-  int total_required = input_token_count + max_output;
-  if (total_required > model_max_length) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "request requires " + std::to_string(total_required) + " total tokens (" +
-                 std::to_string(input_token_count) + " input + " + std::to_string(max_output) +
-                 " output), which exceeds the model's maximum context length of " +
-                 std::to_string(model_max_length) + " tokens");
-  }
+  const int total_required = ValidateGeneratorRequestBudget(input_token_count, max_output, model_max_length);
 
   // max_length in ORT GenAI is the total (input + output) budget.
   // For continuous decoding (cached generators), use the model's full context window
   // so the sequence can grow across turns.
-  int effective_max_length = use_full_context
-                                 ? model_max_length
-                                 : std::min(model_max_length, total_required);
+  const int effective_max_length = use_full_context ? model_max_length : total_required;
   gen_params.SetSearchOption("max_length", static_cast<double>(effective_max_length));
 
   // One shared normalization for every backend: the same combination is forwarded to a classic generator, to an

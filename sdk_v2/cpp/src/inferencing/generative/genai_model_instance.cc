@@ -73,6 +73,11 @@ bool ContainsInOrder(std::string_view text, std::initializer_list<std::string_vi
 ModelCapabilities ResolveModelCapabilities(std::string_view model_type, Preprocessor& preprocessor,
                                            std::string_view reasoning_start,
                                            std::string_view reasoning_end) noexcept {
+#if !FOUNDRY_LOCAL_OGA_HAS_CHAT_TEMPLATE_KWARGS
+  (void)reasoning_start;
+  (void)reasoning_end;
+#endif
+
   ModelCapabilities capabilities;
   if (model_type == kQwen35TextModelType) {
     try {

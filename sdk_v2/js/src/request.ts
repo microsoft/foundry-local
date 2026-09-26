@@ -87,7 +87,7 @@ export class Request {
 export function unwrapNativeRequest(request: Request): NativeRequest {
   const n = nativeByRequest.get(request);
   if (n === undefined) {
-    throw new TypeError("Session.processRequest: argument is not a valid Request");
+    throw new TypeError("Session request argument is not a valid Request");
   }
   return n;
 }
