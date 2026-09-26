@@ -16,6 +16,9 @@ set(VCPKG_CMAKE_CONFIGURE_OPTIONS
     "-DANDROID_ABI=x86_64"
     "-DANDROID_PLATFORM=android-28"
 )
+if(PORT STREQUAL "cpp-client-telemetry")
+    list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS "-DMATSDK_ANDROID_HTTP_CLIENT=CURL")
+endif()
 
 # Chain-load the NDK toolchain so both vcpkg ports and the top-level project
 # use the same NDK. build.py sets ANDROID_NDK_HOME when --android_ndk_path is given.

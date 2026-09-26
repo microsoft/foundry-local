@@ -443,6 +443,15 @@ target_compile_definitions(foundry_local_objects PRIVATE FL_STATIC_LIBRARY=1)
 add_library(foundry_local SHARED)
 target_link_libraries(foundry_local PRIVATE foundry_local_objects)
 
+# Keep bundled libcurl (used by 1DS and Azure) and other static dependencies out of
+# the process-wide ELF symbol namespace. Otherwise a host's libcurl can interpose
+# our curl_easy_init/curl_easy_perform calls with an incompatible CURL handle layout.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    set(FOUNDRY_LOCAL_EXPORTS_MAP "${CMAKE_CURRENT_SOURCE_DIR}/src/exports.map")
+    target_link_options(foundry_local PRIVATE "LINKER:--version-script,${FOUNDRY_LOCAL_EXPORTS_MAP}")
+    set_property(TARGET foundry_local APPEND PROPERTY LINK_DEPENDS "${FOUNDRY_LOCAL_EXPORTS_MAP}")
+endif()
+
 # --------------------------------------------------------------------------
 # RPATH — bake "look beside me" into the shared library so it works in every
 # deployment shape without per-consumer patching.
