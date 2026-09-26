@@ -222,6 +222,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/audio/audio_session.cc
     src/inferencing/generative/audio/onnx_audio_generator.cc
     src/inferencing/generative/audio/pcm_utils.cc
+    src/inferencing/generative/audio/whisper_timestamp_rules.cc
     src/inferencing/generative/embeddings/embeddings_session.cc
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc

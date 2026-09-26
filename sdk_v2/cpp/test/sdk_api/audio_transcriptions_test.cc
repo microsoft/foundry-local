@@ -11,6 +11,7 @@
 #include "web_service_fixture.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <sstream>
 #include <string>
 
@@ -159,14 +160,19 @@ TEST_F(AudioSessionFixture, TranscribeProducesSpeechResultItem) {
   std::string result_text(result.text);
   EXPECT_FALSE(result_text.empty());
   ExpectTranscriptionContent(result_text);
-  // One segment per decoded token, kind NONE. Concatenated text matches result.text.
+  // Whisper emits <|X.XX|> timestamp tokens around each segment, so the result holds FINAL segments with real
+  // start/end times. Concatenated segment text still matches result.text.
   ASSERT_FALSE(result.segments.empty());
   std::string concatenated;
+  std::int64_t previous_end_ms = -1;
   for (const auto& seg_item : result.segments) {
     auto seg = seg_item.GetSpeechSegment();
-    EXPECT_EQ(seg.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_NONE);
-    EXPECT_FALSE(seg.start_time_ms.has_value());
-    EXPECT_FALSE(seg.end_time_ms.has_value());
+    EXPECT_EQ(seg.kind, FOUNDRY_LOCAL_SPEECH_SEGMENT_FINAL);
+    ASSERT_TRUE(seg.start_time_ms.has_value());
+    ASSERT_TRUE(seg.end_time_ms.has_value());
+    EXPECT_GT(*seg.end_time_ms, *seg.start_time_ms);
+    EXPECT_GE(*seg.start_time_ms, previous_end_ms);
+    previous_end_ms = *seg.end_time_ms;
     EXPECT_TRUE(seg.words.empty());
     concatenated.append(seg.text.data(), seg.text.size());
   }

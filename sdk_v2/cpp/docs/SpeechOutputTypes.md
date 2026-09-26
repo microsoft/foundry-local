@@ -145,24 +145,25 @@ Attempting to create one returns `FOUNDRY_LOCAL_ERROR_INVALID_USAGE`.
 
 ## V1 scope
 
-The current producer (`AudioSession` over ORT GenAI — Whisper, Nemotron
-streaming) emits one segment **per decoded token, all with kind `NONE`**.
-Today's models surface only decoded tokens with no hypothesis-revision signal,
-so `PARTIAL` / `FINAL` and `utterance_start` are part of the contract but not
-yet produced. `NONE` is the honest label until a segmenting ASR exists.
+File-based Whisper transcription resolves the model's timestamp-token range and
+emits one `FINAL` segment per closed timestamp pair. Each such segment has
+`text`, `start_time_ms`, and `end_time_ms`; the aggregate
+`SpeechResultItem::text` is the concatenation of the retained segment text.
 
-Populated today:
-
-- `SpeechSegmentItem`: `kind` (always `NONE`), `text` (one token)
-- `SpeechResultItem`: `text` (concatenated transcript), `segments`
+If the tokenizer does not expose the expected Whisper timestamp layout, the
+prompt retains `<|notimestamps|>` and the final text is represented by an
+untimed `NONE` segment. Cancellation or generation ending before a closing
+timestamp can also produce a trailing `NONE` segment, with `start_time_ms` set
+when an opening timestamp was observed. Streaming callbacks remain token
+granular and use `NONE` because timestamp pairs describe finalized segments,
+not revisable token hypotheses.
 
 Defined in the contract but intentionally unset by the current producer:
 
-- segment: `start_time_ms`, `end_time_ms`, `utterance_start`, `words`,
-  `language`
-- result: `language`, `duration_ms` — GenAI reports neither a detected source
-  language nor audio duration; the request-side language is only a hint
-- `PARTIAL` / `FINAL` segment kinds
+- segment: `utterance_start`, `words`, `language`
+- result: `language`, `duration_ms` — the request-side language is only a hint,
+  and WAV duration probing is an internal decoding aid rather than result metadata
+- `PARTIAL` segment kind
 - `SpeechWord` fields (`text` timings, `confidence`, `speaker_id`)
 
 ## Growth headroom (not built)

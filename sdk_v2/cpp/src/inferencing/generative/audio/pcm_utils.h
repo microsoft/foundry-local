@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,10 @@ std::vector<float> LoadPcmWavAsFloatSamples(const std::string& audio_file_path);
 
 /// Convert a count of mono 16 kHz PCM samples to whole milliseconds.
 int64_t AudioDurationMsFromSamples(int64_t samples);
+
+/// Duration of a RIFF/WAVE file from its fmt byte rate and data chunk size, without decoding samples. Returns nullopt
+/// for unreadable, non-WAV (e.g. MP3/FLAC) or malformed files; never throws.
+std::optional<double> TryReadWavDurationSeconds(const std::string& audio_file_path);
 
 }  // namespace AudioInternal
 
