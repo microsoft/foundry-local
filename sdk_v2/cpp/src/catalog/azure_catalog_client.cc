@@ -318,13 +318,24 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
     const std::string& model_alias,
     const std::string& model_name,
   int max_versions) {
-  // The catalog has no server-side alias field, so fetch every version for each
-  // device/EP pair (labels=latest removed) and filter client-side by the alias
-  // (and optionally variant name) that CatalogModelToModelInfo derived.
+  // Historical versions may be archived and may predate systemCatalogData.
+  // Query by the legacy tags alias while retaining the device/EP filters, then
+  // validate the converted alias and optional variant name client-side.
   std::map<std::string, std::vector<ModelInfo>> versions_by_name;
   std::unordered_set<std::string> seen_model_ids;
 
-  for (const auto& filters : BuildSearchFilters(ep_detector_, model_filter_, /*latest_only=*/false)) {
+  for (const auto& [device, eps] : ep_detector_.GetAvailableDevicesToEPs()) {
+    std::vector<CatalogFilter> filters{
+        MakeFilter("type", {"models"}),
+        MakeFilter("kind", {"Versioned"}),
+        MakeFilter("annotations/tags/alias", {model_alias}),
+        MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}),
+        MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps),
+    };
+    if (!model_name.empty()) {
+      filters.push_back(MakeFilter("name", {model_name}));
+    }
+
     auto infos = ToModelInfos(FetchFilterSet(filters));
 
     for (auto& info : infos) {

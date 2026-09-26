@@ -59,11 +59,10 @@ class AzureCatalogClient : public ICatalogClient {
 
   std::vector<ModelInfo> FetchModelsByIds(const std::vector<std::string>& model_ids) override;
 
-  /// Fetch every version of `model_alias` from the live catalog by issuing the
-  /// per-device search with the `latest`-only filter removed, then filtering the
-  /// results client-side by alias (and optionally by variant name). The catalog
-  /// has no server-side alias field to filter on, so this is done locally.
-  /// `model_alias` must be non-empty. Optionally filters by `model_name`.
+  /// Fetch every usable version of `model_alias` from the live catalog. The
+  /// query retains device/EP filters, uses the legacy tags alias, and omits
+  /// latest, archived, and deployment-option filters so historical records
+  /// with older metadata schemas are included. Optionally filters by `model_name`.
   std::vector<ModelInfo> FetchAllVersionsByAlias(const std::string& model_alias,
                                                  const std::string& model_name = "",
                                                  int max_versions = 0) override;

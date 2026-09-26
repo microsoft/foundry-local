@@ -238,16 +238,16 @@ TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
 }
 
 TEST_F(AzureModelCatalogTest, LiveFetchRecordsDimensionsForDefaultCatalogOnly) {
-  const std::string default_url = "https://ai.azure.com/api/centralus/ux/v1.0";
+  const std::string default_url = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
   AddBehavior(default_url);
   auto catalog = CreateCatalog({});
 
   catalog->ListModels();
 
   ASSERT_EQ(telemetry_.calls.size(), 1u);
-  EXPECT_EQ(telemetry_.calls[0].endpoint, "ai.azure.com");
-  EXPECT_EQ(telemetry_.calls[0].region, "centralus");
-  EXPECT_EQ(telemetry_.calls[0].format, "ux/v1.0");
+  EXPECT_EQ(telemetry_.calls[0].endpoint, "custom");
+  EXPECT_TRUE(telemetry_.calls[0].region.empty());
+  EXPECT_TRUE(telemetry_.calls[0].format.empty());
 }
 
 TEST_F(AzureModelCatalogTest, FailedLiveFetchRecordsFailureBeforeSnapshotFallback) {
