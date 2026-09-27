@@ -131,8 +131,8 @@ public sealed class ChatSession : Session
     /// <summary>
     /// Capture this session's current state and <paramref name="request"/> synchronously, then
     /// execute an exact token-budget preflight asynchronously. The captured operation remains valid
-    /// after the source session and request are disposed. The <see cref="FoundryLocalManager"/>
-    /// must not be disposed until the returned task completes.
+    /// after the source session and request are disposed. Manager disposal waits for
+    /// execution and release of the captured operation to finish.
     /// </summary>
     public Task<RequestPreflightResult> PreflightRequestAsync(
         Request request,
@@ -141,18 +141,27 @@ public sealed class ChatSession : Session
         ThrowIfDisposed();
         Detail.Throw.IfNull(request);
 
-        RequestPreflightOperation operation;
-        using (var requestLease = request.AcquireLease())
+        var managerLease = AcquireManagerLease();
+        try
         {
-            operation = ExecuteNative(session =>
+            RequestPreflightOperation operation;
+            using (var requestLease = request.AcquireLease())
             {
-                Api.CheckStatus(Api.Inference.SessionCreateRequestPreflight(
-                    session.Ptr, requestLease.Ptr, out var preflightPtr));
-                return new RequestPreflightOperation(preflightPtr);
-            });
-        }
+                operation = ExecuteNative(session =>
+                {
+                    Api.CheckStatus(Api.Inference.SessionCreateRequestPreflight(
+                        session.Ptr, requestLease.Ptr, out var preflightPtr));
+                    return new RequestPreflightOperation(preflightPtr, managerLease);
+                });
+            }
 
-        return ExecutePreflightAsync(operation, ct);
+            return ExecutePreflightAsync(operation, ct);
+        }
+        catch
+        {
+            managerLease.Dispose();
+            throw;
+        }
     }
 
     private static async Task<RequestPreflightResult> ExecutePreflightAsync(
