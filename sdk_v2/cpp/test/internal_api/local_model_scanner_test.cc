@@ -216,6 +216,7 @@ TEST_F(LocalModelScannerTest, MultiComponentRootIsOneModelAndChildrenAreNotScann
 
 TEST_F(LocalModelScannerTest, MalformedMultiComponentPackageIsExcluded) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("microsoft/clm/genai_config.json");
   fs::remove(fs::path(test_dir_) / "microsoft/clm/tokenizer.json");
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }

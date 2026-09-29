@@ -221,15 +221,9 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
   }
   const auto config_path = model_path / "genai_config.json";
   auto resolved_input_metadata = metadata;
-  if (std::filesystem::is_regular_file(config_path, ec)) {
-    GenAIConfig::LoadFromFile(config_path.string());
-  } else {
-    try {
-      const auto package = ReadNonGenerativePackage(model_path);
-      if (!package) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "model_path must contain genai_config.json or multi-component package metadata");
-      }
+  try {
+    const auto package = ReadNonGenerativePackage(model_path);
+    if (package) {
       if (package->model_id != model_id) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                  "inference_model.json Name must match model_id");
@@ -250,12 +244,17 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       }
       resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR,
                                              std::move(capabilities));
-    } catch (const Exception&) {
-      throw;
-    } catch (const std::exception& error) {
+    } else if (std::filesystem::is_regular_file(config_path, ec)) {
+      GenAIConfig::LoadFromFile(config_path.string());
+    } else {
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-               "invalid multi-component package: " + std::string(error.what()));
+               "model_path must contain genai_config.json or multi-component package metadata");
     }
+  } catch (const Exception&) {
+    throw;
+  } catch (const std::exception& error) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "invalid multi-component package: " + std::string(error.what()));
   }
 
   ListModels();

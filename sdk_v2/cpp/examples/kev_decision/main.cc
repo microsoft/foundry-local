@@ -50,7 +50,8 @@ int main(int argc, char* argv[]) {
     fl::DecisionRuntime runtime(package_path, provider);
     const auto answers = runtime.Decide(request);
 
-    std::cout << "KEV answers:\n" << answers.dump(2) << '\n';
+    std::cout << "KEV answers:\n"
+              << answers.dump(2) << '\n';
   } catch (const std::exception& error) {
     std::cerr << "KEV inference failed: " << error.what() << '\n';
     return 1;

@@ -78,6 +78,14 @@ class LoadModelHandler : public HttpRequestHandler {
       return JsonResponse(Status::CODE_200, {{"status", "already_loaded"}});
     }
 
+    if (model->Info().task == "text-ranking" ||
+        model->Info().task == "typed-decision") {
+      tracker.SetStatus(ActionStatus::kClientError);
+      return ErrorResponse(
+          Status::CODE_400, "Load not supported",
+          "Non-generative models load on the first ranking or decision request");
+    }
+
     if (!model->IsCached()) {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_400, "Model not cached", "Model must be downloaded before loading");
@@ -136,13 +144,15 @@ class UnloadModelHandler : public HttpRequestHandler {
     }
 
     try {
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
       if (model->Info().task == "text-ranking" ||
           model->Info().task == "typed-decision") {
-        const bool unloaded = UnloadNonGenerativeRuntime(*model);
+        const bool unloaded = UnloadNonGenerativeRuntime(ctx_, *model);
         tracker.SetStatus(unloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped);
         return JsonResponse(Status::CODE_200,
                             {{"status", unloaded ? "unloaded" : "not_loaded"}});
       }
+#endif
       model->Unload();
       tracker.SetStatus(ActionStatus::kSuccess);
 

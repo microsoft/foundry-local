@@ -10,11 +10,13 @@ class HttpRequestHandler;
 
 namespace fl {
 class Model;
+class NonGenerativeRuntimeState;
 struct ServiceContext;
 
+std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState();
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(ServiceContext& ctx);
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateRankHandler(ServiceContext& ctx);
-bool UnloadNonGenerativeRuntime(Model& model);
-void ClearNonGenerativeRuntimes();
+bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model);
+void ClearNonGenerativeRuntimes(ServiceContext& ctx);
 
 }  // namespace fl

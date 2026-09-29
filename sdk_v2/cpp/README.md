@@ -401,10 +401,7 @@ sdk_v2/cpp/
 - [Item data ownership](docs/ItemDataOwnershipDesign.md)
 - [C++ port guide](docs/CppPortGuide.md)
 
-## License
-
-Licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
-### Non-generative ranking and decisions
+## Non-generative ranking and decisions
 
 The CLM ranking and KEV decision routes translate their existing JSON contracts
 to the public ORT GenAI `OgaStructuredRequest` and
@@ -419,3 +416,7 @@ tokenized prefixes/rows only.
 True recurrent/convolution/KV state branching needs a future exported
 graph/state-handle contract.
 The HTTP request and response schemas are unchanged.
+
+## License
+
+Licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
