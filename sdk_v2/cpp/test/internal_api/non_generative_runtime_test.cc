@@ -39,7 +39,8 @@ TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {
       {"questions",
        {{"umbrella",
          {{"type", "noul"}, {"instructions", "Should I take an umbrella?"}}}}},
-  }.get<NonGenerativeRequest>();
+  }
+                      .get<NonGenerativeRequest>();
   auto answers = DecisionRuntime(kev.string()).Decide(decision);
   ASSERT_TRUE(answers.contains("umbrella"));
   EXPECT_EQ(answers.at("umbrella").at("type"), "noul");
