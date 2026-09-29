@@ -13,6 +13,7 @@
 #include "service/embeddings_handler.h"
 #include "service/handler_utils.h"
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 #include "service/responses_handler.h"
 
 #include <fmt/format.h>
@@ -189,6 +190,8 @@ void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>&
   router->route("POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
   router->route("POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
   router->route("POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx));
+  router->route("POST", prefix + "/v1/systemone", CreateSystemOneHandler(ctx));
+  router->route("POST", prefix + "/v1/rank", CreateRankHandler(ctx));
   router->route("POST", prefix + "/v1/responses", CreateResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx));
@@ -436,6 +439,7 @@ void WebService::Stop() {
     }
   }
 
+  ClearNonGenerativeRuntimes();
   impl_->servers.clear();
   impl_->listener_threads.clear();
   impl_->providers.clear();

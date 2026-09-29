@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/local_model_catalog.h"
+#include "catalog/non_generative_package.h"
 
 #include "exception.h"
 #include "inferencing/generative/genai_config.h"
@@ -39,6 +40,8 @@ const std::unordered_set<std::string> kSupportedTasks = {
     "chat-completion",
     "coding",
     "embeddings",
+    "text-ranking",
+    "typed-decision",
     "vision-language-chat",
 };
 
@@ -255,14 +258,50 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must be an existing directory");
   }
 
-  const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
-  const auto config_path = model_path / "genai_config.json";
-  if (!std::filesystem::is_regular_file(config_path, ec)) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must contain a regular genai_config.json file");
+  const auto model_path = std::filesystem::weakly_canonical(supplied_path, ec);
+  if (ec) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "failed to canonicalize model_path: " + ec.message());
   }
-
-  const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
-
+  const auto config_path = model_path / "genai_config.json";
+  auto resolved_input_metadata = metadata;
+  GenAIConfig genai_config;
+  if (std::filesystem::is_regular_file(config_path, ec)) {
+    genai_config = GenAIConfig::LoadFromFile(config_path.string());
+  } else {
+    try {
+      const auto package = ReadNonGenerativePackage(model_path);
+      if (!package) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "model_path must contain genai_config.json or multi-component package metadata");
+      }
+      if (package->model_id != model_id) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "inference_model.json Name must match model_id");
+      }
+      const auto* task = metadata.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR);
+      if (!task || *task != package->task) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "registration task must match inference_model.json Task");
+      }
+      resolved_input_metadata.alias = package->alias;
+      resolved_input_metadata.execution_provider = package->execution_provider;
+      resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
+                                             package->execution_provider);
+      std::string capabilities;
+      for (const auto& capability : package->capabilities) {
+        if (!capabilities.empty()) capabilities += ",";
+        capabilities += capability;
+      }
+      resolved_input_metadata.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_CAPABILITIES_STR,
+                                             std::move(capabilities));
+    } catch (const Exception&) {
+      throw;
+    } catch (const std::exception& error) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "invalid multi-component package: " + std::string(error.what()));
+    }
+  }
   ListModels();
   Registration registration;
   {
@@ -277,7 +316,8 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     }
 
     registration = {
-        ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version, genai_config), model_path.string()};
+        ResolveMetadata(resolved_input_metadata, model_id, parsed_id.name, parsed_id.version, genai_config),
+        model_path.string()};
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -367,7 +407,7 @@ ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const st
   RemoveLegacyRegistrationProperties(resolved);
   RemoveCallerContextLength(resolved);
 
-  resolved.alias = DeriveAlias(name);
+  resolved.alias = metadata.alias.empty() ? DeriveAlias(name) : metadata.alias;
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
@@ -461,10 +501,15 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       if (model_path.empty() || HasParentTraversal(model_path)) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path is empty or contains '..' components");
       }
-      model_path = std::filesystem::absolute(model_path).lexically_normal();
+      std::error_code canonical_error;
+      model_path = std::filesystem::weakly_canonical(model_path, canonical_error);
+      if (canonical_error) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+                 "failed to canonicalize model_path: " + canonical_error.message());
+      }
 
       RemoveLegacyRegistrationProperties(info);
-      info.alias = DeriveAlias(parsed_id.name);
+      if (info.alias.empty()) info.alias = DeriveAlias(parsed_id.name);
       info.name = parsed_id.name;
       info.version = parsed_id.version;
       info.model_id = model_id;
