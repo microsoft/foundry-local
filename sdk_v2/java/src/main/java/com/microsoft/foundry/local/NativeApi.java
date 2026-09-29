@@ -109,6 +109,7 @@ final class NativeApi {
         static final int REQUEST_CREATE = 0;
         static final int REQUEST_RELEASE = 1;
         static final int REQUEST_ADD_ITEM = 2;
+        static final int REQUEST_SET_OPTIONS = 5;
         static final int REQUEST_CANCEL = 6;
         static final int RESPONSE_RELEASE = 8;
         static final int RESPONSE_GET_ITEM_COUNT = 9;

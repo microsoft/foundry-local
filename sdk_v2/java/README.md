@@ -154,6 +154,48 @@ PCM input is intentionally limited to signed PCM16LE, 16 kHz, mono. Each call
 accepts at most one second of audio, and the SDK applies backpressure after two
 seconds are queued.
 
+### Language hints
+
+Both audio entry points have an overload with a request-scoped `language`:
+
+```java
+try (var transcription = session.streamPcm(
+        PcmFormat.SPEECH, "auto", event -> showInterim(event.text()))) {
+    for (byte[] chunk : pcmChunks) {
+        transcription.writePcm(chunk);
+    }
+    transcription.finishInput();
+    useFinalText(transcription.await().text());
+}
+
+try (var transcription = session.transcribeWav(
+        Path.of("speech.wav"), "en-US", event -> showInterim(event.text()))) {
+    useFinalText(transcription.await().text());
+}
+```
+
+- The original overloads, or an explicit `null`, omit the native `language`
+  option. They preserve the model's default behavior, **not** explicit language
+  detection.
+- `"auto"` requests automatic detection on a supporting runtime/model.
+- Fixed codes are model-dependent. For example, the multilingual
+  `nemotron-3.5-asr-streaming-0.6b-generic-cpu:3` supports `"en-US"` and `"zh-CN"`.
+  Do not assume `"zh"` is equivalent to `"zh-CN"`.
+
+The SDK forwards non-null hints unchanged through native `Request_SetOptions`
+before processing starts. It does not set session defaults or reuse hints
+across requests. Blank strings and embedded NUL are rejected with
+`IllegalArgumentException` before starting a request. The SDK does not maintain
+a model-specific language allowlist: unrecognized codes may be ignored by
+native, and a hint does not guarantee that the model can honor it. Native API
+errors surface as `FoundryLocalException`, including asynchronous errors from
+`await`. Cancellation, callback and close behavior are unchanged.
+
+Language selection does not remove model-generated locale tags from streaming
+or final text. A requested language also does not imply that
+`TranscriptionResult.language()` contains a detected language; the native
+streaming processor may leave that field unset.
+
 ## Ownership and threading
 
 - `FoundryLocalManager` owns catalogs, models, and sessions. Only one manager
@@ -200,3 +242,30 @@ worker survives close. It also launches a child JVM to check that an abandoned
 stream neither blocks nor crashes process exit. The Windows x64 CI lane
 separately probes a checksum-pinned released legacy runtime in a fresh JVM to
 verify rejection before accessing incompatible native function tables.
+
+`NativeAudioLanguageTest` separately qualifies language hints against a prepared
+multilingual streaming model and a PCM WAV fixture in the chosen language:
+
+```powershell
+mvn -f sdk_v2/java/pom.xml test `
+  -Dtest=NativeAudioLanguageTest `
+  -Dfoundry.test.runtime=<absolute-matching-v2-native-runtime-dir> `
+  -Dfoundry.test.cache=<absolute-model-cache> `
+  -Dfoundry.test.model=nemotron-3.5-asr-streaming-0.6b-generic-cpu:3 `
+  -Dfoundry.test.wav=<absolute-English-wav-file> `
+  -Dfoundry.test.language=en-US `
+  "-Dfoundry.test.language.expected=<phrase-in-the-recording>"
+```
+
+Repeat with `"zh-CN"` and a Mandarin fixture (and a corresponding expected
+phrase), or another language supported by the model. The test checks the fixed
+language and explicit `"auto"` in **both streaming and final text**, through
+both PCM and WAV entry points. It also checks omitted/null compatibility,
+request isolation, invalid strings, cancellation and closed sessions.
+For a fixture whose expected phrase is absent without a hint, add
+`-Dfoundry.test.language.distinguishesDefault=true`. This asserts that native
+recognition actually changes, rather than merely testing Java field storage.
+No model or fixture is downloaded by this test. It is skipped unless
+`foundry.test.language` (or `FOUNDRY_TEST_LANGUAGE`) is set; once enabled,
+missing inputs fail. The expected phrase can also be supplied through
+`FOUNDRY_TEST_LANGUAGE_EXPECTED`.

@@ -35,7 +35,7 @@ public final class Transcription implements AutoCloseable {
     private final long originNanos = System.nanoTime();
     private long firstInputNanos, firstNonemptyNanos, inputClosedNanos, submittedBytes;
 
-    Transcription(AudioSession session, byte[] wav, PcmFormat format, Consumer<SpeechEvent> listener) {
+    Transcription(AudioSession session, byte[] wav, PcmFormat format, String language, Consumer<SpeechEvent> listener) {
         this.session = session;
         this.api = session.api;
         this.format = format;
@@ -46,6 +46,17 @@ public final class Transcription implements AutoCloseable {
         if (feeder != null) feeder.setDaemon(true);
         request = api.create(api.inference, NativeApi.InferenceApi.REQUEST_CREATE);
         try {
+            if (language != null) {
+                PointerByReference options = new PointerByReference();
+                api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_CREATE, options);
+                try {
+                    api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_ADD, options.getValue(), "language", language);
+                    api.check(api.inference.pointer(
+                            NativeApi.InferenceApi.REQUEST_SET_OPTIONS, request, options.getValue()));
+                } finally {
+                    api.root.call(NativeApi.Root.KEY_VALUE_PAIRS_RELEASE, options.getValue());
+                }
+            }
             Pointer audio = api.create(api.item, NativeApi.ItemApi.CREATE, 30);
             boolean transferred = false;
             try (Memory text = NativeApi.utf8("pcm")) {
