@@ -250,6 +250,7 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// The URL path must end in `/asset-gallery/v1.0/models`; legacy `/ux/v1.0` URLs are unsupported.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
 

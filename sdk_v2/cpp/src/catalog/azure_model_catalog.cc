@@ -1,12 +1,14 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/azure_model_catalog.h"
+#include "catalog/azure_catalog_client.h"
 #include "catalog/catalog_cache.h"
 #include "catalog/catalog_client.h"
 #include "catalog/local_model_scanner.h"
 #include "model.h"
 #include "model_info.h"
 #include "telemetry/telemetry.h"
+#include "version.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <fmt/format.h>
@@ -20,15 +22,10 @@ namespace fl {
 
 namespace {
 
-CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string& correlation_id,
-                                       bool is_default_catalog) {
+CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string& correlation_id) {
   CatalogFetchInfo info;
   info.user_agent = DefaultUserAgent();
   info.correlation_id = correlation_id;
-  if (!is_default_catalog) {
-    info.endpoint = "custom";
-    return info;
-  }
 
   std::string rest = url;
   if (auto scheme = rest.find("://"); scheme != std::string::npos) {
@@ -48,20 +45,14 @@ CatalogFetchInfo BuildCatalogFetchInfo(const std::string& url, const std::string
   if (auto at = info.endpoint.rfind('@'); at != std::string::npos) {
     info.endpoint = info.endpoint.substr(at + 1);
   }
-  if (info.endpoint != "ai.azure.com") {
+  info.endpoint = ToLower(info.endpoint);
+  if (info.endpoint != "api.catalog.azureml.ms") {
     info.endpoint = "custom";
     return info;
   }
 
   // Only the public Azure catalog contributes endpoint dimensions; custom hosts and paths stay private.
-  if (path.starts_with("api/")) {
-    path.erase(0, 4);
-    const auto slash = path.find('/');
-    info.region = path.substr(0, slash);
-    info.format = slash == std::string::npos ? std::string{} : path.substr(slash + 1);
-  } else {
-    info.format = path;
-  }
+  info.format = path;
   return info;
 }
 
@@ -83,6 +74,15 @@ void RemoveLegacyLocalEntries(std::vector<ModelInfo>& model_infos) {
   std::erase_if(model_infos, [](const auto& info) {
     const auto* provider = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
     return provider && *provider == "Local";
+  });
+}
+
+void RemoveIncompatibleModels(std::vector<ModelInfo>& model_infos) {
+  std::erase_if(model_infos, [](const ModelInfo& info) {
+    const auto* minimum_version =
+        info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR);
+    return minimum_version && !minimum_version->empty() &&
+           !IsFoundryLocalVersionCompatible(FOUNDRY_LOCAL_VERSION, *minimum_version);
   });
 }
 
@@ -129,7 +129,7 @@ AzureModelCatalog::CatalogResult AzureModelCatalog::GetLiveCatalogOrLocalSnapsho
     for (const auto& [url, filter] : catalog_urls_) {
       try {
         auto client = CreateCatalogClient(url, filter.value_or(""));
-        const auto telemetry_info = BuildCatalogFetchInfo(url, correlation_id, url == kDefaultCatalogUrl);
+        const auto telemetry_info = BuildCatalogFetchInfo(url, correlation_id);
         auto model_infos =
             FetchAllModelInfosWithCachedModels(*client, cached_model_ids, logger_, telemetry_, telemetry_info);
         any_url_succeeded = true;
@@ -190,6 +190,7 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
   logger_.Log(LogLevel::Information, fmt::format("Found {} locally cached models.", cached_model_ids.size()));
 
   auto catalog_result = GetLiveCatalogOrLocalSnapshot(cached_model_ids);
+  RemoveIncompatibleModels(catalog_result.model_infos);
   auto models = CreateModelsWithLocalPaths(catalog_result.model_infos, local_models);
 
   logger_.Log(LogLevel::Information, fmt::format("Populated model info for {} models.", models.size()));
@@ -217,6 +218,7 @@ std::vector<Model> AzureModelCatalog::FetchModelVersions(
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
       auto model_infos = client->FetchAllVersionsByAlias(model_alias, model_name);
+      RemoveIncompatibleModels(model_infos);
 
       out.reserve(out.size() + model_infos.size());
       for (auto& info : model_infos) {
@@ -261,6 +263,7 @@ std::vector<Model> AzureModelCatalog::FetchModelsByIds(const std::vector<std::st
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
       auto model_infos = client->FetchModelsByIds(remaining);
+      RemoveIncompatibleModels(model_infos);
 
       for (auto& info : model_infos) {
         std::string local_path;

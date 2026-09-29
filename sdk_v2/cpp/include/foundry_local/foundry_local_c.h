@@ -971,6 +971,7 @@ struct flConfigurationApi {
   FL_API_STATUS(SetModelCacheDir, _In_ flConfiguration* config, _In_ const char* dir);
   /// Optional. Add a catalog URL. Defaults to the Azure Foundry Local Catalog if none added.
   /// Multiple catalogs can be added. Catalogs priority is determined by the order they were added.
+  /// The URL path must end in `/asset-gallery/v1.0/models`; legacy `/ux/v1.0` URLs are unsupported.
   /// @param filter_override Optional filter string for this catalog. Pass NULL for no override.
   FL_API_STATUS(AddCatalogUrl, _In_ flConfiguration* config, _In_ const char* url,
                 _In_opt_ const char* filter_override);

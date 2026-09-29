@@ -124,6 +124,17 @@ ModelInfo MakeModelInfo(const std::string& model_id,
   return info;
 }
 
+std::vector<ModelInfo> MakeMinVersionModelInfos() {
+  auto compatible = MakeModelInfo("compatible:1", "compatible", 1, "compatible", "SnapshotProvider");
+  compatible.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "0.0.0";
+  auto future = MakeModelInfo("future:1", "future", 1, "future", "SnapshotProvider");
+  future.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "999.0.0";
+  auto missing = MakeModelInfo("missing:1", "missing", 1, "missing", "SnapshotProvider");
+  auto malformed = MakeModelInfo("malformed:1", "malformed", 1, "malformed", "SnapshotProvider");
+  malformed.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR] = "not-a-version";
+  return {std::move(compatible), std::move(future), std::move(missing), std::move(malformed)};
+}
+
 Model* FindVariant(const std::vector<Model*>& models, const std::string& model_id) {
   for (auto* model : models) {
     for (auto* variant : model->Variants()) {
@@ -134,6 +145,13 @@ Model* FindVariant(const std::vector<Model*>& models, const std::string& model_i
   }
 
   return nullptr;
+}
+
+void ExpectCompatibleMinVersionModels(const std::vector<Model*>& models) {
+  EXPECT_NE(FindVariant(models, "compatible:1"), nullptr);
+  EXPECT_NE(FindVariant(models, "missing:1"), nullptr);
+  EXPECT_EQ(FindVariant(models, "future:1"), nullptr);
+  EXPECT_EQ(FindVariant(models, "malformed:1"), nullptr);
 }
 
 }  // namespace
@@ -238,16 +256,16 @@ TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
 }
 
 TEST_F(AzureModelCatalogTest, LiveFetchRecordsDimensionsForDefaultCatalogOnly) {
-  const std::string default_url = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
+  const std::string default_url = "https://API.CATALOG.AZUREML.MS/asset-gallery/v1.0/models?ignored=true";
   AddBehavior(default_url);
-  auto catalog = CreateCatalog({});
+  auto catalog = CreateCatalog({{default_url, std::nullopt}});
 
   catalog->ListModels();
 
   ASSERT_EQ(telemetry_.calls.size(), 1u);
-  EXPECT_EQ(telemetry_.calls[0].endpoint, "custom");
+  EXPECT_EQ(telemetry_.calls[0].endpoint, "api.catalog.azureml.ms");
   EXPECT_TRUE(telemetry_.calls[0].region.empty());
-  EXPECT_TRUE(telemetry_.calls[0].format.empty());
+  EXPECT_EQ(telemetry_.calls[0].format, "asset-gallery/v1.0/models");
 }
 
 TEST_F(AzureModelCatalogTest, FailedLiveFetchRecordsFailureBeforeSnapshotFallback) {
@@ -369,6 +387,33 @@ TEST_F(AzureModelCatalogTest, CacheOnlyUsesSnapshotPathAndIgnoresUnknownScannedM
   EXPECT_NE(FindVariant(cached_models, "snapshot-model:3"), nullptr);
   EXPECT_EQ(catalog->GetModelVariant("cache-only-byom:5"), nullptr);
   EXPECT_EQ(factory_calls_, 0);
+}
+
+TEST_F(AzureModelCatalogTest, CacheOnlyFiltersSnapshotByMinFlVersion) {
+  WriteSnapshot(MakeMinVersionModelInfos());
+  for (const auto* name : {"compatible", "future", "missing", "malformed"}) {
+    AddLocalModel(std::string(name) + ":1", name);
+  }
+  auto catalog = CreateCatalog({{"https://must-not-be-called.test", std::nullopt}}, true);
+
+  const auto models = catalog->GetCachedModels();
+
+  ExpectCompatibleMinVersionModels(models);
+  EXPECT_EQ(factory_calls_, 0);
+}
+
+TEST_F(AzureModelCatalogTest, NetworkFailureFiltersSnapshotByMinFlVersion) {
+  WriteSnapshot(MakeMinVersionModelInfos());
+  for (const auto* name : {"compatible", "future", "missing", "malformed"}) {
+    AddLocalModel(std::string(name) + ":1", name);
+  }
+  AddBehavior("https://catalog.test", true);
+  auto catalog = CreateCatalog({{"https://catalog.test", std::nullopt}});
+
+  const auto models = catalog->GetCachedModels();
+
+  ExpectCompatibleMinVersionModels(models);
+  EXPECT_EQ(factory_calls_, 1);
 }
 
 TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesOnlyResolvedPublicMetadata) {

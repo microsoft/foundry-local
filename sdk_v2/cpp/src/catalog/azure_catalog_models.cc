@@ -83,6 +83,20 @@ bool ContainsStringIgnoreCase(const std::vector<std::string>& values, const std:
                      [&](const std::string& value) { return ToLower(value) == lowered_target; });
 }
 
+void UseLegacyBooleanTag(const nlohmann::json& tags, const char* key,
+                         std::optional<bool>& value) {
+  if (value.has_value() || !tags.contains(key) || !tags[key].is_string()) {
+    return;
+  }
+
+  const auto normalized = ToLower(Trim(tags[key].get<std::string>()));
+  if (normalized == "true") {
+    value = true;
+  } else if (normalized == "false") {
+    value = false;
+  }
+}
+
 DeviceType ParseDeviceType(const std::string& device) {
   const auto lower = ToLower(device);
   if (lower == "cpu") {
@@ -192,6 +206,9 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     opt_str(j, "assetId", m.asset_id);
     opt_str(properties, "name", m.name);
     opt_str(system_data, "alias", m.alias);
+    if (!m.alias || m.alias->empty()) {
+      opt_str(tags, "alias", m.alias);
+    }
     opt_str(system_data, "displayName", m.display_name);
     opt_str(system_data, "publisher", m.publisher);
     opt_str(system_data, "license", m.license);
@@ -241,15 +258,8 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     if (properties.contains("variantInfo") && properties["variantInfo"].is_object()) {
       m.variant_information = properties["variantInfo"].get<VariantInformation>();
     }
-    if (!m.supports_reasoning && tags.contains("supportsReasoning") &&
-      tags["supportsReasoning"].is_string()) {
-      const auto value = ToLower(tags["supportsReasoning"].get<std::string>());
-      if (value == "true") {
-        m.supports_reasoning = true;
-      } else if (value == "false") {
-        m.supports_reasoning = false;
-      }
-    }
+    UseLegacyBooleanTag(tags, "supportsToolCalling", m.supports_tool_calling);
+    UseLegacyBooleanTag(tags, "supportsReasoning", m.supports_reasoning);
     if (tags.contains("foundryLocal") && tags["foundryLocal"].is_string() &&
         tags["foundryLocal"].get<std::string>() == "test") {
       m.is_test_model = true;

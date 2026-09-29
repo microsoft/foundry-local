@@ -249,7 +249,47 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
   EXPECT_TRUE(public_info.IsTestModel());
 }
 
-TEST(AzureCatalogClientTest, FiltersModelsAboveCurrentMinFlVersion) {
+TEST(AzureCatalogClientTest, ParsesToolCallingCapabilityFromHistoricalTag) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [{
+      "assetId": "azureml://registries/azureml/models/qwen2.5-coder-3b/versions/1",
+      "annotations": {
+        "tags": {"supportsToolCalling": " true "},
+        "systemCatalogData": {"alias": "qwen2.5-coder-3b"}
+      },
+      "properties": {
+        "name": "qwen2.5-coder-3b", "version": 1,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }, {
+      "assetId": "azureml://registries/azureml/models/modern-model/versions/2",
+      "annotations": {
+        "tags": {"supportsToolCalling": "true"},
+        "systemCatalogData": {"alias": "modern-model", "supportsToolCalling": false}
+      },
+      "properties": {
+        "name": "modern-model", "version": 2,
+        "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+      }
+    }]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(response);
+                            });
+
+  const auto model_infos = client.FetchAllModelInfos();
+  ASSERT_EQ(model_infos.size(), 2u);
+  EXPECT_EQ(model_infos[0].model_id, "qwen2.5-coder-3b:1");
+  EXPECT_EQ(model_infos[0].int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
+  EXPECT_FALSE(model_infos[0].string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_START_STR));
+  EXPECT_FALSE(model_infos[0].string_properties.contains(FOUNDRY_LOCAL_MODEL_PROP_TOOL_CALL_END_STR));
+  EXPECT_EQ(model_infos[1].int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 0);
+}
+
+TEST(AzureCatalogClientTest, PreservesMinFlVersionForCatalogLevelFiltering) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   AzureCatalogClient client("https://test.com", "", ep, logger,
@@ -269,8 +309,10 @@ TEST(AzureCatalogClientTest, FiltersModelsAboveCurrentMinFlVersion) {
                             });
 
   const auto models = client.FetchAllModelInfos();
-  ASSERT_EQ(models.size(), 1u);
-  EXPECT_EQ(models.front().name, "current");
+  ASSERT_EQ(models.size(), 2u);
+  EXPECT_EQ(models[0].name, "future");
+  EXPECT_EQ(models[0].string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "999.0.0");
+  EXPECT_EQ(models[1].name, "current");
 }
 
 TEST(AzureCatalogClientTest, StampsModelsWithServingRegion) {
@@ -479,9 +521,9 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsUsesNamesButReturnsExactVersions) {
   const auto models = client.FetchModelsByIds({"phi-4-mini:1"});
   ASSERT_EQ(models.size(), 1u);
   EXPECT_EQ(models.front().model_id, "phi-4-mini:1");
-  ASSERT_EQ(captured["filters"].size(), 5u);
-  EXPECT_EQ(captured["filters"][4]["field"], "name");
-  EXPECT_EQ(captured["filters"][4]["values"], nlohmann::json({"phi-4-mini"}));
+  ASSERT_EQ(captured["filters"].size(), 3u);
+  EXPECT_EQ(captured["filters"][2]["field"], "name");
+  EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"phi-4-mini"}));
 }
 
 TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyDoesNotIssueRequest) {
@@ -498,17 +540,28 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyDoesNotIssueRequest) {
   EXPECT_FALSE(called);
 }
 
-TEST(AzureCatalogClientTest, CachedOlderVersionIsResolvedOnce) {
+TEST(AzureCatalogClientTest, ArchivedCachedVersionIsResolvedOnce) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   TelemetryLogger telemetry("catalog-test", logger);
   int calls = 0;
   AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
+                            [&](const std::string&, const std::string& body) {
                               ++calls;
-                              return MakeOkResponse(calls == 1
-                                  ? MakeSummaryResponse({{"phi-4-mini", 2}})
-                                  : MakeSummaryResponse({{"phi-4-mini", 1}, {"phi-4-mini", 2}}));
+                              if (calls == 1) {
+                                return MakeOkResponse(MakeSummaryResponse({{"phi-4-mini", 2}}));
+                              }
+
+                              const auto request = nlohmann::json::parse(body);
+                              const auto& filters = request["filters"];
+                              const auto has_filter = [&filters](const std::string& field) {
+                                return std::any_of(filters.begin(), filters.end(), [&field](const auto& filter) {
+                                  return filter["field"] == field;
+                                });
+                              };
+                              EXPECT_FALSE(has_filter("annotations/systemCatalogData/deploymentOptions"));
+                              EXPECT_FALSE(has_filter("annotations/archived"));
+                              return MakeOkResponse(MakeSummaryResponse({{"phi-4-mini", 1}, {"phi-4-mini", 2}}));
                             });
 
   const auto models =
@@ -551,6 +604,57 @@ TEST(AzureCatalogClientTest, FetchAllVersionsOmitsLatestFilter) {
   for (const auto& filter : captured["filters"]) {
     EXPECT_NE(filter["field"], "labels");
   }
+}
+
+TEST(AzureCatalogClientTest, FetchAllVersionsUsesLegacyTagAliasFromFullServiceResponse) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  const char* response = R"({
+    "value": [
+      {
+        "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-cpu/versions/1",
+        "annotations": {
+          "tags": {"alias": "qwen2.5-0.5b"},
+          "systemCatalogData": {}
+        },
+        "properties": {
+          "name": "qwen2.5-0.5b-cpu", "version": 1,
+          "variantInfo": {
+            "parents": [{"assetId": "azureml://registries/azureml/models/legacy-parent/versions/1"}],
+            "variantMetadata": {"modelType": "ONNX", "device": "cpu"}
+          }
+        }
+      },
+      {
+        "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-cpu/versions/2",
+        "annotations": {"systemCatalogData": {"alias": "qwen2.5-0.5b"}},
+        "properties": {
+          "name": "qwen2.5-0.5b-cpu", "version": 2,
+          "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+        }
+      },
+      {
+        "assetId": "azureml://registries/azureml/models/qwen2.5-0.5b-cpu/versions/3",
+        "annotations": {"systemCatalogData": {"alias": "qwen2.5-0.5b"}},
+        "properties": {
+          "name": "qwen2.5-0.5b-cpu", "version": 3,
+          "variantInfo": {"variantMetadata": {"modelType": "ONNX", "device": "cpu"}}
+        }
+      }
+    ]
+  })";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
+
+  const auto models = client.FetchAllVersionsByAlias("qwen2.5-0.5b");
+
+  ASSERT_EQ(models.size(), 3u);
+  EXPECT_EQ(models[0].version, 3);
+  EXPECT_EQ(models[1].version, 2);
+  EXPECT_EQ(models[2].version, 1);
+  EXPECT_TRUE(std::all_of(models.begin(), models.end(), [](const ModelInfo& info) {
+    return info.alias == "qwen2.5-0.5b";
+  }));
 }
 
 TEST(AzureCatalogClientTest, FetchAllVersionsSortsDeduplicatesAndLimitsPerVariant) {

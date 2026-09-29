@@ -118,21 +118,9 @@ std::string ExtractRegionFromResponse(const http::HttpResponse& response) {
   return ToLower(match[1].str());
 }
 
-bool MeetsMinFlVersion(const CatalogLocalModel& model) {
-  if (!model.min_fl_version || model.min_fl_version->empty()) {
-    return true;
-  }
-
-  return IsFoundryLocalVersionCompatible(FOUNDRY_LOCAL_VERSION, *model.min_fl_version);
-}
-
 std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_models) {
   std::vector<ModelInfo> infos;
   for (const auto& model : raw_models) {
-    if (!MeetsMinFlVersion(model)) {
-      continue;
-    }
-
     if (auto info = CatalogModelToModelInfo(model)) {
       infos.push_back(std::move(*info));
     }
@@ -164,8 +152,7 @@ std::vector<std::vector<CatalogFilter>> BuildSearchFilters(const IEpDetector& ep
   return filter_sets;
 }
 
-std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& model_filter,
-                                               const std::vector<std::string>& model_ids) {
+std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& model_ids) {
   std::vector<std::string> names;
   names.reserve(model_ids.size());
   for (const auto& model_id : model_ids) {
@@ -176,9 +163,6 @@ std::vector<CatalogFilter> BuildModelIdFilters(const std::vector<std::string>& m
   std::vector<CatalogFilter> filters;
   filters.push_back(MakeFilter("type", {"models"}));
   filters.push_back(MakeFilter("kind", {"Versioned"}));
-  filters.push_back(MakeFilter("annotations/systemCatalogData/deploymentOptions",
-                               ResolveDeploymentOptions(model_filter)));
-  filters.push_back(MakeFilter("annotations/archived", {"true"}, "NotEquals"));
   filters.push_back(MakeFilter("name", names));
   return filters;
 }
@@ -307,7 +291,7 @@ std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
     return {};
   }
 
-  auto model_infos = ToModelInfos(FetchFilterSet(BuildModelIdFilters(model_filter_, model_ids)));
+  auto model_infos = ToModelInfos(FetchFilterSet(BuildModelIdFilters(model_ids)));
   std::erase_if(model_infos, [&model_ids](const ModelInfo& info) {
     return std::find(model_ids.begin(), model_ids.end(), info.model_id) == model_ids.end();
   });

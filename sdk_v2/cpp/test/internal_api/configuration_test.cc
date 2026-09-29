@@ -37,6 +37,21 @@ TEST(ConfigurationTest, ValidateRejectsEmptyCatalogUrl) {
   EXPECT_THROW(config.Validate(), fl::Exception);
 }
 
+TEST(ConfigurationTest, ValidateRejectsLegacyCatalogUrl) {
+  Configuration config;
+  config.app_name = "test_app";
+  config.catalog_urls.emplace_back("https://ai.azure.com/api/eastus/ux/v1.0", "");
+
+  try {
+    config.Validate();
+    FAIL() << "Expected legacy catalog URL to be rejected";
+  } catch (const fl::Exception& exception) {
+    EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(exception.what()).find("migrate to"), std::string::npos);
+    EXPECT_NE(std::string(exception.what()).find("asset-gallery/v1.0/models"), std::string::npos);
+  }
+}
+
 TEST(ConfigurationTest, ValidateRejectsEmptyEndpoint) {
   Configuration config;
   config.app_name = "test_app";
@@ -47,7 +62,7 @@ TEST(ConfigurationTest, ValidateRejectsEmptyEndpoint) {
 TEST(ConfigurationTest, ValidateAcceptsCatalogUrlsAndEndpoints) {
   Configuration config;
   config.app_name = "test_app";
-  config.catalog_urls.emplace_back("https://example.com/catalog", "");
+  config.catalog_urls.emplace_back("https://example.com/asset-gallery/v1.0/models", "");
   config.web_service_endpoints.emplace_back("http://127.0.0.1:0");
   EXPECT_NO_THROW(config.Validate());
 }

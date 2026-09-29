@@ -46,6 +46,8 @@ class Configuration:
         additional_settings: Additional settings that Foundry Local Core can consume.
         catalog_urls: Catalog URLs with optional per-catalog filter overrides.
             Each entry is a ``(url, filter)`` tuple where filter may be ``None``.
+            URL paths must end in ``/asset-gallery/v1.0/models``; legacy
+            ``/ux/v1.0`` endpoints are unsupported.
             Defaults to the Azure Foundry Local Catalog when empty or ``None``.
         catalog_region: Region hint forwarded to the catalog service
         disable_nonessential_telemetry: When True, disable non-essential telemetry. Foundry

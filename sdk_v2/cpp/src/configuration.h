@@ -12,6 +12,10 @@
 
 namespace fl {
 
+/// Validates that a catalog URL targets the Asset Gallery models endpoint.
+/// Throws fl::Exception on failure.
+void ValidateCatalogUrl(const std::string& url);
+
 /// Top-level configuration for Manager.
 /// Mirrors the C API's flConfiguration design.
 struct Configuration {

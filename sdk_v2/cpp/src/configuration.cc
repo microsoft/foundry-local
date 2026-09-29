@@ -5,10 +5,16 @@
 #include "utils.h"
 
 #include <functional>
+#include <string_view>
 
 namespace fl {
 
 namespace {
+
+constexpr std::string_view kAssetGalleryPath = "/asset-gallery/v1.0/models";
+constexpr const char* kCatalogUrlMigrationMessage =
+  "Configuration: catalog URL must target the Asset Gallery endpoint; migrate to "
+  "'https://api.catalog.azureml.ms/asset-gallery/v1.0/models'";
 
 /// Replace all occurrences of `placeholder` with `value` in `str`.
 void ReplacePlaceholder(std::string& str, const std::string& placeholder, const std::string& value) {
@@ -36,16 +42,31 @@ std::string ExpandPlaceholders(const std::string& path,
 
 }  // namespace
 
+void ValidateCatalogUrl(const std::string& url) {
+  if (url.empty()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
+  }
+
+  const auto suffix = url.find_first_of("?#");
+  auto path = ToLower(url.substr(0, suffix));
+  while (!path.empty() && path.back() == '/') {
+    path.pop_back();
+  }
+
+  if (path.size() < kAssetGalleryPath.size() ||
+      path.compare(path.size() - kAssetGalleryPath.size(), kAssetGalleryPath.size(),
+                   kAssetGalleryPath) != 0) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, kCatalogUrlMigrationMessage);
+  }
+}
+
 void Configuration::Validate() {
   if (app_name.empty()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: app_name must not be empty");
   }
 
-  // Validate catalog URLs are non-empty strings if present
   for (const auto& [url, filter] : catalog_urls) {
-    if (url.empty()) {
-      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "Configuration: catalog URL must not be empty");
-    }
+    ValidateCatalogUrl(url);
   }
 
   // Validate web service endpoints are non-empty strings if present
