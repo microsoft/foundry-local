@@ -7,6 +7,7 @@
 #include "logger.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -62,6 +63,48 @@ class LocalModelScannerTest : public ::testing::Test {
     fs::create_directories(path.parent_path());
     std::ofstream f(path);
     f << content;
+  }
+
+  void CreateBundleDir(const std::string& relative_path,
+                       const std::string& model_name,
+                       const std::string& task = "text-ranking") {
+    const auto root = fs::path(test_dir_) / relative_path;
+    CreateFile(relative_path + "/tokenizer.json");
+    CreateFile(relative_path + "/tokenizer_config.json");
+    nlohmann::json components = nlohmann::json::object();
+    const auto add_component = [&](const std::string& name, const std::string& role) {
+      const auto relative = "components/" + name + ".onnx";
+      CreateFile(relative_path + "/" + relative, "synthetic");
+      components[name] = {{"role", role}, {"filename", relative}};
+    };
+    if (task == "text-ranking") {
+      add_component("encoder", "backbone");
+      add_component("state_head", "head");
+      add_component("action_head", "head");
+      add_component("scorer", "scorer");
+    } else {
+      add_component("backbone", "backbone");
+      add_component("pointer_head", "head");
+    }
+    std::ofstream(root / "component_manifest.json")
+        << nlohmann::json{{"schema_version", 1},
+                          {"model_type", "synthetic"},
+                          {"components", components}};
+    nlohmann::json metadata = {
+        {"Name", model_name},
+        {"Alias", "synthetic"},
+        {"Task", task},
+        {"ComponentManifest", "component_manifest.json"},
+        {"License", "MIT"},
+        {"Provenance",
+         {{"source", "synthetic"},
+          {"artifact_revision", "test-artifact"},
+          {"base_model", "synthetic/base"},
+          {"base_revision", "test-base"}}},
+        {"Provider", {{"execution_provider", "cpu"}, {"variant", "fp32"}}},
+        {"Capabilities", nlohmann::json::array({"structured-input"})},
+    };
+    std::ofstream(root / "inference_model.json") << metadata;
   }
 
 #ifdef _WIN32
@@ -159,6 +202,66 @@ TEST_F(LocalModelScannerTest, MultipleModelsAllReturned) {
   EXPECT_TRUE(results.count("llama-3:1"));
   EXPECT_TRUE(results.count("gemma:0"));
 }
+
+TEST_F(LocalModelScannerTest, MultiComponentRootIsOneModelAndChildrenAreNotScanned) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateModelDir("microsoft/clm/components/accidental-leaf", "child:1");
+
+  const auto results = ScanLocalModels(test_dir_, logger_);
+
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results.at("clm-generic-cpu:1"),
+            (fs::path(test_dir_) / "microsoft" / "clm").string());
+}
+
+TEST_F(LocalModelScannerTest, MalformedMultiComponentPackageIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  fs::remove(fs::path(test_dir_) / "microsoft/clm/tokenizer.json");
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, IncompleteBundleDownloadIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("microsoft/clm/download.tmp", "");
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, AlternateManifestNameIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  auto metadata_path = fs::path(test_dir_) / "microsoft/clm/inference_model.json";
+  nlohmann::json metadata;
+  {
+    std::ifstream input(metadata_path);
+    input >> metadata;
+  }
+  metadata["ComponentManifest"] = "other.json";
+  std::ofstream(metadata_path) << metadata;
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, TaskSpecificIncompleteLayoutIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  auto manifest_path = fs::path(test_dir_) / "microsoft/clm/component_manifest.json";
+  nlohmann::json manifest;
+  {
+    std::ifstream input(manifest_path);
+    input >> manifest;
+  }
+  manifest["components"].erase("scorer");
+  std::ofstream(manifest_path) << manifest;
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+#ifndef _WIN32
+TEST_F(LocalModelScannerTest, SymlinkedPackageAssetEscapeIsExcluded) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("outside-tokenizer.json");
+  const auto tokenizer = fs::path(test_dir_) / "microsoft/clm/tokenizer.json";
+  fs::remove(tokenizer);
+  fs::create_symlink(fs::path(test_dir_) / "outside-tokenizer.json", tokenizer);
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+#endif
 
 TEST_F(LocalModelScannerTest, EmptyDirectoryReturnsEmptyMap) {
   // test_dir_ exists but has no subdirectories with models.
