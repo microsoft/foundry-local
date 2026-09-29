@@ -1,19 +1,65 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "catalog/catalog_client.h"
+#include "telemetry/telemetry.h"
 
 #include <fmt/format.h>
 
+#include <chrono>
+#include <memory>
 #include <set>
 
 namespace fl {
 
+namespace {
+
+constexpr const char* kCatalogFetchFailure = "catalog request failed";
+
+}  // namespace
+
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,
-    ILogger& logger) {
-  // Step 1: Fetch latest catalog models (existing flow).
-  auto result = client.FetchAllModelInfos();
+    ILogger& logger,
+    ITelemetry& telemetry,
+    const CatalogFetchInfo& base_info) {
+  auto now = [] { return std::chrono::steady_clock::now(); };
+  auto elapsed_ms = [](std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
+        .count();
+  };
+  auto emit = [&](const std::string& operation, ActionStatus status, int64_t duration_ms,
+                  int32_t model_count, const std::string& error) {
+    CatalogFetchInfo info = base_info;
+    info.operation = operation;
+    info.status = status;
+    info.duration_ms = duration_ms;
+    info.model_count = model_count;
+    info.error_message = error;
+    try {
+      telemetry.RecordCatalogFetch(info);
+    } catch (const std::exception& ex) {
+      logger.Log(LogLevel::Warning, fmt::format("telemetry CatalogFetch failed: {}", ex.what()));
+    } catch (...) {
+      logger.Log(LogLevel::Warning, "telemetry CatalogFetch failed.");
+    }
+  };
+
+  // Step 1: Fetch latest catalog models (the primary catalog access).
+  std::vector<ModelInfo> result;
+  {
+    const auto start = now();
+    try {
+      result = client.FetchAllModelInfos();
+    } catch (const std::exception&) {
+      emit("FetchAll", ActionStatus::kDependencyFailure, elapsed_ms(start), 0, kCatalogFetchFailure);
+      throw;
+    } catch (...) {
+      emit("FetchAll", ActionStatus::kDependencyFailure, elapsed_ms(start), 0, "unknown error");
+      throw;
+    }
+    emit("FetchAll", ActionStatus::kSuccess, elapsed_ms(start), static_cast<int32_t>(result.size()), "");
+  }
 
   if (cached_model_ids.empty()) {
     return result;
@@ -34,17 +80,22 @@ std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
 
   // Step 3: Look up unresolved IDs from the catalog (older versions, etc.)
   if (!unresolved_ids.empty()) {
+    const auto start = now();
     try {
       auto additional = client.FetchModelsByIds(unresolved_ids);
+      const auto additional_count = static_cast<int32_t>(additional.size());
       for (auto& info : additional) {
         resolved_ids.insert(info.model_id);
         result.push_back(std::move(info));
       }
+      emit("FetchByIds", ActionStatus::kSuccess, elapsed_ms(start), additional_count, "");
     } catch (const std::exception& ex) {
       logger.Log(LogLevel::Warning,
                  fmt::format("catalog: failed to fetch cached model IDs — {}", ex.what()));
+      emit("FetchByIds", ActionStatus::kDependencyFailure, elapsed_ms(start), 0, kCatalogFetchFailure);
     } catch (...) {
       logger.Log(LogLevel::Warning, "catalog: failed to fetch cached model IDs — unknown error");
+      emit("FetchByIds", ActionStatus::kDependencyFailure, elapsed_ms(start), 0, "unknown error");
     }
 
     // IDs the public source does not recognize are intentionally omitted. Arbitrary models copied into the

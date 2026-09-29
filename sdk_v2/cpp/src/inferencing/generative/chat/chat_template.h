@@ -18,6 +18,7 @@ struct OgaSequences;
 namespace fl {
 
 class GenAIModelInstance;
+struct ToolCallContext;
 
 namespace chat_internal {
 
@@ -74,9 +75,9 @@ std::string RenderMessageForPrompt(const MessageItem& msg);
 ///
 /// The projection is provider-neutral and canonicalizes each message into the shape chat templates expect, while the
 /// transcript keeps the authoritative event order:
-///   - `content` — concatenated visible text. Reasoning is never projected, on any message: it is the model's
-///     private scratchpad, and a conversation rebuilt from storage cannot reproduce it, so replaying it would make
-///     a live session and a rebuilt one send different prompts. Always present, possibly empty.
+///   - `content` — concatenated visible text. Always present, possibly empty.
+///   - `reasoning_content` — assistant reasoning body, emitted only when preserve_reasoning_history is true. The
+///     qualified model template owns marker rendering and preserve_thinking policy.
 ///   - `tool_calls` — OpenAI-shaped array (`id` / `type` / `function.name` / `function.arguments`) for assistant
 ///     messages that issued calls. Arguments are the transcript's normalized object form, so a committed
 ///     conversation always projects; the raw bytes stay on the transcript and the response.
@@ -90,7 +91,8 @@ std::string RenderMessageForPrompt(const MessageItem& msg);
 /// then a call, then more text". Rather than silently reorder such a turn, ChatTranscript rejects it and generation
 /// stops at the call — see ValidateRenderableTurn. Within that invariant, what the template receives is the order
 /// the events actually happened in.
-std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages);
+std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages,
+                                  bool preserve_reasoning_history = false);
 
 /// Build a chat prompt string from the transcript messages of a conversation.
 /// Uses the tokenizer's built-in chat template (via GenAIModelInstance::ApplyChatTemplate).
@@ -98,15 +100,30 @@ std::string BuildChatMessagesJson(const std::vector<TranscriptMessage>& messages
 /// @param messages       Ordered transcript messages (system, user, assistant, tool, ...)
 /// @param model          Model instance whose shared tokenizer renders the template (thread-safe)
 /// @param tools_json     Optional JSON string describing available tools. Pass empty string for none.
+/// @param template_kwargs_json Optional JSON object containing additional typed template context values.
 /// @returns The formatted prompt string ready for tokenization
 std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
                             GenAIModelInstance& model,
-                            const std::string& tools_json = "");
+                            const std::string& tools_json = "",
+                            const std::string& template_kwargs_json = "",
+                            bool preserve_reasoning_history = false);
+
+/// Build a chat prompt from the complete retained tool/template context.
+std::string BuildChatPrompt(const std::vector<TranscriptMessage>& messages,
+                            GenAIModelInstance& model,
+                            const ToolCallContext& tool_ctx);
 
 /// Build a prompt from a projection that was already validated at the caller's state-mutation boundary.
 std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
                             GenAIModelInstance& model,
-                            const std::string& tools_json = "");
+                            const std::string& tools_json = "",
+                            const std::string& template_kwargs_json = "",
+                            bool preserve_reasoning_history = false);
+
+/// Build a prompt from an already-prepared conversation and the complete retained render context.
+std::string BuildChatPrompt(const chat_internal::PreparedChatMessages& messages,
+                            GenAIModelInstance& model,
+                            const ToolCallContext& tool_ctx);
 
 /// Encode a prompt string into token sequences using the model's shared tokenizer (thread-safe).
 /// Returns a unique_ptr to OgaSequences. Caller takes ownership.

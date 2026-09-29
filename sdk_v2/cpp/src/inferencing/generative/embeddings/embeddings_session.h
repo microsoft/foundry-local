@@ -49,6 +49,8 @@ class EmbeddingsSession : public Session {
   void ProcessEmbeddingsJson(const std::string& request_json,
                              const Request& original_request, Response& response);
 
+  std::string ExecutionProvider() const override;
+
   ILogger& logger_;
   GenAIModelInstance& model_;
 };

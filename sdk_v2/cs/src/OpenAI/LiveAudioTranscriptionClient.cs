@@ -92,6 +92,7 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
     private Task StartCore(CancellationToken ct)
     {
         var formatDescriptor = AudioItem.CreateFormatDescriptor("pcm", Settings.SampleRate, Settings.Channels);
+        var language = Settings.Language;
 
         try
         {
@@ -168,15 +169,20 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
 
             _session.SetStreamingCallback(streamingCallback);
 
-            _request = new Request();
-            _request.AddItem(formatDescriptor); // transfers ownership
+            var request = CreateRequest(
+                language,
+                static () => new Request(),
+                static (request, options) => request.SetOptions(options));
+            _request = request;
+
+            request.AddItem(formatDescriptor); // transfers ownership
 
             // Add queue without taking ownership — we still need to push items into it
-            Api.CheckStatus(Api.Inference.RequestAddItem(_request.Ptr, _queue.Ptr, false));
+            Api.CheckStatus(Api.Inference.RequestAddItem(request.Ptr, _queue.Ptr, false));
 
             _processingTask = RunProducerAsync(() =>
             {
-                var responsePtr = _session.ProcessRequest(_request.Ptr);
+                var responsePtr = _session.ProcessRequest(request.Ptr);
 
                 // Drain the final Response: it carries the aggregated transcription as a SpeechResultItem
                 using (var response = new Response(responsePtr))
@@ -232,6 +238,38 @@ public sealed class LiveAudioTranscriptionSession : IAsyncDisposable
             formatDescriptor.Dispose();
             _state = SessionState.Disposed;
             Cleanup();
+            throw;
+        }
+    }
+
+    internal static TRequest CreateRequest<TRequest>(
+        string? language,
+        Func<TRequest> requestFactory,
+        Action<TRequest, RequestOptions> setOptions)
+        where TRequest : IDisposable
+    {
+        var request = requestFactory();
+
+        try
+        {
+            if (language != null)
+            {
+                setOptions(
+                    request,
+                    new RequestOptions
+                    {
+                        AdditionalOptions = new Dictionary<string, string>
+                        {
+                            ["language"] = language
+                        }
+                    });
+            }
+
+            return request;
+        }
+        catch
+        {
+            request.Dispose();
             throw;
         }
     }

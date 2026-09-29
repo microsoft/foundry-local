@@ -109,6 +109,7 @@ endif()
 # ORT and ORT GenAI — acquired via FetchContent from nuget.org.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OnnxRuntimeGenAI REQUIRED)
+
 find_package(OnnxRuntime REQUIRED)
 
 # WinML EP Catalog — Windows-only, for hardware EP discovery and download. The
@@ -144,12 +145,22 @@ if(WIN32)
         src/platform/windows/cross_process_file_lock.cc
         src/platform/windows/dynlib_loader.cc
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/windows_store/telemetry_device_id.cc
+        )
+    else()
+        list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
+            src/platform/windows/telemetry_device_id.cc
+        )
+    endif()
 else()
     list(APPEND FOUNDRY_LOCAL_PLATFORM_SOURCES
         src/util/stacktrace_posix.cc
         src/platform/posix/path.cc
         src/platform/posix/file_io.cc
         src/platform/posix/cross_process_file_lock.cc
+        src/platform/posix/telemetry_device_id.cc
     )
     # Android does not support the dlopen-based loader; dynlib_loader.cc is
     # only compiled for Linux and macOS.
@@ -214,12 +225,14 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/embeddings/embeddings_session.cc
     src/inferencing/generative/chat/chat_generator.cc
     src/inferencing/session/session.cc
+    src/inferencing/session/request.cc
     src/inferencing/session/session_manager.cc
     src/inferencing/session/tool_registry.cc
     src/inferencing/generative/chat/chat_session.cc
     src/inferencing/generative/chat/chat_template.cc
     src/inferencing/generative/chat/chat_transcript.cc
     src/inferencing/generative/chat/media_input.cc
+    src/inferencing/generative/chat/prepared_chat_prompt.cc
     src/configuration.cc
     src/download/blob_download_state.cc
     src/download/blob_downloader.cc
@@ -245,6 +258,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/inferencing/generative/openresponses/response_converter.cc
     src/inferencing/generative/openresponses/response_store.cc
     src/contracts/responses_json.cc
+    src/contracts/reasoning_options.cc
     src/inferencing/generative/toolcalling/qwen_xml_tool_call_decoder.cc
     src/inferencing/generative/toolcalling/tool_call_utils.cc
     src/inferencing/generative/toolcalling/grammar.cc
@@ -267,6 +281,8 @@ set(FOUNDRY_LOCAL_SOURCES
     src/telemetry/telemetry.cc
     src/telemetry/telemetry_action_tracker.cc
     src/telemetry/device_id.cc
+    src/telemetry/download_tracker.cc
+    src/telemetry/ep_download_tracker.cc
     src/telemetry/invocation_context.cc
     src/telemetry/telemetry_environment.cc
     src/telemetry/telemetry_logger.cc
@@ -340,9 +356,10 @@ function(foundry_local_configure_target TARGET LINK_SCOPE)
     endif()
 
     if(WIN32)
-        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt version)
+        target_link_libraries(${TARGET} ${LINK_SCOPE} dbghelp bcrypt)
         # UWP builds have CMAKE_SYSTEM_NAME = "WindowsStore"; desktop = "Windows".
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+            target_link_libraries(${TARGET} ${LINK_SCOPE} version advapi32)
             target_compile_definitions(${TARGET} PRIVATE
                 FOUNDRY_LOCAL_DESKTOP_WINDOWS=1
                 FOUNDRY_LOCAL_USE_WINHTTP_TRANSPORT=1

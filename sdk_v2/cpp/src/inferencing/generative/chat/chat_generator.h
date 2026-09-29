@@ -13,6 +13,7 @@
 namespace fl {
 
 class GenAIModelInstance;
+struct PreparedChatPrompt;
 struct TranscriptMessage;
 struct SearchOptions;
 struct ToolCallContext;
@@ -34,6 +35,7 @@ struct ChatTurnUsage {
   int generated_tokens = 0;
   std::optional<flFinishReason> finish_reason;
   std::optional<BackendTerminationCause> termination_cause;
+  int cached_prompt_tokens = 0;
 };
 
 class RetainedPromptMismatchError : public std::runtime_error {
@@ -95,6 +97,13 @@ class ChatGenerator {
                              GenAIModelInstance& model,
                              const ToolCallContext& tool_ctx,
                              const SearchOptions& options) = 0;
+
+  /// Append a prompt already rendered and tokenized by the authoritative request preparation path.
+  virtual int AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                                   const PreparedChatPrompt& prompt,
+                                   GenAIModelInstance& model,
+                                   const ToolCallContext& tool_ctx,
+                                   const SearchOptions& options);
 
   /// Whether the prompt for the active turn ends inside a reasoning block opened by the chat template.
   virtual bool PromptOpensReasoning() const { return false; }

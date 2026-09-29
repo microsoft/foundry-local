@@ -100,6 +100,46 @@ impl Drop for NativeRequest {
     }
 }
 
+// ── Request preflight ────────────────────────────────────────────────────────
+
+pub(crate) struct NativeRequestPreflight {
+    api: Arc<Api>,
+    ptr: *mut flRequestPreflight,
+    _manager: Arc<NativeManager>,
+}
+
+// SAFETY: the native preflight is a self-contained, exclusively owned snapshot.
+// Moving that handle to one blocking worker does not permit concurrent access,
+// and `_manager` keeps the runtime alive until the native operation is released.
+unsafe impl Send for NativeRequestPreflight {}
+
+impl NativeRequestPreflight {
+    pub(crate) fn execute(self) -> Result<flRequestPreflightResult> {
+        let mut result = flRequestPreflightResult {
+            version: FOUNDRY_LOCAL_API_VERSION,
+            prompt_tokens: 0,
+            output_reserve_tokens: 0,
+            required_tokens: 0,
+            context_limit_tokens: 0,
+            fits: false,
+            deficit_tokens: 0,
+        };
+        let status =
+            unsafe { (self.api.inference_api().RequestPreflight_Execute)(self.ptr, &mut result) };
+        self.api.check(status)?;
+        Ok(result)
+    }
+}
+
+impl Drop for NativeRequestPreflight {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { (self.api.inference_api().RequestPreflight_Release)(self.ptr) };
+            self.ptr = ptr::null_mut();
+        }
+    }
+}
+
 // ── Response ─────────────────────────────────────────────────────────────────
 
 pub(crate) struct NativeResponse {
@@ -406,6 +446,27 @@ impl NativeSession {
         let _guard = self.lock_ops();
         let status = unsafe { (self.api.inference_api().Session_UndoTurns)(self.ptr, count) };
         self.api.check(status)
+    }
+
+    pub(crate) fn create_request_preflight(
+        &self,
+        request: &NativeRequest,
+    ) -> Result<NativeRequestPreflight> {
+        let _guard = self.lock_ops();
+        let mut ptr: *mut flRequestPreflight = ptr::null_mut();
+        let status = unsafe {
+            (self.api.inference_api().Session_CreateRequestPreflight)(
+                self.ptr,
+                request.ptr,
+                &mut ptr,
+            )
+        };
+        self.api.check(status)?;
+        Ok(NativeRequestPreflight {
+            api: Arc::clone(&self.api),
+            ptr,
+            _manager: Arc::clone(&self._manager),
+        })
     }
 
     pub(crate) fn process_request(&self, request: &NativeRequest) -> Result<NativeResponse> {

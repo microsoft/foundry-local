@@ -33,6 +33,14 @@ wrapper need only C++17 or newer.
 The build resolves its C++ dependencies from the manifest in `vcpkg.json`, and obtains
 the pinned ONNX Runtime and ONNX Runtime GenAI dependencies during CMake configuration.
 
+Chat completions accept a typed `chat_template_kwargs` JSON object, such as
+`{"enable_thinking": false}`, for model-specific template controls. The pinned stable
+GenAI package supports this feature; a nightly package is not required. Session-level
+kwargs are defaults: per-request kwargs override the entire object, and `{}` explicitly
+clears an inherited default for that request.
+For OpenAI JSON requests, the payload takes precedence over request options, followed
+by session defaults. Omitting kwargs inherits the session default, if any.
+
 ## Build From Source
 
 From this directory:
@@ -273,6 +281,13 @@ for (const std::string& endpoint : manager.GetWebServiceEndpoints()) {
 
 manager.StopWebService();
 ```
+
+Streaming chat completions, Responses, and audio transcriptions cancel their active inference when the SSE client
+disconnects. The service sends SSE keepalive comments during token silence so a dropped connection can be detected
+without waiting for the next token. Undrained streams are limited to 1 MiB of buffered events; exceeding the limit
+cancels inference and replaces pending events with a terminal SSE error. A disconnected stream cannot be resumed;
+non-streaming requests are unchanged. Engine cancellation is cooperative between inference steps; an in-progress
+prefill step cannot be interrupted before it returns.
 
 Configure with `--skip_service` when the web service is not required; this removes its
 oat++ dependency from the build.

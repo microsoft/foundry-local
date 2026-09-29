@@ -74,10 +74,9 @@ export class Request {
   }
 
   /**
-   * Cancel an in-flight request. Safe to call at any time — if the request
-   * is not currently being processed by a session, this is a no-op.
-   * Cancellation makes the matching `Session.processRequest()` reject with a
-   * `FoundryLocalError` whose `code === FlErrorCode.OperationCancelled`.
+   * Cancel this request's invocation only while it is inside native `Session::ProcessRequest`. Calling this while the
+   * request is idle, waiting in the addon's per-session queue, or already completed has no effect. Active cancellation
+   * makes the matching `Session.processRequest()` reject with `code === FlErrorCode.OperationCancelled`.
    */
   cancel(): void {
     this.#native.cancel();
@@ -88,7 +87,7 @@ export class Request {
 export function unwrapNativeRequest(request: Request): NativeRequest {
   const n = nativeByRequest.get(request);
   if (n === undefined) {
-    throw new TypeError("Session.processRequest: argument is not a valid Request");
+    throw new TypeError("Session request argument is not a valid Request");
   }
   return n;
 }

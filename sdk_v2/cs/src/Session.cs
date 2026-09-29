@@ -401,6 +401,8 @@ public abstract class Session : IDisposable
         return operation(_session);
     }
 
+    private protected ManagerLifetime.Lease AcquireManagerLease() => _managerLifetime.Acquire(this);
+
     protected void ExecuteNative(Action<NativeSession> operation)
     {
         using var admission = _operationGate.Acquire(this);

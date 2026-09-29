@@ -50,7 +50,6 @@ pub trait Logger: Send + Sync {
 ///     .log_level(LogLevel::Debug)
 ///     .model_cache_dir("/path/to/cache");
 /// ```
-#[derive(Default)]
 pub struct FoundryLocalConfig {
     app_name: String,
     app_data_dir: Option<String>,
@@ -64,6 +63,28 @@ pub struct FoundryLocalConfig {
     library_path: Option<String>,
     additional_settings: Option<HashMap<String, String>>,
     logger: Option<Box<dyn Logger>>,
+}
+
+impl Default for FoundryLocalConfig {
+    fn default() -> Self {
+        Self {
+            app_name: String::new(),
+            app_data_dir: None,
+            model_cache_dir: None,
+            logs_dir: None,
+            log_level: None,
+            catalog_urls: Vec::new(),
+            catalog_region: None,
+            web_service_urls: None,
+            service_endpoint: None,
+            library_path: None,
+            additional_settings: Some(HashMap::from([(
+                "UserAgent".into(),
+                concat!("foundry-local-rust/", env!("CARGO_PKG_VERSION")).into(),
+            )])),
+            logger: None,
+        }
+    }
 }
 
 impl fmt::Debug for FoundryLocalConfig {
@@ -311,6 +332,30 @@ impl Drop for NativeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdk_identity_defaults_to_rust_package_and_can_be_overridden() {
+        let default_config = FoundryLocalConfig::default();
+        assert_eq!(
+            default_config
+                .additional_settings
+                .as_ref()
+                .and_then(|settings| settings.get("UserAgent"))
+                .map(String::as_str),
+            Some(concat!("foundry-local-rust/", env!("CARGO_PKG_VERSION")))
+        );
+
+        let overridden = FoundryLocalConfig::new("test")
+            .additional_setting("UserAgent", "custom-rust-client/1.0");
+        assert_eq!(
+            overridden
+                .additional_settings
+                .as_ref()
+                .and_then(|settings| settings.get("UserAgent"))
+                .map(String::as_str),
+            Some("custom-rust-client/1.0")
+        );
+    }
 
     #[test]
     fn catalog_builder_preserves_urls_filters_and_priority() {

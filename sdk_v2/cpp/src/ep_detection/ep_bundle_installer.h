@@ -35,7 +35,8 @@ class EpInstallTransaction {
  public:
   EpInstallTransaction(ILogger& logger, std::unique_ptr<FileLock> lock, std::filesystem::path root_dir,
                        std::string ep_display_name, EpBundleManifest manifest, std::string generation_id,
-                       std::filesystem::path bin_dir, std::optional<std::string> previous_active_generation);
+                       std::filesystem::path bin_dir, std::optional<std::string> previous_active_generation,
+                       bool downloaded);
   ~EpInstallTransaction() noexcept;
 
   EpInstallTransaction(const EpInstallTransaction&) = delete;
@@ -47,6 +48,7 @@ class EpInstallTransaction {
   std::filesystem::path provider_path() const { return bin_dir_ / manifest_.provider_relative_path; }
 
   const std::string& bundle_id() const { return manifest_.bundle_id; }
+  bool downloaded() const { return downloaded_; }
 
   bool Activate();
   void Finalize();
@@ -65,6 +67,7 @@ class EpInstallTransaction {
   std::optional<std::string> previous_active_generation_;
   bool activated_ = false;
   bool finalized_ = false;
+  bool downloaded_ = false;
 };
 
 class EpBundleInstaller {

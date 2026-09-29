@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from foundry_local_sdk.items import Item
     from foundry_local_sdk.request import Request
     from foundry_local_sdk.response import Response
-    from foundry_local_sdk.session_types import RequestOptions
+    from foundry_local_sdk.session_types import RequestOptions, RequestPreflightResult
 
 # Stamped on every versioned struct this module builds. Must match the version requested from
 # FoundryLocalGetApi (see _native/api.py): a tool definition carrying `kind` is only read as such
@@ -126,17 +126,20 @@ class StreamingResponse:
         except RuntimeError:
             pass
 
-    def _drain_and_join(self) -> None:
-        # Drain any pending items (so their native handles are released) and
-        # wait for the worker to publish _DONE.
+    def _cancel_drain_and_join(self) -> None:
+        # Cancellation is an idle no-op, so retry while the worker crosses native admission. Timed joins leave the
+        # worker and callback threads free to make progress while ensuring early close cannot miss that boundary.
+        while self._thread is not None and self._thread.is_alive():
+            self._request.cancel()
+            self._thread.join(timeout=0.01)
+
+        # Drain any pending items so their native handles are released.
         while True:
             msg = self._queue.get()
             if msg is _DONE:
                 break
             # _StreamError / Item: drop reference; Item handles release via __del__.
             del msg
-        if self._thread is not None:
-            self._thread.join()
 
     def __iter__(self) -> Iterator["Item"]:
         from foundry_local_sdk.exception import FoundryLocalException
@@ -169,11 +172,7 @@ class StreamingResponse:
             if self._state is _State.ITERATING:
                 # Caller broke / errored out of the loop. Cancel the in-flight
                 # request, drain the queue, join the worker, and release the lock.
-                try:
-                    self._request.cancel()
-                except Exception:
-                    pass
-                self._drain_and_join()
+                self._cancel_drain_and_join()
                 self._state = _State.CANCELLED
                 # Cancelled streams produce an undefined final Response — discard it.
                 if self._final_response is not None:
@@ -221,11 +220,7 @@ class StreamingResponse:
         try:
             if self._state in (_State.NEW, _State.ITERATING):
                 # Iterator was never run, or abandoned without entering its finally.
-                try:
-                    self._request.cancel()
-                except Exception:
-                    pass
-                self._drain_and_join()
+                self._cancel_drain_and_join()
                 self._state = _State.CANCELLED
             if self._final_response is not None and not self._final_consumed:
                 try:
@@ -535,6 +530,37 @@ class ChatSession(Session):
                 f"'vision-language-chat', but got {task!r}."
             )
         super().__init__(model)
+
+    def preflight_request(self, request: "Request") -> "RequestPreflightResult":
+        """Synchronously return the native token budget for a request."""
+
+        from foundry_local_sdk._native import ffi
+        from foundry_local_sdk._native.api import api
+        from foundry_local_sdk.session_types import RequestPreflightResult
+
+        out_preflight = ffi.new("flRequestPreflight**")
+        with self._native_lifetime() as session_ptr:
+            with request._native_lifetime() as request_ptr:
+                api.check_status(
+                    api.inference.Session_CreateRequestPreflight(
+                        session_ptr, request_ptr, out_preflight
+                    )
+                )
+            preflight = out_preflight[0]
+            try:
+                result = ffi.new("flRequestPreflightResult*")
+                result.version = _API_VERSION
+                api.check_status(api.inference.RequestPreflight_Execute(preflight, result))
+                return RequestPreflightResult(
+                    prompt_tokens=int(result.prompt_tokens),
+                    output_reserve_tokens=int(result.output_reserve_tokens),
+                    required_tokens=int(result.required_tokens),
+                    context_limit_tokens=int(result.context_limit_tokens),
+                    fits=bool(result.fits),
+                    deficit_tokens=int(result.deficit_tokens),
+                )
+            finally:
+                api.inference.RequestPreflight_Release(preflight)
 
     def add_tool_definition(self, name: str, description: str, json_schema: str) -> "ChatSession":
         """Register a function tool so the model can request tool calls. Returns self (fluent).

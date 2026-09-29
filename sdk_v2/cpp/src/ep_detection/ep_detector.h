@@ -34,6 +34,7 @@ enum class CompiledModelCompatibility {
 };
 
 class ILogger;
+class ITelemetry;
 
 /// Interface for detecting available hardware devices and execution providers.
 class IEpDetector {
@@ -97,7 +98,7 @@ class EpDetector : public IEpDetector {
   /// @param logger  Logger instance.
   EpDetector(const OrtApi& ort_api, OrtEnv& ort_env,
              std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers,
-             ILogger& logger);
+             ILogger& logger, ITelemetry& telemetry);
   ~EpDetector() override = default;
 
   // Non-copyable, non-movable (owns bootstrappers and mutex state)
@@ -121,6 +122,7 @@ class EpDetector : public IEpDetector {
   OrtEnv& ort_env_;
   std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers_;
   ILogger& logger_;
+  ITelemetry& telemetry_;
   std::mutex download_mutex_;
   std::atomic<bool> download_in_progress_{false};
   mutable std::mutex cache_mutex_;

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 //
-// Used by model download/load/unload and session inference.
+// Used by asynchronous catalog queries and model load/unload operations.
 //
 // PromiseWorker<T> — generic Napi::AsyncWorker that runs a std::function<T()>
 // on a libuv worker thread and resolves / rejects a JS Promise with the

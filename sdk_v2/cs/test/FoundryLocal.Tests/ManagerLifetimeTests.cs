@@ -10,6 +10,7 @@ using Microsoft.AI.Foundry.Local.Detail;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using NativeModel = Microsoft.AI.Foundry.Local.Detail.Native.Model;
+using RequestPreflightOperation = Microsoft.AI.Foundry.Local.Detail.Native.RequestPreflightOperation;
 
 internal sealed class ManagerLifetimeTests
 {
@@ -52,6 +53,32 @@ internal sealed class ManagerLifetimeTests
         await Assert.That(() => lifetime.Acquire(this)).Throws<ObjectDisposedException>();
 
         sessionLease.Dispose();
+        await disposeTask;
+    }
+
+    [Test]
+    public async Task Dispose_WaitsForCapturedPreflightRelease()
+    {
+        using var lifetime = new ManagerLifetime();
+        using var preflight = new RequestPreflightOperation(IntPtr.Zero, lifetime.Acquire(this));
+        using var disposeStarted = new ManualResetEventSlim(false);
+
+        var disposeTask = Task.Run(() =>
+        {
+            if (!lifetime.TryBeginDispose())
+            {
+                throw new InvalidOperationException("Disposal did not begin.");
+            }
+
+            disposeStarted.Set();
+            lifetime.WaitForLeases();
+        });
+
+        disposeStarted.Wait();
+        await Task.Delay(100);
+        await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+        preflight.Dispose();
         await disposeTask;
     }
 

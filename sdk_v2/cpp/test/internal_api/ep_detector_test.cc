@@ -14,7 +14,9 @@
 #include "ep_detection/ep_bootstrapper.h"
 #include "ep_detection/ep_detector.h"
 #include "ep_detection/ep_types.h"
+#include "internal_api/test_helpers.h"
 #include "logger.h"
+#include "telemetry/telemetry.h"
 
 #include <onnxruntime_c_api.h>
 
@@ -44,11 +46,19 @@ class MockEpBootstrapper : public IEpBootstrapper {
   bool DownloadAndRegister(
       bool /*force*/,
       const ProgressCallback& progress_cb,
-      ILogger& /*logger*/) override {
+      ILogger& /*logger*/,
+      bool* downloaded = nullptr) override {
     download_called_ = true;
+    if (downloaded) {
+      *downloaded = downloaded_on_register_;
+    }
     if (progress_cb) {
-      progress_cb(name_, 50.0f);
-      progress_cb(name_, 100.0f);
+      if (!progress_cb(name_, 50.0f)) {
+        return false;
+      }
+      if (!progress_cb(name_, 100.0f) && !ignore_terminal_cancellation_) {
+        return false;
+      }
     }
     if (succeed_) {
       registered_ = true;
@@ -64,11 +74,34 @@ class MockEpBootstrapper : public IEpBootstrapper {
   bool download_called_ = false;
   bool prepare_called_ = false;
   bool prepare_succeeds_ = true;
+  bool downloaded_on_register_ = true;
+  bool ignore_terminal_cancellation_ = false;
 
  private:
   std::string name_;
   bool succeed_;
   bool registered_ = false;
+};
+
+class RecordingTelemetry : public ITelemetry {
+ public:
+  void RecordAction(Action, ActionStatus, const InvocationContext&, int64_t, const std::string&) override {}
+  void RecordException(Action, const std::exception&, const InvocationContext&) override {}
+  void RecordModelUsage(const ModelUsageInfo&) override {}
+  void RecordEpDownloadAndRegister(const EpDownloadAndRegisterInfo& info) override {
+    ep_register_calls.push_back(info);
+  }
+  void RecordDownload(const DownloadInfo&) override {}
+  void RecordCatalogFetch(const CatalogFetchInfo&) override {}
+  void StartSession() override {}
+  void EndSession() override {}
+
+  void RecordEpDownloadAttempt(const EpDownloadAttemptInfo& info) override {
+    ep_attempt_calls.push_back(info);
+  }
+
+  std::vector<EpDownloadAttemptInfo> ep_attempt_calls;
+  std::vector<EpDownloadAndRegisterInfo> ep_register_calls;
 };
 
 // ========================================================================
@@ -89,14 +122,15 @@ class EpDetectorTest : public ::testing::Test {
 
   /// Build an EpDetector from a list of mock bootstrappers, retaining raw pointers.
   std::unique_ptr<EpDetector> MakeDetector(std::vector<MockEpBootstrapper*>& raw_ptrs,
-                                           std::vector<std::pair<std::string, bool>> specs) {
+                                           std::vector<std::pair<std::string, bool>> specs,
+                                           ITelemetry& telemetry = fl::test::TestTelemetrySink()) {
     std::vector<std::unique_ptr<IEpBootstrapper>> bootstrappers;
     for (auto& [name, succeed] : specs) {
       auto mock = std::make_unique<MockEpBootstrapper>(name, succeed);
       raw_ptrs.push_back(mock.get());
       bootstrappers.push_back(std::move(mock));
     }
-    return std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), logger_);
+    return std::make_unique<EpDetector>(*ort_api_, *ort_env_, std::move(bootstrappers), logger_, telemetry);
   }
 };
 
@@ -224,6 +258,101 @@ TEST_F(EpDetectorTest, DownloadFiltered_UnknownNamesSkipped) {
   EXPECT_TRUE(mocks[0]->download_called_);
 }
 
+TEST_F(EpDetectorTest, DownloadFiltered_TelemetryCountsOnlyRecognizedNames) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}}, telemetry);
+
+  std::vector<std::string> names = {"CUDAExecutionProvider", "NonExistentProvider"};
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_TRUE(result.success);
+  ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].num_providers, 1);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].attempts, 1);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].succeeded, 1);
+  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSuccess);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
+  EXPECT_EQ(result.status, "All recognized EPs registered successfully");
+}
+
+TEST_F(EpDetectorTest, ReusedPackageRecordsSkippedDownloadAfterRestart) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}}, telemetry);
+  mocks[0]->downloaded_on_register_ = false;
+
+  EXPECT_TRUE(detector->DownloadAndRegisterEps(nullptr, nullptr).success);
+  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kSkipped);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
+}
+
+TEST_F(EpDetectorTest, DownloadAll_CancelledProgressRecordsDownloadCancellation) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}, {"QNNExecutionProvider", true}},
+                               telemetry);
+
+  auto result = detector->DownloadAndRegisterEps(nullptr, [](const std::string&, float) { return false; });
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.cancelled);
+  EXPECT_TRUE(result.registered_eps.empty());
+  EXPECT_TRUE(result.failed_eps.empty());
+  ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].status, ActionStatus::kCanceled);
+  EXPECT_FALSE(telemetry.ep_attempt_calls[0].user_agent.empty());
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].attempts, 1);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].succeeded, 0);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].failed, 0);
+  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
+  EXPECT_FALSE(telemetry.ep_register_calls[0].user_agent.empty());
+  EXPECT_EQ(telemetry.ep_register_calls[0].download_status, ActionStatus::kCanceled);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSkipped);
+}
+
+TEST_F(EpDetectorTest, TerminalCancellationRetainsRegisteredProvider) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}, {"QNNExecutionProvider", true}}, telemetry);
+  mocks[0]->ignore_terminal_cancellation_ = true;
+
+  const auto result = detector->DownloadAndRegisterEps(
+      nullptr, [](const std::string&, float percent) { return percent < 100.0f; });
+
+  EXPECT_FALSE(result.success);
+  EXPECT_TRUE(result.cancelled);
+  ASSERT_EQ(result.registered_eps.size(), 1u);
+  EXPECT_EQ(result.registered_eps[0], "CUDAExecutionProvider");
+  EXPECT_TRUE(mocks[0]->IsRegistered());
+  EXPECT_FALSE(mocks[1]->download_called_);
+  EXPECT_TRUE(detector->GetDiscoverableEps()[0].is_registered);
+  ASSERT_EQ(telemetry.ep_register_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_register_calls[0].register_status, ActionStatus::kSuccess);
+  ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].status, ActionStatus::kCanceled);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].succeeded, 1);
+}
+
+TEST_F(EpDetectorTest, DownloadFiltered_TrtRtxMissingCudaRecordsDependencyFailure) {
+  RecordingTelemetry telemetry;
+  std::vector<MockEpBootstrapper*> mocks;
+  auto detector = MakeDetector(mocks, {{"NvTensorRTRTXExecutionProvider", true}}, telemetry);
+  std::vector<std::string> names = {"NvTensorRTRTXExecutionProvider"};
+
+  auto result = detector->DownloadAndRegisterEps(&names, nullptr);
+
+  EXPECT_FALSE(result.success);
+  ASSERT_EQ(telemetry.ep_attempt_calls.size(), 1u);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].status, ActionStatus::kDependencyFailure);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].num_providers, 1);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].attempts, 0);
+  EXPECT_EQ(telemetry.ep_attempt_calls[0].failed, 1);
+  EXPECT_TRUE(telemetry.ep_register_calls.empty());
+}
+
 TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknown_SucceedsWithNothing) {
   std::vector<MockEpBootstrapper*> mocks;
   auto detector = MakeDetector(mocks, {{"CUDAExecutionProvider", true}});
@@ -234,6 +363,7 @@ TEST_F(EpDetectorTest, DownloadFiltered_AllNamesUnknown_SucceedsWithNothing) {
   EXPECT_TRUE(result.success);
   EXPECT_TRUE(result.registered_eps.empty());
   EXPECT_TRUE(result.failed_eps.empty());
+  EXPECT_EQ(result.status, "No recognized EPs requested");
 
   EXPECT_FALSE(mocks[0]->download_called_);
 }

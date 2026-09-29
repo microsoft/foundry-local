@@ -13,11 +13,11 @@
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
-#include <string_view>
+#include <fstream>
 #include <thread>
 #include <vector>
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 #include <windows.h>
 #include <sysinfoapi.h>
 #include <winternl.h>
@@ -28,6 +28,7 @@
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
+#include <sys/sysctl.h>
 #endif
 #endif
 
@@ -35,7 +36,7 @@ namespace fl {
 
 namespace {
 
-#ifdef _WIN32
+#if defined(FOUNDRY_LOCAL_DESKTOP_WINDOWS)
 std::string GetProcessPath() {
   std::array<char, MAX_PATH> path{};
   DWORD length = ::GetModuleFileNameA(nullptr, path.data(), static_cast<DWORD>(path.size()));
@@ -51,6 +52,25 @@ std::string GetProcessName() {
     return "unknown";
   }
   return std::filesystem::path(path).filename().string();
+}
+
+std::string ReadRegistryString(HKEY root, const char* subkey, const char* value_name) {
+  constexpr DWORD kMaxProbeBytes = 16 * 1024;
+  DWORD size = 0;
+  const DWORD flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+  if (::RegGetValueA(root, subkey, value_name, flags, nullptr, nullptr, &size) != ERROR_SUCCESS ||
+      size == 0 || size > kMaxProbeBytes) {
+    return {};
+  }
+
+  std::string value(size, '\0');
+  if (::RegGetValueA(root, subkey, value_name, flags, nullptr, value.data(), &size) != ERROR_SUCCESS) {
+    return {};
+  }
+  while (!value.empty() && value.back() == '\0') {
+    value.pop_back();
+  }
+  return value;
 }
 
 std::string TrimVersionString(std::string value) {
@@ -180,13 +200,66 @@ std::string GetCpuArch() {
   SYSTEM_INFO si{};
   ::GetNativeSystemInfo(&si);
   switch (si.wProcessorArchitecture) {
-    case PROCESSOR_ARCHITECTURE_AMD64: return "amd64";
-    case PROCESSOR_ARCHITECTURE_ARM:   return "arm";
-    case PROCESSOR_ARCHITECTURE_ARM64: return "arm64";
-    case PROCESSOR_ARCHITECTURE_IA64:  return "ia64";
-    case PROCESSOR_ARCHITECTURE_INTEL: return "x86";
-    default:                           return "unknown";
+    case PROCESSOR_ARCHITECTURE_AMD64:
+      return "amd64";
+    case PROCESSOR_ARCHITECTURE_ARM:
+      return "arm";
+    case PROCESSOR_ARCHITECTURE_ARM64:
+      return "arm64";
+    case PROCESSOR_ARCHITECTURE_IA64:
+      return "ia64";
+    case PROCESSOR_ARCHITECTURE_INTEL:
+      return "x86";
+    default:
+      return "unknown";
   }
+}
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  TelemetryInternal::HostEnvironmentEvidence evidence;
+  evidence.kubernetes = !TelemetryEnvironment::GetEnv("KUBERNETES_SERVICE_HOST").empty();
+  evidence.aws_ecs = !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI").empty() ||
+                     !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI_V4").empty();
+  evidence.generic_container =
+      TelemetryEnvironment::IsTruthyValue(TelemetryEnvironment::GetEnv("DOTNET_RUNNING_IN_CONTAINER")) ||
+      !TelemetryEnvironment::GetEnv("CONTAINER_SANDBOX_MOUNT_POINT").empty();
+  constexpr const char* kBiosRegistryPath = "HARDWARE\\DESCRIPTION\\System\\BIOS";
+  evidence.dmi = ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "SystemManufacturer") + " " +
+                 ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "SystemProductName") + " " +
+                 ReadRegistryString(HKEY_LOCAL_MACHINE, kBiosRegistryPath, "BaseBoardManufacturer");
+  return TelemetryInternal::ClassifyHostEnvironment(evidence);
+}
+#elif defined(_WIN32)
+std::string GetProcessName() {
+  return "unknown";
+}
+
+std::string GetHostAppVersion() {
+  return {};
+}
+
+int64_t GetTotalMemoryMB() {
+  return -1;
+}
+
+std::string GetWindowsVersion() {
+  return "unknown";
+}
+
+std::string GetCpuArch() {
+#if defined(_M_AMD64)
+  return "amd64";
+#elif defined(_M_ARM64)
+  return "arm64";
+#elif defined(_M_IX86)
+  return "x86";
+#else
+  return "unknown";
+#endif
+}
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  return TelemetryInternal::ClassifyHostEnvironment({});
 }
 #else
 std::string GetProcessName() {
@@ -229,6 +302,60 @@ PosixOsInfo GetPosixOsInfo() {
     out.arch = u.machine;
   }
   return out;
+}
+
+#if defined(__linux__) || defined(__ANDROID__)
+std::string ReadBoundedFile(const char* path) {
+  constexpr size_t kMaxProbeBytes = 16 * 1024;
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+
+  std::array<char, kMaxProbeBytes> buffer{};
+  input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+  return std::string(buffer.data(), static_cast<size_t>(input.gcount()));
+}
+
+bool FileExists(const char* path) {
+  std::ifstream input(path);
+  return input.good();
+}
+#endif
+
+TelemetryInternal::HostEnvironmentInfo GetHostEnvironmentInfo() {
+  TelemetryInternal::HostEnvironmentEvidence evidence;
+#if defined(__linux__) || defined(__ANDROID__)
+  evidence.docker_marker = FileExists("/.dockerenv");
+  evidence.podman_marker = FileExists("/run/.containerenv");
+  evidence.kubernetes = !TelemetryEnvironment::GetEnv("KUBERNETES_SERVICE_HOST").empty();
+  evidence.aws_ecs = !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI").empty() ||
+                     !TelemetryEnvironment::GetEnv("ECS_CONTAINER_METADATA_URI_V4").empty();
+  evidence.generic_container =
+      TelemetryEnvironment::IsTruthyValue(TelemetryEnvironment::GetEnv("DOTNET_RUNNING_IN_CONTAINER"));
+  evidence.systemd_container =
+      ReadBoundedFile("/run/systemd/container") + TelemetryEnvironment::GetEnv("container");
+  evidence.cgroup = ReadBoundedFile("/proc/1/cgroup") + ReadBoundedFile("/proc/self/cgroup");
+  evidence.cpu_info = ReadBoundedFile("/proc/cpuinfo");
+  evidence.kernel_release = ReadBoundedFile("/proc/sys/kernel/osrelease");
+  evidence.dmi = ReadBoundedFile("/sys/class/dmi/id/sys_vendor") +
+                 ReadBoundedFile("/sys/class/dmi/id/product_name") +
+                 ReadBoundedFile("/sys/class/dmi/id/board_vendor");
+#if defined(__ANDROID__)
+  const std::string android_properties = ReadBoundedFile("/system/build.prop");
+  evidence.android_emulator = TelemetryInternal::ContainsAscii(android_properties, "ro.kernel.qemu=1") ||
+                              TelemetryInternal::ContainsAscii(android_properties, "ro.boot.qemu=1") ||
+                              TelemetryInternal::ContainsAscii(android_properties,
+                                                               "ro.product.manufacturer=genymotion");
+#endif
+#elif defined(__APPLE__)
+  int is_virtual_machine = 0;
+  size_t size = sizeof(is_virtual_machine);
+  evidence.apple_virtual_machine =
+      ::sysctlbyname("kern.hv_vmm_present", &is_virtual_machine, &size, nullptr, 0) == 0 &&
+      is_virtual_machine != 0;
+#endif
+  return TelemetryInternal::ClassifyHostEnvironment(evidence);
 }
 
 #if defined(__APPLE__)
@@ -318,6 +445,15 @@ ProcessInfo BuildProcessInfo(const TelemetryMetadata& metadata, bool include_dev
   info.cpu_arch = metadata.cpu_arch;
   info.process_name = GetProcessName();
   info.device_id_status = include_device_id_status ? TelemetryDeviceId::Instance().GetStatusString() : "Disabled";
+  const auto host_environment = GetHostEnvironmentInfo();
+  info.is_container = host_environment.is_container;
+  info.is_virtual_machine = host_environment.is_virtual_machine;
+  info.is_emulator = host_environment.is_emulator;
+  info.container_type = host_environment.container_type;
+  info.virtualization_type = host_environment.virtualization_type;
+  info.host_environment = host_environment.environment_class;
+  info.environment_detection_confidence = host_environment.detection_confidence;
+  info.device_id_scope = host_environment.device_id_scope;
   info.cpu_count = static_cast<int32_t>(std::thread::hardware_concurrency());
   info.total_memory_mb = GetTotalMemoryMB();
   return info;

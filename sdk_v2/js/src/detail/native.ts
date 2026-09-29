@@ -157,6 +157,15 @@ export interface NativeResponse {
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
+export interface NativeRequestPreflightResult {
+  promptTokens: number;
+  outputReserveTokens: number;
+  requiredTokens: number;
+  contextLimitTokens: number;
+  fits: boolean;
+  deficitTokens: number;
+}
+
 export interface NativeRequestCtor {
   new (): NativeRequest;
 }
@@ -205,13 +214,17 @@ export interface NativeItemQueue {
 
 export interface NativeSession {
   processRequest(request: NativeRequest, workerStartedForTest?: (release: () => void) => void): Promise<NativeResponse>;
-  processStreamingRequest(request: NativeRequest, onItem: (item: unknown) => void): Promise<NativeResponse>;
+  processStreamingRequest(
+    request: NativeRequest,
+    onItem: (item: unknown) => void,
+  ): Promise<NativeResponse> & { cancelQueued(): boolean };
   setOptions(options: NativeRequestOptions): void;
   dispose(): void;
   isDisposed(): boolean;
 }
 
 export interface NativeChatSession extends NativeSession {
+  preflightRequest(request: NativeRequest): Promise<NativeRequestPreflightResult>;
   addToolDefinition(
     definition:
       | {

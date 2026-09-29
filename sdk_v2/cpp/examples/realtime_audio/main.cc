@@ -37,27 +37,16 @@ void RealtimeAudioChat(IModel& model, const std::string& audio_path) {
   AudioSession session(model);
 
   // 2. Set a streaming callback to receive incremental text as words are generated.
-  //    Each callback invocation delivers one item in the queue.
+  //    Each callback invocation delivers one owning Item.
 
   // lambda can capture user data if needed (equivalent to the additional `void* user_data` parameter in the C API).
-  session.SetStreamingCallback([/*user_data*/](flStreamingCallbackData event) -> int {
-    const auto* item_api = detail::item_api();
-
-    flItem* raw_item = nullptr;
-    if (item_api->ItemQueue_TryPop(event.item_queue, &raw_item)) {
-      Item item(*raw_item);
-      if (item.GetType() == FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT) {
-        auto seg = item.GetSpeechSegment();
-        std::cout.write(seg.text.data(), seg.text.size());
-        std::cout.flush();
-      } else {
-        std::cerr << "Unexpected item type" << std::endl;
-      }
-
-      // ~Item calls release.
+  session.SetStreamingCallback([/*user_data*/](Item item) -> int {
+    if (item.GetType() == FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT) {
+      auto seg = item.GetSpeechSegment();
+      std::cout.write(seg.text.data(), seg.text.size());
+      std::cout.flush();
     } else {
-      // should never happen. adding item to queue to callback should be 1:1.
-      std::cerr << "Callback invoked but no item in queue" << std::endl;
+      std::cerr << "Unexpected item type" << std::endl;
     }
 
     return 0;  // return non-zero to cancel

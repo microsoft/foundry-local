@@ -4,6 +4,7 @@
 
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/onnx_chat_engine.h"
+#include "inferencing/generative/chat/prepared_chat_prompt.h"
 #include "inferencing/generative/chat/search_options.h"
 #include "inferencing/generative/toolcalling/tool_call_context.h"
 
@@ -20,6 +21,7 @@ class GenAIModelInstance;
 namespace onnx_engine_chat_stream_internal {
 
 std::optional<BackendTerminationCause> MapTerminationCause(uint32_t reason);
+ChatTurnUsage BuildTurnUsage(int prompt_tokens, const OnnxChatEngine::TurnResult& result);
 
 }  // namespace onnx_engine_chat_stream_internal
 
@@ -41,6 +43,11 @@ class OnnxEngineChatStream final : public ChatGenerator {
                      GenAIModelInstance& model,
                      const ToolCallContext& tool_ctx,
                      const SearchOptions& options) override;
+  int AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                           const PreparedChatPrompt& prompt,
+                           GenAIModelInstance& model,
+                           const ToolCallContext& tool_ctx,
+                           const SearchOptions& options) override;
   int AppendMessages(const std::vector<TranscriptMessage>& new_messages,
                      const std::vector<TranscriptMessage>& full_messages,
                      GenAIModelInstance& model,
@@ -54,6 +61,10 @@ class OnnxEngineChatStream final : public ChatGenerator {
       const SearchOptions& options,
       GenAIModelInstance& model,
       const ToolCallContext& tool_ctx);
+  static std::unique_ptr<OnnxEngineChatStream> CreatePrepared(PreparedChatPrompt prepared,
+                                                              const SearchOptions& options,
+                                                              GenAIModelInstance& model,
+                                                              const ToolCallContext& tool_ctx);
   static std::unique_ptr<OnnxEngineChatStream> Create(
       const chat_internal::PreparedChatMessages& messages,
       const SearchOptions& options,

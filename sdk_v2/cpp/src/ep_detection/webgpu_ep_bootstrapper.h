@@ -31,7 +31,8 @@ class WebGpuEpBootstrapper : public IEpBootstrapper {
 
   const std::string& Name() const override;
   bool IsRegistered() const override;
-  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger) override;
+  bool DownloadAndRegister(bool force, const ProgressCallback& progress_cb, ILogger& logger,
+                           bool* downloaded = nullptr) override;
   bool PrepareForModelLoad(ILogger& logger) override;
 
   /// Whether Foundry Local publishes a WebGPU EP bundle for this platform.

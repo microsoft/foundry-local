@@ -146,8 +146,8 @@ public sealed class StreamingResponse : IAsyncEnumerable<Item>, IAsyncDisposable
             // TryComplete (channel completion is always preceded by ProcessRequest returning). The
             // native request has therefore already produced its full output, so cleanup MUST NOT
             // signal abort — doing so races the native streaming-callback worker thread and can
-            // flip request.canceled on a still-finalizing request, truncating the output. Only an
-            // early break / dispose / external-token cancellation (which skip this line) should abort.
+            // transition a still-finalizing request to canceled, truncating the output. Only an early
+            // break / dispose / external-token cancellation (which skip this line) should abort.
             Interlocked.Exchange(ref _drainedNaturally, 1);
         }
         finally

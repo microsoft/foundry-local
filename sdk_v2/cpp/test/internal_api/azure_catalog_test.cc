@@ -16,6 +16,7 @@
 #include "internal_api/test_helpers.h"
 #include "logger.h"
 #include "model_info.h"
+#include "test_helpers.h"
 
 #include <foundry_local/foundry_local_c.h>
 #include <gtest/gtest.h>
@@ -170,7 +171,7 @@ class FakeClientAzureModelCatalog final : public AzureModelCatalog {
                               bool cache_only,
                               std::shared_ptr<FakeCatalogClientState> state)
       : AzureModelCatalog(std::move(catalog_urls), std::move(cache_dir), std::move(model_factory), ep_detector, logger,
-                          cache_only, "eastus", false),
+                          cache_only, "eastus", false, fl::test::TestTelemetrySink()),
         state_(std::move(state)) {}
 
  protected:
@@ -846,7 +847,8 @@ TEST(AzureCatalogClientTest, WithCachedModels_NoCachedIds_BehavesLikeRegularFetc
                               return MakeOkResponse(MakeMockCatalogResponse({{"phi-4-mini", 3}}));
                             });
 
-  auto result = FetchAllModelInfosWithCachedModels(client, {}, logger);
+  CatalogFetchInfo telemetry_info;
+  auto result = FetchAllModelInfosWithCachedModels(client, {}, logger, fl::test::TestTelemetrySink(), telemetry_info);
 
   // Only the primary FetchAllModelInfos call — no extra fetch for cached models.
   EXPECT_EQ(http_call_count, 1);
@@ -866,7 +868,9 @@ TEST(AzureCatalogClientTest, WithCachedModels_AlreadyInCatalog_NoExtraFetch) {
                             });
 
   // The cached ID matches what's already in the catalog — no extra fetch needed.
-  auto result = FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:3"}, logger);
+  CatalogFetchInfo telemetry_info;
+  auto result = FetchAllModelInfosWithCachedModels(client, {"phi-4-mini:3"}, logger,
+                                                   fl::test::TestTelemetrySink(), telemetry_info);
 
   EXPECT_EQ(http_call_count, 1);
   ASSERT_EQ(result.size(), 1u);
@@ -904,7 +908,9 @@ TEST(AzureCatalogClientTest, WithCachedModels_UnresolvedId_TriggersSecondFetch) 
                               }
                             });
 
-  auto result = FetchAllModelInfosWithCachedModels(client, {"old-model:1"}, logger);
+  CatalogFetchInfo telemetry_info;
+  auto result = FetchAllModelInfosWithCachedModels(client, {"old-model:1"}, logger,
+                                                   fl::test::TestTelemetrySink(), telemetry_info);
 
   EXPECT_EQ(http_call_count, 2);
   ASSERT_EQ(result.size(), 2u);
@@ -944,7 +950,9 @@ TEST(AzureCatalogClientTest, WithCachedModels_FullyUnresolved_DoesNotCreatePubli
                               }
                             });
 
-  auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger);
+  CatalogFetchInfo telemetry_info;
+  auto result = FetchAllModelInfosWithCachedModels(client, {"custom-model:0"}, logger,
+                                                   fl::test::TestTelemetrySink(), telemetry_info);
 
   EXPECT_EQ(http_call_count, 2);
 

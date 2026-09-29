@@ -4,6 +4,7 @@
 
 #include "inferencing/session/session_manager.h"
 #include "inferencing/session/session_registration.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/chat/chat_session.h"
 #include "inferencing/model_load_manager.h"
 #include "inferencing/generative/openresponses/response_store.h"
@@ -11,6 +12,9 @@
 #include "exception.h"
 #include "logger.h"
 #include "model.h"
+#include "items/message_item.h"
+#include "items/text_item.h"
+#include "items/tool_result_item.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 
@@ -20,6 +24,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -399,7 +404,7 @@ TEST_F(SessionManagerTest, CheckedOutSessionNotAffectedByCheckIn) {
 
 namespace {
 
-/// Test-only Session that blocks inside ProcessRequestImpl until its request's cancel flag is
+/// Test-only Session that blocks inside ProcessRequestImpl until its request's cancellation is
 /// observed. Lets a unit test verify SessionManager::CancelAll() propagates cancellation to every
 /// registered session without loading a model. Polls the atomic exactly like the real generation
 /// loop, with a safety deadline so a broken Cancel() fails the test instead of hanging the suite.
@@ -417,7 +422,7 @@ class BlockingCancelSession : public Session {
     in_flight_.store(true, std::memory_order_release);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!request.canceled.load(std::memory_order_relaxed)) {
+    while (!request.IsCancellationRequested()) {
       if (std::chrono::steady_clock::now() >= deadline) {
         return;  // safety net: a broken Cancel() must not hang the test suite
       }
@@ -429,6 +434,165 @@ class BlockingCancelSession : public Session {
  private:
   std::atomic<bool> in_flight_{false};
 };
+
+class CompletingSession : public Session {
+ public:
+  CompletingSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  size_t ProcessCount() const { return process_count_; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& response) override {
+    ++process_count_;
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  size_t process_count_ = 0;
+};
+
+class ControlledCancelSession : public Session {
+ public:
+  ControlledCancelSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry, /*allow_concurrent_requests=*/true) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  bool FirstInvocationEntered() const { return first_invocation_entered_.load(std::memory_order_acquire); }
+  size_t ProcessCount() const { return process_count_.load(std::memory_order_acquire); }
+
+  void ReleaseFirstInvocation() {
+    release_first_invocation_.store(true, std::memory_order_release);
+  }
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& response) override {
+    const auto invocation = process_count_.fetch_add(1, std::memory_order_acq_rel);
+    if (invocation == 0) {
+      first_invocation_entered_.store(true, std::memory_order_release);
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (!request.IsCancellationRequested() || !release_first_invocation_.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          return;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  std::atomic<size_t> process_count_{0};
+  std::atomic<bool> first_invocation_entered_{false};
+  std::atomic<bool> release_first_invocation_{false};
+};
+
+class CallbackExceptionSession : public Session {
+ public:
+  CallbackExceptionSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  size_t ProcessCount() const { return process_count_; }
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& response) override {
+    ++process_count_;
+    if (process_count_ == 1) {
+      request.CancelFromStreamingCallbackException("callback exploded");
+      return;
+    }
+
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  size_t process_count_ = 0;
+};
+
+class ThrowThenCompleteSession : public Session {
+ public:
+  ThrowThenCompleteSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  size_t ProcessCount() const { return process_count_; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& response) override {
+    ++process_count_;
+    if (process_count_ == 1) {
+      throw std::runtime_error("backend exploded");
+    }
+
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  size_t process_count_ = 0;
+};
+
+class NonStdThrowThenCompleteSession : public Session {
+ public:
+  NonStdThrowThenCompleteSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  size_t ProcessCount() const { return process_count_; }
+
+ protected:
+  void ProcessRequestImpl(const Request& /*request*/, Response& response) override {
+    ++process_count_;
+    if (process_count_ == 1) {
+      throw 42;
+    }
+
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+  }
+
+ private:
+  size_t process_count_ = 0;
+};
+
+class NonStdThrowAfterCancelSession : public Session {
+ public:
+  NonStdThrowAfterCancelSession(const Model& model, ILogger& logger, ITelemetry& telemetry)
+      : Session(model, logger, telemetry) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  bool InFlight() const { return in_flight_.load(std::memory_order_acquire); }
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& /*response*/) override {
+    in_flight_.store(true, std::memory_order_release);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!request.IsCancellationRequested()) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw 42;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    throw 42;
+  }
+
+ private:
+  std::atomic<bool> in_flight_{false};
+};
+
+flErrorCode ProcessAndGetCode(Session& session, const Request& request) {
+  try {
+    Response response;
+    session.ProcessRequest(request, response);
+    return FOUNDRY_LOCAL_OK;
+  } catch (const Exception& error) {
+    return error.code();
+  }
+}
 
 /// Spin until `pred` is true or the timeout elapses. Returns pred's final value.
 template <typename Pred>
@@ -463,25 +627,23 @@ TEST(SessionManagerCancelTest, CancelAllCancelsInFlightRequestsOnEverySession) {
 
   // Drive each session's blocking ProcessRequest on its own worker so both requests are in-flight
   // (registered in active_requests_) at the same time — exercising "every registered session".
-  auto f1 = std::async(std::launch::async, [&] {
-    Response resp;
-    s1.ProcessRequest(req1, resp);
-  });
-  auto f2 = std::async(std::launch::async, [&] {
-    Response resp;
-    s2.ProcessRequest(req2, resp);
-  });
+  auto f1 = std::async(std::launch::async, [&] { return ProcessAndGetCode(s1, req1); });
+  auto f2 = std::async(std::launch::async, [&] { return ProcessAndGetCode(s2, req2); });
 
   ASSERT_TRUE(WaitUntil([&] { return s1.InFlight() && s2.InFlight(); }, std::chrono::seconds(2)))
       << "worker requests never became in-flight";
 
   mgr.CancelAll();
 
-  // CancelAll set each request's flag; the blocked workers observe it and return promptly.
+  // CancelAll canceled each request; the blocked workers observe it and return promptly.
   EXPECT_EQ(f1.wait_for(std::chrono::seconds(2)), std::future_status::ready);
   EXPECT_EQ(f2.wait_for(std::chrono::seconds(2)), std::future_status::ready);
-  EXPECT_TRUE(req1.canceled.load(std::memory_order_relaxed));
-  EXPECT_TRUE(req2.canceled.load(std::memory_order_relaxed));
+  EXPECT_EQ(f1.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_EQ(f2.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(req1.IsCompleted());
+  EXPECT_TRUE(req2.IsCompleted());
+  EXPECT_FALSE(req1.IsCancellationRequested());
+  EXPECT_FALSE(req2.IsCancellationRequested());
 }
 
 TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
@@ -505,12 +667,449 @@ TEST(SessionManagerCancelTest, RequestAdmittedAfterCancelIsStampedCanceled) {
 
   // Now drive the request. It is admitted after Cancel() ran, so ProcessRequest must stamp it on
   // insert and the blocking loop must observe cancellation at its first poll.
-  auto f = std::async(std::launch::async, [&] {
-    Response resp;
-    s.ProcessRequest(req, resp);
-  });
+  auto f = std::async(std::launch::async, [&] { return ProcessAndGetCode(s, req); });
 
   EXPECT_EQ(f.wait_for(std::chrono::seconds(2)), std::future_status::ready)
       << "late-admitted request ran uncanceled — the session_canceled_ latch did not stamp it";
-  EXPECT_TRUE(req.canceled.load(std::memory_order_relaxed));
+  EXPECT_EQ(f.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(req.IsCompleted());
+  EXPECT_FALSE(req.IsCancellationRequested());
+  EXPECT_FALSE(s.InFlight());
+}
+
+TEST(SessionRequestLifecycleTest, IdleCancelIsNoOpAndRequestReachesBackend) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  ASSERT_FALSE(request.Cancel());
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
+  EXPECT_EQ(session.ProcessCount(), 1u);
+}
+
+TEST(SessionRequestLifecycleTest, PublishedCompletionMakesLateCancellationNoOp) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  Response response;
+
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.Cancel());
+  EXPECT_FALSE(request.IsCancellationRequested());
+}
+
+TEST(SessionRequestLifecycleTest, ReusedRequestAfterSessionCancelNeverReachesBackend) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CompletingSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+  Response response;
+
+  session.ProcessRequest(request, response);
+  ASSERT_EQ(session.ProcessCount(), 1u);
+  ASSERT_TRUE(request.IsCompleted());
+
+  session.Cancel();
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::None);
+  EXPECT_EQ(session.ProcessCount(), 1u);
+}
+
+TEST(SessionRequestLifecycleTest, InFlightCancellationAllowsRequestReuse) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  ControlledCancelSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  auto first = std::async(std::launch::async, [&] { return ProcessAndGetCode(session, request); });
+  ASSERT_TRUE(WaitUntil([&] { return session.FirstInvocationEntered(); }, std::chrono::seconds(2)));
+  ASSERT_TRUE(request.Cancel());
+  session.ReleaseFirstInvocation();
+
+  EXPECT_EQ(first.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::None);
+  EXPECT_TRUE(request.IsCompleted());
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
+  EXPECT_EQ(session.ProcessCount(), 2u);
+}
+
+TEST(SessionRequestLifecycleTest, ConcurrentReuseOfCanceledActiveRequestIsRejected) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  ControlledCancelSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  auto first = std::async(std::launch::async, [&] { return ProcessAndGetCode(session, request); });
+  ASSERT_TRUE(WaitUntil([&] { return session.FirstInvocationEntered(); }, std::chrono::seconds(2)));
+  ASSERT_TRUE(request.Cancel());
+
+  auto concurrent = std::async(std::launch::async, [&] { return ProcessAndGetCode(session, request); });
+  EXPECT_EQ(concurrent.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  EXPECT_EQ(concurrent.get(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_EQ(session.ProcessCount(), 1u);
+
+  session.ReleaseFirstInvocation();
+  EXPECT_EQ(first.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+}
+
+TEST(SessionRequestLifecycleTest, OrdinaryExceptionAllowsRequestReuse) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  ThrowThenCompleteSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  EXPECT_THROW(
+      {
+        Response response;
+        session.ProcessRequest(request, response);
+      },
+      std::runtime_error);
+  EXPECT_TRUE(request.IsCompleted());
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
+  EXPECT_EQ(session.ProcessCount(), 2u);
+}
+
+TEST(SessionRequestLifecycleTest, NonStdExceptionAllowsRequestReuse) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  NonStdThrowThenCompleteSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  try {
+    Response response;
+    session.ProcessRequest(request, response);
+    FAIL() << "expected non-standard exception";
+  } catch (int value) {
+    EXPECT_EQ(value, 42);
+  }
+  EXPECT_TRUE(request.IsCompleted());
+
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
+  EXPECT_EQ(session.ProcessCount(), 2u);
+}
+
+TEST(SessionRequestLifecycleTest, CancellationWinsOverNonStdException) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  NonStdThrowAfterCancelSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  auto processing = std::async(std::launch::async, [&] { return ProcessAndGetCode(session, request); });
+  ASSERT_TRUE(WaitUntil([&] { return session.InFlight(); }, std::chrono::seconds(2)));
+  ASSERT_TRUE(request.Cancel());
+
+  EXPECT_EQ(processing.get(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  EXPECT_TRUE(request.IsCompleted());
+}
+
+TEST(SessionRequestLifecycleTest, CallbackExceptionSurfacesOriginalCauseAndAllowsReuse) {
+  fl::test::FakeServiceBindings svc;
+  Model catalog_model = Model::FromModelInfo(ModelInfo{}, "", svc.download_manager, svc.model_load_manager);
+  TelemetryLogger telemetry{"test", fl::test::NullLog()};
+  CallbackExceptionSession session(catalog_model, fl::test::NullLog(), telemetry);
+  Request request;
+
+  try {
+    Response response;
+    session.ProcessRequest(request, response);
+    FAIL() << "expected callback failure";
+  } catch (const Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    EXPECT_NE(std::string(error.what()).find("streaming callback threw an exception: callback exploded"),
+              std::string::npos);
+  }
+
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_EQ(request.GetCancellationReason(), Request::CancellationReason::None);
+  EXPECT_EQ(ProcessAndGetCode(session, request), FOUNDRY_LOCAL_OK);
+  EXPECT_EQ(session.ProcessCount(), 2u);
+}
+
+namespace {
+
+class SessionUsageTelemetry : public TelemetryLogger {
+ public:
+  SessionUsageTelemetry() : TelemetryLogger("test", fl::test::NullLog()) {}
+
+  struct ActionCall {
+    Action action;
+    ActionStatus status;
+    InvocationContext context;
+    std::string model_id;
+  };
+
+  void RecordAction(Action action, ActionStatus status, const InvocationContext& context,
+                    int64_t /*duration_ms*/, const std::string& model_id) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    actions.push_back({action, status, context, model_id});
+  }
+
+  void RecordModelUsage(const ModelUsageInfo& usage) override {
+    if (throw_on_usage) {
+      throw std::runtime_error("test telemetry failure");
+    }
+
+    std::lock_guard<std::mutex> lock(mutex);
+    usages.push_back(usage);
+  }
+
+  bool throw_on_usage = false;
+  std::mutex mutex;
+  std::vector<ActionCall> actions;
+  std::vector<ModelUsageInfo> usages;
+};
+
+class UsageTestSession : public Session {
+ public:
+  UsageTestSession(const Model& model, ITelemetry& telemetry, bool concurrent = false)
+      : Session(model, fl::test::NullLog(), telemetry, concurrent) {}
+
+  SessionType Type() const override { return SessionType::kChat; }
+  std::function<void(const Request&, Response&)> process;
+  int additional_usage_calls = 0;
+  bool throw_on_additional_usage = false;
+  std::string execution_provider;
+
+ protected:
+  void ProcessRequestImpl(const Request& request, Response& response) override {
+    response.usage = {.prompt_tokens = 7, .completion_tokens = 4, .total_tokens = 11, .reasoning_tokens = 1};
+    response.finish_reason = FOUNDRY_LOCAL_FINISH_STOP;
+    if (process) {
+      process(request, response);
+    }
+  }
+
+  std::string ExecutionProvider() const override { return execution_provider; }
+
+  void RecordAdditionalModelUsage(const Response&, const ModelUsageInfo&) override {
+    if (throw_on_additional_usage) {
+      throw std::runtime_error("test modality telemetry failure");
+    }
+
+    ++additional_usage_calls;
+  }
+};
+
+class SessionTelemetryTest : public ::testing::Test {
+ protected:
+  static ModelInfo MakeModelInfo() {
+    ModelInfo info;
+    info.model_id = "usage-model";
+    info.name = "usage-model";
+    info.execution_provider = "CPUExecutionProvider";
+    return info;
+  }
+
+  fl::test::FakeServiceBindings svc;
+  Model model = Model::FromModelInfo(MakeModelInfo(), "", svc.download_manager, svc.model_load_manager);
+  SessionUsageTelemetry telemetry;
+};
+
+}  // namespace
+
+TEST_F(SessionTelemetryTest, DirectCallsHaveDistinctContextsAndCurrentTurnMetrics) {
+  UsageTestSession session(model, telemetry);
+  Request request;
+  Response first;
+  Response second;
+  session.ProcessRequest(request, first);
+  session.ProcessRequest(request, second);
+
+  ASSERT_EQ(telemetry.actions.size(), 2u);
+  ASSERT_EQ(telemetry.usages.size(), 2u);
+  EXPECT_NE(telemetry.actions[0].context.correlation_id, telemetry.actions[1].context.correlation_id);
+  for (size_t i = 0; i < 2; ++i) {
+    const auto& action = telemetry.actions[i];
+    const auto& usage = telemetry.usages[i];
+    EXPECT_EQ(action.action, Action::kSessionProcessRequest);
+    EXPECT_EQ(action.status, ActionStatus::kSuccess);
+    EXPECT_EQ(action.model_id, "usage-model");
+    EXPECT_EQ(usage.model_id, "usage-model");
+    EXPECT_EQ(usage.execution_provider, "CPUExecutionProvider");
+    EXPECT_FALSE(action.context.indirect);
+    EXPECT_FALSE(usage.indirect);
+    EXPECT_FALSE(usage.stream);
+    EXPECT_EQ(action.context.correlation_id.size(), 36u);
+    EXPECT_EQ(usage.correlation_id, action.context.correlation_id);
+    EXPECT_EQ(usage.user_agent, action.context.user_agent);
+    EXPECT_EQ(usage.total_tokens, 11);
+    EXPECT_EQ(usage.input_token_count, 7);
+    EXPECT_EQ(usage.num_messages, 0u);
+    EXPECT_EQ(usage.time_to_first_token_ms, -1);
+    EXPECT_EQ(usage.memory_used_mb, -1);
+    EXPECT_GE(usage.total_time_ms, 0);
+  }
+}
+
+TEST_F(SessionTelemetryTest, IndirectContextIsConsumedOnceAndReplacedOnReuse) {
+  UsageTestSession session(model, telemetry);
+  Request request;
+  const InvocationContext route{"test-client", "route-one", false};
+  session.SetInvocationContext(route.AsIndirect());
+  Response first;
+  session.ProcessRequest(request, first);
+  Response second;
+  session.ProcessRequest(request, second);
+  session.SetInvocationContext(InvocationContext{"other-client", "route-three", true});
+  Response third;
+  session.ProcessRequest(request, third);
+
+  ASSERT_EQ(telemetry.usages.size(), 3u);
+  EXPECT_EQ(telemetry.usages[0].correlation_id, "route-one");
+  EXPECT_EQ(telemetry.usages[0].user_agent, "test-client");
+  EXPECT_TRUE(telemetry.usages[0].indirect);
+  EXPECT_FALSE(telemetry.usages[1].indirect);
+  EXPECT_NE(telemetry.usages[1].correlation_id, "route-one");
+  EXPECT_EQ(telemetry.usages[2].correlation_id, "route-three");
+  EXPECT_EQ(telemetry.usages[2].user_agent, "other-client");
+  EXPECT_TRUE(telemetry.usages[2].indirect);
+}
+
+TEST_F(SessionTelemetryTest, MovedSessionRetainsPendingContextAndCancellationLatch) {
+  UsageTestSession original(model, telemetry);
+  original.SetInvocationContext(InvocationContext{"client", "moved-context", true});
+  original.Cancel();
+  UsageTestSession session(std::move(original));
+  Request request;
+  Response response;
+  EXPECT_THROW(session.ProcessRequest(request, response), fl::Exception);
+
+  EXPECT_TRUE(request.IsCompleted());
+  ASSERT_EQ(telemetry.actions.size(), 1u);
+  EXPECT_EQ(telemetry.actions[0].context.correlation_id, "moved-context");
+  EXPECT_EQ(telemetry.actions[0].status, ActionStatus::kCanceled);
+}
+
+TEST_F(SessionTelemetryTest, TypedAndJsonMessagesAreCountedWithoutCountingTransportItems) {
+  UsageTestSession session(model, telemetry);
+  session.execution_provider = "CUDAExecutionProvider";
+  session.SetStreamingCallback([](flStreamingCallbackData, void*) { return 0; });
+  Request request;
+  request.items.push_back(nullptr);
+  request.AddOwnedItem(std::make_unique<MessageItem>(FOUNDRY_LOCAL_ROLE_USER, "hello"));
+  request.AddOwnedItem(std::make_unique<ToolResultItem>("call", "result"));
+  request.AddOwnedItem(std::make_unique<TextItem>("plain text"));
+  request.AddOwnedItem(std::make_unique<TextItem>(
+      R"({"messages":[{"role":"user","content":"one"},{"role":"assistant","content":"two"}]})",
+      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+  Response response;
+  session.ProcessRequest(request, response);
+
+  ASSERT_EQ(telemetry.usages.size(), 1u);
+  EXPECT_EQ(telemetry.usages[0].num_messages, 4u);
+  EXPECT_EQ(telemetry.usages[0].execution_provider, "CUDAExecutionProvider");
+  EXPECT_TRUE(telemetry.usages[0].stream);
+}
+
+TEST_F(SessionTelemetryTest, UsageSinkFailureDoesNotChangeResponseOrSuppressAdditionalUsage) {
+  UsageTestSession session(model, telemetry);
+  telemetry.throw_on_usage = true;
+  Request request;
+  Response response;
+  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_EQ(response.usage.total_tokens, 11);
+  EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(session.additional_usage_calls, 1);
+  ASSERT_EQ(telemetry.actions.size(), 1u);
+  EXPECT_EQ(telemetry.actions[0].status, ActionStatus::kSuccess);
+}
+
+TEST_F(SessionTelemetryTest, AdditionalUsageFailureDoesNotChangeResponse) {
+  UsageTestSession session(model, telemetry);
+  session.throw_on_additional_usage = true;
+  Request request;
+  Response response;
+  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  EXPECT_EQ(response.usage.total_tokens, 11);
+  ASSERT_EQ(telemetry.usages.size(), 1u);
+  ASSERT_EQ(telemetry.actions.size(), 1u);
+  EXPECT_EQ(telemetry.actions[0].status, ActionStatus::kSuccess);
+}
+
+TEST_F(SessionTelemetryTest, FailedInferenceKeepsOriginalExceptionAndDoesNotEmitUsage) {
+  UsageTestSession session(model, telemetry);
+  session.SetInvocationContext(InvocationContext{"client", "failed-context", true});
+  session.process = [](const Request&, Response&) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "invalid test request");
+  };
+  Request request;
+  Response response;
+  try {
+    session.ProcessRequest(request, response);
+    FAIL() << "Expected original inference exception";
+  } catch (const fl::Exception& ex) {
+    EXPECT_EQ(ex.code(), FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(ex.what()).find("invalid test request"), std::string::npos);
+  }
+
+  ASSERT_EQ(telemetry.actions.size(), 1u);
+  EXPECT_EQ(telemetry.actions[0].status, ActionStatus::kClientError);
+  EXPECT_EQ(telemetry.actions[0].context.correlation_id, "failed-context");
+  EXPECT_TRUE(telemetry.usages.empty());
+  session.process = nullptr;
+  session.ProcessRequest(request, response);
+  ASSERT_EQ(telemetry.actions.size(), 2u);
+  EXPECT_FALSE(telemetry.actions[1].context.indirect);
+}
+
+TEST_F(SessionTelemetryTest, TelemetryTokenNarrowingDoesNotWrapOrChangeResponseAccounting) {
+  UsageTestSession session(model, telemetry);
+  session.process = [](const Request&, Response& response) {
+    response.usage.total_tokens = std::numeric_limits<int64_t>::max();
+    response.usage.prompt_tokens = -1;
+  };
+  Request request;
+  Response response;
+  session.ProcessRequest(request, response);
+
+  EXPECT_EQ(response.usage.total_tokens, std::numeric_limits<int64_t>::max());
+  EXPECT_EQ(response.usage.prompt_tokens, -1);
+  ASSERT_EQ(telemetry.usages.size(), 1u);
+  EXPECT_EQ(telemetry.usages[0].total_tokens, std::numeric_limits<int32_t>::max());
+  EXPECT_EQ(telemetry.usages[0].input_token_count, 0);
+}
+
+TEST(SessionTelemetryProviderTest, ImplicitCpuHasConcreteTelemetryNameWithoutChangingRuntimeSentinels) {
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, ""), "CPUExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoGenAI(ExecutionProvider::kDefault), "");
+  EXPECT_EQ(EPUtils::EPtoRegistrationName(ExecutionProvider::kDefault), "");
+  EXPECT_EQ(EPUtils::StringtoEP(""), ExecutionProvider::kUnknown);
+}
+
+TEST(SessionTelemetryProviderTest, DefaultSelectionUsesConfiguredProviderInsteadOfAssumingCpu) {
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "cpu"), "CPUExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "CPUExecutionProvider"), "CPUExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "cuda"), "CUDAExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "CUDAExecutionProvider"), "CUDAExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "WebGPU"), "WebGpuExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "OpenVINO"), "OpenVINOExecutionProvider");
+}
+
+TEST(SessionTelemetryProviderTest, ExplicitProviderOverridesConfigWithoutChangingGenAiNames) {
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kCPU, "cuda"), "CPUExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kCUDA, "OpenVINO"), "CUDAExecutionProvider");
+  EXPECT_EQ(EPUtils::EPtoGenAI(ExecutionProvider::kCPU), "");
+  EXPECT_EQ(EPUtils::EPtoGenAI(ExecutionProvider::kCUDA), "cuda");
+}
+
+TEST(SessionTelemetryProviderTest, UnknownProvidersAreNotReportedAsImplicitCpu) {
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kUnknown, ""), "");
+  EXPECT_EQ(EPUtils::EPtoTelemetryName(ExecutionProvider::kDefault, "unknown-provider"), "");
 }

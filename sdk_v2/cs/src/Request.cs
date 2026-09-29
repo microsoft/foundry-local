@@ -94,6 +94,9 @@ public sealed class Request : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Cancels this request's in-flight invocation. This has no effect while the request is idle or after completion.
+    /// </summary>
     public void Cancel()
     {
         Api.CheckStatus(Api.Inference.RequestCancel(Ptr));

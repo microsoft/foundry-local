@@ -468,13 +468,15 @@ void from_json(const nlohmann::json& j, ResponseCreateParams& p) {
         } else if (type == "custom_tool_call") {
           items.push_back(entry.get<CustomToolCallInputItem>());
         } else if (type == "reasoning") {
-          // Reasoning text is private and is never fed back to the model. The assistant turn that produced it still
-          // happened, so it replays as an empty assistant message: dropping the item outright would leave two user
-          // turns next to each other and a different prompt than the live session builds. When the same turn also
-          // carried visible text or a call, this boundary merges into that assistant message and changes nothing.
-          InputMessage boundary;
-          boundary.role = "assistant";
-          items.push_back(std::move(boundary));
+          ReasoningInputItem reasoning;
+          if (const auto summary = entry.find("summary"); summary != entry.end() && summary->is_array()) {
+            for (const auto& part : *summary) {
+              if (part.is_object() && part.value("type", "") == "summary_text") {
+                reasoning.text += part.value("text", "");
+              }
+            }
+          }
+          items.push_back(std::move(reasoning));
         } else {
           // Default: message item
           items.push_back(entry.get<InputMessage>());

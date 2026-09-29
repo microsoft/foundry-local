@@ -6,6 +6,7 @@
 #include "inferencing/generative/chat/onnx_chat_engine.h"
 #include "inferencing/generative/chat/onnx_engine_chat_stream.h"
 #include "inferencing/model_load_manager.h"
+#include "c_api_types.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "items/text_item.h"
@@ -15,6 +16,7 @@
 #include <gtest/gtest.h>
 #include <ort_genai.h>
 
+#include <atomic>
 #include <barrier>
 #include <chrono>
 #include <filesystem>
@@ -46,6 +48,23 @@ TEST(OnnxEngineChatStreamDecisionTest, PreservesEveryOgaFinishCauseForRawFinaliz
             BackendTerminationCause::kCancellation);
   EXPECT_EQ(MapTerminationCause(OgaFinishReason_Failed), BackendTerminationCause::kFailure);
   EXPECT_EQ(MapTerminationCause(9999), std::nullopt);
+}
+
+TEST(OnnxEngineChatStreamDecisionTest, MapsCachedPromptTokensIntoTurnUsage) {
+  const OnnxChatEngine::TurnResult result{
+      /*prompt_tokens=*/12,
+      /*generated_tokens=*/4,
+      /*cached_prompt_tokens=*/8,
+      /*finish_reason=*/OgaFinishReason_Eos,
+  };
+
+  const auto usage = onnx_engine_chat_stream_internal::BuildTurnUsage(12, result);
+
+  EXPECT_EQ(usage.prompt_tokens, 12);
+  EXPECT_EQ(usage.generated_tokens, 4);
+  EXPECT_EQ(usage.cached_prompt_tokens, 8);
+  EXPECT_EQ(usage.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+  EXPECT_EQ(usage.termination_cause, BackendTerminationCause::kNaturalEnd);
 }
 
 std::unique_ptr<Item> UserMessage(std::string text) {
@@ -161,6 +180,7 @@ class DynamicEngineChatTest : public ::testing::Test {
     model_ = result.model;
     ASSERT_EQ(model_->GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kEngine);
     ASSERT_NE(model_->GetChatEngine(), nullptr);
+    ASSERT_EQ(model_->GetChatEngine()->MaxRequestLength(), 1024u);
   }
 
   static void TearDownTestSuite() {
@@ -193,6 +213,65 @@ class DynamicEngineChatTest : public ::testing::Test {
   TelemetryLogger telemetry_{"dynamic-engine-test", test::NullLog()};
 };
 
+TEST_F(DynamicEngineChatTest, NativeCAbiPreflightCapturesAndExecutesExactlyOnce) {
+  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  ASSERT_NE(api, nullptr);
+  const auto* inference_api = api->GetInferenceApi();
+
+  auto session = std::make_unique<ChatSession>(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto request = std::make_unique<Request>(MakeRequest("Count this exact prompt.", 17));
+  ASSERT_TRUE(request->TryBegin());
+  ASSERT_TRUE(request->Cancel());
+  EXPECT_FALSE(request->CaptureChatSnapshot().IsCancellationRequested());
+  const auto expected_prompt_tokens =
+      static_cast<int64_t>(EncodeUserPrompt("Count this exact prompt.", ModelInstance()).size());
+
+  flRequestPreflight* preflight = nullptr;
+  ASSERT_EQ(inference_api->Session_CreateRequestPreflight(
+                AsHandle<flSession>(session.get()), AsHandle<flRequest>(request.get()), &preflight),
+            nullptr);
+  ASSERT_NE(preflight, nullptr);
+
+  request.reset();
+  session.reset();
+
+  flRequestPreflightResult result{};
+  result.version = FOUNDRY_LOCAL_API_VERSION;
+  ASSERT_EQ(inference_api->RequestPreflight_Execute(preflight, &result), nullptr);
+  EXPECT_EQ(result.prompt_tokens, expected_prompt_tokens);
+  EXPECT_EQ(result.output_reserve_tokens, 17);
+  EXPECT_EQ(result.required_tokens, result.prompt_tokens + result.output_reserve_tokens);
+  EXPECT_EQ(result.context_limit_tokens, 1024);
+  EXPECT_TRUE(result.fits);
+  EXPECT_EQ(result.deficit_tokens, 0);
+
+  auto* repeated = inference_api->RequestPreflight_Execute(preflight, &result);
+  ASSERT_NE(repeated, nullptr);
+  EXPECT_EQ(api->Status_GetErrorCode(repeated), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  api->Status_Release(repeated);
+
+  inference_api->RequestPreflight_Release(preflight);
+}
+
+TEST_F(DynamicEngineChatTest, PreflightUsesMergedSessionTemplateOptions) {
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  KeyValuePairs defaults;
+  defaults.Add("chat_template_kwargs", "[]");
+  session.SetSessionOptions(defaults);
+
+  auto ordinary = MakeRequest("Hello.");
+  Request json_request;
+  json_request.AddOwnedItem(std::make_unique<TextItem>(
+      R"({"model":"tiny-paged-attention","messages":[{"role":"user","content":"Hello."}]})",
+      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+
+  for (auto* request : {&ordinary, &json_request}) {
+    EXPECT_THROW((void)session.CreateRequestPreflight(*request)->Execute(), fl::Exception);
+    request->options.Add("chat_template_kwargs", "{}");
+    EXPECT_TRUE(session.CreateRequestPreflight(*request)->Execute().fits);
+  }
+}
+
 TEST_F(DynamicEngineChatTest, RetainedContinuationReportsFreshPromptUsageParity) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
 
@@ -213,6 +292,11 @@ TEST_F(DynamicEngineChatTest, RetainedContinuationReportsFreshPromptUsageParity)
   const auto expected_second_prompt_tokens = EncodeMessages(full_history, ModelInstance()).size();
 
   auto second = MakeRequest(kSecondPrompt);
+  const auto second_budget = session.CreateRequestPreflight(second)->Execute();
+  EXPECT_EQ(second_budget.prompt_tokens, expected_second_prompt_tokens);
+  EXPECT_EQ(second_budget.output_reserve_tokens, 32);
+  EXPECT_EQ(session.TurnCount(), 1u);
+
   Response second_response;
   session.ProcessRequest(second, second_response);
 
@@ -482,6 +566,23 @@ TEST_F(DynamicEngineChatTest, LateCancelAfterCompletedConversationRemovalIsNoOp)
   EXPECT_EQ(result_after_cancel.finish_reason, result.finish_reason);
 }
 
+TEST_F(DynamicEngineChatTest, BackendCancellationIsNotAnApiErrorByItself) {
+  SearchOptions options;
+  options.max_output_tokens = 512;
+  options.temperature = 0.0f;
+  ToolCallContext tool_context;
+  std::vector<TranscriptMessage> messages = {
+      {FOUNDRY_LOCAL_ROLE_USER, "Write a long essay about mathematics."}};
+  auto stream = OnnxEngineChatStream::Create(messages, options, ModelInstance(), tool_context);
+
+  stream->GenerateNextToken();
+  stream->Cancel();
+
+  const auto usage = stream->GetTurnUsage();
+  ASSERT_TRUE(usage.has_value());
+  EXPECT_FALSE(usage->finish_reason.has_value());
+}
+
 TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) {
   ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
 
@@ -499,8 +600,14 @@ TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) 
 
   auto canceled = MakeRequest("Write a long essay about mathematics.", 512);
   Response canceled_response;
-  session.ProcessRequest(canceled, canceled_response);
+  try {
+    session.ProcessRequest(canceled, canceled_response);
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
   EXPECT_EQ(canceled_response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(canceled_response.items.empty());
   EXPECT_EQ(session.TurnCount(), 1u);
   EXPECT_GE(streamed_tokens, 3);
 
@@ -518,6 +625,114 @@ TEST_F(DynamicEngineChatTest, CancellationRebuildsCommittedHistoryWithinBudget) 
   EXPECT_EQ(recovery_response.usage.completion_tokens, 32);
   EXPECT_LT(recovery_elapsed, 30s);
   EXPECT_EQ(session.TurnCount(), 2u);
+}
+
+TEST_F(DynamicEngineChatTest, PreflightFromStreamingCallbackFailsWithoutBlocking) {
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  auto request = MakeRequest("Count from one to ten.");
+  auto preflight_request = MakeRequest("What comes next?");
+  std::atomic<int> callback_count{0};
+  std::atomic<int> error_code{0};
+
+  session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+    (void)queue->TryPop();
+    ++callback_count;
+    try {
+      (void)session.CreateRequestPreflight(preflight_request);
+    } catch (const fl::Exception& error) {
+      error_code = error.code();
+    }
+    return 0;
+  });
+
+  Response response;
+  session.ProcessRequest(request, response);
+  EXPECT_GT(callback_count.load(), 0);
+  EXPECT_EQ(error_code.load(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_FALSE(AssistantText(response).empty());
+
+  EXPECT_NO_THROW((void)session.CreateRequestPreflight(preflight_request));
+}
+
+TEST_F(DynamicEngineChatTest, SessionOptionsFromStreamingCallbackFailWithoutBlocking) {
+  const auto* api = FoundryLocalGetApi(FOUNDRY_LOCAL_API_VERSION);
+  ASSERT_NE(api, nullptr);
+  ChatSession session(CatalogModel(), ModelInstance(), *logger_, telemetry_);
+  KeyValuePairs initial_options;
+  initial_options.Add("max_output_tokens", "11");
+  session.SetSessionOptions(initial_options);
+  KeyValuePairs changed_options;
+  changed_options.Add("max_output_tokens", "7");
+  auto request = MakeRequest("Count from one to ten.");
+  std::atomic<int> callback_count{0};
+  std::atomic<int> error_code{0};
+
+  session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+    auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+    (void)queue->TryPop();
+    ++callback_count;
+    auto* status = api->GetInferenceApi()->Session_SetOptions(
+        AsHandle<flSession>(&session), AsHandle<flKeyValuePairs>(&changed_options));
+    if (status) {
+      error_code = api->Status_GetErrorCode(status);
+      api->Status_Release(status);
+    }
+    return 0;
+  });
+
+  Response response;
+  session.ProcessRequest(request, response);
+  EXPECT_GT(callback_count.load(), 0);
+  EXPECT_EQ(error_code.load(), FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_FALSE(AssistantText(response).empty());
+
+  Request next_request;
+  next_request.AddOwnedItem(UserMessage("What comes next?"));
+  EXPECT_EQ(session.CreateRequestPreflight(next_request)->Execute().output_reserve_tokens, 11);
+  session.SetSessionOptions(changed_options);
+  EXPECT_EQ(session.CreateRequestPreflight(next_request)->Execute().output_reserve_tokens, 7);
+}
+
+TEST_F(DynamicEngineChatTest, PreflightFromProcessingThreadFailsWithoutReenteringMutex) {
+  class ReentrantLogger final : public ILogger {
+   public:
+    ChatSession* session = nullptr;
+    const Request* request = nullptr;
+    int preflight_error_code = 0;
+    int options_error_code = 0;
+
+    void Log(LogLevel, std::string_view message) override {
+      if (!session || !message.starts_with("Completion stats:")) {
+        return;
+      }
+      try {
+        (void)session->CreateRequestPreflight(*request);
+      } catch (const fl::Exception& error) {
+        preflight_error_code = error.code();
+      }
+      KeyValuePairs options;
+      options.Add("max_output_tokens", "7");
+      try {
+        session->SetSessionOptions(options);
+      } catch (const fl::Exception& error) {
+        options_error_code = error.code();
+      }
+    }
+  };
+
+  ReentrantLogger logger;
+  ChatSession session(CatalogModel(), ModelInstance(), logger, telemetry_);
+  auto request = MakeRequest("Count from one to ten.");
+  logger.session = &session;
+  logger.request = &request;
+
+  Response response;
+  session.ProcessRequest(request, response);
+  EXPECT_EQ(logger.preflight_error_code, FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_EQ(logger.options_error_code, FOUNDRY_LOCAL_ERROR_INVALID_USAGE);
+  EXPECT_FALSE(AssistantText(response).empty());
+  EXPECT_NO_THROW((void)session.CreateRequestPreflight(request));
 }
 
 TEST_F(DynamicEngineChatTest, UnloadsAfterSessionsClose) {

@@ -8,6 +8,7 @@
 #include "inferencing/generative/chat/chat_generator.h"
 #include "inferencing/generative/chat/chat_template.h"
 #include "inferencing/generative/chat/onnx_chat_generator.h"
+#include "inferencing/generative/chat/stop_strings.h"
 #include "inferencing/generative/openresponses/response_converter.h"
 #include "inferencing/generative/openresponses/response_store.h"
 #include "contracts/tool_definitions.h"
@@ -40,6 +41,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -61,6 +63,14 @@ class RecordingLogger final : public ILogger {
   std::vector<std::pair<LogLevel, std::string>> entries;
 };
 
+struct GenerationTrace {
+  bool requires_cancellation = false;
+  bool canceled = false;
+  bool usage_requested = false;
+  bool canceled_before_usage = false;
+  int generated_tokens = 0;
+};
+
 struct GeneratorCounters {
   int created = 0;
   int destroyed = 0;
@@ -77,18 +87,24 @@ class FixedOutputGenerator final : public ChatGenerator {
                        std::shared_ptr<GeneratorCounters> counters = {},
                        int prompt_tokens = 4,
                        int generated_tokens = 1,
-                       std::function<void()> generate_hook = {})
+                       std::function<void()> generate_hook = {},
+                       GenerationTrace* trace = nullptr)
       : output_(std::move(output)),
         cause_(cause),
         prompt_opens_reasoning_(prompt_opens_reasoning),
         counters_(std::move(counters)),
         prompt_tokens_(prompt_tokens),
         generated_tokens_(generated_tokens),
-        generate_hook_(std::move(generate_hook)) {
+        generate_hook_(std::move(generate_hook)),
+        trace_(trace) {
     if (counters_) {
       ++counters_->created;
     }
   }
+
+  FixedOutputGenerator(std::string output, BackendTerminationCause cause,
+                       bool prompt_opens_reasoning, GenerationTrace* trace)
+      : FixedOutputGenerator(std::move(output), cause, prompt_opens_reasoning, {}, 4, 1, {}, trace) {}
 
   ~FixedOutputGenerator() override {
     if (counters_) {
@@ -97,12 +113,19 @@ class FixedOutputGenerator final : public ChatGenerator {
   }
 
   bool IsDone() const override {
-    return canceled_ || generated_;
+    return canceled_ || (generated_ && !(trace_ && trace_->requires_cancellation));
   }
 
   void GenerateNextToken() override {
+    if (generated_) {
+      throw std::logic_error("The host must end this turn after the first fragment");
+    }
+
     generated_ = true;
     current_token_ = 1;
+    if (trace_) {
+      ++trace_->generated_tokens;
+    }
     if (generate_hook_) {
       generate_hook_();
     }
@@ -127,6 +150,9 @@ class FixedOutputGenerator final : public ChatGenerator {
 
   void Cancel() override {
     canceled_ = true;
+    if (trace_) {
+      trace_->canceled = true;
+    }
     if (counters_) {
       ++counters_->canceled;
     }
@@ -155,6 +181,10 @@ class FixedOutputGenerator final : public ChatGenerator {
   }
 
   std::optional<ChatTurnUsage> GetTurnUsage() const override {
+    if (trace_) {
+      trace_->usage_requested = true;
+      trace_->canceled_before_usage = canceled_;
+    }
     if (counters_ && canceled_) {
       ++counters_->usage_after_cancel;
     }
@@ -184,6 +214,7 @@ class FixedOutputGenerator final : public ChatGenerator {
   int prompt_tokens_;
   int generated_tokens_;
   std::function<void()> generate_hook_;
+  GenerationTrace* trace_;
 };
 
 constexpr std::string_view kNativeQwenChatTemplate =
@@ -232,6 +263,16 @@ void AppendSegments(std::vector<Segment>& destination, const std::vector<Segment
     } else {
       destination.push_back(segment);
     }
+  }
+}
+
+template <typename Action>
+void ExpectOperationCancelled(Action&& action) {
+  try {
+    action();
+    FAIL() << "Expected operation cancellation";
+  } catch (const fl::Exception& error) {
+    EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
   }
 }
 
@@ -1068,31 +1109,28 @@ TEST(ChatSessionDecisionTest, FinishReasonPrecedenceCoversEveryTerminalSource) {
 
   struct TestCase {
     const char* name;
-    bool canceled;
     bool has_tool_calls;
     bool stop_sequence_matched;
     bool host_output_limit_reached;
     std::optional<flFinishReason> backend_finish_reason;
     flFinishReason expected;
   };
-
   const std::vector<TestCase> cases = {
-      {"cancellation wins", true, true, true, true, FOUNDRY_LOCAL_FINISH_NONE, FOUNDRY_LOCAL_FINISH_NONE},
-      {"tool calls win over stop", false, true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"tool calls win over stop", true, true, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"tool calls win over host limit", false, true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"tool calls win over host limit", true, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_TOOL_CALLS},
-      {"stop wins over host limit", false, false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"stop wins over host limit", false, true, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_STOP},
-      {"host limit produces length", false, false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
+      {"host limit produces length", false, false, true, FOUNDRY_LOCAL_FINISH_NONE,
        FOUNDRY_LOCAL_FINISH_LENGTH},
-      {"backend reason survives natural completion", false, false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
+      {"backend reason survives natural completion", false, false, false, FOUNDRY_LOCAL_FINISH_STOP,
        FOUNDRY_LOCAL_FINISH_STOP},
   };
 
   for (const auto& test : cases) {
     SCOPED_TRACE(test.name);
-    EXPECT_EQ(ResolveGeneratedFinishReason(test.canceled, test.has_tool_calls, test.stop_sequence_matched,
+    EXPECT_EQ(ResolveGeneratedFinishReason(test.has_tool_calls, test.stop_sequence_matched,
                                            test.host_output_limit_reached, test.backend_finish_reason,
                                            /*completion_tokens=*/32, /*max_output_tokens=*/32),
               test.expected);
@@ -1714,7 +1752,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
   auto [response_output, output_text] = ResponseConverter::FromSessionResponse(response, "msg_recovered");
   const nlohmann::json projected = ResponseConverter::BuildResponseObject(
-      "resp_recovered", 123, kEngineModelId, params, std::move(response_output), output_text, response.usage);
+      "resp_recovered", 123, kEngineModelId, params, std::move(response_output), output_text, response);
   ASSERT_EQ(projected.at("output").size(), 1u);
   EXPECT_EQ(projected.at("output").at(0).at("type"), "function_call");
   EXPECT_EQ(projected.at("output").at(0).at("call_id"), calls.front()->call_id);
@@ -1797,8 +1835,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   } catch (const fl::Exception& error) {
     EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
     failure_message = error.what();
-    EXPECT_NE(std::string(error.what()).find(
-                  "Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
+    EXPECT_NE(std::string(error.what()).find("Model emitted a malformed tool call and guided recovery did not produce a valid tool call"),
               std::string::npos);
   }
 
@@ -1849,7 +1886,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
         std::function<void()> hook;
         if (index == 1) {
           hook = [&] {
-            active_request->canceled.store(true, std::memory_order_relaxed);
+            active_request->Cancel();
           };
         }
 
@@ -1879,9 +1916,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   auto request = MakeStatefulRequest("route this");
   active_request = &request;
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 2);
   EXPECT_EQ(counters->closed, 1);
   EXPECT_EQ(counters->canceled, 1);
@@ -1918,17 +1956,15 @@ TEST_F(QwenNativeProductionIntegrationTest,
 
   auto request = MakeStatefulRequest("route this");
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
   EXPECT_EQ(streamed_text, "safe prefix");
-  ASSERT_EQ(response.items.size(), 1u);
-  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
-  EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
-            output);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_EQ(session.TurnCount(), 0u);
   EXPECT_TRUE(session.Transcript().Empty());
@@ -1979,9 +2015,10 @@ TEST_F(QwenNativeProductionIntegrationTest,
   request.AddOwnedItem(std::make_unique<TextItem>(
       body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
   Response response;
-  EXPECT_NO_THROW(session.ProcessRequest(request, response));
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  EXPECT_TRUE(request.canceled.load(std::memory_order_relaxed));
+  EXPECT_TRUE(request.IsCompleted());
+  EXPECT_FALSE(request.IsCancellationRequested());
   EXPECT_EQ(counters->created, 1);
   EXPECT_EQ(counters->canceled, 1);
   EXPECT_EQ(counters->usage_after_cancel, 1);
@@ -1996,10 +2033,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   EXPECT_EQ(streamed_content, "safe prefix");
   EXPECT_EQ(streamed_content.find("<tool_call>"), std::string::npos);
   EXPECT_EQ(streamed_content.find("<function="), std::string::npos);
-  ASSERT_EQ(response.items.size(), 1u);
-  ASSERT_EQ(response.items.front()->type, FOUNDRY_LOCAL_ITEM_MESSAGE);
-  EXPECT_EQ(static_cast<const MessageItem&>(*response.items.front()).GetSimpleText(),
-            output);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
   EXPECT_TRUE(session.Transcript().Empty());
 }
@@ -2765,8 +2799,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   params.model = kModelId;
   params.input = "call zero";
   const nlohmann::json completed = ResponseConverter::BuildResponseObject(
-      "resp_zero", 123, kModelId, params, std::move(output), output_text,
-      response.usage);
+      "resp_zero", 123, kModelId, params, std::move(output), output_text, response);
   ASSERT_EQ(completed.at("output").size(), 1u);
   EXPECT_EQ(completed.at("output").at(0).at("type"), "function_call");
   EXPECT_EQ(completed.at("output").at(0).at("name"), "zero");
@@ -2876,8 +2909,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   params.model = kModelId;
   params.input = "look up Paris";
   const auto completed = ResponseConverter::BuildResponseObject(
-      "resp_native", 123, kModelId, params, std::move(output), output_text,
-      response.usage);
+      "resp_native", 123, kModelId, params, std::move(output), output_text, response);
   const nlohmann::json completed_json = completed;
   ASSERT_EQ(completed_json.at("output").size(), 1u);
   EXPECT_EQ(completed_json.at("output")[0].at("call_id"),
@@ -2991,8 +3023,7 @@ TEST_F(QwenNativeProductionIntegrationTest,
   params.model = kModelId;
   params.input = "get both values";
   const auto completed = ResponseConverter::BuildResponseObject(
-      "resp_replay", 456, kModelId, params, std::move(output), output_text,
-      response.usage);
+      "resp_replay", 456, kModelId, params, std::move(output), output_text, response);
   const nlohmann::json completed_json = completed;
 
   ResponseStore store;
@@ -3024,6 +3055,30 @@ TEST_F(QwenNativeProductionIntegrationTest,
       replay_session.ProcessRequest(replay_request, replay_response));
   EXPECT_EQ(replay_session.Transcript().Messages().back().VisibleText(),
             "replay complete");
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, ResponsePreservesBackendLengthCause) {
+  for (const auto cause : {BackendTerminationCause::kOutputTokenLimit,
+                           BackendTerminationCause::kSessionTokenLimit}) {
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                        OutputFactory("partial answer", {}, cause));
+    auto request = MakeStatefulRequest("Write an answer.");
+    request.options.Add("max_output_tokens", "1");
+    Response response;
+    session.ProcessRequest(request, response);
+
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_LENGTH);
+    EXPECT_EQ(response.termination_cause, cause);
+
+    responses::ResponseCreateParams params;
+    params.max_output_tokens = 1;
+    auto [output, output_text] = ResponseConverter::FromSessionResponse(response);
+    const auto projected = ResponseConverter::BuildResponseObject(
+        "resp_limit", 123, kModelId, params, std::move(output), output_text, response);
+    EXPECT_EQ(projected.status, responses::ResponseStatus::kIncomplete);
+    EXPECT_EQ(projected.incomplete_reason.has_value(), cause == BackendTerminationCause::kOutputTokenLimit);
+  }
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
@@ -3220,7 +3275,7 @@ TEST_F(ChatSessionTest, AmbiguousPositionalResultsLeaveWarmGeneratorAndTranscrip
   Response seed_response;
   session.ProcessRequest(seed, seed_response);
 
-  ASSERT_EQ(session.MessageCount(), 1u);
+  ASSERT_EQ(session.MessageCount(), 2u);
   ASSERT_EQ(session.Transcript().Messages().front().ToolCalls().size(), 2u);
   ASSERT_EQ(counters->created, 1);
   ASSERT_EQ(counters->destroyed, 0);
@@ -3242,7 +3297,7 @@ TEST_F(ChatSessionTest, AmbiguousPositionalResultsLeaveWarmGeneratorAndTranscrip
   EXPECT_EQ(counters->destroyed, 0);
   EXPECT_EQ(counters->appended, 0);
   EXPECT_EQ(BuildChatMessagesJson(session.Transcript().Messages()), transcript_before);
-  EXPECT_EQ(session.MessageCount(), 1u);
+  EXPECT_EQ(session.MessageCount(), 2u);
   EXPECT_EQ(session.TurnCount(), 1u);
 }
 
@@ -3302,6 +3357,216 @@ TEST_F(ChatSessionTest, RunBasic) {
   EXPECT_EQ(messages[0].role, FOUNDRY_LOCAL_ROLE_USER);
   EXPECT_EQ(messages[1].role, FOUNDRY_LOCAL_ROLE_ASSISTANT);
   EXPECT_EQ(messages[1].VisibleText(), text);
+}
+
+TEST_F(ChatSessionTest, AssistantInputAndReplyFollowNativeTemplateBoundaries) {
+  TextChatGeneratorFactory factory =
+      [](const auto& messages, const auto&, auto& model, const auto&, bool) {
+        const auto prompt = BuildChatPrompt(messages, model);
+        EXPECT_TRUE(prompt.ends_with(
+            "<|im_start|>assistant\nThe answer is<|im_end|>\n<|im_start|>assistant\n"));
+        return std::make_unique<FixedOutputGenerator>(" 42.", BackendTerminationCause::kNaturalEnd);
+      };
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {}, std::move(factory));
+  Request request;
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "What is it?"));
+  request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_ASSISTANT, "The answer is"));
+
+  Response response;
+  session.ProcessRequest(request, response);
+
+  ASSERT_EQ(session.MessageCount(), 3u);
+  EXPECT_EQ(session.Transcript().Messages()[1].VisibleText(), "The answer is");
+  EXPECT_EQ(session.Transcript().Messages()[2].VisibleText(), " 42.");
+  EXPECT_TRUE(BuildChatPrompt(session.Transcript().Messages(), GetModel()).ends_with(
+      "<|im_start|>assistant\nThe answer is<|im_end|>\n"
+      "<|im_start|>assistant\n 42.<|im_end|>\n<|im_start|>assistant\n"));
+}
+
+TEST_F(ChatSessionTest, SuppliedCallsDoNotCloseTheGeneratedTurnsVisibleText) {
+  for (bool json_request : {false, true}) {
+    SCOPED_TRACE(json_request ? "Chat Completions" : "typed request");
+    TextChatGeneratorFactory factory = [](const auto&, const auto&, auto&, const auto&, bool) {
+      return std::make_unique<FixedOutputGenerator>("New answer.", BackendTerminationCause::kNaturalEnd);
+    };
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {}, std::move(factory));
+    std::string streamed;
+    session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+      auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+      while (auto item = queue->TryPop()) {
+        if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+          const auto& text = static_cast<const TextItem&>(*item);
+          if (json_request) {
+            const auto chunk = nlohmann::json::parse(text.text);
+            const auto& delta = chunk.at("choices").at(0).at("delta");
+            if (delta.contains("content") && delta["content"].is_string()) {
+              streamed += delta["content"].get<std::string>();
+            }
+          } else {
+            streamed += text.text;
+          }
+        }
+      }
+      return 0;
+    });
+
+    Request request;
+    if (json_request) {
+      request.AddOwnedItem(std::make_unique<TextItem>(R"({
+        "model":"test-model", "stream":true,
+        "messages":[{"role":"user","content":"Again?"},
+          {"role":"assistant","content":"","tool_calls":[
+            {"id":"prior_call","type":"function","function":{"name":"lookup","arguments":"{}"}}]}]
+      })",
+                                                      FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    } else {
+      request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Again?"));
+      request.AddOwnedItem(std::make_unique<ToolCallItem>("prior_call", "lookup", "{}"));
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(streamed, "New answer.");
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    if (json_request) {
+      ASSERT_EQ(response.items.size(), 1u);
+      const auto completion = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
+      EXPECT_EQ(completion.at("choices").at(0).at("message").at("content"), "New answer.");
+    } else {
+      EXPECT_EQ(GetAssistantText(response), "New answer.");
+      ASSERT_EQ(session.MessageCount(), 3u);
+      EXPECT_TRUE(session.Transcript().IsOutstanding("prior_call"));
+      EXPECT_EQ(session.Transcript().Messages()[2].VisibleText(), "New answer.");
+    }
+  }
+}
+
+TEST_F(ChatSessionTest, HostEndedTurnsCancelBeforeWaitingForBackendUsage) {
+  enum class End { kPostCallText,
+                   kStopString,
+                   kCallback,
+                   kTokenLimit };
+  struct Case {
+    bool json;
+    bool streaming;
+    End end;
+  };
+  const std::vector<Case> cases{
+      {false, false, End::kPostCallText},
+      {false, true, End::kPostCallText},
+      {true, false, End::kPostCallText},
+      {true, true, End::kPostCallText},
+      {false, false, End::kStopString},
+      {false, true, End::kStopString},
+      {true, false, End::kStopString},
+      {true, true, End::kStopString},
+      {false, true, End::kCallback},
+      {true, true, End::kCallback},
+      {false, false, End::kTokenLimit},
+      {false, true, End::kTokenLimit},
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(::testing::Message() << "json=" << test.json << " streaming=" << test.streaming
+                                      << " end=" << static_cast<int>(test.end));
+    // Model an asynchronous backend that is still running after the host stops consuming. Usage records ordering
+    // instead of blocking, so a missing cancellation fails deterministically rather than hanging the test.
+    GenerationTrace trace;
+    trace.requires_cancellation = test.end != End::kCallback;
+    TextChatGeneratorFactory factory =
+        [&](const auto&, const auto&, auto&, const ToolCallContext& tools, bool) {
+          std::string output = "Visible.";
+          if (test.end == End::kPostCallText) {
+            EXPECT_FALSE(tools.tool_call_start.empty());
+            EXPECT_FALSE(tools.tool_call_end.empty());
+            output += tools.tool_call_start + R"({"name":"lookup","arguments":{}})" +
+                      tools.tool_call_end + "Discarded.";
+          } else if (test.end == End::kStopString) {
+            output += "STOPDiscarded.";
+          }
+
+          return std::make_unique<FixedOutputGenerator>(
+              output, BackendTerminationCause::kNaturalEnd, false, &trace);
+        };
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_, {}, std::move(factory));
+    if (!test.json) {
+      session.AddToolDefinition({"lookup", "Look up a value", R"({"type":"object","properties":{}})"});
+    }
+
+    std::string streamed;
+    if (test.streaming) {
+      session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed += static_cast<const TextItem&>(*item).text;
+          }
+        }
+        return test.end == End::kCallback ? 1 : 0;
+      });
+    }
+
+    Request request;
+    if (test.json) {
+      auto body = nlohmann::json::parse(R"({
+        "model":"test-model",
+        "messages":[{"role":"user","content":"Look it up."}],
+        "tools":[{"type":"function","function":{
+          "name":"lookup","parameters":{"type":"object","properties":{}}}}]
+      })");
+      body["stream"] = test.streaming;
+      if (test.end == End::kStopString) {
+        body["stop"] = "STOP";
+      }
+
+      request.AddOwnedItem(std::make_unique<TextItem>(
+          body.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
+    } else {
+      request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, "Look it up."));
+      if (test.end == End::kStopString) {
+        StoreStopStringsOption({"STOP"}, request.options);
+      } else if (test.end == End::kTokenLimit) {
+        request.options.Add("max_output_tokens", "1");
+      }
+    }
+
+    Response response;
+    if (test.end == End::kCallback) {
+      ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
+    } else {
+      ASSERT_NO_THROW(session.ProcessRequest(request, response));
+    }
+    EXPECT_TRUE(trace.usage_requested);
+    EXPECT_TRUE(trace.canceled);
+    EXPECT_TRUE(trace.canceled_before_usage);
+    EXPECT_EQ(streamed.find("Discarded."), std::string::npos);
+    if (test.end == End::kCallback) {
+      EXPECT_TRUE(request.IsCompleted());
+      EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+      EXPECT_TRUE(session.Transcript().Empty());
+      continue;
+    }
+
+    EXPECT_EQ(trace.generated_tokens, 1);
+    EXPECT_FALSE(request.IsCancellationRequested());
+    const auto expected_finish = test.end == End::kPostCallText ? FOUNDRY_LOCAL_FINISH_TOOL_CALLS
+                                 : test.end == End::kTokenLimit ? FOUNDRY_LOCAL_FINISH_LENGTH
+                                                                : FOUNDRY_LOCAL_FINISH_STOP;
+    EXPECT_EQ(response.finish_reason, expected_finish);
+    if (test.json) {
+      ASSERT_EQ(response.items.size(), 1u);
+      const auto completion = nlohmann::json::parse(static_cast<const TextItem&>(*response.items[0]).text);
+      const auto& choice = completion.at("choices").at(0);
+      EXPECT_EQ(choice.at("message").at("content"), "Visible.");
+      if (test.end == End::kPostCallText) {
+        EXPECT_EQ(choice.at("finish_reason"), "tool_calls");
+        ASSERT_EQ(choice.at("message").at("tool_calls").size(), 1u);
+      }
+    } else {
+      EXPECT_EQ(GetAssistantText(response), "Visible.");
+      EXPECT_EQ(session.TurnCount(), 1u);
+      EXPECT_EQ(session.Transcript().OutstandingCallCount(), test.end == End::kPostCallText ? 1u : 0u);
+    }
+  }
 }
 
 TEST_F(ChatSessionTest, ForcedBuiltInRawCallRemainsVisibleWhenPromptOpensReasoning) {
@@ -3583,6 +3848,228 @@ TEST_F(ChatSessionTest, RunMultiTurn) {
   EXPECT_EQ(session.MessageCount(), 4u);
 }
 
+TEST_F(ChatSessionTest, ChatTemplateKwargsControlCachedGeneratorReuse) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    return TurnResult{GetAssistantText(response), response.usage.prompt_tokens};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Reply briefly: two.";
+  constexpr const char* kThirdPrompt = "Reply briefly: three.";
+  constexpr const char* kFourthPrompt = "Reply briefly: four.";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto first = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kNoThinking);
+  auto same_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, kNoThinking);
+  ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+  EXPECT_TRUE(session.Transcript().Turns()[1].tokens.pre_turn.has_value())
+      << "Identical template kwargs should retain the continuous-decoding path";
+
+  ChatSession same_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto same_kwargs_full_history = run_turn(
+      same_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+      kNoThinking);
+  EXPECT_EQ(same_kwargs.text, same_kwargs_full_history.text);
+  EXPECT_EQ(same_kwargs.prompt_tokens, same_kwargs_full_history.prompt_tokens);
+
+  auto changed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  ASSERT_EQ(session.Transcript().Turns().size(), 3u);
+  EXPECT_FALSE(session.Transcript().Turns()[2].tokens.pre_turn.has_value())
+      << "A kwargs-triggered rebuild has no valid rewind boundary in the previous generator";
+
+  ChatSession changed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto changed_kwargs_full_history = run_turn(
+      changed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}},
+      kThinking);
+  EXPECT_EQ(changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Changing template kwargs must rebuild the generator from full history";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 2u);
+  auto replayed_changed_kwargs =
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt}}, kThinking);
+  EXPECT_EQ(replayed_changed_kwargs.text, changed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_changed_kwargs.prompt_tokens, changed_kwargs_full_history.prompt_tokens)
+      << "Undoing a kwargs-triggered rebuild must discard stale rewind state and replay full history";
+
+  auto removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+  ASSERT_EQ(session.Transcript().Turns().size(), 4u);
+  EXPECT_FALSE(session.Transcript().Turns()[3].tokens.pre_turn.has_value());
+
+  ChatSession removed_kwargs_baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  auto removed_kwargs_full_history = run_turn(
+      removed_kwargs_baseline,
+      {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, same_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kThirdPrompt},
+       {FOUNDRY_LOCAL_ROLE_ASSISTANT, replayed_changed_kwargs.text},
+       {FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}},
+      nullptr);
+  EXPECT_EQ(removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens)
+      << "Removing template kwargs must rebuild from full history and clear tokenizer state";
+
+  session.UndoTurns(1);
+  EXPECT_EQ(session.TurnCount(), 3u);
+  auto replayed_removed_kwargs = run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFourthPrompt}}, nullptr);
+  EXPECT_EQ(replayed_removed_kwargs.text, removed_kwargs_full_history.text);
+  EXPECT_EQ(replayed_removed_kwargs.prompt_tokens, removed_kwargs_full_history.prompt_tokens);
+}
+
+TEST_F(ChatSessionTest, SessionTemplateDefaultsInvalidateOnlyWhenEffectiveKwargsChange) {
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+  ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+  KeyValuePairs defaults;
+  defaults.Add("chat_template_kwargs", kNoThinking);
+  session.SetSessionOptions(defaults);
+
+  auto run_turn = [&](const char* prompt, const char* kwargs = nullptr) {
+    Request request;
+    request.AddOwnedItem(MakeMessage(FOUNDRY_LOCAL_ROLE_USER, prompt));
+    request.options.Add("max_output_tokens", "32");
+    request.options.Add("temperature", "0");
+    if (kwargs) {
+      request.options.Add("chat_template_kwargs", kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+    return session.Transcript().Turns().back().tokens.pre_turn.has_value();
+  };
+
+  EXPECT_FALSE(run_turn("Reply briefly: one."));
+  EXPECT_TRUE(run_turn("Reply briefly: two.", kNoThinking))
+      << "Explicitly repeating the inherited default must not rebuild the generator";
+
+  defaults.Add("chat_template_kwargs", kThinking);
+  session.SetSessionOptions(defaults);
+  EXPECT_TRUE(run_turn("Reply briefly: three.", kNoThinking))
+      << "A request override keeps the effective kwargs unchanged when the session default changes";
+  EXPECT_FALSE(run_turn("Reply briefly: four."))
+      << "Using a changed session default must rebuild without a stale rewind boundary";
+
+  session.SetSessionOptions({});
+  EXPECT_FALSE(run_turn("Reply briefly: five."))
+      << "Removing the session default must invalidate retained template state";
+}
+
+TEST_F(ChatSessionTest, ChatTemplateKwargsCancellationReplaysFullHistory) {
+  struct TurnResult {
+    std::string text;
+    int64_t prompt_tokens;
+  };
+
+  auto run_turn = [&](ChatSession& session,
+                      const std::vector<std::pair<flMessageRole, std::string>>& messages,
+                      const char* template_kwargs,
+                      int max_output_tokens = 32) {
+    Request request;
+    for (const auto& [role, content] : messages) {
+      request.AddOwnedItem(MakeMessage(role, content));
+    }
+
+    request.options.Add("max_output_tokens", std::to_string(max_output_tokens));
+    request.options.Add("temperature", "0");
+    if (template_kwargs) {
+      request.options.Add("chat_template_kwargs", template_kwargs);
+    }
+
+    Response response;
+    session.ProcessRequest(request, response);
+    return std::pair{TurnResult{GetAssistantText(response), response.usage.prompt_tokens},
+                     response.finish_reason};
+  };
+
+  constexpr const char* kFirstPrompt = "Reply briefly: one.";
+  constexpr const char* kSecondPrompt = "Using the previous turn, reply briefly: two.";
+  constexpr const char* kThinking = R"({"enable_thinking":true})";
+  constexpr const char* kNoThinking = R"({"enable_thinking":false})";
+
+  const char* next_kwargs_values[] = {kNoThinking, nullptr};
+  for (const char* next_kwargs : next_kwargs_values) {
+    SCOPED_TRACE(next_kwargs ? "changed kwargs" : "removed kwargs");
+    ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    auto [first, first_finish] =
+        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt}}, kThinking);
+    ASSERT_EQ(first_finish, FOUNDRY_LOCAL_FINISH_STOP);
+
+    int streamed_items = 0;
+    bool cancel_enabled = true;
+    session.SetStreamingCallback(
+        [&](flStreamingCallbackData event, void*) -> int {
+          auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+          if (queue->TryPop()) {
+            ++streamed_items;
+          }
+          return cancel_enabled && streamed_items >= 1 ? 1 : 0;
+        });
+
+    try {
+      run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+      FAIL() << "Expected streaming callback cancellation";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+    }
+    EXPECT_EQ(session.TurnCount(), 1u);
+    EXPECT_EQ(session.MessageCount(), 2u);
+
+    cancel_enabled = false;
+    auto [replayed, replayed_finish] =
+        run_turn(session, {{FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}}, next_kwargs);
+    EXPECT_NE(replayed_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+    ASSERT_EQ(session.Transcript().Turns().size(), 2u);
+    EXPECT_FALSE(session.Transcript().Turns()[1].tokens.pre_turn.has_value());
+
+    ChatSession baseline(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
+    auto [full_history, baseline_finish] = run_turn(
+        baseline,
+        {{FOUNDRY_LOCAL_ROLE_USER, kFirstPrompt},
+         {FOUNDRY_LOCAL_ROLE_ASSISTANT, first.text},
+         {FOUNDRY_LOCAL_ROLE_USER, kSecondPrompt}},
+        next_kwargs);
+    EXPECT_NE(baseline_finish, FOUNDRY_LOCAL_FINISH_ERROR);
+    EXPECT_EQ(replayed.text, full_history.text);
+    EXPECT_EQ(replayed.prompt_tokens, full_history.prompt_tokens)
+        << "Cancellation after a kwargs-triggered rebuild must discard retained state before replay";
+  }
+}
+
 TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancellation) {
   ChatSession session(GetCatalogModel(), GetModel(), *logger_, null_telemetry_);
   ASSERT_EQ(GetModel().GetGenAIConfig().GetChatBackendKind(), ChatBackendKind::kGenerator);
@@ -3621,12 +4108,12 @@ TEST_F(ChatSessionTest, AppendedClassicGeneratorIsDiscardedAfterStreamingCancell
   session.SetStreamingCallback(callback_fn);
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
-  // Should have stopped early
+  // The canceled response is not published.
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
-  // we check cancellation at the start of each loop and we don't use std::atomic to make processing cheaper
-  // so allow for a couple of extra tokens to come through after the cancellation condition is met
+  EXPECT_TRUE(response.items.empty());
+  // Cancellation is observed between token steps, so allow for a couple of extra tokens after the callback.
   EXPECT_LE(tokens_received, 6);
 
   // The appended canceled turn commits nothing; only the seed turn remains.
@@ -3672,9 +4159,10 @@ TEST_F(ChatSessionTest, CancellationFromTheLastQueuedCallbackPreventsCommit) {
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   EXPECT_EQ(session.MessageCount(), 0u);
   EXPECT_EQ(session.TurnCount(), 0u);
 }
@@ -3719,9 +4207,10 @@ TEST_F(ChatSessionTest, OpenAIJsonCancellationFromLastContentCallbackPublishesNo
   });
 
   Response response;
-  session.ProcessRequest(request, response);
+  ExpectOperationCancelled([&] { session.ProcessRequest(request, response); });
 
   EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_NONE);
+  EXPECT_TRUE(response.items.empty());
   ASSERT_EQ(delivered.size(), 2u);
   EXPECT_EQ(delivered[0]["choices"][0]["delta"]["role"], "assistant");
   EXPECT_FALSE(delivered[0]["choices"][0]["finish_reason"].is_string());

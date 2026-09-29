@@ -109,6 +109,59 @@ async fn should_process_request_and_return_response() {
 }
 
 #[tokio::test]
+async fn preflight_survives_source_session_and_maps_budget_results() {
+    let (session, model) = setup_chat_session().await;
+    let request = Request::from_items(vec![Item::user_message(vec![Item::text("Say hello.")])])
+        .with_options(RequestOptions {
+            search: SearchOptions {
+                max_output_tokens: Some(17),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    let fitting_preflight = session.preflight_request(request);
+
+    let oversized_request = Request::from_items(vec![Item::user_message(vec![Item::text(
+        "Say hello.",
+    )])])
+    .with_options(RequestOptions {
+        search: SearchOptions {
+            max_output_tokens: Some(1_000_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let oversized_preflight = session.preflight_request(oversized_request);
+    drop(session);
+
+    let fitting = fitting_preflight.await.expect("captured preflight failed");
+    assert!(fitting.prompt_tokens > 0);
+    assert_eq!(fitting.output_reserve_tokens, 17);
+    assert_eq!(fitting.required_tokens, fitting.prompt_tokens + 17);
+    assert!(fitting.context_limit_tokens >= fitting.required_tokens);
+    assert!(fitting.fits);
+    assert_eq!(fitting.deficit_tokens, 0);
+
+    let oversized = oversized_preflight
+        .await
+        .expect("oversized preflight failed");
+    assert_eq!(oversized.prompt_tokens, fitting.prompt_tokens);
+    assert_eq!(oversized.output_reserve_tokens, 1_000_000);
+    assert_eq!(
+        oversized.required_tokens,
+        oversized.prompt_tokens + oversized.output_reserve_tokens
+    );
+    assert_eq!(oversized.context_limit_tokens, fitting.context_limit_tokens);
+    assert!(!oversized.fits);
+    assert_eq!(
+        oversized.deficit_tokens,
+        oversized.required_tokens - oversized.context_limit_tokens
+    );
+
+    model.unload().await.expect("unload should succeed");
+}
+
+#[tokio::test]
 async fn should_stream_items() {
     let (session, model) = setup_chat_session().await;
 

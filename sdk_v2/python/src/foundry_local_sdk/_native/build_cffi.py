@@ -172,6 +172,7 @@ typedef struct flModel flModel;
 typedef struct flModelInfo flModelInfo;
 typedef struct flModelList flModelList;
 typedef struct flRequest flRequest;
+typedef struct flRequestPreflight flRequestPreflight;
 typedef struct flResponse flResponse;
 typedef struct flSession flSession;
 typedef struct flStatus flStatus;
@@ -193,6 +194,16 @@ typedef struct flUsage {
     int64_t completion_tokens;
     int64_t total_tokens;
 } flUsage;
+
+typedef struct flRequestPreflightResult {
+    uint32_t version;
+    int64_t prompt_tokens;
+    int64_t output_reserve_tokens;
+    int64_t required_tokens;
+    int64_t context_limit_tokens;
+    _Bool fits;
+    int64_t deficit_tokens;
+} flRequestPreflightResult;
 
 typedef struct flEpInfo {
     uint32_t version;
@@ -467,6 +478,9 @@ typedef struct flInferenceApi {
     flStatusPtr (*Session_RemoveToolDefinition)(flSession* session, const char* tool_name, bool* out_removed);
     size_t (*Session_GetTurnCount)(const flSession* session);
     flStatusPtr (*Session_UndoTurns)(flSession* session, size_t count);
+    flStatusPtr (*Session_CreateRequestPreflight)(const flSession* session, const flRequest* request, flRequestPreflight** out_preflight);
+    flStatusPtr (*RequestPreflight_Execute)(flRequestPreflight* preflight, flRequestPreflightResult* out_result);
+    void (*RequestPreflight_Release)(flRequestPreflight* instance);
 } flInferenceApi;
 
 /* -----------------------------------------------------------------------

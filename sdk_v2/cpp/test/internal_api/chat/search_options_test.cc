@@ -35,6 +35,20 @@ TEST(SearchOptionsParsingTest, TemperatureOutsideSupportedRangeThrows) {
   }
 }
 
+TEST(SearchOptionsParsingTest, NumericParametersRejectTrailingCharacters) {
+  for (const auto& [key, value] : {std::pair{FOUNDRY_LOCAL_PARAM_TEMPERATURE, "0.9oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_TOP_P, "0.9oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_TOP_K, "40oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_MAX_OUTPUT_TOKENS, "1.5"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_FREQUENCY_PENALTY, "0.1oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_PRESENCE_PENALTY, "0.1oops"},
+                                   std::pair{FOUNDRY_LOCAL_PARAM_SEED, "42oops"}}) {
+    KeyValuePairs params;
+    params.Add(key, value);
+    EXPECT_THROW(SearchOptions::FromParameters(params), fl::Exception) << key;
+  }
+}
+
 TEST(SearchOptionsParsingTest, OmittedOutputLimitUsesTextAndMediaDefaults) {
   SearchOptions defaults;
   EXPECT_EQ(GetDefaultMaxOutputTokens(/*has_media=*/false), 2048);
@@ -48,6 +62,64 @@ TEST(SearchOptionsParsingTest, ExplicitOutputLimitOverridesTurnDefault) {
   explicit_limit.max_output_tokens = 64;
   EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/false)), 64);
   EXPECT_EQ(ResolveMaxOutputTokens(explicit_limit, GetDefaultMaxOutputTokens(/*has_media=*/true)), 64);
+}
+
+TEST(SearchOptionsParsingTest, ModelContextLengthIsAuthoritativeWithLegacyFallback) {
+  GenAIConfig config;
+  config.model.emplace().context_length = 8192;
+  config.search.emplace().max_length = 2048;
+  EXPECT_EQ(GetModelMaxContextLength(config), 8192);
+
+  config.model->context_length = 0;
+  EXPECT_EQ(GetModelMaxContextLength(config), 2048);
+
+  config.search->max_length = 0;
+  EXPECT_THROW(GetModelMaxContextLength(config), fl::Exception);
+}
+
+TEST(SearchOptionsParsingTest, RequestBudgetReportsExactFitAndDeficit) {
+  const auto exact = ComputeRequestBudget(90, 10, 100);
+  EXPECT_TRUE(exact.fits);
+  EXPECT_EQ(exact.required_tokens, 100);
+  EXPECT_EQ(exact.deficit_tokens, 0);
+
+  const auto over = ComputeRequestBudget(91, 10, 100);
+  EXPECT_FALSE(over.fits);
+  EXPECT_EQ(over.required_tokens, 101);
+  EXPECT_EQ(over.deficit_tokens, 1);
+}
+
+TEST(SearchOptionsParsingTest, GeneratorBudgetValidatorMatchesPreflightBoundaries) {
+  for (const int prompt_tokens : {90, 91}) {
+    const auto budget = ComputeRequestBudget(prompt_tokens, 10, 100);
+    EXPECT_EQ(budget.fits, prompt_tokens == 90);
+    if (budget.fits) {
+      EXPECT_EQ(ValidateGeneratorRequestBudget(prompt_tokens, 10, 100), 100);
+    } else {
+      EXPECT_THROW(ValidateGeneratorRequestBudget(prompt_tokens, 10, 100), fl::Exception);
+    }
+  }
+
+  const auto overflow = ComputeRequestBudget(10, (std::numeric_limits<int>::max)(), 100);
+  EXPECT_FALSE(overflow.fits);
+  EXPECT_THROW(ValidateGeneratorRequestBudget(10, (std::numeric_limits<int>::max)(), 100), fl::Exception);
+}
+
+TEST(SearchOptionsParsingTest, OutputReserveMatchesBackendGenerationPolicy) {
+  SearchOptions explicit_limit;
+  explicit_limit.max_output_tokens = 64;
+  EXPECT_EQ(ResolveOutputReserve(explicit_limit, ChatBackendKind::kEngine, false, 25, 100), 64);
+
+  const SearchOptions defaults;
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, false, 25, 100), 2048);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kGenerator, true, 25, 100), 3072);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 25, 100), 75);
+  EXPECT_EQ(ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 100, 100), 1);
+
+  const auto exhausted = ComputeRequestBudget(
+      100, ResolveOutputReserve(defaults, ChatBackendKind::kEngine, false, 100, 100), 100);
+  EXPECT_FALSE(exhausted.fits);
+  EXPECT_EQ(exhausted.deficit_tokens, 1);
 }
 
 TEST(SearchOptionsParsingTest, RetainedGenerationSettingsAreBackendAware) {

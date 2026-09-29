@@ -294,6 +294,24 @@ model.unload()
 
 `ChatSession` is stateful across turns. `session.turn_count` reports how many requests have been processed; `session.undo_turns(n)` rewinds history.
 
+Before processing a request, use `preflight_request()` to synchronously ask the native runtime for
+the request's token budget:
+
+```python
+model = manager.catalog.get_model("qwen2.5-0.5b")
+model.load()
+with ChatSession(model) as session:
+    with Request().add_item(MessageItem.user("Summarize this conversation.")) as req:
+        budget = session.preflight_request(req)
+        print(f"Required tokens: {budget.required_tokens}; fits: {budget.fits}")
+model.unload()
+```
+
+The SDK reports the native result without estimating tokens, changing options, truncating context,
+or rewriting the request.
+`context_limit_tokens` is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
 ### Multi-turn conversations
 
 Each call to `process_request` extends the session's turn history. Build a new `Request` per turn:

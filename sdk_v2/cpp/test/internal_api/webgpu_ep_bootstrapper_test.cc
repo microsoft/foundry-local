@@ -241,7 +241,9 @@ TEST(WebGpuEpBootstrapperTest, SuccessfulBundleRegistrationFinalizesPreviousGene
       [manifest_v2] { return std::optional<EpBundleManifest>(manifest_v2); },
       downloads.AsFn());
 
-  EXPECT_TRUE(bootstrapper.DownloadAndRegister(false, /*progress_cb=*/nullptr, logger));
+  bool downloaded = false;
+  EXPECT_TRUE(bootstrapper.DownloadAndRegister(false, /*progress_cb=*/nullptr, logger, &downloaded));
+  EXPECT_TRUE(downloaded);
   EXPECT_EQ(registration_count, 1);
   EXPECT_TRUE(bootstrapper.IsRegistered());
   EXPECT_EQ(registered_path.filename(), "provider.so");
@@ -250,6 +252,14 @@ TEST(WebGpuEpBootstrapperTest, SuccessfulBundleRegistrationFinalizesPreviousGene
   EXPECT_TRUE(active_v2.starts_with("bundle-v2-"));
   EXPECT_FALSE(std::filesystem::exists(root.path() / "bundles" / active_v1));
   EXPECT_TRUE(std::filesystem::exists(root.path() / "bundles" / active_v2));
+
+  auto register_ep = [](const std::string&, const std::filesystem::path&) { return true; };
+  auto manifest_factory = [manifest_v2] { return std::optional<EpBundleManifest>(manifest_v2); };
+  WebGpuEpBootstrapper restarted(root.string(), register_ep, manifest_factory, downloads.AsFn());
+  downloaded = true;
+  EXPECT_TRUE(restarted.DownloadAndRegister(false, /*progress_cb=*/nullptr, logger, &downloaded));
+  EXPECT_FALSE(downloaded);
+  EXPECT_EQ(downloads.CallCount("https://example.test/provider-v2.so"), 1);
 }
 
 }  // namespace fl

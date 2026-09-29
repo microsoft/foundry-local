@@ -108,6 +108,16 @@ struct EPUtils {
         return "";
     }
   }
+
+  /// Telemetry names the effective provider, while runtime mappings must preserve GenAI's empty/default sentinel.
+  /// An explicit selection overrides the model config; otherwise an empty configured provider means implicit CPU.
+  static std::string_view EPtoTelemetryName(ExecutionProvider ep, std::string_view configured_provider) {
+    if (ep == ExecutionProvider::kDefault) {
+      ep = configured_provider.empty() ? ExecutionProvider::kCPU : StringtoEP(configured_provider);
+    }
+
+    return EPtoRegistrationName(ep);
+  }
 };
 
 }  // namespace fl

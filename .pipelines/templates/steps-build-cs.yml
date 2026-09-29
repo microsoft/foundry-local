@@ -100,9 +100,21 @@ steps:
     script: |
       dotnet build "$(Build.SourcesDirectory)/sdk_v2/cs/src/Microsoft.AI.Foundry.Local.csproj" `
         --no-restore --configuration Release `
+        /p:Version=$(packageVersion) `
+        /p:IncludeSourceRevisionInInformationalVersion=false `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir=
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      $outputDir = Join-Path '$(Build.SourcesDirectory)' 'sdk_v2\cs\src\bin\Release'
+      foreach ($framework in @('net8.0', 'net9.0', 'netstandard2.0')) {
+        $dll = Join-Path (Join-Path $outputDir $framework) 'Microsoft.AI.Foundry.Local.dll'
+        if (-not (Test-Path $dll)) { throw "Missing C# SDK assembly: $dll" }
+        $builtVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($dll).ProductVersion
+        if ($builtVersion -ne '$(packageVersion)') {
+          throw "C# SDK assembly version for $framework is '$builtVersion', expected '$(packageVersion)'"
+        }
+      }
 
 # Sign SDK DLLs across all target frameworks (net8.0, net9.0, netstandard2.0).
 # Pattern is a recursive glob so every TFM output directory is covered.
@@ -139,6 +151,7 @@ steps:
       dotnet pack "$(Build.SourcesDirectory)/sdk_v2/cs/src/Microsoft.AI.Foundry.Local.csproj" `
         --no-build --no-restore --configuration Release `
         --output "${{ parameters.outputDir }}" `
+        /p:Version=$(packageVersion) `
         /p:PackageVersion=$(packageVersion) `
         /p:FoundryLocalRuntimeVersion=$(packageVersion) `
         /p:FoundryLocalNativeBinDir= `

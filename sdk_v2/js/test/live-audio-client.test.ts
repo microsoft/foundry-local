@@ -110,6 +110,7 @@ describe.skipIf(!haveTestModelCache)("LiveAudioTranscriptionSession (V1, real ne
       const chunks = splitIntoChunks(pcm, CHUNK_BYTES);
       expect(chunks.length).toBeGreaterThan(1);
 
+      session.settings.language = "en";
       await session.start();
 
       // Push the chunks and signal end-of-input in the background while a

@@ -24,7 +24,10 @@ class ListLoadedModelsHandler : public HttpRequestHandler {
  public:
   explicit ListLoadedModelsHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
+    ActionTracker tracker(Action::kModelList, ctx_.telemetry,
+                          InvocationContext::Direct(GetUserAgent(request)));
+
     auto loaded = ctx_.catalog.GetLoadedModels();
     nlohmann::json names = nlohmann::json::array();
 
@@ -32,6 +35,7 @@ class ListLoadedModelsHandler : public HttpRequestHandler {
       names.push_back(model->Id());
     }
 
+    tracker.SetStatus(ActionStatus::kSuccess);
     return JsonResponse(Status::CODE_200, names);
   }
 
@@ -48,7 +52,8 @@ class LoadModelHandler : public HttpRequestHandler {
   explicit LoadModelHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
-    ActionTracker tracker(Action::kModelLoad, ctx_.telemetry);
+    ActionTracker tracker(Action::kModelLoad, ctx_.telemetry,
+                          InvocationContext::Direct(GetUserAgent(request)));
 
     auto name_raw = request->getPathVariable("name");
     if (!name_raw) {
@@ -63,6 +68,7 @@ class LoadModelHandler : public HttpRequestHandler {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
+    tracker.SetModelId(model->Id());
 
     if (model->IsLoaded()) {
       tracker.SetStatus(ActionStatus::kSkipped);
@@ -77,13 +83,11 @@ class LoadModelHandler : public HttpRequestHandler {
 
     try {
       model->Load();
-      tracker.SetModelId(name);
       tracker.SetStatus(ActionStatus::kSuccess);
 
       ctx_.logger.Log(LogLevel::Information, fmt::format("Model loaded via web service: {}", name));
       return JsonResponse(Status::CODE_200, {{"status", "loaded"}});
     } catch (const std::exception& ex) {
-      tracker.SetModelId(name);
       tracker.RecordException(ex);
 
       ctx_.logger.Log(LogLevel::Error, fmt::format("Failed to load model {}: {}", name, ex.what()));
@@ -104,7 +108,8 @@ class UnloadModelHandler : public HttpRequestHandler {
   explicit UnloadModelHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
-    ActionTracker tracker(Action::kModelUnload, ctx_.telemetry);
+    ActionTracker tracker(Action::kModelUnload, ctx_.telemetry,
+                          InvocationContext::Direct(GetUserAgent(request)));
 
     auto name_raw = request->getPathVariable("name");
     if (!name_raw) {
@@ -119,6 +124,7 @@ class UnloadModelHandler : public HttpRequestHandler {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(Status::CODE_404, "Model not found", "No model matching '" + name + "'");
     }
+    tracker.SetModelId(model->Id());
 
     if (!model->IsLoaded()) {
       tracker.SetStatus(ActionStatus::kSkipped);
@@ -128,13 +134,11 @@ class UnloadModelHandler : public HttpRequestHandler {
 
     try {
       model->Unload();
-      tracker.SetModelId(name);
       tracker.SetStatus(ActionStatus::kSuccess);
 
       ctx_.logger.Log(LogLevel::Information, fmt::format("Model unloaded via web service: {}", name));
       return JsonResponse(Status::CODE_200, {{"status", "unloaded"}});
     } catch (const std::exception& ex) {
-      tracker.SetModelId(name);
       tracker.RecordException(ex);
 
       ctx_.logger.Log(LogLevel::Error, fmt::format("Failed to unload model {}: {}", name, ex.what()));
@@ -154,8 +158,9 @@ class OpenAIListModelsHandler : public HttpRequestHandler {
  public:
   explicit OpenAIListModelsHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
-    ActionTracker tracker(Action::kOpenAIModelList, ctx_.telemetry);
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
+    ActionTracker tracker(Action::kOpenAIModelList, ctx_.telemetry,
+                          InvocationContext::Direct(GetUserAgent(request)));
 
     auto models = ctx_.catalog.ListModels();
     nlohmann::json data = nlohmann::json::array();
@@ -208,7 +213,8 @@ class OpenAIRetrieveModelHandler : public HttpRequestHandler {
   explicit OpenAIRetrieveModelHandler(ServiceContext& ctx) : ctx_(ctx) {}
 
   std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& request) override {
-    ActionTracker tracker(Action::kOpenAIModelRetrieve, ctx_.telemetry);
+    ActionTracker tracker(Action::kOpenAIModelRetrieve, ctx_.telemetry,
+                          InvocationContext::Direct(GetUserAgent(request)));
 
     auto name_raw = request->getPathVariable("name");
     if (!name_raw) {

@@ -70,6 +70,30 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
+    public async Task RequestPreflight_CaptureSurvivesSourceDisposal()
+    {
+        var session = new ChatSession(model!);
+        session.SetOptions(new RequestOptions { Search = new SearchOptions { MaxOutputTokens = 32 } });
+        var request = new Request();
+        request.AddItem(MessageItem.User("Count the tokens in this request."));
+
+        var preflightTask = session.PreflightRequestAsync(request);
+
+        request.Dispose();
+        session.Dispose();
+
+        var result = await preflightTask.ConfigureAwait(false);
+
+        await Assert.That(result.PromptTokens).IsGreaterThan(0L);
+        await Assert.That(result.OutputReserveTokens).IsEqualTo(32L);
+        await Assert.That(result.RequiredTokens)
+            .IsEqualTo(result.PromptTokens + result.OutputReserveTokens);
+        await Assert.That(result.ContextLimitTokens).IsGreaterThan(0L);
+        await Assert.That(result.Fits).IsTrue();
+        await Assert.That(result.DeficitTokens).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Chat_Streaming_Succeeds()
     {
         using var session = new ChatSession(model!);
@@ -290,7 +314,7 @@ internal sealed class ChatSessionTests
     }
 
     [Test]
-    public async Task Chat_Streaming_TokenCancellation_FinalResponse_Cancels()
+    public async Task Chat_Streaming_TokenCancellation_FinalResponse_CancelsOrCompletes()
     {
         using var session = new ChatSession(model!);
         session.SetStreaming(true);
@@ -324,18 +348,19 @@ internal sealed class ChatSessionTests
         }
 
         await Assert.That(iteratorEx).IsNotNull();
+        await Assert.That(itemCount).IsGreaterThanOrEqualTo(1);
 
-        OperationCanceledException? finalEx = null;
         try
         {
-            using var _ = await stream.FinalResponse;
+            using var final = await stream.FinalResponse;
+            await Assert.That(final.FinishReason).IsEqualTo(FinishReason.Stop);
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            finalEx = oce;
+            // The producer may still be running when the first buffered item is consumed.
+            // In that case cancellation wins and FinalResponse is canceled. If the producer
+            // already completed, its terminal response remains successful.
         }
-
-        await Assert.That(finalEx).IsNotNull();
     }
 
     [Test]

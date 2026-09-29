@@ -1,0 +1,175 @@
+// Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+package com.microsoft.foundry.local;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/** Explicit opt-in; never downloads a model. All sessions share the caller's prepared cache. */
+class NativeAsrTest {
+    @TempDir Path temporary;
+
+    @Test void realAsrOwnershipCancellationAndRepeatedSessions() throws Exception {
+        String runtime = setting("foundry.test.runtime", "FOUNDRY_LOCAL_NATIVE_BIN_DIR");
+        String cache = setting("foundry.test.cache", "FOUNDRY_TEST_DATA_DIR");
+        String wav = setting("foundry.test.wav", "FOUNDRY_TEST_WAV");
+        String modelId = setting("foundry.test.model", "FOUNDRY_TEST_MODEL");
+        if (Boolean.getBoolean("foundry.test.native.required")) {
+            assertNotNull(runtime, "Missing native test runtime");
+            assertNotNull(cache, "Missing native test cache");
+            assertNotNull(wav, "Missing native test WAV");
+            assertNotNull(modelId, "Missing native test model");
+        } else {
+            assumeTrue(runtime != null && cache != null && wav != null && modelId != null,
+                    "Configure the native test runtime, cache, WAV, and model");
+        }
+        Configuration config = Configuration.builder("java-asr-test")
+                .runtimeDirectory(Path.of(runtime))
+                .modelCacheDirectory(Path.of(cache))
+                .appDataDirectory(temporary)
+                .build();
+        Model borrowed;
+        AtomicInteger callbacks = new AtomicInteger();
+        try (FoundryLocalManager manager = new FoundryLocalManager(config)) {
+            System.err.println("native-test: manager created");
+            assertThrows(IllegalStateException.class, () -> new FoundryLocalManager(config));
+            Catalog catalog = manager.catalog();
+            assertThrows(IllegalArgumentException.class, () -> catalog.getModelVariant("nemotron"));
+            assertThrows(ModelNotFoundException.class, () ->
+                    catalog.getModelVariant("missing-java-test-model:999"));
+            borrowed = catalog.getModelVariant(modelId);
+            assertEquals(borrowed.info().alias(), catalog.getModel(borrowed.info().alias()).info().alias());
+            CancellationToken cancelled = new CancellationToken();
+            cancelled.cancel();
+            FoundryLocalException download = assertThrows(FoundryLocalException.class,
+                    () -> borrowed.download(cancelled, ignored -> fail("Must not invoke progress")));
+            assertEquals(5, download.code());
+            assertTrue(borrowed.isCached(), "Explicitly prepare the model first");
+            CancellationToken completedDownload = new CancellationToken();
+            borrowed.download(completedDownload, value -> {
+                if (value == 100.0) completedDownload.cancel();
+            });
+            assertTrue(completedDownload.isCancelled(), "Cached download must report completion");
+            borrowed.load();
+            System.err.println("native-test: model loaded");
+            byte[] pcm = WavAudio.read(Path.of(wav)).pcm();
+            try (AudioSession session = borrowed.createAudioSession();
+                 Transcription run = session.transcribeWav(Path.of(wav), event -> callbacks.incrementAndGet())) {
+                TranscriptionResult result = run.await(Duration.ofSeconds(60));
+                assertTranscript(result.text());
+                assertNull(result.language());
+                assertEquals(pcm.length, run.timing().submittedBytes());
+                assertNotNull(run.timing().inputClosedMillis());
+            }
+            System.err.println("native-test: WAV finished and closed");
+            for (int iteration = 0; iteration < 2; iteration++) {
+                try (AudioSession session = borrowed.createAudioSession()) {
+                    assertThrows(IllegalStateException.class, borrowed::unload);
+                    try (Transcription run = session.streamPcm(
+                            PcmFormat.SPEECH, event -> callbacks.incrementAndGet())) {
+                        for (int offset = 0; offset < pcm.length; offset += 3200) {
+                            run.writePcm(Arrays.copyOfRange(pcm, offset, Math.min(offset + 3200, pcm.length)));
+                        }
+                        run.finishInput();
+                        TranscriptionResult result = run.await(Duration.ofMinutes(3));
+                        assertFalse(result.cancelled());
+                        assertEquals(2, result.nativeFinishReason());
+                        assertTranscript(result.text());
+                        assertThrows(IllegalStateException.class, () -> run.writePcm(new byte[2]));
+                    }
+                    System.err.println("native-test: PCM finished and closed " + iteration);
+                    int count = callbacks.get();
+                    Thread.sleep(100);
+                    assertEquals(count, callbacks.get(), "No callback may outlive close");
+                    try (Transcription run = session.streamPcm(
+                            PcmFormat.SPEECH, event -> callbacks.incrementAndGet())) {
+                        run.writePcm(Arrays.copyOf(pcm, Math.min(3200, pcm.length)));
+                        run.cancel();
+                        assertTrue(run.await(Duration.ofSeconds(30)).cancelled());
+                        assertTrue(run.isCancelled());
+                    }
+                    System.err.println("native-test: cancellation acknowledged and closed " + iteration);
+                    try (Transcription run = session.streamPcm(PcmFormat.SPEECH, event -> {
+                        throw new IllegalStateException("listener failure");
+                    })) {
+                        for (int offset = 0; offset < Math.min(pcm.length, 64000); offset += 3200) {
+                            if (run.isDone()) break;
+                            run.writePcm(Arrays.copyOfRange(pcm, offset, Math.min(offset + 3200, pcm.length)));
+                        }
+                        run.finishInput();
+                        assertThrows(IllegalStateException.class, () -> run.await(Duration.ofSeconds(30)));
+                    }
+                    System.err.println("native-test: callback failure surfaced and closed " + iteration);
+                }
+            }
+            // Manager owns and closes an outstanding session/request even if the caller forgets.
+            borrowed.createAudioSession().streamPcm(PcmFormat.SPEECH, event -> callbacks.incrementAndGet());
+            System.err.println("native-test: cascade close starting");
+        }
+        System.err.println("native-test: manager closed");
+        assertThrows(IllegalStateException.class, borrowed::isLoaded);
+        int count = callbacks.get();
+        Thread.sleep(100);
+        assertEquals(count, callbacks.get());
+        assertTrue(Thread.getAllStackTraces().keySet().stream()
+                .noneMatch(thread -> thread.isAlive() && thread.getName().startsWith("foundry-java-asr")));
+        try (FoundryLocalManager manager = new FoundryLocalManager(config)) {
+            assertFalse(manager.runtimeVersion().isBlank());
+        }
+        System.err.println("native-test: manager recreated and closed");
+        Process process = NativeTestProcess.start(NativeAbandonedStream.class,
+                runtime, cache, temporary.toString(), modelId);
+        try {
+            assertTrue(process.waitFor(90, TimeUnit.SECONDS), "Abandoned stream kept the JVM alive");
+            String output = new String(process.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(0, process.exitValue(), output);
+            assertTrue(output.contains("stream-started"), output);
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                process.waitFor();
+            }
+        }
+        Process closeProcess = NativeTestProcess.start(NativeManagerCloseDuringTranscription.class,
+                runtime, cache, temporary.toString(), modelId);
+        try {
+            assertTrue(closeProcess.waitFor(90, TimeUnit.SECONDS),
+                    "Manager close during active transcription did not finish");
+            String output = new String(closeProcess.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(0, closeProcess.exitValue(), output);
+            assertTrue(output.contains("manager-closed"), output);
+        } finally {
+            if (closeProcess.isAlive()) {
+                closeProcess.destroyForcibly();
+                closeProcess.waitFor();
+            }
+        }
+    }
+
+    private static String setting(String property, String environmentVariable) {
+        String value = System.getProperty(property);
+        if (value == null) {
+            value = System.getenv(environmentVariable);
+        }
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private static void assertTranscript(String text) {
+        String normalized = text.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", " ")
+                .trim()
+                .replaceAll(" +", " ");
+        for (String phrase : new String[] {"more than one link", "live concert", "album to purchase"}) {
+            assertTrue(normalized.contains(phrase), () -> "Missing '" + phrase + "' in transcript: " + text);
+        }
+    }
+}

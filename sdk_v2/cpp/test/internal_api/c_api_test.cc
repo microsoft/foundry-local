@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 #include "internal_api/c_api_test_helpers.h"
+#include "c_api_types.h"
 #include "items/tool_call_item.h"
 #include "utils/temp_path.h"
 
+#include <foundry_local/foundry_local_cpp.h>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -172,6 +174,15 @@ TEST(CApiTest, ConfigurationReleaseNullIsNoOp) {
   const flApi* api = GetApi();
   ASSERT_NE(api, nullptr);
   api->GetConfigurationApi()->Configuration_Release(nullptr);
+}
+
+TEST(CApiTest, CppConfigurationAutomaticallySetsSdkIdentity) {
+  foundry_local::Configuration config("test-app");
+  const auto* native_config = AsImpl(config.native_handle());
+
+  const auto default_user_agent = native_config->additional_options.find("UserAgent");
+  ASSERT_NE(default_user_agent, native_config->additional_options.end());
+  EXPECT_EQ(default_user_agent->second, std::string("foundry-local-cpp/") + foundry_local::Version());
 }
 
 // ========================================================================
@@ -1712,7 +1723,7 @@ TEST(CApiTest, ItemQueuePushPopAndFinish) {
 // Inference API — Request_Cancel
 // ========================================================================
 
-TEST(CApiTest, RequestCancelOnIdleRequest) {
+TEST(CApiTest, RequestCancelWhileIdleSucceeds) {
   const flApi* api = GetApi();
   const flInferenceApi* inf_api = api->GetInferenceApi();
 
@@ -1720,7 +1731,7 @@ TEST(CApiTest, RequestCancelOnIdleRequest) {
   ASSERT_TRUE(IsOk(inf_api->Request_Create(&req)));
   ASSERT_NE(req, nullptr);
 
-  // Cancel on an idle request should succeed (no-op)
+  // Idle cancellation is a successful no-op.
   EXPECT_TRUE(IsOk(inf_api->Request_Cancel(req)));
 
   inf_api->Request_Release(req);

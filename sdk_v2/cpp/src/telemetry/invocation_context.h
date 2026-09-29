@@ -7,8 +7,8 @@
 
 namespace fl {
 
-/// Generate an RFC 4122 v4 UUID, hex-encoded with hyphens. Not a cryptographic
-/// identifier — used for per-operation correlation and per-process session ids.
+/// Generate an RFC 4122 v4 UUID, hex-encoded with hyphens, for per-operation
+/// correlation and per-process session ids.
 std::string GenerateGuidV4();
 
 std::string DefaultUserAgent();

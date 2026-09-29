@@ -9,12 +9,14 @@
 #include "utils/string_utils.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using fl::test::ToLower;
@@ -113,6 +115,9 @@ TEST_F(StreamingAudioFixture, StreamRecordingInChunksAndValidateTranscription) {
   Request request;
   request.AddItem(audio, /*take_ownership=*/true);   // we don't need to keep this alive
   request.AddItem(queue, /*take_ownership=*/false);  // we need to keep this alive to stream data
+  RequestOptions options;
+  options.additional_options.Set("language", "en");
+  request.SetOptions(options);
 
   AudioSession session(audio_model());
   auto future = std::async(std::launch::async, [&]() {
@@ -202,6 +207,7 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
 
   auto pcm = LoadPcm();
   auto chunks = SplitIntoChunks(pcm, 3200);
+  ASSERT_GT(chunks.size(), 1u);
 
   auto audio = Item::AudioFromData("pcm", nullptr, 0, /*sample_rate=*/16000, /*channels=*/1);
   ItemQueue queue;
@@ -221,13 +227,30 @@ TEST_F(StreamingAudioFixture, CancellationMidStream) {
     queue.Push(Item::Bytes(FOUNDRY_LOCAL_ITEM_BYTES, chunks[i].data(), chunks[i].size()));
   }
 
+  const auto admission_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (queue.Size() == half && std::chrono::steady_clock::now() < admission_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  if (queue.Size() == half) {
+    request.Cancel();
+    queue.MarkFinished();
+    future.wait();
+    FAIL() << "Audio session did not consume input before the cancellation deadline";
+  }
+
+  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
+      << "Audio session completed before cancellation";
+
   request.Cancel();
   queue.MarkFinished();
 
-  Response response = future.get();
-
-  EXPECT_EQ(response.GetFinishReason(), FOUNDRY_LOCAL_FINISH_NONE)
-      << "Cancelled request should have NONE finish reason";
+  try {
+    (void)future.get();
+    FAIL() << "Expected operation cancellation";
+  } catch (const foundry_local::Error& error) {
+    EXPECT_EQ(error.Code(), FOUNDRY_LOCAL_ERROR_OPERATION_CANCELLED);
+  }
 }
 
 TEST_F(StreamingAudioFixture, StreamingCallbackReceivesTokens) {
@@ -250,16 +273,7 @@ TEST_F(StreamingAudioFixture, StreamingCallbackReceivesTokens) {
   std::mutex text_mutex;
   std::string streamed_text;
 
-  session.SetStreamingCallback([&](flStreamingCallbackData data) {
-    // Pop the item from the queue — this is the established contract.
-    flItem* raw_item = nullptr;
-    if (!detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw_item) || !raw_item) {
-      return 0;
-    }
-
-    // Wrap in Item for RAII release and checked accessors.
-    Item item(*raw_item);
-
+  session.SetStreamingCallback([&](Item item) {
     // Audio output is always a SpeechSegmentItem per token.
     EXPECT_EQ(item.GetType(), FOUNDRY_LOCAL_ITEM_SPEECH_SEGMENT);
     auto seg = item.GetSpeechSegment();

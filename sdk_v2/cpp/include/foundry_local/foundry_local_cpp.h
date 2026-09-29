@@ -1028,13 +1028,36 @@ class Request {
   /// Options for this request. Overrides session options for the duration of this request.
   Request& SetOptions(const RequestOptions& options);
 
-  /// Cancel the current request. Inferencing will stop as soon as possible.
+  /// Cancel this request's in-flight invocation. This is a no-op while idle or after completion.
   void Cancel();
 
   const flRequest* native_handle() const noexcept { return handle_.get(); }
 
  private:
   detail::Base<flRequest> handle_;
+};
+
+/// Captured exact token-budget preflight operation.
+///
+/// Capture is separate from execution so callers can capture request and session state on one
+/// thread, then move the operation to a worker for the potentially expensive execution. The
+/// source Request and ChatSession do not need to remain alive after capture. The owning Manager
+/// and model runtime must remain alive until this operation is executed and destroyed.
+class RequestPreflight {
+ public:
+  RequestPreflight(const RequestPreflight&) = delete;
+  RequestPreflight& operator=(const RequestPreflight&) = delete;
+  RequestPreflight(RequestPreflight&&) noexcept = default;
+  RequestPreflight& operator=(RequestPreflight&&) noexcept = default;
+
+  /// Execute the captured preflight operation.
+  flRequestPreflightResult Execute();
+
+ private:
+  friend class ChatSession;
+  explicit RequestPreflight(flRequestPreflight* preflight);
+
+  detail::Base<flRequestPreflight> handle_;
 };
 
 /// Wrapper for an opaque flResponse.
@@ -1069,9 +1092,18 @@ class Session {
   /// Options to apply to all requests on this session.
   Session& SetOptions(const RequestOptions& options);
 
-  /// Set the streaming callback using a std::function.
+  /// Set a callback that receives each streamed item as an owning RAII wrapper.
+  /// The callback may move the item elsewhere to extend its lifetime.
   /// Return 0 to continue, non-zero to cancel.
+  Session& SetStreamingCallback(std::function<int(Item)> callback);
+
+  /// Set the legacy callback that receives the C streaming event and must pop its item manually.
+  /// Return 0 to continue, non-zero to cancel.
+  [[deprecated("Use SetStreamingCallback(std::function<int(Item)>) instead")]]
   Session& SetStreamingCallback(std::function<int(flStreamingCallbackData)> callback);
+
+  /// Clear the streaming callback.
+  Session& SetStreamingCallback(std::nullptr_t);
 
   /// Process the request.
   /// Populates the response with output items, finish reason, and usage.
@@ -1104,6 +1136,16 @@ class ChatSession : public Session {
   /// Undo the last `count` turns and remove their input messages and assistant replies from history.
   /// Retained inference state is reused when it can be restored safely; otherwise it is rebuilt on the next request.
   void UndoTurns(size_t count);
+
+  /// Capture request and session state for a later exact token-budget preflight.
+  /// The returned operation can be moved to a worker and executed after the source request and
+  /// session are destroyed. The owning Manager and model runtime must remain alive until the
+  /// returned operation is executed and destroyed.
+  RequestPreflight CaptureRequestPreflight(const Request& request) const;
+
+  /// Synchronously capture and execute an exact token-budget preflight without mutating the request or session.
+  /// This operation may be expensive. The owning Manager and model runtime must remain alive for the call.
+  flRequestPreflightResult PreflightRequest(const Request& request) const;
 };
 
 /// Session for automatic-speech-recognition (transcription) models.
@@ -1133,17 +1175,30 @@ namespace detail {
 
 /// Adapts a std::function streaming callback for use with the C API's function-pointer + void* interface.
 struct StreamingCallbackHelper {
-  using CallbackFn = std::function<int(flStreamingCallbackData)>;
+  using ItemCallbackFn = std::function<int(Item)>;
+  using LegacyCallbackFn = std::function<int(flStreamingCallbackData)>;
 
-  explicit StreamingCallbackHelper(CallbackFn callback) : callback_(std::move(callback)) {}
+  explicit StreamingCallbackHelper(ItemCallbackFn callback) : item_callback_(std::move(callback)) {}
+  explicit StreamingCallbackHelper(LegacyCallbackFn callback) : legacy_callback_(std::move(callback)) {}
 
   static int CCallback(flStreamingCallbackData data, void* user_data) {
     auto* helper = static_cast<StreamingCallbackHelper*>(user_data);
-    return helper->callback_(data);
+    if (helper->legacy_callback_) {
+      return helper->legacy_callback_(data);
+    }
+
+    flItem* raw_item = nullptr;
+    if (!detail::item_api()->ItemQueue_TryPop(data.item_queue, &raw_item) || !raw_item) {
+      // should never happen. adding item to queue to callback should be 1:1.
+      return 1;
+    }
+
+    return helper->item_callback_(Item(*raw_item));
   }
 
  private:
-  CallbackFn callback_;
+  ItemCallbackFn item_callback_;
+  LegacyCallbackFn legacy_callback_;
 };
 
 /// Adapts a std::function deleter for use with C API data struct deleters.
