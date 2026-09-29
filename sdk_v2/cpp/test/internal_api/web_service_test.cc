@@ -548,6 +548,10 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_EQ(ranking.at("ranked").size(), 2u);
   EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+  EXPECT_THROW(
+      TestHttpGet(base_url_ + "/catalogs/local/models/load/" +
+                  clm_metadata.model_id),
+      std::exception);
 
   auto decision = json::parse(TestHttpPost(
       base_url_ + "/catalogs/local/v1/systemone",
