@@ -59,6 +59,8 @@ add_executable(foundry_local_tests
     internal_api/model_io_info_test.cc
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
+    internal_api/non_generative_contract_test.cc
+    internal_api/non_generative_runtime_test.cc
     internal_api/platform_path_test.cc
     internal_api/replay_equivalence_test.cc
     internal_api/response_converter_test.cc

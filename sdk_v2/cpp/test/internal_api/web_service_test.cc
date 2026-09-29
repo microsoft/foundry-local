@@ -5,6 +5,7 @@
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 
 #include "catalog.h"
+#include "catalog/non_generative_package.h"
 #include "contracts/tool_definitions.h"
 #include "ep_detection/ep_detector.h"
 #include "http/http_client.h"
@@ -27,6 +28,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -109,10 +111,12 @@ std::string TestHttpGet(const std::string& url, const std::string& user_agent = 
 }
 
 std::string TestHttpPost(const std::string& url, const std::string& json_body,
-                         const std::string& user_agent = "") {
+                         const std::string& user_agent = "",
+                         std::chrono::milliseconds timeout = std::chrono::seconds(30)) {
   http::HttpRequestOptions options;
   options.user_agent = user_agent;
   options.close_connection = true;
+  options.timeout = timeout;
   return http::HttpPost(url, json_body, options);
 }
 
@@ -205,6 +209,27 @@ class WebServiceTest : public ::testing::Test {
   json Get(const std::string& path) {
     auto body = TestHttpGet(base_url_ + path);
     return json::parse(body);
+  }
+
+  static NonGenerativePackageMetadata AddLocalPackage(
+      const std::filesystem::path& path) {
+    auto package = ReadNonGenerativePackage(path);
+    if (!package) throw std::runtime_error("test package metadata is missing");
+    const auto separator = package->model_id.rfind(':');
+    ModelInfo info;
+    info.model_id = package->model_id;
+    info.name = package->model_id.substr(0, separator);
+    info.version = std::stoi(package->model_id.substr(separator + 1));
+    info.alias = package->alias;
+    info.task = package->task;
+    info.execution_provider = package->execution_provider;
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, package->task);
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR,
+                        package->execution_provider);
+    local_catalog_->AddModel(Model::FromLocalRegistration(
+        std::move(info), path.string(), svc_.download_manager,
+        svc_.model_load_manager));
+    return *package;
   }
 
   static std::unique_ptr<test::MockCatalog> public_catalog_;
@@ -463,6 +488,116 @@ TEST_F(WebServiceTest, ChatCompletionsRejectsMissingMessages) {
 
   EXPECT_THROW(TestHttpPost(base_url_ + "/v1/chat/completions", body.dump()),
                std::exception);
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesRejectInvalidContracts) {
+  EXPECT_THROW(TestHttpPost(base_url_ + "/v1/rank", ""),
+               std::exception);
+  EXPECT_THROW(TestHttpPost(base_url_ + "/v1/systemone",
+                            R"({"questions":{}})"),
+               std::exception);
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesResolveRequestedCatalogModelAndValidateTask) {
+  EXPECT_THROW(
+      TestHttpPost(
+          base_url_ + "/v1/rank",
+          R"({"model":"alpha-model","context":{},"question":"select","answers":["a","b"]})"),
+      std::exception);
+  EXPECT_THROW(
+      TestHttpPost(
+          base_url_ + "/v1/systemone",
+          R"({"model":"alpha-model","state":{},"questions":{"q":{"type":"noul"}}})"),
+      std::exception);
+  EXPECT_THROW(
+      TestHttpPost(
+          base_url_ + "/v1/rank",
+          R"({"model":"unknown-explicit-model","context":{},"question":"select","answers":["a","b"]})"),
+      std::exception);
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfigured) {
+  const char* root_value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (!root_value || !*root_value) {
+    GTEST_SKIP() << "set FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run exported packages";
+  }
+  const auto root = std::filesystem::path(root_value);
+  const auto clm = root / "clm-v0.1-8b-fp32";
+  const auto kev = root / "kev-4b-fp32";
+  const auto clm_metadata = AddLocalPackage(clm);
+  const auto kev_metadata = AddLocalPackage(kev);
+#ifdef _WIN32
+  _putenv_s("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str());
+  _putenv_s("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str());
+  _putenv_s("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER", "");
+#else
+  setenv("FOUNDRY_LOCAL_RANK_MODEL_PATH", clm.string().c_str(), 1);
+  setenv("FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH", kev.string().c_str(), 1);
+  unsetenv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
+#endif
+
+  auto ranking = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/rank",
+      json{{"model", clm_metadata.model_id},
+           {"context", {{"weather", "heavy rain"}}},
+           {"question", "Which activity is more suitable?"},
+           {"answers", {"Have a picnic outdoors", "Visit an indoor museum"}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  ASSERT_EQ(ranking.at("ranked").size(), 2u);
+  EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+
+  auto decision = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/systemone",
+      json{{"model", kev_metadata.alias},
+           {"state", {{"weather", "heavy rain"}}},
+           {"questions",
+            {{"umbrella",
+              {{"type", "noul"},
+               {"instructions", "Should I take an umbrella?"}}}}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  ASSERT_TRUE(decision.at("answers").contains("umbrella"));
+  EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
+
+  auto fallback = json::parse(TestHttpPost(
+      base_url_ + "/v1/rank",
+      R"({"model":"clm-latest","context":{},"question":"select","answers":["a","b"]})",
+      "", std::chrono::minutes(3)));
+  EXPECT_EQ(fallback.at("model"), clm_metadata.model_id);
+}
+
+TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConfigured) {
+  const char* enabled = std::getenv("FOUNDRY_LOCAL_RUN_CUDA_TESTS");
+  const char* root_value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (!enabled || std::string_view(enabled) != "1" || !root_value || !*root_value) {
+    GTEST_SKIP() << "set FOUNDRY_LOCAL_RUN_CUDA_TESTS=1 and "
+                    "FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run CUDA packages";
+  }
+  const auto root = std::filesystem::path(root_value);
+  const auto clm = root / "clm-v0.1-8b-int4-cuda";
+  const auto kev = root / "kev-4b-int4-cuda";
+  const auto clm_metadata = AddLocalPackage(clm);
+  const auto kev_metadata = AddLocalPackage(kev);
+
+  auto ranking = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/rank",
+      json{{"model", clm_metadata.model_id},
+           {"context", {{"weather", "heavy rain"}}},
+           {"question", "select"},
+           {"answers", {"outside", "inside"}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  EXPECT_EQ(ranking.at("model"), clm_metadata.model_id);
+
+  auto decision = json::parse(TestHttpPost(
+      base_url_ + "/catalogs/local/v1/systemone",
+      json{{"model", kev_metadata.model_id},
+           {"state", {{"weather", "heavy rain"}}},
+           {"questions", {{"umbrella", {{"type", "noul"}}}}}}
+          .dump(),
+      "", std::chrono::minutes(3)));
+  EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
 }
 
 TEST_F(WebServiceTest, ChatCompletionsRejectsUnknownModel) {
