@@ -3,6 +3,7 @@
 
 #ifdef FOUNDRY_LOCAL_HAS_WEB_SERVICE
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 
 #include "catalog.h"
 #include "model_info.h"
@@ -63,6 +64,7 @@ class LoadModelHandler : public HttpRequestHandler {
 
     std::string name = name_raw->c_str();
     auto* model = ctx_.catalog.GetModel(name);
+    if (!model) model = ctx_.catalog.GetModelVariant(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
@@ -119,6 +121,7 @@ class UnloadModelHandler : public HttpRequestHandler {
 
     std::string name = name_raw->c_str();
     auto* model = ctx_.catalog.GetModel(name);
+    if (!model) model = ctx_.catalog.GetModelVariant(name);
 
     if (!model) {
       tracker.SetStatus(ActionStatus::kClientError);
@@ -133,6 +136,13 @@ class UnloadModelHandler : public HttpRequestHandler {
     }
 
     try {
+      if (model->Info().task == "text-ranking" ||
+          model->Info().task == "typed-decision") {
+        const bool unloaded = UnloadNonGenerativeRuntime(*model);
+        tracker.SetStatus(unloaded ? ActionStatus::kSuccess : ActionStatus::kSkipped);
+        return JsonResponse(Status::CODE_200,
+                            {{"status", unloaded ? "unloaded" : "not_loaded"}});
+      }
       model->Unload();
       tracker.SetStatus(ActionStatus::kSuccess);
 
