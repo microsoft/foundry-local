@@ -235,6 +235,10 @@ CI provides the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
 `FOUNDRY_TEST_MODEL`, and passes `-Dfoundry.test.native.required=true`, so
 missing native inputs fail instead of skipping the integration test.
 
+Model-free tests check language option forwarding, omission, and error
+propagation. The native test exercises both the original overloads and explicit
+`"en-US"` for PCM and WAV in every native CI lane.
+
 The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager
 recreation with the same runtime directory, and verifies that no callback or
