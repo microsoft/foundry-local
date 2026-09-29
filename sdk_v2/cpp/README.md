@@ -392,7 +392,9 @@ to the public ORT GenAI `OgaStructuredRequest` and
 `OgaFreeFormRankRequest` types. Rendering, tokenization, tensor preparation,
 pooling, scoring, and typed result construction are owned by ORT GenAI; Foundry
 only performs contract translation. Set
-`FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda` to select CUDA for these routes.
+`FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda` to select CUDA only for prototype
+path-fallback packages. Catalog-selected packages use their registered/package
+provider metadata and are not overridden by this environment variable.
 The `FOUNDRY_LOCAL_{CLM,KEV}_CACHE_CAPACITY` and `_CAPACITY_BYTES` variables
 configure bounded session-local runtime caches. Package runtimes are also
 cached per canonical catalog identity and evicted by model unload. KEV caches
