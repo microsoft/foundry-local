@@ -248,7 +248,15 @@ separately probes a checksum-pinned released legacy runtime in a fresh JVM to
 verify rejection before accessing incompatible native function tables.
 
 `NativeAudioLanguageTest` separately qualifies language hints against a prepared
-multilingual streaming model and a PCM WAV fixture in the chosen language:
+multilingual streaming model and a PCM WAV fixture in the chosen language.
+The Windows x64 CI lane explicitly downloads the pinned multilingual model
+through `PrepareAudioLanguageModel`, then requires this test with the checked-in
+`sdk_v2/testdata/AudioLanguage.fr-FR.wav` fixture, `fr-FR`, and the expected phrase
+`dans le parc`. It also requires `distinguishesDefault=true`: both fixed language
+and `auto` must recognize a phrase that is absent when language is omitted.
+Fixture provenance and attribution are in the adjacent `.txt` file.
+
+To qualify another recording locally:
 
 ```powershell
 mvn -f sdk_v2/java/pom.xml test `
@@ -272,4 +280,6 @@ recognition actually changes, rather than merely testing Java field storage.
 No model or fixture is downloaded by this test. It is skipped unless
 `foundry.test.language` (or `FOUNDRY_TEST_LANGUAGE`) is set; once enabled,
 missing inputs fail. The expected phrase can also be supplied through
-`FOUNDRY_TEST_LANGUAGE_EXPECTED`.
+`FOUNDRY_TEST_LANGUAGE_EXPECTED`. CI sets
+`-Dfoundry.test.language.required=true` so a missing language also fails rather
+than silently skipping the test.

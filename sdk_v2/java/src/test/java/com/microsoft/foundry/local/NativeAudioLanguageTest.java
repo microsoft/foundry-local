@@ -17,7 +17,11 @@ class NativeAudioLanguageTest {
 
     @Test void languageHintsReachPcmAndWavRequests() throws Exception {
         String language = setting("foundry.test.language", "FOUNDRY_TEST_LANGUAGE");
-        assumeTrue(language != null, "Configure a fixed language and matching speech fixture");
+        if (Boolean.getBoolean("foundry.test.language.required")) {
+            assertNotNull(language, "Missing required native test language");
+        } else {
+            assumeTrue(language != null, "Configure a fixed language and matching speech fixture");
+        }
         assertNotEquals("auto", language, "Use a fixed language; auto is tested separately");
         String expected = required("foundry.test.language.expected", "FOUNDRY_TEST_LANGUAGE_EXPECTED");
         Path wav = Path.of(required("foundry.test.wav", "FOUNDRY_TEST_WAV"));
