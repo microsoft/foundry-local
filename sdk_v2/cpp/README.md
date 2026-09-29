@@ -340,6 +340,7 @@ The build produces these example executables in the build output directory:
 | `tool_calling_example` | Tool definitions, tool-result turns, and streaming tool calls |
 | `embeddings_example` | Single and batch embeddings with cosine similarity |
 | `realtime_audio_example <audio_file_path>` | PCM streaming input and streaming transcription output |
+| `kev_decision_example <package_path> [provider]` | Run a typed KEV decision package through Foundry Local Core |
 
 The source for each is under [examples/](examples/). `basic_chat_example` honors
 `FOUNDRY_LOCAL_SAMPLE_CACHE_DIR` to use an existing model-cache location.
