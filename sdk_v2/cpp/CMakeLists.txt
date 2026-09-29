@@ -218,6 +218,7 @@ set(FOUNDRY_LOCAL_SOURCES
     src/catalog/catalog_client.cc
     src/catalog/local_model_catalog.cc
     src/catalog/local_model_scanner.cc
+    src/catalog/non_generative_package.cc
     src/inferencing/generative/audio/audio_generator.cc
     src/inferencing/generative/audio/audio_session.cc
     src/inferencing/generative/audio/onnx_audio_generator.cc
@@ -272,8 +273,11 @@ set(FOUNDRY_LOCAL_SOURCES
     src/contracts/tool_definitions.cc
     src/contracts/audio_transcriptions.cc
     src/contracts/embeddings.cc
+    src/contracts/non_generative.cc
+    src/inferencing/predictive/non_generative_runtime.cc
     src/service/audio_transcriptions_handler.cc
     src/service/embeddings_handler.cc
+    src/service/non_generative_handlers.cc
     src/service/chat_completions_handler.cc
     src/service/models_handlers.cc
     src/service/responses_handler.cc
