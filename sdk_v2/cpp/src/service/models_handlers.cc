@@ -72,18 +72,18 @@ class LoadModelHandler : public HttpRequestHandler {
     }
     tracker.SetModelId(model->Id());
 
-    if (model->IsLoaded()) {
-      tracker.SetStatus(ActionStatus::kSkipped);
-
-      return JsonResponse(Status::CODE_200, {{"status", "already_loaded"}});
-    }
-
     if (model->Info().task == "text-ranking" ||
         model->Info().task == "typed-decision") {
       tracker.SetStatus(ActionStatus::kClientError);
       return ErrorResponse(
           Status::CODE_400, "Load not supported",
           "Non-generative models load on the first ranking or decision request");
+    }
+
+    if (model->IsLoaded()) {
+      tracker.SetStatus(ActionStatus::kSkipped);
+
+      return JsonResponse(Status::CODE_200, {{"status", "already_loaded"}});
     }
 
     if (!model->IsCached()) {
