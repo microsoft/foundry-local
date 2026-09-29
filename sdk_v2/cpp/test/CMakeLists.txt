@@ -60,7 +60,6 @@ add_executable(foundry_local_tests
     internal_api/model_load_manager_test.cc
     internal_api/model_sorting_test.cc
     internal_api/non_generative_contract_test.cc
-    internal_api/non_generative_runtime_test.cc
     internal_api/platform_path_test.cc
     internal_api/replay_equivalence_test.cc
     internal_api/response_converter_test.cc
@@ -92,6 +91,12 @@ add_executable(foundry_local_tests
     internal_api/winml_provider_allowlist_test.cc
     internal_api/zip_extract_test.cc
 )
+
+if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
+    target_sources(foundry_local_tests PRIVATE
+        internal_api/non_generative_runtime_test.cc
+    )
+endif()
 
 if(FOUNDRY_LOCAL_HAS_EP_BOOTSTRAPPERS)
     target_sources(foundry_local_tests PRIVATE

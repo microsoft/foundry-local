@@ -17,6 +17,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -24,8 +25,21 @@
 #include <type_traits>
 
 namespace fl {
-namespace {
 
+struct RuntimeEntry {
+  std::string model_id;
+  Model* owner;
+  std::shared_future<std::shared_ptr<void>> runtime;
+  std::shared_ptr<void> reservation;
+};
+
+class NonGenerativeRuntimeState {
+ public:
+  std::mutex mutex;
+  std::map<std::string, RuntimeEntry> runtimes;
+};
+
+namespace {
 struct ResolvedPackage {
   std::string identity;
   std::string model_id;
@@ -34,19 +48,10 @@ struct ResolvedPackage {
   Model* model = nullptr;
 };
 
-struct RuntimeEntry {
-  std::string model_id;
-  Model* owner;
-  std::shared_ptr<void> runtime;
-};
-
 class ModelNotFoundError : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
-
-std::mutex runtime_mutex;
-std::map<std::string, RuntimeEntry> runtimes;
 
 std::string ConfiguredPackagePath(const char* specific, const char* directory) {
   if (const char* value = std::getenv(specific); value && *value) return value;
@@ -138,27 +143,52 @@ class ModelSessionLease {
 
 template <typename Runtime>
 std::pair<std::shared_ptr<Runtime>, std::unique_ptr<ModelSessionLease>>
-AcquireRuntime(const ResolvedPackage& package) {
-  std::lock_guard lock(runtime_mutex);
-  const auto found = runtimes.find(package.identity);
-  if (found != runtimes.end()) {
-    Model* acquired = package.model ? package.model->AcquireExternalSession() : nullptr;
-    return {
-        std::static_pointer_cast<Runtime>(found->second.runtime),
-        acquired
-            ? std::make_unique<ModelSessionLease>(
-                  acquired, ModelSessionLease::AlreadyAcquired{})
-            : nullptr,
-    };
-  }
-  auto runtime = std::make_shared<Runtime>(package.path, package.provider);
+AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
   Model* acquired = package.model ? package.model->AcquireExternalSession() : nullptr;
   auto lease = acquired
                    ? std::make_unique<ModelSessionLease>(
                          acquired, ModelSessionLease::AlreadyAcquired{})
                    : nullptr;
-  runtimes.emplace(package.identity, RuntimeEntry{package.model_id, acquired, runtime});
-  return {std::move(runtime), std::move(lease)};
+
+  auto state = ctx.non_generative_runtimes;
+  std::shared_future<std::shared_ptr<void>> future;
+  std::shared_ptr<std::promise<std::shared_ptr<void>>> promise;
+  std::shared_ptr<void> reservation;
+  {
+    std::lock_guard lock(state->mutex);
+    const auto found = state->runtimes.find(package.identity);
+    if (found != state->runtimes.end()) {
+      future = found->second.runtime;
+    } else {
+      promise = std::make_shared<std::promise<std::shared_ptr<void>>>();
+      future = promise->get_future().share();
+      reservation = std::make_shared<int>(0);
+      state->runtimes.emplace(
+          package.identity,
+          RuntimeEntry{package.model_id, acquired, future, reservation});
+    }
+  }
+
+  if (promise) {
+    try {
+      promise->set_value(
+          std::make_shared<Runtime>(package.path, package.provider));
+    } catch (...) {
+      promise->set_exception(std::current_exception());
+      std::lock_guard lock(state->mutex);
+      const auto found = state->runtimes.find(package.identity);
+      if (found != state->runtimes.end() &&
+          found->second.reservation == reservation) {
+        state->runtimes.erase(found);
+      }
+      throw;
+    }
+  }
+
+  return {
+      std::static_pointer_cast<Runtime>(future.get()),
+      std::move(lease),
+  };
 }
 
 template <typename Runtime, typename Request, bool IsRank>
@@ -180,7 +210,7 @@ class NonGenerativeHandler final : public HttpRequestHandler {
     }
     try {
       const auto package = ResolvePackage(ctx_, input.model, task_, environment_, directory_);
-      auto [runtime, lease] = AcquireRuntime<Runtime>(package);
+      auto [runtime, lease] = AcquireRuntime<Runtime>(ctx_, package);
       auto output = [&]() {
         if constexpr (IsRank) {
           auto result = runtime->Rank(input);
@@ -218,14 +248,19 @@ class NonGenerativeHandler final : public HttpRequestHandler {
 
 }  // namespace
 
-bool UnloadNonGenerativeRuntime(Model& model) {
-  std::lock_guard lock(runtime_mutex);
+std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState() {
+  return std::make_shared<NonGenerativeRuntimeState>();
+}
+
+bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model) {
+  auto state = ctx.non_generative_runtimes;
+  std::lock_guard lock(state->mutex);
   auto* leaf = model.SelectedLeaf();
   leaf->UnloadExternalRuntime();
   bool removed = false;
-  for (auto it = runtimes.begin(); it != runtimes.end();) {
+  for (auto it = state->runtimes.begin(); it != state->runtimes.end();) {
     if (it->second.owner == leaf) {
-      it = runtimes.erase(it);
+      it = state->runtimes.erase(it);
       removed = true;
     } else {
       ++it;
@@ -234,12 +269,13 @@ bool UnloadNonGenerativeRuntime(Model& model) {
   return removed;
 }
 
-void ClearNonGenerativeRuntimes() {
-  std::lock_guard lock(runtime_mutex);
-  for (auto& [_, entry] : runtimes) {
+void ClearNonGenerativeRuntimes(ServiceContext& ctx) {
+  auto state = ctx.non_generative_runtimes;
+  std::lock_guard lock(state->mutex);
+  for (auto& [_, entry] : state->runtimes) {
     if (entry.owner) entry.owner->UnloadExternalRuntime();
   }
-  runtimes.clear();
+  state->runtimes.clear();
 }
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(
