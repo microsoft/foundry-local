@@ -573,6 +573,11 @@ void Model::Unload() {
   }
 
   std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+  if (Info().task == "text-ranking" || Info().task == "typed-decision") {
+    FL_THROW(
+        FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
+        "non-generative models must be unloaded through the service model-unload route");
+  }
 
   if (external_session_count_.load() != 0) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
