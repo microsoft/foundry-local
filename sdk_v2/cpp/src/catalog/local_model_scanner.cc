@@ -100,9 +100,7 @@ void ScanDirectory(const fs::path& dir,
           model_name += ":0";
         }
 
-        std::error_code ec;
-        const auto canonical_dir = fs::weakly_canonical(dir, ec);
-        results[model_name] = ec ? dir.string() : canonical_dir.string();
+        results[model_name] = dir.string();
       }
 
       // Don't recurse into a valid model directory — it's a leaf.
