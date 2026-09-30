@@ -12,7 +12,7 @@
 
 namespace fl {
 
-/// Validates that a catalog URL targets the Asset Gallery models endpoint.
+/// Validates that a catalog URL is non-empty and does not target the legacy Azure catalog endpoint.
 /// Throws fl::Exception on failure.
 void ValidateCatalogUrl(const std::string& url);
 

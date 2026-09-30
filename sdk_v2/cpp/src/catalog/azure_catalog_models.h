@@ -15,10 +15,10 @@ namespace fl {
 
 // ========================================================================
 // JSON models for the Azure Foundry Asset Gallery catalog REST API
-// (`asset-gallery/v1.0/models`). All model metadata (variant/device info,
-// tasks, capabilities, limits) is returned as regular top-level fields —
-// there is no separate tag/annotation layer to unpack. Everything is
-// optional because the catalog may omit fields at will.
+// (`asset-gallery/v1.0/models`). Production `value` records use nested
+// `properties` and `annotations`; flat `summaries` records expose the same
+// metadata as top-level fields. Everything is optional because the catalog
+// may omit fields at will.
 // ========================================================================
 
 // --- Request types ---
@@ -66,9 +66,8 @@ struct VariantInformation {
   std::optional<VariantMetadata> variant_metadata;
 };
 
-/// A single model entry in the catalog response. Entries with no
-/// `variantInformation` or `alias` are not runnable catalog variants and are
-/// skipped during conversion.
+/// A single nested `value` or flat `summaries` entry. Records without the
+/// required identity or variant information are skipped during conversion.
 struct CatalogLocalModel {
   // Populated from the response's azureml-served-by-cluster header, not JSON.
   std::string detected_region;
@@ -84,10 +83,12 @@ struct CatalogLocalModel {
   std::optional<bool> supports_tool_calling;
   std::optional<bool> supports_reasoning;
   std::optional<bool> is_test_model;
+  std::optional<std::string> foundry_local;
   std::optional<std::string> created_time;
   std::vector<std::string> inference_tasks;
   std::vector<std::string> model_capabilities;
   std::vector<std::string> deployment_options;
+  bool has_deployment_options = false;
   std::optional<ModelLimits> model_limits;
   std::optional<VariantInformation> variant_information;
 };

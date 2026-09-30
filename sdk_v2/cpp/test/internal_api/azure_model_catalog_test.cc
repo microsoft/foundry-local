@@ -35,8 +35,11 @@ struct CatalogBehavior {
   bool fail_fetch_all = false;
   std::vector<ModelInfo> all_models;
   std::vector<ModelInfo> models_by_id;
+  std::vector<ModelInfo> all_versions;
   int fetch_all_calls = 0;
   int fetch_by_id_calls = 0;
+  int fetch_all_versions_calls = 0;
+  std::vector<int> requested_max_versions;
   std::vector<std::string> last_requested_ids;
 };
 
@@ -65,6 +68,21 @@ class FakeCatalogClient final : public ICatalogClient {
       }
     }
 
+    return result;
+  }
+
+  std::vector<ModelInfo> FetchAllVersionsByAlias(
+      const std::string& model_alias,
+      const std::string& model_name,
+      int max_versions) override {
+    ++behavior_->fetch_all_versions_calls;
+    behavior_->requested_max_versions.push_back(max_versions);
+    std::vector<ModelInfo> result;
+    for (const auto& info : behavior_->all_versions) {
+      if (info.alias == model_alias && (model_name.empty() || info.name == model_name)) {
+        result.push_back(info);
+      }
+    }
     return result;
   }
 
@@ -203,6 +221,7 @@ class AzureModelCatalogTest : public ::testing::Test {
       std::vector<std::pair<std::string, std::optional<std::string>>> catalog_urls,
       bool cache_only = false) {
     auto model_factory = [this](ModelInfo info, std::string local_path) {
+      ++model_handle_factory_calls_;
       return Model::FromModelInfo(std::move(info), std::move(local_path), services_.download_manager,
                                   services_.model_load_manager);
     };
@@ -226,6 +245,7 @@ class AzureModelCatalogTest : public ::testing::Test {
   RecordingCatalogTelemetry telemetry_;
   std::unordered_map<std::string, std::shared_ptr<CatalogBehavior>> behaviors_;
   int factory_calls_ = 0;
+  int model_handle_factory_calls_ = 0;
 };
 
 TEST_F(AzureModelCatalogTest, LiveFetchBucketsConfiguredCatalogsAsCustom) {
@@ -453,6 +473,57 @@ TEST_F(AzureModelCatalogTest, LiveAggregationDeduplicatesAndSavesOnlyResolvedPub
   }
 
   EXPECT_EQ(persisted_ids, (std::unordered_set<std::string>{"latest-model:2", "old-model:1"}));
+}
+
+TEST_F(AzureModelCatalogTest, VersionHistoryDeduplicatesBeforeApplyingLimit) {
+  const std::string first_url = "https://catalog-one.test";
+  const std::string second_url = "https://catalog-two.test";
+  auto shared_first = MakeModelInfo("shared:3", "variant", 3, "test-alias", "FirstProvider");
+  auto shared_second = MakeModelInfo("shared:3", "variant", 3, "test-alias", "SecondProvider");
+  auto older = MakeModelInfo("older:2", "variant", 2, "test-alias", "SecondProvider");
+
+  const auto first_behavior = AddBehavior(first_url);
+  first_behavior->all_versions = {shared_first};
+  const auto second_behavior = AddBehavior(second_url);
+  second_behavior->all_versions = {shared_second, older};
+  auto catalog = CreateCatalog({{first_url, std::nullopt}, {second_url, std::nullopt}});
+
+  const auto versions = catalog->GetModelVersions("test-alias", "", 2);
+
+  ASSERT_EQ(versions.size(), 2u);
+  ASSERT_NE(FindVariant(versions, "shared:3"), nullptr);
+  EXPECT_NE(FindVariant(versions, "older:2"), nullptr);
+  const auto* provider = FindVariant(versions, "shared:3")
+                             ->Info().GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+  ASSERT_NE(provider, nullptr);
+  EXPECT_EQ(*provider, "FirstProvider");
+  EXPECT_EQ(first_behavior->fetch_all_versions_calls, 1);
+  EXPECT_EQ(second_behavior->fetch_all_versions_calls, 1);
+  EXPECT_EQ(first_behavior->requested_max_versions, std::vector<int>{2});
+  EXPECT_EQ(second_behavior->requested_max_versions, std::vector<int>{2});
+}
+
+TEST_F(AzureModelCatalogTest, VersionHistoryLimitsBeforeCreatingModelHandles) {
+  const std::string url = "https://catalog.test";
+  const auto behavior = AddBehavior(url);
+  behavior->all_versions = {
+      MakeModelInfo("text:1", "text", 1, "test-alias", "TestProvider"),
+      MakeModelInfo("vision:1", "vision", 1, "test-alias", "TestProvider"),
+      MakeModelInfo("text:3", "text", 3, "test-alias", "TestProvider"),
+      MakeModelInfo("vision:2", "vision", 2, "test-alias", "TestProvider"),
+      MakeModelInfo("text:2", "text", 2, "test-alias", "TestProvider"),
+  };
+  auto catalog = CreateCatalog({{url, std::nullopt}});
+
+  const auto first = catalog->GetModelVersions("test-alias", "", 1);
+  const auto second = catalog->GetModelVersions("test-alias", "", 1);
+
+  ASSERT_EQ(first.size(), 2u);
+  EXPECT_NE(FindVariant(first, "text:3"), nullptr);
+  EXPECT_NE(FindVariant(first, "vision:2"), nullptr);
+  ASSERT_EQ(second.size(), 2u);
+  EXPECT_EQ(model_handle_factory_calls_, 4);
+  EXPECT_EQ(behavior->requested_max_versions, (std::vector<int>{1, 1}));
 }
 
 TEST_F(AzureModelCatalogTest, CacheOnlyIgnoresLegacySynthesizedByomSnapshotEntry) {

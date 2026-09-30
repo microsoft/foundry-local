@@ -189,6 +189,7 @@ TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
       "publisher": "Microsoft",
       "license": "MIT",
       "minFLVersion": "0.1.0",
+      "isTestModel": true,
       "createdTime": "2026-06-02T07:03:01.3390586+00:00",
       "inferenceTasks": ["chat-completion"],
       "modelCapabilities": ["tool-calling", "reasoning"],
@@ -219,6 +220,7 @@ TEST(AzureCatalogClientTest, ParsesFlatAssetGalleryResponse) {
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT), 4096);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MAX_OUTPUT_TOKENS_INT), 2048);
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR), "0.1.0");
+  EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT), 1);
 }
 
 TEST(AzureCatalogClientTest, SkipsModelsWithInvalidVersions) {
@@ -271,6 +273,7 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
   ASSERT_EQ(models.size(), 1u);
   EXPECT_EQ(models.front().deployment_options,
             std::vector<std::string>({"Foundry Local on Devices"}));
+  EXPECT_EQ(models.front().foundry_local, "test");
   const auto converted = CatalogModelToModelInfo(models.front());
   ASSERT_TRUE(converted.has_value());
   const auto& info = *converted;
@@ -721,6 +724,27 @@ TEST(AzureCatalogClientTest, FetchAllVersionsSortsDeduplicatesAndLimitsPerVarian
   EXPECT_EQ(models[3].model_id, "phi-4-mini-vision:1");
 }
 
+TEST(AzureCatalogClientTest, FetchAllVersionsLimitsAfterRemovingIncompatibleVersions) {
+  AllDevicesEpDetector ep;
+  StderrLogger logger;
+  auto response = nlohmann::json::parse(
+      MakeSummaryResponse({{"phi-4-mini", 3}, {"phi-4-mini", 2}}));
+  for (auto& summary : response["summaries"]) {
+    summary["alias"] = "phi-4-mini";
+  }
+  response["summaries"][0]["minFLVersion"] = "999.0.0";
+  response["summaries"][1]["minFLVersion"] = "0.0.0";
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(response.dump());
+                            });
+
+  const auto models = client.FetchAllVersionsByAlias("phi-4-mini", "", 1);
+
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0].model_id, "phi-4-mini:2");
+}
+
 TEST(AzureCatalogClientTest, AcceptsEmptyRecognizedResponseArrays) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
@@ -731,6 +755,24 @@ TEST(AzureCatalogClientTest, AcceptsEmptyRecognizedResponseArrays) {
                               });
     EXPECT_TRUE(client.FetchAllModels().empty());
   }
+}
+
+TEST(AzureCatalogClientTest, SkipsMalformedRecordWithoutDiscardingValidRecords) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  auto response = nlohmann::json::parse(
+      MakeSummaryResponse({{"valid-before", 1}, {"malformed", 1}, {"valid-after", 1}}));
+  response["summaries"][1]["inferenceTasks"] = {"chat-completion", 42};
+  AzureCatalogClient client("https://test.com", "", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(response.dump());
+                            });
+
+  const auto models = client.FetchAllModels();
+
+  ASSERT_EQ(models.size(), 2u);
+  EXPECT_EQ(models[0].name, "valid-before");
+  EXPECT_EQ(models[1].name, "valid-after");
 }
 
 TEST(AzureCatalogClientTest, RejectsMalformedSuccessfulResponseShapes) {
@@ -772,6 +814,7 @@ TEST(AzureCatalogClientTest, RaisesNetworkErrorForFailedRequest) {
 TEST(AzureCatalogClientTest, FetchAllVersionsHonorsDeploymentOptionAndKeepsLegacyRecords) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
+  nlohmann::json request;
   auto response = nlohmann::json::parse(
       MakeSummaryResponse({{"matching", 3}, {"different", 2}, {"legacy", 1}}));
   for (auto& summary : response["summaries"]) {
@@ -781,7 +824,8 @@ TEST(AzureCatalogClientTest, FetchAllVersionsHonorsDeploymentOptionAndKeepsLegac
   response["summaries"][1]["deploymentOptions"] = {"Other Ring"};
 
   AzureCatalogClient client("https://test.com", "deploymentOptions=Private Ring", ep, logger,
-                            [&](const std::string&, const std::string&) {
+                            [&](const std::string&, const std::string& body) {
+                              request = nlohmann::json::parse(body);
                               return MakeOkResponse(response.dump());
                             });
 
@@ -794,4 +838,42 @@ TEST(AzureCatalogClientTest, FetchAllVersionsHonorsDeploymentOptionAndKeepsLegac
   EXPECT_TRUE(std::any_of(models.begin(), models.end(), [](const ModelInfo& model) {
     return model.name == "legacy";
   }));
+  EXPECT_TRUE(std::none_of(request["filters"].begin(), request["filters"].end(),
+                           [](const nlohmann::json& filter) {
+                             return filter["field"] ==
+                                    "annotations/systemCatalogData/deploymentOptions";
+                           }));
+}
+
+TEST(AzureCatalogClientTest, FetchAllVersionsHonorsLegacyFilterAndKeepsRecordsWithoutMetadata) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  nlohmann::json request;
+  auto response = nlohmann::json::parse(
+      MakeSummaryResponse({{"matching", 3}, {"different", 2}, {"legacy", 1}}));
+  for (auto& summary : response["summaries"]) {
+    summary["alias"] = "phi";
+  }
+  response["summaries"][0]["foundryLocal"] = "Private Ring";
+  response["summaries"][1]["foundryLocal"] = "Other Ring";
+
+  AzureCatalogClient client("https://test.com", "foundryLocal=Private Ring", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              request = nlohmann::json::parse(body);
+                              return MakeOkResponse(response.dump());
+                            });
+
+  const auto models = client.FetchAllVersionsByAlias("phi");
+
+  ASSERT_EQ(models.size(), 2u);
+  EXPECT_TRUE(std::any_of(models.begin(), models.end(), [](const ModelInfo& model) {
+    return model.name == "matching";
+  }));
+  EXPECT_TRUE(std::any_of(models.begin(), models.end(), [](const ModelInfo& model) {
+    return model.name == "legacy";
+  }));
+  EXPECT_TRUE(std::none_of(request["filters"].begin(), request["filters"].end(),
+                           [](const nlohmann::json& filter) {
+                             return filter["field"] == "annotations/tags/foundryLocal";
+                           }));
 }

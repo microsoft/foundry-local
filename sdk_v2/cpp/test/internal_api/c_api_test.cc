@@ -165,7 +165,7 @@ TEST(CApiTest, ConfigurationSetters) {
   EXPECT_TRUE(IsOk(config_api->SetModelCacheDir(config, "/tmp/cache")));
   EXPECT_TRUE(IsOk(config_api->SetDefaultLogLevel(config, FOUNDRY_LOCAL_LOG_DEBUG)));
   EXPECT_TRUE(IsOk(config_api->AddCatalogUrl(
-      config, "https://example.com/asset-gallery/v1.0/models", nullptr)));
+      config, "https://catalog.example.com/v1/models", nullptr)));
   EXPECT_TRUE(IsOk(config_api->AddWebServiceEndpoint(config, "http://127.0.0.1:0")));
 
   config_api->Configuration_Release(config);
@@ -182,7 +182,7 @@ TEST(CApiTest, AddCatalogUrlRejectsLegacyContractWithMigrationError) {
 
   for (const char* legacy_url : {
            "https://ai.azure.com/api/eastus/ux/v1.0",
-           "https://catalog.example.com/v1/models",
+           "https://AI.AZURE.COM/api/westus/ux/v1.0/?ignored=true",
        }) {
     flStatus* status = config_api->AddCatalogUrl(config, legacy_url, nullptr);
     ASSERT_NE(status, nullptr);

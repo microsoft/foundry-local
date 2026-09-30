@@ -400,10 +400,7 @@ endfunction()
 # --------------------------------------------------------------------------
 # Generate version header from CMake project version (single source of truth)
 # --------------------------------------------------------------------------
-# Keep the runtime catalog-compatibility version aligned with the current SDK
-# version, regardless of a stale CMake cache or CI package-version override.
-set(FOUNDRY_LOCAL_VERSION_STRING "${PROJECT_VERSION}"
-    CACHE STRING "Version string returned by FoundryLocalGetVersionString()")
+include(cmake/FoundryLocalVersion.cmake)
 
 set(FOUNDRY_LOCAL_ORT_GENAI_VERSION "${ORT_GENAI_VERSION}")
 if(NOT FOUNDRY_LOCAL_ORT_GENAI_VERSION)

@@ -216,6 +216,7 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     opt_str(system_data, "minFLVersion", m.min_fl_version);
     opt_bool(system_data, "supportsToolCalling", m.supports_tool_calling);
     opt_bool(system_data, "supportsReasoning", m.supports_reasoning);
+    opt_str(tags, "foundryLocal", m.foundry_local);
     opt_str(properties.value("creationContext", nlohmann::json::object()), "createdTime", m.created_time);
 
     if (properties.contains("version")) {
@@ -233,6 +234,7 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     }
     if (system_data.contains("deploymentOptions") && system_data["deploymentOptions"].is_array()) {
       m.deployment_options = system_data["deploymentOptions"].get<std::vector<std::string>>();
+      m.has_deployment_options = true;
     }
     if (system_data.contains("modelLimits") && system_data["modelLimits"].is_object()) {
       m.model_limits = system_data["modelLimits"].get<ModelLimits>();
@@ -281,6 +283,8 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
   opt_str(j, "minFLVersion", m.min_fl_version);
   opt_bool(j, "supportsToolCalling", m.supports_tool_calling);
   opt_bool(j, "supportsReasoning", m.supports_reasoning);
+  opt_bool(j, "isTestModel", m.is_test_model);
+  opt_str(j, "foundryLocal", m.foundry_local);
   opt_str(j, "createdTime", m.created_time);
 
   if (j.contains("inferenceTasks") && j["inferenceTasks"].is_array()) {
@@ -293,6 +297,7 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
 
   if (j.contains("deploymentOptions") && j["deploymentOptions"].is_array()) {
     m.deployment_options = j["deploymentOptions"].get<std::vector<std::string>>();
+    m.has_deployment_options = true;
   }
 
   if (j.contains("modelLimits") && j["modelLimits"].is_object()) {
@@ -313,13 +318,24 @@ void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
   opt_int(j, "totalCount", r.total_count);
   opt_str(j, "continuationToken", r.continuation_token);
 
+  const nlohmann::json* records = nullptr;
   if (j.contains("value") && j["value"].is_array()) {
-    r.models = j["value"].get<std::vector<CatalogLocalModel>>();
+    records = &j["value"];
   } else if (j.contains("summaries") && j["summaries"].is_array()) {
-    r.models = j["summaries"].get<std::vector<CatalogLocalModel>>();
+    records = &j["summaries"];
   } else {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
              "catalog response must contain an array-valued 'value' or 'summaries' field");
+  }
+
+  r.models.clear();
+  r.models.reserve(records->size());
+  for (const auto& record : *records) {
+    try {
+      r.models.push_back(record.get<CatalogLocalModel>());
+    } catch (const nlohmann::json::exception&) {
+      // A malformed record must not discard valid records from the same page.
+    }
   }
 }
 

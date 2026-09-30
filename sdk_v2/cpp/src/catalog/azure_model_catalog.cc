@@ -14,7 +14,9 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <iterator>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -68,6 +70,54 @@ std::vector<ModelInfo> DeduplicateByModelId(std::vector<ModelInfo> model_infos) 
   }
 
   return deduplicated;
+}
+
+std::vector<ModelInfo> LimitVersionsPerName(std::vector<ModelInfo> model_infos,
+                                            int max_versions) {
+  if (max_versions <= 0) {
+    return model_infos;
+  }
+
+  std::unordered_map<std::string, std::vector<std::size_t>> indices_by_name;
+  for (std::size_t index = 0; index < model_infos.size(); ++index) {
+    indices_by_name[model_infos[index].name].push_back(index);
+  }
+
+  std::vector<bool> selected(model_infos.size(), false);
+  for (auto& entry : indices_by_name) {
+    auto& indices = entry.second;
+    std::sort(indices.begin(), indices.end(), [&model_infos](std::size_t left, std::size_t right) {
+      const auto& left_info = model_infos[left];
+      const auto& right_info = model_infos[right];
+      if (left_info.version != right_info.version) {
+        return left_info.version > right_info.version;
+      }
+
+      const auto left_created = left_info.GetPropertyWithDefault(
+          FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0});
+      const auto right_created = right_info.GetPropertyWithDefault(
+          FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, int64_t{0});
+      if (left_created != right_created) {
+        return left_created > right_created;
+      }
+
+      return left_info.model_id < right_info.model_id;
+    });
+
+    const auto count = std::min(indices.size(), static_cast<std::size_t>(max_versions));
+    for (std::size_t index = 0; index < count; ++index) {
+      selected[indices[index]] = true;
+    }
+  }
+
+  std::vector<ModelInfo> limited;
+  limited.reserve(model_infos.size());
+  for (std::size_t index = 0; index < model_infos.size(); ++index) {
+    if (selected[index]) {
+      limited.push_back(std::move(model_infos[index]));
+    }
+  }
+  return limited;
 }
 
 void RemoveLegacyLocalEntries(std::vector<ModelInfo>& model_infos) {
@@ -205,29 +255,35 @@ std::vector<Model> AzureModelCatalog::FetchModels() const {
 
 std::vector<Model> AzureModelCatalog::FetchModelVersions(
     const std::string& model_alias,
-    const std::string& model_name) const {
-  std::vector<Model> out;
+  const std::string& model_name,
+  int max_versions) const {
+  std::vector<ModelInfo> model_infos;
   if (cache_only_) {
     // In cache-only mode we have no remote source to query for older versions.
     logger_.Log(LogLevel::Debug,
                 "FetchModelVersions skipped: catalog is in cache-only mode.");
-    return out;
+    return {};
   }
 
   for (const auto& [url, filter] : catalog_urls_) {
     try {
       auto client = CreateCatalogClient(url, filter.value_or(""));
-      auto model_infos = client->FetchAllVersionsByAlias(model_alias, model_name);
-      RemoveIncompatibleModels(model_infos);
-
-      out.reserve(out.size() + model_infos.size());
-      for (auto& info : model_infos) {
-        out.push_back(model_factory_(std::move(info), /*local_path=*/""));
-      }
+      auto fetched = client->FetchAllVersionsByAlias(model_alias, model_name, max_versions);
+      RemoveIncompatibleModels(fetched);
+      model_infos.insert(model_infos.end(), std::make_move_iterator(fetched.begin()),
+                         std::make_move_iterator(fetched.end()));
     } catch (const std::exception& ex) {
       logger_.Log(LogLevel::Error,
                   fmt::format("FetchModelVersions: failed to query {} — {}", url, ex.what()));
     }
+  }
+
+  model_infos = DeduplicateByModelId(std::move(model_infos));
+  model_infos = LimitVersionsPerName(std::move(model_infos), max_versions);
+  std::vector<Model> out;
+  out.reserve(model_infos.size());
+  for (auto& info : model_infos) {
+    out.push_back(model_factory_(std::move(info), /*local_path=*/""));
   }
 
   logger_.Log(LogLevel::Information,

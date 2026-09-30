@@ -40,7 +40,7 @@ TEST(ConfigurationTest, ValidateRejectsEmptyCatalogUrl) {
 TEST(ConfigurationTest, ValidateRejectsLegacyCatalogUrl) {
   Configuration config;
   config.app_name = "test_app";
-  config.catalog_urls.emplace_back("https://ai.azure.com/api/eastus/ux/v1.0", "");
+  config.catalog_urls.emplace_back("https://AI.AZURE.COM/api/eastus/ux/v1.0/?ignored=true", "");
 
   try {
     config.Validate();
@@ -62,7 +62,8 @@ TEST(ConfigurationTest, ValidateRejectsEmptyEndpoint) {
 TEST(ConfigurationTest, ValidateAcceptsCatalogUrlsAndEndpoints) {
   Configuration config;
   config.app_name = "test_app";
-  config.catalog_urls.emplace_back("https://example.com/asset-gallery/v1.0/models", "");
+  config.catalog_urls.emplace_back("https://private.example.com/catalog/v2/models", "");
+  config.catalog_urls.emplace_back("https://proxy.example.com/ux/v1.0", "");
   config.web_service_endpoints.emplace_back("http://127.0.0.1:0");
   EXPECT_NO_THROW(config.Validate());
 }

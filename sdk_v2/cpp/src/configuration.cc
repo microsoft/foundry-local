@@ -11,9 +11,10 @@ namespace fl {
 
 namespace {
 
-constexpr std::string_view kAssetGalleryPath = "/asset-gallery/v1.0/models";
+constexpr std::string_view kLegacyAzureCatalogPrefix = "https://ai.azure.com/";
+constexpr std::string_view kLegacyAzureCatalogPath = "/ux/v1.0";
 constexpr const char* kCatalogUrlMigrationMessage =
-  "Configuration: catalog URL must target the Asset Gallery endpoint; migrate to "
+  "Configuration: legacy Azure /ux/v1.0 catalog URLs are unsupported; migrate to "
   "'https://api.catalog.azureml.ms/asset-gallery/v1.0/models'";
 
 /// Replace all occurrences of `placeholder` with `value` in `str`.
@@ -48,14 +49,13 @@ void ValidateCatalogUrl(const std::string& url) {
   }
 
   const auto suffix = url.find_first_of("?#");
-  auto path = ToLower(url.substr(0, suffix));
-  while (!path.empty() && path.back() == '/') {
-    path.pop_back();
+  auto normalized_url = ToLower(url.substr(0, suffix));
+  while (!normalized_url.empty() && normalized_url.back() == '/') {
+    normalized_url.pop_back();
   }
 
-  if (path.size() < kAssetGalleryPath.size() ||
-      path.compare(path.size() - kAssetGalleryPath.size(), kAssetGalleryPath.size(),
-                   kAssetGalleryPath) != 0) {
+  if (normalized_url.starts_with(kLegacyAzureCatalogPrefix) &&
+      normalized_url.ends_with(kLegacyAzureCatalogPath)) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, kCatalogUrlMigrationMessage);
   }
 }

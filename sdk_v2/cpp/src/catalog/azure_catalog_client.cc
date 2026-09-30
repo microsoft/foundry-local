@@ -108,6 +108,31 @@ std::vector<std::string> ResolveDeploymentOptions(const std::vector<std::string>
   return {kDefaultDeploymentOption};
 }
 
+bool MatchesConfiguredHistoricalScope(const CatalogLocalModel& model,
+                                      const std::vector<std::string>& model_filter,
+                                      bool uses_legacy_foundry_local_filter) {
+  // Older catalog records predate scope metadata; retain them, but reject any
+  // record that carries scope metadata which does not match this endpoint.
+  if (uses_legacy_foundry_local_filter) {
+    if (!model.foundry_local || model_filter.empty()) {
+      return true;
+    }
+    return std::find(model_filter.begin(), model_filter.end(), *model.foundry_local) !=
+           model_filter.end();
+  }
+
+  if (!model.has_deployment_options) {
+    return true;
+  }
+
+  const auto deployment_options = ResolveDeploymentOptions(model_filter);
+  return std::any_of(model.deployment_options.begin(), model.deployment_options.end(),
+                     [&deployment_options](const std::string& option) {
+                       return std::find(deployment_options.begin(), deployment_options.end(), option) !=
+                              deployment_options.end();
+                     });
+}
+
 std::string BuildRequestBody(const std::vector<CatalogFilter>& filters,
                              const std::optional<std::string>& continuation_token) {
   AzureCatalogRequest request;
@@ -341,28 +366,22 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
         MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}),
         MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps),
     };
-    if (uses_legacy_foundry_local_filter_) {
-      filters.push_back(MakeFilter("annotations/tags/foundryLocal", model_filter_));
-    }
     if (!model_name.empty()) {
       filters.push_back(MakeFilter("name", {model_name}));
     }
 
     auto raw_models = FetchFilterSet(filters);
-    if (!uses_legacy_foundry_local_filter_) {
-      const auto deployment_options = ResolveDeploymentOptions(model_filter_);
-      std::erase_if(raw_models, [&deployment_options](const CatalogLocalModel& model) {
-        if (model.deployment_options.empty()) {
-          return false;
-        }
-        return std::none_of(model.deployment_options.begin(), model.deployment_options.end(),
-                            [&deployment_options](const std::string& option) {
-                              return std::find(deployment_options.begin(), deployment_options.end(), option) !=
-                                     deployment_options.end();
-                            });
-      });
-    }
+    std::erase_if(raw_models, [this](const CatalogLocalModel& model) {
+      return !MatchesConfiguredHistoricalScope(
+          model, model_filter_, uses_legacy_foundry_local_filter_);
+    });
     auto infos = ToModelInfos(raw_models);
+    std::erase_if(infos, [](const ModelInfo& info) {
+      const auto* minimum_version =
+          info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MIN_FL_VERSION_STR);
+      return minimum_version && !minimum_version->empty() &&
+             !IsFoundryLocalVersionCompatible(FOUNDRY_LOCAL_VERSION, *minimum_version);
+    });
 
     for (auto& info : infos) {
       if (info.alias != model_alias) {

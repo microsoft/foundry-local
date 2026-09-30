@@ -163,6 +163,14 @@ gtest_discover_tests(foundry_local_tests
     DISCOVERY_TIMEOUT 60
 )
 
+add_test(
+    NAME FoundryLocalVersionConfigureTwice
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/version_configure_twice
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_configure_twice.cmake
+)
+
 # ==========================================================================
 # SDK API tests — test the public C++ API surface only
 # Links the shared library via foundry_local_cpp (the INTERFACE library for

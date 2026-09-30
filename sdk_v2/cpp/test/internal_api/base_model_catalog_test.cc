@@ -69,7 +69,8 @@ class QueryingTestCatalog : public BaseModelCatalog {
   }
 
   std::vector<Model> FetchModelVersions(const std::string& model_alias,
-                                        const std::string& model_name = "") const override {
+                                        const std::string& model_name,
+                                        int) const override {
     std::vector<Model> result;
     for (const auto& model : version_fetch_results_) {
       const auto& info = model.Info();
