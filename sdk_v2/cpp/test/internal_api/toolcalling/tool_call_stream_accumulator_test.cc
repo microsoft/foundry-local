@@ -241,6 +241,67 @@ TEST(QwenXmlToolCallAccumulatorTest, UnsupportedSchemaKeywordsDisableExactDecode
   }
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, CopilotToolsDecodeSupportedCallsDespiteOtherUnsupportedSchemas) {
+  const auto tools = nlohmann::json::array({
+      {{"type", "function"},
+       {"function",
+        {{"name", "powershell"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"command", {{"type", "string"}}}, {"description", {{"type", "string"}}}}},
+           {"required", nlohmann::json::array({"command", "description"})}}}}}},
+      {{"type", "function"},
+       {"function",
+        {{"name", "github-mcp-server-issue_read"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties",
+            {{"method", {{"type", "string"}, {"enum", nlohmann::json::array({"get", "get_comments"})}}},
+             {"owner", {{"type", "string"}, {"x-mcp-header", "owner"}}},
+             {"repo", {{"type", "string"}, {"x-mcp-header", "repo"}}},
+             {"issue_number", {{"type", "number"}}}}},
+           {"required", nlohmann::json::array({"method", "owner", "repo", "issue_number"})}}}}}},
+      {{"type", "function"},
+       {"function",
+        {{"name", "unsupported"},
+         {"parameters",
+          {{"type", "object"},
+           {"properties", {{"input", {{"type", "object"}, {"properties", {{"value", {{"type", "string"}}}}}}}}}}}}}},
+  }).dump();
+  const std::unordered_map<std::string, ToolKind> kinds = {
+      {"powershell", ToolKind::kFunction},
+      {"github-mcp-server-issue_read", ToolKind::kFunction},
+      {"unsupported", ToolKind::kFunction},
+  };
+  ASSERT_TRUE(static_cast<bool>(CreateQwenXmlToolCallPayloadParser(tools, kinds, true)));
+
+  const std::string issue_call =
+      "<tool_call>\n<function=github-mcp-server-issue_read>\n"
+      "<parameter=method>\nget\n</parameter>\n"
+      "<parameter=owner>\nmicrosoft\n</parameter>\n"
+      "<parameter=repo>\nonnxruntime-genai\n</parameter>\n"
+      "<parameter=issue_number>\n2653\n</parameter>\n"
+      "</function>\n</tool_call>";
+  const auto accepted = RunQwen({issue_call}, tools, kinds);
+  EXPECT_TRUE(accepted.visible.empty());
+  ASSERT_EQ(accepted.calls.size(), 1u);
+  EXPECT_EQ(accepted.calls.front().name, "github-mcp-server-issue_read");
+  EXPECT_EQ(nlohmann::json::parse(accepted.calls.front().arguments),
+            nlohmann::json({{"method", "get"}, {"owner", "microsoft"}, {"repo", "onnxruntime-genai"},
+                            {"issue_number", 2653}}));
+
+  const std::string unsupported_call =
+      "<tool_call>\n<function=unsupported>\n<parameter=input>\n{\"value\":\"x\"}\n</parameter>\n"
+      "</function>\n</tool_call>";
+  const auto rejected = RunQwen({unsupported_call}, tools, kinds);
+  EXPECT_EQ(rejected.visible, unsupported_call);
+  EXPECT_TRUE(rejected.calls.empty());
+
+  const auto batch = RunQwen({issue_call + unsupported_call}, tools, kinds);
+  EXPECT_EQ(batch.visible, issue_call + unsupported_call);
+  EXPECT_TRUE(batch.calls.empty());
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, RequiredAdditionalPropertyDisablesExactDecoder) {
   const auto tools = nlohmann::json::array(
                          {{{"type", "function"},
@@ -396,6 +457,28 @@ TEST(QwenXmlToolCallAccumulatorTest, SchemaTypesAreDecodedAsCompatibleJson) {
       "\"object\":{\"key\":3},\"text\":\"{\\\"looks\\\":\\\"json\\\"}\"}";
   EXPECT_EQ(output.calls[0].arguments, expected);
   EXPECT_TRUE(output.visible.empty());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, PythonBooleanLiteralsDecodeWithoutAcceptingOtherNonJsonValues) {
+  for (const auto& [body, expected] : std::vector<std::pair<std::string, bool>>{
+           {"True", true}, {"False", false}}) {
+    const auto output = RunQwen({
+        "<tool_call>\n<function=typed>\n"
+        "<parameter=text>\nhello\n</parameter>\n"
+        "<parameter=boolean>\n" + body + "\n</parameter>\n"
+        "</function>\n</tool_call>",
+    });
+    EXPECT_TRUE(output.visible.empty());
+    ASSERT_EQ(output.calls.size(), 1u);
+    EXPECT_EQ(nlohmann::json::parse(output.calls.front().arguments).at("boolean"), expected);
+  }
+
+  const std::string unsupported =
+      "<tool_call>\n<function=typed>\n<parameter=text>\nhello\n</parameter>\n"
+      "<parameter=boolean>\nTRUE\n</parameter>\n</function>\n</tool_call>";
+  const auto rejected = RunQwen({unsupported});
+  EXPECT_EQ(rejected.visible, unsupported);
+  EXPECT_TRUE(rejected.calls.empty());
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, MultilineAndEmptyStringsPreserveExactBodies) {

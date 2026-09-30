@@ -193,6 +193,33 @@ print(model.info.get_string_property("display_name"))
 local_catalog.unregister_model(model.id)
 ```
 
+To expose a CUDA BYOM chat model to GitHub Copilot's OpenAI-compatible BYOK provider, run the launcher from
+the repository root. This checkout's tested build and isolated Python environment are selected automatically:
+
+```powershell
+python launch_server.py -m ..\models\qwen-3.8-27b-cuda-gpu
+```
+
+For a different build, install this Python SDK in the running Python environment and pass `--native-lib-dir`
+pointing to matching `foundry_local.dll`, `onnxruntime.dll`, `onnxruntime-genai.dll`,
+`onnxruntime-genai-cuda.dll`, and `onnxruntime_providers_cuda.dll`.
+The script finds cuDNN 9 under `Program Files\NVIDIA\CUDNN` using `CUDA_PATH` and the host architecture, then adds
+its DLL directory to this process's search path. No separate PATH assignment is needed. For a nonstandard
+installation, use `--cudnn-bin-dir`. The CUDA toolkit installer normally adds its own `bin` directory to `PATH`.
+The script registers the model as `qwen-3.8-27b-cuda-gpu:1`, marks tool calling and reasoning as supported,
+loads it with the CUDA plugin, and prints the loaded model and URLs before listening on `127.0.0.1:5272` until
+Ctrl+C. In Copilot's OpenAI-compatible model
+provider, use **`http://127.0.0.1:5272/catalogs/local/v1`** as the base URL and the model ID above. The
+`/catalogs/local` prefix is essential: `/v1` addresses the public catalog, not BYOM registrations. This local
+service has no API-key authentication; keep it bound to loopback and use a placeholder key if the client requires
+one. If Copilot asks for model capabilities, enable tool calling there too: the OpenAI `/models` response lists
+IDs but not Foundry's capability metadata. Build ONNX Runtime GenAI with `--use_guidance` if the client uses
+`tool_choice=required`; tool-calling metadata alone does not enable constrained decoding. Use `--port` to change
+the port, `--model-id` for a different canonical ID, and `--app-data-dir` to isolate registrations.
+
+On limited-memory machines, the model's original 40–60 GiB device profile can exhaust host RAM. The model in the
+command above has a smaller 1,037-block runtime profile; the script does not rewrite model files.
+
 `manager.catalog` and `manager.get_catalog()` both return the public catalog for backward compatibility.
 `ModelInfoBuilder()` owns a mutable native metadata handle; call `close()` or use a `with` block. In contrast,
 `model.info` is a frozen point-in-time `ModelInfo` value that supports normal dataclass operations such as

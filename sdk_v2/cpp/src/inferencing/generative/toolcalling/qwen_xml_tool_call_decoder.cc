@@ -110,6 +110,7 @@ bool IsSupportedAnnotation(std::string_view keyword) {
       "readOnly",
       "title",
       "writeOnly",
+      "x-mcp-header",
   };
   return kSupportedAnnotations.contains(keyword);
 }
@@ -451,6 +452,11 @@ std::optional<Json> DecodeSimpleParameterValue(std::string_view body, const Json
     return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
   }
 
+  if (*type == "boolean" && (body == "True" || body == "False")) {
+    Json value = body == "True";
+    return IsCompatibleJsonValue(value, schema) ? std::optional<Json>(std::move(value)) : std::nullopt;
+  }
+
   const auto value = Json::parse(body, nullptr, false);
   if (value.is_discarded() || !IsCompatibleJsonValue(value, schema)) {
     return std::nullopt;
@@ -729,8 +735,8 @@ ToolCallPayloadParser CreateQwenXmlToolCallPayloadParser(
   auto schemas = ParseFunctionSchemas(tools_json, tool_kinds, declaration_count, recovery_aware);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
-      std::ranges::any_of(schemas, [](const auto& schema) {
-        return !schema.second.valid;
+      std::ranges::none_of(schemas, [](const auto& schema) {
+        return schema.second.valid;
       })) {
     return {};
   }
@@ -754,8 +760,8 @@ std::vector<ParsedToolCall> ParseQwenGuidedToolCalls(
       tools_json, tool_kinds, declaration_count, /*recovery_aware=*/true);
   if (declaration_count == 0 || schemas.size() != declaration_count ||
       schemas.size() != tool_kinds.size() ||
-      std::ranges::any_of(schemas, [](const auto& schema) {
-        return !schema.second.valid;
+      std::ranges::none_of(schemas, [](const auto& schema) {
+        return schema.second.valid;
       })) {
     return {};
   }
