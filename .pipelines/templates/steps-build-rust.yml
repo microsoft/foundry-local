@@ -93,10 +93,7 @@ steps:
       cargo --version
       rustc --version
 
-- task: CargoAuthenticate@0
-  displayName: 'Authenticate AIFoundryLocal_PublicPackages for Cargo'
-  inputs:
-    configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
+- template: steps-authenticate-rust.yml
 
 # ── 2. Assemble the native runtime directory ─────────────────────────────────
 - task: PowerShell@2

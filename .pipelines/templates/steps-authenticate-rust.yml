@@ -1,0 +1,19 @@
+steps:
+- task: NuGetAuthenticate@1
+  displayName: 'Obtain feed credentials for Cargo via NuGet authentication'
+
+- task: PowerShell@2
+  displayName: 'Configure AIFoundryLocal_PublicPackages Cargo credentials'
+  inputs:
+    targetType: inline
+    pwsh: true
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $accessToken = $env:VSS_NUGET_ACCESSTOKEN
+      if ([string]::IsNullOrWhiteSpace($accessToken)) {
+        throw 'NuGetAuthenticate did not provide a feed access token.'
+      }
+      $cargoToken = "Bearer $accessToken"
+      Write-Host "##vso[task.setsecret]$cargoToken"
+      Write-Host "##vso[task.setvariable variable=CARGO_REGISTRIES_AIFOUNDRYLOCAL_PUBLICPACKAGES_TOKEN]$cargoToken"
+      Write-Host '##vso[task.setvariable variable=CARGO_REGISTRIES_AIFOUNDRYLOCAL_PUBLICPACKAGES_CREDENTIAL_PROVIDER]cargo:token'

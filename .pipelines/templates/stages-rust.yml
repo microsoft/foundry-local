@@ -217,10 +217,7 @@ stages:
           }
           Write-Host "##vso[task.prependpath]$cargoBin"
           $env:PATH = "$cargoBin$([IO.Path]::PathSeparator)$env:PATH"
-    - task: CargoAuthenticate@0
-      displayName: 'Authenticate AIFoundryLocal_PublicPackages for Cargo'
-      inputs:
-        configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
+    - template: steps-authenticate-rust.yml
     - task: PowerShell@2
       displayName: 'Set crate version from sdkVersion.txt'
       inputs:
