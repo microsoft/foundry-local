@@ -67,18 +67,6 @@ bool IsValidBundleDirectory(const fs::path& dir) {
   return ReadNonGenerativePackage(dir).has_value();
 }
 
-bool DeclaresBundleDirectory(const fs::path& dir) {
-  const auto path = dir / kInferenceModelFileName;
-  if (!fs::is_regular_file(path)) return false;
-  try {
-    std::ifstream file(path);
-    const auto json = nlohmann::json::parse(file);
-    return json.is_object() && json.contains("ComponentManifest");
-  } catch (...) {
-    return false;
-  }
-}
-
 /// Recursively scan a directory for valid model directories.
 void ScanDirectory(const fs::path& dir,
                    std::map<std::string, std::string>& results,
@@ -90,7 +78,7 @@ void ScanDirectory(const fs::path& dir,
 
     // Package-shaped directories must pass strict bundle validation and may
     // never fall back to the more permissive generative leaf check.
-    const bool declares_bundle = DeclaresBundleDirectory(dir);
+    const bool declares_bundle = DeclaresNonGenerativePackage(dir);
     if ((declares_bundle && IsValidBundleDirectory(dir)) ||
         (!declares_bundle && IsValidModelDirectory(dir))) {
       auto model_name = ReadModelNameFromInferenceModel(dir);

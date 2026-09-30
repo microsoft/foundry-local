@@ -24,6 +24,10 @@ struct NonGenerativePackageMetadata {
 /// an empty string (the default CPU provider); unknown providers throw.
 std::string NormalizeNonGenerativeProvider(std::string_view provider);
 
+/// Return true when a directory contains any non-generative package signal:
+/// the standard manifest file, ComponentManifest metadata, or a supported task.
+bool DeclaresNonGenerativePackage(const std::filesystem::path& package_root);
+
 /// Parse and validate a multi-component package root. Returns nullopt when the
 /// directory is not a multi-component package; malformed packages throw.
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
