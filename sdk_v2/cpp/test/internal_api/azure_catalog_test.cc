@@ -40,13 +40,13 @@ std::string MakeSummaryResponse(const std::vector<std::pair<std::string, int>>& 
         {"alias", name},
         {"version", std::to_string(version)},
         {"variantInformation", {
-            {"parents", {{{"assetId", "azureml://registries/azureml/models/" + name + "/versions/1"}}}},
-            {"variantMetadata", {
-                {"modelType", "ONNX"},
-                {"device", "cpu"},
-                {"executionProvider", "CPUExecutionProvider"},
-            }},
-        }},
+                                   {"parents", {{{"assetId", "azureml://registries/azureml/models/" + name + "/versions/1"}}}},
+                                   {"variantMetadata", {
+                                                           {"modelType", "ONNX"},
+                                                           {"device", "cpu"},
+                                                           {"executionProvider", "CPUExecutionProvider"},
+                                                       }},
+                               }},
     });
   }
 
@@ -54,7 +54,8 @@ std::string MakeSummaryResponse(const std::vector<std::pair<std::string, int>>& 
       {"totalCount", static_cast<int>(models.size())},
       {"continuationToken", std::move(continuation_token)},
       {"summaries", std::move(summaries)},
-  }.dump();
+  }
+      .dump();
 }
 
 class CpuOnlyEpDetector final : public IEpDetector {
@@ -112,7 +113,7 @@ TEST(AzureCatalogClientTest, OverrideReplacesDeploymentOptionFilter) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
   nlohmann::json captured;
-  AzureCatalogClient client("https://test.com", "Custom One, 'Custom Two'", ep, logger,
+  AzureCatalogClient client("https://test.com", "deploymentOptions=Custom One, 'Custom Two'", ep, logger,
                             [&](const std::string&, const std::string& body) {
                               captured = nlohmann::json::parse(body);
                               return MakeOkResponse(R"({"summaries":[]})");
@@ -121,6 +122,38 @@ TEST(AzureCatalogClientTest, OverrideReplacesDeploymentOptionFilter) {
   client.FetchAllModels();
 
   EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"Custom One", "Custom Two"}));
+}
+
+TEST(AzureCatalogClientTest, UnqualifiedOverrideRetainsLegacyFoundryLocalFilter) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  nlohmann::json captured;
+  AzureCatalogClient client("https://test.com", "test", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              captured = nlohmann::json::parse(body);
+                              return MakeOkResponse(R"({"summaries":[]})");
+                            });
+
+  client.FetchAllModels();
+
+  EXPECT_EQ(captured["filters"][2]["field"], "annotations/tags/foundryLocal");
+  EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"test"}));
+}
+
+TEST(AzureCatalogClientTest, QuotedEmptyLegacyOverrideUsesDefaultDeploymentOption) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  nlohmann::json captured;
+  AzureCatalogClient client("https://test.com", "''", ep, logger,
+                            [&](const std::string&, const std::string& body) {
+                              captured = nlohmann::json::parse(body);
+                              return MakeOkResponse(R"({"summaries":[]})");
+                            });
+
+  client.FetchAllModels();
+
+  EXPECT_EQ(captured["filters"][2]["field"], "annotations/systemCatalogData/deploymentOptions");
+  EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"Foundry Local on Devices"}));
 }
 
 TEST(AzureCatalogClientTest, UsesOneFilterSetPerDeviceAndProvider) {
@@ -219,6 +252,7 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
           "alias": "phi-4-mini", "license": "MIT", "licenseDescription": "License terms",
           "minFLVersion": "0.1.0", "supportsToolCalling": true,
           "reasoningStart": "<think>", "inferenceTasks": ["chat-completion"],
+          "deploymentOptions": ["Foundry Local on Devices"],
           "textContextWindow": 4096, "maxOutputTokens": 2048,
           "inputModalities": ["text", "image"], "outputModalities": ["text"]
         }
@@ -233,9 +267,13 @@ TEST(AzureCatalogClientTest, ParsesFullServiceMetadataWithoutPromptOrDelimiterFi
   AzureCatalogClient client("https://test.com", "", ep, logger,
                             [&](const std::string&, const std::string&) { return MakeOkResponse(response); });
 
-  const auto model_infos = client.FetchAllModelInfos();
-  ASSERT_EQ(model_infos.size(), 1u);
-  const auto& info = model_infos.front();
+  const auto models = client.FetchAllModels();
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models.front().deployment_options,
+            std::vector<std::string>({"Foundry Local on Devices"}));
+  const auto converted = CatalogModelToModelInfo(models.front());
+  ASSERT_TRUE(converted.has_value());
+  const auto& info = *converted;
   EXPECT_EQ(info.string_properties.at(FOUNDRY_LOCAL_MODEL_PROP_LICENSE_DESCRIPTION_STR), "License terms");
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT), 1);
   EXPECT_EQ(info.int_properties.at(FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT), 0);
@@ -337,17 +375,14 @@ TEST(AzureCatalogClientTest, RetriesTransientCatalogFailures) {
   http::RetryConfig retry_config;
   retry_config.max_retries = 1;
   retry_config.base_delay = std::chrono::milliseconds::zero();
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
+  AzureCatalogClient client("https://test.com", "", ep, logger, [&](const std::string&, const std::string&) {
                               ++attempts;
                               if (attempts == 1) {
                                 http::HttpResponse response;
                                 response.status = 429;
                                 return response;
                               }
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            },
-                            retry_config);
+                              return MakeOkResponse(R"({"summaries":[]})"); }, retry_config);
 
   EXPECT_TRUE(client.FetchAllModels().empty());
   EXPECT_EQ(attempts, 2);
@@ -360,15 +395,12 @@ TEST(AzureCatalogClientTest, RetriesThrownCatalogTransportFailure) {
   http::RetryConfig retry_config;
   retry_config.max_retries = 1;
   retry_config.base_delay = std::chrono::milliseconds::zero();
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
+  AzureCatalogClient client("https://test.com", "", ep, logger, [&](const std::string&, const std::string&) {
                               ++attempts;
                               if (attempts == 1) {
                                 throw std::runtime_error("connection reset");
                               }
-                              return MakeOkResponse(R"({"summaries":[]})");
-                            },
-                            retry_config);
+                              return MakeOkResponse(R"({"summaries":[]})"); }, retry_config);
 
   EXPECT_TRUE(client.FetchAllModels().empty());
   EXPECT_EQ(attempts, 2);
@@ -381,12 +413,9 @@ TEST(AzureCatalogClientTest, ExhaustsRetryBudgetForThrownCatalogTransportFailure
   http::RetryConfig retry_config;
   retry_config.max_retries = 1;
   retry_config.base_delay = std::chrono::milliseconds::zero();
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) -> http::HttpResponse {
+  AzureCatalogClient client("https://test.com", "", ep, logger, [&](const std::string&, const std::string&) -> http::HttpResponse {
                               ++attempts;
-                              throw std::runtime_error("connection reset");
-                            },
-                            retry_config);
+                              throw std::runtime_error("connection reset"); }, retry_config);
 
   try {
     client.FetchAllModels();
@@ -478,15 +507,15 @@ TEST(AzureCatalogClientTest, FollowsContinuationTokenAfterEmptyPage) {
   StderrLogger logger;
   int calls = 0;
   AzureCatalogClient client("https://test.com", "", ep, logger,
-              [&](const std::string&, const std::string& body) {
-                ++calls;
-                const auto request = nlohmann::json::parse(body);
-                if (calls == 1) {
-                  return MakeOkResponse(MakeSummaryResponse({}, "next"));
-                }
-                EXPECT_EQ(request["continuationToken"], "next");
-                return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}));
-              });
+                            [&](const std::string&, const std::string& body) {
+                              ++calls;
+                              const auto request = nlohmann::json::parse(body);
+                              if (calls == 1) {
+                                return MakeOkResponse(MakeSummaryResponse({}, "next"));
+                              }
+                              EXPECT_EQ(request["continuationToken"], "next");
+                              return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}));
+                            });
 
   const auto models = client.FetchAllModels();
   ASSERT_EQ(models.size(), 1u);
@@ -499,10 +528,10 @@ TEST(AzureCatalogClientTest, RejectsRepeatedContinuationToken) {
   StderrLogger logger;
   int calls = 0;
   AzureCatalogClient client("https://test.com", "", ep, logger,
-              [&](const std::string&, const std::string&) {
-                ++calls;
-                return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}, "loop"));
-              });
+                            [&](const std::string&, const std::string&) {
+                              ++calls;
+                              return MakeOkResponse(MakeSummaryResponse({{"model-a", 1}}, "loop"));
+                            });
 
   EXPECT_THROW(client.FetchAllModels(), fl::Exception);
   EXPECT_EQ(calls, 2);
@@ -738,4 +767,31 @@ TEST(AzureCatalogClientTest, RaisesNetworkErrorForFailedRequest) {
   } catch (const fl::Exception& exception) {
     EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_NETWORK);
   }
+}
+
+TEST(AzureCatalogClientTest, FetchAllVersionsHonorsDeploymentOptionAndKeepsLegacyRecords) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  auto response = nlohmann::json::parse(
+      MakeSummaryResponse({{"matching", 3}, {"different", 2}, {"legacy", 1}}));
+  for (auto& summary : response["summaries"]) {
+    summary["alias"] = "phi";
+  }
+  response["summaries"][0]["deploymentOptions"] = {"Private Ring"};
+  response["summaries"][1]["deploymentOptions"] = {"Other Ring"};
+
+  AzureCatalogClient client("https://test.com", "deploymentOptions=Private Ring", ep, logger,
+                            [&](const std::string&, const std::string&) {
+                              return MakeOkResponse(response.dump());
+                            });
+
+  const auto models = client.FetchAllVersionsByAlias("phi");
+
+  ASSERT_EQ(models.size(), 2u);
+  EXPECT_TRUE(std::any_of(models.begin(), models.end(), [](const ModelInfo& model) {
+    return model.name == "matching";
+  }));
+  EXPECT_TRUE(std::any_of(models.begin(), models.end(), [](const ModelInfo& model) {
+    return model.name == "legacy";
+  }));
 }

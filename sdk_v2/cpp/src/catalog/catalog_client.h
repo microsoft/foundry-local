@@ -57,13 +57,14 @@ class ICatalogClient {
 std::vector<ModelInfo> FetchAllModelInfosWithCachedModels(
     ICatalogClient& client,
     const std::vector<std::string>& cached_model_ids,
-  ILogger& logger,
-  ITelemetry& telemetry,
-  const CatalogFetchInfo& base_info);
+    ILogger& logger,
+    ITelemetry& telemetry,
+    const CatalogFetchInfo& base_info);
 
 /// Construct a client for the live Azure Foundry catalog (Asset Gallery API).
 /// - `ep_detector` limits results to models supported by this machine.
-/// - `filter_override` overrides the deploymentOptions filter (default `Foundry Local on Devices`).
+/// - `filter_override` accepts explicit `deploymentOptions=` values. Unqualified
+///   values retain the legacy foundryLocal-tag semantics.
 std::unique_ptr<ICatalogClient> MakeCatalogClient(
     const std::string& base_url,
     const std::string& filter_override,
@@ -71,4 +72,4 @@ std::unique_ptr<ICatalogClient> MakeCatalogClient(
     ILogger& logger,
     const std::string& cache_directory);
 
-  }  // namespace fl
+}  // namespace fl

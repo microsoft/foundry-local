@@ -231,6 +231,9 @@ void from_json(const nlohmann::json& j, CatalogLocalModel& m) {
     if (system_data.contains("modelCapabilities") && system_data["modelCapabilities"].is_array()) {
       m.model_capabilities = system_data["modelCapabilities"].get<std::vector<std::string>>();
     }
+    if (system_data.contains("deploymentOptions") && system_data["deploymentOptions"].is_array()) {
+      m.deployment_options = system_data["deploymentOptions"].get<std::vector<std::string>>();
+    }
     if (system_data.contains("modelLimits") && system_data["modelLimits"].is_object()) {
       m.model_limits = system_data["modelLimits"].get<ModelLimits>();
     }
@@ -427,15 +430,15 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
         ContainsStringIgnoreCase(cm.model_capabilities, "reasoning") ? 1 : 0;
   }
 
-        if (cm.supports_tool_calling) {
-          info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] =
-          *cm.supports_tool_calling ? 1 : 0;
-        }
+  if (cm.supports_tool_calling) {
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT] =
+        *cm.supports_tool_calling ? 1 : 0;
+  }
 
-        if (cm.supports_reasoning) {
-          info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
-          *cm.supports_reasoning ? 1 : 0;
-        }
+  if (cm.supports_reasoning) {
+    info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT] =
+        *cm.supports_reasoning ? 1 : 0;
+  }
 
   if (cm.is_test_model && *cm.is_test_model) {
     info.int_properties[FOUNDRY_LOCAL_MODEL_PROP_IS_TEST_MODEL_INT] = 1;
@@ -481,4 +484,3 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
 }
 
 }  // namespace fl
-

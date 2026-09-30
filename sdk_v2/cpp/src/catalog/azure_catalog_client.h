@@ -39,7 +39,10 @@ class AzureCatalogClient : public ICatalogClient {
       std::function<http::HttpResponse(const std::string& url, const std::string& body)>;
 
   /// @param base_url Catalog endpoint, e.g. "https://api.catalog.azureml.ms/asset-gallery/v1.0/models".
-  /// @param filter_override Deployment-option filter override. Empty means `Foundry Local on Devices`.
+  /// @param filter_override Optional catalog filter. Empty or `''` uses the default
+  /// `Foundry Local on Devices` deployment option. Prefix deployment-option values
+  /// with `deploymentOptions=`. Unqualified values retain the legacy `foundryLocal`
+  /// tag semantics; `foundryLocal=` may be used to make that explicit.
   /// @param ep_detector Reports available device and execution-provider pairs.
   /// @param logger Logger.
   /// @param http_post HTTP POST implementation. The default uses `http::HttpPostWithResponse`.
@@ -73,7 +76,8 @@ class AzureCatalogClient : public ICatalogClient {
   http::HttpResponse PostWithRetry(const std::string& body);
 
   std::string base_url_;
-  std::vector<std::string> model_filter_;  // deploymentOptions filter values
+  std::vector<std::string> model_filter_;
+  bool uses_legacy_foundry_local_filter_ = false;
   const IEpDetector& ep_detector_;
   ILogger& logger_;
   HttpPostResponseFn http_post_response_;

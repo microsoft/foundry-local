@@ -43,21 +43,18 @@ std::string TrimSingleQuotes(const std::string& s) {
   return s.substr(begin, end - begin + 1);
 }
 
-/// Build the deploymentOptions filter values from the override string.
-/// An empty override means "use the default ('Foundry Local on Devices')".
-/// Otherwise split on ',', drop entries that are empty after whitespace-trimming,
-/// then strip surrounding quotes.
-std::vector<std::string> CreateModelFilter(const std::string& filter_override) {
-  if (filter_override.empty()) {
-    return {};
-  }
+struct ParsedModelFilter {
+  std::vector<std::string> values;
+  bool uses_legacy_foundry_local_filter = false;
+};
 
+std::vector<std::string> ParseFilterValues(const std::string& value_list) {
   std::vector<std::string> values;
   std::size_t start = 0;
-  while (start <= filter_override.size()) {
-    const auto comma = filter_override.find(',', start);
+  while (start <= value_list.size()) {
+    const auto comma = value_list.find(',', start);
     const auto count = (comma == std::string::npos) ? std::string::npos : comma - start;
-    const auto entry = Trim(filter_override.substr(start, count));
+    const auto entry = Trim(value_list.substr(start, count));
 
     if (!entry.empty()) {
       values.push_back(TrimSingleQuotes(entry));
@@ -71,6 +68,26 @@ std::vector<std::string> CreateModelFilter(const std::string& filter_override) {
   }
 
   return values;
+}
+
+/// Preserve the original unqualified foundryLocal-tag contract while providing
+/// an explicit syntax for the catalog-v2 deploymentOptions filter.
+ParsedModelFilter CreateModelFilter(const std::string& filter_override) {
+  const auto trimmed = Trim(filter_override);
+  if (trimmed.empty() || TrimSingleQuotes(trimmed).empty()) {
+    return {};
+  }
+
+  constexpr std::string_view kDeploymentOptionsPrefix = "deploymentOptions=";
+  constexpr std::string_view kFoundryLocalPrefix = "foundryLocal=";
+  if (trimmed.starts_with(kDeploymentOptionsPrefix)) {
+    return {ParseFilterValues(trimmed.substr(kDeploymentOptionsPrefix.size())), false};
+  }
+  if (trimmed.starts_with(kFoundryLocalPrefix)) {
+    return {ParseFilterValues(trimmed.substr(kFoundryLocalPrefix.size())), true};
+  }
+
+  return {ParseFilterValues(trimmed), true};
 }
 
 CatalogFilter MakeFilter(std::string field,
@@ -132,16 +149,21 @@ std::vector<ModelInfo> ToModelInfos(const std::vector<CatalogLocalModel>& raw_mo
 /// Build the full-service Asset Gallery filter sets used for catalog queries.
 std::vector<std::vector<CatalogFilter>> BuildSearchFilters(const IEpDetector& ep_detector,
                                                            const std::vector<std::string>& model_filter,
+                                                           bool uses_legacy_foundry_local_filter,
                                                            bool latest_only = true) {
   std::vector<std::vector<CatalogFilter>> filter_sets;
   for (const auto& [device, eps] : ep_detector.GetAvailableDevicesToEPs()) {
     std::vector<CatalogFilter> filters{
         MakeFilter("type", {"models"}),
         MakeFilter("kind", {"Versioned"}),
-        MakeFilter("annotations/systemCatalogData/deploymentOptions",
-                   ResolveDeploymentOptions(model_filter)),
-        MakeFilter("annotations/archived", {"true"}, "NotEquals"),
     };
+    if (uses_legacy_foundry_local_filter) {
+      filters.push_back(MakeFilter("annotations/tags/foundryLocal", model_filter));
+    } else {
+      filters.push_back(MakeFilter("annotations/systemCatalogData/deploymentOptions",
+                                   ResolveDeploymentOptions(model_filter)));
+    }
+    filters.push_back(MakeFilter("annotations/archived", {"true"}, "NotEquals"));
     if (latest_only) {
       filters.push_back(MakeFilter("labels", {"latest"}));
     }
@@ -194,11 +216,13 @@ AzureCatalogClient::AzureCatalogClient(const std::string& base_url,
                                        HttpPostResponseFn http_post,
                                        http::RetryConfig retry_config)
     : base_url_(base_url),
-      model_filter_(CreateModelFilter(filter_override)),
       ep_detector_(ep_detector),
       logger_(logger),
       http_post_response_(std::move(http_post)),
       retry_config_(retry_config) {
+  auto parsed_filter = CreateModelFilter(filter_override);
+  model_filter_ = std::move(parsed_filter.values);
+  uses_legacy_foundry_local_filter_ = parsed_filter.uses_legacy_foundry_local_filter;
   if (!http_post_response_) {
     http_post_response_ = [](const std::string& url, const std::string& body) {
       http::HttpRequestOptions options;
@@ -217,8 +241,7 @@ http::HttpResponse AzureCatalogClient::PostWithRetry(const std::string& body) {
         try {
           response = http_post_response_(base_url_, body);
         } catch (const std::exception& exception) {
-          return {http::RetryDecision::RetryTransient, {},
-                  std::string("transport error: ") + exception.what()};
+          return {http::RetryDecision::RetryTransient, {}, std::string("transport error: ") + exception.what()};
         }
         if (response.status >= 200 && response.status < 300) {
           successful_response = std::move(response);
@@ -226,8 +249,9 @@ http::HttpResponse AzureCatalogClient::PostWithRetry(const std::string& body) {
         }
 
         return {IsRegionRetryableStatus(response.status) ? http::RetryDecision::RetryTransient
-                                                          : http::RetryDecision::FailPermanent,
-                {}, http::DescribeFailure(response)};
+                                                         : http::RetryDecision::FailPermanent,
+                {},
+                http::DescribeFailure(response)};
       },
       retry_config_, logger_);
   return std::move(*successful_response);
@@ -260,7 +284,7 @@ std::vector<CatalogLocalModel> AzureCatalogClient::FetchFilterSet(const std::vec
     if (parsed.continuation_token && !parsed.continuation_token->empty()) {
       if (!seen_continuation_tokens.insert(*parsed.continuation_token).second) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_NETWORK,
-             "catalog response repeated continuation token: " + *parsed.continuation_token);
+                 "catalog response repeated continuation token: " + *parsed.continuation_token);
       }
       continuation_token = parsed.continuation_token;
     } else {
@@ -273,7 +297,8 @@ std::vector<CatalogLocalModel> AzureCatalogClient::FetchFilterSet(const std::vec
 
 std::vector<CatalogLocalModel> AzureCatalogClient::FetchAllModels() {
   std::vector<CatalogLocalModel> models;
-  for (const auto& filters : BuildSearchFilters(ep_detector_, model_filter_)) {
+  for (const auto& filters :
+       BuildSearchFilters(ep_detector_, model_filter_, uses_legacy_foundry_local_filter_)) {
     auto page = FetchFilterSet(filters);
     models.insert(models.end(), std::make_move_iterator(page.begin()), std::make_move_iterator(page.end()));
   }
@@ -301,7 +326,7 @@ std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
 std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
     const std::string& model_alias,
     const std::string& model_name,
-  int max_versions) {
+    int max_versions) {
   // Historical versions may be archived and may predate systemCatalogData.
   // Query by the legacy tags alias while retaining the device/EP filters, then
   // validate the converted alias and optional variant name client-side.
@@ -316,11 +341,28 @@ std::vector<ModelInfo> AzureCatalogClient::FetchAllVersionsByAlias(
         MakeFilter("properties/variantInfo/variantMetadata/device", {ToLower(device)}),
         MakeFilter("properties/variantInfo/variantMetadata/executionProvider", eps),
     };
+    if (uses_legacy_foundry_local_filter_) {
+      filters.push_back(MakeFilter("annotations/tags/foundryLocal", model_filter_));
+    }
     if (!model_name.empty()) {
       filters.push_back(MakeFilter("name", {model_name}));
     }
 
-    auto infos = ToModelInfos(FetchFilterSet(filters));
+    auto raw_models = FetchFilterSet(filters);
+    if (!uses_legacy_foundry_local_filter_) {
+      const auto deployment_options = ResolveDeploymentOptions(model_filter_);
+      std::erase_if(raw_models, [&deployment_options](const CatalogLocalModel& model) {
+        if (model.deployment_options.empty()) {
+          return false;
+        }
+        return std::none_of(model.deployment_options.begin(), model.deployment_options.end(),
+                            [&deployment_options](const std::string& option) {
+                              return std::find(deployment_options.begin(), deployment_options.end(), option) !=
+                                     deployment_options.end();
+                            });
+      });
+    }
+    auto infos = ToModelInfos(raw_models);
 
     for (auto& info : infos) {
       if (info.alias != model_alias) {
@@ -366,4 +408,3 @@ std::unique_ptr<ICatalogClient> MakeCatalogClient(
 }
 
 }  // namespace fl
-
