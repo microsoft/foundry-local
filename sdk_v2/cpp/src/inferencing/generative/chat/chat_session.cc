@@ -819,6 +819,11 @@ bool HasSemanticOutput(const ToolCallStreamAccumulator::Output& output) {
            "Model emitted a malformed tool call and guided recovery did not produce a valid tool call");
 }
 
+[[noreturn]] void ThrowInvalidToolCallWithoutRecovery() {
+  FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
+           "Model emitted an invalid tool call and guided recovery is unavailable");
+}
+
 bool IsGuidedEngineToolRetryEligible(
     ChatBackendKind backend_kind,
     bool natural_tool_output_end,
@@ -1670,7 +1675,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
         streaming_callback->Drain();
       }
 
-      ThrowMalformedToolCallRecoveryFailure();
+      ThrowInvalidToolCallWithoutRecovery();
     }
 
     completed_tool_ctx = cached_tool_ctx_;
@@ -1999,7 +2004,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
         streaming_callback->Drain();
       }
 
-      ThrowMalformedToolCallRecoveryFailure();
+      ThrowInvalidToolCallWithoutRecovery();
     }
 
     generator->Close();
