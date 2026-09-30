@@ -140,7 +140,7 @@ add_executable(foundry_local_tests
     internal_api/zip_extract_test.cc
 )
 
-if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI)
+if(FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI AND FOUNDRY_LOCAL_BUILD_SERVICE)
     target_sources(foundry_local_tests PRIVATE
         internal_api/non_generative_runtime_test.cc
     )

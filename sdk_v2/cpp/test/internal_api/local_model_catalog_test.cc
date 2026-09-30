@@ -215,6 +215,18 @@ TEST_F(LocalModelCatalogTest, BundleRegistrationValidatesIdentityAndTask) {
   EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
                                       MakeMetadata("typed-decision")),
                Exception);
+
+  auto inference_path = bundle_path / "inference_model.json";
+  nlohmann::json inference;
+  {
+    std::ifstream input(inference_path);
+    input >> inference;
+  }
+  inference.erase("ComponentManifest");
+  std::ofstream(inference_path) << inference;
+  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                      MakeMetadata("text-ranking")),
+               Exception);
 }
 
 TEST_F(LocalModelCatalogTest, ActiveExternalSessionBlocksUnloadAndUnregister) {
