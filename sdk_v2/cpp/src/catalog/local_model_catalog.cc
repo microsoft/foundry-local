@@ -214,11 +214,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must be an existing directory");
   }
 
-  const auto model_path = std::filesystem::weakly_canonical(supplied_path, ec);
-  if (ec) {
-    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-             "failed to canonicalize model_path: " + ec.message());
-  }
+  const auto model_path = std::filesystem::absolute(supplied_path).lexically_normal();
   const auto config_path = model_path / "genai_config.json";
   auto resolved_input_metadata = metadata;
   try {
@@ -444,12 +440,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       if (model_path.empty() || HasParentTraversal(model_path)) {
         FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path is empty or contains '..' components");
       }
-      std::error_code canonical_error;
-      model_path = std::filesystem::weakly_canonical(model_path, canonical_error);
-      if (canonical_error) {
-        FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
-                 "failed to canonicalize model_path: " + canonical_error.message());
-      }
+      model_path = std::filesystem::absolute(model_path).lexically_normal();
 
       RemoveLegacyRegistrationProperties(info);
       if (info.alias.empty()) info.alias = DeriveAlias(parsed_id.name);

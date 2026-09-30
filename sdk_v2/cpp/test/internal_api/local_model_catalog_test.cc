@@ -235,6 +235,7 @@ TEST_F(LocalModelCatalogTest, ActiveExternalSessionBlocksUnloadAndUnregister) {
   auto* model = catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
                                        MakeMetadata("text-ranking"));
 
+  EXPECT_EQ(model->GetPath(), bundle_path.string());
   auto* acquired = model->AcquireExternalSession();
   EXPECT_EQ(acquired, model);
   EXPECT_TRUE(model->IsLoaded());
