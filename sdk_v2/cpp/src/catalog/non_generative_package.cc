@@ -83,6 +83,24 @@ std::string NormalizeNonGenerativeProvider(std::string_view provider) {
   throw std::invalid_argument("unsupported execution provider: " + std::string(provider));
 }
 
+bool DeclaresNonGenerativePackage(const fs::path& package_root) {
+  std::error_code ec;
+  if (fs::exists(package_root / "component_manifest.json", ec)) return true;
+  const auto inference_path = package_root / "inference_model.json";
+  if (!fs::is_regular_file(inference_path, ec)) return false;
+  try {
+    std::ifstream stream(inference_path);
+    const auto inference = nlohmann::json::parse(stream);
+    if (!inference.is_object()) return false;
+    if (inference.contains("ComponentManifest")) return true;
+    if (!inference.contains("Task") || !inference["Task"].is_string()) return false;
+    const auto task = inference["Task"].get<std::string>();
+    return task == "text-ranking" || task == "typed-decision";
+  } catch (...) {
+    return false;
+  }
+}
+
 std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
     const fs::path& package_root) {
   std::error_code ec;
@@ -100,7 +118,13 @@ std::optional<NonGenerativePackageMetadata> ReadNonGenerativePackage(
   } catch (const nlohmann::json::exception& error) {
     throw std::invalid_argument(std::string("invalid inference_model.json: ") + error.what());
   }
-  if (!inference.is_object() || !inference.contains("ComponentManifest")) {
+  if (!inference.is_object()) {
+    return std::nullopt;
+  }
+  if (!inference.contains("ComponentManifest")) {
+    if (DeclaresNonGenerativePackage(canonical_root)) {
+      throw std::invalid_argument("inference_model.json requires ComponentManifest");
+    }
     return std::nullopt;
   }
   if (fs::exists(canonical_root / "download.tmp")) {

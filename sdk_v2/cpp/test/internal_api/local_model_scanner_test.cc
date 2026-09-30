@@ -240,6 +240,37 @@ TEST_F(LocalModelScannerTest, AlternateManifestNameIsExcluded) {
   EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
 }
 
+TEST_F(LocalModelScannerTest, ManifestFileWithoutMetadataKeyCannotFallBackToGenerative) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("microsoft/clm/genai_config.json");
+  auto metadata_path = fs::path(test_dir_) / "microsoft/clm/inference_model.json";
+  nlohmann::json metadata;
+  {
+    std::ifstream input(metadata_path);
+    input >> metadata;
+  }
+  metadata.erase("ComponentManifest");
+  std::ofstream(metadata_path) << metadata;
+
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
+TEST_F(LocalModelScannerTest, NonGenerativeTaskWithoutManifestCannotFallBackToGenerative) {
+  CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
+  CreateFile("microsoft/clm/genai_config.json");
+  auto root = fs::path(test_dir_) / "microsoft/clm";
+  nlohmann::json metadata;
+  {
+    std::ifstream input(root / "inference_model.json");
+    input >> metadata;
+  }
+  metadata.erase("ComponentManifest");
+  fs::remove(root / "component_manifest.json");
+  std::ofstream(root / "inference_model.json") << metadata;
+
+  EXPECT_TRUE(ScanLocalModels(test_dir_, logger_).empty());
+}
+
 TEST_F(LocalModelScannerTest, TaskSpecificIncompleteLayoutIsExcluded) {
   CreateBundleDir("microsoft/clm", "clm-generic-cpu:1");
   auto manifest_path = fs::path(test_dir_) / "microsoft/clm/component_manifest.json";
