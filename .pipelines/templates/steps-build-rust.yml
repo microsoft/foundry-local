@@ -112,8 +112,7 @@ steps:
       "@ | Set-Content (Join-Path $cargoHome 'config.toml')
 
       if (-not $env:SYSTEM_ACCESSTOKEN) { throw 'System.AccessToken is required for Cargo feed authentication.' }
-      $credential = 'Basic ' + [Convert]::ToBase64String(
-        [Text.Encoding]::UTF8.GetBytes("build:$($env:SYSTEM_ACCESSTOKEN)"))
+      $credential = "Bearer $env:SYSTEM_ACCESSTOKEN"
       $credential | cargo login --registry AIFoundryLocal_PublicPackages
 
       rustup show
