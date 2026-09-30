@@ -17,27 +17,48 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <future>
-#include <map>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 
 namespace fl {
 
-struct RuntimeEntry {
-  std::string model_id;
-  Model* owner;
-  std::shared_future<std::shared_ptr<void>> runtime;
+std::shared_ptr<void> NonGenerativeRuntimeState::Acquire(
+    const std::string& identity, const std::string& model_id, Model* owner,
+    const std::function<std::shared_ptr<void>()>& factory) {
+  std::shared_future<std::shared_ptr<void>> future;
+  std::shared_ptr<std::promise<std::shared_ptr<void>>> promise;
   std::shared_ptr<void> reservation;
-};
+  {
+    std::lock_guard lock(mutex_);
+    const auto found = runtimes_.find(identity);
+    if (found != runtimes_.end()) {
+      future = found->second.runtime;
+    } else {
+      promise = std::make_shared<std::promise<std::shared_ptr<void>>>();
+      future = promise->get_future().share();
+      reservation = std::make_shared<int>(0);
+      runtimes_.emplace(
+          identity, RuntimeEntry{model_id, owner, future, reservation});
+    }
+  }
 
-class NonGenerativeRuntimeState {
- public:
-  std::mutex mutex;
-  std::map<std::string, RuntimeEntry> runtimes;
-};
+  if (promise) {
+    try {
+      promise->set_value(factory());
+    } catch (...) {
+      promise->set_exception(std::current_exception());
+      std::lock_guard lock(mutex_);
+      const auto found = runtimes_.find(identity);
+      if (found != runtimes_.end() &&
+          found->second.reservation == reservation) {
+        runtimes_.erase(found);
+      }
+      throw;
+    }
+  }
+  return future.get();
+}
 
 namespace {
 struct ResolvedPackage {
@@ -151,42 +172,12 @@ AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
                    : nullptr;
   auto state = ctx.non_generative_runtimes;
   try {
-    std::shared_future<std::shared_ptr<void>> future;
-    std::shared_ptr<std::promise<std::shared_ptr<void>>> promise;
-    std::shared_ptr<void> reservation;
-    {
-      std::lock_guard lock(state->mutex);
-      const auto found = state->runtimes.find(package.identity);
-      if (found != state->runtimes.end()) {
-        future = found->second.runtime;
-      } else {
-        promise = std::make_shared<std::promise<std::shared_ptr<void>>>();
-        future = promise->get_future().share();
-        reservation = std::make_shared<int>(0);
-        state->runtimes.emplace(
-            package.identity,
-            RuntimeEntry{package.model_id, package.model, future, reservation});
-      }
-    }
-
-    if (promise) {
-      try {
-        promise->set_value(
-            std::make_shared<Runtime>(package.path, package.provider));
-      } catch (...) {
-        promise->set_exception(std::current_exception());
-        std::lock_guard lock(state->mutex);
-        const auto found = state->runtimes.find(package.identity);
-        if (found != state->runtimes.end() &&
-            found->second.reservation == reservation) {
-          state->runtimes.erase(found);
-        }
-        throw;
-      }
-    }
-
     return {
-        std::static_pointer_cast<Runtime>(future.get()),
+        std::static_pointer_cast<Runtime>(state->Acquire(
+            package.identity, package.model_id, package.model,
+            [&] {
+              return std::make_shared<Runtime>(package.path, package.provider);
+            })),
         std::move(lease),
     };
   } catch (...) {
@@ -268,13 +259,13 @@ std::shared_ptr<NonGenerativeRuntimeState> CreateNonGenerativeRuntimeState() {
 
 bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model) {
   auto state = ctx.non_generative_runtimes;
-  std::lock_guard lock(state->mutex);
+  std::lock_guard lock(state->mutex_);
   auto* leaf = model.SelectedLeaf();
   leaf->UnloadExternalRuntime();
   bool removed = false;
-  for (auto it = state->runtimes.begin(); it != state->runtimes.end();) {
+  for (auto it = state->runtimes_.begin(); it != state->runtimes_.end();) {
     if (it->second.owner == leaf) {
-      it = state->runtimes.erase(it);
+      it = state->runtimes_.erase(it);
       removed = true;
     } else {
       ++it;
@@ -285,11 +276,11 @@ bool UnloadNonGenerativeRuntime(ServiceContext& ctx, Model& model) {
 
 void ClearNonGenerativeRuntimes(ServiceContext& ctx) {
   auto state = ctx.non_generative_runtimes;
-  std::lock_guard lock(state->mutex);
-  for (auto& [_, entry] : state->runtimes) {
+  std::lock_guard lock(state->mutex_);
+  for (auto& [_, entry] : state->runtimes_) {
     if (entry.owner) entry.owner->UnloadExternalRuntime();
   }
-  state->runtimes.clear();
+  state->runtimes_.clear();
 }
 
 std::shared_ptr<oatpp::web::server::HttpRequestHandler> CreateSystemOneHandler(

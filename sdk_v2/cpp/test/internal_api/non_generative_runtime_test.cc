@@ -3,16 +3,66 @@
 
 #include "contracts/non_generative.h"
 #include "inferencing/predictive/non_generative_runtime.h"
+#include "service/non_generative_handlers.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace fl {
 namespace {
+
+TEST(NonGenerativeRuntimeStateTest, SameKeyColdLoadsAreCoalesced) {
+  auto state = CreateNonGenerativeRuntimeState();
+  std::atomic<int> constructions{0};
+  std::promise<void> entered;
+  std::promise<void> release;
+  auto release_future = release.get_future().share();
+  auto factory = [&]() -> std::shared_ptr<void> {
+    ++constructions;
+    entered.set_value();
+    release_future.wait();
+    return std::make_shared<int>(42);
+  };
+
+  auto first = std::async(std::launch::async, [&] {
+    return state->Acquire("same", "model:1", nullptr, factory);
+  });
+  entered.get_future().wait();
+  auto second = std::async(std::launch::async, [&] {
+    return state->Acquire("same", "model:1", nullptr, factory);
+  });
+
+  EXPECT_EQ(first.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  EXPECT_EQ(second.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  release.set_value();
+  EXPECT_EQ(first.get(), second.get());
+  EXPECT_EQ(constructions.load(), 1);
+}
+
+TEST(NonGenerativeRuntimeStateTest, FailedColdLoadIsRemovedAndCanBeRetried) {
+  auto state = CreateNonGenerativeRuntimeState();
+  std::atomic<int> constructions{0};
+  auto factory = [&]() -> std::shared_ptr<void> {
+    if (++constructions == 1) throw std::runtime_error("synthetic failure");
+    return std::make_shared<int>(42);
+  };
+
+  EXPECT_THROW(state->Acquire("retry", "model:1", nullptr, factory),
+               std::runtime_error);
+  EXPECT_NE(state->Acquire("retry", "model:1", nullptr, factory), nullptr);
+  EXPECT_EQ(constructions.load(), 2);
+}
 
 TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {
   const char* root_value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
