@@ -217,34 +217,10 @@ stages:
           }
           Write-Host "##vso[task.prependpath]$cargoBin"
           $env:PATH = "$cargoBin$([IO.Path]::PathSeparator)$env:PATH"
-
-          $cargoHome = if ($env:CARGO_HOME) {
-            $env:CARGO_HOME
-          } elseif ($env:HOME) {
-            Join-Path $env:HOME '.cargo'
-          } else {
-            Join-Path $env:USERPROFILE '.cargo'
-          }
-          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
-          @"
-          [source.crates-io]
-          replace-with = "AIFoundryLocal_PublicPackages"
-
-          [source.AIFoundryLocal_PublicPackages]
-          registry = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
-
-          [registries.AIFoundryLocal_PublicPackages]
-          index = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
-
-          [registry]
-          global-credential-providers = ["cargo:token"]
-          "@ | Set-Content (Join-Path $cargoHome 'config.toml')
-
-          if (-not $env:SYSTEM_ACCESSTOKEN) { throw 'System.AccessToken is required for Cargo feed authentication.' }
-          $credential = "Bearer $env:SYSTEM_ACCESSTOKEN"
-          $credential | cargo login --registry AIFoundryLocal_PublicPackages
-      env:
-        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    - task: CargoAuthenticate@0
+      displayName: 'Authenticate AIFoundryLocal_PublicPackages for Cargo'
+      inputs:
+        configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
     - task: PowerShell@2
       displayName: 'Set crate version from sdkVersion.txt'
       inputs:
