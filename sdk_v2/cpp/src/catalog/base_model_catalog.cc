@@ -418,8 +418,14 @@ std::vector<Model*> BaseModelCatalog::GetLoadedModels() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<Model*> result;
   for (auto& stored : models_) {
-    if (stored.active && stored.model->IsLoaded()) {
-      result.push_back(stored.model.get());
+    if (!stored.active) {
+      continue;
+    }
+
+    for (auto* variant : stored.model->Variants()) {
+      if (variant->IsLoaded()) {
+        result.push_back(variant);
+      }
     }
   }
 

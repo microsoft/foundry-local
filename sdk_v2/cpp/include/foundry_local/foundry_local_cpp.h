@@ -792,6 +792,7 @@ class ICatalog {
   /// Get every individual model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
 
+  /// Get every loaded leaf variant, independently of each alias group's selected variant.
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;

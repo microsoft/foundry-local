@@ -495,6 +495,10 @@ Common session methods:
 
 Enums: `ItemType`, `TextItemType`, `MessageRole`, `TensorDataType`.
 
+Inline `BytesItem`, `ImageItem`, and `AudioItem` data is copied into item-owned storage. After transferring an item to a
+`Request` or `ItemQueue`, the Python wrapper and original input buffer can be discarded; the bytes remain alive until the
+native item is released.
+
 ### CLI entry point
 
 | Function | CLI name | Description |

@@ -65,4 +65,5 @@ for result in session.get_stream():
     print(result.is_final)               # True for final results
 
 session.stop()
+session.close()
 ```

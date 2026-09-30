@@ -184,6 +184,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     await session.stop();
     await readPromise;
+    await session.dispose();
     await model.unload();
     console.log('✓ Done');
     process.exit(0);
@@ -197,6 +198,7 @@ process.on('SIGINT', async () => {
     }
     await session.stop();
     await readPromise;
+    await session.dispose();
     await model.unload();
     console.log('✓ Done');
     process.exit(0);
