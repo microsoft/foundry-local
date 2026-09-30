@@ -210,6 +210,13 @@ TEST_F(GenAIConfigTest, LoadMissingOptionalFields) {
   EXPECT_FALSE(config.model->decoder.has_value());
 }
 
+TEST_F(GenAIConfigTest, RejectsInvalidContextLength) {
+  for (const auto& value : {"1.5", "0", "-1", "2147483648"}) {
+    auto path = WriteFile("genai_config.json", std::string(R"({"model":{"context_length":)") + value + "}}");
+    ExpectConfigError(path, "genai_config.json model.context_length must be a positive integer");
+  }
+}
+
 TEST_F(GenAIConfigTest, RejectsEngineWithoutDynamicBatching) {
   for (const auto& invalid_engine : {R"({})", R"({"dynamic-batching": {}})"}) {
     auto path = WriteFile("genai_config.json", std::string(R"({"engine": )") + invalid_engine + "}");

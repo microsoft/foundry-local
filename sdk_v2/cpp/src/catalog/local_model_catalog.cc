@@ -3,6 +3,7 @@
 #include "catalog/local_model_catalog.h"
 
 #include "exception.h"
+#include "inferencing/execution_provider.h"
 #include "inferencing/generative/genai_config.h"
 #include "util/file_lock.h"
 #include "util/time_utils.h"
@@ -49,6 +50,120 @@ struct ParsedModelId {
   std::string name;
   int version;
 };
+
+bool IsDmlProvider(std::string_view provider) {
+  return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
+         provider == "DMLExecutionProvider";
+}
+
+std::optional<std::string> ConfigExecutionProvider(const GenAIConfig& config) {
+  if (config.HasProvider("dml") || config.HasProvider("DML") || config.HasProvider("DmlExecutionProvider") ||
+      config.HasProvider("DMLExecutionProvider")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "DirectML execution provider is not supported");
+  }
+
+  const auto config_provider = config.DefaultProvider();
+  if (config_provider.empty()) {
+    return std::nullopt;
+  }
+  if (IsDmlProvider(config_provider)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "DirectML execution provider is not supported");
+  }
+
+  auto provider = EPUtils::StringtoEP(config_provider);
+  if (provider == ExecutionProvider::kUnknown) {
+    return std::nullopt;
+  }
+
+  return std::string(EPUtils::EPtoRegistrationName(provider));
+}
+
+std::optional<DeviceType> DeviceTypeForExecutionProvider(std::string_view provider_name) {
+  const auto provider = EPUtils::StringtoEP(provider_name);
+  switch (provider) {
+    case ExecutionProvider::kCPU:
+      return DeviceType::kCPU;
+    case ExecutionProvider::kCUDA:
+    case ExecutionProvider::kWebGPU:
+    case ExecutionProvider::kTensorRT_RTX:
+      return DeviceType::kGPU;
+    case ExecutionProvider::kVitisAI:
+    case ExecutionProvider::kRyzenAI:
+    case ExecutionProvider::kQNN:
+      return DeviceType::kNPU;
+    default:
+      return std::nullopt;
+  }
+}
+
+std::string CanonicalizeExecutionProvider(std::string_view provider_name) {
+  if (IsDmlProvider(provider_name)) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "DirectML execution provider is not supported");
+  }
+
+  const auto provider = EPUtils::StringtoEP(provider_name);
+  if (provider == ExecutionProvider::kUnknown) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "unsupported execution provider: " + std::string(provider_name));
+  }
+
+  return std::string(EPUtils::EPtoRegistrationName(provider));
+}
+
+void NormalizeRuntimeMetadata(ModelInfo& info) {
+  if (const auto* device_type = info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR);
+      device_type && info.device_type == DeviceType::kNotSet) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "device_type must be CPU, GPU, or NPU");
+  }
+
+  if (info.execution_provider.empty()) {
+    return;
+  }
+
+  const auto canonical_provider = CanonicalizeExecutionProvider(info.execution_provider);
+  const auto expected_device = DeviceTypeForExecutionProvider(canonical_provider);
+  if (expected_device && info.device_type != DeviceType::kNotSet && info.device_type != *expected_device) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+             "device_type does not match execution_provider " + canonical_provider);
+  }
+
+  info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, canonical_provider);
+  if (expected_device && info.device_type == DeviceType::kNotSet) {
+    info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DEVICE_TYPE_STR, DeviceTypeToString(*expected_device));
+  }
+}
+
+void ApplyTaskDefaults(ModelInfo& info) {
+  if (info.task == "chat-completion") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "vision-language-chat") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text,image");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "automatic-speech-recognition") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "audio");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "text");
+    }
+  } else if (info.task == "embeddings") {
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_INPUT_MODALITIES_STR, "text");
+    }
+    if (!info.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR)) {
+      info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_OUTPUT_MODALITIES_STR, "embeddings");
+    }
+  }
+}
 
 ParsedModelId ParseModelId(const std::string& model_id) {
   const auto separator = model_id.find(':');
@@ -118,6 +233,25 @@ void RemoveLegacyRegistrationProperties(ModelInfo& info) {
   info.int_properties.erase(kLegacyVersionProperty);
 }
 
+void RemoveSdkOwnedProperty(ModelInfo& info, std::string_view key) {
+  if (const auto string_property = info.string_properties.find(key);
+      string_property != info.string_properties.end()) {
+    info.string_properties.erase(string_property);
+  }
+  if (const auto int_property = info.int_properties.find(key); int_property != info.int_properties.end()) {
+    info.int_properties.erase(int_property);
+  }
+}
+
+void RemoveSdkOwnedProperties(ModelInfo& info) {
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT);
+  RemoveSdkOwnedProperty(info, FOUNDRY_LOCAL_MODEL_PROP_CREATION_TIME_STR);
+}
+
 bool IsLegacyIntegerProperty(std::string_view key) {
   return key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_TOOL_CALLING_INT ||
          key == FOUNDRY_LOCAL_MODEL_PROP_SUPPORTS_REASONING_INT ||
@@ -161,10 +295,40 @@ ModelInfo ModelInfoFromLegacyPropertyBagJson(const nlohmann::json& json) {
 }
 
 nlohmann::json RegistrationToJson(const LocalModelCatalog::Registration& registration) {
-  return {
+  nlohmann::json json = {
       {"model_info", ModelInfoToJson(registration.info)},
       {"model_path", registration.model_path},
   };
+  if (registration.info.execution_provider_override) {
+    json["execution_provider_override"] = true;
+  }
+  return json;
+}
+
+void ValidatePersistedRuntimeJson(const nlohmann::json& model_info) {
+  if (!model_info.contains("runtime")) {
+    return;
+  }
+
+  const auto& runtime = model_info["runtime"];
+  if (!runtime.is_object()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info.runtime must be an object");
+  }
+
+  if (runtime.contains("deviceType")) {
+    if (!runtime["deviceType"].is_string()) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info.runtime.deviceType must be a string");
+    }
+
+    const auto device_type = runtime["deviceType"].get<std::string>();
+    if (device_type != "CPU" && device_type != "GPU" && device_type != "NPU") {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info.runtime.deviceType must be CPU, GPU, or NPU");
+    }
+  }
+
+  if (runtime.contains("executionProvider") && !runtime["executionProvider"].is_string()) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info.runtime.executionProvider must be a string");
+  }
 }
 
 }  // namespace
@@ -217,7 +381,7 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_path must contain a regular genai_config.json file");
   }
 
-  GenAIConfig::LoadFromFile(config_path.string());
+  const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
 
   ListModels();
   Registration registration;
@@ -232,7 +396,8 @@ Model* LocalModelCatalog::RegisterModel(const std::string& model_path_value, con
       FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_id is already registered: " + model_id);
     }
 
-    registration = {ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version), model_path.string()};
+    registration = {
+        ResolveMetadata(metadata, model_id, parsed_id.name, parsed_id.version, genai_config), model_path.string()};
 
     registrations.push_back(registration);
     SaveRegistrations(registrations);
@@ -316,21 +481,45 @@ void LocalModelCatalog::UnregisterModel(const std::string& alias_or_model_id) {
 }
 
 ModelInfo LocalModelCatalog::ResolveMetadata(const ModelInfo& metadata, const std::string& model_id,
-                                             const std::string& name, int version) const {
+                                             const std::string& name, int version,
+                                             const GenAIConfig& genai_config) const {
   auto resolved = metadata;
   RemoveLegacyRegistrationProperties(resolved);
+  RemoveSdkOwnedProperties(resolved);
 
+  resolved.detected_region.clear();
+  resolved.prompt_templates = {};
+  resolved.model_settings = {};
+  resolved.execution_provider_override = !metadata.execution_provider.empty();
+  if (genai_config.model) {
+    resolved.prompt_templates.CopyFromMap(genai_config.model->prompt_templates);
+  }
   resolved.alias = DeriveAlias(name);
   resolved.name = name;
   resolved.version = version;
   resolved.model_id = model_id;
   resolved.uri.clear();
+  if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR)) {
+    resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_DISPLAY_NAME_STR, name);
+  }
   if (!resolved.GetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR)) {
     resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_PUBLISHER_STR, "local");
   }
+  const auto config_provider = ConfigExecutionProvider(genai_config);
+  if (resolved.execution_provider.empty()) {
+    if (config_provider) {
+      resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_EP_STR, *config_provider);
+    }
+  }
+  NormalizeRuntimeMetadata(resolved);
+  ApplyTaskDefaults(resolved);
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_PROVIDER_STR, "LocalRegistration");
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_ENTITY_TYPE_STR, "Model");
   resolved.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR, "ONNX");
+
+  if (genai_config.model && genai_config.model->context_length > 0) {
+    resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CONTEXT_LENGTH_INT, genai_config.model->context_length);
+  }
 
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   resolved.SetPropertyInt(FOUNDRY_LOCAL_MODEL_PROP_CREATED_AT_UNIX_INT, now);
@@ -361,6 +550,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
   } catch (const std::exception& ex) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, "failed to parse local model registration index: " + std::string(ex.what()));
   }
+  stream.close();
 
   if (!root.is_object()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
@@ -368,7 +558,7 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
   }
 
   const auto schema_version = root.value("version", 0);
-  if ((schema_version != 1 && schema_version != 2) || !root.contains("models") || !root["models"].is_array()) {
+  if ((schema_version < 1 || schema_version > 3) || !root.contains("models") || !root["models"].is_array()) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
              "unsupported or malformed local model registration index: " + index_path_.string());
   }
@@ -383,12 +573,21 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
 
       ModelInfo info;
       std::string model_id;
-      if (schema_version == 2) {
+      if (schema_version >= 2) {
         if (!item.contains("model_info") || !item["model_info"].is_object()) {
           FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "model_info must be an object");
         }
+        if (schema_version == 3) {
+          ValidatePersistedRuntimeJson(item["model_info"]);
+        }
 
         info = ModelInfoFromJson(item["model_info"]);
+        if (schema_version == 3 && item.contains("execution_provider_override")) {
+          if (!item["execution_provider_override"].is_boolean()) {
+            FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "execution_provider_override must be a boolean");
+          }
+          info.execution_provider_override = item["execution_provider_override"].get<bool>();
+        }
         model_id = info.model_id;
       } else {
         if (!item.contains("model_id") || !item["model_id"].is_string() || !item.contains("properties")) {
@@ -406,12 +605,23 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
       }
       model_path = std::filesystem::absolute(model_path).lexically_normal();
 
-      RemoveLegacyRegistrationProperties(info);
-      info.alias = DeriveAlias(parsed_id.name);
-      info.name = parsed_id.name;
-      info.version = parsed_id.version;
-      info.model_id = model_id;
-      info.uri.clear();
+      if (schema_version < 3) {
+        const auto config_path = model_path / "genai_config.json";
+        const auto genai_config = GenAIConfig::LoadFromFile(config_path.string());
+        const auto persisted_provider = info.execution_provider;
+        info = ResolveMetadata(info, model_id, parsed_id.name, parsed_id.version, genai_config);
+        // Schema v2 did not persist provider provenance. Preserve its load behavior: every persisted provider was
+        // treated as an explicit override, while an empty provider deferred to the artifact configuration.
+        info.execution_provider_override = !persisted_provider.empty();
+      } else {
+        RemoveLegacyRegistrationProperties(info);
+        info.alias = DeriveAlias(parsed_id.name);
+        info.name = parsed_id.name;
+        info.version = parsed_id.version;
+        info.model_id = model_id;
+        info.uri.clear();
+        NormalizeRuntimeMetadata(info);
+      }
 
       const auto duplicate = std::find_if(registrations.begin(), registrations.end(), [&](const auto& existing) {
         return existing.info.model_id == info.model_id;
@@ -429,6 +639,10 @@ std::vector<LocalModelCatalog::Registration> LocalModelCatalog::LoadRegistration
     ++item_index;
   }
 
+  if (schema_version < 3) {
+    SaveRegistrations(registrations);
+  }
+
   return registrations;
 }
 
@@ -439,7 +653,7 @@ void LocalModelCatalog::SaveRegistrations(const std::vector<Registration>& regis
     models.push_back(RegistrationToJson(registration));
   }
 
-  const nlohmann::json root = {{"version", 2}, {"catalog_name", "local"}, {"models", std::move(models)}};
+  const nlohmann::json root = {{"version", 3}, {"catalog_name", "local"}, {"models", std::move(models)}};
   const auto serialized = root.dump(2) + '\n';
   const auto temp_path = index_path_.string() + ".tmp";
   const auto remove_temp = [&temp_path]() noexcept {

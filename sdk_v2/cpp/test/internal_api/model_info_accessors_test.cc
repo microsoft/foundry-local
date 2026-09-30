@@ -140,6 +140,23 @@ TEST(ModelInfoAccessors, GetRuntimeReturnsNulloptWhenDeviceNotSet) {
   EXPECT_FALSE(view.GetRuntime().has_value());
 }
 
+TEST(ModelInfoAccessors, GetRuntimeReturnsProviderWhenDeviceNotSet) {
+  fl::ModelInfo info = MakeBareInfo();
+  info.execution_provider = "OpenVINOExecutionProvider";
+
+  auto view = MakeView(info);
+
+  EXPECT_EQ(view.DeviceType(), FOUNDRY_LOCAL_DEVICE_NOTSET);
+  ASSERT_TRUE(view.ExecutionProvider().has_value());
+  EXPECT_EQ(*view.ExecutionProvider(), "OpenVINOExecutionProvider");
+
+  auto runtime = view.GetRuntime();
+  ASSERT_TRUE(runtime.has_value());
+  EXPECT_EQ(runtime->device_type, FOUNDRY_LOCAL_DEVICE_NOTSET);
+  ASSERT_TRUE(runtime->execution_provider.has_value());
+  EXPECT_EQ(*runtime->execution_provider, "OpenVINOExecutionProvider");
+}
+
 TEST(ModelInfoAccessors, GetRuntimeReturnsAggregateForCpuWithExecutionProvider) {
   fl::ModelInfo info = MakeBareInfo();
   info.device_type = fl::DeviceType::kCPU;

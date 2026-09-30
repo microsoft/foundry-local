@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fl {
@@ -59,6 +60,9 @@ struct GenAIConfig {
   /// Returns the first provider key from decoder.session_options.provider_options,
   /// or empty string if not found.
   std::string DefaultProvider() const;
+
+  /// Returns whether any decoder provider-options entry contains the exact provider name.
+  bool HasProvider(std::string_view provider) const;
 
   /// Selects the chat inference backend declared by the model artifact.
   ChatBackendKind GetChatBackendKind() const;

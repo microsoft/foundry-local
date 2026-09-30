@@ -76,7 +76,7 @@ std::string_view RequiredEpForModelId(std::string_view model_id) {
   return {};
 }
 
-/// Returns whether the provider is DirectML, which is supplied by WinML rather than a downloadable EP bootstrapper.
+/// Returns whether the provider is DirectML, which Foundry Local does not support.
 bool IsDmlProvider(std::string_view provider) {
   return provider == "dml" || provider == "DML" || provider == "DmlExecutionProvider" ||
          provider == "DMLExecutionProvider";
@@ -84,8 +84,11 @@ bool IsDmlProvider(std::string_view provider) {
 
 /// Returns the required EP registration name for a provider declared in genai_config.json.
 std::string RequiredEpForConfigProvider(std::string_view provider) {
-  if (provider.empty() || IsDmlProvider(provider)) {
+  if (provider.empty()) {
     return {};
+  }
+  if (IsDmlProvider(provider)) {
+    return "DmlExecutionProvider";
   }
 
   auto ep = EPUtils::StringtoEP(provider);
@@ -112,8 +115,8 @@ std::string RequiredEpForConfigProvider(std::string_view provider) {
 // Construction / Destruction
 // ---------------------------------------------------------------------------
 
-ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger)
-    : ep_detector_(ep_detector), logger_(logger) {}
+ModelLoadManager::ModelLoadManager(IEpDetector& ep_detector, ILogger& logger, BeforeModelCreate before_model_create)
+  : ep_detector_(ep_detector), logger_(logger), before_model_create_(std::move(before_model_create)) {}
 
 ModelLoadManager::~ModelLoadManager() {
   // Destroy all loaded models under the lock.
@@ -138,7 +141,8 @@ bool ModelLoadManager::HasEP(const std::string& ep_name) const {
 
 ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_path,
                                                          std::string_view model_id,
-                                                         ExecutionProvider ep_override) {
+                                                         ExecutionProvider ep_override,
+                                                         std::string_view registration_ep_override) {
   if (shutdown_.load()) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                      "cannot load model during shutdown");
@@ -177,12 +181,24 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   }
 
   auto genai_config = GenAIConfig::LoadFromFile(config_path);
+  if (genai_config.HasProvider("dml") || genai_config.HasProvider("DML") ||
+      genai_config.HasProvider("DmlExecutionProvider") || genai_config.HasProvider("DMLExecutionProvider")) {
+    FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_USAGE, "DirectML execution provider is not supported");
+  }
 
   // Determine execution provider
   auto resolved_ep = ep_override;
 
   if (resolved_ep == ExecutionProvider::kUnknown) {
     FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT, "unknown execution provider override");
+  }
+
+  if (resolved_ep == ExecutionProvider::kDefault && !registration_ep_override.empty()) {
+    resolved_ep = EPUtils::StringtoEP(registration_ep_override);
+    if (resolved_ep == ExecutionProvider::kUnknown) {
+      FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
+               "unknown execution provider for local model: " + std::string(registration_ep_override));
+    }
   }
 
   if (resolved_ep == ExecutionProvider::kDefault) {
@@ -220,6 +236,10 @@ ModelLoadManager::LoadResult ModelLoadManager::LoadModel(std::string_view model_
   if (!required_ep.empty() && !ep_detector_.PrepareForModelLoad(required_ep)) {
     FL_LOG_AND_THROW(logger_, FOUNDRY_LOCAL_ERROR_INTERNAL,
                      "failed to prepare ", required_ep, " for model loading");
+  }
+
+  if (before_model_create_) {
+    before_model_create_(genai_config, resolved_ep);
   }
 
   // std::make_unique cannot access the private constructor; using new directly is intentional.

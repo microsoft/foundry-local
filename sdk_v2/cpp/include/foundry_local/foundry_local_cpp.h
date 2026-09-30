@@ -329,7 +329,7 @@ class ModelInfo {
   std::string_view Uri() const noexcept;
   flDeviceType DeviceType() const noexcept;
   std::optional<std::string_view> ExecutionProvider() const noexcept;
-  /// Returns the device + execution provider pair, or nullopt if device_type is unknown/invalid.
+  /// Returns runtime metadata when either the device or provider is known; nullopt only when both are absent.
   std::optional<Runtime> GetRuntime() const noexcept;
 
   // Key-value lookups
@@ -808,7 +808,12 @@ class ICatalog {
                                      const std::string& variant_name = {},
                                      int max_versions = 50) = 0;
 
-  /// Register existing local model assets. `model_id` must use `<name>:<version>`; metadata is copied.
+  /// Register existing local model assets. `model_id` must use `<name>:<version>` and `metadata.Task()` is required.
+  /// Display name, publisher, validated runtime metadata, modalities, and custom properties are preserved and may
+  /// receive authoritative defaults. Identity, alias, type, timestamps, context length, and prompt templates are
+  /// SDK-derived; caller location and internal metadata are ignored. A caller-supplied provider becomes the default
+  /// IModel::Load override; an SDK-derived artifact provider is descriptive and leaves genai_config.json options
+  /// intact.
   /// The catalog does not take ownership of `model_path` and never deletes its contents.
   virtual std::unique_ptr<IModel> RegisterModel(const std::string& model_path, const std::string& model_id,
                                                 const ModelInfo& metadata) = 0;

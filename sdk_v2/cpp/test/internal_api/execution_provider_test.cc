@@ -53,3 +53,20 @@ TEST(ExecutionProviderTest, RoundTripPreservesSupportedNonDefaultProviders) {
     EXPECT_EQ(EPUtils::StringtoEP(EPUtils::EPtoGenAI(provider)), provider);
   }
 }
+
+TEST(ExecutionProviderTest, RegistrationNameRoundTripPreservesSupportedProviders) {
+  const auto providers = {
+      ExecutionProvider::kCPU,
+      ExecutionProvider::kCUDA,
+      ExecutionProvider::kWebGPU,
+      ExecutionProvider::kOpenVINO,
+      ExecutionProvider::kTensorRT_RTX,
+      ExecutionProvider::kVitisAI,
+      ExecutionProvider::kRyzenAI,
+      ExecutionProvider::kQNN,
+  };
+
+  for (auto provider : providers) {
+    EXPECT_EQ(EPUtils::StringtoEP(EPUtils::EPtoRegistrationName(provider)), provider);
+  }
+}

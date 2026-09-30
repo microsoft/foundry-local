@@ -38,6 +38,7 @@ struct ModelInfo {
 
   DeviceType device_type = DeviceType::kNotSet;
   std::string execution_provider;  // e.g. "WebGPUExecutionProvider", empty if not set
+  bool execution_provider_override = false;
   std::string task;
 
   // Azure region the catalog was served from (auto-detected from cluster headers).
