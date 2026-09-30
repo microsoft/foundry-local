@@ -144,51 +144,65 @@ class ModelSessionLease {
 template <typename Runtime>
 std::pair<std::shared_ptr<Runtime>, std::unique_ptr<ModelSessionLease>>
 AcquireRuntime(ServiceContext& ctx, const ResolvedPackage& package) {
-  auto state = ctx.non_generative_runtimes;
-  std::shared_future<std::shared_ptr<void>> future;
-  std::shared_ptr<std::promise<std::shared_ptr<void>>> promise;
-  std::shared_ptr<void> reservation;
-  {
-    std::lock_guard lock(state->mutex);
-    const auto found = state->runtimes.find(package.identity);
-    if (found != state->runtimes.end()) {
-      future = found->second.runtime;
-    } else {
-      promise = std::make_shared<std::promise<std::shared_ptr<void>>>();
-      future = promise->get_future().share();
-      reservation = std::make_shared<int>(0);
-      state->runtimes.emplace(
-          package.identity,
-          RuntimeEntry{package.model_id, package.model, future, reservation});
-    }
-  }
-
-  if (promise) {
-    try {
-      promise->set_value(
-          std::make_shared<Runtime>(package.path, package.provider));
-    } catch (...) {
-      promise->set_exception(std::current_exception());
-      std::lock_guard lock(state->mutex);
-      const auto found = state->runtimes.find(package.identity);
-      if (found != state->runtimes.end() &&
-          found->second.reservation == reservation) {
-        state->runtimes.erase(found);
-      }
-      throw;
-    }
-  }
-
-  auto runtime = std::static_pointer_cast<Runtime>(future.get());
   Model* acquired = package.model ? package.model->AcquireExternalSession() : nullptr;
   auto lease = acquired
                    ? std::make_unique<ModelSessionLease>(
                          acquired, ModelSessionLease::AlreadyAcquired{})
                    : nullptr;
-  return {
-      std::move(runtime),
-      std::move(lease),
-  };
+  auto state = ctx.non_generative_runtimes;
+  try {
+    std::shared_future<std::shared_ptr<void>> future;
+    std::shared_ptr<std::promise<std::shared_ptr<void>>> promise;
+    std::shared_ptr<void> reservation;
+    {
+      std::lock_guard lock(state->mutex);
+      const auto found = state->runtimes.find(package.identity);
+      if (found != state->runtimes.end()) {
+        future = found->second.runtime;
+      } else {
+        promise = std::make_shared<std::promise<std::shared_ptr<void>>>();
+        future = promise->get_future().share();
+        reservation = std::make_shared<int>(0);
+        state->runtimes.emplace(
+            package.identity,
+            RuntimeEntry{package.model_id, package.model, future, reservation});
+      }
+    }
+
+    if (promise) {
+      try {
+        promise->set_value(
+            std::make_shared<Runtime>(package.path, package.provider));
+      } catch (...) {
+        promise->set_exception(std::current_exception());
+        std::lock_guard lock(state->mutex);
+        const auto found = state->runtimes.find(package.identity);
+        if (found != state->runtimes.end() &&
+            found->second.reservation == reservation) {
+          state->runtimes.erase(found);
+        }
+        throw;
+      }
+    }
+
+    return {
+        std::static_pointer_cast<Runtime>(future.get()),
+        std::move(lease),
+    };
+  } catch (...) {
+    lease.reset();
+    if (acquired && acquired->ActiveExternalSessionCount() == 0) {
+      try {
+        acquired->UnloadExternalRuntime();
+      } catch (const std::exception& error) {
+        ctx.logger.Log(
+            LogLevel::Warning,
+            fmt::format("failed to clear non-generative load state for {}: {}",
+                        package.model_id, error.what()));
+      }
+    }
+    throw;
+  }
 }
 
 template <typename Runtime, typename Request, bool IsRank>
