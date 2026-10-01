@@ -57,20 +57,44 @@ int64_t ParseIso8601ToUnix(const std::string& iso_str) {
   return t == static_cast<time_t>(-1) ? 0 : static_cast<int64_t>(t);
 }
 
-DeviceType ParseDeviceType(const std::string& device) {
-  const auto lower = ToLower(device);
-  if (lower == "cpu") {
-    return DeviceType::kCPU;
+std::optional<ModelVariantMetadata> ToModelVariantMetadata(const VariantMetadata& variant_metadata) {
+  if (!variant_metadata.model_format.has_value() && !variant_metadata.model_package.has_value()) {
+    return std::nullopt;
   }
 
-  if (lower == "gpu") {
-    return DeviceType::kGPU;
+  ModelVariantMetadata metadata;
+  metadata.model_format = variant_metadata.model_format;
+
+  if (variant_metadata.model_package.has_value()) {
+    ModelPackageMetadata package_metadata;
+    package_metadata.schema_version = variant_metadata.model_package->schema_version;
+    package_metadata.variants.reserve(variant_metadata.model_package->variants.size());
+
+    for (const auto& catalog_variant : variant_metadata.model_package->variants) {
+      ModelPackageVariant package_variant;
+      if (catalog_variant.name.has_value()) {
+        package_variant.name = *catalog_variant.name;
+      }
+
+      if (catalog_variant.execution_provider.has_value()) {
+        package_variant.execution_provider = *catalog_variant.execution_provider;
+      }
+
+      if (catalog_variant.device.has_value()) {
+        package_variant.device_type = DeviceTypeFromString(*catalog_variant.device);
+      }
+
+      if (catalog_variant.compatibility_string.has_value()) {
+        package_variant.compatibility_string = *catalog_variant.compatibility_string;
+      }
+
+      package_metadata.variants.push_back(std::move(package_variant));
+    }
+
+    metadata.model_package = std::move(package_metadata);
   }
 
-  if (lower == "npu") {
-    return DeviceType::kNPU;
-  }
-  return DeviceType::kNotSet;
+  return metadata;
 }
 
 }  // anonymous namespace
@@ -120,11 +144,31 @@ void to_json(nlohmann::json& j, const AzureCatalogRequest& r) {
 // Response deserialization (from_json)
 // ========================================================================
 
+void from_json(const nlohmann::json& j, CatalogModelPackageVariant& v) {
+  opt_str(j, "name", v.name);
+  opt_str(j, "executionProvider", v.execution_provider);
+  opt_str(j, "device", v.device);
+  opt_str(j, "compatibilityString", v.compatibility_string);
+}
+
+void from_json(const nlohmann::json& j, CatalogModelPackageMetadata& p) {
+  opt_int(j, "schemaVersion", p.schema_version);
+
+  if (j.contains("variants") && j["variants"].is_array()) {
+    p.variants = j["variants"].get<std::vector<CatalogModelPackageVariant>>();
+  }
+}
+
 void from_json(const nlohmann::json& j, VariantMetadata& v) {
   opt_str(j, "modelType", v.model_type);
   opt_str(j, "device", v.device);
   opt_str(j, "executionProvider", v.execution_provider);
   opt_int64(j, "fileSizeBytes", v.file_size_bytes);
+  opt_str(j, "modelFormat", v.model_format);
+
+  if (j.contains("modelPackage") && j["modelPackage"].is_object()) {
+    v.model_package = j["modelPackage"].get<CatalogModelPackageMetadata>();
+  }
 }
 
 void from_json(const nlohmann::json& j, VariantParent& v) {
@@ -286,12 +330,14 @@ std::optional<ModelInfo> CatalogModelToModelInfo(const CatalogLocalModel& cm) {
   if (props.variant_info && props.variant_info->variant_metadata) {
     const auto& vm = *props.variant_info->variant_metadata;
     if (vm.device) {
-      info.device_type = ParseDeviceType(*vm.device);
+      info.device_type = DeviceTypeFromString(*vm.device);
     }
 
     if (vm.execution_provider) {
       info.execution_provider = *vm.execution_provider;
     }
+
+    info.variant_metadata = ToModelVariantMetadata(vm);
 
     // ModelType — defaults to "ONNX" (matches C# ToAzureFoundryLocalModel)
     info.string_properties[FOUNDRY_LOCAL_MODEL_PROP_MODEL_TYPE_STR] =

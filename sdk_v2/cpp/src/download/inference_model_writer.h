@@ -17,7 +17,8 @@ void WriteInferenceModelJson(const std::string& directory,
 /// Fix the location of inference_model.json for AzureFoundryLocal variants.
 /// The model blobs download into a sub-directory for the variant, but we don't know the
 /// name ahead of time. This copies inference_model.json into any sub-directory that
-/// doesn't already have it, then deletes the root copy.
+/// doesn't already have it, then deletes the root copy. Model packages keep the marker
+/// at the package root.
 /// Matches C# FixAzureFoundryLocalVariantDownload.
 void FixVariantInferenceModelJson(const std::string& model_directory);
 

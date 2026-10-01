@@ -138,6 +138,53 @@ TEST_F(LocalModelScannerTest, MissingInferenceModelExcluded) {
   EXPECT_TRUE(results.empty());
 }
 
+TEST_F(LocalModelScannerTest, ModelPackageRootDetectedOnceWithoutScanningChildren) {
+  CreateFile("publisher/package/manifest.json");
+  CreateFile("publisher/package/inference_model.json", R"({"Name": "package-model:7"})");
+  CreateModelDir("publisher/package/variants/cpu", "child-model:1");
+  CreateModelDir("publisher/package/shared_assets/tokenizer", "shared-asset:1");
+
+  auto results = ScanLocalModels(test_dir_, logger_);
+
+  ASSERT_EQ(results.size(), 1u);
+  ASSERT_TRUE(results.contains("package-model:7"));
+  EXPECT_EQ(results.at("package-model:7"), (fs::path(test_dir_) / "publisher" / "package").string());
+  EXPECT_FALSE(results.contains("child-model:1"));
+  EXPECT_FALSE(results.contains("shared-asset:1"));
+}
+
+TEST_F(LocalModelScannerTest, FlatModelWithUnrelatedManifestRemainsFlat) {
+  CreateModelDir("publisher/flat-model", "flat-model:2");
+  CreateFile("publisher/flat-model/manifest.json");
+  CreateModelDir("publisher/flat-model/nested", "nested-model:1");
+
+  auto results = ScanLocalModels(test_dir_, logger_);
+
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results.at("flat-model:2"), (fs::path(test_dir_) / "publisher" / "flat-model").string());
+  EXPECT_FALSE(results.contains("nested-model:1"));
+}
+
+TEST_F(LocalModelScannerTest, ModelPackageWithDownloadSignalIsExcludedWithoutScanningChildren) {
+  CreateFile("publisher/package/manifest.json");
+  CreateFile("publisher/package/inference_model.json", R"({"Name": "package-model:1"})");
+  CreateFile("publisher/package/download.tmp", "");
+  CreateModelDir("publisher/package/variants/cpu", "child-model:1");
+
+  auto results = ScanLocalModels(test_dir_, logger_);
+
+  EXPECT_TRUE(results.empty());
+}
+
+TEST_F(LocalModelScannerTest, ModelPackageWithoutRootInferenceMarkerIsExcludedWithoutScanningChildren) {
+  CreateFile("publisher/package/manifest.json");
+  CreateModelDir("publisher/package/variants/cpu", "child-model:1");
+
+  auto results = ScanLocalModels(test_dir_, logger_);
+
+  EXPECT_TRUE(results.empty());
+}
+
 TEST_F(LocalModelScannerTest, NestedPublisherModelStructure) {
   CreateModelDir("microsoft/phi-4-mini-instruct", "phi-4-mini-instruct:2");
 

@@ -8,6 +8,7 @@
 #include "logger.h"
 #include "telemetry/download_tracker.h"
 #include "telemetry/telemetry.h"
+#include "util/model_layout.h"
 #include "util/path_safety.h"
 #include "util/region_fallback.h"
 #include "utils.h"
@@ -32,12 +33,26 @@ const char* kGenAIConfigFileName = "genai_config.json";
 const char* kInferenceModelFileName = "inference_model.json";
 const char* kDefaultRegistryRegion = "centralus";
 
-/// Check whether inference_model.json exists at the root or in any immediate
-/// subdirectory.  This is the definitive proof that a download completed
-/// successfully — DownloadModel writes it in Step 3.
+bool IsRegularFile(const std::filesystem::path& path) {
+  std::error_code ec;
+  const auto is_regular_file = std::filesystem::is_regular_file(path, ec);
+  return !ec && is_regular_file;
+}
+
+/// Check for the completion marker at the location required by the model layout.
 bool HasInferenceModelJson(const std::string& model_path) {
-  if (std::filesystem::exists(std::filesystem::path(model_path) / kInferenceModelFileName)) {
+  const auto root = std::filesystem::path(model_path);
+  const auto layout = ClassifyModelLayout(root);
+  if (layout == ModelLayout::Invalid) {
+    return false;
+  }
+
+  if (IsRegularFile(root / kInferenceModelFileName)) {
     return true;
+  }
+
+  if (layout == ModelLayout::ModelPackage) {
+    return false;
   }
 
   std::error_code ec;
@@ -48,7 +63,7 @@ bool HasInferenceModelJson(const std::string& model_path) {
 
   for (const auto& entry : it) {
     if (entry.is_directory(ec)) {
-      if (std::filesystem::exists(entry.path() / kInferenceModelFileName)) {
+      if (IsRegularFile(entry.path() / kInferenceModelFileName)) {
         return true;
       }
     }
@@ -61,6 +76,10 @@ bool HasInferenceModelJson(const std::string& model_path) {
 /// For single-variant models this is model_path itself.
 /// For multi-variant models it's the first subdirectory containing genai_config.json.
 std::string ResolveEffectiveModelPath(const std::string& model_path) {
+  if (ClassifyModelLayout(model_path) == ModelLayout::ModelPackage) {
+    return model_path;
+  }
+
   auto root_config = std::filesystem::path(model_path) / kGenAIConfigFileName;
   if (std::filesystem::exists(root_config)) {
     return model_path;
