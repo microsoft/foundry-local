@@ -4,13 +4,13 @@
 #include "contracts/non_generative.h"
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "service/non_generative_handlers.h"
+#include "utils/safe_getenv.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -65,8 +65,8 @@ TEST(NonGenerativeRuntimeStateTest, FailedColdLoadIsRemovedAndCanBeRetried) {
 }
 
 TEST(NonGenerativeRuntimeTest, ExportedPackagesRunWhenConfigured) {
-  const char* root_value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
-  if (!root_value || !*root_value) {
+  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (root_value.empty()) {
     GTEST_SKIP() << "set FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run exported packages";
   }
   const std::filesystem::path root(root_value);
