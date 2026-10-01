@@ -64,8 +64,9 @@ The SDK re-exports its public types from the crate root. Key entry points:
 | `FoundryLocalConfig` | Configuration (app name, log level, catalog, service endpoint) |
 | `Catalog` | Model discovery, lookup, and version queries |
 | `Model` | Grouped model (alias → best variant) — download, load, unload |
-| `Session` / `ChatSession` / `EmbeddingsSession` / `AudioSession` | Inference sessions |
+| `Session` / `ChatSession` / `RankingSession` / `DecisionSession` / `EmbeddingsSession` / `AudioSession` | Inference sessions |
+| `RankingRequest` / `RankingResult` / `RankedCandidate` | Candidate-ranking contracts |
+| `DecisionRequest` / `DecisionResult` / `DecisionQuestion` / `DecisionAnswer` | Typed-decision contracts |
 | `ChatClient` / `AudioClient` | OpenAI-compatible clients (sync + streaming) |
 | `FoundryLocalError` / `NativeErrorCode` | Error enum and stable native error codes |
-
 
