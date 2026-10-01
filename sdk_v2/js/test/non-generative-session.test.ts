@@ -13,6 +13,7 @@ import {
 } from "./_fixtures/cacheOnlyManager.js";
 import {
   type RealModelManagerFixture,
+  SkipFixture,
   haveTestModelCache,
   setupRealModelManager,
   teardownRealModelManager,
@@ -55,19 +56,25 @@ describe.skipIf(!haveNativePrereqs)("non-generative session task validation", ()
 describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
   let fixture: RealModelManagerFixture | undefined;
   let session: RankingSession | undefined;
+  let skipReason: string | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager({
-      task: "text-ranking",
-      namePreference: "clm",
-      loadModel: false,
-    });
+    try {
+      fixture = await setupRealModelManager({
+        task: "text-ranking",
+        namePreference: "clm",
+        loadModel: false,
+      });
+    } catch (error) {
+      if (!(error instanceof SkipFixture)) throw error;
+      skipReason = error.message;
+    }
   }, 5 * 60_000);
 
   afterAll(() => teardownRealModelManager(fixture));
 
   beforeEach(() => {
-    if (fixture === undefined) throw new Error("fixture missing");
+    if (fixture === undefined) return;
     session = new RankingSession(fixture.model);
   });
 
@@ -76,7 +83,8 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     session = undefined;
   });
 
-  it("ranks candidates with the typed helper", async () => {
+  it("ranks candidates with the typed helper", async (context) => {
+    if (skipReason !== undefined) context.skip();
     if (session === undefined) throw new Error("session missing");
     const result = await session.rank({
       context: { weather: "heavy rain" },
@@ -91,7 +99,8 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     );
   });
 
-  it("uses one OpenAI JSON text item at the low-level boundary", async () => {
+  it("uses one OpenAI JSON text item at the low-level boundary", async (context) => {
+    if (skipReason !== undefined) context.skip();
     if (session === undefined) throw new Error("session missing");
     const request = new Request().addItem(Item.text(JSON.stringify({ answers: ["first", "second"] }), "openai-json"));
     const response = await session.processRequest(request);
@@ -99,7 +108,8 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     expect(response.output[0]).toMatchObject({ type: "text", textType: "openai-json" });
   });
 
-  it("serializes concurrent requests before occupying another worker", async () => {
+  it("serializes concurrent requests before occupying another worker", async (context) => {
+    if (skipReason !== undefined) context.skip();
     if (session === undefined) throw new Error("session missing");
     const nativeSession = (session as unknown as { native: NativeGenericSession }).native;
     const request = () =>
@@ -133,12 +143,14 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     await expect(second).resolves.toMatchObject({ output: expect.any(Array) });
   });
 
-  it("does not expose streaming on one-shot predictive sessions", () => {
+  it("does not expose streaming on one-shot predictive sessions", (context) => {
+    if (skipReason !== undefined) context.skip();
     if (session === undefined) throw new Error("session missing");
     expect("processStreamingRequest" in session).toBe(false);
   });
 
-  it("disposes idempotently", () => {
+  it("disposes idempotently", (context) => {
+    if (skipReason !== undefined) context.skip();
     session?.dispose();
     expect(session?.disposed).toBe(true);
     expect(() => session?.dispose()).not.toThrow();
@@ -148,19 +160,25 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
 describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
   let fixture: RealModelManagerFixture | undefined;
   let session: DecisionSession | undefined;
+  let skipReason: string | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager({
-      task: "typed-decision",
-      namePreference: "kev",
-      loadModel: false,
-    });
+    try {
+      fixture = await setupRealModelManager({
+        task: "typed-decision",
+        namePreference: "kev",
+        loadModel: false,
+      });
+    } catch (error) {
+      if (!(error instanceof SkipFixture)) throw error;
+      skipReason = error.message;
+    }
   }, 5 * 60_000);
 
   afterAll(() => teardownRealModelManager(fixture));
 
   beforeEach(() => {
-    if (fixture === undefined) throw new Error("fixture missing");
+    if (fixture === undefined) return;
     session = new DecisionSession(fixture.model);
   });
 
@@ -169,7 +187,8 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
     session = undefined;
   });
 
-  it("returns typed answers with the typed helper", async () => {
+  it("returns typed answers with the typed helper", async (context) => {
+    if (skipReason !== undefined) context.skip();
     if (session === undefined) throw new Error("session missing");
     const result = await session.decide({
       state: { weather: "heavy rain" },
