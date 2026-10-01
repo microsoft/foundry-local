@@ -10,9 +10,7 @@
 #include "ep_detection/ep_detector.h"
 #include "http/http_client.h"
 #include "inferencing/model_load_manager.h"
-#include "inferencing/predictive/non_generative_session.h"
 #include "inferencing/session/session_manager.h"
-#include "items/text_item.h"
 #include "internal_api/test_helpers.h"
 #include "internal_api/test_model_cache.h"
 #include "internal_api/toolcalling/coding_agent_tools_fixture.h"
@@ -27,6 +25,7 @@
 
 #include <foundry_local/foundry_local_c.h>
 #include <ort_genai_c.h>
+#include <foundry_local/foundry_local_cpp.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -570,40 +569,48 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
   ASSERT_TRUE(decision.at("answers").contains("umbrella"));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
 
-  auto run_sdk_request = [&](const std::string& model_id,
-                             const json& payload) {
-    auto* model = local_catalog_->GetModelVariant(model_id);
-    if (!model) throw std::runtime_error("SDK test model was not registered");
-    NonGenerativeSession session(*model, *logger_, *null_telemetry_);
-    Request request;
-    request.AddOwnedItem(std::make_unique<TextItem>(
-        payload.dump(), FOUNDRY_LOCAL_TEXT_ITEM_TYPE_OPENAI_JSON));
-    Response response;
-    session.ProcessRequest(request, response);
-    EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
-    EXPECT_EQ(response.items.size(), 1u);
-    return json::parse(
-        static_cast<const TextItem&>(*response.items.front()).text);
-  };
+  auto sdk_root =
+      test::TempPath::CreateTempDir("fl_non_generative_sdk_");
+  foundry_local::Configuration sdk_config("non-generative-sdk-test");
+  sdk_config.SetAppDataDir(sdk_root.string());
+  foundry_local::Manager sdk_manager(std::move(sdk_config));
+  auto& sdk_catalog =
+      sdk_manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
 
-  const auto sdk_ranking = run_sdk_request(
-      clm_metadata.model_id,
-      json{{"context", {{"weather", "heavy rain"}}},
-           {"question", "Which activity is more suitable?"},
-           {"answers",
-            {"Have a picnic outdoors", "Visit an indoor museum"}}});
-  EXPECT_EQ(sdk_ranking.at("model"), clm_metadata.model_id);
-  ASSERT_EQ(sdk_ranking.at("ranked").size(), 2u);
+  foundry_local::ModelInfo sdk_clm_metadata;
+  sdk_clm_metadata.SetStringProperty(
+      FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "text-ranking");
+  auto sdk_clm = sdk_catalog.RegisterModel(
+      clm.string(), clm_metadata.model_id, sdk_clm_metadata);
+  {
+    foundry_local::RankingSession ranking_session(*sdk_clm);
+    const auto sdk_ranking = json::parse(ranking_session.RankJson(
+        json{{"context", {{"weather", "heavy rain"}}},
+             {"question", "Which activity is more suitable?"},
+             {"answers",
+              {"Have a picnic outdoors", "Visit an indoor museum"}}}
+            .dump()));
+    EXPECT_EQ(sdk_ranking.at("model"), clm_metadata.model_id);
+    ASSERT_EQ(sdk_ranking.at("ranked").size(), 2u);
+  }
 
-  const auto sdk_decision = run_sdk_request(
-      kev_metadata.model_id,
-      json{{"state", {{"weather", "heavy rain"}}},
-           {"questions",
-            {{"umbrella",
-              {{"type", "noul"},
-               {"instructions", "Should I take an umbrella?"}}}}}});
-  EXPECT_EQ(sdk_decision.at("model"), kev_metadata.model_id);
-  EXPECT_TRUE(sdk_decision.at("answers").contains("umbrella"));
+  foundry_local::ModelInfo sdk_kev_metadata;
+  sdk_kev_metadata.SetStringProperty(
+      FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "typed-decision");
+  auto sdk_kev = sdk_catalog.RegisterModel(
+      kev.string(), kev_metadata.model_id, sdk_kev_metadata);
+  {
+    foundry_local::DecisionSession decision_session(*sdk_kev);
+    const auto sdk_decision = json::parse(decision_session.DecideJson(
+        json{{"state", {{"weather", "heavy rain"}}},
+             {"questions",
+              {{"umbrella",
+                {{"type", "noul"},
+                 {"instructions", "Should I take an umbrella?"}}}}}}
+            .dump()));
+    EXPECT_EQ(sdk_decision.at("model"), kev_metadata.model_id);
+    EXPECT_TRUE(sdk_decision.at("answers").contains("umbrella"));
+  }
 
   auto fallback = json::parse(TestHttpPost(
       base_url_ + "/v1/rank",
