@@ -6,6 +6,76 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
+from typing import Literal, NotRequired, Required, TypeAlias, TypedDict
+
+
+JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+DecisionQuestionType: TypeAlias = Literal["noul", "choice", "score"]
+
+
+class DecisionQuestion(TypedDict, total=False):
+    """One named question in a typed-decision request."""
+
+    type: Required[DecisionQuestionType]
+    criteria: NotRequired[JSONValue]
+    instructions: NotRequired[JSONValue]
+
+
+class DecisionAnswer(TypedDict, total=False):
+    """One named answer returned by a typed-decision model."""
+
+    type: Required[str]
+    noul: NotRequired[float]
+    choice: NotRequired[str]
+    score: NotRequired[float]
+    confidence: NotRequired[float]
+    probabilities: NotRequired[dict[str, float]]
+    legend: NotRequired[dict[str, str]]
+
+
+class DecisionUsage(TypedDict):
+    billing_units: int
+
+
+@dataclass(frozen=True)
+class RankingRequest:
+    """Payload accepted by ``POST /v1/rank`` and :meth:`RankingSession.rank`."""
+
+    answers: list[str]
+    context: JSONValue = None
+    question: str = ""
+    model: str = "clm"
+    temperature: float = 1.0
+
+
+@dataclass(frozen=True)
+class RankedCandidate:
+    rank: int
+    candidate: str
+    prob: float
+
+
+@dataclass(frozen=True)
+class RankingResult:
+    model: str
+    ranked: list[RankedCandidate]
+
+
+@dataclass(frozen=True)
+class DecisionRequest:
+    """Payload accepted by ``POST /v1/systemone`` and :meth:`DecisionSession.decide`."""
+
+    questions: dict[str, DecisionQuestion]
+    state: JSONValue = None
+    model: str = "kev"
+    temperature: float = 1.0
+
+
+@dataclass(frozen=True)
+class DecisionResult:
+    model: str
+    answers: dict[str, DecisionAnswer]
+    usage: DecisionUsage
 
 
 class FinishReason(IntEnum):
