@@ -39,6 +39,7 @@ public abstract class NonGenerativeSession : Session
         var responseJson = _testTransport == null
             ? await ProcessNativeJsonAsync(requestJson, ct).ConfigureAwait(false)
             : await _testTransport(requestJson, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
 
         return JsonSerializer.Deserialize(responseJson, resultTypeInfo)
             ?? throw new JsonException($"Native response could not be deserialized as {typeof(TResult).Name}.");
@@ -51,7 +52,19 @@ public abstract class NonGenerativeSession : Session
         request.AddItem(TextItem.OpenAIJson(requestJson));
 #pragma warning restore CA2000
 
+        using var cancellation = ct.Register(static state =>
+        {
+            try
+            {
+                ((Request)state!).Cancel();
+            }
+            catch
+            {
+                // Cancellation races native completion and request teardown.
+            }
+        }, request);
         using var response = await ProcessRequestAsync(request, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
         if (response.ItemCount != 1)
         {
             throw new FoundryLocalException(
@@ -59,10 +72,15 @@ public abstract class NonGenerativeSession : Session
         }
 
         using var item = response.GetItem(0);
-        if (item is not TextItem textItem || textItem.Type != TextItemType.OpenAIJson)
+        if (item is not TextItem textItem)
         {
             throw new FoundryLocalException(
                 $"Expected one OpenAIJson TextItem from native response, got {item.GetType().Name}.");
+        }
+        if (textItem.Type != TextItemType.OpenAIJson)
+        {
+            throw new FoundryLocalException(
+                $"Expected one OpenAIJson TextItem from native response, got TextItem with type {textItem.Type}.");
         }
 
         return textItem.Text;
