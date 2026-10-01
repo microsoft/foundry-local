@@ -219,6 +219,14 @@ CI provides the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
 `FOUNDRY_TEST_MODEL`, and passes `-Dfoundry.test.native.required=true`, so
 missing native inputs fail instead of skipping the integration test.
 
+The test reuses one loaded model for repeated PCM requests, covers final
+results, cancellation, callback failures, deterministic cleanup, manager
+recreation with the same runtime directory, and verifies that no callback or
+worker survives close. It also launches a child JVM to check that an abandoned
+stream neither blocks nor crashes process exit. The Windows x64 CI lane
+separately probes a checksum-pinned released legacy runtime in a fresh JVM to
+verify rejection before accessing incompatible native function tables.
+
 The CLM/KEV native bridge has a separate opt-in integration test:
 
 ```powershell
@@ -235,11 +243,3 @@ The equivalent environment variables are
 `FOUNDRY_TEST_CLM_MODEL`, and `FOUNDRY_TEST_KEV_MODEL`. The test creates both
 public sessions, executes one typed request through each native bridge,
 validates the resolved model and result shape, and closes all resources.
-
-The test reuses one loaded model for repeated PCM requests, covers final
-results, cancellation, callback failures, deterministic cleanup, manager
-recreation with the same runtime directory, and verifies that no callback or
-worker survives close. It also launches a child JVM to check that an abandoned
-stream neither blocks nor crashes process exit. The Windows x64 CI lane
-separately probes a checksum-pinned released legacy runtime in a fresh JVM to
-verify rejection before accessing incompatible native function tables.

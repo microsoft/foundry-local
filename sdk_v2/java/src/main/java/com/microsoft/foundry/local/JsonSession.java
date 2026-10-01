@@ -2,6 +2,7 @@
 package com.microsoft.foundry.local;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.jna.Memory;
 import com.sun.jna.Pointer;
@@ -9,7 +10,8 @@ import com.sun.jna.ptr.PointerByReference;
 
 /** Shared native OpenAI-JSON request bridge for non-generative sessions. */
 abstract class JsonSession extends OwnedSession {
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     final Model model;
     final NativeApi api;
