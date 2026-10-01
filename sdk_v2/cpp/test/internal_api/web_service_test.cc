@@ -15,6 +15,7 @@
 #include "internal_api/test_model_cache.h"
 #include "internal_api/toolcalling/coding_agent_tools_fixture.h"
 #include "internal_api/web_service_test_helpers.h"
+#include "utils/safe_getenv.h"
 #include "logger.h"
 #include "model.h"
 #include "model_info.h"
@@ -519,8 +520,8 @@ TEST_F(WebServiceTest, NonGenerativeRoutesResolveRequestedCatalogModelAndValidat
 }
 
 TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfigured) {
-  const char* root_value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
-  if (!root_value || !*root_value) {
+  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (root_value.empty()) {
     GTEST_SKIP() << "set FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run exported packages";
   }
   const auto root = std::filesystem::path(root_value);
@@ -574,9 +575,9 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
 }
 
 TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCudaPackagesWhenConfigured) {
-  const char* enabled = std::getenv("FOUNDRY_LOCAL_RUN_CUDA_TESTS");
-  const char* root_value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
-  if (!enabled || std::string_view(enabled) != "1" || !root_value || !*root_value) {
+  const auto enabled = test::SafeGetEnv("FOUNDRY_LOCAL_RUN_CUDA_TESTS");
+  const auto root_value = test::SafeGetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT");
+  if (enabled != "1" || root_value.empty()) {
     GTEST_SKIP() << "set FOUNDRY_LOCAL_RUN_CUDA_TESTS=1 and "
                     "FOUNDRY_LOCAL_NON_GENERATIVE_TEST_ROOT to run CUDA packages";
   }

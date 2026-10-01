@@ -563,13 +563,23 @@ if(TARGET OnnxRuntime::OnnxRuntime)
                 $<TARGET_FILE_DIR:foundry_local>
         )
 
-        if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_shared.dll")
+        if(EXISTS "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll")
             add_custom_command(TARGET foundry_local POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${ORT_DLL_DIR}/onnxruntime_providers_shared.dll"
+                    "${ORT_GENAI_LIB_DIR}/onnxruntime-genai-cuda.dll"
                     $<TARGET_FILE_DIR:foundry_local>
             )
         endif()
+
+        foreach(_ORT_PROVIDER shared cuda tensorrt)
+            if(EXISTS "${ORT_DLL_DIR}/onnxruntime_providers_${_ORT_PROVIDER}.dll")
+                add_custom_command(TARGET foundry_local POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${ORT_DLL_DIR}/onnxruntime_providers_${_ORT_PROVIDER}.dll"
+                        $<TARGET_FILE_DIR:foundry_local>
+                )
+            endif()
+        endforeach()
 
         # Copy WinML EP Catalog DLL for runtime EP discovery
         if(WinMLEpCatalog_FOUND AND EXISTS "${WINML_EP_CATALOG_DLL_DIR}/Microsoft.Windows.AI.MachineLearning.dll")
