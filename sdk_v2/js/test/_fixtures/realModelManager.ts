@@ -46,6 +46,12 @@ export interface RealModelManagerOptions {
    * "qwen2.5-0.5b" — alias of the smallest chat model we ship.
    */
   readonly namePreference?: string;
+  /**
+   * Whether to load the selected model through the generative model loader.
+   * Defaults to true. Set false for cache-only predictive packages whose
+   * session owns an external runtime.
+   */
+  readonly loadModel?: boolean;
 }
 
 export interface RealModelManagerFixture {
@@ -112,8 +118,7 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
       );
     }
     matching.sort(
-      (a, b) =>
-        (a.info.fileSizeMb ?? Number.POSITIVE_INFINITY) - (b.info.fileSizeMb ?? Number.POSITIVE_INFINITY),
+      (a, b) => (a.info.fileSizeMb ?? Number.POSITIVE_INFINITY) - (b.info.fileSizeMb ?? Number.POSITIVE_INFINITY),
     );
     model = matching[0];
   }
@@ -123,14 +128,16 @@ export async function setupRealModelManager(opts: RealModelManagerOptions = {}):
   }
 
   // CI gate: refuse to trigger a real download.
-  if (isCi && !model.isCached) {
+  if (!model.isCached && (isCi || opts.loadModel === false)) {
     manager.dispose();
     throw new SkipFixture(
-      `[CI] selected model '${model.info.name}' is not in the cache; skipping to avoid a download.`,
+      `Selected model '${model.info.name}' is not in the cache; skipping because this fixture cannot use the requested lifecycle.`,
     );
   }
 
-  await model.load();
+  if (opts.loadModel ?? true) {
+    await model.load();
+  }
   return { manager, catalog, model };
 }
 

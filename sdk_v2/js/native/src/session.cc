@@ -802,7 +802,8 @@ Napi::Function GenericSession::Init(Napi::Env env) {
 }
 
 GenericSession::GenericSession(const Napi::CallbackInfo& info)
-    : Napi::ObjectWrap<GenericSession>(info) {
+    : Napi::ObjectWrap<GenericSession>(info),
+      scheduler_(std::make_shared<SessionScheduler>()) {
   Napi::Env env = info.Env();
   auto* data = env.GetInstanceData<AddonData>();
   if (info.Length() != 1 || !info[0].IsObject() || data == nullptr ||
@@ -865,8 +866,10 @@ Napi::Value GenericSession::ProcessRequest(const Napi::CallbackInfo& info) {
   }
   Napi::ObjectReference owner = Napi::Reference<Napi::Object>::New(manager_.Value(), 1);
   auto impl = impl_;
-  return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_, std::move(owner), nullptr,
-                          activity_, worker_started);
+  auto scheduler = scheduler_;
+  return ProcessRequestOn(env, std::move(impl), info[0], manager_lifetime_,
+                          std::move(owner), std::move(scheduler), nullptr,
+                          worker_started);
 }
 
 Napi::Value GenericSession::SetOptions(const Napi::CallbackInfo& info) {
@@ -876,7 +879,7 @@ Napi::Value GenericSession::SetOptions(const Napi::CallbackInfo& info) {
     Napi::TypeError::New(env, "setOptions(options: RequestOptions)").ThrowAsJavaScriptException();
     return env.Undefined();
   }
-  if (activity_->Busy()) {
+  if (scheduler_->Busy()) {
     ThrowFoundryLocalError(env, FOUNDRY_LOCAL_ERROR_INVALID_USAGE,
                            "setOptions is unavailable while session work is active");
     return env.Undefined();

@@ -4,6 +4,7 @@ import {
   type NativeChatSession,
   type NativeEmbeddingsSession,
   type NativeGenericSession,
+  type NativeOneShotSession,
   type NativeSession,
   getAddon,
 } from "./detail/native.js";
@@ -314,19 +315,18 @@ function makeAbortError(message: string): Error {
   return err;
 }
 
-export abstract class Session {
+abstract class OneShotSession {
   // `protected` (not `#private`) so subclasses can downcast for
   // modality-specific native methods without a second field/storage slot.
-  protected readonly native: NativeSession;
+  protected readonly native: NativeOneShotSession;
 
-  protected constructor(native: NativeSession) {
+  protected constructor(native: NativeOneShotSession) {
     this.native = native;
   }
 
   /**
    * Run inference for `request`. Resolves with a `Response` snapshot when
-   * generation completes. The full output is materialised before resolution
-   * — use {@link processStreamingRequest} to consume items incrementally.
+   * generation completes. The full output is materialised before resolution.
    *
    * Rejects with a `FoundryLocalError` on native failure. Calling
    * `request.cancel()` from another async context causes this promise to
@@ -335,26 +335,6 @@ export abstract class Session {
   async processRequest(request: Request): Promise<Response> {
     const nativeReq = unwrapNativeRequest(request);
     return (await this.native.processRequest(nativeReq)) as Response;
-  }
-
-  /**
-   * Run inference for `request`, yielding each `Item` produced by the model
-   * as it streams. The returned value is an `AsyncIterable<Item>` that can
-   * be consumed with `for await (const item of session.processStreamingRequest(req)) { ... }`,
-   * and also exposes a `response` promise that resolves to the terminal
-   * `Response` (stop reason, usage, aggregate text item, etc.) once the
-   * native call completes.
-   *
-   * Cancellation: pass `{ signal }`; aborting removes queued work or cancels an active native request and causes the
-   * iterator to throw an `Error` with `name === "AbortError"`. A signal already aborted at call time rejects before
-   * submission.
-   * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
-   * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
-   *
-   * Non-cancellation failures throw a `FoundryLocalError`.
-   */
-  processStreamingRequest(request: Request, options?: StreamOptions): StreamingResponse {
-    return streamItems(this.native, request, options?.signal);
   }
 
   /** Apply session-level options that persist across `processRequest()` calls. */
@@ -379,6 +359,34 @@ export abstract class Session {
 
   [Symbol.dispose](): void {
     this.dispose();
+  }
+}
+
+export abstract class Session extends OneShotSession {
+  protected declare readonly native: NativeSession;
+
+  protected constructor(native: NativeSession) {
+    super(native);
+  }
+
+  /**
+   * Run inference for `request`, yielding each `Item` produced by the model
+   * as it streams. The returned value is an `AsyncIterable<Item>` that can
+   * be consumed with `for await (const item of session.processStreamingRequest(req)) { ... }`,
+   * and also exposes a `response` promise that resolves to the terminal
+   * `Response` (stop reason, usage, aggregate text item, etc.) once the
+   * native call completes.
+   *
+   * Cancellation: pass `{ signal }`; aborting removes queued work or cancels an active native request and causes the
+   * iterator to throw an `Error` with `name === "AbortError"`. A signal already aborted at call time rejects before
+   * submission.
+   * Breaking out of the `for await` loop similarly requests active cancellation. If native completion wins the race,
+   * `response` resolves normally; otherwise it rejects with `OperationCancelled`.
+   *
+   * Non-cancellation failures throw a `FoundryLocalError`.
+   */
+  processStreamingRequest(request: Request, options?: StreamOptions): StreamingResponse {
+    return streamItems(this.native, request, options?.signal);
   }
 }
 
@@ -553,7 +561,7 @@ export class AudioSession extends Session {
  * The lower-level inherited {@link Session.processRequest} API accepts exactly
  * one `Item.text(json, "openai-json")` input and returns the same item shape.
  */
-export class RankingSession extends Session {
+export class RankingSession extends OneShotSession {
   constructor(model: IModel) {
     super(modelToNativeGenericSession(model, "RankingSession", "text-ranking"));
   }
@@ -569,7 +577,7 @@ export class RankingSession extends Session {
  * {@link decide} uses the same JSON request and result contracts as
  * `POST /v1/systemone`.
  */
-export class DecisionSession extends Session {
+export class DecisionSession extends OneShotSession {
   constructor(model: IModel) {
     super(modelToNativeGenericSession(model, "DecisionSession", "typed-decision"));
   }
@@ -579,5 +587,7 @@ export class DecisionSession extends Session {
   }
 }
 
+/** @deprecated Use {@link DecisionSession}. */
+export type TypedDecisionSession = DecisionSession;
 /** @deprecated Use {@link DecisionSession}. */
 export const TypedDecisionSession = DecisionSession;
