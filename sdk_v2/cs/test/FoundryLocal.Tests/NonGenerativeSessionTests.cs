@@ -101,4 +101,27 @@ internal sealed class NonGenerativeSessionTests
             cts.Token)).Throws<TaskCanceledException>();
         await Assert.That(observed).IsEqualTo(cts.Token);
     }
+
+    [Test]
+    public async Task RankingSession_RejectsSuccessfulResponseAfterCancellation()
+    {
+        var admitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var session = new RankingSession(async (_, _) =>
+        {
+            admitted.SetResult();
+            await release.Task;
+            return /*lang=json*/ """{"model":"clm-test:1","ranked":[]}""";
+        });
+        using var cts = new CancellationTokenSource();
+
+        var pending = session.RankAsync(
+            new RankingRequest { Answers = ["one"] },
+            cts.Token);
+        await admitted.Task;
+        cts.Cancel();
+        release.SetResult();
+
+        await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+    }
 }
