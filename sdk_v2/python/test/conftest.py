@@ -30,6 +30,7 @@ import pytest
 # CI detection
 # ---------------------------------------------------------------------------
 
+
 def is_running_in_ci() -> bool:
     azure_devops = os.environ.get("TF_BUILD", "false").lower() == "true"
     github_actions = os.environ.get("GITHUB_ACTIONS", "false").lower() == "true"
@@ -45,6 +46,7 @@ FOUNDRY_TEST_DATA_DIR: str | None = os.environ.get("FOUNDRY_TEST_DATA_DIR") or N
 # ---------------------------------------------------------------------------
 # Session-scoped manager — singleton, created exactly once per test process
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def manager():
@@ -97,6 +99,7 @@ def manager():
                 # hides real native shutdown bugs. Surface as a warning so it
                 # appears in pytest's warnings summary without failing the run.
                 import warnings
+
                 warnings.warn(
                     f"FoundryLocalManager teardown raised: {e!r}",
                     RuntimeWarning,
@@ -107,6 +110,7 @@ def manager():
 # ---------------------------------------------------------------------------
 # Model discovery helpers
 # ---------------------------------------------------------------------------
+
 
 def _find_smallest_cached_model_for_task(manager, task: str, *, name_substr: str | None = None):
     """Return the smallest cached model variant whose task matches.
@@ -215,6 +219,18 @@ def embedding_model(manager):
 
 
 @pytest.fixture(scope="session")
+def ranking_model(manager):
+    """Smallest cached ranking model; native session owns its runtime."""
+    return _model_fixture_or_skip(manager, "text-ranking", "ranking", load=False)
+
+
+@pytest.fixture(scope="session")
+def decision_model(manager):
+    """Smallest cached typed-decision model; native session owns its runtime."""
+    return _model_fixture_or_skip(manager, "typed-decision", "decision", load=False)
+
+
+@pytest.fixture(scope="session")
 def audio_model(manager):
     """Smallest cached ASR model, loaded. Skips if none cached.
 
@@ -258,6 +274,7 @@ def streaming_audio_model(manager):
 # was not built or is incompatible with the current Python.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def native_api():
     try:
@@ -265,4 +282,5 @@ def native_api():
     except Exception as e:
         pytest.skip(f"native cffi extension not loadable: {e}")
     from foundry_local_sdk._native.api import api, ffi
+
     return api, ffi

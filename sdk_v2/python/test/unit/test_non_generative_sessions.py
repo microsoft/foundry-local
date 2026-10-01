@@ -214,6 +214,31 @@ def test_invalid_response_shape_still_releases_request_and_response(monkeypatch)
     assert ("response-release", _RESPONSE) in calls
 
 
+def test_ranking_rejects_non_list_answers_before_native():
+    session = _fake_session(RankingSession)
+    request = RankingRequest(answers="candidate")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="answers must be a list"):
+        session.rank(request)
+
+
+def test_decision_rejects_answer_missing_type_specific_value(monkeypatch):
+    calls = _install_native(
+        monkeypatch,
+        {
+            "model": "kev-package:1",
+            "answers": {"umbrella": {"type": "noul"}},
+            "usage": {"billing_units": 0},
+        },
+    )
+
+    with pytest.raises(FoundryLocalException, match="invalid response"):
+        _fake_session(DecisionSession).decide(DecisionRequest(questions={"umbrella": {"type": "noul"}}))
+
+    assert ("request-release", _REQUEST) in calls
+    assert ("response-release", _RESPONSE) in calls
+
+
 @pytest.mark.parametrize(
     ("session_type", "request_value", "message"),
     [
