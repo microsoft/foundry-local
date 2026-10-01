@@ -129,6 +129,7 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   Napi::Function model_info_ctor = foundry_local_node::NativeModelInfo::Init(env);
   Napi::Function request_ctor = foundry_local_node::Request::Init(env);
   Napi::Function item_queue_ctor = foundry_local_node::NativeItemQueue::Init(env);
+  Napi::Function session_ctor = foundry_local_node::GenericSession::Init(env);
   Napi::Function chat_session_ctor = foundry_local_node::ChatSession::Init(env);
   Napi::Function embeddings_session_ctor = foundry_local_node::EmbeddingsSession::Init(env);
   Napi::Function audio_session_ctor = foundry_local_node::AudioSession::Init(env);
@@ -150,7 +151,9 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   // ItemQueue is directly constructible from JS — it's a stateful native
   // handle exposed by the public `ItemQueue` TS class.
   exports.Set("ItemQueue", item_queue_ctor);
-  // Only modality-specific session classes are constructible from JS:
+  // The generic session is used for native-dispatched one-shot tasks.
+  exports.Set("Session", session_ctor);
+  // Modality-specific session classes are also constructible from JS:
   // `new ChatSession(model)`, `new EmbeddingsSession(model)`,
   // `new AudioSession(model)`. The abstract TS base `Session` has no
   // native counterpart.
