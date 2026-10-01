@@ -1397,6 +1397,8 @@ inline std::vector<std::vector<float>> EmbeddingsSession::Embed(const std::vecto
   return results;
 }
 
+namespace detail {
+
 inline std::string ProcessNonGenerativeJson(
     Session& session, const std::string& request_json) {
   Request request(Item::Text(request_json,
@@ -1415,6 +1417,8 @@ inline std::string ProcessNonGenerativeJson(
   return std::string(content.text);
 }
 
+}  // namespace detail
+
 inline RankingSession::RankingSession(IModel& model) : Session(model) {
   if (model.GetInfo().Task() != "text-ranking") {
     throw std::invalid_argument(
@@ -1424,7 +1428,7 @@ inline RankingSession::RankingSession(IModel& model) : Session(model) {
 
 inline std::string RankingSession::RankJson(
     const std::string& request_json) {
-  return ProcessNonGenerativeJson(*this, request_json);
+  return detail::ProcessNonGenerativeJson(*this, request_json);
 }
 
 inline DecisionSession::DecisionSession(IModel& model) : Session(model) {
@@ -1436,7 +1440,7 @@ inline DecisionSession::DecisionSession(IModel& model) : Session(model) {
 
 inline std::string DecisionSession::DecideJson(
     const std::string& request_json) {
-  return ProcessNonGenerativeJson(*this, request_json);
+  return detail::ProcessNonGenerativeJson(*this, request_json);
 }
 
 // ===========================================================================
