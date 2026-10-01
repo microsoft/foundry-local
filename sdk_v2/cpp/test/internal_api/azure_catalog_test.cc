@@ -23,6 +23,15 @@ using namespace fl;
 
 namespace {
 
+class CatalogRecordingLogger final : public ILogger {
+ public:
+  void Log(LogLevel level, std::string_view message) override {
+    entries.emplace_back(level, std::string(message));
+  }
+
+  std::vector<std::pair<LogLevel, std::string>> entries;
+};
+
 http::HttpResponse MakeOkResponse(std::string body) {
   http::HttpResponse response;
   response.status = 200;
@@ -558,6 +567,64 @@ TEST(AzureCatalogClientTest, FetchModelsByIdsUsesNamesButReturnsExactVersions) {
   EXPECT_EQ(captured["filters"][2]["values"], nlohmann::json({"phi-4-mini"}));
 }
 
+TEST(AzureCatalogClientTest, FetchModelsByIdsHonorsDeploymentScopeAndKeepsLegacyRecords) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto* filter_override : {"", "deploymentOptions=Private Ring"}) {
+    SCOPED_TRACE(filter_override);
+    nlohmann::json request;
+    auto response = nlohmann::json::parse(MakeSummaryResponse(
+        {{"phi", 1}, {"phi", 2}, {"phi", 3}, {"phi", 4}, {"phi", 5}}));
+    const auto* matching_scope = std::string(filter_override).empty()
+                                     ? "Foundry Local on Devices"
+                                     : "Private Ring";
+    response["summaries"][0]["deploymentOptions"] = {"Other Ring", matching_scope};
+    response["summaries"][1]["deploymentOptions"] = {"Other Ring"};
+    response["summaries"][3]["deploymentOptions"] = nlohmann::json::array();
+    response["summaries"][4]["deploymentOptions"] = {matching_scope};
+    AzureCatalogClient client("https://test.com", filter_override, ep, logger,
+                              [&](const std::string&, const std::string& body) {
+                                request = nlohmann::json::parse(body);
+                                return MakeOkResponse(response.dump());
+                              });
+
+    const auto models = client.FetchModelsByIds({"phi:1", "phi:2", "phi:3", "phi:4"});
+
+    ASSERT_EQ(models.size(), 2u);
+    EXPECT_EQ(models[0].model_id, "phi:1");
+    EXPECT_EQ(models[1].model_id, "phi:3");
+    ASSERT_EQ(request["filters"].size(), 3u);
+    EXPECT_EQ(request["filters"][2]["field"], "name");
+  }
+}
+
+TEST(AzureCatalogClientTest, FetchModelsByIdsHonorsLegacyScopeAndKeepsRecordsWithoutMetadata) {
+  CpuOnlyEpDetector ep;
+  StderrLogger logger;
+  for (const auto* filter_override : {"foundryLocal=Private Ring", "Private Ring"}) {
+    SCOPED_TRACE(filter_override);
+    nlohmann::json request;
+    auto response = nlohmann::json::parse(MakeSummaryResponse(
+        {{"phi", 1}, {"phi", 2}, {"phi", 3}, {"phi", 4}}));
+    response["summaries"][0]["foundryLocal"] = "Private Ring";
+    response["summaries"][1]["foundryLocal"] = "Other Ring";
+    response["summaries"][3]["foundryLocal"] = "Private Ring";
+    AzureCatalogClient client("https://test.com", filter_override, ep, logger,
+                              [&](const std::string&, const std::string& body) {
+                                request = nlohmann::json::parse(body);
+                                return MakeOkResponse(response.dump());
+                              });
+
+    const auto models = client.FetchModelsByIds({"phi:1", "phi:2", "phi:3"});
+
+    ASSERT_EQ(models.size(), 2u);
+    EXPECT_EQ(models[0].model_id, "phi:1");
+    EXPECT_EQ(models[1].model_id, "phi:3");
+    ASSERT_EQ(request["filters"].size(), 3u);
+    EXPECT_EQ(request["filters"][2]["field"], "name");
+  }
+}
+
 TEST(AzureCatalogClientTest, FetchModelsByIdsEmptyDoesNotIssueRequest) {
   CpuOnlyEpDetector ep;
   StderrLogger logger;
@@ -759,20 +826,68 @@ TEST(AzureCatalogClientTest, AcceptsEmptyRecognizedResponseArrays) {
 
 TEST(AzureCatalogClientTest, SkipsMalformedRecordWithoutDiscardingValidRecords) {
   CpuOnlyEpDetector ep;
+  for (const auto* field : {"value", "summaries"}) {
+    SCOPED_TRACE(field);
+    CatalogRecordingLogger logger;
+    auto records = nlohmann::json::parse(MakeSummaryResponse(
+        {{"valid-before", 1}, {"malformed", 1}, {"also-malformed", 1}, {"valid-after", 1}}))["summaries"];
+    records[1]["inferenceTasks"] = {"chat-completion", 42};
+    records[2]["deploymentOptions"] = {false};
+    const nlohmann::json response = {{field, records}};
+    auto parsed = response.get<AzureCatalogResponse>();
+    EXPECT_EQ(parsed.skipped_record_count, 2u);
+    from_json(nlohmann::json{{field, nlohmann::json::array()}}, parsed);
+    EXPECT_EQ(parsed.skipped_record_count, 0u);
+    EXPECT_TRUE(parsed.models.empty());
+    AzureCatalogClient client("https://test.com", "", ep, logger,
+                              [&](const std::string&, const std::string&) {
+                                return MakeOkResponse(response.dump());
+                              });
+
+    const auto models = client.FetchAllModels();
+
+    ASSERT_EQ(models.size(), 2u);
+    EXPECT_EQ(models[0].name, "valid-before");
+    EXPECT_EQ(models[1].name, "valid-after");
+    ASSERT_EQ(logger.entries.size(), 1u);
+    EXPECT_EQ(logger.entries[0].first, LogLevel::Warning);
+    EXPECT_EQ(logger.entries[0].second,
+              "catalog response skipped 2 of 4 records due to malformed metadata");
+  }
+}
+
+TEST(AzureCatalogClientTest, RejectsAllMalformedPageEvenAfterValidPage) {
+  CpuOnlyEpDetector ep;
   StderrLogger logger;
-  auto response = nlohmann::json::parse(
-      MakeSummaryResponse({{"valid-before", 1}, {"malformed", 1}, {"valid-after", 1}}));
-  response["summaries"][1]["inferenceTasks"] = {"chat-completion", 42};
-  AzureCatalogClient client("https://test.com", "", ep, logger,
-                            [&](const std::string&, const std::string&) {
-                              return MakeOkResponse(response.dump());
-                            });
+  for (const auto* field : {"value", "summaries"}) {
+    for (const bool valid_first_page : {false, true}) {
+      SCOPED_TRACE(field);
+      SCOPED_TRACE(valid_first_page);
+      auto records = nlohmann::json::parse(MakeSummaryResponse({{"malformed", 1}}))["summaries"];
+      records[0]["inferenceTasks"] = {42};
+      const nlohmann::json response = {{field, records}};
+      int calls = 0;
+      AzureCatalogClient client("https://test.com", "", ep, logger,
+                                [&](const std::string&, const std::string&) {
+                                  ++calls;
+                                  if (valid_first_page && calls == 1) {
+                                    return MakeOkResponse(MakeSummaryResponse({{"valid", 1}}, "next"));
+                                  }
+                                  return MakeOkResponse(response.dump());
+                                });
 
-  const auto models = client.FetchAllModels();
-
-  ASSERT_EQ(models.size(), 2u);
-  EXPECT_EQ(models[0].name, "valid-before");
-  EXPECT_EQ(models[1].name, "valid-after");
+      try {
+        client.FetchAllModelInfos();
+        FAIL() << "Expected all-malformed page to fail the endpoint";
+      } catch (const fl::Exception& exception) {
+        EXPECT_EQ(exception.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+        EXPECT_NE(std::string(exception.what()).find("skipped 1 of 1 records"), std::string::npos);
+        EXPECT_NE(std::string(exception.what()).find("no valid records on non-empty page"),
+                  std::string::npos);
+      }
+      EXPECT_EQ(calls, valid_first_page ? 2 : 1);
+    }
+  }
 }
 
 TEST(AzureCatalogClientTest, RejectsMalformedSuccessfulResponseShapes) {

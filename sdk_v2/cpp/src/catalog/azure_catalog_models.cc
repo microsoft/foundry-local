@@ -329,12 +329,13 @@ void from_json(const nlohmann::json& j, AzureCatalogResponse& r) {
   }
 
   r.models.clear();
+  r.skipped_record_count = 0;
   r.models.reserve(records->size());
   for (const auto& record : *records) {
     try {
       r.models.push_back(record.get<CatalogLocalModel>());
     } catch (const nlohmann::json::exception&) {
-      // A malformed record must not discard valid records from the same page.
+      ++r.skipped_record_count;
     }
   }
 }

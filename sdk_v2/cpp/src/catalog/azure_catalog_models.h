@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -97,6 +98,7 @@ struct AzureCatalogResponse {
   std::optional<int> total_count;
   std::optional<std::string> continuation_token;
   std::vector<CatalogLocalModel> models;
+  std::size_t skipped_record_count = 0;
 };
 
 // ========================================================================

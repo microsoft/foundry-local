@@ -298,6 +298,15 @@ std::vector<CatalogLocalModel> AzureCatalogClient::FetchFilterSet(const std::vec
       FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL,
                "catalog response must be valid JSON with an array-valued 'value' or 'summaries' field");
     }
+    if (parsed.skipped_record_count > 0) {
+      const auto message = "catalog response skipped " + std::to_string(parsed.skipped_record_count) +
+                           " of " + std::to_string(parsed.models.size() + parsed.skipped_record_count) +
+                           " records due to malformed metadata";
+      if (parsed.models.empty()) {
+        FL_THROW(FOUNDRY_LOCAL_ERROR_INTERNAL, message + "; no valid records on non-empty page");
+      }
+      logger_.Log(LogLevel::Warning, message);
+    }
     const auto detected_region = ExtractRegionFromResponse(response);
     for (auto& model : parsed.models) {
       model.detected_region = detected_region;
@@ -341,7 +350,12 @@ std::vector<ModelInfo> AzureCatalogClient::FetchModelsByIds(
     return {};
   }
 
-  auto model_infos = ToModelInfos(FetchFilterSet(BuildModelIdFilters(model_ids)));
+  auto raw_models = FetchFilterSet(BuildModelIdFilters(model_ids));
+  std::erase_if(raw_models, [this](const CatalogLocalModel& model) {
+    return !MatchesConfiguredHistoricalScope(
+        model, model_filter_, uses_legacy_foundry_local_filter_);
+  });
+  auto model_infos = ToModelInfos(raw_models);
   std::erase_if(model_infos, [&model_ids](const ModelInfo& info) {
     return std::find(model_ids.begin(), model_ids.end(), info.model_id) == model_ids.end();
   });
