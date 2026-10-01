@@ -1527,11 +1527,15 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   };
 
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
+    malformed_tool_output_seen |= out.malformed;
+    if (malformed_tool_output_seen) {
+      return;
+    }
+
     // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
     // no caller-visible item or durable turn state may contain only its valid prefix.
     chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
     semantic_output_seen |= HasSemanticOutput(out);
-    malformed_tool_output_seen |= out.malformed;
 
     for (auto& event : out.events) {
       if (auto* text = std::get_if<std::string>(&event)) {
@@ -1565,6 +1569,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
   auto emit_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
     for (const auto& seg : segments) {
+      if (malformed_tool_output_seen) {
+        break;
+      }
+
       if (seg.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
         if (active_raw_detector != nullptr && active_raw_detector->HasPendingCandidate()) {
           emit_tool_output(chat_session_internal::AbortRawToolOutput(active_raw_detector));
@@ -1574,6 +1582,10 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
           emit_tool_output(tool_accumulator.RejectPendingSelectedPayload());
         } else if (!tool_accumulator.InsideToolCall()) {
           emit_tool_output(tool_accumulator.Flush());
+        }
+
+        if (malformed_tool_output_seen) {
+          break;
         }
 
         // REASONING goes straight through — never feed it to the tool-call accumulator.
@@ -1862,11 +1874,15 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   };
 
   auto process_tool_output = [&](ToolCallStreamAccumulator::Output out) {
+    malformed_tool_output_seen |= out.malformed;
+    if (malformed_tool_output_seen) {
+      return;
+    }
+
     // Validate and normalize the entire parsed batch before publishing any element. In particular,
     // custom input comes from argument_source, which preserves the complete provider wrapper.
     chat_session_internal::NormalizeToolOutputBatch(out, tool_ctx);
     semantic_output_seen |= HasSemanticOutput(out);
-    malformed_tool_output_seen |= out.malformed;
 
     for (auto& event : out.events) {
       if (auto* text = std::get_if<std::string>(&event)) {
@@ -1901,6 +1917,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
   auto process_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
     for (const auto& seg : segments) {
+      if (malformed_tool_output_seen) {
+        break;
+      }
+
       // REASONING segments: never feed reasoning text to the tool-call accumulator — tool-call-shaped text inside
       // <think>...</think> is scratchpad, not a real call. Emit via reasoning_content, not content.
       if (seg.type != FOUNDRY_LOCAL_TEXT_ITEM_TYPE_DEFAULT) {
@@ -1912,6 +1932,10 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
           process_tool_output(tool_accumulator.RejectPendingSelectedPayload());
         } else if (!tool_accumulator.InsideToolCall()) {
           process_tool_output(tool_accumulator.Flush());
+        }
+
+        if (malformed_tool_output_seen) {
+          break;
         }
 
         semantic_output_seen |= !seg.text.empty();
@@ -2023,6 +2047,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
     }
 
     generated_events.clear();
+    malformed_tool_output_seen = false;
     if (!retry.canceled) {
       for (auto& event : retry.events) {
         if (auto* segment = std::get_if<TextSegment>(&event)) {

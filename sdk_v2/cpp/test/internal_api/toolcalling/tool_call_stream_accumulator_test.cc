@@ -351,6 +351,45 @@ TEST(QwenXmlToolCallAccumulatorTest, CopilotGrepPathMismatchWithValidSiblingFail
   EXPECT_EQ(nlohmann::json::parse(valid_output.calls.front().arguments).at("paths"), "src");
 }
 
+TEST(QwenXmlToolCallAccumulatorTest, InvalidCallWithLiteralClosingMarkerCannotExposeTailOrAdjacentCall) {
+  const auto unsupported_tools = nlohmann::json::array({
+      {{"type", "function"},
+       {"function",
+        {{"name", "unsupported"},
+         {"parameters", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}},
+      {{"type", "function"},
+       {"function", {{"name", "zero"}, {"parameters", {{"type", "object"},
+                                                       {"properties", nlohmann::json::object()}}}}}},
+  }).dump();
+  const std::string unsupported =
+      "<tool_call>\n<function=unsupported>\n<parameter=value>\n"
+      "literal </tool_call> inside body\n</parameter>\n</function>\n</tool_call>";
+  const std::string undeclared =
+      "<tool_call>\n<function=typed>\n<parameter=unknown>\n"
+      "literal </tool_call> inside body\n</parameter>\n</function>\n</tool_call>";
+  const std::string valid_before_invalid =
+      "<tool_call>\n<function=typed>\n<parameter=text>\n"
+      "literal </tool_call> inside body\n</parameter>\n"
+      "<parameter=unknown>\nlater\n</parameter>\n</function>\n</tool_call>";
+
+  for (const auto& [call, tools, kinds] : std::vector<std::tuple<
+           std::string, std::string, std::unordered_map<std::string, ToolKind>>>{
+           {unsupported, unsupported_tools,
+            {{"unsupported", ToolKind::kFunction}, {"zero", ToolKind::kFunction}}},
+           {undeclared, kQwenTools, kQwenToolKinds},
+           {valid_before_invalid, kQwenTools, kQwenToolKinds}}) {
+    const std::string generated = call + "\n" + kValidZeroQwenCall + " visible tail";
+    const auto literal_end = generated.find("</tool_call>");
+    const auto outer_end = generated.find("</tool_call>", literal_end + 1);
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {generated}, SplitAt(generated, literal_end + 6),
+             SplitAt(generated, outer_end), SplitIntoBytes(generated)}) {
+      SCOPED_TRACE(call);
+      ExpectSchemaFailureWithoutCalls(chunks, tools, kinds);
+    }
+  }
+}
+
 TEST(QwenXmlToolCallAccumulatorTest, AdditionalPropertiesTrueIsNotMistakenForInvalidArguments) {
   const auto tools = nlohmann::json::array(
                          {{{"type", "function"},
@@ -433,6 +472,28 @@ TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationPreservesCompletePend
   EXPECT_EQ(CollectVisible(outputs), kValidTypedQwenCall);
   EXPECT_TRUE(CollectCalls(outputs).empty());
   EXPECT_FALSE(acc.InsideToolCall());
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, InterruptedCompleteSchemaViolationCannotBecomeVisibleText) {
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=unknown>\nvalue\n</parameter>\n"
+      "</function>\n</tool_call>";
+
+  for (size_t split = 0; split <= invalid.size(); ++split) {
+    auto acc = MakeQwenAccumulator();
+    auto chunks = SplitAt(invalid, split);
+    std::vector<ToolCallStreamAccumulator::Output> outputs;
+    for (const auto& chunk : chunks) {
+      outputs.push_back(acc.Push(chunk));
+    }
+    outputs.push_back(acc.RejectPendingSelectedPayload());
+    outputs.push_back(acc.Push(kValidTypedQwenCall + "tail"));
+    outputs.push_back(acc.Flush());
+
+    EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+    EXPECT_TRUE(CollectVisible(outputs).empty()) << "split=" << split;
+    EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+  }
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, NonNaturalFinalizationKeepsAlreadyAdmittedCallTerminal) {
@@ -629,7 +690,7 @@ TEST(QwenXmlToolCallAccumulatorTest, EditSourceComparisonOperatorsRemainExactStr
   EXPECT_TRUE(output.visible.empty());
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupRemainsExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupFailsClosed) {
   const std::string function_tools =
       R"([{"type":"function","function":{"name":"edit","parameters":{"type":"object","properties":{)"
       R"("new_str":{"type":"string"}},"required":["new_str"]}}}])";
@@ -646,9 +707,8 @@ TEST(QwenXmlToolCallAccumulatorTest, ReservedNestedQwenMarkupRemainsExactVisible
   for (const auto& [tools, kinds, function, parameter, body] : cases) {
     const auto generated = "<tool_call>\n<function=" + function + ">\n<parameter=" + parameter +
                            ">\n" + body + "\n</parameter>\n</function>\n</tool_call>";
-    auto output = RunQwen({generated}, tools, kinds);
-    EXPECT_TRUE(output.calls.empty()) << body;
-    EXPECT_EQ(output.visible, generated) << body;
+    SCOPED_TRACE(body);
+    ExpectSchemaFailureWithoutCalls({generated}, tools, kinds);
   }
 }
 
@@ -1352,7 +1412,6 @@ TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExact
       "<tool_call>\n<function=typed>\n<parameter=text>\nprefix\n</parameter>\nsuffix\n"
       "</parameter>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<param=text>\nx\n</param>\n</function>\n</tool_call>",
-      "<tool_call>\n<function=typed>\n<parameter=text>\nx\n</function>\n</parameter>\n</function>\n</tool_call>",
       "<tool_call>\n<function=typed>\n<parameter=text>\ntruncated",
   };
 
@@ -1361,6 +1420,11 @@ TEST(QwenXmlToolCallAccumulatorTest, MalformedAndIncompleteCandidatesRemainExact
     EXPECT_EQ(output.visible, candidate);
     EXPECT_TRUE(output.calls.empty());
   }
+
+  ExpectSchemaFailureWithoutCalls({
+      "<tool_call>\n<function=typed>\n<parameter=text>\nx\n</function>\n"
+      "</parameter>\n</function>\n</tool_call>",
+  });
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, RecoveryAwareQualifiedStructuralFailuresAreSuppressed) {
@@ -1475,14 +1539,14 @@ TEST(QwenXmlToolCallAccumulatorTest, BacktickAndTildeFencedExamplesStayVisibleAc
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallInOneChunk) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCallFailsClosedWithWhitespaceAdjacentCallsInOneChunk) {
   const auto generated =
       MakeOversizedQwenCall() + " \n\t" + kValidZeroQwenCall + "\n" + kValidZeroQwenCall;
 
-  ExpectExactVisibleWithoutCalls({generated}, generated);
+  ExpectSchemaFailureWithoutCalls({generated});
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallAcrossStructuralSplits) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCallFailsClosedAcrossStructuralSplits) {
   const auto oversized = MakeOversizedQwenCall();
   const std::string whitespace = " \n\t";
   const auto generated = oversized + whitespace + kValidZeroQwenCall;
@@ -1509,25 +1573,24 @@ TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallA
 
   for (const auto split : split_positions) {
     SCOPED_TRACE("split=" + std::to_string(split));
-    ExpectExactVisibleWithoutCalls(SplitAt(generated, split), generated);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, split));
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCallRejectsWhitespaceAdjacentCallByteAtATime) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCallFailsClosedByteAtATime) {
   const auto generated = MakeOversizedQwenCall() + " \n\t" + kValidZeroQwenCall;
 
-  ExpectExactVisibleWithoutCalls(SplitIntoBytes(generated), generated);
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(generated));
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, OversizedCandidateDoesNotHideIndependentLaterCallAcrossEverySplit) {
+TEST(QwenXmlToolCallAccumulatorTest, OversizedCandidateFailsClosedEvenBeforeIndependentLaterCall) {
   const auto oversized = MakeOversizedQwenCall();
   const std::string generated = oversized + " visible " + kValidZeroQwenCall + " tail";
 
-  for (size_t split = 0; split <= generated.size(); ++split) {
-    auto output = RunQwen(SplitAt(generated, split));
-    ASSERT_EQ(output.calls.size(), 1u) << "split=" << split;
-    EXPECT_EQ(output.calls[0].name, "zero") << "split=" << split;
-    EXPECT_EQ(output.visible, oversized + " visible  tail") << "split=" << split;
+  for (const auto split : {size_t{0}, kSelectedPayloadBufferLimit - 1,
+                           kSelectedPayloadBufferLimit, oversized.size(), generated.size()}) {
+    SCOPED_TRACE(split);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, split));
   }
 }
 
@@ -1539,23 +1602,14 @@ std::string MakeBoundaryStraddledOversizedCandidate() {
          std::string(closing_prefix) + "call>";
 }
 
-void ExpectBoundaryStraddledOversizeRecovery(const std::vector<std::string>& chunks,
-                                             const std::string& rejected) {
-  auto output = RunQwen(chunks);
-  ASSERT_EQ(output.calls.size(), 1u);
-  EXPECT_EQ(output.calls.front().name, "zero");
-  EXPECT_EQ(output.calls.front().arguments, "{}");
-  EXPECT_EQ(output.visible, rejected + " visible  tail");
-}
-
-TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLaterCallInOneChunk) {
+TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeCloseFailsClosedInOneChunk) {
   const auto rejected = MakeBoundaryStraddledOversizedCandidate();
   const auto generated = rejected + " visible " + kValidZeroQwenCall + " tail";
 
-  ExpectBoundaryStraddledOversizeRecovery({generated}, rejected);
+  ExpectSchemaFailureWithoutCalls({generated});
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLaterCallAtEveryCloseSplit) {
+TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeCloseFailsClosedAtEveryCloseSplit) {
   const auto rejected = MakeBoundaryStraddledOversizedCandidate();
   const auto generated = rejected + " visible " + kValidZeroQwenCall + " tail";
   constexpr auto close_size = std::string_view("</tool_call>").size();
@@ -1563,16 +1617,15 @@ TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLate
 
   for (size_t offset = 0; offset <= close_size; ++offset) {
     SCOPED_TRACE("offset=" + std::to_string(offset));
-    ExpectBoundaryStraddledOversizeRecovery(
-        SplitAt(generated, close_start + offset), rejected);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, close_start + offset));
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeClosePreservesLaterCallByteAtATime) {
+TEST(QwenXmlToolCallAccumulatorTest, BoundaryStraddledOversizeCloseFailsClosedByteAtATime) {
   const auto rejected = MakeBoundaryStraddledOversizedCandidate();
   const auto generated = rejected + " visible " + kValidZeroQwenCall + " tail";
 
-  ExpectBoundaryStraddledOversizeRecovery(SplitIntoBytes(generated), rejected);
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(generated));
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, CandidateAtLimitIsParsedBeforeOversizedRejection) {
@@ -1648,7 +1701,7 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateHandlesWhitespace
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespaceAdjacentBatchAtEveryMarkerSplit) {
+TEST(QwenXmlToolCallAccumulatorTest, LimitSizedCandidateAndAdjacentBatchFailsClosedAtEveryMarkerSplit) {
   const std::string separator = " \n\t";
   constexpr size_t partial_marker_size = 5;
   const auto candidate =
@@ -1656,12 +1709,12 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateRejectsWhitespace
   const auto generated = candidate + separator + kValidZeroQwenCall;
   const auto adjacent_start = candidate.size() + separator.size();
 
-  ExpectExactVisibleWithoutCalls({generated}, generated);
+  ExpectSchemaFailureWithoutCalls({generated});
   for (size_t offset = 0; offset <= std::string_view("<tool_call>").size(); ++offset) {
     SCOPED_TRACE("offset=" + std::to_string(offset));
-    ExpectExactVisibleWithoutCalls(SplitAt(generated, adjacent_start + offset), generated);
+    ExpectSchemaFailureWithoutCalls(SplitAt(generated, adjacent_start + offset));
   }
-  ExpectExactVisibleWithoutCalls(SplitIntoBytes(generated), generated);
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(generated));
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedCandidateFinalizesBeforePartialMarkerAtEos) {
@@ -1695,13 +1748,12 @@ TEST(QwenXmlToolCallAccumulatorTest, ExactlyLimitSizedPartialMarkerMismatchBecom
   }
 }
 
-TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitRemainsExactVisibleText) {
+TEST(QwenXmlToolCallAccumulatorTest, CandidateOneByteOverLimitFailsClosed) {
   const auto candidate = MakeSizedQwenCall(kSelectedPayloadBufferLimit + 1);
 
-  ExpectExactVisibleWithoutCalls({candidate}, candidate);
-  ExpectExactVisibleWithoutCalls(
-      SplitAt(candidate, kSelectedPayloadBufferLimit), candidate);
-  ExpectExactVisibleWithoutCalls(SplitIntoBytes(candidate), candidate);
+  ExpectSchemaFailureWithoutCalls({candidate});
+  ExpectSchemaFailureWithoutCalls(SplitAt(candidate, kSelectedPayloadBufferLimit));
+  ExpectSchemaFailureWithoutCalls(SplitIntoBytes(candidate));
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, ByteSizedChunksPerformBoundedSelectedPayloadParseWork) {

@@ -71,6 +71,10 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
     if (payload_parser_) {
       size_t offset = 0;
       while (offset < chunk.size()) {
@@ -78,6 +82,9 @@ class ToolCallStreamAccumulator {
         buffer_.append(chunk, offset, count);
         offset += count;
         DrainSelectedPayload(out, /*flushing=*/false);
+        if (selected_payload_malformed_) {
+          break;
+        }
       }
     } else {
       buffer_ += chunk;
@@ -95,6 +102,10 @@ class ToolCallStreamAccumulator {
       return out;
     }
 
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
     if (payload_parser_) {
       DrainSelectedPayload(out, /*flushing=*/true);
     } else {
@@ -104,11 +115,22 @@ class ToolCallStreamAccumulator {
     return out;
   }
 
-  /// Reject a pending request-selected payload without parsing it. This is intentionally separate from `Flush()`:
-  /// default JSON recovery keeps its established terminal semantics, while an interrupted selected batch is ambiguous.
+  /// Preserve interrupted selected calls as text, but never expose a complete schema-invalid call.
+  /// This is separate from `Flush()`: interrupted valid batches remain ambiguous and are not admitted as calls.
   Output RejectPendingSelectedPayload() {
     Output out;
     if (!payload_parser_) {
+      return out;
+    }
+
+    if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (inside_tool_call_ && tool_call_buffer_.find(end_marker_) != std::string::npos &&
+        payload_parser_(tool_call_buffer_, /*end_of_stream=*/true).disposition ==
+            ToolCallPayloadDisposition::kMalformed) {
+      RejectMalformedSelectedPayload(out);
       return out;
     }
 
@@ -117,7 +139,6 @@ class ToolCallStreamAccumulator {
     tool_call_buffer_.clear();
     buffer_.clear();
     inside_tool_call_ = false;
-    rejected_batch_state_ = RejectedBatchState::kNone;
     ResetPayloadScan();
     ResetSelectedPayloadBoundaryScan();
     return out;
@@ -134,12 +155,6 @@ class ToolCallStreamAccumulator {
   enum class MarkerKind { kNone,
                           kNestedStart,
                           kEnd };
-
-  enum class RejectedBatchState {
-    kNone,
-    kCandidate,
-    kBetweenCandidates,
-  };
 
   enum class SelectedPayloadBoundaryState {
     kSearchingForEnd,
@@ -183,85 +198,8 @@ class ToolCallStreamAccumulator {
     }
   }
 
-  void DrainRejectedCandidate(Output& out, bool flushing) {
-    const auto found = buffer_.find(end_marker_);
-    if (found != std::string::npos) {
-      const auto end = found + end_marker_.size();
-      EmitVisible(out, buffer_.substr(0, end));
-      buffer_.erase(0, end);
-      rejected_batch_state_ = RejectedBatchState::kBetweenCandidates;
-      inside_tool_call_ = false;
-      return;
-    }
-
-    if (flushing) {
-      EmitVisible(out, std::move(buffer_));
-      buffer_.clear();
-      rejected_batch_state_ = RejectedBatchState::kNone;
-      inside_tool_call_ = false;
-      return;
-    }
-
-    const auto hold = LongestSuffixThatIsPrefixOf(buffer_, end_marker_);
-    const auto safe = buffer_.size() - hold;
-    if (safe > 0) {
-      EmitVisible(out, buffer_.substr(0, safe));
-      buffer_.erase(0, safe);
-    }
-  }
-
-  void DrainBetweenRejectedCandidates(Output& out, bool flushing) {
-    const auto boundary = buffer_.find_first_not_of(" \t\r\n");
-    if (boundary == std::string::npos) {
-      EmitVisible(out, std::move(buffer_));
-      buffer_.clear();
-      if (flushing) {
-        rejected_batch_state_ = RejectedBatchState::kNone;
-      }
-
-      return;
-    }
-
-    if (boundary > 0) {
-      EmitVisible(out, buffer_.substr(0, boundary));
-      buffer_.erase(0, boundary);
-    }
-
-    if (buffer_.starts_with(start_marker_)) {
-      EmitVisible(out, buffer_.substr(0, start_marker_.size()));
-      buffer_.erase(0, start_marker_.size());
-      rejected_batch_state_ = RejectedBatchState::kCandidate;
-      inside_tool_call_ = true;
-      return;
-    }
-
-    if (!flushing && start_marker_.starts_with(buffer_)) {
-      return;
-    }
-
-    rejected_batch_state_ = RejectedBatchState::kNone;
-  }
-
   void DrainSelectedPayload(Output& out, bool flushing) {
     while (true) {
-      if (rejected_batch_state_ == RejectedBatchState::kCandidate) {
-        DrainRejectedCandidate(out, flushing);
-        if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-          return;
-        }
-
-        continue;
-      }
-
-      if (rejected_batch_state_ == RejectedBatchState::kBetweenCandidates) {
-        DrainBetweenRejectedCandidates(out, flushing);
-        if (rejected_batch_state_ == RejectedBatchState::kBetweenCandidates || buffer_.empty()) {
-          return;
-        }
-
-        continue;
-      }
-
       if (inside_tool_call_) {
         const auto available = kSelectedPayloadBufferLimit - tool_call_buffer_.size();
         const auto appended = std::min(available, buffer_.size());
@@ -282,11 +220,8 @@ class ToolCallStreamAccumulator {
               finalize_exact_limit = true;
               break;
             case ExactLimitLookahead::kOversized:
-              RejectOversizedSelectedPayload(out, flushing);
-              if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-                return;
-              }
-              continue;
+              RejectMalformedSelectedPayload(out);
+              return;
           }
         }
 
@@ -295,12 +230,8 @@ class ToolCallStreamAccumulator {
             return;
           }
 
-          RejectOversizedSelectedPayload(out, flushing);
-          if (rejected_batch_state_ == RejectedBatchState::kCandidate || buffer_.empty()) {
-            return;
-          }
-
-          continue;
+          RejectMalformedSelectedPayload(out);
+          return;
         }
 
         auto result = payload_parser_(tool_call_buffer_, flushing || finalize_exact_limit);
@@ -324,6 +255,11 @@ class ToolCallStreamAccumulator {
           return;
         }
 
+        if (result.disposition == ToolCallPayloadDisposition::kMalformed) {
+          RejectMalformedSelectedPayload(out);
+          return;
+        }
+
         auto consumed = tool_call_buffer_.substr(0, result.consumed_size);
         buffer_.insert(0, tool_call_buffer_.substr(result.consumed_size));
         tool_call_buffer_.clear();
@@ -331,8 +267,6 @@ class ToolCallStreamAccumulator {
         ResetSelectedPayloadBoundaryScan();
         if (result.disposition == ToolCallPayloadDisposition::kParsed) {
           EmitParsedCalls(out, std::move(result.calls));
-        } else if (result.disposition == ToolCallPayloadDisposition::kMalformed) {
-          out.malformed = true;
         } else {
           EmitVisible(out, std::move(consumed));
         }
@@ -462,15 +396,14 @@ class ToolCallStreamAccumulator {
     return ExactLimitLookahead::kFinalize;
   }
 
-  void RejectOversizedSelectedPayload(Output& out, bool flushing) {
-    const auto hold = LongestSuffixThatIsPrefixOf(tool_call_buffer_, end_marker_);
-    const auto safe = tool_call_buffer_.size() - hold;
-    EmitVisible(out, tool_call_buffer_.substr(0, safe));
-    buffer_.insert(0, tool_call_buffer_.substr(safe));
+  void RejectMalformedSelectedPayload(Output& out) {
+    out.events.clear();
+    out.malformed = true;
+    selected_payload_malformed_ = true;
     tool_call_buffer_.clear();
-    rejected_batch_state_ = RejectedBatchState::kCandidate;
+    buffer_.clear();
+    inside_tool_call_ = false;
     ResetSelectedPayloadBoundaryScan();
-    DrainRejectedCandidate(out, flushing);
   }
 
   void ResetSelectedPayloadBoundaryScan() {
@@ -725,7 +658,7 @@ class ToolCallStreamAccumulator {
   std::string buffer_;            // pending bytes from Push() that haven't yet been routed
   std::string tool_call_buffer_;  // accumulated bytes of the in-progress tool-call block (incl. start marker)
   bool inside_tool_call_ = false;
-  RejectedBatchState rejected_batch_state_ = RejectedBatchState::kNone;
+  bool selected_payload_malformed_ = false;
   MarkdownFenceTracker markdown_fence_tracker_;
   size_t scan_position_ = 0;
   size_t prefix_probe_position_ = 0;

@@ -612,12 +612,12 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
     if (body_end == std::string_view::npos) {
       return BlockResult(source.find(kQwenXmlToolCallEndMarker, position) == std::string_view::npos
                              ? ParseState::kQualifiedIncomplete
-                             : ParseState::kStructuralFailure);
+                             : ParseState::kSchemaViolation);
     }
 
     const auto body = source.substr(position, body_end - position);
     if (ContainsReservedFramingMarkup(body)) {
-      return BlockResult(ParseState::kInvalid);
+      return BlockResult(ParseState::kSchemaViolation);
     }
 
     auto value = DecodeParameterValue(body, schema_it->second.properties[parameter]);
