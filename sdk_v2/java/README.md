@@ -219,6 +219,23 @@ CI provides the equivalent `FOUNDRY_LOCAL_NATIVE_BIN_DIR`,
 `FOUNDRY_TEST_MODEL`, and passes `-Dfoundry.test.native.required=true`, so
 missing native inputs fail instead of skipping the integration test.
 
+The CLM/KEV native bridge has a separate opt-in integration test:
+
+```powershell
+mvn -f sdk_v2/java/pom.xml test `
+  -Dtest=NativeNonGenerativeTest `
+  -Dfoundry.test.runtime=<absolute-native-runtime-dir> `
+  -Dfoundry.test.cache=<absolute-model-cache> `
+  -Dfoundry.test.clm=<registered-clm-model-id> `
+  -Dfoundry.test.kev=<registered-kev-model-id>
+```
+
+The equivalent environment variables are
+`FOUNDRY_LOCAL_NATIVE_BIN_DIR`, `FOUNDRY_TEST_DATA_DIR`,
+`FOUNDRY_TEST_CLM_MODEL`, and `FOUNDRY_TEST_KEV_MODEL`. The test creates both
+public sessions, executes one typed request through each native bridge,
+validates the resolved model and result shape, and closes all resources.
+
 The test reuses one loaded model for repeated PCM requests, covers final
 results, cancellation, callback failures, deterministic cleanup, manager
 recreation with the same runtime directory, and verifies that no callback or

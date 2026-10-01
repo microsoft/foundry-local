@@ -62,9 +62,9 @@ abstract class JsonSession extends OwnedSession {
                 data.write();
                 api.check(api.item.pointer(NativeApi.ItemApi.SET_TEXT, item, data));
 
+                requestOwnsItem = true;
                 api.check(api.inference.pointer(
                         NativeApi.InferenceApi.REQUEST_ADD_ITEM, request, item, (byte) 1));
-                requestOwnsItem = true;
 
                 PointerByReference output = new PointerByReference();
                 Pointer status = api.inference.pointer(
