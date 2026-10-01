@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# -------------------------------------------------------------------------
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+# --------------------------------------------------------------------------
+
 """Typed ranking and decision requests with cached native model packages."""
 
 from foundry_local_sdk import (

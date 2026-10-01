@@ -144,14 +144,12 @@ def test_ranking_session_uses_endpoint_json_contract_and_releases_handles(monkey
             context={"weather": "rain"},
             question="Where?",
             answers=["outside", "inside"],
-            model="clm",
             temperature=2,
         )
     )
     payload = next(call for call in calls if isinstance(call, tuple) and call[0] == "input")
 
     assert json.loads(payload[1]) == {
-        "model": "clm",
         "context": {"weather": "rain"},
         "question": "Where?",
         "answers": ["outside", "inside"],
