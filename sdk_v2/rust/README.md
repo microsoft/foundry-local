@@ -210,6 +210,11 @@ sessions send and receive exactly one OpenAI-JSON text item through the native
 generic session. Ranking and decision models must be cached, but callers do not
 explicitly load or unload them; the native session manages their runtime.
 
+Native integration tests discover cached packages by task. Set
+`FOUNDRY_TEST_CLM_MODEL` and `FOUNDRY_TEST_KEV_MODEL` to exact registered model
+IDs to select specific packages; otherwise the tests use the first cached
+`text-ranking` and `typed-decision` models and skip cleanly when unavailable.
+
 ### Browsing the Model Catalog
 
 The `Catalog` lets you discover what models are available, which are already cached locally, and which are currently loaded in memory.
