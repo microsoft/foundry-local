@@ -55,6 +55,7 @@ class NativeContractTest {
         assertEquals(16, new NativeApi.CallbackData().size());
         assertEquals(72, new NativeApi.AudioData().size());
         assertEquals(48, new NativeApi.BytesData().size());
+        assertEquals(24, new NativeApi.TextData().size());
         assertEquals(64, new NativeApi.SegmentData().size());
         assertEquals(48, new NativeApi.ResultData().size());
     }
