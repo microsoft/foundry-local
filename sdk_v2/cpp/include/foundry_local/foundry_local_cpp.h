@@ -1168,6 +1168,20 @@ class EmbeddingsSession : public Session {
   std::vector<std::vector<float>> Embed(const std::vector<std::string>& inputs);
 };
 
+/// Typed-decision and ranking sessions use the same JSON contracts as the
+/// corresponding Foundry Local HTTP endpoints.
+class RankingSession : public Session {
+ public:
+  explicit RankingSession(IModel& model);
+  std::string RankJson(const std::string& request_json);
+};
+
+class DecisionSession : public Session {
+ public:
+  explicit DecisionSession(IModel& model);
+  std::string DecideJson(const std::string& request_json);
+};
+
 // ===========================================================================
 // Callback helpers
 // ===========================================================================
