@@ -24,7 +24,7 @@ class DecisionQuestion(TypedDict, total=False):
 class DecisionAnswer(TypedDict, total=False):
     """One named answer returned by a typed-decision model."""
 
-    type: Required[str]
+    type: Required[DecisionQuestionType]
     noul: NotRequired[float]
     choice: NotRequired[str]
     score: NotRequired[float]
@@ -39,12 +39,11 @@ class DecisionUsage(TypedDict):
 
 @dataclass(frozen=True)
 class RankingRequest:
-    """Payload accepted by ``POST /v1/rank`` and :meth:`RankingSession.rank`."""
+    """Bound-session ranking request derived from ``POST /v1/rank``."""
 
     answers: list[str]
     context: JSONValue = None
     question: str = ""
-    model: str = "clm"
     temperature: float = 1.0
 
 
@@ -63,11 +62,10 @@ class RankingResult:
 
 @dataclass(frozen=True)
 class DecisionRequest:
-    """Payload accepted by ``POST /v1/systemone`` and :meth:`DecisionSession.decide`."""
+    """Bound-session decision request derived from ``POST /v1/systemone``."""
 
     questions: dict[str, DecisionQuestion]
     state: JSONValue = None
-    model: str = "kev"
     temperature: float = 1.0
 
 

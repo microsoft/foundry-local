@@ -700,13 +700,6 @@ def _validate_temperature(value: object) -> None:
         raise ValueError("temperature must be in (0, 100]")
 
 
-def _validate_model(value: object) -> None:
-    if not isinstance(value, str):
-        raise TypeError("model must be a string")
-    if not value:
-        raise ValueError("model must not be empty")
-
-
 def _is_finite_number(value: object) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
@@ -762,13 +755,11 @@ class RankingSession(Session):
         if not isinstance(request.question, str):
             raise TypeError("question must be a string")
         _validate_json_value(request.context, "context")
-        _validate_model(request.model)
         _validate_temperature(request.temperature)
 
         result = _process_non_generative_json(
             self,
             {
-                "model": request.model,
                 "context": request.context,
                 "question": request.question,
                 "answers": request.answers,
@@ -835,13 +826,11 @@ class DecisionSession(Session):
                 if field in question:
                     _validate_json_value(question[field], f"questions.{question_id}.{field}")
         _validate_json_value(request.state, "state")
-        _validate_model(request.model)
         _validate_temperature(request.temperature)
 
         result = _process_non_generative_json(
             self,
             {
-                "model": request.model,
                 "state": request.state,
                 "questions": request.questions,
                 "temperature": request.temperature,

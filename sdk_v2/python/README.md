@@ -426,6 +426,11 @@ the native session manages their runtime.
 ```python
 from foundry_local_sdk import DecisionRequest, DecisionSession, RankingRequest, RankingSession
 
+ranking_model = manager.catalog.get_model("clm")
+decision_model = manager.catalog.get_model("kev")
+if not ranking_model.is_cached or not decision_model.is_cached:
+    raise RuntimeError("Download and review the CLM and KEV packages first")
+
 with RankingSession(ranking_model) as session:
     ranking = session.rank(RankingRequest(
         context={"weather": "rain"},
