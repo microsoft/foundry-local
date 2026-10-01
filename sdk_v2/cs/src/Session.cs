@@ -49,6 +49,12 @@ public abstract class Session : IDisposable
         }
     }
 
+    // Allows task-specific wrappers to substitute their JSON transport in unit tests
+    // without loading the native runtime.
+    private protected Session()
+    {
+    }
+
     /// <summary>
     /// Set session-level inference options. These apply to all subsequent
     /// <see cref="ProcessRequestAsync"/> calls unless overridden per-request.

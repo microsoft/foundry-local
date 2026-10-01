@@ -148,4 +148,14 @@ public final class Model {
             return new AudioSession(this);
         }
     }
+
+    /** Creates a session for a cached model whose task is {@code text-ranking}. */
+    public RankingSession createRankingSession() {
+        return new RankingSession(this);
+    }
+
+    /** Creates a session for a cached model whose task is {@code typed-decision}. */
+    public DecisionSession createDecisionSession() {
+        return new DecisionSession(this);
+    }
 }

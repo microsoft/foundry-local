@@ -17,9 +17,9 @@
 //   * dispose() — drops the underlying flSession; subsequent calls reject with
 //     a FoundryLocalError tagged INVALID_USAGE.
 //
-// The abstract `Session` base in the TS layer is not represented by its own
-// ObjectWrap — modality-specific session classes (`ChatSession` today,
-// `AudioSession` / `EmbeddingsSession` later) each get their own ObjectWrap.
+// The abstract `Session` base in the TS layer delegates to either the generic
+// ObjectWrap (for native-dispatched one-shot tasks) or a modality-specific
+// ObjectWrap.
 //
 // Lifetime: each session retains shared native Manager ownership, the
 // Manager's explicit-disposal flag, and a JS Manager reference. New calls
@@ -68,6 +68,29 @@ class SessionActivity {
 
  private:
   std::atomic_size_t active_ = 0;
+};
+
+// Generic one-shot session used by model tasks that dispatch through the
+// native foundry_local::Session implementation.
+class GenericSession : public Napi::ObjectWrap<GenericSession> {
+ public:
+  static Napi::Function Init(Napi::Env env);
+
+  explicit GenericSession(const Napi::CallbackInfo& info);
+
+ private:
+  Napi::Value ProcessRequest(const Napi::CallbackInfo& info);
+  Napi::Value SetOptions(const Napi::CallbackInfo& info);
+  Napi::Value Dispose(const Napi::CallbackInfo& info);
+  Napi::Value IsDisposed(const Napi::CallbackInfo& info);
+
+  bool ThrowIfDisposed(Napi::Env env);
+
+  std::shared_ptr<foundry_local::Manager> manager_lifetime_;
+  std::shared_ptr<std::atomic_bool> manager_disposed_;
+  Napi::ObjectReference manager_;
+  std::shared_ptr<foundry_local::Session> impl_;
+  std::shared_ptr<SessionActivity> activity_ = std::make_shared<SessionActivity>();
 };
 
 class ChatSession : public Napi::ObjectWrap<ChatSession> {

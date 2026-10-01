@@ -15,6 +15,8 @@ The Foundry Local Rust SDK provides an async Rust interface for running AI model
 - **Automatic model management** — Download, load, unload, and remove models from cache
 - **Chat completions** — OpenAI-compatible chat API with both non-streaming and streaming responses
 - **Embeddings** — Generate text embeddings via OpenAI-compatible API
+- **Ranking and typed decisions** — Typed in-process clients for the `/v1/rank`
+  and `/v1/systemone` JSON contracts
 - **Audio transcription** — Transcribe audio files locally with streaming support
 - **Tool calling** — Function/tool calling with streaming, multi-turn conversation support
 - **Response format control** — Text, JSON, JSON Schema, and Lark grammar constrained output
@@ -184,6 +186,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ## Usage
+
+### Ranking and typed decisions
+
+```rust
+use foundry_local_sdk::{RankingRequest, RankingSession};
+
+if !model.is_cached().await? {
+    return Err("download and review the model before opening a session".into());
+}
+let session = RankingSession::new(&model).await?;
+let request = RankingRequest::new(
+    "Which activity is more suitable?",
+    vec!["Have a picnic".into(), "Visit a museum".into()],
+);
+let result = session.rank(&request).await?;
+println!("best: {}", result.ranked[0].candidate);
+```
+
+Use `DecisionSession::decide` with `DecisionRequest` and keyed
+`DecisionQuestion` values for a model whose task is `typed-decision`. Both
+sessions send and receive exactly one OpenAI-JSON text item through the native
+generic session. Ranking and decision models must be cached, but callers do not
+explicitly load or unload them; the native session manages their runtime.
 
 ### Browsing the Model Catalog
 

@@ -1,0 +1,137 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+import { Item } from "../src/items.js";
+import { Request } from "../src/request.js";
+import { DecisionSession, RankingSession, TypedDecisionSession } from "../src/session.js";
+
+import {
+  type CacheOnlyManagerFixture,
+  haveNativePrereqs,
+  setupCacheOnlyManager,
+  teardownCacheOnlyManager,
+} from "./_fixtures/cacheOnlyManager.js";
+import {
+  type RealModelManagerFixture,
+  haveTestModelCache,
+  setupRealModelManager,
+  teardownRealModelManager,
+  testModelCacheDiagnostic,
+} from "./_fixtures/realModelManager.js";
+
+if (!haveTestModelCache) {
+  console.warn(testModelCacheDiagnostic);
+}
+
+describe("non-generative session constructor guards", () => {
+  it("requires a Model instance", () => {
+    expect(() => new RankingSession({} as never)).toThrow(TypeError);
+    expect(() => new RankingSession({} as never)).toThrow(/Model/);
+    expect(TypedDecisionSession).toBe(DecisionSession);
+    expect(() => new DecisionSession({} as never)).toThrow(TypeError);
+    expect(() => new DecisionSession({} as never)).toThrow(/Model/);
+  });
+});
+
+describe.skipIf(!haveNativePrereqs)("non-generative session task validation", () => {
+  let fixture: CacheOnlyManagerFixture | undefined;
+
+  beforeAll(() => {
+    fixture = setupCacheOnlyManager({ appName: "foundry-local-js-sdk-v2-non-generative-wrong-task" });
+  });
+
+  afterAll(() => {
+    if (fixture !== undefined) teardownCacheOnlyManager(fixture);
+  });
+
+  it("rejects models with the wrong task before native construction", async () => {
+    if (fixture === undefined) throw new Error("fixture missing");
+    const chatModel = await fixture.manager.catalog.getModel("phi-4-mini-instruct");
+    expect(() => new RankingSession(chatModel)).toThrow(/text-ranking.*chat-completion/);
+    expect(() => new DecisionSession(chatModel)).toThrow(/typed-decision.*chat-completion/);
+  });
+});
+
+describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
+  let fixture: RealModelManagerFixture | undefined;
+  let session: RankingSession | undefined;
+
+  beforeAll(async () => {
+    fixture = await setupRealModelManager({ task: "text-ranking", namePreference: "clm" });
+  }, 5 * 60_000);
+
+  afterAll(() => teardownRealModelManager(fixture));
+
+  beforeEach(() => {
+    if (fixture === undefined) throw new Error("fixture missing");
+    session = new RankingSession(fixture.model);
+  });
+
+  afterEach(() => {
+    session?.dispose();
+    session = undefined;
+  });
+
+  it("ranks candidates with the typed helper", async () => {
+    if (session === undefined) throw new Error("session missing");
+    const result = await session.rank({
+      context: { weather: "heavy rain" },
+      question: "Which activity is more suitable?",
+      answers: ["Have a picnic outdoors", "Visit an indoor museum"],
+    });
+
+    expect(result.model).toBeTruthy();
+    expect(result.ranked).toHaveLength(2);
+    expect(result.ranked.map((candidate) => candidate.candidate).sort()).toEqual(
+      ["Have a picnic outdoors", "Visit an indoor museum"].sort(),
+    );
+  });
+
+  it("uses one OpenAI JSON text item at the low-level boundary", async () => {
+    if (session === undefined) throw new Error("session missing");
+    const request = new Request().addItem(Item.text(JSON.stringify({ answers: ["first", "second"] }), "openai-json"));
+    const response = await session.processRequest(request);
+    expect(response.output).toHaveLength(1);
+    expect(response.output[0]).toMatchObject({ type: "text", textType: "openai-json" });
+  });
+
+  it("disposes idempotently", () => {
+    session?.dispose();
+    expect(session?.disposed).toBe(true);
+    expect(() => session?.dispose()).not.toThrow();
+  });
+});
+
+describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
+  let fixture: RealModelManagerFixture | undefined;
+  let session: DecisionSession | undefined;
+
+  beforeAll(async () => {
+    fixture = await setupRealModelManager({ task: "typed-decision", namePreference: "kev" });
+  }, 5 * 60_000);
+
+  afterAll(() => teardownRealModelManager(fixture));
+
+  beforeEach(() => {
+    if (fixture === undefined) throw new Error("fixture missing");
+    session = new DecisionSession(fixture.model);
+  });
+
+  afterEach(() => {
+    session?.dispose();
+    session = undefined;
+  });
+
+  it("returns typed answers with the typed helper", async () => {
+    if (session === undefined) throw new Error("session missing");
+    const result = await session.decide({
+      state: { weather: "heavy rain" },
+      questions: {
+        umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+      },
+    });
+
+    expect(result.model).toBeTruthy();
+    expect(result.answers.umbrella?.type).toBe("noul");
+    expect(result.usage.billing_units).toBe(0);
+  });
+});
