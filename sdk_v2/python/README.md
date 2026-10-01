@@ -8,6 +8,7 @@ The Foundry Local Python SDK is a native Python binding for the Foundry Local C+
 - **Model Management** – download, cache, load, and unload models
 - **Chat Completions** – streaming and non-streaming, with first-class tool calling
 - **Embeddings** – text embeddings via a typed tensor API
+- **Ranking and Typed Decisions** – typed wrappers over the native `/v1/rank` and `/v1/systemone` contracts
 - **Audio Transcription** – speech-to-text (offline and live streaming)
 - **Explicit EP Management** – discover, download, and register execution providers on demand
 - **Built-in Web Service** – optional HTTP endpoint for multi-process scenarios
@@ -413,6 +414,40 @@ with EmbeddingsSession(model) as session:
 
 model.unload()
 ```
+
+### Ranking and typed decisions
+
+`RankingSession` requires a `text-ranking` model and `DecisionSession` requires a `typed-decision`
+model. Their typed request and response values mirror `POST /v1/rank` and `POST /v1/systemone`;
+the wrappers create and release the underlying OpenAI JSON request and response items.
+Both models must be cached, but callers do not explicitly load or unload them;
+the native session manages their runtime.
+
+```python
+from foundry_local_sdk import DecisionRequest, DecisionSession, RankingRequest, RankingSession
+
+ranking_model = manager.catalog.get_model("clm")
+decision_model = manager.catalog.get_model("kev")
+if not ranking_model.is_cached or not decision_model.is_cached:
+    raise RuntimeError("Download and review the CLM and KEV packages first")
+
+with RankingSession(ranking_model) as session:
+    ranking = session.rank(RankingRequest(
+        context={"weather": "rain"},
+        question="Which activity is better?",
+        answers=["picnic", "museum"],
+    ))
+    print(ranking.ranked)
+
+with DecisionSession(decision_model) as session:
+    decision = session.decide(DecisionRequest(
+        state={"weather": "rain"},
+        questions={"umbrella": {"type": "noul", "instructions": "Take one?"}},
+    ))
+    print(decision.answers["umbrella"])
+```
+
+See [`examples/ranking_and_decision.py`](examples/ranking_and_decision.py) for reusable helper functions.
 
 ### Audio transcription
 

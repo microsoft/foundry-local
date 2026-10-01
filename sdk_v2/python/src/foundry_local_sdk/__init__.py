@@ -42,7 +42,17 @@ from foundry_local_sdk.items import (
     TensorDataType,
 )
 from foundry_local_sdk.session_types import (
+    DecisionAnswer,
+    DecisionQuestion,
+    DecisionQuestionType,
+    DecisionRequest,
+    DecisionResult,
+    DecisionUsage,
     FinishReason,
+    JSONValue,
+    RankedCandidate,
+    RankingRequest,
+    RankingResult,
     RequestOptions,
     RequestPreflightResult,
     SearchOptions,
@@ -52,7 +62,15 @@ from foundry_local_sdk.session_types import (
 from foundry_local_sdk.item_queue import ItemQueue
 from foundry_local_sdk.request import Request
 from foundry_local_sdk.response import Response
-from foundry_local_sdk.session import Session, ChatSession, AudioSession, EmbeddingsSession, StreamingResponse
+from foundry_local_sdk.session import (
+    AudioSession,
+    ChatSession,
+    DecisionSession,
+    EmbeddingsSession,
+    RankingSession,
+    Session,
+    StreamingResponse,
+)
 
 _logger = logging.getLogger(__name__)
 _logger.setLevel(logging.WARNING)
@@ -106,6 +124,16 @@ __all__ = [
     "TensorDataType",
     "ItemQueue",
     "FinishReason",
+    "JSONValue",
+    "DecisionQuestion",
+    "DecisionQuestionType",
+    "DecisionAnswer",
+    "DecisionUsage",
+    "RankingRequest",
+    "RankedCandidate",
+    "RankingResult",
+    "DecisionRequest",
+    "DecisionResult",
     "TokenUsage",
     "SearchOptions",
     "RequestOptions",
@@ -117,5 +145,7 @@ __all__ = [
     "ChatSession",
     "AudioSession",
     "EmbeddingsSession",
+    "RankingSession",
+    "DecisionSession",
     "StreamingResponse",
 ]
