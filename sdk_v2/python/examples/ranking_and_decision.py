@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed ranking and decision requests with already-loaded native models."""
+"""Typed ranking and decision requests with cached native model packages."""
 
 from foundry_local_sdk import (
     DecisionRequest,

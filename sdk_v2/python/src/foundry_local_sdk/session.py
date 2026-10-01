@@ -755,6 +755,8 @@ class RankingSession(Session):
 
         if not isinstance(request, RankingRequest):
             raise TypeError("request must be a RankingRequest")
+        if not isinstance(request.answers, list):
+            raise TypeError("answers must be a list")
         if not request.answers or any(not isinstance(answer, str) or not answer for answer in request.answers):
             raise ValueError("answers must be a non-empty list of non-empty strings")
         if not isinstance(request.question, str):
@@ -855,16 +857,9 @@ class DecisionSession(Session):
         ):
             raise _invalid_non_generative_response()
         for question_id, answer in answers.items():
-            if (
-                not isinstance(question_id, str)
-                or not isinstance(answer, dict)
-                or not isinstance(answer.get("type"), str)
-            ):
+            if not isinstance(question_id, str) or not isinstance(answer, dict):
                 raise _invalid_non_generative_response()
-            try:
-                _validate_json_value(answer, f"answers.{question_id}")
-            except (TypeError, ValueError) as exc:
-                raise _invalid_non_generative_response() from exc
+            _validate_decision_answer(answer)
         return DecisionResult(
             model,
             cast(dict[str, DecisionAnswer], answers),
@@ -876,3 +871,40 @@ def _invalid_non_generative_response() -> Exception:
     from foundry_local_sdk.exception import FoundryLocalException
 
     return FoundryLocalException("Non-generative session returned an invalid response.")
+
+
+def _validate_decision_answer(answer: dict[str, object]) -> None:
+    answer_type = answer.get("type")
+    if not isinstance(answer_type, str):
+        raise _invalid_non_generative_response()
+    required_field = {
+        "noul": "noul",
+        "choice": "choice",
+        "score": "score",
+    }.get(answer_type)
+    if required_field is None:
+        raise _invalid_non_generative_response()
+    value = answer.get(required_field)
+    if required_field == "choice":
+        if not isinstance(value, str):
+            raise _invalid_non_generative_response()
+    elif not _is_finite_number(value):
+        raise _invalid_non_generative_response()
+
+    confidence = answer.get("confidence")
+    if confidence is not None and not _is_finite_number(confidence):
+        raise _invalid_non_generative_response()
+    probabilities = answer.get("probabilities")
+    if probabilities is not None and (
+        not isinstance(probabilities, dict)
+        or any(
+            not isinstance(key, str) or not _is_finite_number(probability) for key, probability in probabilities.items()
+        )
+    ):
+        raise _invalid_non_generative_response()
+    legend = answer.get("legend")
+    if legend is not None and (
+        not isinstance(legend, dict)
+        or any(not isinstance(key, str) or not isinstance(label, str) for key, label in legend.items())
+    ):
+        raise _invalid_non_generative_response()
