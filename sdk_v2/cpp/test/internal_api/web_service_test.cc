@@ -24,6 +24,7 @@
 #include "utils/temp_path.h"
 
 #include <foundry_local/foundry_local_c.h>
+#include <foundry_local/foundry_local_cpp.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -565,6 +566,49 @@ TEST_F(WebServiceTest, NonGenerativeRoutesRunCatalogSelectedCpuPackagesWhenConfi
       "", std::chrono::minutes(3)));
   ASSERT_TRUE(decision.at("answers").contains("umbrella"));
   EXPECT_EQ(decision.at("model"), kev_metadata.model_id);
+
+  auto sdk_root =
+      test::TempPath::CreateTempDir("fl_non_generative_sdk_");
+  foundry_local::Configuration sdk_config("non-generative-sdk-test");
+  sdk_config.SetAppDataDir(sdk_root.string());
+  foundry_local::Manager sdk_manager(std::move(sdk_config));
+  auto& sdk_catalog =
+      sdk_manager.GetCatalog(FOUNDRY_LOCAL_CATALOG_LOCAL);
+
+  foundry_local::ModelInfo sdk_clm_metadata;
+  sdk_clm_metadata.SetStringProperty(
+      FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "text-ranking");
+  auto sdk_clm = sdk_catalog.RegisterModel(
+      clm.string(), clm_metadata.model_id, sdk_clm_metadata);
+  {
+    foundry_local::RankingSession ranking_session(*sdk_clm);
+    const auto sdk_ranking = json::parse(ranking_session.RankJson(
+        json{{"context", {{"weather", "heavy rain"}}},
+             {"question", "Which activity is more suitable?"},
+             {"answers",
+              {"Have a picnic outdoors", "Visit an indoor museum"}}}
+            .dump()));
+    EXPECT_EQ(sdk_ranking.at("model"), clm_metadata.model_id);
+    ASSERT_EQ(sdk_ranking.at("ranked").size(), 2u);
+  }
+
+  foundry_local::ModelInfo sdk_kev_metadata;
+  sdk_kev_metadata.SetStringProperty(
+      FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, "typed-decision");
+  auto sdk_kev = sdk_catalog.RegisterModel(
+      kev.string(), kev_metadata.model_id, sdk_kev_metadata);
+  {
+    foundry_local::DecisionSession decision_session(*sdk_kev);
+    const auto sdk_decision = json::parse(decision_session.DecideJson(
+        json{{"state", {{"weather", "heavy rain"}}},
+             {"questions",
+              {{"umbrella",
+                {{"type", "noul"},
+                 {"instructions", "Should I take an umbrella?"}}}}}}
+            .dump()));
+    EXPECT_EQ(sdk_decision.at("model"), kev_metadata.model_id);
+    EXPECT_TRUE(sdk_decision.at("answers").contains("umbrella"));
+  }
 
   auto fallback = json::parse(TestHttpPost(
       base_url_ + "/v1/rank",

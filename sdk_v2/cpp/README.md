@@ -17,6 +17,8 @@ wrapper need only C++17 or newer.
 - **Tool calling** -- session-scoped and request-scoped tool definitions, plus typed tool call/result items
 - **Embeddings** -- single and batch `std::vector<float>` helpers
 - **Audio** -- offline and real-time streaming audio transcription
+- **Ranking and typed decisions** -- native `RankingSession` and
+  `DecisionSession` APIs for CLM and KEV packages
 - **Execution providers** -- discover, download, and register hardware acceleration on demand
 - **Embedded web service** -- optionally expose an OpenAI-compatible local endpoint
 - **C API** -- a stable ABI for other language bindings and low-level integrations
@@ -74,10 +76,36 @@ curl -s http://127.0.0.1:5272/v1/systemone \
 
 Missing fallback configuration is reported as HTTP 503. Invalid contracts,
 tasks, criteria, or token bounds are HTTP 400. This bounded integration does
-not add remote catalog submission or C/Python SDK APIs.
+not add remote catalog submission.
 Until the corresponding ORT GenAI package is published, configure this branch
 with `--ort_genai_home /path/to/onnxruntime-genai` so the native
 `DirectoryTokenizer` and component session exports are available.
+
+Cached catalog models can also be used directly without starting the web
+service or calling the generative `Load` path:
+
+```cpp
+foundry_local::RankingSession ranking(clm_model);
+const auto ranked = ranking.RankJson(R"({
+  "context":{"weather":"heavy rain"},
+  "question":"Which activity is more suitable?",
+  "answers":["Have a picnic outdoors","Visit an indoor museum"]
+})");
+
+foundry_local::DecisionSession decision(kev_model);
+const auto answers = decision.DecideJson(R"({
+  "state":{"weather":"heavy rain"},
+  "questions":{"umbrella":{
+    "type":"noul",
+    "instructions":"Should I take an umbrella?"
+  }}
+})");
+```
+
+The SDK methods use the same JSON contracts and response shapes as
+`POST /v1/rank` and `POST /v1/systemone`. The C ABI remains unchanged: all
+language bindings use the existing `flSession`, `flRequest`, `flResponse`, and
+OpenAI-JSON text-item contract.
 
 ## Build From Source
 
