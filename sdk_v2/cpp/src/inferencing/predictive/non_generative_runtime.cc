@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 #include "inferencing/predictive/non_generative_runtime.h"
 #include "catalog/non_generative_package.h"
+#include "utils.h"
 
 #include <charconv>
-#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -15,9 +15,9 @@ namespace {
 using json = nlohmann::ordered_json;
 
 std::vector<std::string> EnvironmentProviders() {
-  if (const char* value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
-      value && *value) {
-    const auto provider = NormalizeNonGenerativeProvider(value);
+  if (const auto value = Utils::GetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
+      value && !value->empty()) {
+    const auto provider = NormalizeNonGenerativeProvider(*value);
     return provider.empty() ? std::vector<std::string>{}
                             : std::vector<std::string>{provider};
   }
@@ -30,10 +30,10 @@ std::vector<std::string> ExplicitProviders(const std::string& provider) {
 }
 
 size_t CacheSetting(const char* name, size_t fallback) {
-  const char* value = std::getenv(name);
-  if (!value || !*value) return fallback;
+  const auto value = Utils::GetEnv(name);
+  if (!value || value->empty()) return fallback;
   size_t parsed{};
-  const std::string_view text(value);
+  const std::string_view text(*value);
   const auto [end, error] =
       std::from_chars(text.data(), text.data() + text.size(), parsed);
   if (error != std::errc{} || end != text.data() + text.size()) {

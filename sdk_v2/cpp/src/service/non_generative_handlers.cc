@@ -11,11 +11,11 @@
 #include "model.h"
 #include "service/handler_utils.h"
 #include "service/web_service.h"
+#include "utils.h"
 
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
-#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -75,9 +75,10 @@ class ModelNotFoundError : public std::runtime_error {
 };
 
 std::string ConfiguredPackagePath(const char* specific, const char* directory) {
-  if (const char* value = std::getenv(specific); value && *value) return value;
-  if (const char* root = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT"); root && *root)
-    return (std::filesystem::path(root) / directory).string();
+  if (const auto value = Utils::GetEnv(specific); value && !value->empty()) return *value;
+  if (const auto root = Utils::GetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT");
+      root && !root->empty())
+    return (std::filesystem::path(*root) / directory).string();
   throw std::runtime_error(fmt::format(
       "{} is not configured; register the requested package in the local catalog, set {}, "
       "or set FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT with {}/ beneath it",
@@ -139,9 +140,9 @@ ResolvedPackage ResolvePackage(ServiceContext& ctx, const std::string& requested
         expected_alias));
   }
   std::string provider = metadata ? metadata->execution_provider : std::string{};
-  if (const char* value = std::getenv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
-      value && *value) {
-    provider = NormalizeNonGenerativeProvider(value);
+  if (const auto value = Utils::GetEnv("FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER");
+      value && !value->empty()) {
+    provider = NormalizeNonGenerativeProvider(*value);
   }
   const auto model_id = metadata ? metadata->model_id : requested;
   return {"prototype|" + model_id + "|" + canonical + "|" + provider, model_id,
