@@ -476,7 +476,7 @@ impl CustomToolDefinition {
 /// state and keeps the error identical whether or not the model happens to be
 /// loaded. This mirrors the C#, JavaScript, and Python bindings, which validate
 /// the task the same way for the same reason.
-fn validate_session_task(model: &Model, session: &str, allowed: &[&str]) -> Result<()> {
+pub(crate) fn validate_session_task(model: &Model, session: &str, allowed: &[&str]) -> Result<()> {
     let info = model.info()?;
 
     check_task(info.task.as_deref(), session, allowed)
