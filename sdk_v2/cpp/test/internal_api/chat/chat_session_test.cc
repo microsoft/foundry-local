@@ -1975,9 +1975,9 @@ TEST_F(QwenNativeProductionIntegrationTest,
       const auto& delta = chunk.at("choices").at(0).at("delta");
       return delta.contains("tool_calls") ||
              (delta.contains("content") && delta.at("content").is_string() &&
-              !delta.at("content").get<std::string>().empty()) ||
+              !delta.at("content").template get<std::string>().empty()) ||
              (delta.contains("reasoning_content") && delta.at("reasoning_content").is_string() &&
-              !delta.at("reasoning_content").get<std::string>().empty());
+              !delta.at("reasoning_content").template get<std::string>().empty());
     }));
     EXPECT_EQ(stateless.TurnCount(), 0u);
   }
@@ -2007,9 +2007,9 @@ TEST_F(QwenNativeProductionIntegrationTest,
     const auto& delta = chunk.at("choices").at(0).at("delta");
     return delta.contains("tool_calls") ||
            (delta.contains("content") && delta.at("content").is_string() &&
-            !delta.at("content").get<std::string>().empty()) ||
+            !delta.at("content").template get<std::string>().empty()) ||
            (delta.contains("reasoning_content") && delta.at("reasoning_content").is_string() &&
-            !delta.at("reasoning_content").get<std::string>().empty());
+            !delta.at("reasoning_content").template get<std::string>().empty());
   }));
   EXPECT_EQ(session.TurnCount(), 0u);
 }
