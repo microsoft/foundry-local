@@ -9,6 +9,7 @@ The Foundry Local C# SDK provides a .NET interface for running AI models locally
 - **Lifecycle management** — download, load, unload, and remove models programmatically
 - **Chat completions** — synchronous and `IAsyncEnumerable` streaming via OpenAI-compatible types
 - **Audio transcription** — transcribe audio files with streaming support
+- **Ranking and typed decisions** — strongly typed sessions for `text-ranking` and `typed-decision` models
 - **Download progress** — wire up an `Action<float>` callback for real-time download percentage
 - **Model variants** — select specific hardware/quantization variants per model alias
 - **Optional web service** — start an OpenAI-compatible REST endpoint (`/v1/chat_completions`, `/v1/models`)
@@ -223,6 +224,44 @@ await model.UnloadAsync();
 // Remove from local cache entirely
 await model.RemoveFromCacheAsync();
 ```
+
+### Ranking and typed decisions
+
+The typed sessions use the same request and response contracts as `POST /v1/rank` and
+`POST /v1/systemone`. Structured context, state, criteria, and instructions are `JsonElement`
+values so their JSON shape is preserved.
+
+```csharp
+using System.Text.Json;
+
+using var ranking = new RankingSession(rankingModel);
+var ranked = await ranking.RankAsync(new RankingRequest
+{
+    Context = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
+    Question = "Which activity is more suitable?",
+    Answers = ["Have a picnic outdoors", "Visit an indoor museum"],
+});
+Console.WriteLine(ranked.Ranked[0].Candidate);
+
+using var decisions = new DecisionSession(decisionModel);
+var result = await decisions.DecideAsync(new DecisionRequest
+{
+    State = JsonSerializer.SerializeToElement(new { weather = "heavy rain" }),
+    Questions = new Dictionary<string, DecisionQuestion>
+    {
+        ["umbrella"] = new()
+        {
+            Type = "noul",
+            Instructions = JsonSerializer.SerializeToElement("Should I take an umbrella?"),
+        },
+    },
+});
+Console.WriteLine(result.Answers["umbrella"].Noul);
+```
+
+`RankingSession` requires a cached model with task `text-ranking`; `DecisionSession` requires a
+cached model with task `typed-decision`. The native session loads the package runtime as needed.
+Each call sends exactly one `TextItem.OpenAIJson` and expects exactly one such item in response.
 
 ### Chat Completions
 
