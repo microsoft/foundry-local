@@ -3,7 +3,7 @@ steps:
   displayName: 'Obtain feed credentials for Cargo via NuGet authentication'
 
 - task: PowerShell@2
-  displayName: 'Configure AIFoundryLocal_PublicPackages Cargo credentials'
+  displayName: 'Configure CI Cargo feed and credentials'
   inputs:
     targetType: inline
     pwsh: true
@@ -13,6 +13,21 @@ steps:
       if ([string]::IsNullOrWhiteSpace($accessToken)) {
         throw 'NuGetAuthenticate did not provide a feed access token.'
       }
+      $cargoConfigDir = Join-Path $env:BUILD_SOURCESDIRECTORY '.cargo'
+      New-Item -ItemType Directory -Force -Path $cargoConfigDir | Out-Null
+      @'
+      [source.crates-io]
+      replace-with = "AIFoundryLocal_PublicPackages"
+
+      [source.AIFoundryLocal_PublicPackages]
+      registry = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/"
+
+      [registries]
+      AIFoundryLocal_PublicPackages = { index = "sparse+https://pkgs.dev.azure.com/aiinfra/AIFoundryLocal/_packaging/AIFoundryLocal_PublicPackages/Cargo/index/" }
+
+      [registry]
+      global-credential-providers = ["cargo:token"]
+      '@ | Set-Content -Path (Join-Path $cargoConfigDir 'config.toml') -Encoding utf8
       $cargoToken = "Bearer $accessToken"
       Write-Host "##vso[task.setsecret]$cargoToken"
       Write-Host "##vso[task.setvariable variable=CARGO_REGISTRIES_AIFOUNDRYLOCAL_PUBLICPACKAGES_TOKEN]$cargoToken"
