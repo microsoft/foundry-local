@@ -14,7 +14,7 @@ cloned the repo and wants to build, test, and debug the JS SDK.
 
 - **Model catalog** — browse public models and inspect cached or loaded state
 - **Bring your own model (BYOM)** — register existing local model assets without copying or taking ownership of them
-- **Native inference** — run chat, embeddings, and audio sessions directly through the C++ engine
+- **Native inference** — run chat, embeddings, audio, ranking, and typed-decision sessions directly through the C++ engine
 - **Streaming and tool calling** — consume streamed items and run multi-turn tool-enabled chat
 - **Embedded web service** — optionally expose OpenAI-compatible HTTP endpoints
 
@@ -48,6 +48,38 @@ Request preflight captures state synchronously, executes token counting on a wor
 manager-owned runtime alive until completion.
 `contextLimitTokens` is the Engine's structural request capacity or the Generator's model context.
 `fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
+### Ranking and typed decisions
+
+`RankingSession` and `DecisionSession` use the same contracts as
+`POST /v1/rank` and `POST /v1/systemone`:
+
+```ts
+import { DecisionSession, RankingSession } from "foundry-local-sdk";
+
+using ranking = new RankingSession(cachedRankingModel);
+const ranked = await ranking.rank({
+  context: { weather: "rain" },
+  question: "Which activity is best?",
+  answers: ["picnic", "museum"],
+});
+
+using decisions = new DecisionSession(cachedDecisionModel);
+const result = await decisions.decide({
+  state: { weather: "rain" },
+  questions: {
+    umbrella: { type: "noul", instructions: "Should I take an umbrella?" },
+  },
+});
+```
+
+Ranking and decision models must be cached, but callers do not explicitly load
+or unload them; the native session manages their runtime.
+
+The inherited low-level `processRequest()` API accepts exactly one
+`Item.text(JSON.stringify(payload), "openai-json")` item and returns one OpenAI JSON text item.
+Sessions validate the model task before native construction and must be disposed like chat and
+embeddings sessions.
 
 ---
 

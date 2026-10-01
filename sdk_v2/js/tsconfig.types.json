@@ -5,5 +5,10 @@
     "moduleResolution": "NodeNext",
     "noEmit": true
   },
-  "include": ["src/**/*", "test/model-download.types.ts", "test/tool-definition.types.ts"]
+  "include": [
+    "src/**/*",
+    "test/model-download.types.ts",
+    "test/non-generative.types.ts",
+    "test/tool-definition.types.ts"
+  ]
 }

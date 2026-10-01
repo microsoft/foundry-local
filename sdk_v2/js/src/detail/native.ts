@@ -255,6 +255,7 @@ export type NativeEmbeddingsSession = NativeSession;
 // behavioural difference at the native registration site, not a TS-shape
 // difference.
 export type NativeAudioSession = NativeSession;
+export type NativeGenericSession = NativeSession;
 
 export interface NativeAddon {
   Manager: NativeManagerCtor;
@@ -273,9 +274,8 @@ export interface NativeAddon {
   // wraps it. The only `Item` subtype with a real native handle on the JS
   // side; all the others are plain JS objects copied across the boundary.
   ItemQueue: NativeItemQueueCtor;
-  // Only modality-specific session classes (`ChatSession` today;
-  // `AudioSession` / `EmbeddingsSession` later) are directly constructible
-  // from JS. They take a JS Model instance (the native ObjectWrap<Model>,
+  Session: new (model: NativeModel) => NativeGenericSession;
+  // Session constructors take a JS Model instance (the native ObjectWrap<Model>,
   // i.e. the value stored in the `nativeByModel` weak map) and produce a
   // native session handle. The abstract base `Session` is a TS-only class
   // and has no JS-constructible native counterpart.

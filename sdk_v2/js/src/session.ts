@@ -3,6 +3,7 @@ import {
   type NativeAudioSession,
   type NativeChatSession,
   type NativeEmbeddingsSession,
+  type NativeGenericSession,
   type NativeSession,
   getAddon,
 } from "./detail/native.js";
@@ -25,8 +26,10 @@ import {
 //   * `setOptions(...)`, `dispose()`, `Symbol.dispose`.
 import type { IModel } from "./imodel.js";
 import type { Item } from "./items.js";
+import { Item as ItemFactory } from "./items.js";
 import { Model, unwrapNativeModel } from "./model.js";
-import { type Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
+import type { DecisionRequest, DecisionResult, RankingRequest, RankingResult } from "./non-generative.js";
+import { Request, type RequestOptions, unwrapNativeRequest } from "./request.js";
 import type { Response } from "./response.js";
 
 /** Options accepted by streaming Session APIs. */
@@ -117,6 +120,36 @@ function modelToNativeAudioSession(model: IModel): NativeAudioSession {
   }
   const nativeModel = unwrapNativeModel(model);
   return new (getAddon().AudioSession)(nativeModel);
+}
+
+function modelToNativeGenericSession(
+  model: IModel,
+  sessionName: string,
+  expectedTask: "text-ranking" | "typed-decision",
+): NativeGenericSession {
+  if (!(model instanceof Model)) {
+    throw new TypeError(`${sessionName}: expected a Model as the first argument`);
+  }
+  const task = model.info.task;
+  if (task !== expectedTask) {
+    throw new TypeError(`${sessionName} requires a model with task '${expectedTask}', but got '${task ?? "(unset)"}'.`);
+  }
+  return new (getAddon().Session)(unwrapNativeModel(model));
+}
+
+function jsonRequest(value: RankingRequest | DecisionRequest): Request {
+  return new Request().addItem(ItemFactory.text(JSON.stringify(value), "openai-json"));
+}
+
+function jsonResult<T>(response: Response, sessionName: string): T {
+  if (response.output.length !== 1) {
+    throw new TypeError(`${sessionName}: expected one response item, but got ${response.output.length}`);
+  }
+  const item = response.output[0];
+  if (item?.type !== "text" || item.textType !== "openai-json") {
+    throw new TypeError(`${sessionName}: expected one OpenAI JSON text response item`);
+  }
+  return JSON.parse(item.text) as T;
 }
 
 /**
@@ -512,3 +545,39 @@ export class AudioSession extends Session {
     super(modelToNativeAudioSession(model));
   }
 }
+
+/**
+ * One-shot inference session for `text-ranking` models.
+ *
+ * {@link rank} uses the same JSON request and result contracts as `POST /v1/rank`.
+ * The lower-level inherited {@link Session.processRequest} API accepts exactly
+ * one `Item.text(json, "openai-json")` input and returns the same item shape.
+ */
+export class RankingSession extends Session {
+  constructor(model: IModel) {
+    super(modelToNativeGenericSession(model, "RankingSession", "text-ranking"));
+  }
+
+  async rank(request: RankingRequest): Promise<RankingResult> {
+    return jsonResult<RankingResult>(await this.processRequest(jsonRequest(request)), "RankingSession");
+  }
+}
+
+/**
+ * One-shot inference session for `typed-decision` models.
+ *
+ * {@link decide} uses the same JSON request and result contracts as
+ * `POST /v1/systemone`.
+ */
+export class DecisionSession extends Session {
+  constructor(model: IModel) {
+    super(modelToNativeGenericSession(model, "DecisionSession", "typed-decision"));
+  }
+
+  async decide(request: DecisionRequest): Promise<DecisionResult> {
+    return jsonResult<DecisionResult>(await this.processRequest(jsonRequest(request)), "DecisionSession");
+  }
+}
+
+/** @deprecated Use {@link DecisionSession}. */
+export const TypedDecisionSession = DecisionSession;
