@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import type { NativeGenericSession } from "../src/detail/native.js";
 import { Item } from "../src/items.js";
-import { Request } from "../src/request.js";
+import { Request, unwrapNativeRequest } from "../src/request.js";
 import { DecisionSession, RankingSession, TypedDecisionSession } from "../src/session.js";
 
 import {
@@ -56,7 +57,11 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
   let session: RankingSession | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager({ task: "text-ranking", namePreference: "clm" });
+    fixture = await setupRealModelManager({
+      task: "text-ranking",
+      namePreference: "clm",
+      loadModel: false,
+    });
   }, 5 * 60_000);
 
   afterAll(() => teardownRealModelManager(fixture));
@@ -94,6 +99,45 @@ describe.skipIf(!haveTestModelCache)("RankingSession (real model)", () => {
     expect(response.output[0]).toMatchObject({ type: "text", textType: "openai-json" });
   });
 
+  it("serializes concurrent requests before occupying another worker", async () => {
+    if (session === undefined) throw new Error("session missing");
+    const nativeSession = (session as unknown as { native: NativeGenericSession }).native;
+    const request = () =>
+      new Request().addItem(Item.text(JSON.stringify({ answers: ["first", "second"] }), "openai-json"));
+
+    let signalFirstStarted!: (release: () => void) => void;
+    const firstStarted = new Promise<() => void>((resolve) => {
+      signalFirstStarted = resolve;
+    });
+    const firstRequest = request();
+    const first = nativeSession.processRequest(unwrapNativeRequest(firstRequest), signalFirstStarted);
+    const releaseFirst = await firstStarted;
+
+    let secondStarted = false;
+    let signalSecondStarted!: (release: () => void) => void;
+    const secondStartedPromise = new Promise<() => void>((resolve) => {
+      signalSecondStarted = (release) => {
+        secondStarted = true;
+        resolve(release);
+      };
+    });
+    const secondRequest = request();
+    const second = nativeSession.processRequest(unwrapNativeRequest(secondRequest), signalSecondStarted);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(secondStarted).toBe(false);
+
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ output: expect.any(Array) });
+    const releaseSecond = await secondStartedPromise;
+    releaseSecond();
+    await expect(second).resolves.toMatchObject({ output: expect.any(Array) });
+  });
+
+  it("does not expose streaming on one-shot predictive sessions", () => {
+    if (session === undefined) throw new Error("session missing");
+    expect("processStreamingRequest" in session).toBe(false);
+  });
+
   it("disposes idempotently", () => {
     session?.dispose();
     expect(session?.disposed).toBe(true);
@@ -106,7 +150,11 @@ describe.skipIf(!haveTestModelCache)("DecisionSession (real model)", () => {
   let session: DecisionSession | undefined;
 
   beforeAll(async () => {
-    fixture = await setupRealModelManager({ task: "typed-decision", namePreference: "kev" });
+    fixture = await setupRealModelManager({
+      task: "typed-decision",
+      namePreference: "kev",
+      loadModel: false,
+    });
   }, 5 * 60_000);
 
   afterAll(() => teardownRealModelManager(fixture));

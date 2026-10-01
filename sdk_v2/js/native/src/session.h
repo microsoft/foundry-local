@@ -90,7 +90,7 @@ class GenericSession : public Napi::ObjectWrap<GenericSession> {
   std::shared_ptr<std::atomic_bool> manager_disposed_;
   Napi::ObjectReference manager_;
   std::shared_ptr<foundry_local::Session> impl_;
-  std::shared_ptr<SessionActivity> activity_ = std::make_shared<SessionActivity>();
+  std::shared_ptr<SessionScheduler> scheduler_;
 };
 
 class ChatSession : public Napi::ObjectWrap<ChatSession> {

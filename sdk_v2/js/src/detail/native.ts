@@ -212,15 +212,18 @@ export interface NativeItemQueue {
   dispose(): void;
 }
 
-export interface NativeSession {
+export interface NativeOneShotSession {
   processRequest(request: NativeRequest, workerStartedForTest?: (release: () => void) => void): Promise<NativeResponse>;
+  setOptions(options: NativeRequestOptions): void;
+  dispose(): void;
+  isDisposed(): boolean;
+}
+
+export interface NativeSession extends NativeOneShotSession {
   processStreamingRequest(
     request: NativeRequest,
     onItem: (item: unknown) => void,
   ): Promise<NativeResponse> & { cancelQueued(): boolean };
-  setOptions(options: NativeRequestOptions): void;
-  dispose(): void;
-  isDisposed(): boolean;
 }
 
 export interface NativeChatSession extends NativeSession {
@@ -255,7 +258,7 @@ export type NativeEmbeddingsSession = NativeSession;
 // behavioural difference at the native registration site, not a TS-shape
 // difference.
 export type NativeAudioSession = NativeSession;
-export type NativeGenericSession = NativeSession;
+export type NativeGenericSession = NativeOneShotSession;
 
 export interface NativeAddon {
   Manager: NativeManagerCtor;
