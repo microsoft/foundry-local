@@ -243,7 +243,7 @@ bool IsSupportedParametersObject(const Json& schema) {
       return true;
     }
     return item.key() == "additionalProperties" && item.value().is_boolean() &&
-           !item.value().get<bool>();
+           !item.value().template get<bool>();
   });
 }
 
