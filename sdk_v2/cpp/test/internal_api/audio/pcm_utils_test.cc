@@ -5,14 +5,80 @@
 //
 
 #include "inferencing/generative/audio/pcm_utils.h"
+#include "utils/temp_path.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <vector>
 
 using namespace fl;
+
+namespace {
+
+void AppendU32(std::string& out, uint32_t v) {
+  out.append(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+
+void AppendU16(std::string& out, uint16_t v) {
+  out.append(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+
+void WriteU32(std::string& out, size_t offset, uint32_t v) {
+  std::memcpy(out.data() + offset, &v, sizeof(v));
+}
+
+void WriteU16(std::string& out, size_t offset, uint16_t v) {
+  std::memcpy(out.data() + offset, &v, sizeof(v));
+}
+
+// Minimal RIFF/WAVE file; an optional odd-sized LIST chunk before "data" exercises chunk skipping and padding.
+std::string MakeWav(uint32_t sample_rate, uint16_t channels, uint32_t data_bytes, bool with_list_chunk) {
+  std::string body = "WAVE";
+  body += "fmt ";
+  AppendU32(body, 16);
+  AppendU16(body, 1);
+  AppendU16(body, channels);
+  AppendU32(body, sample_rate);
+  AppendU32(body, sample_rate * channels * 2);
+  AppendU16(body, static_cast<uint16_t>(channels * 2));
+  AppendU16(body, 16);
+  if (with_list_chunk) {
+    body += "LIST";
+    AppendU32(body, 3);
+    body += "abc";
+    body += '\0';
+  }
+
+  body += "data";
+  AppendU32(body, data_bytes);
+  body.append(data_bytes, '\0');
+  if (data_bytes % 2 != 0) {
+    body += '\0';  // RIFF chunks are word aligned, so an odd-sized data chunk is followed by a pad byte.
+  }
+
+  std::string wav = "RIFF";
+  AppendU32(wav, static_cast<uint32_t>(body.size()));
+  return wav + body;
+}
+
+class TempFile {
+ public:
+  explicit TempFile(const std::string& contents)
+      : path_(fl::test::TempPath::CreateTempFile("pcm_utils_test_")) {
+    std::ofstream(path_.path(), std::ios::binary) << contents;
+  }
+
+  std::string path() const { return path_.string(); }
+
+ private:
+  fl::test::TempPath path_;
+};
+
+}  // namespace
 
 TEST(PcmUtilsTest, Silence_AllZeros) {
   std::vector<uint8_t> pcm(64, 0);
@@ -73,4 +139,74 @@ TEST(PcmUtilsTest, MultipleSamples) {
   ASSERT_EQ(result.size(), 2u);
   EXPECT_FLOAT_EQ(result[0], 0.0f);
   EXPECT_FLOAT_EQ(result[1], -1.0f / 32768.0f);
+}
+
+TEST(PcmUtilsTest, WavDurationFromHeader) {
+  TempFile mono16k(MakeWav(16000, 1, 16000 * 2 * 3, false));
+  auto duration = AudioInternal::TryReadWavDurationSeconds(mono16k.path());
+  ASSERT_TRUE(duration.has_value());
+  EXPECT_DOUBLE_EQ(*duration, 3.0);
+}
+
+TEST(PcmUtilsTest, WavDurationSkipsExtraChunksAndIgnoresSampleRate) {
+  TempFile stereo44k(MakeWav(44100, 2, 44100 * 4 / 2, true));
+  auto duration = AudioInternal::TryReadWavDurationSeconds(stereo44k.path());
+  ASSERT_TRUE(duration.has_value());
+  EXPECT_DOUBLE_EQ(*duration, 0.5);
+}
+
+TEST(PcmUtilsTest, WavDurationUnknownForNonWavOrMissingFile) {
+  TempFile mp3("ID3 not a wav file");
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(mp3.path()).has_value());
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds("does_not_exist_pcm_utils_test.wav").has_value());
+
+  TempFile truncated(MakeWav(16000, 1, 32, false).substr(0, 30));
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(truncated.path()).has_value());
+}
+
+TEST(PcmUtilsTest, WavDurationRejectsChunksOutsideFileOrRiffBounds) {
+  auto truncated_data = MakeWav(16000, 1, 32, false);
+  truncated_data.resize(truncated_data.size() - 1);
+  TempFile truncated_data_file(truncated_data);
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(truncated_data_file.path()).has_value());
+
+  auto oversized_chunk = MakeWav(16000, 1, 32, false);
+  WriteU32(oversized_chunk, 40, 1024);
+  TempFile oversized_chunk_file(oversized_chunk);
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(oversized_chunk_file.path()).has_value());
+
+  auto short_riff = MakeWav(16000, 1, 32, false);
+  WriteU32(short_riff, 4, 28);
+  TempFile short_riff_file(short_riff);
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(short_riff_file.path()).has_value());
+}
+
+TEST(PcmUtilsTest, WavDurationRejectsInconsistentFormatRates) {
+  auto bad_byte_rate = MakeWav(16000, 1, 32, false);
+  WriteU32(bad_byte_rate, 28, 1234);
+  TempFile bad_byte_rate_file(bad_byte_rate);
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(bad_byte_rate_file.path()).has_value());
+
+  auto bad_block_align = MakeWav(16000, 1, 32, false);
+  WriteU16(bad_block_align, 32, 4);
+  TempFile bad_block_align_file(bad_block_align);
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(bad_block_align_file.path()).has_value());
+}
+
+TEST(PcmUtilsTest, WavDurationRejectsDataChunkWithPartialFrame) {
+  // A data chunk must hold whole sample frames. 16 kHz mono PCM16 has a 2-byte frame, so an odd chunk ends mid-frame
+  // and the header disagrees with the payload. Trusting it would report 1.00003125 s, which rounds the audio end up to
+  // 51 timestamp steps instead of 50 and wrongly engages the end-of-text mask.
+  TempFile mono_partial_frame(MakeWav(16000, 1, 32001, false));
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(mono_partial_frame.path()).has_value());
+
+  // Same gap with a 4-byte stereo frame, where the leftover is larger than a single byte.
+  TempFile stereo_partial_frame(MakeWav(16000, 2, 32002, false));
+  EXPECT_FALSE(AudioInternal::TryReadWavDurationSeconds(stereo_partial_frame.path()).has_value());
+
+  // The exactly frame-aligned neighbour must still report a duration.
+  TempFile aligned(MakeWav(16000, 1, 32000, false));
+  auto duration = AudioInternal::TryReadWavDurationSeconds(aligned.path());
+  ASSERT_TRUE(duration.has_value());
+  EXPECT_DOUBLE_EQ(*duration, 1.0);
 }
