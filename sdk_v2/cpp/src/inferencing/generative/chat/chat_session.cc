@@ -426,10 +426,20 @@ namespace {
 
 void AppendToolOutput(ToolCallStreamAccumulator::Output& destination,
                       ToolCallStreamAccumulator::Output source) {
-  destination.malformed |= source.malformed;
+  if (destination.malformed) {
+    return;
+  }
+
   destination.events.insert(destination.events.end(),
                             std::make_move_iterator(source.events.begin()),
                             std::make_move_iterator(source.events.end()));
+  destination.malformed = source.malformed;
+  if (destination.malformed) {
+    const auto first_call = std::ranges::find_if(destination.events, [](const auto& event) {
+      return std::holds_alternative<ParsedToolCall>(event);
+    });
+    destination.events.erase(first_call, destination.events.end());
+  }
 }
 
 bool ContainsToolCall(const ToolCallStreamAccumulator::Output& output) {
@@ -471,6 +481,10 @@ ToolCallStreamAccumulator::Output RouteRawToolOutput(
   };
 
   for (auto& event : raw_output.events) {
+    if (output.malformed) {
+      break;
+    }
+
     if (auto* text = std::get_if<std::string>(&event)) {
       if (raw_call_completed) {
         output.events.emplace_back(std::move(*text));
@@ -484,7 +498,9 @@ ToolCallStreamAccumulator::Output RouteRawToolOutput(
       auto structured_output = structured_accumulator.Flush();
       structured_call_completed |= ContainsToolCall(structured_output);
       AppendToolOutput(output, std::move(structured_output));
-      output.events.emplace_back(std::move(rejected->text));
+      if (!output.malformed) {
+        output.events.emplace_back(std::move(rejected->text));
+      }
       continue;
     }
 
@@ -495,6 +511,9 @@ ToolCallStreamAccumulator::Output RouteRawToolOutput(
     AppendToolOutput(output, std::move(structured_output));
 
     auto raw_call = std::move(std::get<ParsedToolCall>(event));
+    if (output.malformed) {
+      break;
+    }
     if (structured_call_completed) {
       AppendToolOutput(output, structured_accumulator.Push(raw_call.arguments));
     } else {
@@ -518,6 +537,10 @@ ToolCallStreamAccumulator::Output PushToolOutput(
   ToolCallStreamAccumulator::Output output;
   size_t position = 0;
   while (position < text.size()) {
+    if (output.malformed) {
+      break;
+    }
+
     const auto newline = text.find('\n', position);
     const auto end = newline == std::string::npos ? text.size() : newline + 1;
     const auto part = text.substr(position, end - position);
@@ -565,6 +588,10 @@ ToolCallStreamAccumulator::Output FlushToolOutput(
 
   auto raw_output = natural_end ? raw_detector->FinalizeNatural() : raw_detector->Abort();
   auto output = RouteRawToolOutput(std::move(raw_output), *raw_detector, structured_accumulator);
+  if (output.malformed) {
+    return output;
+  }
+
   if (!structured_accumulator.HasPayloadParser()) {
     AppendToolOutput(output, structured_accumulator.Flush());
   } else if (natural_end) {
@@ -1527,14 +1554,16 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
   };
 
   auto emit_tool_output = [&](ToolCallStreamAccumulator::Output out) {
-    malformed_tool_output_seen |= out.malformed;
     if (malformed_tool_output_seen) {
       return;
     }
 
     // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
     // no caller-visible item or durable turn state may contain only its valid prefix.
-    chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
+    if (!out.malformed) {
+      chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
+    }
+
     semantic_output_seen |= HasSemanticOutput(out);
 
     for (auto& event : out.events) {
@@ -1565,6 +1594,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       }
       generated_events.push_back(std::move(call));
     }
+    malformed_tool_output_seen = out.malformed;
   };
 
   auto emit_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
@@ -1874,14 +1904,16 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
   };
 
   auto process_tool_output = [&](ToolCallStreamAccumulator::Output out) {
-    malformed_tool_output_seen |= out.malformed;
     if (malformed_tool_output_seen) {
       return;
     }
 
     // Validate and normalize the entire parsed batch before publishing any element. In particular,
     // custom input comes from argument_source, which preserves the complete provider wrapper.
-    chat_session_internal::NormalizeToolOutputBatch(out, tool_ctx);
+    if (!out.malformed) {
+      chat_session_internal::NormalizeToolOutputBatch(out, tool_ctx);
+    }
+
     semantic_output_seen |= HasSemanticOutput(out);
 
     for (auto& event : out.events) {
@@ -1913,6 +1945,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
       }
       generated_events.push_back(std::move(call));
     }
+    malformed_tool_output_seen = out.malformed;
   };
 
   auto process_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {

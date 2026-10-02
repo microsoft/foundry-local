@@ -643,30 +643,80 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
   };
 }
 
-size_t RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream) {
+size_t RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream) {
+  size_t position = start + std::string_view("<tool_call>\n").size();
+  if (auto function_name = ReadTagName(source, position, kFunctionPrefix)) {
+    while (position < source.size()) {
+      if (source.substr(position).starts_with(kFunctionEnd)) {
+        return position + kFunctionEnd.size();
+      }
+
+      if (kFunctionEnd.starts_with(source.substr(position)) && !end_of_stream) {
+        return 0;
+      }
+
+      if (!ReadTagName(source, position, kParameterPrefix)) {
+        break;
+      }
+
+      const auto body_end = source.find(kParameterEnd, position);
+      if (body_end == std::string_view::npos) {
+        return end_of_stream ? source.size() : 0;
+      }
+
+      position = body_end + kParameterEnd.size();
+    }
+  }
+
+  const auto function_end = source.find(kFunctionEnd, position);
+  const auto end = source.find(kQwenXmlToolCallEndMarker, position);
+  if (function_end != std::string_view::npos &&
+      (end == std::string_view::npos || function_end < end)) {
+    return function_end + kFunctionEnd.size();
+  }
+
+  return end == std::string_view::npos ? (end_of_stream ? source.size() : 0)
+                                      : end + kQwenXmlToolCallEndMarker.size();
+}
+
+struct RejectedBatch {
+  size_t end = 0;
+  bool schema_violation = false;
+};
+
+RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream,
+                              const FunctionSchemas& schemas) {
   size_t position = invalid_position;
   while (true) {
-    const auto end = source.find(kQwenXmlToolCallEndMarker, position);
-    if (end == std::string_view::npos) {
-      return end_of_stream ? source.size() : 0;
+    const auto block = ParseBlock(source, position, schemas);
+    if (block.state == ParseState::kSchemaViolation) {
+      return {source.size(), true};
+    }
+    if (block.state == ParseState::kIncomplete || block.state == ParseState::kQualifiedIncomplete) {
+      return {end_of_stream ? source.size() : 0, false};
     }
 
-    const auto block_end = end + kQwenXmlToolCallEndMarker.size();
+    const auto block_end = block.state == ParseState::kComplete
+                               ? block.end
+                               : RejectedBlockEnd(source, position, end_of_stream);
+    if (block_end == 0) {
+      return {};
+    }
+
     position = source.find_first_not_of(" \t\r\n", block_end);
     if (position == std::string_view::npos) {
-      return end_of_stream ? block_end : 0;
+      return {end_of_stream ? block_end : 0, false};
     }
 
     const auto remaining = source.substr(position);
     if (remaining.starts_with(kQwenXmlToolCallStartMarker)) {
-      position += kQwenXmlToolCallStartMarker.size();
       continue;
     }
     if (kQwenXmlToolCallStartMarker.starts_with(remaining) && !end_of_stream) {
-      return 0;
+      return {};
     }
 
-    return block_end;
+    return {block_end, false};
   }
 }
 
@@ -694,18 +744,18 @@ ToolCallPayloadParseResult ParseBatch(std::string_view source, bool end_of_strea
     }
     if (block.state == ParseState::kInvalid || block.state == ParseState::kStructuralFailure ||
         block.state == ParseState::kSchemaViolation) {
-      const auto rejected_end = RejectedBatchEnd(source, position, end_of_stream);
-      if (rejected_end == 0) {
+      const auto rejected = RejectedBatchEnd(source, position, end_of_stream, schemas);
+      if (rejected.end == 0) {
         return {};
       }
 
       return {
-          .disposition = block.state == ParseState::kSchemaViolation ||
+          .disposition = rejected.schema_violation ||
                                  (recovery_aware && calls.empty() &&
                                   block.state == ParseState::kStructuralFailure)
                              ? ToolCallPayloadDisposition::kMalformed
                              : ToolCallPayloadDisposition::kRejected,
-          .consumed_size = rejected_end,
+          .consumed_size = rejected.end,
           .calls = {},
       };
     }

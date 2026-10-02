@@ -2489,6 +2489,105 @@ TEST_F(QwenNativeProductionIntegrationTest,
   }
 }
 
+TEST_F(QwenNativeProductionIntegrationTest, EngineSameFragmentPrefixBeforeSchemaViolationNeverRetries) {
+  const std::string output =
+      "safe prefix<tool_call>\n<function=lookup>\n<parameter=path>\nsrc\n</parameter>\n"
+      "</function>\n</tool_call> tail";
+  for (const bool json_request : {false, true}) {
+    SCOPED_TRACE(json_request ? "chat completions" : "typed");
+    auto counters = std::make_shared<GeneratorCounters>();
+    auto catalog_model = MakeCatalogModel();
+    ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                        OutputFactory(output, counters));
+    std::string streamed_text;
+    int streamed_calls = 0;
+    std::vector<nlohmann::json> chunks;
+    if (json_request) {
+      try {
+        RunChatCompletions(session, "auto", &chunks);
+        FAIL() << "expected invalid tool call";
+      } catch (const fl::Exception& error) {
+        EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+      }
+      for (const auto& chunk : chunks) {
+        const auto& delta = chunk.at("choices").at(0).at("delta");
+        if (delta.contains("content") && delta.at("content").is_string()) {
+          streamed_text += delta.at("content").get<std::string>();
+        }
+        streamed_calls += delta.contains("tool_calls");
+      }
+    } else {
+      AddFunctionTools(session);
+      session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed_text += static_cast<const TextItem&>(*item).text;
+          } else if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+            ++streamed_calls;
+          }
+        }
+        return 0;
+      });
+      auto request = MakeStatefulRequest("route this");
+      Response response;
+      try {
+        session.ProcessRequest(request, response);
+        FAIL() << "expected invalid tool call";
+      } catch (const fl::Exception& error) {
+        EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+      }
+      EXPECT_TRUE(response.items.empty());
+    }
+
+    EXPECT_EQ(counters->created, 1);
+    EXPECT_EQ(streamed_text, "safe prefix");
+    EXPECT_EQ(streamed_calls, 0);
+    EXPECT_TRUE(session.Transcript().Empty());
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, InterruptedIncompleteSchemaViolationNeverStreamsXml) {
+  const std::string invalid = "<tool_call>\n<function=lookup>\n<parameter=path>\nsrc\n";
+  const std::string unsupported = "<tool_call>\n<function=unsupported>\n<parameter=value>\nsrc\n";
+  for (const auto& [output, cause] : std::vector{
+           std::pair{invalid, BackendTerminationCause::kOutputTokenLimit},
+           std::pair{invalid + "<think>reasoning</think>", BackendTerminationCause::kNaturalEnd},
+           std::pair{unsupported, BackendTerminationCause::kOutputTokenLimit},
+           std::pair{unsupported + "<think>reasoning</think>", BackendTerminationCause::kNaturalEnd},
+       }) {
+    SCOPED_TRACE(output);
+    auto counters = std::make_shared<GeneratorCounters>();
+    auto catalog_model = MakeCatalogModel(/*reasoning=*/true);
+    ChatSession session(catalog_model, *model_, *logger_, telemetry_, {},
+                        OutputFactory(output, counters, cause));
+    AddFunctionTools(session);
+    session.AddToolDefinition(
+        {"unsupported", "Unsupported root.", R"({"type":"array","items":{"type":"string"}})",
+         ToolKind::kFunction});
+    int streamed_items = 0;
+    session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+      auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+      while (queue->TryPop()) {
+        ++streamed_items;
+      }
+      return 0;
+    });
+    auto request = MakeStatefulRequest("route this");
+    Response response;
+    try {
+      session.ProcessRequest(request, response);
+      FAIL() << "expected invalid tool call";
+    } catch (const fl::Exception& error) {
+      EXPECT_EQ(error.code(), FOUNDRY_LOCAL_ERROR_INTERNAL);
+    }
+    EXPECT_EQ(counters->created, 1);
+    EXPECT_EQ(streamed_items, 0);
+    EXPECT_TRUE(response.items.empty());
+    EXPECT_TRUE(session.Transcript().Empty());
+  }
+}
+
 TEST_F(QwenNativeProductionIntegrationTest,
        EngineMalformedRecoveryRejectsEveryNonCallRetryOutputWithoutThirdAttempt) {
   const std::string malformed =

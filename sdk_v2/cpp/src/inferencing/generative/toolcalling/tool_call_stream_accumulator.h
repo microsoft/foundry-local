@@ -115,7 +115,7 @@ class ToolCallStreamAccumulator {
     return out;
   }
 
-  /// Preserve interrupted selected calls as text, but never expose a complete schema-invalid call.
+  /// Preserve ambiguous interrupted selected calls as text, but never expose a known schema-invalid call.
   /// This is separate from `Flush()`: interrupted valid batches remain ambiguous and are not admitted as calls.
   Output RejectPendingSelectedPayload() {
     Output out;
@@ -124,6 +124,13 @@ class ToolCallStreamAccumulator {
     }
 
     if (selected_payload_malformed_) {
+      return out;
+    }
+
+    if (inside_tool_call_ &&
+        payload_parser_(tool_call_buffer_, /*end_of_stream=*/false).disposition ==
+            ToolCallPayloadDisposition::kMalformed) {
+      RejectMalformedSelectedPayload(out);
       return out;
     }
 
@@ -397,7 +404,10 @@ class ToolCallStreamAccumulator {
   }
 
   void RejectMalformedSelectedPayload(Output& out) {
-    out.events.clear();
+    const auto first_call = std::ranges::find_if(out.events, [](const Event& event) {
+      return std::holds_alternative<ParsedToolCall>(event);
+    });
+    out.events.erase(first_call, out.events.end());
     out.malformed = true;
     selected_payload_malformed_ = true;
     tool_call_buffer_.clear();
