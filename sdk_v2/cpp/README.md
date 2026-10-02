@@ -32,6 +32,8 @@ wrapper need only C++17 or newer.
 
 The build resolves its C++ dependencies from the manifest in `vcpkg.json`, and obtains
 the pinned ONNX Runtime and ONNX Runtime GenAI dependencies during CMake configuration.
+Use a vcpkg checkout containing the manifest's `builtin-baseline`; older bundled
+checkouts may lack the registered `cpp-client-telemetry` port.
 
 Chat completions accept a typed `chat_template_kwargs` JSON object, such as
 `{"enable_thinking": false}`, for model-specific template controls. The pinned stable
