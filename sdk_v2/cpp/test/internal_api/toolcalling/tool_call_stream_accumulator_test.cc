@@ -179,13 +179,6 @@ void ExpectSchemaFailureWithoutCalls(
   EXPECT_TRUE(CollectCalls(outputs).empty());
 }
 
-void ExpectExactVisibleWithoutCalls(const std::vector<std::string>& chunks,
-                                    const std::string& expected) {
-  auto output = RunQwen(chunks);
-  EXPECT_EQ(output.visible, expected);
-  EXPECT_TRUE(output.calls.empty());
-}
-
 void ExpectTwoCallsAroundVisibleTail(const std::vector<std::string>& chunks,
                                      const std::string& expected_visible) {
   auto output = RunQwen(chunks);
