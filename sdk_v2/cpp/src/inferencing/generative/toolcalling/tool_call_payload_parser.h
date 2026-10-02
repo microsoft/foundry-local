@@ -15,8 +15,8 @@ enum class ToolCallPayloadDisposition {
   kNeedMore,
   kParsed,
   kRejected,
-  /// A structurally tool-shaped Engine auto-mode candidate that must not become visible text.
-  /// This is only a retry trigger; it does not mean the payload is valid or repairable.
+  /// A recognized, invalid tool attempt that must not become visible text. This signals bounded recovery when
+  /// eligible; otherwise the request fails. It never admits the rejected arguments as a tool call.
   kMalformed,
 };
 
