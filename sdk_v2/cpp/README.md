@@ -41,6 +41,44 @@ clears an inherited default for that request.
 For OpenAI JSON requests, the payload takes precedence over request options, followed
 by session defaults. Omitting kwargs inherits the session default, if any.
 
+### Native non-generative packages
+
+When the web service is enabled, `POST /v1/rank` and `POST /v1/systemone`
+resolve the request `model` as a local-catalog ID or alias. Multi-component
+packages use the metadata described in
+[`docs/non-generative-packages.md`](docs/non-generative-packages.md). Runtime
+caches are isolated by canonical model identity and provider; active requests
+hold lifecycle ownership and block unload. Explicit local paths remain a
+prototype fallback when an alias is not registered:
+
+```bash
+export FOUNDRY_LOCAL_RANK_MODEL_PATH=/models/clm
+export FOUNDRY_LOCAL_SYSTEMONE_MODEL_PATH=/models/kev
+export FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda
+# Bounded session-local caches; setting either corresponding value to 0 disables.
+export FOUNDRY_LOCAL_CLM_CACHE_CAPACITY=256
+export FOUNDRY_LOCAL_CLM_CACHE_CAPACITY_BYTES=67108864
+export FOUNDRY_LOCAL_KEV_CACHE_CAPACITY=512
+export FOUNDRY_LOCAL_KEV_CACHE_CAPACITY_BYTES=16777216
+# Alternatively set FOUNDRY_LOCAL_NON_GENERATIVE_PACKAGE_ROOT, containing
+# rank/ and systemone/ subdirectories.
+
+curl -s http://127.0.0.1:5272/v1/rank \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"clm","context":{"text":"sample"},"question":"Select","answers":["first","second"],"temperature":1}'
+
+curl -s http://127.0.0.1:5272/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kev","state":"sample","questions":{"q":{"type":"noul","instructions":"Is this valid?"}}}'
+```
+
+Missing fallback configuration is reported as HTTP 503. Invalid contracts,
+tasks, criteria, or token bounds are HTTP 400. This bounded integration does
+not add remote catalog submission or C/Python SDK APIs.
+Until the corresponding ORT GenAI package is published, configure this branch
+with `--ort_genai_home /path/to/onnxruntime-genai` so the native
+`DirectoryTokenizer` and component session exports are available.
+
 ## Build From Source
 
 From this directory:
@@ -302,6 +340,7 @@ The build produces these example executables in the build output directory:
 | `tool_calling_example` | Tool definitions, tool-result turns, and streaming tool calls |
 | `embeddings_example` | Single and batch embeddings with cosine similarity |
 | `realtime_audio_example <audio_file_path>` | PCM streaming input and streaming transcription output |
+| `kev_decision_example <package_path> [provider]` | Run a typed KEV decision package through Foundry Local Core |
 
 The source for each is under [examples/](examples/). `basic_chat_example` honors
 `FOUNDRY_LOCAL_SAMPLE_CACHE_DIR` to use an existing model-cache location.
@@ -345,6 +384,24 @@ sdk_v2/cpp/
 - [Runtime loading behavior](docs/OrtRuntimeLoading.md)
 - [Item data ownership](docs/ItemDataOwnershipDesign.md)
 - [C++ port guide](docs/CppPortGuide.md)
+
+## Non-generative ranking and decisions
+
+The CLM ranking and KEV decision routes translate their existing JSON contracts
+to the public ORT GenAI `OgaStructuredRequest` and
+`OgaFreeFormRankRequest` types. Rendering, tokenization, tensor preparation,
+pooling, scoring, and typed result construction are owned by ORT GenAI; Foundry
+only performs contract translation. Set
+`FOUNDRY_LOCAL_NON_GENERATIVE_PROVIDER=cuda` to select CUDA only for prototype
+path-fallback packages. Catalog-selected packages use their registered/package
+provider metadata and are not overridden by this environment variable.
+The `FOUNDRY_LOCAL_{CLM,KEV}_CACHE_CAPACITY` and `_CAPACITY_BYTES` variables
+configure bounded session-local runtime caches. Package runtimes are also
+cached per canonical catalog identity and evicted by model unload. KEV caches
+tokenized prefixes/rows only.
+True recurrent/convolution/KV state branching needs a future exported
+graph/state-handle contract.
+The HTTP request and response schemas are unchanged.
 
 ## License
 

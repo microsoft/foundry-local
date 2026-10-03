@@ -42,6 +42,49 @@ class LocalModelCatalogTest : public ::testing::Test {
     std::ofstream(path / "genai_config.json") << R"({"model":{"type":"phi3","context_length":4096}})";
   }
 
+  static void WriteBundle(const std::filesystem::path& path,
+                          const std::string& model_id,
+                          const std::string& task,
+                          const std::string& provider = "cpu") {
+    std::filesystem::create_directories(path / "components");
+    std::ofstream(path / "tokenizer.json") << "{}";
+    std::ofstream(path / "tokenizer_config.json") << "{}";
+    nlohmann::json components = nlohmann::json::object();
+    const auto add_component = [&](const std::string& name, const std::string& role) {
+      const auto relative = "components/" + name + ".onnx";
+      std::ofstream(path / relative) << "synthetic";
+      components[name] = {{"role", role}, {"filename", relative}};
+    };
+    if (task == "text-ranking") {
+      add_component("encoder", "backbone");
+      add_component("state_head", "head");
+      add_component("action_head", "head");
+      add_component("scorer", "scorer");
+    } else {
+      add_component("backbone", "backbone");
+      add_component("pointer_head", "head");
+    }
+    std::ofstream(path / "component_manifest.json")
+        << nlohmann::json{{"schema_version", 1},
+                          {"model_type", "synthetic"},
+                          {"components", components}};
+    nlohmann::json metadata = {
+        {"Name", model_id},
+        {"Alias", task == "text-ranking" ? "clm" : "kev"},
+        {"Task", task},
+        {"ComponentManifest", "component_manifest.json"},
+        {"License", "MIT"},
+        {"Provenance",
+         {{"source", "synthetic"},
+          {"artifact_revision", "artifact-revision"},
+          {"base_model", "synthetic/base"},
+          {"base_revision", "base-revision"}}},
+        {"Provider", {{"execution_provider", provider}, {"variant", "fp32"}}},
+        {"Capabilities", nlohmann::json::array({"structured-input"})},
+    };
+    std::ofstream(path / "inference_model.json") << metadata;
+  }
+
   ModelInfo MakeMetadata(std::string task = "chat-completion") const {
     ModelInfo info;
     info.SetPropertyStr(FOUNDRY_LOCAL_MODEL_PROP_TASK_STR, std::move(task));
@@ -145,6 +188,124 @@ TEST_F(LocalModelCatalogTest, RegistrationRequiresSupportedTask) {
   ModelInfo missing_task;
   EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "missing-task:1", missing_task), Exception);
   EXPECT_THROW(catalog_.RegisterModel(model_dir_.string(), "invalid-task:1", MakeMetadata("text-generation")),
+               Exception);
+}
+
+TEST_F(LocalModelCatalogTest, RegistersMultiComponentTasksAndResolvesAlias) {
+  const auto clm_path = root_.path() / "clm";
+  WriteBundle(clm_path, "clm-generic-cpu:1", "text-ranking");
+
+  auto* registered = catalog_.RegisterModel(
+      clm_path.string(), "clm-generic-cpu:1", MakeMetadata("text-ranking"));
+
+  ASSERT_NE(registered, nullptr);
+  EXPECT_EQ(registered->Info().task, "text-ranking");
+  EXPECT_TRUE(registered->IsCached());
+  ASSERT_NE(catalog_.GetModel("clm"), nullptr);
+  EXPECT_EQ(catalog_.GetModel("clm")->Id(), "clm-generic-cpu:1");
+}
+
+TEST_F(LocalModelCatalogTest, BundleRegistrationValidatesIdentityAndTask) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+
+  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "other:1",
+                                      MakeMetadata("text-ranking")),
+               Exception);
+  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                      MakeMetadata("typed-decision")),
+               Exception);
+
+  auto inference_path = bundle_path / "inference_model.json";
+  nlohmann::json inference;
+  {
+    std::ifstream input(inference_path);
+    input >> inference;
+  }
+  inference.erase("ComponentManifest");
+  std::ofstream(inference_path) << inference;
+  EXPECT_THROW(catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                      MakeMetadata("text-ranking")),
+               Exception);
+}
+
+TEST_F(LocalModelCatalogTest, ActiveExternalSessionBlocksUnloadAndUnregister) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+  auto* model = catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                       MakeMetadata("text-ranking"));
+
+  EXPECT_EQ(model->GetPath(), bundle_path.string());
+  auto* acquired = model->AcquireExternalSession();
+  EXPECT_EQ(acquired, model);
+  EXPECT_TRUE(model->IsLoaded());
+  EXPECT_THROW(model->Unload(), Exception);
+  EXPECT_THROW(catalog_.UnregisterModel("clm"), Exception);
+  acquired->ReleaseExternalSession();
+  EXPECT_NO_THROW(model->UnloadExternalRuntime());
+  EXPECT_NO_THROW(catalog_.UnregisterModel("clm"));
+}
+
+TEST_F(LocalModelCatalogTest, DirectUnloadRejectsNonGenerativeModels) {
+  const auto bundle_path = root_.path() / "bundle";
+  WriteBundle(bundle_path, "clm-generic-cpu:1", "text-ranking");
+  auto* model = catalog_.RegisterModel(bundle_path.string(), "clm-generic-cpu:1",
+                                       MakeMetadata("text-ranking"));
+
+  auto* acquired = model->AcquireExternalSession();
+  acquired->ReleaseExternalSession();
+  EXPECT_THROW(model->Unload(), Exception);
+  EXPECT_TRUE(model->IsLoaded());
+  EXPECT_NO_THROW(model->UnloadExternalRuntime());
+}
+
+TEST_F(LocalModelCatalogTest, ExternalLeaseRetainsExactLeafAcrossAliasSelectionChange) {
+  const auto first_path = root_.path() / "clm-v1";
+  const auto second_path = root_.path() / "clm-v2";
+  WriteBundle(first_path, "clm-generic-cpu:1", "text-ranking");
+  WriteBundle(second_path, "clm-generic-cpu:2", "text-ranking");
+  auto* first = catalog_.RegisterModel(first_path.string(), "clm-generic-cpu:1",
+                                       MakeMetadata("text-ranking"));
+  auto* second = catalog_.RegisterModel(second_path.string(), "clm-generic-cpu:2",
+                                        MakeMetadata("text-ranking"));
+  auto* alias = catalog_.GetModel("clm");
+  ASSERT_NE(alias, nullptr);
+  alias->SelectVariant(*first);
+
+  auto* leased_leaf = alias->AcquireExternalSession();
+  ASSERT_EQ(leased_leaf, first);
+  EXPECT_EQ(first->ActiveExternalSessionCount(), 1u);
+  alias->SelectVariant(*second);
+  EXPECT_EQ(alias->SelectedLeaf(), second);
+  EXPECT_EQ(first->ActiveExternalSessionCount(), 1u);
+  EXPECT_EQ(second->ActiveExternalSessionCount(), 0u);
+  EXPECT_THROW(first->UnloadExternalRuntime(), Exception);
+  EXPECT_NO_THROW(second->UnloadExternalRuntime());
+
+  leased_leaf->ReleaseExternalSession();
+  EXPECT_EQ(first->ActiveExternalSessionCount(), 0u);
+  EXPECT_NO_THROW(first->UnloadExternalRuntime());
+}
+
+TEST_F(LocalModelCatalogTest, NormalizesSupportedPackageProvidersAndRejectsUnknown) {
+  const auto cpu_path = root_.path() / "cpu";
+  WriteBundle(cpu_path, "clm-generic-cpu:1", "text-ranking",
+              "CPUExecutionProvider");
+  auto* cpu = catalog_.RegisterModel(cpu_path.string(), "clm-generic-cpu:1",
+                                     MakeMetadata("text-ranking"));
+  EXPECT_TRUE(cpu->Info().execution_provider.empty());
+
+  const auto cuda_path = root_.path() / "cuda";
+  WriteBundle(cuda_path, "clm-cuda-gpu:1", "text-ranking",
+              "CUDAExecutionProvider");
+  auto* cuda = catalog_.RegisterModel(cuda_path.string(), "clm-cuda-gpu:1",
+                                      MakeMetadata("text-ranking"));
+  EXPECT_EQ(cuda->Info().execution_provider, "cuda");
+
+  const auto unknown_path = root_.path() / "unknown";
+  WriteBundle(unknown_path, "clm-unknown:1", "text-ranking", "mystery");
+  EXPECT_THROW(catalog_.RegisterModel(unknown_path.string(), "clm-unknown:1",
+                                      MakeMetadata("text-ranking")),
                Exception);
 }
 

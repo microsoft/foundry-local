@@ -11,8 +11,8 @@ namespace fl {
 
 /// Scan a model cache directory for locally cached (downloaded) models.
 /// Returns a map of model_id -> local_path for each valid model found.
-/// A valid model directory has genai_config.json, no download.tmp,
-/// and an inference_model.json with a model name.
+/// A valid model directory is either a generative leaf (genai_config.json plus
+/// inference_model.json) or a validated multi-component package root.
 std::map<std::string, std::string> ScanLocalModels(const std::string& cache_directory,
                                                    ILogger& logger);
 

@@ -13,6 +13,7 @@
 #include "service/embeddings_handler.h"
 #include "service/handler_utils.h"
 #include "service/models_handlers.h"
+#include "service/non_generative_handlers.h"
 #include "service/responses_handler.h"
 
 #include <fmt/format.h>
@@ -189,6 +190,10 @@ void RegisterOpenAIRoutes(const std::shared_ptr<oatpp::web::server::HttpRouter>&
   router->route("POST", prefix + "/v1/chat/completions", CreateChatCompletionsHandler(ctx));
   router->route("POST", prefix + "/v1/audio/transcriptions", CreateAudioTranscriptionsHandler(ctx));
   router->route("POST", prefix + "/v1/embeddings", CreateEmbeddingsHandler(ctx));
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+  router->route("POST", prefix + "/v1/systemone", CreateSystemOneHandler(ctx));
+  router->route("POST", prefix + "/v1/rank", CreateRankHandler(ctx));
+#endif
   router->route("POST", prefix + "/v1/responses", CreateResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses", CreateListResponsesHandler(ctx));
   router->route("GET", prefix + "/v1/responses/{id}", CreateGetResponseHandler(ctx));
@@ -264,7 +269,13 @@ struct WebService::Impl {
                            session_manager,
                            public_response_store,
                            telemetry,
-                           thread_tracker})),
+                           thread_tracker,
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+                           CreateNonGenerativeRuntimeState()
+#else
+                           nullptr
+#endif
+            })),
         local_context(std::make_unique<ServiceContext>(
             ServiceContext{local_catalog,
                            logger,
@@ -274,7 +285,14 @@ struct WebService::Impl {
                            session_manager,
                            local_response_store,
                            telemetry,
-                           thread_tracker})) {}
+                           thread_tracker,
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+                           CreateNonGenerativeRuntimeState()
+#else
+                           nullptr
+#endif
+            })) {
+  }
 };
 
 WebService::WebService(ICatalog& public_catalog, ICatalog& local_catalog, ILogger& logger, std::string model_cache_dir,
@@ -436,6 +454,10 @@ void WebService::Stop() {
     }
   }
 
+#ifdef FOUNDRY_LOCAL_HAS_NON_GENERATIVE_ORT_GENAI
+  ClearNonGenerativeRuntimes(*impl_->public_context);
+  ClearNonGenerativeRuntimes(*impl_->local_context);
+#endif
   impl_->servers.clear();
   impl_->listener_threads.clear();
   impl_->providers.clear();
