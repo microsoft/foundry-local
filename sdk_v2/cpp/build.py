@@ -439,10 +439,8 @@ def configure(args: argparse.Namespace) -> None:
         command += [f"-DVCPKG_OVERLAY_TRIPLETS={triplets_dir}"]
 
     ports_dir = SCRIPT_DIR / "ports"
-    if ports_dir.is_dir() and any(ports_dir.glob("*/portfile.cmake")):
+    if ports_dir.is_dir():
         command += [f"-DVCPKG_OVERLAY_PORTS={ports_dir}"]
-    else:
-        command += ["-DVCPKG_OVERLAY_PORTS="]
 
     # Project options
     build_tests = "ON"

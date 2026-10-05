@@ -16,6 +16,7 @@ set(VCPKG_CMAKE_CONFIGURE_OPTIONS
     "-DANDROID_ABI=arm64-v8a"
     "-DANDROID_PLATFORM=android-28"
 )
+
 # Chain-load the NDK toolchain so both vcpkg ports and the top-level project
 # use the same NDK. build.py sets ANDROID_NDK_HOME when --android_ndk_path is given.
 if(DEFINED ENV{ANDROID_NDK_HOME})

@@ -13,6 +13,15 @@ if(VCPKG_TARGET_IS_OSX OR VCPKG_TARGET_IS_IOS)
     set(MATSDK_BUILD_APPLE_HTTP ON)
 endif()
 
+if("minimal-sqlite" IN_LIST FEATURES AND "system-sqlite" IN_LIST FEATURES)
+    message(FATAL_ERROR "cpp-client-telemetry features minimal-sqlite and system-sqlite are mutually exclusive")
+endif()
+
+set(MATSDK_SQLITE_PROVIDER SYSTEM)
+if("minimal-sqlite" IN_LIST FEATURES)
+    set(MATSDK_SQLITE_PROVIDER MINIMAL)
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
@@ -36,7 +45,7 @@ vcpkg_cmake_configure(
         -DMATSDK_BUILD_APPLE_HTTP=${MATSDK_BUILD_APPLE_HTTP}
         -DMATSDK_ANDROID_HTTP_CLIENT=CURL
         -DMATSDK_CURL_PROVIDER=SYSTEM
-        -DMATSDK_SQLITE_PROVIDER=MINIMAL
+        -DMATSDK_SQLITE_PROVIDER=${MATSDK_SQLITE_PROVIDER}
         -DMATSDK_ZLIB_PROVIDER=SYSTEM
 )
 
