@@ -450,6 +450,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     set(FOUNDRY_LOCAL_EXPORTS_MAP "${CMAKE_CURRENT_SOURCE_DIR}/src/exports.map")
     target_link_options(foundry_local PRIVATE "LINKER:--version-script,${FOUNDRY_LOCAL_EXPORTS_MAP}")
     set_property(TARGET foundry_local APPEND PROPERTY LINK_DEPENDS "${FOUNDRY_LOCAL_EXPORTS_MAP}")
+    # Bundled OpenSSL registers pthread-local destructors on caller-owned threads.
+    # Keep their code mapped after dlclose until those threads have exited.
+    target_link_options(foundry_local PRIVATE "LINKER:-z,nodelete")
 endif()
 
 # --------------------------------------------------------------------------
