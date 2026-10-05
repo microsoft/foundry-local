@@ -64,8 +64,15 @@ Both triplets use:
 | `spdlog`                  | Builds for Android   | Uses `android_sink_mt` for logcat output       |
 | `gtest`                   | Builds for Android   | No changes needed                              |
 | `azure-storage-blobs-cpp` | Works via vcpkg      | Pulls in libcurl + OpenSSL (statically linked) |
+| `cpp-client-telemetry`    | Native curl transport | Overlay declares curl/OpenSSL dependencies and bundles minimal SQLite |
 | `oatpp`                   | Excluded on Android  | Web service disabled via CMake `if(ANDROID)`   |
 | OpenSSL                   | vcpkg builds 3.x     | Unversioned `.so` works natively on Android    |
+
+The telemetry overlay port selects the native curl transport; the triplets do not
+override 1DS transport selection. Its `curl-openssl` feature declares curl as a
+dependency on Android, so vcpkg installs curl before configuring 1DS and includes
+curl's ABI in the telemetry binary-cache key. Telemetry always builds with private
+minimal SQLite, not the external `sqlite3` package.
 
 ---
 

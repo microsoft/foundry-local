@@ -32,8 +32,10 @@ wrapper need only C++17 or newer.
 
 The build resolves its C++ dependencies from the manifest in `vcpkg.json`, and obtains
 the pinned ONNX Runtime and ONNX Runtime GenAI dependencies during CMake configuration.
-Use a vcpkg checkout containing the manifest's `builtin-baseline`; older bundled
-checkouts may lack the registered `cpp-client-telemetry` port.
+Use a vcpkg checkout containing the manifest's `builtin-baseline`. The telemetry
+overlay port pins 1DS and selects private minimal SQLite on every platform.
+On Linux and Android, its `curl-openssl` feature declares curl/OpenSSL as port
+dependencies, ensuring correct build ordering and binary-cache dependency tracking.
 
 Chat completions accept a typed `chat_template_kwargs` JSON object, such as
 `{"enable_thinking": false}`, for model-specific template controls. The pinned stable

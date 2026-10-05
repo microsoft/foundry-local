@@ -42,13 +42,8 @@
         {
           "name": "cpp-client-telemetry",
           "default-features": false,
+          "features": ["minimal-sqlite", "curl-openssl"],
           "platform": "!uwp"
-        },
-        {
-          "name": "curl",
-          "default-features": false,
-          "features": ["openssl"],
-          "platform": "android"
         }
       ]
     },
