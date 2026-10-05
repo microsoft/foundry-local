@@ -67,6 +67,15 @@ can be created after all previous handles are released. Bindings must release
 managers and derived handles normally rather than relying on library unloading
 for cleanup.
 
+The trade-off is intentional: Foundry's code and static state, and dependencies
+retained by the loader, may remain resident until process exit. Replacing the
+library file on disk does not upgrade the copy already mapped in a running
+process, even after all SDK handles have been released. SDK users should restart
+the application to pick up native-library upgrades; unloading/reloading the SDK
+is not a supported hot-upgrade mechanism. Normal package updates followed by an
+application restart are unaffected. Do not overwrite a mapped library in place;
+deploy an update separately and restart.
+
 ## Why Not a Native-Side Loader?
 
 Earlier iterations tried two native-side designs:

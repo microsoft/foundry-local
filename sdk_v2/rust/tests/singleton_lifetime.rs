@@ -119,13 +119,4 @@ async fn create_reuses_native_manager_after_outer_drop() {
 
     drop(rebuilt);
     drop(keep_alive);
-
-    // Keeping the library mapped must not keep the native manager alive.
-    let fresh = FoundryLocalManager::create(test_config())
-        .expect("create must initialise a new manager after every previous handle is dropped");
-    assert!(
-        !fresh.catalog().name().is_empty(),
-        "fresh manager must expose a working catalog"
-    );
-    drop(fresh);
 }

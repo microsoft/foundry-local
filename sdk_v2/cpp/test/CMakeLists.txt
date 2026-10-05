@@ -1,5 +1,28 @@
 # Copyright (c) Microsoft. All rights reserved.
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    find_package(CURL REQUIRED)
+    find_package(Threads REQUIRED)
+    add_executable(elf-loader-probe elf-loader-probe.cc)
+    target_include_directories(elf-loader-probe PRIVATE ../include ${CURL_INCLUDE_DIRS})
+    target_compile_options(elf-loader-probe PRIVATE ${FOUNDRY_LOCAL_COMPILE_OPTIONS})
+    # Do not link Foundry or curl: each test must control the first/last dlopen handle.
+    target_link_libraries(elf-loader-probe PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_dependencies(elf-loader-probe foundry_local)
+
+    add_test(NAME elf-artifact-contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py
+            artifact $<TARGET_FILE:foundry_local> ${CMAKE_NM} ${CMAKE_READELF})
+    foreach(order IN ITEMS curl-first foundry-first)
+        add_test(NAME elf-loader-${order}
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py
+                runtime $<TARGET_FILE:foundry_local> $<TARGET_FILE:elf-loader-probe>
+                ${CMAKE_CURRENT_BINARY_DIR}/elf-loader-${order} ${order})
+        set_tests_properties(elf-loader-${order} PROPERTIES TIMEOUT 120)
+    endforeach()
+endif()
+
 find_package(httplib CONFIG REQUIRED)
 
 # cpp-httplib's non-blocking resolver uses getaddrinfo_a, which lives in libanl on glibc < 2.34.
