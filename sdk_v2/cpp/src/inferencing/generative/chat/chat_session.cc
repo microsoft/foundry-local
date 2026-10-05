@@ -1554,9 +1554,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
 
     // The accumulator can emit several calls from one decoded fragment. Admit the batch atomically:
     // no caller-visible item or durable turn state may contain only its valid prefix.
-    if (!out.malformed) {
-      chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
-    }
+    chat_session_internal::NormalizeToolOutputBatch(out, cached_tool_ctx_);
 
     semantic_output_seen |= HasSemanticOutput(out);
 
@@ -1588,7 +1586,7 @@ void ChatSession::ProcessRequestImpl(const Request& request, Response& response)
       }
       generated_events.push_back(std::move(call));
     }
-    malformed_tool_output_seen = out.malformed;
+    malformed_tool_output_seen = out.malformed && !turn_guard.TurnEnded();
   };
 
   auto emit_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {
@@ -1904,9 +1902,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
 
     // Validate and normalize the entire parsed batch before publishing any element. In particular,
     // custom input comes from argument_source, which preserves the complete provider wrapper.
-    if (!out.malformed) {
-      chat_session_internal::NormalizeToolOutputBatch(out, tool_ctx);
-    }
+    chat_session_internal::NormalizeToolOutputBatch(out, tool_ctx);
 
     semantic_output_seen |= HasSemanticOutput(out);
 
@@ -1939,7 +1935,7 @@ void ChatSession::ProcessChatCompletionsJson(PreparedChatRequest& prepared, cons
       }
       generated_events.push_back(std::move(call));
     }
-    malformed_tool_output_seen = out.malformed;
+    malformed_tool_output_seen = out.malformed && !turn_guard.TurnEnded();
   };
 
   auto process_segments = [&](const std::vector<ReasoningStreamSplitter::Segment>& segments) {

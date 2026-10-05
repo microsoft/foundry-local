@@ -667,6 +667,24 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
 
       const auto body_end = source.find(kParameterEnd, position);
       const auto outer_end = source.find(kFunctionEnd, position);
+      for (auto call_end = source.find(kQwenXmlToolCallEndMarker, position);
+           call_end != std::string_view::npos &&
+           (body_end == std::string_view::npos || call_end < body_end);
+           call_end = source.find(kQwenXmlToolCallEndMarker,
+                                  call_end + kQwenXmlToolCallEndMarker.size())) {
+        const auto next = source.find_first_not_of(" \t\r\n", call_end + kQwenXmlToolCallEndMarker.size());
+        if (next != std::string_view::npos && source.substr(next).starts_with(kCallStart)) {
+          size_t name_position = next + kCallStart.size();
+          // A sibling parameter or function close before this body's close is ambiguous framing. Fail closed;
+          // a bare function header without either can still be literal body text.
+          if (ReadTagName(source, name_position, kFunctionPrefix) &&
+              (body_end == std::string_view::npos ||
+               source.find(kParameterPrefix, name_position) < body_end ||
+               source.find(kFunctionEnd, name_position) < body_end)) {
+            return {source.size(), true};
+          }
+        }
+      }
       if (outer_end != std::string_view::npos &&
           (body_end == std::string_view::npos || outer_end < body_end)) {
         for (auto sibling = source.find(kCallStart, outer_end + kFunctionEnd.size());

@@ -88,7 +88,9 @@ class FixedOutputGenerator final : public ChatGenerator {
                        int prompt_tokens = 4,
                        int generated_tokens = 1,
                        std::function<void()> generate_hook = {},
-                       GenerationTrace* trace = nullptr)
+                       GenerationTrace* trace = nullptr,
+                       size_t chunk_size = std::string::npos,
+                       size_t first_chunk_size = std::string::npos)
       : output_(std::move(output)),
         cause_(cause),
         prompt_opens_reasoning_(prompt_opens_reasoning),
@@ -96,7 +98,9 @@ class FixedOutputGenerator final : public ChatGenerator {
         prompt_tokens_(prompt_tokens),
         generated_tokens_(generated_tokens),
         generate_hook_(std::move(generate_hook)),
-        trace_(trace) {
+        trace_(trace),
+        chunk_size_(chunk_size),
+        first_chunk_size_(first_chunk_size) {
     if (counters_) {
       ++counters_->created;
     }
@@ -121,7 +125,6 @@ class FixedOutputGenerator final : public ChatGenerator {
       throw std::logic_error("The host must end this turn after the first fragment");
     }
 
-    generated_ = true;
     current_token_ = 1;
     if (trace_) {
       ++trace_->generated_tokens;
@@ -133,7 +136,12 @@ class FixedOutputGenerator final : public ChatGenerator {
 
   std::string Decode() override {
     current_token_.reset();
-    return output_;
+    const auto size = std::min(output_offset_ == 0 ? first_chunk_size_ : chunk_size_,
+                               output_.size() - output_offset_);
+    auto chunk = output_.substr(output_offset_, size);
+    output_offset_ += size;
+    generated_ = output_offset_ == output_.size();
+    return chunk;
   }
 
   std::optional<int32_t> CurrentTokenId() const override {
@@ -176,6 +184,7 @@ class FixedOutputGenerator final : public ChatGenerator {
 
     generated_ = false;
     canceled_ = false;
+    output_offset_ = 0;
     current_token_.reset();
     return 1;
   }
@@ -215,6 +224,9 @@ class FixedOutputGenerator final : public ChatGenerator {
   int generated_tokens_;
   std::function<void()> generate_hook_;
   GenerationTrace* trace_;
+  size_t chunk_size_;
+  size_t first_chunk_size_;
+  size_t output_offset_ = 0;
 };
 
 constexpr std::string_view kNativeQwenChatTemplate =
@@ -1488,11 +1500,15 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
   static TextChatGeneratorFactory OutputFactory(
       std::string output,
       std::shared_ptr<GeneratorCounters> counters = {},
-      BackendTerminationCause cause = BackendTerminationCause::kNaturalEnd) {
-    return [output = std::move(output), counters = std::move(counters), cause](
+      BackendTerminationCause cause = BackendTerminationCause::kNaturalEnd,
+      size_t chunk_size = std::string::npos,
+      size_t first_chunk_size = std::string::npos) {
+    return [output = std::move(output), counters = std::move(counters), cause, chunk_size, first_chunk_size](
                const auto&, const auto&, auto&, const auto&, bool) {
       return std::make_unique<FixedOutputGenerator>(
-          output, cause, /*prompt_opens_reasoning=*/false, counters);
+          output, cause, /*prompt_opens_reasoning=*/false, counters,
+          /*prompt_tokens=*/4, /*generated_tokens=*/1, std::function<void()>{},
+          /*trace=*/nullptr, chunk_size, first_chunk_size);
     };
   }
 
@@ -1517,7 +1533,8 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
 
   static nlohmann::json RunChatCompletions(ChatSession& session,
                                            std::string tool_choice,
-                                           std::vector<nlohmann::json>* chunks = nullptr) {
+                                           std::vector<nlohmann::json>* chunks = nullptr,
+                                           bool include_custom_tool = false) {
     if (chunks != nullptr) {
       session.SetStreamingCallback(
           [chunks](flStreamingCallbackData event, void*) {
@@ -1538,7 +1555,7 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
       choice = {{"type", "function"},
                 {"function", {{"name", "lookup"}}}};
     }
-    const auto body = nlohmann::json{
+    auto body = nlohmann::json{
         {"model", kModelId},
         {"messages", nlohmann::json::array(
                          {{{"role", "user"}, {"content", "route this"}}})},
@@ -1561,6 +1578,11 @@ class QwenNativeProductionIntegrationTest : public ::testing::Test {
                    {"properties",
                     {{"zone", {{"type", "string"}}}}}}}}}}})},
         {"tool_choice", std::move(choice)}};
+    if (include_custom_tool) {
+      body["tools"].push_back(
+          {{"type", "custom"},
+           {"custom", {{"name", "transform"}, {"format", {{"type", "text"}}}}}});
+    }
 
     Request request;
     request.AddOwnedItem(std::make_unique<TextItem>(
@@ -2529,9 +2551,6 @@ TEST_F(QwenNativeProductionIntegrationTest, EngineSemanticPrefixBeforeSchemaViol
   const std::vector<Case> cases = {
       {"safe prefix<tool_call>\n<function=lookup>\n<parameter=path>\nsrc\n</parameter>\n"
        "</function>\n</tool_call> tail", "safe prefix", 0},
-      {std::string(kLookupCall) + "\nordinary prose\n"
-       "<tool_call>\n<function=clock>\n<parameter=path>\nsrc\n"
-       "</parameter>\n</function>\n</tool_call> tail", "", 1},
   };
 
   for (const auto& test_case : cases) {
@@ -2587,6 +2606,85 @@ TEST_F(QwenNativeProductionIntegrationTest, EngineSemanticPrefixBeforeSchemaViol
       EXPECT_EQ(streamed_text, test_case.expected_text);
       EXPECT_EQ(streamed_calls, test_case.expected_calls);
       EXPECT_TRUE(session.Transcript().Empty());
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest, EarlierCallEndsTurnBeforeIndependentMalformedBatch) {
+  const std::string invalid =
+      "<tool_call>\n<function=clock>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string custom_call =
+      "<tool_call>\n<function=transform>\n<parameter=input>\nhello\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  for (const bool custom : {false, true}) {
+    const std::string generated = (custom ? custom_call : std::string(kLookupCall)) +
+                                  "\nordinary prose\n" + invalid + " tail";
+    for (size_t split = 0; split <= generated.size() + 1; ++split) {
+      SCOPED_TRACE(custom ? "custom" : "function");
+      SCOPED_TRACE(split);
+      const bool byte_chunks = split == generated.size() + 1;
+      const auto chunk_size = byte_chunks ? 1u : std::string::npos;
+      const auto first_chunk_size = byte_chunks ? 1u : split == 0 ? std::string::npos : split;
+
+      for (const bool json_request : {false, true}) {
+        SCOPED_TRACE(json_request ? "chat completions" : "typed");
+        auto counters = std::make_shared<GeneratorCounters>();
+        auto catalog_model = MakeCatalogModel();
+        ChatSession session(catalog_model, *engine_model_, *logger_, telemetry_, {},
+                            OutputFactory(generated, counters, BackendTerminationCause::kNaturalEnd,
+                                          chunk_size, first_chunk_size));
+        if (json_request) {
+          std::vector<nlohmann::json> chunks;
+          const auto completion = RunChatCompletions(session, "auto", &chunks, custom);
+          const auto& choice = completion.at("choices").at(0);
+          EXPECT_EQ(choice.at("finish_reason"), "tool_calls");
+          ASSERT_EQ(choice.at("message").at("tool_calls").size(), 1u);
+          const auto& call = choice.at("message").at("tool_calls").at(0);
+          if (custom) {
+            EXPECT_EQ(call.at("custom").at("name"), "transform");
+            EXPECT_EQ(call.at("custom").at("input"), "hello");
+          } else {
+            EXPECT_EQ(call.at("function").at("name"), "lookup");
+            EXPECT_EQ(call.at("function").at("arguments"), R"({"city":"Paris"})");
+          }
+          EXPECT_TRUE(std::ranges::none_of(chunks, [](const auto& chunk) {
+            const auto& delta = chunk.at("choices").at(0).at("delta");
+            return delta.contains("content") && delta.at("content").is_string() &&
+                   !delta.at("content").template get<std::string>().empty();
+          }));
+        } else {
+          AddFunctionTools(session);
+          if (custom) {
+            session.AddToolDefinition(tools::MakeCustomTool("transform", "Transform text."));
+          }
+          std::vector<std::string> streamed_arguments;
+          session.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+            auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+            while (auto item = queue->TryPop()) {
+              if (item->type == FOUNDRY_LOCAL_ITEM_TOOL_CALL) {
+                streamed_arguments.push_back(static_cast<const ToolCallItem&>(*item).arguments);
+              } else {
+                EXPECT_EQ(item->type, FOUNDRY_LOCAL_ITEM_TEXT);
+                EXPECT_TRUE(static_cast<const TextItem&>(*item).text.empty());
+              }
+            }
+            return 0;
+          });
+          auto request = MakeStatefulRequest("route this");
+          Response response;
+          session.ProcessRequest(request, response);
+          const auto calls = Calls(response);
+          ASSERT_EQ(calls.size(), 1u);
+          const std::string expected = custom ? "hello" : R"({"city":"Paris"})";
+          EXPECT_EQ(calls.front()->arguments, expected);
+          EXPECT_EQ(streamed_arguments, (std::vector<std::string>{expected}));
+          EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_TOOL_CALLS);
+          EXPECT_TRUE(session.Transcript().Messages().back().VisibleText().empty());
+        }
+        EXPECT_EQ(counters->created, 1);
+      }
     }
   }
 }

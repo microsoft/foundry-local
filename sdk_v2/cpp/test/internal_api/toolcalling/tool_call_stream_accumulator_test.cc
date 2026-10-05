@@ -413,8 +413,12 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidSiblingAfterUnknownOrRejectedCallFai
       "<tool_call>\n<function=missing>\n<parameter=x>\n"
       "literal </function>\n</tool_call> and <tool_call>\nnot a sibling\n"
       "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_sibling_header =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </tool_call>\n<tool_call>\n<function=typed>\nnot a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
   for (const auto& candidate : {literal, literal_outer_end, literal_outer_end_and_start,
-                                literal_outer_end_and_line_start}) {
+                                literal_outer_end_and_line_start, literal_sibling_header}) {
     for (const auto& chunks : std::vector<std::vector<std::string>>{
              {candidate}, SplitIntoBytes(candidate)}) {
       auto accumulator = MakeQwenAccumulator();
@@ -461,6 +465,71 @@ TEST(QwenXmlToolCallAccumulatorTest, UnclosedRejectedParameterCannotConsumeInval
         EXPECT_TRUE(CollectVisible(outputs).empty()) << "split=" << split;
         EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
       }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, MissingFunctionCloseCannotConsumeInvalidSibling) {
+  const std::string unknown =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n</tool_call>";
+  const std::string unknown_with_literal_end =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </tool_call> not a sibling\n</tool_call>";
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string missing_required =
+      "<tool_call>\n<function=typed>\n</function>\n</tool_call>";
+
+  for (const auto& first : {unknown, unknown_with_literal_end}) {
+    for (const auto& sibling : {invalid, missing_required}) {
+      for (const auto& generated : {first + "\n" + sibling, sibling + "\n" + first}) {
+        for (const bool recovery_aware : {false, true}) {
+          for (const auto& chunks : std::vector<std::vector<std::string>>{
+                   {generated}, SplitIntoBytes(generated)}) {
+            auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+            auto outputs = RunChunks(accumulator, chunks);
+            EXPECT_TRUE(AnyMalformed(outputs));
+            EXPECT_TRUE(CollectVisible(outputs).empty());
+            EXPECT_TRUE(CollectCalls(outputs).empty());
+          }
+          for (size_t split = 0; split <= generated.size(); ++split) {
+            SCOPED_TRACE(split);
+            auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+            auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+            EXPECT_TRUE(AnyMalformed(outputs));
+            EXPECT_TRUE(CollectVisible(outputs).empty());
+            EXPECT_TRUE(CollectCalls(outputs).empty());
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, AmbiguousNestedCallMarkupFailsClosed) {
+  const std::string ambiguous =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </tool_call>\n<tool_call>\n<function=typed>\n"
+      "<parameter=path>\nsrc\n</parameter> not a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  for (const bool recovery_aware : {false, true}) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {ambiguous}, SplitIntoBytes(ambiguous)}) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, chunks);
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+    for (size_t split = 0; split <= ambiguous.size(); ++split) {
+      SCOPED_TRACE(split);
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitAt(ambiguous, split));
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
     }
   }
 }
