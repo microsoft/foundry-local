@@ -402,9 +402,100 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidSiblingAfterUnknownOrRejectedCallFai
                               "literal </tool_call> and <tool_call>\n<function=typed>\n"
                               "<parameter=path>\nsrc\n</parameter> not a sibling\n"
                               "</parameter>\n</function>\n</tool_call>";
-  const auto literal_output = RunQwen({literal});
-  EXPECT_EQ(literal_output.visible, literal);
-  EXPECT_TRUE(literal_output.calls.empty());
+  const std::string literal_outer_end = "<tool_call>\n<function=missing>\n<parameter=x>\n"
+                                        "literal </function>\n</tool_call> within the body\n"
+                                        "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_outer_end_and_start =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call> and <tool_call> not a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_outer_end_and_line_start =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call> and <tool_call>\nnot a sibling\n"
+      "</parameter>\n</function>\n</tool_call>";
+  for (const auto& candidate : {literal, literal_outer_end, literal_outer_end_and_start,
+                                literal_outer_end_and_line_start}) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {candidate}, SplitIntoBytes(candidate)}) {
+      auto accumulator = MakeQwenAccumulator();
+      auto outputs = RunChunks(accumulator, chunks);
+      EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
+      EXPECT_EQ(CollectVisible(outputs), candidate) << candidate;
+      EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
+    }
+    for (size_t split = 0; split <= candidate.size(); ++split) {
+      auto accumulator = MakeQwenAccumulator();
+      auto outputs = RunChunks(accumulator, SplitAt(candidate, split));
+      EXPECT_FALSE(AnyMalformed(outputs)) << "split=" << split;
+      EXPECT_EQ(CollectVisible(outputs), candidate) << "split=" << split;
+      EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, UnclosedRejectedParameterCannotConsumeInvalidSibling) {
+  const std::string unknown =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n"
+      "</function>\n</tool_call>";
+  const std::string unknown_with_literal_candidate =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n"
+      "</function>\n</tool_call> and <tool_call>\nnot a sibling";
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+
+  for (const auto& generated : {unknown + "\n" + invalid, invalid + "\n" + unknown,
+                                unknown_with_literal_candidate + "\n" + invalid}) {
+    for (const bool recovery_aware : {false, true}) {
+      {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, SplitIntoBytes(generated));
+        EXPECT_TRUE(AnyMalformed(outputs));
+        EXPECT_TRUE(CollectVisible(outputs).empty());
+        EXPECT_TRUE(CollectCalls(outputs).empty());
+      }
+      for (size_t split = 0; split <= generated.size(); ++split) {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+        EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+        EXPECT_TRUE(CollectVisible(outputs).empty()) << "split=" << split;
+        EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+      }
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, IndependentValidCallSurvivesLaterInvalidBatchAcrossSplits) {
+  const std::string invalid =
+      "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
+      "</parameter>\n</function>\n</tool_call>";
+  const std::string prose = "\nordinary prose\n";
+  const std::string generated = kValidZeroQwenCall + prose + invalid + " tail";
+  for (const bool recovery_aware : {false, true}) {
+    {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitIntoBytes(generated));
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_EQ(CollectVisible(outputs), prose);
+      auto calls = CollectCalls(outputs);
+      ASSERT_EQ(calls.size(), 1u);
+      EXPECT_EQ(calls.front().name, "zero");
+    }
+    for (size_t split = 0; split <= generated.size(); ++split) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitAt(generated, split));
+      EXPECT_TRUE(AnyMalformed(outputs)) << "split=" << split;
+      EXPECT_EQ(CollectVisible(outputs), prose) << "split=" << split;
+      auto calls = CollectCalls(outputs);
+      ASSERT_EQ(calls.size(), 1u) << "split=" << split;
+      EXPECT_EQ(calls.front().name, "zero") << "split=" << split;
+    }
+
+    auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+    auto adjacent = RunChunks(accumulator, SplitIntoBytes(kValidZeroQwenCall + "\n" + invalid));
+    EXPECT_TRUE(AnyMalformed(adjacent));
+    EXPECT_TRUE(CollectCalls(adjacent).empty());
+  }
 }
 
 TEST(QwenXmlToolCallAccumulatorTest, VisiblePrefixBeforeInvalidCallAndTailIsChunkInvariant) {

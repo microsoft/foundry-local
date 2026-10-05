@@ -404,10 +404,6 @@ class ToolCallStreamAccumulator {
   }
 
   void RejectMalformedSelectedPayload(Output& out) {
-    const auto first_call = std::ranges::find_if(out.events, [](const Event& event) {
-      return std::holds_alternative<ParsedToolCall>(event);
-    });
-    out.events.erase(first_call, out.events.end());
     out.malformed = true;
     selected_payload_malformed_ = true;
     tool_call_buffer_.clear();

@@ -434,12 +434,6 @@ void AppendToolOutput(ToolCallStreamAccumulator::Output& destination,
                             std::make_move_iterator(source.events.begin()),
                             std::make_move_iterator(source.events.end()));
   destination.malformed = source.malformed;
-  if (destination.malformed) {
-    const auto first_call = std::ranges::find_if(destination.events, [](const auto& event) {
-      return std::holds_alternative<ParsedToolCall>(event);
-    });
-    destination.events.erase(first_call, destination.events.end());
-  }
 }
 
 bool ContainsToolCall(const ToolCallStreamAccumulator::Output& output) {

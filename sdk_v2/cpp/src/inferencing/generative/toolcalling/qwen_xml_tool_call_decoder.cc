@@ -21,6 +21,7 @@ namespace {
 
 using Json = nlohmann::json;
 
+constexpr std::string_view kCallStart = "<tool_call>\n";
 constexpr std::string_view kFunctionPrefix = "<function=";
 constexpr std::string_view kParameterPrefix = "<parameter=";
 constexpr std::string_view kFunctionEnd = "</function>\n</tool_call>";
@@ -564,7 +565,7 @@ std::optional<std::string_view> ReadTagName(std::string_view source, size_t& pos
 
 BlockParseResult ParseBlock(std::string_view source, size_t start, const FunctionSchemas& schemas) {
   size_t position = start;
-  auto state = ConsumeLiteral(source, position, "<tool_call>\n");
+  auto state = ConsumeLiteral(source, position, kCallStart);
   if (state != ParseState::kComplete) {
     return BlockResult(state);
   }
@@ -643,16 +644,21 @@ BlockParseResult ParseBlock(std::string_view source, size_t start, const Functio
   };
 }
 
-size_t RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream) {
-  size_t position = start + std::string_view("<tool_call>\n").size();
+struct RejectedBatch {
+  size_t end = 0;
+  bool schema_violation = false;
+};
+
+RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream) {
+  size_t position = start + kCallStart.size();
   if (auto function_name = ReadTagName(source, position, kFunctionPrefix)) {
     while (position < source.size()) {
       if (source.substr(position).starts_with(kFunctionEnd)) {
-        return position + kFunctionEnd.size();
+        return {position + kFunctionEnd.size(), false};
       }
 
       if (kFunctionEnd.starts_with(source.substr(position)) && !end_of_stream) {
-        return 0;
+        return {};
       }
 
       if (!ReadTagName(source, position, kParameterPrefix)) {
@@ -660,8 +666,21 @@ size_t RejectedBlockEnd(std::string_view source, size_t start, bool end_of_strea
       }
 
       const auto body_end = source.find(kParameterEnd, position);
+      const auto outer_end = source.find(kFunctionEnd, position);
+      if (outer_end != std::string_view::npos &&
+          (body_end == std::string_view::npos || outer_end < body_end)) {
+        for (auto sibling = source.find(kCallStart, outer_end + kFunctionEnd.size());
+             sibling != std::string_view::npos &&
+             (body_end == std::string_view::npos || sibling < body_end);
+             sibling = source.find(kCallStart, sibling + kCallStart.size())) {
+          size_t name_position = sibling + kCallStart.size();
+          if (ReadTagName(source, name_position, kFunctionPrefix)) {
+            return {source.size(), true};
+          }
+        }
+      }
       if (body_end == std::string_view::npos) {
-        return end_of_stream ? source.size() : 0;
+        return {end_of_stream ? source.size() : 0, false};
       }
 
       position = body_end + kParameterEnd.size();
@@ -672,17 +691,12 @@ size_t RejectedBlockEnd(std::string_view source, size_t start, bool end_of_strea
   const auto end = source.find(kQwenXmlToolCallEndMarker, position);
   if (function_end != std::string_view::npos &&
       (end == std::string_view::npos || function_end < end)) {
-    return function_end + kFunctionEnd.size();
+    return {function_end + kFunctionEnd.size(), false};
   }
 
-  return end == std::string_view::npos ? (end_of_stream ? source.size() : 0)
-                                      : end + kQwenXmlToolCallEndMarker.size();
+  return {end == std::string_view::npos ? (end_of_stream ? source.size() : 0)
+                                       : end + kQwenXmlToolCallEndMarker.size(), false};
 }
-
-struct RejectedBatch {
-  size_t end = 0;
-  bool schema_violation = false;
-};
 
 RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position, bool end_of_stream,
                               const FunctionSchemas& schemas) {
@@ -696,16 +710,19 @@ RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position,
       return {end_of_stream ? source.size() : 0, false};
     }
 
-    const auto block_end = block.state == ParseState::kComplete
-                               ? block.end
-                               : RejectedBlockEnd(source, position, end_of_stream);
-    if (block_end == 0) {
+    const auto rejected_block = block.state == ParseState::kComplete
+                                    ? RejectedBatch{block.end, false}
+                                    : RejectedBlockEnd(source, position, end_of_stream);
+    if (rejected_block.schema_violation) {
+      return rejected_block;
+    }
+    if (rejected_block.end == 0) {
       return {};
     }
 
-    position = source.find_first_not_of(" \t\r\n", block_end);
+    position = source.find_first_not_of(" \t\r\n", rejected_block.end);
     if (position == std::string_view::npos) {
-      return {end_of_stream ? block_end : 0, false};
+      return {end_of_stream ? rejected_block.end : 0, false};
     }
 
     const auto remaining = source.substr(position);
@@ -716,7 +733,7 @@ RejectedBatch RejectedBatchEnd(std::string_view source, size_t invalid_position,
       return {};
     }
 
-    return {block_end, false};
+    return rejected_block;
   }
 }
 
