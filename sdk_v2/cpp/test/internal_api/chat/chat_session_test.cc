@@ -3103,6 +3103,63 @@ TEST_F(QwenNativeProductionIntegrationTest,
 }
 
 TEST_F(QwenNativeProductionIntegrationTest,
+       LiteralBareFunctionHeaderInRejectedBodyRemainsVisibleToBothConsumers) {
+  const std::string literal =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call>\n<tool_call>\n<function=lookup>\n"
+      "not a sibling\n</parameter>\n</function>\n</tool_call>";
+  auto catalog_model = MakeCatalogModel();
+
+  for (auto* native_model : {model_, engine_model_}) {
+    for (const size_t chunk_size : {size_t{1}, literal.size()}) {
+      SCOPED_TRACE(chunk_size);
+      auto factory = OutputFactory(literal, {}, BackendTerminationCause::kNaturalEnd,
+                                   chunk_size, chunk_size);
+
+      ChatSession stateful(catalog_model, *native_model, *logger_, telemetry_, {}, factory);
+      AddFunctionTools(stateful);
+      std::string streamed_text;
+      stateful.SetStreamingCallback([&](flStreamingCallbackData event, void*) {
+        auto* queue = reinterpret_cast<fl::ItemQueue*>(event.item_queue);
+        while (auto item = queue->TryPop()) {
+          EXPECT_EQ(item->type, FOUNDRY_LOCAL_ITEM_TEXT);
+          if (item->type == FOUNDRY_LOCAL_ITEM_TEXT) {
+            streamed_text += static_cast<const TextItem&>(*item).text;
+          }
+        }
+
+        return 0;
+      });
+
+      auto request = MakeStatefulRequest("route this");
+      Response response;
+      stateful.ProcessRequest(request, response);
+      EXPECT_EQ(streamed_text, literal);
+      EXPECT_TRUE(Calls(response).empty());
+      ASSERT_FALSE(stateful.Transcript().Messages().empty());
+      EXPECT_EQ(stateful.Transcript().Messages().back().VisibleText(), literal);
+      EXPECT_EQ(response.finish_reason, FOUNDRY_LOCAL_FINISH_STOP);
+
+      ChatSession stateless(catalog_model, *native_model, *logger_, telemetry_, {}, factory);
+      std::vector<nlohmann::json> chunks;
+      const auto completion = RunChatCompletions(stateless, "auto", &chunks);
+      std::string streamed_content;
+      for (const auto& chunk : chunks) {
+        const auto& delta = chunk.at("choices").at(0).at("delta");
+        streamed_content += delta.value("content", "");
+        EXPECT_FALSE(delta.contains("tool_calls"));
+      }
+
+      EXPECT_EQ(streamed_content, literal);
+      const auto& message = completion.at("choices").at(0).at("message");
+      EXPECT_EQ(message.at("content"), literal);
+      EXPECT_FALSE(message.contains("tool_calls"));
+      EXPECT_EQ(completion.at("choices").at(0).at("finish_reason"), "stop");
+    }
+  }
+}
+
+TEST_F(QwenNativeProductionIntegrationTest,
        MalformedVersionOneSchemaDoesNotSuppressExplicitGuidance) {
   flToolDefinition legacy_definition{};
   legacy_definition.version = 1;

@@ -24,6 +24,7 @@ using Json = nlohmann::json;
 constexpr std::string_view kCallStart = "<tool_call>\n";
 constexpr std::string_view kFunctionPrefix = "<function=";
 constexpr std::string_view kParameterPrefix = "<parameter=";
+constexpr std::string_view kFunctionClose = "</function>\n";
 constexpr std::string_view kFunctionEnd = "</function>\n</tool_call>";
 constexpr std::string_view kParameterEnd = "\n</parameter>\n";
 constexpr size_t kMaxSchemaNesting = 16;
@@ -649,6 +650,21 @@ struct RejectedBatch {
   bool schema_violation = false;
 };
 
+bool HasSiblingFramingBefore(std::string_view source, size_t sibling, size_t body_end) {
+  size_t name_position = sibling + kCallStart.size();
+  if (!ReadTagName(source, name_position, kFunctionPrefix)) {
+    return false;
+  }
+
+  // A bare header can be literal body text; a parameter or function close before the body's close is ambiguous.
+  const auto parameter = source.find(kParameterPrefix, name_position);
+  const auto function_end = source.find(kFunctionClose, name_position);
+  return (parameter != std::string_view::npos &&
+          (body_end == std::string_view::npos || parameter < body_end)) ||
+         (function_end != std::string_view::npos &&
+          (body_end == std::string_view::npos || function_end < body_end));
+}
+
 RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_of_stream) {
   size_t position = start + kCallStart.size();
   if (auto function_name = ReadTagName(source, position, kFunctionPrefix)) {
@@ -666,7 +682,7 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
       }
 
       const auto body_end = source.find(kParameterEnd, position);
-      const auto outer_end = source.find(kFunctionEnd, position);
+      const auto outer_end = source.find(kFunctionClose, position);
       for (auto call_end = source.find(kQwenXmlToolCallEndMarker, position);
            call_end != std::string_view::npos &&
            (body_end == std::string_view::npos || call_end < body_end);
@@ -674,25 +690,18 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
                                   call_end + kQwenXmlToolCallEndMarker.size())) {
         const auto next = source.find_first_not_of(" \t\r\n", call_end + kQwenXmlToolCallEndMarker.size());
         if (next != std::string_view::npos && source.substr(next).starts_with(kCallStart)) {
-          size_t name_position = next + kCallStart.size();
-          // A sibling parameter or function close before this body's close is ambiguous framing. Fail closed;
-          // a bare function header without either can still be literal body text.
-          if (ReadTagName(source, name_position, kFunctionPrefix) &&
-              (body_end == std::string_view::npos ||
-               source.find(kParameterPrefix, name_position) < body_end ||
-               source.find(kFunctionEnd, name_position) < body_end)) {
+          if (HasSiblingFramingBefore(source, next, body_end)) {
             return {source.size(), true};
           }
         }
       }
       if (outer_end != std::string_view::npos &&
           (body_end == std::string_view::npos || outer_end < body_end)) {
-        for (auto sibling = source.find(kCallStart, outer_end + kFunctionEnd.size());
+        for (auto sibling = source.find(kCallStart, outer_end + kFunctionClose.size());
              sibling != std::string_view::npos &&
              (body_end == std::string_view::npos || sibling < body_end);
              sibling = source.find(kCallStart, sibling + kCallStart.size())) {
-          size_t name_position = sibling + kCallStart.size();
-          if (ReadTagName(source, name_position, kFunctionPrefix)) {
+          if (HasSiblingFramingBefore(source, sibling, body_end)) {
             return {source.size(), true};
           }
         }
@@ -707,6 +716,18 @@ RejectedBatch RejectedBlockEnd(std::string_view source, size_t start, bool end_o
 
   const auto function_end = source.find(kFunctionEnd, position);
   const auto end = source.find(kQwenXmlToolCallEndMarker, position);
+  const auto boundary = function_end != std::string_view::npos &&
+                                (end == std::string_view::npos || function_end < end)
+                            ? function_end + kFunctionEnd.size()
+                            : end == std::string_view::npos ? source.size() : end;
+  for (auto sibling = source.find(kCallStart, position);
+       sibling != std::string_view::npos && sibling < boundary;
+       sibling = source.find(kCallStart, sibling + kCallStart.size())) {
+    if (HasSiblingFramingBefore(source, sibling, boundary)) {
+      return {source.size(), true};
+    }
+  }
+
   if (function_end != std::string_view::npos &&
       (end == std::string_view::npos || function_end < end)) {
     return {function_end + kFunctionEnd.size(), false};

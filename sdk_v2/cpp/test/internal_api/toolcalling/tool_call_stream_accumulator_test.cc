@@ -417,22 +417,36 @@ TEST(QwenXmlToolCallAccumulatorTest, InvalidSiblingAfterUnknownOrRejectedCallFai
       "<tool_call>\n<function=missing>\n<parameter=x>\n"
       "literal </tool_call>\n<tool_call>\n<function=typed>\nnot a sibling\n"
       "</parameter>\n</function>\n</tool_call>";
+  const std::string literal_combined_close_and_sibling_header =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call>\n<tool_call>\n<function=typed>\n"
+      "not a sibling\n</parameter>\n</function>\n</tool_call>";
+  const std::string literal_multiple_combined_closes =
+      "<tool_call>\n<function=missing>\n<parameter=x>\n"
+      "literal </function>\n</tool_call> not a sibling\n"
+      "literal </function>\n</tool_call>\n<tool_call>\n<function=typed>\n"
+      "not a sibling\n</parameter>\n</function>\n</tool_call>";
   for (const auto& candidate : {literal, literal_outer_end, literal_outer_end_and_start,
-                                literal_outer_end_and_line_start, literal_sibling_header}) {
-    for (const auto& chunks : std::vector<std::vector<std::string>>{
-             {candidate}, SplitIntoBytes(candidate)}) {
-      auto accumulator = MakeQwenAccumulator();
-      auto outputs = RunChunks(accumulator, chunks);
-      EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
-      EXPECT_EQ(CollectVisible(outputs), candidate) << candidate;
-      EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
-    }
-    for (size_t split = 0; split <= candidate.size(); ++split) {
-      auto accumulator = MakeQwenAccumulator();
-      auto outputs = RunChunks(accumulator, SplitAt(candidate, split));
-      EXPECT_FALSE(AnyMalformed(outputs)) << "split=" << split;
-      EXPECT_EQ(CollectVisible(outputs), candidate) << "split=" << split;
-      EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+                                literal_outer_end_and_line_start, literal_sibling_header,
+                                literal_combined_close_and_sibling_header,
+                                literal_multiple_combined_closes}) {
+    SCOPED_TRACE(candidate);
+    for (const bool recovery_aware : {false, true}) {
+      for (const auto& chunks : std::vector<std::vector<std::string>>{
+               {candidate}, SplitIntoBytes(candidate)}) {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, chunks);
+        EXPECT_FALSE(AnyMalformed(outputs)) << candidate;
+        EXPECT_EQ(CollectVisible(outputs), candidate) << candidate;
+        EXPECT_TRUE(CollectCalls(outputs).empty()) << candidate;
+      }
+      for (size_t split = 0; split <= candidate.size(); ++split) {
+        auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+        auto outputs = RunChunks(accumulator, SplitAt(candidate, split));
+        EXPECT_FALSE(AnyMalformed(outputs)) << "split=" << split;
+        EXPECT_EQ(CollectVisible(outputs), candidate) << "split=" << split;
+        EXPECT_TRUE(CollectCalls(outputs).empty()) << "split=" << split;
+      }
     }
   }
 }
@@ -475,16 +489,25 @@ TEST(QwenXmlToolCallAccumulatorTest, MissingFunctionCloseCannotConsumeInvalidSib
   const std::string unknown_with_literal_end =
       "<tool_call>\n<function=missing>\n<parameter=x>\n"
       "literal </tool_call> not a sibling\n</tool_call>";
+  const std::string unknown_without_tool_close =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n</function>\n";
+  const std::string unknown_with_closed_parameter =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n</parameter>\n";
   const std::string invalid =
       "<tool_call>\n<function=typed>\n<parameter=path>\nsrc\n"
       "</parameter>\n</function>\n</tool_call>";
   const std::string missing_required =
       "<tool_call>\n<function=typed>\n</function>\n</tool_call>";
 
-  for (const auto& first : {unknown, unknown_with_literal_end}) {
+  for (const auto& first : {unknown, unknown_with_literal_end,
+                            unknown_without_tool_close, unknown_with_closed_parameter}) {
     for (const auto& sibling : {invalid, missing_required}) {
       for (const auto& generated : {first + "\n" + sibling, sibling + "\n" + first}) {
+        SCOPED_TRACE(generated);
         for (const bool recovery_aware : {false, true}) {
+          const auto parsed =
+              CreateQwenXmlToolCallPayloadParser(kQwenTools, kQwenToolKinds, recovery_aware)(generated, true);
+          EXPECT_EQ(parsed.disposition, ToolCallPayloadDisposition::kMalformed);
           for (const auto& chunks : std::vector<std::vector<std::string>>{
                    {generated}, SplitIntoBytes(generated)}) {
             auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
@@ -527,6 +550,33 @@ TEST(QwenXmlToolCallAccumulatorTest, AmbiguousNestedCallMarkupFailsClosed) {
       SCOPED_TRACE(split);
       auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
       auto outputs = RunChunks(accumulator, SplitAt(ambiguous, split));
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+  }
+}
+
+TEST(QwenXmlToolCallAccumulatorTest, RejectedBodyCannotConsumeSiblingMissingToolClose) {
+  const std::string generated =
+      "<tool_call>\n<function=missing>\n<parameter=x>\nbody\n"
+      "</function>\n</tool_call>\n"
+      "<tool_call>\n<function=typed>\n</function>\n";
+
+  for (const bool recovery_aware : {false, true}) {
+    for (const auto& chunks : std::vector<std::vector<std::string>>{
+             {generated}, SplitIntoBytes(generated)}) {
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, chunks);
+      EXPECT_TRUE(AnyMalformed(outputs));
+      EXPECT_TRUE(CollectVisible(outputs).empty());
+      EXPECT_TRUE(CollectCalls(outputs).empty());
+    }
+
+    for (size_t split = 0; split <= generated.size(); ++split) {
+      SCOPED_TRACE(split);
+      auto accumulator = MakeQwenAccumulator(kQwenTools, kQwenToolKinds, recovery_aware);
+      auto outputs = RunChunks(accumulator, SplitAt(generated, split));
       EXPECT_TRUE(AnyMalformed(outputs));
       EXPECT_TRUE(CollectVisible(outputs).empty());
       EXPECT_TRUE(CollectCalls(outputs).empty());
