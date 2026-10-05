@@ -9,6 +9,9 @@ import socketserver
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock
 
 
 def check_artifact(library, nm, readelf):
@@ -31,12 +34,38 @@ def check_artifact(library, nm, readelf):
 class TlsProbe(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(10)
-        data = self.request.recv(4096)
+        data = bytearray()
+        while len(data) < 2:
+            chunk = self.request.recv(2 - len(data))
+            if not chunk:
+                break
+            data.extend(chunk)
         if data.startswith(b"\x16\x03"):
             self.server.saw_client_hello.set()
         # Deliberately fail the TLS handshake after OpenSSL has initialized on
         # the native worker. No certificate, external service or model is needed.
         self.request.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+
+
+class TlsProbeTest(unittest.TestCase):
+    def check_prefix(self, chunks, expected):
+        request = Mock()
+        request.recv.side_effect = chunks
+        server = SimpleNamespace(saw_client_hello=threading.Event())
+        TlsProbe(request, ("127.0.0.1", 1), server)
+        self.assertEqual(server.saw_client_hello.is_set(), expected)
+        request.sendall.assert_called_once()
+        return request
+
+    def test_fragmented_header(self):
+        request = self.check_prefix([b"\x16", b"\x03"], True)
+        self.assertEqual([call.args[0] for call in request.recv.call_args_list], [2, 1])
+
+    def test_early_eof(self):
+        self.check_prefix([b"\x16", b""], False)
+
+    def test_non_tls_header(self):
+        self.check_prefix([b"HT"], False)
 
 
 def check_runtime(library, probe, output_dir, order):
@@ -86,5 +115,7 @@ if __name__ == "__main__":
         check_artifact(*sys.argv[2:])
     elif sys.argv[1] == "runtime":
         check_runtime(*sys.argv[2:])
+    elif sys.argv[1] == "probe":
+        unittest.main(argv=[sys.argv[0]])
     else:
         raise ValueError(f"Unknown test mode: {sys.argv[1]}")

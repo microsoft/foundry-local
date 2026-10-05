@@ -14,6 +14,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME elf-artifact-contract
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py
             artifact $<TARGET_FILE:foundry_local> ${CMAKE_NM} ${CMAKE_READELF})
+    add_test(NAME elf-tls-probe-contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py probe)
     foreach(order IN ITEMS curl-first foundry-first)
         add_test(NAME elf-loader-${order}
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/elf-library-test.py
