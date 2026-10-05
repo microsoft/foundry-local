@@ -44,6 +44,11 @@ your TS/JS code
 The addon talks to the **C++ wrapper**, never directly to the C ABI. If the wrapper is
 missing something, fix the wrapper rather than reaching past it.
 
+Request preflight captures state synchronously, executes token counting on a worker, and keeps the
+manager-owned runtime alive until completion.
+`contextLimitTokens` is the Engine's structural request capacity or the Generator's model context.
+`fits` does not reserve cache or guarantee immediate admission while other requests are active.
+
 ---
 
 ## 2. Prerequisites

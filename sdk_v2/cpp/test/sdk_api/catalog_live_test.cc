@@ -30,11 +30,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// The live catalog endpoint and an explicit region. Setting the region exercises the public
-// Configuration::SetCatalogRegion() override path; it matches the URL template so routing stays
-// consistent.
-constexpr const char* kLiveCatalogUrl = "https://ai.azure.com/api/centralus/ux/v1.0";
-constexpr const char* kLiveCatalogRegion = "centralus";
+constexpr const char* kLiveCatalogUrl = "https://api.catalog.azureml.ms/asset-gallery/v1.0/models";
 
 // A small model the repo already standardizes on (see SharedTestEnv). Used by the download test.
 constexpr const char* kSmallModelAlias = "qwen2.5-0.5b";
@@ -69,7 +65,6 @@ foundry_local::Configuration MakeLiveConfig(const std::string& app_name, const f
   foundry_local::Configuration config(app_name);
   config.SetDefaultLogLevel(FOUNDRY_LOCAL_LOG_WARNING)
       .AddCatalogUrl(kLiveCatalogUrl)
-      .SetCatalogRegion(kLiveCatalogRegion)
       .SetModelCacheDir(cache_dir.string());
   return config;
 }
@@ -85,7 +80,7 @@ TEST(CatalogLiveTest, DumpLiveCatalog) {
 
   ASSERT_FALSE(models.empty()) << "Live catalog returned no models.";
 
-  std::cout << "\n=== Live model catalog (" << models.size() << " models, region=" << kLiveCatalogRegion
+  std::cout << "\n=== Live model catalog (" << models.size() << " models, endpoint=" << kLiveCatalogUrl
             << ") ===\n";
   for (const auto& model : models) {
     auto info = model->GetInfo();

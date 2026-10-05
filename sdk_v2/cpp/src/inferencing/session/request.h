@@ -102,6 +102,9 @@ struct Request {
   Request(const Request&) = delete;
   Request& operator=(const Request&) = delete;
 
+  /// Deep-copy every field read during chat preparation, including inline media bytes.
+  Request CaptureChatSnapshot() const;
+
   /// Add a pre-allocated owned item.
   void AddOwnedItem(std::unique_ptr<Item> item) {
     items.push_back(item.get());

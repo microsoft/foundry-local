@@ -12,6 +12,7 @@ import pytest
 from foundry_local_sdk import (
     FinishReason,
     RequestOptions,
+    RequestPreflightResult,
     SearchOptions,
     TokenUsage,
     ToolChoice,
@@ -51,6 +52,13 @@ class TestTokenUsage:
         c = TokenUsage(1, 2, 4)
         assert a == b
         assert a != c
+
+
+class TestRequestPreflightResult:
+    def test_is_frozen_dataclass(self):
+        result = RequestPreflightResult(10, 20, 30, 40, True, 0)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            result.fits = False  # type: ignore[misc]
 
 
 class TestToolChoice:

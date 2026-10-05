@@ -13,6 +13,7 @@
 namespace fl {
 
 class GenAIModelInstance;
+struct PreparedChatPrompt;
 struct TranscriptMessage;
 struct SearchOptions;
 struct ToolCallContext;
@@ -96,6 +97,13 @@ class ChatGenerator {
                              GenAIModelInstance& model,
                              const ToolCallContext& tool_ctx,
                              const SearchOptions& options) = 0;
+
+  /// Append a prompt already rendered and tokenized by the authoritative request preparation path.
+  virtual int AppendPreparedPrompt(const std::vector<TranscriptMessage>& new_messages,
+                                   const PreparedChatPrompt& prompt,
+                                   GenAIModelInstance& model,
+                                   const ToolCallContext& tool_ctx,
+                                   const SearchOptions& options);
 
   /// Whether the prompt for the active turn ends inside a reasoning block opened by the chat template.
   virtual bool PromptOpensReasoning() const { return false; }

@@ -119,7 +119,7 @@ std::shared_ptr<OnnxChatEngine::Conversation> OnnxChatEngine::CreateConversation
   Enqueue(
       [this, conversation, completion]() {
         auto request_options = OgaRequestOptions::Create();
-        request_options->SetMaxSessionTokens(static_cast<uint64_t>(GetModelMaxContextLength(model_.GetGenAIConfig())));
+        request_options->SetMaxSessionTokens(max_request_length_);
 
         auto request = engine_->CreateRequest(request_options.get());
         conversations_.emplace(conversation.get(),
@@ -172,18 +172,17 @@ uint64_t OnnxChatEngine::BeginTurn(const std::shared_ptr<Conversation>& conversa
                                                prompt_opens_reasoning);
         if (plan.max_generated_tokens.has_value()) {
           // Validate only the limit the caller requested. When it is absent, leave the turn uncapped and let OGA
-          // enforce the Request's model-context session limit.
+          // enforce the Request's Engine-capability session limit.
           const uint64_t total_required =
               static_cast<uint64_t>(existing_tokens) + static_cast<uint64_t>(tokens.size()) +
               static_cast<uint64_t>(*plan.max_generated_tokens);
-          const uint64_t model_max_tokens = static_cast<uint64_t>(GetModelMaxContextLength(model_.GetGenAIConfig()));
-          if (total_required > model_max_tokens) {
+          if (total_required > max_request_length_) {
             FL_THROW(FOUNDRY_LOCAL_ERROR_INVALID_ARGUMENT,
                      "request requires " + std::to_string(total_required) + " total tokens (" +
                          std::to_string(existing_tokens) + " existing + " + std::to_string(tokens.size()) +
                          " input + " + std::to_string(*plan.max_generated_tokens) +
-                         " output), which exceeds the model's maximum context length of " +
-                         std::to_string(model_max_tokens) + " tokens");
+                         " output), which exceeds the Engine's maximum request length of " +
+                         std::to_string(max_request_length_) + " tokens");
           }
         }
 
@@ -326,6 +325,12 @@ void OnnxChatEngine::Enqueue(std::function<void()> command,
 void OnnxChatEngine::WorkerLoop(std::promise<void> initialized) {
   try {
     engine_ = OgaEngine::Create(model_.GetOgaModel());
+    auto capabilities = engine_->GetCapabilities();
+    max_request_length_ = capabilities->MaxRequestLength();
+    if (max_request_length_ == 0) {
+      throw std::runtime_error("Dynamic Engine did not report max_request_length.");
+    }
+
     // Drain an ordinary full decode batch in one call. OGA retains speculative or fatal overflow for later runs.
     event_buffer_ = engine_->CreateEventBuffer(model_.GetGenAIConfig().EngineMaxBatchSize().value_or(1));
     initialized.set_value();

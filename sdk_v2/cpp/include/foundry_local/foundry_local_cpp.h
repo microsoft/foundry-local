@@ -250,6 +250,10 @@ class Configuration {
 
   /// Optional. Add a catalog URL to connect to.
   /// Defaults to the Azure Foundry Local Catalog if none are added.
+  /// Legacy Azure `https://ai.azure.com/.../ux/v1.0` URLs are unsupported. Compatible custom
+  /// catalog endpoints may use a different path.
+  /// Prefix catalog-v2 deployment-option overrides with `deploymentOptions=`. Unqualified
+  /// overrides retain the legacy `foundryLocal` tag semantics.
   Configuration& AddCatalogUrl(const std::string& url,
                                const std::optional<std::string>& filter_override = std::nullopt);
 
@@ -792,6 +796,7 @@ class ICatalog {
   /// Get every individual model variant currently present in the local cache.
   virtual ModelList GetCachedModels() const = 0;
 
+  /// Get every loaded leaf variant, independently of each alias group's selected variant.
   virtual ModelList GetLoadedModels() const = 0;
   virtual std::unique_ptr<IModel> GetModel(const std::string& alias) const = 0;
   virtual std::unique_ptr<IModel> GetModelVariant(const std::string& model_id) const = 0;
@@ -1037,6 +1042,29 @@ class Request {
   detail::Base<flRequest> handle_;
 };
 
+/// Captured exact token-budget preflight operation.
+///
+/// Capture is separate from execution so callers can capture request and session state on one
+/// thread, then move the operation to a worker for the potentially expensive execution. The
+/// source Request and ChatSession do not need to remain alive after capture. The owning Manager
+/// and model runtime must remain alive until this operation is executed and destroyed.
+class RequestPreflight {
+ public:
+  RequestPreflight(const RequestPreflight&) = delete;
+  RequestPreflight& operator=(const RequestPreflight&) = delete;
+  RequestPreflight(RequestPreflight&&) noexcept = default;
+  RequestPreflight& operator=(RequestPreflight&&) noexcept = default;
+
+  /// Execute the captured preflight operation.
+  flRequestPreflightResult Execute();
+
+ private:
+  friend class ChatSession;
+  explicit RequestPreflight(flRequestPreflight* preflight);
+
+  detail::Base<flRequestPreflight> handle_;
+};
+
 /// Wrapper for an opaque flResponse.
 class Response {
  public:
@@ -1113,6 +1141,16 @@ class ChatSession : public Session {
   /// Undo the last `count` turns and remove their input messages and assistant replies from history.
   /// Retained inference state is reused when it can be restored safely; otherwise it is rebuilt on the next request.
   void UndoTurns(size_t count);
+
+  /// Capture request and session state for a later exact token-budget preflight.
+  /// The returned operation can be moved to a worker and executed after the source request and
+  /// session are destroyed. The owning Manager and model runtime must remain alive until the
+  /// returned operation is executed and destroyed.
+  RequestPreflight CaptureRequestPreflight(const Request& request) const;
+
+  /// Synchronously capture and execute an exact token-budget preflight without mutating the request or session.
+  /// This operation may be expensive. The owning Manager and model runtime must remain alive for the call.
+  flRequestPreflightResult PreflightRequest(const Request& request) const;
 };
 
 /// Session for automatic-speech-recognition (transcription) models.
